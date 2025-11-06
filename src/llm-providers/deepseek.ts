@@ -1,47 +1,33 @@
 /**
- * OpenAI LLM Provider
+ * DeepSeek LLM Provider
  */
 
 import axios, { AxiosInstance } from 'axios';
 import { BaseLLMProvider } from './base.js';
 import type { Message, LLMResponse, LLMProviderConfig } from '../types.js';
 
-export interface OpenAIConfig extends LLMProviderConfig {
+export interface DeepSeekConfig extends LLMProviderConfig {
   model?: string;
   temperature?: number;
   maxTokens?: number;
-  organization?: string;
-  project?: string;
 }
 
-export class OpenAIProvider extends BaseLLMProvider {
+export class DeepSeekProvider extends BaseLLMProvider {
   private client: AxiosInstance;
   private model: string;
 
-  constructor(config: OpenAIConfig) {
+  constructor(config: DeepSeekConfig) {
     super(config);
     this.validateConfig();
     
-    this.model = config.model || 'gpt-4o-mini';
+    this.model = config.model || 'deepseek-chat';
     
-    const headers: Record<string, string> = {
-      'Authorization': `Bearer ${config.apiKey}`,
-      'Content-Type': 'application/json',
-    };
-
-    // Add organization header if provided
-    if (config.organization) {
-      headers['OpenAI-Organization'] = config.organization;
-    }
-
-    // Add project header if provided
-    if (config.project) {
-      headers['OpenAI-Project'] = config.project;
-    }
-
     this.client = axios.create({
-      baseURL: config.baseURL || 'https://api.openai.com/v1',
-      headers,
+      baseURL: config.baseURL || 'https://api.deepseek.com/v1',
+      headers: {
+        'Authorization': `Bearer ${config.apiKey}`,
+        'Content-Type': 'application/json',
+      },
     });
   }
 
@@ -61,12 +47,12 @@ export class OpenAIProvider extends BaseLLMProvider {
         finishReason: choice.finish_reason,
       };
     } catch (error: any) {
-      throw new Error(`OpenAI API error: ${error.response?.data?.error?.message || error.message}`);
+      throw new Error(`DeepSeek API error: ${error.response?.data?.error?.message || error.message}`);
     }
   }
 
   /**
-   * Format messages for OpenAI API
+   * Format messages for DeepSeek API
    */
   private formatMessages(messages: Message[]): any[] {
     return messages.map(msg => ({

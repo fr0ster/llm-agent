@@ -11,12 +11,17 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts",
+    "dev:llm": "tsx src/cli.ts --llm-only",
     "start": "node dist/cli.js",
+    "start:llm": "node dist/cli.js --llm-only",
+    "test": "npm run build && npm start",
+    "test:llm": "npm run build && npm run start:llm",
     "clean": "rimraf dist || rm -rf dist"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2",
-    "axios": "^1.7.7"
+    "axios": "^1.7.7",
+    "dotenv": "^16.6.1"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -26,4 +31,3 @@
   "license": "MIT",
   "private": true
 }
-
