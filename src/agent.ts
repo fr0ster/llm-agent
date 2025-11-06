@@ -5,12 +5,21 @@
  */
 
 import type { LLMProvider } from './llm-providers/base.js';
-import { MCPClientWrapper } from './mcp/client.js';
+import { MCPClientWrapper, type MCPClientConfig } from './mcp/client.js';
 import type { Message, AgentResponse, ToolCall } from './types.js';
 
 export interface AgentConfig {
   llmProvider: LLMProvider;
-  mcpClient: MCPClientWrapper;
+  /**
+   * MCP client instance (if provided, will be used directly)
+   * If not provided, will be created from mcpConfig
+   */
+  mcpClient?: MCPClientWrapper;
+  /**
+   * Direct MCP configuration (used if mcpClient is not provided)
+   * If both mcpClient and mcpConfig are provided, mcpClient takes precedence
+   */
+  mcpConfig?: MCPClientConfig;
   maxIterations?: number;
 }
 
@@ -22,8 +31,25 @@ export class Agent {
 
   constructor(config: AgentConfig) {
     this.llmProvider = config.llmProvider;
-    this.mcpClient = config.mcpClient;
     this.maxIterations = config.maxIterations || 5;
+    
+    // Initialize MCP client
+    if (config.mcpClient) {
+      this.mcpClient = config.mcpClient;
+    } else if (config.mcpConfig) {
+      this.mcpClient = new MCPClientWrapper(config.mcpConfig);
+    } else {
+      throw new Error(
+        'MCP client configuration required. Provide either mcpClient or mcpConfig.'
+      );
+    }
+  }
+
+  /**
+   * Initialize MCP client connection (call this before using the agent)
+   */
+  async connect(): Promise<void> {
+    await this.mcpClient.connect();
   }
 
   /**
