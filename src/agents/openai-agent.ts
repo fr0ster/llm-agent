@@ -90,16 +90,29 @@ export class OpenAIAgent extends BaseAgent {
 
   /**
    * Format messages for OpenAI API
+   * 
+   * IMPORTANT: Tool results use role='tool' with tool_call_id
+   * This is the correct OpenAI format - tool results are NOT user messages
    */
   private formatMessagesForOpenAI(messages: Message[]): any[] {
     return messages.map(msg => {
+      // Tool result messages (role='tool')
+      if (msg.role === 'tool' && msg.toolCallId) {
+        return {
+          role: 'tool',
+          tool_call_id: msg.toolCallId,
+          content: msg.content,
+        };
+      }
+      
+      // Assistant messages with tool calls
       const formatted: any = {
         role: msg.role,
-        content: msg.content,
+        content: msg.content || null, // OpenAI requires null if empty
       };
       
       // Add tool calls if present
-      if (msg.toolCalls) {
+      if (msg.toolCalls && msg.toolCalls.length > 0) {
         formatted.tool_calls = msg.toolCalls.map(tc => ({
           id: tc.id,
           type: 'function',
@@ -108,12 +121,6 @@ export class OpenAIAgent extends BaseAgent {
             arguments: JSON.stringify(tc.arguments),
           },
         }));
-      }
-      
-      // Add tool call ID if present (for tool result messages)
-      if (msg.toolCallId) {
-        formatted.role = 'tool';
-        formatted.tool_call_id = msg.toolCallId;
       }
       
       return formatted;
