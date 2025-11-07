@@ -117,31 +117,48 @@ export abstract class BaseAgent {
 
   /**
    * Handle tool calls - execute tools and get response
+   * 
+   * IMPORTANT: Tool results are NOT added as user messages.
+   * They are added as separate tool/function result messages.
+   * 
+   * For OpenAI-style models: role='tool' with tool_call_id
+   * For prompt-based models: role='assistant' with JSON tool_result
    */
   protected async handleToolCalls(toolCalls: ToolCall[]): Promise<AgentResponse> {
     // Execute all tool calls
     const toolResults = await this.mcpClient.callTools(toolCalls);
     
-    // Add tool results to conversation
-    const toolResultsMessage: Message = {
+    // Add assistant message with tool calls to history
+    const assistantMessage: Message = {
       role: 'assistant',
       content: '',
       toolCalls,
     };
-    this.conversationHistory.push(toolResultsMessage);
+    this.conversationHistory.push(assistantMessage);
 
-    // Format tool results for LLM
-    const toolResultsContent = this.formatToolResults(toolResults);
-    
-    // Add tool results as user message (LLM-specific format)
-    this.conversationHistory.push({
-      role: 'user',
-      content: toolResultsContent,
-    });
+    // Add tool results using LLM-specific format
+    // This method is overridden by subclasses to use correct format
+    this.addToolResultsToHistory(toolResults, toolCalls);
 
-    // Get final response from LLM
+    // Get final response from LLM (with tool results in context)
     const finalResponse = await this.callLLMWithTools(this.conversationHistory, this.tools);
     
+    // If LLM made more tool calls, handle them recursively
+    if (finalResponse.toolCalls && finalResponse.toolCalls.length > 0) {
+      // Check iteration limit
+      const currentIterations = this.conversationHistory.filter(m => m.toolCalls).length;
+      if (currentIterations >= this.maxIterations) {
+        return {
+          message: finalResponse.content || 'Maximum iterations reached',
+          toolCalls,
+          toolResults,
+        };
+      }
+      // Recursively handle new tool calls
+      return await this.handleToolCalls(finalResponse.toolCalls);
+    }
+    
+    // No more tool calls - add final response
     this.conversationHistory.push({
       role: 'assistant',
       content: finalResponse.content,
@@ -155,16 +172,29 @@ export abstract class BaseAgent {
   }
 
   /**
-   * Format tool results for LLM (can be overridden by subclasses)
+   * Add tool results to conversation history
+   * 
+   * This method is overridden by subclasses to use LLM-specific format:
+   * - OpenAI-style: role='tool' with tool_call_id
+   * - Prompt-based: role='assistant' with JSON tool_result
    */
-  protected formatToolResults(toolResults: ToolResult[]): string {
-    return toolResults.map(result => {
-      if (result.error) {
-        return `Tool ${result.name} failed: ${result.error}`;
+  protected addToolResultsToHistory(toolResults: ToolResult[], toolCalls: ToolCall[]): void {
+    // Default implementation: add as tool messages (OpenAI-style)
+    // Subclasses can override for different formats
+    for (const result of toolResults) {
+      const toolCall = toolCalls.find(tc => tc.id === result.toolCallId);
+      if (toolCall) {
+        this.conversationHistory.push({
+          role: 'tool',
+          content: result.error 
+            ? JSON.stringify({ error: result.error })
+            : JSON.stringify(result.result),
+          toolCallId: result.toolCallId,
+        });
       }
-      return `Tool ${result.name} returned: ${JSON.stringify(result.result)}`;
-    }).join('\n');
+    }
   }
+
 
   /**
    * Clear conversation history

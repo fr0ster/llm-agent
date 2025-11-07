@@ -3,9 +3,22 @@
  */
 
 export interface Message {
-  role: 'user' | 'assistant' | 'system';
+  /**
+   * Message role
+   * - 'user': User input
+   * - 'assistant': LLM response (may include tool calls or tool results)
+   * - 'system': System instructions
+   * - 'tool': Tool/function result (for OpenAI-style models)
+   */
+  role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
+  /**
+   * Tool calls made by assistant (if any)
+   */
   toolCalls?: ToolCall[];
+  /**
+   * Tool call ID (for tool result messages)
+   */
   toolCallId?: string;
 }
 

@@ -1,21 +1,31 @@
 # LLM Agent
 
-Minimal LLM agent orchestrating MCP tools across multiple LLM providers.
+Minimal LLM agent orchestrating MCP tools through SAP AI Core.
 
 ## Overview
 
-This agent acts as an orchestrator between LLM providers (OpenAI, Anthropic, etc.) and MCP (Model Context Protocol) servers, allowing LLMs to interact with external tools and services.
+This agent acts as an orchestrator between LLM providers and MCP (Model Context Protocol) servers, allowing LLMs to interact with external tools and services.
+
+**Important Architecture Change:**
+- **All LLM providers are accessed through SAP AI Core**, not directly
+- OpenAI models → SAP AI Core → OpenAI
+- Anthropic models → SAP AI Core → Anthropic  
+- DeepSeek models → SAP AI Core → DeepSeek
+- The model name determines which underlying provider SAP AI Core routes to
 
 ## Features
 
-- ✅ Multiple LLM provider support (OpenAI implemented)
+- ✅ SAP AI Core integration (all LLM providers through SAP AI Core)
 - ✅ MCP client integration with multiple transport protocols
   - ✅ Stdio transport (for local processes)
   - ✅ SSE transport (Server-Sent Events)
   - ✅ Streamable HTTP transport (bidirectional NDJSON)
   - ✅ Auto-detection of transport from URL
-- ✅ Tool orchestration
+- ✅ Tool orchestration with proper tool result handling
+  - ✅ OpenAI-style: `role='tool'` with `tool_call_id`
+  - ✅ Prompt-based: `role='assistant'` with JSON `tool_result`
 - ✅ Conversation history management
+- ✅ Recursive tool call handling (multiple iterations)
 - 🔄 Streaming support (planned)
 
 ## Installation
@@ -40,25 +50,43 @@ When using the agent embedded in your application (e.g., in `cloud-llm-hub` CAP 
 
 ```typescript
 // srv/agent-service.ts
-import { Agent, OpenAIProvider } from '@cloud-llm-hub/llm-agent';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 export default class AgentService extends cds.Service {
-  private agent: Agent;
+  private agent: SapCoreAIAgent;
 
   async init() {
-    // Agent connects to MCP proxy via HTTP (same process, different endpoint)
-    // The MCP proxy embeds mcp-abap-adt server, agent connects to it via transport
-    this.agent = new Agent({
-      llmProvider: new OpenAIProvider({
-        apiKey: process.env.OPENAI_API_KEY!,
-      }),
-      mcpConfig: {
-        url: 'http://localhost:4004/mcp/stream/http', // MCP proxy endpoint
-        headers: {
-          'Authorization': 'Basic YWxpY2U6',
-          'X-SAP-Destination': 'SAP_DEV_DEST',
-        },
+    // Create SAP AI Core provider (all LLM providers through SAP AI Core)
+    const llmProvider = new SapCoreAIProvider({
+      destinationName: 'SAP_AI_CORE_DEST', // SAP destination for AI Core
+      model: 'gpt-4o-mini', // Model name determines which provider SAP AI Core uses
+      httpClient: async (config) => {
+        return await executeHttpRequest(
+          { destinationName: config.destinationName },
+          {
+            method: config.method as any,
+            url: config.url,
+            headers: config.headers,
+            data: config.data,
+          }
+        );
       },
+    });
+
+    // Create MCP client
+    const mcpClient = new MCPClientWrapper({
+      url: 'http://localhost:4004/mcp/stream/http', // MCP proxy endpoint
+      headers: {
+        'Authorization': 'Basic YWxpY2U6',
+        'X-SAP-Destination': 'SAP_DEV_DEST',
+      },
+    });
+
+    // Create agent
+    this.agent = new SapCoreAIAgent({
+      llmProvider,
+      mcpClient,
     });
 
     await this.agent.connect();
@@ -83,11 +111,24 @@ See [Embedded Usage Guide](../../docs/LLM_AGENT_EMBEDDED_USAGE.md) for complete 
 ### Basic Example (Stdio Transport)
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
-const llmProvider = new OpenAIProvider({
-  apiKey: process.env.OPENAI_API_KEY!,
-  model: 'gpt-4o-mini',
+// Create SAP AI Core provider
+const llmProvider = new SapCoreAIProvider({
+  destinationName: 'SAP_AI_CORE_DEST',
+  model: 'gpt-4o-mini', // Routes to OpenAI through SAP AI Core
+  httpClient: async (config) => {
+    return await executeHttpRequest(
+      { destinationName: config.destinationName },
+      {
+        method: config.method as any,
+        url: config.url,
+        headers: config.headers,
+        data: config.data,
+      }
+    );
+  },
 });
 
 const mcpClient = new MCPClientWrapper({
@@ -96,11 +137,12 @@ const mcpClient = new MCPClientWrapper({
   args: ['path/to/mcp-server.js'],
 });
 
-const agent = new Agent({
+const agent = new SapCoreAIAgent({
   llmProvider,
   mcpClient,
 });
 
+await agent.connect();
 const response = await agent.process('What tools are available?');
 console.log(response.message);
 ```
@@ -231,20 +273,20 @@ The agent supports configuration via `.env` file for easier setup:
 
 2. Edit `.env` with your settings:
    ```bash
-   # OpenAI example
-   OPENAI_API_KEY=sk-proj-your-key-here
-   OPENAI_MODEL=gpt-4o-mini
-   OPENAI_ORG=org-your-org-id
-   OPENAI_PRJ=proj-your-project-id
+   # SAP AI Core Configuration (required)
+   # All LLM providers are accessed through SAP AI Core
+   SAP_CORE_AI_DESTINATION=SAP_AI_CORE_DEST
+   SAP_CORE_AI_MODEL=gpt-4o-mini  # Model determines provider: gpt-4o-mini → OpenAI, claude-3-5-sonnet → Anthropic
+   SAP_CORE_AI_TEMPERATURE=0.7
+   SAP_CORE_AI_MAX_TOKENS=2000
    
-   # Or Anthropic
-   LLM_PROVIDER=anthropic
-   ANTHROPIC_API_KEY=sk-ant-your-key-here
-   
-   # Or DeepSeek
-   LLM_PROVIDER=deepseek
-   DEEPSEEK_API_KEY=sk-your-key-here
+   # MCP Configuration (optional, for MCP integration)
+   MCP_ENDPOINT=http://localhost:4004/mcp/stream/http
+   MCP_DISABLED=false
    ```
+   
+   **Note:** Legacy direct provider configuration (OPENAI_API_KEY, etc.) is deprecated.
+   All LLM providers must be accessed through SAP AI Core.
 
 3. Run the agent - it will automatically load `.env`:
    ```bash
@@ -257,11 +299,21 @@ Environment variables from `.env` can be overridden by actual environment variab
 
 The agent includes a simple CLI test launcher for quick testing.
 
+**Note:** The CLI launcher currently supports legacy direct provider configuration for testing purposes. In production, all LLM providers should be accessed through SAP AI Core.
+
 #### Test LLM Only (Without MCP)
 
 Test just the LLM provider without MCP integration:
 
-**OpenAI:**
+**Using SAP AI Core (Recommended):**
+```bash
+# Set SAP AI Core destination
+export SAP_CORE_AI_DESTINATION="SAP_AI_CORE_DEST"
+export SAP_CORE_AI_MODEL="gpt-4o-mini"  # Routes to OpenAI through SAP AI Core
+npm run dev:llm
+```
+
+**Legacy Direct Provider (for testing only):**
 ```bash
 # Basic usage - set API key and run
 export OPENAI_API_KEY="sk-proj-your-actual-key-here"
@@ -457,10 +509,46 @@ The test launcher will:
 - Show response and tool calls
 - Display conversation history
 
+## Tool Result Handling Architecture
+
+**Important:** Tool results are NOT added as user messages. They are added as separate tool/function result messages to maintain clear conversation structure.
+
+### For OpenAI-style Models (Function Calling)
+
+Tool results use the standard OpenAI format:
+- `role: 'tool'` with `tool_call_id`
+- Content contains the tool result data
+
+**Flow:**
+1. User message → LLM
+2. LLM responds with tool calls
+3. Agent executes tools
+4. Tool results added as `role: 'tool'` messages
+5. LLM processes tool results and generates final answer
+
+### For Prompt-based Models (No Function Calling)
+
+Tool results use JSON format in assistant messages:
+- `role: 'assistant'` with JSON `{"tool_result": {"tool": "...", "data": {...}}}`
+- LLM is instructed in system message to recognize and use tool_result data
+
+**Flow:**
+1. User message → LLM (with tool descriptions in system prompt)
+2. LLM responds with tool call request (JSON or text format)
+3. Agent parses and executes tools
+4. Tool results added as `role: 'assistant'` with JSON tool_result
+5. LLM processes tool_result and generates final answer
+
+This architecture ensures:
+- ✅ Tool results are clearly separated from user input
+- ✅ LLM can distinguish between user messages and tool results
+- ✅ Better security and control over tool execution
+- ✅ Proper conversation history structure
+
 ## Architecture
 
-- `src/agent.ts` - Core agent orchestrator
-- `src/llm-providers/` - LLM provider implementations
+- `src/agents/` - Agent implementations (BaseAgent, SapCoreAIAgent, etc.)
+- `src/llm-providers/` - LLM provider implementations (SapCoreAIProvider)
 - `src/mcp/` - MCP client wrapper
 - `src/types.ts` - TypeScript type definitions
 
