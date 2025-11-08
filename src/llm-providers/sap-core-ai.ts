@@ -103,10 +103,12 @@ export class SapCoreAIProvider {
 
       if (this.httpClient) {
         // Use provided HTTP client (typically SAP Cloud SDK)
+        // Ensure URL doesn't have trailing slash (SAP AI Core is strict about this)
+        const url = '/v1/chat/completions'.replace(/\/$/, '');
         response = await this.httpClient({
           destinationName: this.destinationName,
           method: 'POST',
-          url: '/v1/chat/completions',
+          url: url,
           headers: {
             'Content-Type': 'application/json',
           },
