@@ -240,6 +240,10 @@ See [docs/LLM_AGENT_EMBEDDED_USAGE.md](../../docs/LLM_AGENT_EMBEDDED_USAGE.md) f
 
 ## Development
 
+**Cross-Platform Development:** This project is configured for consistent behavior across Windows, Linux, and macOS. See the parent project's [Cross-Platform Development Guide](../../docs/CROSS_PLATFORM_GUIDE.md) for setup instructions and troubleshooting.
+
+**Verify your setup:** Run `npm run verify:setup` from the root project to check cross-platform configuration.
+
 ```bash
 # Install dependencies
 npm install
