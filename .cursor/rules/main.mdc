@@ -1,0 +1,30 @@
+---
+alwaysApply: true
+description: LLM Agent project rules and guidelines
+---
+
+# LLM Agent Rules
+
+## Language Requirements
+All repository artifacts authored by the assistant (source code, documentation, comments, commit messages, etc.) must be written in English.
+
+Direct communication with the user must follow the language used by the user in the current conversation.
+
+## Project Context
+- **Name:** LLM Agent – Minimal LLM agent orchestrating MCP tools through SAP AI Core.
+- **Purpose:** Acts as an orchestrator between LLM providers and MCP (Model Context Protocol) servers.
+- **Key Architecture:** All LLM providers are accessed through SAP AI Core (not directly).
+- **Key Modules:** `src/agents/`, `src/llm-providers/`, `src/mcp/`, `src/types.ts`
+
+## Code Standards
+- Source code: English only
+- Comments: English only, explain "why" not "what"
+- Variable/function/class names: English only
+- Error messages: English only
+- Log messages: English only
+
+## Architecture Notes
+- SAP AI Core is the primary gateway for all LLM providers
+- Supports multiple transport protocols: Stdio, SSE, Streamable HTTP
+- Auto-detection of transport from URL
+- Tool orchestration with proper tool result handling
