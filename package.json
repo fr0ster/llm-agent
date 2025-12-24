@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-proxy",
-  "version": "0.0.0",
+  "version": "0.0.1",
   "description": "Minimal LLM proxy that normalizes provider access and surfaces MCP tools without executing them.",
   "type": "module",
   "main": "dist/index.js",
