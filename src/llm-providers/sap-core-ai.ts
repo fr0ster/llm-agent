@@ -1,42 +1,42 @@
 /**
  * SAP Core AI LLM Provider
- * 
+ *
  * Implementation of LLMProvider interface for SAP Core AI service.
  * This provider uses SAP Cloud SDK for authentication and destination handling.
- * 
+ *
  * All LLM providers (OpenAI, Anthropic, DeepSeek, etc.) are accessed through SAP AI Core.
  * SAP AI Core acts as a proxy/gateway to different LLM providers.
- * 
+ *
  * Architecture:
  * - Agent → SAP Core AI Provider → SAP AI Core → External LLM (OpenAI/Anthropic/DeepSeek)
  * - SAP AI Core handles authentication, routing, and provider selection
  */
 
-import type { Message, LLMResponse, LLMProviderConfig } from '../types.js';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
   /**
    * SAP Destination name for Core AI service
    */
   destinationName: string;
-  
+
   /**
    * Model name (optional, defaults to service default)
    * Model selection determines which underlying LLM provider to use
    * Examples: 'gpt-4o-mini', 'claude-3-5-sonnet', 'deepseek-chat'
    */
   model?: string;
-  
+
   /**
    * Temperature (optional)
    */
   temperature?: number;
-  
+
   /**
    * Max tokens (optional)
    */
   maxTokens?: number;
-  
+
   /**
    * HTTP client function for making requests
    * If not provided, will use axios (requires direct URL configuration)
@@ -49,7 +49,7 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
     headers?: Record<string, string>;
     data?: any;
   }) => Promise<{ data: any }>;
-  
+
   /**
    * Optional logger instance
    */
@@ -58,7 +58,7 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
 
 /**
  * SAP Core AI Provider implementation
- * 
+ *
  * Uses SAP Cloud SDK executeHttpRequest for authentication and destination handling.
  * All LLM providers are accessed through SAP AI Core, not directly.
  */
@@ -73,7 +73,7 @@ export class SapCoreAIProvider {
     if (!config.destinationName) {
       throw new Error('SAP destination name is required for SapCoreAIProvider');
     }
-    
+
     this.destinationName = config.destinationName;
     this.model = config.model || 'gpt-4o-mini'; // Default model
     this.config = config;
@@ -118,8 +118,9 @@ export class SapCoreAIProvider {
         // Fallback: use axios (requires direct URL configuration)
         // This is for standalone testing without SAP SDK
         const axios = await import('axios');
-        const baseURL = process.env.SAP_CORE_AI_URL || 'https://api.ai.core.sap';
-        
+        const baseURL =
+          process.env.SAP_CORE_AI_URL || 'https://api.ai.core.sap';
+
         response = await axios.default.post(
           `${baseURL}/v1/chat/completions`,
           requestBody,
@@ -127,12 +128,12 @@ export class SapCoreAIProvider {
             headers: {
               'Content-Type': 'application/json',
             },
-          }
+          },
         );
       }
 
       const choice = response.data.choices?.[0];
-      
+
       if (!choice) {
         throw new Error('No response from SAP Core AI');
       }
@@ -146,6 +147,7 @@ export class SapCoreAIProvider {
       return {
         content: choice.message?.content || '',
         finishReason: choice.finish_reason,
+        raw: response.data,
       };
     } catch (error: any) {
       if (this.log) {
@@ -155,9 +157,9 @@ export class SapCoreAIProvider {
           response: error.response?.data,
         });
       }
-      
+
       throw new Error(
-        `SAP Core AI API error: ${error.response?.data?.error?.message || error.message}`
+        `SAP Core AI API error: ${error.response?.data?.error?.message || error.message}`,
       );
     }
   }
@@ -166,10 +168,9 @@ export class SapCoreAIProvider {
    * Format messages for SAP Core AI API
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map(msg => ({
+    return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
   }
 }
-

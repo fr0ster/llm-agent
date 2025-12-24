@@ -16,7 +16,7 @@ The MCP Client supports multiple transport protocols. You can specify the transp
 #### 1. Explicit Transport Selection
 
 ```typescript
-import { MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 // Stdio transport
 const stdioClient = new MCPClientWrapper({
@@ -135,4 +135,3 @@ try {
   //   - url (will auto-detect transport)
 }
 ```
-

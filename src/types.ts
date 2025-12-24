@@ -1,25 +1,17 @@
 /**
- * Core types for LLM Agent
+ * Core types for LLM Proxy
  */
 
 export interface Message {
   /**
    * Message role
    * - 'user': User input
-   * - 'assistant': LLM response (may include tool calls or tool results)
+   * - 'assistant': LLM response
    * - 'system': System instructions
-   * - 'tool': Tool/function result (for OpenAI-style models)
+   * - 'tool': Tool/function result (reserved for external consumers)
    */
   role: 'user' | 'assistant' | 'system' | 'tool';
   content: string;
-  /**
-   * Tool calls made by assistant (if any)
-   */
-  toolCalls?: ToolCall[];
-  /**
-   * Tool call ID (for tool result messages)
-   */
-  toolCallId?: string;
 }
 
 export interface ToolCall {
@@ -37,14 +29,13 @@ export interface ToolResult {
 
 export interface AgentResponse {
   message: string;
-  toolCalls?: ToolCall[];
-  toolResults?: ToolResult[];
+  raw?: unknown;
   error?: string;
 }
 
 export interface LLMResponse {
   content: string;
-  toolCalls?: ToolCall[];
+  raw?: unknown;
   finishReason?: string;
 }
 
@@ -55,4 +46,3 @@ export interface LLMProviderConfig {
   temperature?: number;
   maxTokens?: number;
 }
-

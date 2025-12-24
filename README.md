@@ -1,10 +1,10 @@
-# LLM Agent
+# LLM Proxy
 
-Minimal LLM agent orchestrating MCP tools through SAP AI Core.
+Minimal LLM agent that normalizes provider access and surfaces MCP tools without executing them.
 
 ## Overview
 
-This agent acts as an orchestrator between LLM providers and MCP (Model Context Protocol) servers, allowing LLMs to interact with external tools and services.
+This agent acts as a thin orchestration layer between LLM providers and MCP (Model Context Protocol) servers. It provides tool catalogs to the LLM and returns the raw LLM response to the consumer.
 
 **Important Architecture Change:**
 - **All LLM providers are accessed through SAP AI Core**, not directly
@@ -21,18 +21,15 @@ This agent acts as an orchestrator between LLM providers and MCP (Model Context 
   - ✅ SSE transport (Server-Sent Events)
   - ✅ Streamable HTTP transport (bidirectional NDJSON)
   - ✅ Auto-detection of transport from URL
-- ✅ Tool orchestration with proper tool result handling
-  - ✅ OpenAI-style: `role='tool'` with `tool_call_id`
-  - ✅ Prompt-based: `role='assistant'` with JSON `tool_result`
+- ✅ Tool catalog surfacing (no tool execution at this layer)
 - ✅ Conversation history management
-- ✅ Recursive tool call handling (multiple iterations)
+- ✅ Raw LLM response passthrough for consumers
 - 🔄 Streaming support (planned)
 
 ## Installation
 
 ```bash
-npm install
-npm run build
+npm install @mcp-abap-adt/llm-proxy
 ```
 
 ## Usage
@@ -50,7 +47,7 @@ When using the agent embedded in your application (e.g., in `cloud-llm-hub` CAP 
 
 ```typescript
 // srv/agent-service.ts
-import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 export default class AgentService extends cds.Service {
@@ -111,7 +108,7 @@ See [Embedded Usage Guide](../../docs/LLM_AGENT_EMBEDDED_USAGE.md) for complete 
 ### Basic Example (Stdio Transport)
 
 ```typescript
-import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 // Create SAP AI Core provider
@@ -150,7 +147,7 @@ console.log(response.message);
 ### HTTP Transport (Auto-Detection)
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 const llmProvider = new OpenAIProvider({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -175,6 +172,7 @@ await mcpClient.connect();
 const sessionId = mcpClient.getSessionId(); // Get session ID for subsequent requests
 
 const response = await agent.process('What tools are available?');
+// The response is returned as-is; tool execution is handled by the consumer.
 console.log(response.message);
 ```
 
@@ -208,7 +206,7 @@ The agent can be imported and used directly in CAP services, similar to how `mcp
 
 ```typescript
 // srv/agent-service.ts
-import { Agent, OpenAIProvider } from '@cloud-llm-hub/llm-agent';
+import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-proxy';
 
 export default class AgentService extends cds.Service {
   private agent: Agent;
@@ -465,7 +463,7 @@ npm run dev
 #### Example Output
 
 ```
-🤖 LLM Agent Test Launcher v0.1.0
+🤖 LLM Proxy Test Launcher v0.0.1
 
 📋 Configuration:
    LLM Provider: openai
@@ -493,12 +491,6 @@ npm run dev
 ────────────────────────────────────────────────────────────
 I can see you have 31 tools available for working with ABAP systems...
 
-🔧 Tool calls: 1
-   - GetObjectsList({"object_type":"PROG"})
-
-📊 Tool results: 1
-   - GetObjectsList: ✅ [{"name":"ZTEST_PROGRAM",...}]
-
 ⏱️  Duration: 2341ms
 
 📜 Conversation history: 4 messages
@@ -510,44 +502,17 @@ The test launcher will:
 - Connect to MCP server
 - List available tools
 - Process a test message
-- Show response and tool calls
+- Show response
 - Display conversation history
 
-## Tool Result Handling Architecture
+## Tool Execution Responsibility
 
-**Important:** Tool results are NOT added as user messages. They are added as separate tool/function result messages to maintain clear conversation structure.
+The agent does not execute tools. It only:
+- Fetches MCP tool catalogs
+- Passes tool definitions to the LLM
+- Returns the raw LLM response to the consumer
 
-### For OpenAI-style Models (Function Calling)
-
-Tool results use the standard OpenAI format:
-- `role: 'tool'` with `tool_call_id`
-- Content contains the tool result data
-
-**Flow:**
-1. User message → LLM
-2. LLM responds with tool calls
-3. Agent executes tools
-4. Tool results added as `role: 'tool'` messages
-5. LLM processes tool results and generates final answer
-
-### For Prompt-based Models (No Function Calling)
-
-Tool results use JSON format in assistant messages:
-- `role: 'assistant'` with JSON `{"tool_result": {"tool": "...", "data": {...}}}`
-- LLM is instructed in system message to recognize and use tool_result data
-
-**Flow:**
-1. User message → LLM (with tool descriptions in system prompt)
-2. LLM responds with tool call request (JSON or text format)
-3. Agent parses and executes tools
-4. Tool results added as `role: 'assistant'` with JSON tool_result
-5. LLM processes tool_result and generates final answer
-
-This architecture ensures:
-- ✅ Tool results are clearly separated from user input
-- ✅ LLM can distinguish between user messages and tool results
-- ✅ Better security and control over tool execution
-- ✅ Proper conversation history structure
+If your application needs tool execution, parse the model output in the consumer layer and call MCP tools there.
 
 ## Architecture
 

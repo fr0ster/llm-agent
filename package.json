@@ -1,12 +1,14 @@
 {
-  "name": "@cloud-llm-hub/llm-agent",
-  "version": "0.1.0",
-  "description": "Minimal LLM agent orchestrating MCP tools across multiple LLM providers.",
+  "name": "@mcp-abap-adt/llm-proxy",
+  "version": "0.0.0",
+  "description": "Minimal LLM proxy that normalizes provider access and surfaces MCP tools without executing them.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
-    "dist"
+    "dist",
+    "README.md",
+    "LICENSE"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -16,7 +18,11 @@
     "start:llm": "node dist/cli.js --llm-only",
     "test": "npm run build && npm start",
     "test:llm": "npm run build && npm run start:llm",
-    "clean": "rimraf dist || rm -rf dist"
+    "lint": "npx biome check --write --config-path . src",
+    "lint:check": "npx biome check --config-path . src",
+    "format": "npx biome format --write --config-path . src",
+    "clean": "rimraf dist || rm -rf dist",
+    "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.17.2",
@@ -24,12 +30,28 @@
     "dotenv": "^16.6.1"
   },
   "devDependencies": {
+    "@biomejs/biome": "^2.3.10",
     "@types/node": "^22.0.0",
     "tsx": "^4",
     "typescript": "^5"
   },
   "license": "MIT",
-  "private": true,
+  "author": "Oleksii Kyslytsia <oleksij.kyslytsja@gmail.com>",
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/cloud-llm-hub.git"
+  },
+  "keywords": [
+    "llm",
+    "agent",
+    "mcp",
+    "model-context-protocol",
+    "sap-ai-core"
+  ],
   "engines": {
     "node": ">=18.0.0",
     "npm": ">=9.0.0"

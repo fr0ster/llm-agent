@@ -2,9 +2,9 @@
  * OpenAI LLM Provider
  */
 
-import axios, { AxiosInstance } from 'axios';
+import axios, { type AxiosInstance } from 'axios';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
-import type { Message, LLMResponse, LLMProviderConfig } from '../types.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
   model?: string;
@@ -21,11 +21,11 @@ export class OpenAIProvider extends BaseLLMProvider {
   constructor(config: OpenAIConfig) {
     super(config);
     this.validateConfig();
-    
+
     this.model = config.model || 'gpt-4o-mini';
-    
+
     const headers: Record<string, string> = {
-      'Authorization': `Bearer ${config.apiKey}`,
+      Authorization: `Bearer ${config.apiKey}`,
       'Content-Type': 'application/json',
     };
 
@@ -55,13 +55,16 @@ export class OpenAIProvider extends BaseLLMProvider {
       });
 
       const choice = response.data.choices[0];
-      
+
       return {
         content: choice.message.content || '',
         finishReason: choice.finish_reason,
+        raw: response.data,
       };
     } catch (error: any) {
-      throw new Error(`OpenAI API error: ${error.response?.data?.error?.message || error.message}`);
+      throw new Error(
+        `OpenAI API error: ${error.response?.data?.error?.message || error.message}`,
+      );
     }
   }
 
@@ -69,10 +72,9 @@ export class OpenAIProvider extends BaseLLMProvider {
    * Format messages for OpenAI API
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map(msg => ({
+    return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
   }
 }
-

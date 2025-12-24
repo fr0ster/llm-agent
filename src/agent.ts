@@ -1,12 +1,12 @@
 /**
  * Core Agent Orchestrator
- * 
+ *
  * Coordinates between LLM provider and MCP tools
  */
 
 import type { LLMProvider } from './llm-providers/base.js';
-import { MCPClientWrapper, type MCPClientConfig } from './mcp/client.js';
-import type { Message, AgentResponse, ToolCall } from './types.js';
+import { type MCPClientConfig, MCPClientWrapper } from './mcp/client.js';
+import type { AgentResponse, Message } from './types.js';
 
 export interface AgentConfig {
   llmProvider: LLMProvider;
@@ -26,13 +26,11 @@ export interface AgentConfig {
 export class Agent {
   private llmProvider: LLMProvider;
   private mcpClient: MCPClientWrapper;
-  private maxIterations: number;
   private conversationHistory: Message[] = [];
 
   constructor(config: AgentConfig) {
     this.llmProvider = config.llmProvider;
-    this.maxIterations = config.maxIterations || 5;
-    
+
     // Initialize MCP client
     if (config.mcpClient) {
       this.mcpClient = config.mcpClient;
@@ -40,7 +38,7 @@ export class Agent {
       this.mcpClient = new MCPClientWrapper(config.mcpConfig);
     } else {
       throw new Error(
-        'MCP client configuration required. Provide either mcpClient or mcpConfig.'
+        'MCP client configuration required. Provide either mcpClient or mcpConfig.',
       );
     }
   }
@@ -65,10 +63,10 @@ export class Agent {
 
       // Get available tools from MCP
       const tools = await this.mcpClient.listTools();
-      
+
       // Build system message with tool definitions
       const systemMessage = this.buildSystemMessage(tools);
-      
+
       // Prepare messages for LLM
       const messages: Message[] = [
         { role: 'system', content: systemMessage },
@@ -77,10 +75,7 @@ export class Agent {
 
       // Get LLM response
       const llmResponse = await this.llmProvider.chat(messages);
-      
-      // For now, return simple response
-      // TODO: Parse tool calls from LLM response when function calling is implemented
-      
+
       // Add assistant response to history
       this.conversationHistory.push({
         role: 'assistant',
@@ -89,6 +84,7 @@ export class Agent {
 
       return {
         message: llmResponse.content,
+        raw: llmResponse.raw,
       };
     } catch (error: any) {
       return {
@@ -102,16 +98,17 @@ export class Agent {
    * Build system message with tool definitions
    */
   private buildSystemMessage(tools: any[]): string {
-    const toolDescriptions = tools.map(tool => {
-      return `- ${tool.name}: ${tool.description || 'No description'}`;
-    }).join('\n');
+    const toolDescriptions = tools
+      .map((tool) => {
+        return `- ${tool.name}: ${tool.description || 'No description'}`;
+      })
+      .join('\n');
 
     return `You are a helpful assistant with access to the following tools:
 
 ${toolDescriptions}
 
-When you need to use a tool, respond with the tool name and required parameters.
-For now, provide helpful responses based on the user's questions.`;
+If using a tool is required, describe the tool call and its parameters in your response.`;
   }
 
   /**
@@ -128,4 +125,3 @@ For now, provide helpful responses based on the user's questions.`;
     return [...this.conversationHistory];
   }
 }
-

@@ -1,17 +1,17 @@
 /**
  * Base Agent - Abstract class for LLM-specific agent implementations
- * 
+ *
  * Each LLM provider has different ways of handling tools:
  * - OpenAI: function calling via tools parameter
  * - Anthropic: tools in messages
  * - DeepSeek: function calling or prompt-based
- * 
+ *
  * This base class provides common logic, subclasses implement LLM-specific tool handling.
  */
 
-import { MCPClientWrapper, type MCPClientConfig } from '../mcp/client.js';
-import type { Message, AgentResponse, ToolCall, ToolResult } from '../types.js';
 import type { LLMProvider } from '../llm-providers/base.js';
+import { type MCPClientConfig, MCPClientWrapper } from '../mcp/client.js';
+import type { AgentResponse, Message } from '../types.js';
 
 export interface BaseAgentConfig {
   /**
@@ -23,6 +23,9 @@ export interface BaseAgentConfig {
    * Direct MCP configuration (used if mcpClient is not provided)
    */
   mcpConfig?: MCPClientConfig;
+  /**
+   * Reserved for future auto tool execution loops (currently unused).
+   */
   maxIterations?: number;
 }
 
@@ -31,13 +34,10 @@ export interface BaseAgentConfig {
  */
 export abstract class BaseAgent {
   protected mcpClient: MCPClientWrapper;
-  protected maxIterations: number;
   protected conversationHistory: Message[] = [];
   protected tools: any[] = [];
 
   constructor(config: BaseAgentConfig) {
-    this.maxIterations = config.maxIterations || 5;
-    
     // Initialize MCP client
     if (config.mcpClient) {
       this.mcpClient = config.mcpClient;
@@ -45,7 +45,7 @@ export abstract class BaseAgent {
       this.mcpClient = new MCPClientWrapper(config.mcpConfig);
     } else {
       throw new Error(
-        'MCP client configuration required. Provide either mcpClient or mcpConfig.'
+        'MCP client configuration required. Provide either mcpClient or mcpConfig.',
       );
     }
   }
@@ -71,7 +71,8 @@ export abstract class BaseAgent {
 
   /**
    * Process a user message and return agent response
-   * Template method - subclasses implement LLM-specific logic
+   * Subclasses handle provider-specific tool formatting only.
+   * Tool execution is left to the consumer of this library.
    */
   async process(userMessage: string): Promise<AgentResponse> {
     try {
@@ -82,14 +83,11 @@ export abstract class BaseAgent {
       });
 
       // Get LLM response with tools (LLM-specific implementation)
-      const llmResponse = await this.callLLMWithTools(this.conversationHistory, this.tools);
-      
-      // Handle tool calls if present
-      if (llmResponse.toolCalls && llmResponse.toolCalls.length > 0) {
-        return await this.handleToolCalls(llmResponse.toolCalls);
-      }
+      const llmResponse = await this.callLLMWithTools(
+        this.conversationHistory,
+        this.tools,
+      );
 
-      // No tool calls - return text response
       this.conversationHistory.push({
         role: 'assistant',
         content: llmResponse.content,
@@ -97,6 +95,7 @@ export abstract class BaseAgent {
 
       return {
         message: llmResponse.content,
+        raw: llmResponse.raw,
       };
     } catch (error: any) {
       return {
@@ -112,89 +111,8 @@ export abstract class BaseAgent {
    */
   protected abstract callLLMWithTools(
     messages: Message[],
-    tools: any[]
-  ): Promise<{ content: string; toolCalls?: ToolCall[] }>;
-
-  /**
-   * Handle tool calls - execute tools and get response
-   * 
-   * IMPORTANT: Tool results are NOT added as user messages.
-   * They are added as separate tool/function result messages.
-   * 
-   * For OpenAI-style models: role='tool' with tool_call_id
-   * For prompt-based models: role='assistant' with JSON tool_result
-   */
-  protected async handleToolCalls(toolCalls: ToolCall[]): Promise<AgentResponse> {
-    // Execute all tool calls
-    const toolResults = await this.mcpClient.callTools(toolCalls);
-    
-    // Add assistant message with tool calls to history
-    const assistantMessage: Message = {
-      role: 'assistant',
-      content: '',
-      toolCalls,
-    };
-    this.conversationHistory.push(assistantMessage);
-
-    // Add tool results using LLM-specific format
-    // This method is overridden by subclasses to use correct format
-    this.addToolResultsToHistory(toolResults, toolCalls);
-
-    // Get final response from LLM (with tool results in context)
-    const finalResponse = await this.callLLMWithTools(this.conversationHistory, this.tools);
-    
-    // If LLM made more tool calls, handle them recursively
-    if (finalResponse.toolCalls && finalResponse.toolCalls.length > 0) {
-      // Check iteration limit
-      const currentIterations = this.conversationHistory.filter(m => m.toolCalls).length;
-      if (currentIterations >= this.maxIterations) {
-        return {
-          message: finalResponse.content || 'Maximum iterations reached',
-          toolCalls,
-          toolResults,
-        };
-      }
-      // Recursively handle new tool calls
-      return await this.handleToolCalls(finalResponse.toolCalls);
-    }
-    
-    // No more tool calls - add final response
-    this.conversationHistory.push({
-      role: 'assistant',
-      content: finalResponse.content,
-    });
-
-    return {
-      message: finalResponse.content,
-      toolCalls,
-      toolResults,
-    };
-  }
-
-  /**
-   * Add tool results to conversation history
-   * 
-   * This method is overridden by subclasses to use LLM-specific format:
-   * - OpenAI-style: role='tool' with tool_call_id
-   * - Prompt-based: role='assistant' with JSON tool_result
-   */
-  protected addToolResultsToHistory(toolResults: ToolResult[], toolCalls: ToolCall[]): void {
-    // Default implementation: add as tool messages (OpenAI-style)
-    // Subclasses can override for different formats
-    for (const result of toolResults) {
-      const toolCall = toolCalls.find(tc => tc.id === result.toolCallId);
-      if (toolCall) {
-        this.conversationHistory.push({
-          role: 'tool',
-          content: result.error 
-            ? JSON.stringify({ error: result.error })
-            : JSON.stringify(result.result),
-          toolCallId: result.toolCallId,
-        });
-      }
-    }
-  }
-
+    tools: any[],
+  ): Promise<{ content: string; raw?: unknown }>;
 
   /**
    * Clear conversation history
@@ -210,4 +128,3 @@ export abstract class BaseAgent {
     return [...this.conversationHistory];
   }
 }
-

@@ -1,4 +1,4 @@
-# LLM Agent Usage Examples
+# LLM Proxy Usage Examples
 
 ## Quick Start Examples
 
@@ -185,7 +185,7 @@ npm run dev
 ### Example: Using in Your Own Code
 
 ```typescript
-import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@cloud-llm-hub/llm-agent';
+import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
 
 // Create LLM provider
 const llmProvider = new OpenAIProvider({
@@ -257,4 +257,3 @@ cds watch --profile development
 export MCP_ENDPOINT="http://localhost:4004/mcp/stream/http"
 export SAP_DESTINATION="SAP_DEV_DEST"
 ```
-
