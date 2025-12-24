@@ -1,6 +1,6 @@
 /**
  * MCP Client Wrapper
- * 
+ *
  * Wraps the MCP SDK client to provide a simpler interface for the agent
  */
 
@@ -9,7 +9,12 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { ToolCall, ToolResult } from '../types.js';
 
-export type TransportType = 'stdio' | 'sse' | 'stream-http' | 'auto' | 'embedded';
+export type TransportType =
+  | 'stdio'
+  | 'sse'
+  | 'stream-http'
+  | 'auto'
+  | 'embedded';
 
 export interface MCPClientConfig {
   /**
@@ -19,14 +24,14 @@ export interface MCPClientConfig {
    * - 'stream-http': Streamable HTTP (POST endpoint, bidirectional NDJSON)
    * - 'auto': Automatically detect from URL (defaults to 'stream-http' for HTTP URLs)
    * - 'embedded': Direct MCP server instance (same process, no transport)
-   * 
+   *
    * If URL is provided and transport is 'auto', it will be detected automatically:
    * - URLs containing '/sse' or ending with '/sse' -> 'sse'
    * - URLs containing '/stream/http' or '/http' -> 'stream-http'
    * - Otherwise defaults to 'stream-http'
    */
   transport?: TransportType;
-  
+
   /**
    * For embedded mode: Direct MCP server instance
    * Use this when MCP server runs in the same process (e.g., imported as submodule)
@@ -35,7 +40,7 @@ export interface MCPClientConfig {
    * - Or provide tools list and tool call handler directly
    */
   serverInstance?: any;
-  
+
   /**
    * For embedded mode: Direct access to tools registry
    * If provided, listTools() will use this instead of calling server
@@ -43,19 +48,31 @@ export interface MCPClientConfig {
   toolsRegistry?: {
     getAllTools: () => any[];
   };
-  
+
   /**
    * For embedded mode: Direct tool call handler
    * If provided, callTool() will use this instead of calling server
    */
   toolCallHandler?: (name: string, args: Record<string, any>) => Promise<any>;
-  
+
+  /**
+   * Direct tools list provider (DI)
+   * Use this to supply tools without relying on MCP transport details.
+   */
+  listToolsHandler?: () => Promise<any[]>;
+
+  /**
+   * Direct tool call provider (DI)
+   * Use this to supply tool execution without relying on MCP transport details.
+   */
+  callToolHandler?: (name: string, args: Record<string, any>) => Promise<any>;
+
   /**
    * For stdio: command and args to execute
    */
   command?: string;
   args?: string[];
-  
+
   /**
    * For HTTP transports: URL endpoint
    * Examples:
@@ -63,18 +80,18 @@ export interface MCPClientConfig {
    * - 'http://localhost:4004/mcp/stream/http' -> Streamable HTTP transport
    */
   url?: string;
-  
+
   /**
    * Session ID for HTTP transports (optional, will be generated if not provided)
    * For Streamable HTTP: first request should omit this, subsequent requests should include it
    */
   sessionId?: string;
-  
+
   /**
    * HTTP headers for authentication and configuration
    */
   headers?: Record<string, string>;
-  
+
   /**
    * Timeout in milliseconds (default: 30000)
    */
@@ -102,8 +119,12 @@ export class MCPClientWrapper {
       return this.config.transport;
     }
 
-    // If server instance is provided, use embedded mode
-    if (this.config.serverInstance) {
+    // If direct handlers or server instance are provided, use embedded mode
+    if (
+      this.config.listToolsHandler ||
+      this.config.callToolHandler ||
+      this.config.serverInstance
+    ) {
       return 'embedded';
     }
 
@@ -130,10 +151,10 @@ export class MCPClientWrapper {
     // Default fallback
     throw new Error(
       'Cannot determine transport type. Please provide either:\n' +
-      '  - transport: "embedded" with serverInstance\n' +
-      '  - transport: "stdio" with command\n' +
-      '  - transport: "sse" or "stream-http" with url\n' +
-      '  - url (will auto-detect transport)'
+        '  - transport: "embedded" with serverInstance\n' +
+        '  - transport: "stdio" with command\n' +
+        '  - transport: "sse" or "stream-http" with url\n' +
+        '  - url (will auto-detect transport)',
     );
   }
 
@@ -144,58 +165,65 @@ export class MCPClientWrapper {
     const transport = this.detectedTransport;
 
     if (transport === 'embedded') {
-      // Embedded mode - use MCP server instance directly
-      if (!this.config.serverInstance) {
-        throw new Error('serverInstance is required for embedded transport');
+      const hasDirectTools =
+        this.config.listToolsHandler || this.config.toolsRegistry;
+      // Embedded mode - allow direct handlers without serverInstance
+      if (!this.config.serverInstance && !hasDirectTools) {
+        throw new Error(
+          'serverInstance or toolsRegistry/listToolsHandler is required for embedded transport',
+        );
       }
 
       // If tools registry is provided, use it directly
-      if (this.config.toolsRegistry) {
+      if (this.config.listToolsHandler) {
+        this.tools = await this.config.listToolsHandler();
+      } else if (this.config.toolsRegistry) {
         this.tools = this.config.toolsRegistry.getAllTools();
       } else {
-        // Try to import tools registry directly (for mcp-abap-adt)
-        // This is the recommended approach for embedded mode
-        try {
-          const { getAllTools } = await import('@fr0ster/mcp-abap-adt/dist/lib/toolsRegistry.js');
-          this.tools = getAllTools();
-        } catch (err) {
-          // Fallback: try to get from server instance if it has a method
-          if (this.config.serverInstance?.server) {
-            // Try to simulate ListToolsRequest
-            try {
-              // MCP Server has request handlers, but we need to call them directly
-              // For now, fall back to registry import
-              throw new Error('Direct server.listTools() not supported, use toolsRegistry');
-            } catch (err2) {
-              throw new Error('Cannot get tools list in embedded mode. Provide toolsRegistry or import from @fr0ster/mcp-abap-adt/dist/lib/toolsRegistry.js');
-            }
-          } else {
-            throw new Error('Cannot get tools list in embedded mode. Provide toolsRegistry or ensure @fr0ster/mcp-abap-adt is available.');
+        // Fallback: try to get from server instance if it has a method
+        if (this.config.serverInstance?.server) {
+          // Try to simulate ListToolsRequest
+          try {
+            // MCP Server has request handlers, but we need to call them directly
+            throw new Error(
+              'Direct server.listTools() not supported, use toolsRegistry',
+            );
+          } catch (_err) {
+            throw new Error(
+              'Cannot get tools list in embedded mode. Provide toolsRegistry.',
+            );
           }
+        } else {
+          throw new Error(
+            'Cannot get tools list in embedded mode. Provide toolsRegistry.',
+          );
         }
       }
-      
+
       // No need to connect in embedded mode - server is already in process
       return;
     } else if (transport === 'stdio') {
       if (!this.config.command) {
         throw new Error('Command is required for stdio transport');
       }
-      
+
       const stdioTransport = new StdioClientTransport({
         command: this.config.command,
         args: this.config.args || [],
       });
-      
-      this.client = new Client({
-        name: 'llm-agent',
-        version: '0.1.0',
-      }, {
-        capabilities: {},
-      });
+
+      this.client = new Client(
+        {
+        name: 'llm-proxy',
+          version: '0.1.0',
+        },
+        {
+          capabilities: {},
+        },
+      );
 
       await this.client.connect(stdioTransport);
-      
+
       // List available tools
       const toolsResponse = await this.client.listTools();
       this.tools = toolsResponse.tools || [];
@@ -214,23 +242,26 @@ export class MCPClientWrapper {
             headers: this.config.headers || {},
             signal: AbortSignal.timeout(this.config.timeout || 30000),
           },
-        }
+        },
       );
 
-      this.client = new Client({
-        name: 'llm-agent',
-        version: '0.1.0',
-      }, {
-        capabilities: {},
-      });
+      this.client = new Client(
+        {
+        name: 'llm-proxy',
+          version: '0.1.0',
+        },
+        {
+          capabilities: {},
+        },
+      );
 
       await this.client.connect(httpTransport);
-      
+
       // Store session ID if provided by transport
       if (httpTransport.sessionId) {
         this.sessionId = httpTransport.sessionId;
       }
-      
+
       // List available tools
       const toolsResponse = await this.client.listTools();
       this.tools = toolsResponse.tools || [];
@@ -265,12 +296,12 @@ export class MCPClientWrapper {
     if (!this.client) {
       await this.connect();
     }
-    
+
     if (this.tools.length === 0) {
       const response = await this.client!.listTools();
       this.tools = response.tools || [];
     }
-    
+
     return this.tools;
   }
 
@@ -282,15 +313,25 @@ export class MCPClientWrapper {
     if (this.detectedTransport === 'embedded') {
       try {
         let result: any;
-        
-        if (this.config.toolCallHandler) {
+
+        if (this.config.callToolHandler) {
+          result = await this.config.callToolHandler(
+            toolCall.name,
+            toolCall.arguments,
+          );
+        } else if (this.config.toolCallHandler) {
           // Use provided handler
-          result = await this.config.toolCallHandler(toolCall.name, toolCall.arguments);
+          result = await this.config.toolCallHandler(
+            toolCall.name,
+            toolCall.arguments,
+          );
         } else if (this.config.serverInstance?.server) {
           // Use MCP Server instance directly via CallToolRequest
           // The server has request handlers registered, we need to call them
-          const { CallToolRequestSchema } = await import('@modelcontextprotocol/sdk/types.js');
-          
+          const { CallToolRequestSchema } = await import(
+            '@modelcontextprotocol/sdk/types.js'
+          );
+
           // Create a request object that matches CallToolRequest format
           const request = {
             jsonrpc: '2.0' as const,
@@ -301,14 +342,17 @@ export class MCPClientWrapper {
               arguments: toolCall.arguments,
             },
           };
-          
+
           // Call the handler directly
           // The server.setRequestHandler registers handlers, but we need to access them
-          // For mcp-abap-adt, handlers are in switch statement, so we need to import them
-          // This is a limitation - we should provide toolCallHandler for embedded mode
-          throw new Error('Direct server.callTool() requires toolCallHandler. Provide toolCallHandler in mcpConfig or import handlers directly.');
+          // This is a limitation - provide toolCallHandler for embedded mode
+          throw new Error(
+            'Direct server.callTool() requires toolCallHandler. Provide toolCallHandler in mcpConfig.',
+          );
         } else {
-          throw new Error('No tool call handler available in embedded mode. Provide toolCallHandler in mcpConfig.');
+          throw new Error(
+            'No tool call handler available in embedded mode. Provide toolCallHandler in mcpConfig.',
+          );
         }
 
         return {
@@ -356,7 +400,7 @@ export class MCPClientWrapper {
    */
   async callTools(toolCalls: ToolCall[]): Promise<ToolResult[]> {
     const results = await Promise.all(
-      toolCalls.map(toolCall => this.callTool(toolCall))
+      toolCalls.map((toolCall) => this.callTool(toolCall)),
     );
     return results;
   }
@@ -376,4 +420,3 @@ export class MCPClientWrapper {
     }
   }
 }
-

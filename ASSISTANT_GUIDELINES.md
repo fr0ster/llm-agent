@@ -16,7 +16,7 @@
 
 ## Project Snapshot
 
-- **Name:** LLM Agent – Minimal LLM agent orchestrating MCP tools through SAP AI Core.
+- **Name:** LLM Proxy – Minimal LLM agent orchestrating MCP tools through SAP AI Core.
 - **Purpose:** Acts as an orchestrator between LLM providers and MCP (Model Context Protocol) servers, allowing LLMs to interact with external tools and services.
 - **Key Architecture:**
   - All LLM providers are accessed through SAP AI Core (not directly)
@@ -116,7 +116,7 @@ When reviewing code or documentation:
 
 This submodule is used by the main `cloud-llm-hub` project:
 
-- **Import path**: `@cloud-llm-hub/llm-agent`
+- **Import path**: `@mcp-abap-adt/llm-proxy`
 - **Build output**: `dist/` directory
 - **Usage**: Imported in `srv/agent-manager.ts` and `srv/agent-service.ts`
 - **Configuration**: Agent configuration is managed in `cloud-llm-hub/srv/agent-config.ts`
@@ -125,4 +125,3 @@ When making changes:
 1. Build the submodule: `npm run build`
 2. Changes are automatically picked up by the main project (if using `file:` dependency)
 3. For production, the main project's build process handles submodule compilation
-

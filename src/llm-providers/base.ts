@@ -2,7 +2,7 @@
  * Base interface for LLM providers
  */
 
-import type { Message, LLMResponse, LLMProviderConfig } from '../types.js';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 
 export interface LLMProvider {
   /**
@@ -39,4 +39,3 @@ export abstract class BaseLLMProvider implements LLMProvider {
     }
   }
 }
-
