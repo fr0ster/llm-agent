@@ -6,16 +6,14 @@ Minimal LLM agent that normalizes provider access and surfaces MCP tools without
 
 This agent acts as a thin orchestration layer between LLM providers and MCP (Model Context Protocol) servers. It provides tool catalogs to the LLM and returns the raw LLM response to the consumer.
 
-**Important Architecture Change:**
-- **All LLM providers are accessed through SAP AI Core**, not directly
-- OpenAI models → SAP AI Core → OpenAI
-- Anthropic models → SAP AI Core → Anthropic  
-- DeepSeek models → SAP AI Core → DeepSeek
-- The model name determines which underlying provider SAP AI Core routes to
+**Provider Paths:**
+- Direct providers are supported: `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`
+- SAP AI Core gateway is also supported via `SapCoreAIProvider`
+- In SAP deployments, SAP AI Core is typically the recommended integration path
 
 ## Features
 
-- ✅ SAP AI Core integration (all LLM providers through SAP AI Core)
+- ✅ Multiple LLM provider paths (direct providers and SAP AI Core gateway)
 - ✅ MCP client integration with multiple transport protocols
   - ✅ Stdio transport (for local processes)
   - ✅ SSE transport (Server-Sent Events)
@@ -275,20 +273,19 @@ The agent supports configuration via `.env` file for easier setup:
 
 2. Edit `.env` with your settings:
    ```bash
-   # SAP AI Core Configuration (required)
-   # All LLM providers are accessed through SAP AI Core
-   SAP_CORE_AI_DESTINATION=SAP_AI_CORE_DEST
-   SAP_CORE_AI_MODEL=gpt-4o-mini  # Model determines provider: gpt-4o-mini → OpenAI, claude-3-5-sonnet → Anthropic
-   SAP_CORE_AI_TEMPERATURE=0.7
-   SAP_CORE_AI_MAX_TOKENS=2000
+   # Direct provider configuration (used by current CLI launcher)
+   LLM_PROVIDER=openai  # openai | anthropic | deepseek
+   OPENAI_API_KEY=sk-proj-your-key
+   OPENAI_MODEL=gpt-4o-mini
    
    # MCP Configuration (optional, for MCP integration)
    MCP_ENDPOINT=http://localhost:4004/mcp/stream/http
    MCP_DISABLED=false
    ```
    
-   **Note:** Legacy direct provider configuration (OPENAI_API_KEY, etc.) is deprecated.
-   All LLM providers must be accessed through SAP AI Core.
+   **Optional (library-level SAP AI Core provider):**
+   SAP_CORE_AI_URL=https://api.ai.core.sap
+   SAP_CORE_AI_DESTINATION=SAP_AI_CORE_DEST
 
 3. Run the agent - it will automatically load `.env`:
    ```bash
@@ -301,21 +298,13 @@ Environment variables from `.env` can be overridden by actual environment variab
 
 The agent includes a simple CLI test launcher for quick testing.
 
-**Note:** The CLI launcher currently supports legacy direct provider configuration for testing purposes. In production, all LLM providers should be accessed through SAP AI Core.
+**Note:** The current CLI launcher uses direct providers (`openai`, `anthropic`, `deepseek`). `ollama` is listed in comments but not implemented.
 
 #### Test LLM Only (Without MCP)
 
 Test just the LLM provider without MCP integration:
 
-**Using SAP AI Core (Recommended):**
-```bash
-# Set SAP AI Core destination
-export SAP_CORE_AI_DESTINATION="SAP_AI_CORE_DEST"
-export SAP_CORE_AI_MODEL="gpt-4o-mini"  # Routes to OpenAI through SAP AI Core
-npm run dev:llm
-```
-
-**Legacy Direct Provider (for testing only):**
+**OpenAI:**
 ```bash
 # Basic usage - set API key and run
 export OPENAI_API_KEY="sk-proj-your-actual-key-here"
@@ -517,7 +506,7 @@ If your application needs tool execution, parse the model output in the consumer
 ## Architecture
 
 - `src/agents/` - Agent implementations (BaseAgent, SapCoreAIAgent, etc.)
-- `src/llm-providers/` - LLM provider implementations (SapCoreAIProvider)
+- `src/llm-providers/` - LLM provider implementations (OpenAI, Anthropic, DeepSeek, SapCoreAI)
 - `src/mcp/` - MCP client wrapper
 - `src/types.ts` - TypeScript type definitions
 
