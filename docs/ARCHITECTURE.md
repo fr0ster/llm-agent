@@ -43,7 +43,7 @@
 ### Key Design Decisions
 
 1. **No automatic tool execution.** The agent surfaces tool calls from the LLM but never executes them. The consumer decides what to do with `AgentResponse.raw`.
-2. **SAP AI Core as primary gateway.** All LLM providers are accessed through SAP AI Core. Direct provider classes exist for backward compatibility and testing.
+2. **Multiple provider paths are supported.** The library supports both direct providers (`OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`) and `SapCoreAIProvider` (SAP AI Core gateway). SAP AI Core is the recommended production path in SAP environments.
 3. **Multi-transport MCP.** A single `MCPClientWrapper` handles Stdio, SSE, Streamable HTTP, and embedded (in-process) transports with automatic detection.
 4. **Minimal dependencies.** Only three runtime dependencies: `@modelcontextprotocol/sdk`, `axios`, `dotenv`.
 
@@ -68,10 +68,10 @@ src/
 ├── llm-providers/
 │   ├── index.ts                # Barrel exports
 │   ├── base.ts                 # LLMProvider interface + BaseLLMProvider abstract class
-│   ├── openai.ts               # Direct OpenAI API (legacy)
-│   ├── anthropic.ts            # Direct Anthropic API (legacy)
-│   ├── deepseek.ts             # Direct DeepSeek API (legacy)
-│   └── sap-core-ai.ts          # Primary provider — routes through SAP AI Core
+│   ├── openai.ts               # Direct OpenAI API provider
+│   ├── anthropic.ts            # Direct Anthropic API provider
+│   ├── deepseek.ts             # Direct DeepSeek API provider
+│   └── sap-core-ai.ts          # SAP AI Core gateway provider
 └── mcp/
     ├── client.ts               # MCPClientWrapper — multi-transport MCP client
     └── README.md               # Transport configuration documentation
@@ -172,12 +172,12 @@ All providers return the same `LLMResponse` shape, making them interchangeable a
 
 | Provider | Auth | API | Status |
 |---|---|---|---|
-| `SapCoreAIProvider` | SAP Destination (via Cloud SDK `httpClient` injection) | `POST /v1/chat/completions` (OpenAI-compatible) | **Primary / Recommended** |
-| `OpenAIProvider` | Bearer token | `POST /chat/completions` | Legacy (for testing) |
-| `AnthropicProvider` | `x-api-key` + `anthropic-version` header | `POST /messages` | Legacy (for testing) |
-| `DeepSeekProvider` | Bearer token | `POST /chat/completions` | Legacy (for testing) |
+| `SapCoreAIProvider` | SAP Destination (via Cloud SDK `httpClient` injection) or fallback URL | `POST /v1/chat/completions` (OpenAI-compatible) | Recommended for SAP deployment paths |
+| `OpenAIProvider` | Bearer token | `POST /chat/completions` | Supported (used by CLI) |
+| `AnthropicProvider` | `x-api-key` + `anthropic-version` header | `POST /messages` | Supported (used by CLI) |
+| `DeepSeekProvider` | Bearer token | `POST /chat/completions` | Supported (used by CLI) |
 
-### SapCoreAIProvider — Primary Provider
+### SapCoreAIProvider (SAP AI Core Gateway)
 
 SAP AI Core acts as a unified gateway. The `model` field determines which backend LLM the request is routed to:
 
@@ -263,12 +263,13 @@ Consumer                  Agent                  LLM Provider           MCP
    │                        │  (format tools for     │                   │
    │                        │   specific provider)   │                   │
    │                        │───────────────────────►│                   │
-   │                        │                        │  HTTP request     │
-   │                        │                        │  (chat/completions│
+   │                        │                        │  HTTP request to  │
+   │                        │                        │  LLM endpoint     │
+   │                        │                        │  (/chat/completions
    │                        │                        │   or /messages)   │
-   │                        │                        │──────────────────►│
-   │                        │                        │                   │
-   │                        │                        │◄──────────────────│
+   │                        │                        │──────────────────► (OpenAI/Anthropic/DeepSeek/SAP AI Core)
+   │                        │                        │
+   │                        │                        │◄────────────────── response
    │                        │◄───────────────────────│                   │
    │                        │                        │                   │
    │  AgentResponse         │                        │                   │
@@ -276,8 +277,8 @@ Consumer                  Agent                  LLM Provider           MCP
    │◄───────────────────────│                        │                   │
    │                        │                        │                   │
    │  (consumer parses raw  │                        │                   │
-   │   for tool_calls and   │                        │                   │
-   │   executes them via    │                        │                   │
+   │   for tool_calls and   │  optional: callTool()  │                   │
+   │   executes them via    │────────────────────────────────────────────►│
    │   mcpClient.callTool)  │                        │                   │
 ```
 
@@ -321,14 +322,13 @@ For the CLI test launcher (`src/cli.ts`), configuration comes from environment v
 
 | Variable | Purpose |
 |---|---|
-| `LLM_PROVIDER` | Provider selection (openai / anthropic / deepseek / ollama) |
+| `LLM_PROVIDER` | Provider selection (`openai` / `anthropic` / `deepseek`). `ollama` is currently listed in comments but not implemented in `cli.ts`. |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider API keys |
 | `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `DEEPSEEK_MODEL` | Model override |
 | `MCP_ENDPOINT` | MCP server URL |
 | `MCP_DISABLED` | Skip MCP connection |
 | `MCP_AUTH_HEADER` | Authorization header for MCP |
-| `SAP_CORE_AI_DESTINATION` | SAP destination name |
-| `SAP_CORE_AI_URL` | Direct SAP AI Core URL (standalone fallback) |
+| `SAP_CORE_AI_URL` | Used by `SapCoreAIProvider` fallback mode (library-level config), not by the current CLI flow. |
 
 ---
 
