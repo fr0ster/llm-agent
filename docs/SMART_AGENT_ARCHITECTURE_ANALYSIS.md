@@ -1,76 +1,76 @@
-# Аналіз Smart Orchestrated Agent Architecture
+# Smart Orchestrated Agent Architecture Analysis
 
-Аналіз архітектурного рішення описаного в `SMART_AGENT_ARCHITECTURE.md` як самостійного продукту — універсального інтелектуального агента з пам'яттю, керованим контекстом та можливістю використовувати будь-які RAG і MCP.
+Analysis of the architectural approach described in `SMART_AGENT_ARCHITECTURE.md` as a standalone product: a universal intelligent agent with memory, context control, and support for any RAG and MCP implementations.
 
 ---
 
 ## PRO
 
-### 1. Повна агностичність через контракти
-Кожен компонент — `ILlm`, `IMcpClient`, `IRag`, `ISubpromptClassifier`, `IContextAssembler` — визначений як інтерфейс. Агент не знає, яка конкретна модель стоїть за `ILlm`, яка vector-база реалізує `IRag`, скільки MCP-серверів підключено і з яких доменів. Це дає справжню горизонтальну масштабованість: підключаєш нові інструменти та сховища знань без зміни ядра.
+### 1. Full agnosticism through contracts
+Each component - `ILlm`, `IMcpClient`, `IRag`, `ISubpromptClassifier`, `IContextAssembler` - is defined as an interface. The agent does not know which specific model is behind `ILlm`, which vector DB implements `IRag`, how many MCP servers are connected, or which domains they come from. This provides true horizontal scalability: you can add new tools and knowledge stores without changing the core.
 
-### 2. Таксономія вводу вирішує фундаментальну проблему
-Реальні повідомлення користувача рідко бувають чистою командою. Вони містять одночасно факти («до речі, ця функція тепер повертає масив»), поправки до попередньої поведінки, налаштування стилю та безпосереднє завдання. Поділ на `fact / feedback / state / action` — це архітектурний контракт: агент розуміє, що в повідомленні є різнорідні наміри і вміє їх розрізняти. Те, як вони обробляються (пріоритетність, чи впливає факт на поточну дію чи лише на наступні запити) — це рішення конкретного pipeline, не архітектури.
+### 2. Input taxonomy solves a fundamental problem
+Real user messages are rarely pure commands. They often contain facts ("by the way, this function now returns an array"), corrections to prior behavior, style preferences, and the actual task at the same time. Splitting into `fact / feedback / state / action` is an architectural contract: the agent understands that a message contains heterogeneous intents and can distinguish them. How they are processed (priority, whether a fact affects the current action or only future requests) is a pipeline decision, not an architecture decision.
 
-### 3. Last-frame стратегія вирішує деградацію довгих сесій
-Класичний агент передає повну `conversationHistory` — і зі зростанням розмови якість відповідей падає через «розбавлення» релевантної інформації шумом. Last-frame збирає компактний фрейм тільки з того, що потрібно для конкретного кроку. Це не скорочення якості — це фільтрація нерелевантного.
+### 3. Last-frame strategy fixes long-session degradation
+A classic agent sends full `conversationHistory`, and as conversation length grows, response quality drops because relevant information is diluted by noise. Last-frame builds a compact frame containing only what is needed for the current step. This is not quality reduction; it is irrelevant-noise filtering.
 
-### 4. Пам'ять за типом наміру зменшує шум при retrieval
-Зберігати все в один RAG — і витягувати все разом — це рецепт нерелевантного контексту. Окремі `IRag`-сховища для фактів, фідбеку та стану дозволяють точечно запитувати тільки потрібний тип знань. Для `action` збираються: facts + feedback + state + candidate tools — кожен шар незалежно.
+### 4. Intent-typed memory reduces retrieval noise
+Storing everything in one RAG and retrieving it together is a recipe for irrelevant context. Separate `IRag` stores for facts, feedback, and state allow targeted retrieval of only the needed knowledge type. For `action`, the agent assembles: facts + feedback + state + candidate tools, with each layer independent.
 
-### 5. Ітеративний tool loop дає справжню автономність
-Агент може вирішувати багатокрокові задачі: викликати інструмент, отримати результат, оцінити, чи потрібен ще один виклик, і продовжити. Це не черга команд — це справжній цикл reasoning→action→observation, який завершується лише коли LLM вирішує, що відповідь готова.
+### 5. Iterative tool loop provides real autonomy
+The agent can solve multi-step tasks: call a tool, get the result, evaluate whether another call is needed, and continue. This is not a command queue; it is a true reasoning→action→observation loop that ends only when the LLM decides the answer is ready.
 
-### 6. Кілька LLM з різною ціною і призначенням
-`mainLlm` — найкращий доступний для фінального reasoning і прийняття рішень по tool_call. Helper LLMs — дешевші/швидші для класифікації та препроцесингу. Це раціональний розподіл витрат: не женеш Opus через кожен запит.
+### 6. Multiple LLMs with different cost/performance profiles
+`mainLlm` is the best available model for final reasoning and tool-call decisions. Helper LLMs are cheaper/faster for classification and preprocessing. This is a rational cost split: you do not run an expensive model for every subtask.
 
-### 7. Кілька IMcpClient і кілька IRag; tool selection — опціональна векторизація
-Агент агрегує інструменти з кількох MCP-серверів і знання з кількох vector-баз. Важливий нюанс щодо вибору інструментів: якщо консьюмер **не** інжектує `IRag` для тулзів — агент передає весь каталог у context frame (просто і детерміновано). Якщо консьюмер інжектує `IRag` з попередньо векторизованими описами інструментів — semantic selection стає детермінованим з боку консьюмера: він сам контролює, які описи векторизовані і з яким рівнем деталізації. Тобто "тихого промаху" при виборі тулзів в цьому режимі немає — консьюмер отримує рівно ті інструменти, які заклав у векторне сховище.
+### 7. Multiple IMcpClient and multiple IRag; tool selection via optional vectorization
+The agent aggregates tools from multiple MCP servers and knowledge from multiple vector databases. Important nuance for tool selection: if the consumer does **not** inject an `IRag` for tools, the agent passes the full tool catalog into the context frame (simple and deterministic). If the consumer injects an `IRag` with pre-vectorized tool descriptions, semantic selection becomes consumer-deterministic: the consumer controls which descriptions are vectorized and at what granularity. In this mode, there is no "silent miss" in tool selection; the consumer gets exactly the tools they put into the vector store.
 
-### 8. Семантична дедуплікація пам'яті
-Повторне записування того ж факту різними словами не створює дублів у сховищі. Це критично для довготривалих сесій, щоб retrieval не повертав десять варіантів одного і того ж факту з різними embeddings.
+### 8. Semantic memory deduplication
+Rewriting the same fact in different words does not create duplicates in storage. This is critical for long-running sessions so retrieval does not return ten variants of the same fact with different embeddings.
 
-### 9. Обмеження циклу захищають від runaway-поведінки
-`maxIterations`, timeout і `max tool calls` — не просто захисні огорожі, а частина контракту виконання. Агент гарантовано завершить запит навіть якщо LLM нескінченно запитує інструменти.
+### 9. Loop bounds protect against runaway behavior
+`maxIterations`, timeout, and `max tool calls` are not just safety rails; they are part of the execution contract. The agent is guaranteed to finish the request even if the LLM keeps requesting tools indefinitely.
 
-### 10. Спостережуваність від самого початку
-Трасування декомпозиції, RAG hits, tool calls і фінального виводу — не afterthought, а вимога архітектури. Без цього налагодження агента, що «чогось не знайшов» або «взяв не той інструмент», практично неможливе.
+### 10. Observability from day one
+Tracing decomposition, RAG hits, tool calls, and final output is not an afterthought; it is an architecture requirement. Without this, debugging an agent that "did not find something" or "picked the wrong tool" is practically impossible.
 
-### 11. OpenAI-compatible API — стандартний інтерфейс назовні
-Будь-який клієнт, що вміє говорити з OpenAI, може підключитись без адаптерів. Це знижує поріг інтеграції до нуля.
+### 11. OpenAI-compatible API as the standard external interface
+Any client that can talk to OpenAI can connect without adapters. This reduces integration friction to near zero.
 
-### 12. DI-модель робить тестування ізольованим за конструкцією
-Кожен компонент — за інтерфейсом. Для тестів підміняються детерміновані допоміжні реалізації (`ILlm`, `IRag`, `ISubpromptClassifier` тощо) з передбачуваною поведінкою на конкретних промптах. Щоб перевірити конкретну реальну реалізацію — замінюєш лише її одну, решта залишається детермінованою. Це ізольоване тестування без необхідності підіймати всю інфраструктуру.
-
----
-
-## Прийняті ризики
-
-Ці ризики є невід'ємною властивістю використання LLM і не можуть бути усунені архітектурно. Проблеми керування контекстним вікном, які ця архітектура вирішує, трапляються значно частіше. Поточна стратегія пом'якшення — параметри моделі та якість промпту в допоміжному LLM; більш надійні підходи визначатимуться в міру накопичення досвіду.
-
-### 1. Помилка класифікатора
-`ISubpromptClassifier` сам є LLM-викликом — і, як будь-який LLM, може помилитись. Якщо `action` класифіковано як `fact` — запит піде в пам'ять замість виконання. Якщо `feedback` як `state` — корекція потрапить не в той шар. Пом'якшення: низька температура допоміжного LLM, чіткий і вузький промпт класифікатора, обмежена і чітко розмежована таксономія.
-
-### 2. Тихий промах RAG для fact/feedback/state
-Поганий embedding-матч не дає помилки — агент просто діє без потрібного знання, і LLM заповнює прогалину параметричною пам'яттю. Для тулзів цей ризик знімається через опціональну попередню векторизацію описів консьюмером. Для накопиченої пам'яті (`fact`, `feedback`, `state`) — невід'ємний. Пом'якшення: низька температура mainLlm, налаштування порогу схожості в `IRag`, якісні промпти що спонукають модель визнавати відсутність знання замість вигадування.
+### 12. DI model enables isolation by construction
+Every component is interface-driven. Tests can swap in deterministic helper implementations (`ILlm`, `IRag`, `ISubpromptClassifier`, etc.) with predictable behavior for specific prompts. To validate one real implementation, replace only that one and keep all others deterministic. This enables isolated testing without standing up full infrastructure.
 
 ---
 
-## Зони відповідальності реалізацій
+## Accepted Risks
 
-Наступні питання не є архітектурними ризиками — вони свідомо делеговані в конкретні реалізації інтерфейсів. Еталонні реалізації дають відповідь на кожне з них; консьюмер з власною реалізацією бере відповідальність на себе.
+These risks are inherent to LLM usage and cannot be fully removed at the architecture level. The context-window management issues this architecture solves occur much more frequently. The current mitigation strategy relies on model settings and helper-LLM prompt quality; more robust methods should be defined as operational experience grows.
 
-| Питання | Де вирішується |
+### 1. Classifier error
+`ISubpromptClassifier` is itself an LLM call and, like any LLM, can be wrong. If `action` is classified as `fact`, the request goes to memory instead of execution. If `feedback` is classified as `state`, correction is written to the wrong layer. Mitigation: low helper-LLM temperature, narrow and explicit classifier prompt, and a limited, clearly separated taxonomy.
+
+### 2. Silent RAG miss for fact/feedback/state
+A poor embedding match does not throw an error; the agent simply acts without the needed knowledge, and the LLM fills the gap with parametric memory. For tools, this risk is mitigated via optional consumer pre-vectorization of tool descriptions. For accumulated memory (`fact`, `feedback`, `state`), it remains inherent. Mitigation: low `mainLlm` temperature, tuned similarity threshold in `IRag`, and prompts that encourage the model to acknowledge missing knowledge instead of hallucinating.
+
+---
+
+## Implementation Responsibility Zones
+
+The following are not architectural risks; they are intentionally delegated to concrete interface implementations. Reference implementations provide one answer for each; a consumer with custom implementations owns these decisions.
+
+| Question | Where it is solved |
 |---------|---------------|
-| TTL та видалення застарілих фактів | Реалізація `IRag` |
-| Conflict resolution при суперечливих фактах | Реалізація `IRag` або стратегія типу `IResolveFactConflictStrategy` |
-| Пріоритетність обробки subprompts (`fact > feedback > state > action`) | Pipeline (дефолтний pipeline реалізує саме цей порядок) |
-| Чи впливає факт з поточного запиту на поточну ж дію або лише на наступні | Pipeline (дефолтний — впливає на поточну; кастомний — вирішує сам) |
-| Tool selection з великого каталогу | Опціонально: без `IRag` для тулзів — весь каталог; з `IRag` — консьюмер векторизує описи сам, selection детермінований |
-| Оптимізація латентності pipeline | Дефолтна реалізація pipeline: паралельні RAG queries, паралельне виконання tool calls, кешування результатів класифікатора; кастомний pipeline — вирішує сам |
-| Streaming: чи використовувати і який | Pipeline: без streaming (повертає одним куском), з streaming (chunks в міру готовності subprompts і tool results), event-based (типізовані події per step). Детальний аналіз підходів — [`STREAMING_TOOL_LOOP_ANALYSIS.md`](./STREAMING_TOOL_LOOP_ANALYSIS.md) |
-| Convergence criteria для раннього виходу з tool loop | Реалізація оркестратора або `IConvergenceStrategy` |
-| Memory eviction при досягненні ліміту | Реалізація `IRag` |
-| Cross-session identity для персоналізованого retrieval | Реалізація `IRag` + session-контекст |
-| Явне підтвердження збереженого feedback | Реалізація оркестратора (опціональна відповідь агента) |
-| Багатоходова зв'язність розмови | Реалізація `IContextAssembler` + стратегія збереження в `fact` |
+| TTL and stale-fact cleanup | `IRag` implementation |
+| Conflict resolution for contradictory facts | `IRag` implementation or a strategy such as `IResolveFactConflictStrategy` |
+| Subprompt processing priority (`fact > feedback > state > action`) | Pipeline (the default pipeline uses this exact order) |
+| Whether a fact from the current request affects the current action or only future ones | Pipeline (default: affects current; custom: consumer-defined) |
+| Tool selection from a large catalog | Optional: without `IRag` for tools - full catalog; with `IRag` - consumer vectorizes descriptions, selection is deterministic |
+| Pipeline latency optimization | Default pipeline: parallel RAG queries, parallel tool-call execution, classifier-result caching; custom pipeline: consumer-defined |
+| Streaming: whether and which type | Pipeline: no streaming (single response), streaming (chunks as subprompts/tool results become ready), event-based (typed events per step). Detailed analysis: [`STREAMING_TOOL_LOOP_ANALYSIS.md`](./STREAMING_TOOL_LOOP_ANALYSIS.md) |
+| Convergence criteria for early tool-loop exit | Orchestrator implementation or `IConvergenceStrategy` |
+| Memory eviction when limits are reached | `IRag` implementation |
+| Cross-session identity for personalized retrieval | `IRag` implementation + session context |
+| Explicit confirmation of persisted feedback | Orchestrator implementation (optional agent response) |
+| Multi-turn conversation coherence | `IContextAssembler` implementation + persistence strategy in `fact` |

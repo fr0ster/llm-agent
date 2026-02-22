@@ -1,83 +1,83 @@
-# Smart Orchestrated Agent — Roadmap реалізації
+# Smart Orchestrated Agent - Implementation Roadmap
 
-Черновий roadmap на основі [`SMART_AGENT_ARCHITECTURE.md`](./SMART_AGENT_ARCHITECTURE.md).
-
----
-
-## Фаза 1 — Контракти (`src/smart-agent/interfaces/`)
-
-- [ ] `ILlm` — chat/completion: `chat(messages, tools?) → LLMResponse`
-- [ ] `IMcpClient` — `listTools() → Tool[]`, `callTool(name, args) → ToolResult`
-- [ ] `IRag` — `upsert(text, metadata)`, `query(text, k) → RagResult[]`
-- [ ] `ISubpromptClassifier` — `classify(text) → Subprompt[]` (типи: `fact | feedback | state | action`)
-- [ ] `IContextAssembler` — `assemble(action, retrieved, toolResults) → ContextFrame`
-- [ ] Спільні типи: `Subprompt`, `ContextFrame`, `RagResult`, `AgentConfig`
+Draft roadmap based on [`SMART_AGENT_ARCHITECTURE.md`](./SMART_AGENT_ARCHITECTURE.md).
 
 ---
 
-## Фаза 2 — Адаптери існуючого коду (`src/smart-agent/adapters/`)
+## Phase 1 - Contracts (`src/smart-agent/interfaces/`)
 
-- [ ] `LlmAdapter` — обертає існуючі `BaseAgent`-підкласи в `ILlm`
-- [ ] `McpClientAdapter` — обертає `MCPClientWrapper` в `IMcpClient`
-
-Ціль: нова архітектура не дублює HTTP-логіку провайдерів, а перевикористовує існуючий шар.
-
----
-
-## Фаза 3 — Еталонна реалізація `IRag` (`src/smart-agent/rag/`)
-
-- [ ] In-memory vector store з cosine similarity (для fact/feedback/state/tools — окремі екземпляри)
-- [ ] Семантична дедуплікація при `upsert`: якщо схожий запис вже є — оновлює, не дублює
-- [ ] TTL-поле в metadata; `query` відфільтровує прострочені записи
+- [ ] `ILlm` - chat/completion: `chat(messages, tools?) → LLMResponse`
+- [ ] `IMcpClient` - `listTools() → Tool[]`, `callTool(name, args) → ToolResult`
+- [ ] `IRag` - `upsert(text, metadata)`, `query(text, k) → RagResult[]`
+- [ ] `ISubpromptClassifier` - `classify(text) → Subprompt[]` (types: `fact | feedback | state | action`)
+- [ ] `IContextAssembler` - `assemble(action, retrieved, toolResults) → ContextFrame`
+- [ ] Shared types: `Subprompt`, `ContextFrame`, `RagResult`, `AgentConfig`
 
 ---
 
-## Фаза 4 — `ISubpromptClassifier` (`src/smart-agent/classifier/`)
+## Phase 2 - Existing Code Adapters (`src/smart-agent/adapters/`)
 
-- [ ] LLM-based classifier: системний промпт з таксономією, низька температура
-- [ ] Вхід: одне повідомлення користувача → масив `Subprompt` з типом і текстом
-- [ ] Кешування результату для ідентичного тексту в межах запиту
+- [ ] `LlmAdapter` - wraps existing `BaseAgent` subclasses into `ILlm`
+- [ ] `McpClientAdapter` - wraps `MCPClientWrapper` into `IMcpClient`
 
----
-
-## Фаза 5 — `IContextAssembler` (`src/smart-agent/context/`)
-
-- [ ] Збирає `ContextFrame`: `action` + retrieved `facts` + `feedback` + `state` + `tools` + `toolResults`
-- [ ] Формує фінальний масив `messages[]` для `mainLlm.chat()`
-- [ ] Токен-ліміт: відкидає найменш релевантні записи якщо фрейм перевищує ліміт
+Goal: the new architecture should not duplicate provider HTTP logic, but reuse the existing layer.
 
 ---
 
-## Фаза 6 — Оркестратор `SmartAgent` (`src/smart-agent/agent.ts`)
+## Phase 3 - Reference `IRag` Implementation (`src/smart-agent/rag/`)
 
-- [ ] DI-конструктор: `mainLlm`, `helperLlm`, `mcpClients[]`, `ragStores`, `classifier`, `assembler`, `config`
-- [ ] Pipeline на один запит:
-  - [ ] Класифікація → масив subprompts
-  - [ ] `fact/feedback/state` → `IRag.upsert()` у відповідні сховища
-  - [ ] `action` → `IRag.query()` для facts/feedback/state/tools → `IContextAssembler.assemble()`
-  - [ ] Виклик `mainLlm.chat()` → tool loop (max `config.maxIterations`)
-  - [ ] Повертає фінальну текстову відповідь
-- [ ] Bounded tool loop: `maxIterations`, timeout — завершує запит навіть якщо LLM продовжує запитувати tools
+- [ ] In-memory vector store with cosine similarity (separate instances for fact/feedback/state/tools)
+- [ ] Semantic deduplication on `upsert`: if a similar record already exists, update it instead of duplicating
+- [ ] TTL field in metadata; `query` filters out expired records
 
 ---
 
-## Фаза 7 — OpenAI-compatible HTTP сервер (`src/smart-agent/server.ts`)
+## Phase 4 - `ISubpromptClassifier` (`src/smart-agent/classifier/`)
 
-- [ ] `POST /v1/chat/completions` — приймає стандартний OpenAI-формат, повертає `SmartAgent.process()`
-- [ ] Підтримка `stream: false` (MVP); streaming — окремо після стабілізації
-
----
-
-## Фаза 8 — Observability
-
-- [ ] Структурований лог на кожному кроці: класифікація, RAG hits/misses, tool calls, підсумок
-- [ ] `DEBUG_SMART_AGENT=true` у `.env` вмикає детальний вивід
-- [ ] Не блокує реліз — мінімальна реалізація достатня для налагодження
+- [ ] LLM-based classifier: system prompt with taxonomy, low temperature
+- [ ] Input: one user message → array of `Subprompt` with type and text
+- [ ] Cache the result for identical text within the request scope
 
 ---
 
-## Фаза 9 — Тести
+## Phase 5 - `IContextAssembler` (`src/smart-agent/context/`)
 
-- [ ] Test doubles для кожного інтерфейсу (детерміновані відповіді)
-- [ ] Тест ізоляції кожного компонента: підміняється лише одна реальна реалізація, решта — test doubles
-- [ ] Smoke-тест pipeline end-to-end через embedded MCP + stub LLM
+- [ ] Builds `ContextFrame`: `action` + retrieved `facts` + `feedback` + `state` + `tools` + `toolResults`
+- [ ] Produces final `messages[]` array for `mainLlm.chat()`
+- [ ] Token limit: drops least-relevant entries if the frame exceeds the limit
+
+---
+
+## Phase 6 - `SmartAgent` Orchestrator (`src/smart-agent/agent.ts`)
+
+- [ ] DI constructor: `mainLlm`, `helperLlm`, `mcpClients[]`, `ragStores`, `classifier`, `assembler`, `config`
+- [ ] Single-request pipeline:
+  - [ ] Classification → subprompt array
+  - [ ] `fact/feedback/state` → `IRag.upsert()` into corresponding stores
+  - [ ] `action` → `IRag.query()` for facts/feedback/state/tools → `IContextAssembler.assemble()`
+  - [ ] Call `mainLlm.chat()` → tool loop (max `config.maxIterations`)
+  - [ ] Return final text response
+- [ ] Bounded tool loop: `maxIterations`, timeout - completes the request even if LLM keeps asking for tools
+
+---
+
+## Phase 7 - OpenAI-Compatible HTTP Server (`src/smart-agent/server.ts`)
+
+- [ ] `POST /v1/chat/completions` - accepts standard OpenAI format, returns `SmartAgent.process()`
+- [ ] Support `stream: false` (MVP); streaming comes separately after stabilization
+
+---
+
+## Phase 8 - Observability
+
+- [ ] Structured log at each step: classification, RAG hits/misses, tool calls, summary
+- [ ] `DEBUG_SMART_AGENT=true` in `.env` enables detailed output
+- [ ] Should not block release - minimal implementation is enough for debugging
+
+---
+
+## Phase 9 - Tests
+
+- [ ] Test doubles for each interface (deterministic responses)
+- [ ] Component isolation test: replace only one real implementation, keep the rest as test doubles
+- [ ] End-to-end pipeline smoke test via embedded MCP + stub LLM

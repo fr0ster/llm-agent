@@ -1,77 +1,77 @@
-# Streaming та ітеративний Tool Loop: аналіз
+# Streaming and Iterative Tool Loop: Analysis
 
-## Де приймається рішення
+## Where the decision is made
 
-Streaming — це рішення pipeline, а не архітектури. Pipeline визначає:
-- **Чи використовувати streaming** — деякі сценарії (batch, внутрішні виклики) не потребують streaming взагалі
-- **Який тип streaming** — текстові chunks, типізовані події, або комбінація
-- **Що стримити** — лише фінальний текст, або також tool call events і subprompt-рівні відповіді
+Streaming is a pipeline decision, not an architecture decision. The pipeline defines:
+- **Whether to use streaming** - some scenarios (batch, internal calls) do not need streaming at all
+- **Which streaming type to use** - text chunks, typed events, or a combination
+- **What to stream** - only final text, or also tool-call events and subprompt-level responses
 
-SSE вже є в стеку через MCP транспорт. OpenAI-compatible протокол визначає формат: відправляєш готовий chunk, закриваєш з'єднання коли все завершено. Pipeline просто вирішує, що і коли кидати в цей потік.
+SSE is already in the stack through MCP transport. The OpenAI-compatible protocol defines the format: send a chunk when it is ready, close the connection when everything is done. The pipeline only decides what and when to push into that stream.
 
 ---
 
-## Суть проблеми
+## Core problem
 
-В ітеративному tool loop агент не знає наперед, яка ітерація буде останньою. Кожна відповідь LLM може містити `tool_call` (цикл продовжується) або фінальний текст (цикл завершується). Питання: що і коли стримити?
+In an iterative tool loop, the agent does not know in advance which iteration will be the last. Each LLM response may contain `tool_call` (loop continues) or final text (loop ends). The question is: what should be streamed, and when?
 
-```
+```text
 Iteration 1: LLM → tool_call("search", {...})
 Iteration 2: LLM → tool_call("read_file", {...})
-Iteration 3: LLM → "Ось результат: ..."   ← тільки тут є що стримити?
+Iteration 3: LLM → "Here is the result: ..."   ← only here is there text to stream?
 ```
 
-**Важливо:** паралельність виконання tool calls не вирішує цю проблему. Tool loop є послідовним — кожен наступний виклик LLM залежить від результату попереднього. Паралелізувати можна кілька `tool_call` в межах однієї відповіді LLM, але не самі ітерації.
+**Important:** parallel tool-call execution does not solve this. The tool loop is sequential - each next LLM call depends on the previous result. You can parallelize multiple `tool_call`s within a single LLM response, but not the iterations themselves.
 
-## Чому це не архітектурний конфлікт
+## Why this is not an architectural conflict
 
-Протокол вже вирішує це питання. OpenAI-compatible streaming працює просто: відправляєш готовий chunk як тільки він готовий, закриваєш з'єднання коли все завершено. SSE при цьому вже є в стеку — MCP використовує його як один з транспортів (поряд зі stdio та HTTP). Окремого транспортного рівня вигадувати не потрібно.
+The protocol already solves this. OpenAI-compatible streaming is simple: emit a chunk as soon as it is ready, close the connection when complete. SSE is already in the stack, and MCP uses it as one transport option (alongside stdio and HTTP). No separate transport layer is needed.
 
-Агент просто стримить те, що готове в кожен момент:
+The agent simply streams whatever is ready at each moment:
 
-```
-→ chunk: "Запам'ятав: таблиці тепер UUID замість int id."   (fact оброблено)
-→ chunk: [tool_call event: викликаю search(...)]             (почався action)
-→ chunk: [tool_result event: результат search]
-→ chunk: "Ось схема таблиці users: ..."                     (фінальна відповідь)
+```text
+→ chunk: "Noted: tables now use UUID instead of int id."      (fact processed)
+→ chunk: [tool_call event: calling search(...)]               (action started)
+→ chunk: [tool_result event: search result]
+→ chunk: "Here is the users table schema: ..."                (final response)
 → [connection closed]
 ```
 
-## Часткове вирішення через subprompt decomposition
+## Partial solution via subprompt decomposition
 
-Subprompt decomposition дає конкретний виграш у perceived latency. Якщо повідомлення містить кілька subprompts — агент стримить результат кожного subprompt одразу після його завершення, не чекаючи решти:
+Subprompt decomposition provides concrete gains in perceived latency. If a message contains multiple subprompts, the agent streams each subprompt result immediately after it completes, without waiting for the rest:
 
-```
-Вхід: "До речі, зараз таблиці мають UUID замість int id.
-       Покажи схему таблиці users."
+```text
+Input: "By the way, tables now use UUID instead of int id.
+        Show me the users table schema."
 
-Subprompt 1 (fact):   "До речі, зараз таблиці мають UUID замість int id"
-Subprompt 2 (action): "Покажи схему таблиці users"
+Subprompt 1 (fact):   "By the way, tables now use UUID instead of int id"
+Subprompt 2 (action): "Show me the users table schema"
 
-→ Стримимо одразу: "Запам'ятав: таблиці тепер UUID замість int id."
-  (паралельно запускається tool loop для action)
-→ Стримимо пізніше: результат зі схемою таблиці
+→ Stream immediately: "Noted: tables now use UUID instead of int id."
+  (in parallel, start the action tool loop)
+→ Stream later: schema result
 → [connection closed]
 ```
 
-Користувач бачить відповідь частинами в міру обробки — без очікування завершення всього запиту. Це пряма перевага subprompt taxonomy, а не окрема оптимізація.
+The user sees partial responses as processing progresses, without waiting for the full request to finish. This is a direct benefit of subprompt taxonomy, not a separate optimization.
 
-## Що стримити при tool call
+## What to stream during tool calls
 
-При tool call агент не має тексту для streaming, але може емітувати типізовані події:
+During a tool call, the agent may have no text to stream, but it can emit typed events:
 
-| Момент | Що стримити |
+| Moment | What to stream |
 |--------|------------|
-| Subprompt оброблено | Текстова відповідь по ньому |
-| Tool call вирішено LLM | Подія з назвою інструменту і аргументами |
-| Tool result отримано | Подія з результатом (або стислий текст) |
-| Фінальна відповідь LLM | Текстові delta chunks |
-| Все завершено | Close connection |
+| Subprompt processed | Text response for that subprompt |
+| Tool call chosen by LLM | Event with tool name and arguments |
+| Tool result received | Event with result (or concise text) |
+| Final LLM response | Text delta chunks |
+| Everything completed | Close connection |
 
-## Посилання
+## References
 
-- [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) — streaming з tool calls через `stream: true`, delta chunks з `tool_calls`
-- [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming) — `content_block_start` / `content_block_delta` / `message_stop` для tool use
-- [OpenAI Assistants Function Calling](https://platform.openai.com/docs/assistants/tools/function-calling) — event-based підхід: `tool_calls.created`, `tool_calls.delta`
-- [AG-UI Protocol](https://docs.ag-ui.com/) — відкритий стандарт для agentic streaming між бекендом і UI
-- [Microsoft Semantic Kernel — Agent Streaming](https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-streaming) — `IAsyncEnumerable` з `FunctionCallContent` і `FunctionResultContent` як типи в потоці
+- [OpenAI Function Calling Guide](https://platform.openai.com/docs/guides/function-calling) - streaming with tool calls via `stream: true`, delta chunks with `tool_calls`
+- [Anthropic Streaming Messages](https://platform.claude.com/docs/en/build-with-claude/streaming) - `content_block_start` / `content_block_delta` / `message_stop` for tool use
+- [OpenAI Assistants Function Calling](https://platform.openai.com/docs/assistants/tools/function-calling) - event-based approach: `tool_calls.created`, `tool_calls.delta`
+- [AG-UI Protocol](https://docs.ag-ui.com/) - open standard for agentic streaming between backend and UI
+- [Microsoft Semantic Kernel - Agent Streaming](https://learn.microsoft.com/en-us/semantic-kernel/frameworks/agent/agent-streaming) - `IAsyncEnumerable` with `FunctionCallContent` and `FunctionResultContent` types in the stream
