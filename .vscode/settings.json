@@ -1,4 +1,7 @@
 {
   "cSpell.language": "en",
-  "cSpell.words": ["subprompt"]
+  "cSpell.words": [
+    "subprompt",
+    "upserts"
+  ]
 }
