@@ -59,6 +59,11 @@ BaseAgent (abstract)
 `MCPClientConfig.transport` values: `stdio` | `sse` | `stream-http` | `embedded` | `auto`
 `auto` detects transport from URL patterns. `embedded` injects an in-process server (used for testing).
 
+## Language
+
+- All artifacts (code, comments, docs, commit messages) must be written in **English**.
+- Communicate with the user in the **language they used** in their message.
+
 ## Conventions
 
 - **ESM only** — `"type": "module"` in package.json; use `.js` extensions in imports
