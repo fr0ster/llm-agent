@@ -12,6 +12,7 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "smoke:adapters": "tsx src/smoke-adapters.ts",
     "dev": "tsx src/cli.ts",
     "dev:llm": "tsx src/cli.ts --llm-only",
     "start": "node dist/cli.js",

@@ -6,6 +6,8 @@ dist/
 
 # Environment variables
 .env
+.env.smoke
+.env.abap
 
 # IDE
 # .vscode/
