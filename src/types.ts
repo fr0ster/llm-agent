@@ -17,14 +17,34 @@ export interface Message {
 export interface ToolCall {
   id: string;
   name: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
 }
 
 export interface ToolResult {
   toolCallId: string;
   name: string;
-  result: any;
+  result: unknown;
   error?: string;
+}
+
+export interface ToolInputProperty {
+  type?: string;
+  description?: string;
+  [key: string]: unknown;
+}
+
+export interface ToolInputSchema {
+  type?: string;
+  properties?: Record<string, unknown>;
+  required?: string[];
+  [key: string]: unknown;
+}
+
+export interface ToolDefinition {
+  name: string;
+  description?: string;
+  inputSchema?: ToolInputSchema;
+  [key: string]: unknown;
 }
 
 export interface AgentResponse {

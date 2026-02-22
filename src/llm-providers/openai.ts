@@ -4,6 +4,7 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import { getErrorMessage, getNestedApiErrorMessage } from '../utils/errors.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
@@ -17,10 +18,12 @@ export interface OpenAIConfig extends LLMProviderConfig {
 export class OpenAIProvider extends BaseLLMProvider {
   private client: AxiosInstance;
   private model: string;
+  private providerConfig: OpenAIConfig;
 
   constructor(config: OpenAIConfig) {
     super(config);
     this.validateConfig();
+    this.providerConfig = config;
 
     this.model = config.model || 'gpt-4o-mini';
 
@@ -50,8 +53,8 @@ export class OpenAIProvider extends BaseLLMProvider {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
         messages: this.formatMessages(messages),
-        temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 2000,
+        temperature: this.providerConfig.temperature || 0.7,
+        max_tokens: this.providerConfig.maxTokens || 2000,
       });
 
       const choice = response.data.choices[0];
@@ -61,9 +64,9 @@ export class OpenAIProvider extends BaseLLMProvider {
         finishReason: choice.finish_reason,
         raw: response.data,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       throw new Error(
-        `OpenAI API error: ${error.response?.data?.error?.message || error.message}`,
+        `OpenAI API error: ${getNestedApiErrorMessage(error) || getErrorMessage(error, 'Request failed')}`,
       );
     }
   }
@@ -71,10 +74,24 @@ export class OpenAIProvider extends BaseLLMProvider {
   /**
    * Format messages for OpenAI API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(
+    messages: Message[],
+  ): Array<{ role: Message['role']; content: string }> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
+  }
+
+  getClient(): AxiosInstance {
+    return this.client;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getProviderConfig(): OpenAIConfig {
+    return this.providerConfig;
   }
 }

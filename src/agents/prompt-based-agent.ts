@@ -6,7 +6,8 @@
  */
 
 import type { LLMProvider } from '../llm-providers/base.js';
-import type { Message } from '../types.js';
+import type { Message, ToolDefinition } from '../types.js';
+import { isRecord } from '../utils/errors.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface PromptBasedAgentConfig extends BaseAgentConfig {
@@ -26,7 +27,7 @@ export class PromptBasedAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: ToolDefinition[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Build system message with tool descriptions
     const systemMessage = this.buildSystemMessageWithTools(tools);
@@ -49,14 +50,14 @@ export class PromptBasedAgent extends BaseAgent {
   /**
    * Build system message with tool descriptions
    */
-  private buildSystemMessageWithTools(tools: any[]): string {
+  private buildSystemMessageWithTools(tools: ToolDefinition[]): string {
     const toolDescriptions = tools
       .map((tool) => {
         const params = tool.inputSchema?.properties
           ? Object.entries(tool.inputSchema.properties)
               .map(
-                ([name, prop]: [string, any]) =>
-                  `  - ${name}: ${prop.description || prop.type || 'any'}`,
+                ([name, prop]: [string, unknown]) =>
+                  `  - ${name}: ${this.describeProperty(prop)}`,
               )
               .join('\n')
           : '';
@@ -79,5 +80,21 @@ TOOL_CALL: tool_name
 ARGUMENTS: {"param1": "value1", "param2": "value2"}
 
 Only include tool usage hints if they are needed to solve the user's request.`;
+  }
+
+  private describeProperty(property: unknown): string {
+    if (!isRecord(property)) {
+      return 'any';
+    }
+
+    if (typeof property.description === 'string') {
+      return property.description;
+    }
+
+    if (typeof property.type === 'string') {
+      return property.type;
+    }
+
+    return 'any';
   }
 }

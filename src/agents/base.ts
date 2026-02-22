@@ -9,9 +9,9 @@
  * This base class provides common logic, subclasses implement LLM-specific tool handling.
  */
 
-import type { LLMProvider } from '../llm-providers/base.js';
 import { type MCPClientConfig, MCPClientWrapper } from '../mcp/client.js';
-import type { AgentResponse, Message } from '../types.js';
+import type { AgentResponse, Message, ToolDefinition } from '../types.js';
+import { getErrorMessage } from '../utils/errors.js';
 
 export interface BaseAgentConfig {
   /**
@@ -35,7 +35,7 @@ export interface BaseAgentConfig {
 export abstract class BaseAgent {
   protected mcpClient: MCPClientWrapper;
   protected conversationHistory: Message[] = [];
-  protected tools: any[] = [];
+  protected tools: ToolDefinition[] = [];
 
   constructor(config: BaseAgentConfig) {
     // Initialize MCP client
@@ -59,7 +59,7 @@ export abstract class BaseAgent {
       await this.mcpClient.connect();
       // Load tools once connected
       this.tools = await this.mcpClient.listTools();
-    } catch (error: any) {
+    } catch (error: unknown) {
       // If connection fails, agent will work without tools (LLM-only mode)
       // Set empty tools array to ensure agent can still process messages
       this.tools = [];
@@ -97,10 +97,10 @@ export abstract class BaseAgent {
         message: llmResponse.content,
         raw: llmResponse.raw,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         message: '',
-        error: error.message || 'Agent processing failed',
+        error: getErrorMessage(error, 'Agent processing failed'),
       };
     }
   }
@@ -111,7 +111,7 @@ export abstract class BaseAgent {
    */
   protected abstract callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: ToolDefinition[],
   ): Promise<{ content: string; raw?: unknown }>;
 
   /**

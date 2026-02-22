@@ -6,7 +6,8 @@
 
 import type { LLMProvider } from './llm-providers/base.js';
 import { type MCPClientConfig, MCPClientWrapper } from './mcp/client.js';
-import type { AgentResponse, Message } from './types.js';
+import type { AgentResponse, Message, ToolDefinition } from './types.js';
+import { getErrorMessage } from './utils/errors.js';
 
 export interface AgentConfig {
   llmProvider: LLMProvider;
@@ -86,10 +87,10 @@ export class Agent {
         message: llmResponse.content,
         raw: llmResponse.raw,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         message: '',
-        error: error.message || 'Agent processing failed',
+        error: getErrorMessage(error, 'Agent processing failed'),
       };
     }
   }
@@ -97,7 +98,7 @@ export class Agent {
   /**
    * Build system message with tool definitions
    */
-  private buildSystemMessage(tools: any[]): string {
+  private buildSystemMessage(tools: ToolDefinition[]): string {
     const toolDescriptions = tools
       .map((tool) => {
         return `- ${tool.name}: ${tool.description || 'No description'}`;

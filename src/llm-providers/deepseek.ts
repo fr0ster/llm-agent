@@ -4,6 +4,7 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import { getErrorMessage, getNestedApiErrorMessage } from '../utils/errors.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
@@ -15,10 +16,12 @@ export interface DeepSeekConfig extends LLMProviderConfig {
 export class DeepSeekProvider extends BaseLLMProvider {
   private client: AxiosInstance;
   private model: string;
+  private providerConfig: DeepSeekConfig;
 
   constructor(config: DeepSeekConfig) {
     super(config);
     this.validateConfig();
+    this.providerConfig = config;
 
     this.model = config.model || 'deepseek-chat';
 
@@ -36,8 +39,8 @@ export class DeepSeekProvider extends BaseLLMProvider {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
         messages: this.formatMessages(messages),
-        temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 2000,
+        temperature: this.providerConfig.temperature || 0.7,
+        max_tokens: this.providerConfig.maxTokens || 2000,
       });
 
       const choice = response.data.choices[0];
@@ -47,9 +50,9 @@ export class DeepSeekProvider extends BaseLLMProvider {
         finishReason: choice.finish_reason,
         raw: response.data,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       throw new Error(
-        `DeepSeek API error: ${error.response?.data?.error?.message || error.message}`,
+        `DeepSeek API error: ${getNestedApiErrorMessage(error) || getErrorMessage(error, 'Request failed')}`,
       );
     }
   }
@@ -57,10 +60,24 @@ export class DeepSeekProvider extends BaseLLMProvider {
   /**
    * Format messages for DeepSeek API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(
+    messages: Message[],
+  ): Array<{ role: Message['role']; content: string }> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
+  }
+
+  getClient(): AxiosInstance {
+    return this.client;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getProviderConfig(): DeepSeekConfig {
+    return this.providerConfig;
   }
 }

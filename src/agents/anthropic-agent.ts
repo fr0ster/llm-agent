@@ -5,11 +5,8 @@
  * tool use blocks in the response content.
  */
 
-import type {
-  AnthropicConfig,
-  AnthropicProvider,
-} from '../llm-providers/anthropic.js';
-import type { Message } from '../types.js';
+import type { AnthropicProvider } from '../llm-providers/anthropic.js';
+import type { Message, ToolDefinition } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface AnthropicAgentConfig extends BaseAgentConfig {
@@ -29,7 +26,7 @@ export class AnthropicAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: ToolDefinition[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to Anthropic tool format
     const anthropicTools = this.convertToolsToAnthropicTools(tools);
@@ -41,13 +38,23 @@ export class AnthropicAgent extends BaseAgent {
       this.formatMessagesForAnthropic(conversationMessages);
 
     // Access Anthropic client and config
-    const anthropicProvider = this.llmProvider as any;
-    const client = anthropicProvider.client;
-    const model = anthropicProvider.model;
-    const config = anthropicProvider.config;
+    const client = this.llmProvider.getClient();
+    const model = this.llmProvider.getModel();
+    const config = this.llmProvider.getProviderConfig();
 
     // Call Anthropic API with tools
-    const requestBody: any = {
+    const requestBody: {
+      model: string;
+      messages: Array<{ role: 'assistant' | 'user'; content: string }>;
+      max_tokens: number;
+      temperature: number;
+      system?: string;
+      tools?: Array<{
+        name: string;
+        description: string;
+        input_schema: unknown;
+      }>;
+    } = {
       model,
       messages: formattedMessages,
       max_tokens: config.maxTokens || 2000,
@@ -82,7 +89,11 @@ export class AnthropicAgent extends BaseAgent {
   /**
    * Convert MCP tools to Anthropic tool format
    */
-  private convertToolsToAnthropicTools(tools: any[]): any[] {
+  private convertToolsToAnthropicTools(tools: ToolDefinition[]): Array<{
+    name: string;
+    description: string;
+    input_schema: unknown;
+  }> {
     return tools.map((tool) => ({
       name: tool.name,
       description: tool.description || '',
@@ -96,7 +107,9 @@ export class AnthropicAgent extends BaseAgent {
   /**
    * Format messages for Anthropic API
    */
-  private formatMessagesForAnthropic(messages: Message[]): any[] {
+  private formatMessagesForAnthropic(
+    messages: Message[],
+  ): Array<{ role: 'assistant' | 'user'; content: string }> {
     return messages.map((msg) => {
       return {
         role: msg.role === 'assistant' ? 'assistant' : 'user',

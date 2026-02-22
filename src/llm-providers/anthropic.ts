@@ -4,6 +4,7 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import { getErrorMessage, getNestedApiErrorMessage } from '../utils/errors.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface AnthropicConfig extends LLMProviderConfig {
@@ -15,10 +16,12 @@ export interface AnthropicConfig extends LLMProviderConfig {
 export class AnthropicProvider extends BaseLLMProvider {
   private client: AxiosInstance;
   private model: string;
+  private providerConfig: AnthropicConfig;
 
   constructor(config: AnthropicConfig) {
     super(config);
     this.validateConfig();
+    this.providerConfig = config;
 
     this.model = config.model || 'claude-3-5-sonnet-20241022';
 
@@ -38,11 +41,17 @@ export class AnthropicProvider extends BaseLLMProvider {
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
-      const requestBody: any = {
+      const requestBody: {
+        model: string;
+        messages: Array<{ role: 'assistant' | 'user'; content: string }>;
+        max_tokens: number;
+        temperature: number;
+        system?: string;
+      } = {
         model: this.model,
         messages: this.formatMessages(conversationMessages),
-        max_tokens: this.config.maxTokens || 2000,
-        temperature: this.config.temperature || 0.7,
+        max_tokens: this.providerConfig.maxTokens || 2000,
+        temperature: this.providerConfig.temperature || 0.7,
       };
 
       if (systemMessage) {
@@ -58,9 +67,9 @@ export class AnthropicProvider extends BaseLLMProvider {
         finishReason: response.data.stop_reason,
         raw: response.data,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       throw new Error(
-        `Anthropic API error: ${error.response?.data?.error?.message || error.message}`,
+        `Anthropic API error: ${getNestedApiErrorMessage(error) || getErrorMessage(error, 'Request failed')}`,
       );
     }
   }
@@ -68,10 +77,24 @@ export class AnthropicProvider extends BaseLLMProvider {
   /**
    * Format messages for Anthropic API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(
+    messages: Message[],
+  ): Array<{ role: 'assistant' | 'user'; content: string }> {
     return messages.map((msg) => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
       content: msg.content,
     }));
+  }
+
+  getClient(): AxiosInstance {
+    return this.client;
+  }
+
+  getModel(): string {
+    return this.model;
+  }
+
+  getProviderConfig(): AnthropicConfig {
+    return this.providerConfig;
   }
 }

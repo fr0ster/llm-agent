@@ -4,11 +4,8 @@
  * DeepSeek supports function calling similar to OpenAI via the `tools` parameter.
  */
 
-import type {
-  DeepSeekConfig,
-  DeepSeekProvider,
-} from '../llm-providers/deepseek.js';
-import type { Message } from '../types.js';
+import type { DeepSeekProvider } from '../llm-providers/deepseek.js';
+import type { Message, ToolDefinition } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface DeepSeekAgentConfig extends BaseAgentConfig {
@@ -28,7 +25,7 @@ export class DeepSeekAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: ToolDefinition[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to DeepSeek function format (same as OpenAI)
     const functions = this.convertToolsToFunctions(tools);
@@ -37,10 +34,9 @@ export class DeepSeekAgent extends BaseAgent {
     const formattedMessages = this.formatMessagesForDeepSeek(messages);
 
     // Access DeepSeek client and config
-    const deepseekProvider = this.llmProvider as any;
-    const client = deepseekProvider.client;
-    const model = deepseekProvider.model;
-    const config = deepseekProvider.config;
+    const client = this.llmProvider.getClient();
+    const model = this.llmProvider.getModel();
+    const config = this.llmProvider.getProviderConfig();
 
     // Call DeepSeek API with tools
     const response = await client.post('/chat/completions', {
@@ -64,7 +60,14 @@ export class DeepSeekAgent extends BaseAgent {
   /**
    * Convert MCP tools to DeepSeek function format
    */
-  private convertToolsToFunctions(tools: any[]): any[] {
+  private convertToolsToFunctions(tools: ToolDefinition[]): Array<{
+    type: 'function';
+    function: {
+      name: string;
+      description: string;
+      parameters: unknown;
+    };
+  }> {
     return tools.map((tool) => ({
       type: 'function',
       function: {
@@ -81,9 +84,11 @@ export class DeepSeekAgent extends BaseAgent {
   /**
    * Format messages for DeepSeek API (same as OpenAI)
    */
-  private formatMessagesForDeepSeek(messages: Message[]): any[] {
+  private formatMessagesForDeepSeek(
+    messages: Message[],
+  ): Array<{ role: Message['role']; content: string }> {
     return messages.map((msg) => {
-      const formatted: any = {
+      const formatted = {
         role: msg.role,
         content: msg.content,
       };

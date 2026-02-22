@@ -13,6 +13,27 @@
  */
 
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import {
+  getErrorMessage,
+  getNestedApiErrorMessage,
+  isRecord,
+} from '../utils/errors.js';
+
+interface Logger {
+  debug?: (message: string, meta?: Record<string, unknown>) => void;
+  error?: (message: string, meta?: Record<string, unknown>) => void;
+}
+
+interface SapCoreAIChoice {
+  message?: {
+    content?: string;
+  };
+  finish_reason?: string;
+}
+
+interface SapCoreAIResponseData {
+  choices?: SapCoreAIChoice[];
+}
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
   /**
@@ -47,13 +68,13 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
     method: string;
     url: string;
     headers?: Record<string, string>;
-    data?: any;
-  }) => Promise<{ data: any }>;
+    data?: unknown;
+  }) => Promise<{ data: unknown }>;
 
   /**
    * Optional logger instance
    */
-  log?: any;
+  log?: Logger;
 }
 
 /**
@@ -67,7 +88,7 @@ export class SapCoreAIProvider {
   private model: string;
   private config: SapCoreAIConfig;
   private httpClient: SapCoreAIConfig['httpClient'];
-  private log?: any; // Optional logger
+  private log?: Logger;
 
   constructor(config: SapCoreAIConfig) {
     if (!config.destinationName) {
@@ -84,7 +105,7 @@ export class SapCoreAIProvider {
   async chat(messages: Message[]): Promise<LLMResponse> {
     try {
       if (this.log) {
-        this.log.debug('Sending chat request to SAP Core AI', {
+        this.log.debug?.('Sending chat request to SAP Core AI', {
           destination: this.destinationName,
           model: this.model,
           messageCount: messages.length,
@@ -99,7 +120,7 @@ export class SapCoreAIProvider {
         max_tokens: this.config.maxTokens || 2000,
       };
 
-      let response: { data: any };
+      let response: { data: unknown };
 
       if (this.httpClient) {
         // Use provided HTTP client (typically SAP Cloud SDK)
@@ -132,14 +153,15 @@ export class SapCoreAIProvider {
         );
       }
 
-      const choice = response.data.choices?.[0];
+      const responseData = this.toResponseData(response.data);
+      const choice = responseData.choices?.[0];
 
       if (!choice) {
         throw new Error('No response from SAP Core AI');
       }
 
       if (this.log) {
-        this.log.debug('Received response from SAP Core AI', {
+        this.log.debug?.('Received response from SAP Core AI', {
           finishReason: choice.finish_reason,
         });
       }
@@ -147,19 +169,19 @@ export class SapCoreAIProvider {
       return {
         content: choice.message?.content || '',
         finishReason: choice.finish_reason,
-        raw: response.data,
+        raw: responseData,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       if (this.log) {
-        this.log.error('SAP Core AI API error', {
+        this.log.error?.('SAP Core AI API error', {
           destination: this.destinationName,
-          error: error.message,
-          response: error.response?.data,
+          error: getErrorMessage(error, 'Request failed'),
+          response: this.extractResponseData(error),
         });
       }
 
       throw new Error(
-        `SAP Core AI API error: ${error.response?.data?.error?.message || error.message}`,
+        `SAP Core AI API error: ${getNestedApiErrorMessage(error) || getErrorMessage(error, 'Request failed')}`,
       );
     }
   }
@@ -167,10 +189,33 @@ export class SapCoreAIProvider {
   /**
    * Format messages for SAP Core AI API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(
+    messages: Message[],
+  ): Array<{ role: Message['role']; content: string }> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,
     }));
+  }
+
+  private toResponseData(data: unknown): SapCoreAIResponseData {
+    if (!isRecord(data)) {
+      throw new Error('Invalid response from SAP Core AI');
+    }
+
+    return data as SapCoreAIResponseData;
+  }
+
+  private extractResponseData(error: unknown): unknown {
+    if (!isRecord(error)) {
+      return undefined;
+    }
+
+    const response = error.response;
+    if (!isRecord(response)) {
+      return undefined;
+    }
+
+    return response.data;
   }
 }

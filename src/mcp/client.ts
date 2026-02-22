@@ -7,7 +7,8 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { ToolCall, ToolResult } from '../types.js';
+import type { ToolCall, ToolDefinition, ToolResult } from '../types.js';
+import { getErrorMessage, isRecord } from '../utils/errors.js';
 
 export type TransportType =
   | 'stdio'
@@ -39,33 +40,41 @@ export interface MCPClientConfig {
    * - server.setRequestHandler() method for ListToolsRequestSchema and CallToolRequestSchema
    * - Or provide tools list and tool call handler directly
    */
-  serverInstance?: any;
+  serverInstance?: {
+    server?: unknown;
+  };
 
   /**
    * For embedded mode: Direct access to tools registry
    * If provided, listTools() will use this instead of calling server
    */
   toolsRegistry?: {
-    getAllTools: () => any[];
+    getAllTools: () => ToolDefinition[];
   };
 
   /**
    * For embedded mode: Direct tool call handler
    * If provided, callTool() will use this instead of calling server
    */
-  toolCallHandler?: (name: string, args: Record<string, any>) => Promise<any>;
+  toolCallHandler?: (
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
 
   /**
    * Direct tools list provider (DI)
    * Use this to supply tools without relying on MCP transport details.
    */
-  listToolsHandler?: () => Promise<any[]>;
+  listToolsHandler?: () => Promise<ToolDefinition[]>;
 
   /**
    * Direct tool call provider (DI)
    * Use this to supply tool execution without relying on MCP transport details.
    */
-  callToolHandler?: (name: string, args: Record<string, any>) => Promise<any>;
+  callToolHandler?: (
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
 
   /**
    * For stdio: command and args to execute
@@ -101,7 +110,7 @@ export interface MCPClientConfig {
 export class MCPClientWrapper {
   private client: Client | null = null;
   private config: MCPClientConfig;
-  private tools: any[] = [];
+  private tools: ToolDefinition[] = [];
   private detectedTransport: TransportType;
   private sessionId?: string;
 
@@ -287,7 +296,7 @@ export class MCPClientWrapper {
   /**
    * Get list of available tools
    */
-  async listTools(): Promise<any[]> {
+  async listTools(): Promise<ToolDefinition[]> {
     // For embedded mode, tools are already loaded in connect()
     if (this.detectedTransport === 'embedded') {
       return this.tools;
@@ -297,8 +306,13 @@ export class MCPClientWrapper {
       await this.connect();
     }
 
+    const client = this.client;
+    if (!client) {
+      throw new Error('MCP client is not connected');
+    }
+
     if (this.tools.length === 0) {
-      const response = await this.client!.listTools();
+      const response = await client.listTools();
       this.tools = response.tools || [];
     }
 
@@ -312,7 +326,7 @@ export class MCPClientWrapper {
     // For embedded mode, use direct handler or server instance
     if (this.detectedTransport === 'embedded') {
       try {
-        let result: any;
+        let result: unknown;
 
         if (this.config.callToolHandler) {
           result = await this.config.callToolHandler(
@@ -326,26 +340,7 @@ export class MCPClientWrapper {
             toolCall.arguments,
           );
         } else if (this.config.serverInstance?.server) {
-          // Use MCP Server instance directly via CallToolRequest
-          // The server has request handlers registered, we need to call them
-          const { CallToolRequestSchema } = await import(
-            '@modelcontextprotocol/sdk/types.js'
-          );
-
-          // Create a request object that matches CallToolRequest format
-          const request = {
-            jsonrpc: '2.0' as const,
-            id: 1,
-            method: 'tools/call',
-            params: {
-              name: toolCall.name,
-              arguments: toolCall.arguments,
-            },
-          };
-
-          // Call the handler directly
-          // The server.setRequestHandler registers handlers, but we need to access them
-          // This is a limitation - provide toolCallHandler for embedded mode
+          // Embedded server instance exists but direct call tooling is not wired.
           throw new Error(
             'Direct server.callTool() requires toolCallHandler. Provide toolCallHandler in mcpConfig.',
           );
@@ -355,17 +350,22 @@ export class MCPClientWrapper {
           );
         }
 
+        const wrappedContent =
+          isRecord(result) && Object.hasOwn(result, 'content')
+            ? result.content
+            : undefined;
+
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
-          result: result.content || result,
+          result: wrappedContent ?? result,
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: null,
-          error: error.message || 'Tool execution failed',
+          error: getErrorMessage(error, 'Tool execution failed'),
         };
       }
     }
@@ -374,8 +374,13 @@ export class MCPClientWrapper {
       await this.connect();
     }
 
+    const client = this.client;
+    if (!client) {
+      throw new Error('MCP client is not connected');
+    }
+
     try {
-      const response = await this.client!.callTool({
+      const response = await client.callTool({
         name: toolCall.name,
         arguments: toolCall.arguments,
       });
@@ -385,12 +390,12 @@ export class MCPClientWrapper {
         name: toolCall.name,
         result: response.content,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
       return {
         toolCallId: toolCall.id,
         name: toolCall.name,
         result: null,
-        error: error.message || 'Tool execution failed',
+        error: getErrorMessage(error, 'Tool execution failed'),
       };
     }
   }

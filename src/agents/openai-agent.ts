@@ -5,8 +5,8 @@
  * Tools are passed as JSON schema, and LLM returns function calls in response.
  */
 
-import type { OpenAIConfig, OpenAIProvider } from '../llm-providers/openai.js';
-import type { Message } from '../types.js';
+import type { OpenAIProvider } from '../llm-providers/openai.js';
+import type { Message, ToolDefinition } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface OpenAIAgentConfig extends BaseAgentConfig {
@@ -26,7 +26,7 @@ export class OpenAIAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: ToolDefinition[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to OpenAI function format
     const functions = this.convertToolsToOpenAIFunctions(tools);
@@ -35,10 +35,9 @@ export class OpenAIAgent extends BaseAgent {
     const formattedMessages = this.formatMessagesForOpenAI(messages);
 
     // Access OpenAI client and config
-    const openaiProvider = this.llmProvider as any;
-    const client = openaiProvider.client;
-    const model = openaiProvider.model;
-    const config = openaiProvider.config;
+    const client = this.llmProvider.getClient();
+    const model = this.llmProvider.getModel();
+    const config = this.llmProvider.getProviderConfig();
 
     // Call OpenAI API with tools
     const response = await client.post('/chat/completions', {
@@ -62,7 +61,14 @@ export class OpenAIAgent extends BaseAgent {
   /**
    * Convert MCP tools to OpenAI function format
    */
-  private convertToolsToOpenAIFunctions(tools: any[]): any[] {
+  private convertToolsToOpenAIFunctions(tools: ToolDefinition[]): Array<{
+    type: 'function';
+    function: {
+      name: string;
+      description: string;
+      parameters: unknown;
+    };
+  }> {
     return tools.map((tool) => ({
       type: 'function',
       function: {
@@ -79,7 +85,9 @@ export class OpenAIAgent extends BaseAgent {
   /**
    * Format messages for OpenAI API
    */
-  private formatMessagesForOpenAI(messages: Message[]): any[] {
+  private formatMessagesForOpenAI(
+    messages: Message[],
+  ): Array<{ role: Message['role']; content: string | null }> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content || null, // OpenAI requires null if empty

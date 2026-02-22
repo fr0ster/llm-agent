@@ -51,10 +51,10 @@
  *     MCP_DISABLED - Set to 'true' to test LLM only without MCP
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
-import { existsSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 import {
   AnthropicAgent,
   AnthropicProvider,
@@ -65,6 +65,8 @@ import {
   OpenAIProvider,
   PromptBasedAgent,
 } from './index.js';
+import type { ToolDefinition } from './types.js';
+import { getErrorMessage, isRecord } from './utils/errors.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -188,10 +190,11 @@ async function main() {
           ? ` (org: ${process.env.OPENAI_ORG.substring(0, 8)}...)`
           : '';
         const projectInfo =
-          process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ
-            ? ` (project: ${(process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ)!.substring(0, 8)}...)`
-            : '';
-        console.log(`✅ Created OpenAI provider${orgInfo}${projectInfo}`);
+          process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ;
+        const projectLabel = projectInfo
+          ? ` (project: ${projectInfo.substring(0, 8)}...)`
+          : '';
+        console.log(`✅ Created OpenAI provider${orgInfo}${projectLabel}`);
         break;
       }
 
@@ -321,7 +324,7 @@ async function main() {
     const tools = await mcpClient.listTools();
     console.log(`📦 Available tools: ${tools.length}`);
     if (tools.length > 0) {
-      tools.slice(0, 5).forEach((tool: any) => {
+      tools.slice(0, 5).forEach((tool: ToolDefinition) => {
         console.log(
           `   - ${tool.name}: ${tool.description || 'No description'}`,
         );
@@ -357,9 +360,9 @@ async function main() {
     console.log('✅ Test completed successfully!\n');
 
     process.exit(0);
-  } catch (error: any) {
-    console.error('\n❌ Error:', error.message);
-    if (error.stack) {
+  } catch (error: unknown) {
+    console.error('\n❌ Error:', getErrorMessage(error, 'Unexpected error'));
+    if (isRecord(error) && typeof error.stack === 'string') {
       console.error('\nStack trace:');
       console.error(error.stack);
     }
