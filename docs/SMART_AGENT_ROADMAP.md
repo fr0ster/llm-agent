@@ -42,20 +42,20 @@ Validation
 
 ---
 
-## Phase 3 - Reference `IRag` Implementation (`src/smart-agent/rag/`)
+## Phase 3 - Reference `IRag` Implementation (`src/smart-agent/rag/`) ✅
 
-- [ ] In-memory vector store with cosine similarity (separate instances for fact/feedback/state/tools)
-- [ ] Semantic deduplication on `upsert`: if a similar record already exists, update it instead of duplicating
-- [ ] TTL field in metadata; `query` filters out expired records
+- [x] In-memory vector store with cosine similarity (separate instances for fact/feedback/state/tools)
+- [x] Semantic deduplication on `upsert`: if a similar record already exists, update it instead of duplicating
+- [x] TTL field in metadata; `query` filters out expired records
 
 Definition of Done
-- [ ] Deterministic retrieval behavior for fixed embeddings in tests
-- [ ] Deduplication policy and similarity thresholds are configurable
-- [ ] Memory namespace model is defined (`tenant/user/session`)
+- [x] Deterministic retrieval behavior for fixed embeddings in tests
+- [x] Deduplication policy and similarity thresholds are configurable
+- [x] Memory namespace model is defined (`tenant/user/session`)
 
 Validation
-- [ ] [CI]     Unit tests cover deduplication, TTL expiry, and namespace isolation
-- [ ] [CI]     Load smoke test confirms bounded memory growth under repeated upserts
+- [x] [CI]     Unit tests cover deduplication, TTL expiry, and namespace isolation (12/12 pass)
+- [x] [CI]     Load smoke test confirms bounded memory growth under repeated upserts
 
 ---
 
