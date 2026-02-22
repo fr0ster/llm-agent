@@ -8,7 +8,7 @@ dist/
 .env
 
 # IDE
-.vscode/
+# .vscode/
 .idea/
 *.swp
 *.swo
