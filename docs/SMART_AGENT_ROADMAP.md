@@ -38,7 +38,7 @@ Definition of Done
 
 Validation
 - [ ] [CI]     Integration tests cover nominal flows and edge cases (timeouts, malformed tool args, provider errors)
-- [ ] [manual] Golden-path smoke runs confirm no regression in current CLI behavior
+- [x] [manual] Golden-path smoke runs confirm no regression in current CLI behavior
 
 ---
 
