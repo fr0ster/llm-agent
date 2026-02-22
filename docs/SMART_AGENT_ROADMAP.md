@@ -24,17 +24,17 @@ Validation
 
 ---
 
-## Phase 2 - Existing Code Adapters (`src/smart-agent/adapters/`)
+## Phase 2 - Existing Code Adapters (`src/smart-agent/adapters/`) ✅
 
-- [ ] `LlmAdapter` - wraps existing `BaseAgent` subclasses into `ILlm`
-- [ ] `McpClientAdapter` - wraps `MCPClientWrapper` into `IMcpClient`
+- [x] `LlmAdapter` - wraps existing `BaseAgent` subclasses into `ILlm`
+- [x] `McpClientAdapter` - wraps `MCPClientWrapper` into `IMcpClient`
 
 Goal: the new architecture should not duplicate provider HTTP logic, but reuse the existing layer.
 
 Definition of Done
-- [ ] Adapters preserve existing provider behavior for success and failure paths
-- [ ] Adapter output conforms to Phase 1 contracts without lossy mapping
-- [ ] Adapter-level timeout and cancellation behavior is deterministic
+- [x] Adapters preserve existing provider behavior for success and failure paths
+- [x] Adapter output conforms to Phase 1 contracts without lossy mapping
+- [x] Adapter-level timeout and cancellation behavior is deterministic
 
 Validation
 - [ ] [CI]     Integration tests cover nominal flows and edge cases (timeouts, malformed tool args, provider errors)
