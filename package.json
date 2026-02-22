@@ -13,6 +13,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "smoke:adapters": "tsx src/smoke-adapters.ts",
+    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
     "dev": "tsx src/cli.ts",
     "dev:llm": "tsx src/cli.ts --llm-only",
     "start": "node dist/cli.js",
