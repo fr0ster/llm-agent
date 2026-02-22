@@ -23,6 +23,7 @@ function withAbort<T>(
   makeError: () => SmartAgentError,
 ): Promise<T> {
   if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(makeError());
   return Promise.race([
     promise,
     new Promise<never>((_, reject) => {
