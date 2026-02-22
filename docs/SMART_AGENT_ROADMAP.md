@@ -4,19 +4,19 @@ Draft roadmap based on [`SMART_AGENT_ARCHITECTURE.md`](./SMART_AGENT_ARCHITECTUR
 
 ---
 
-## Phase 1 - Contracts (`src/smart-agent/interfaces/`)
+## Phase 1 - Contracts (`src/smart-agent/interfaces/`) ✅
 
-- [ ] `ILlm` - chat/completion: `chat(messages, tools?) → LLMResponse`
-- [ ] `IMcpClient` - `listTools() → Tool[]`, `callTool(name, args) → ToolResult`
-- [ ] `IRag` - `upsert(text, metadata)`, `query(text, k) → RagResult[]`
-- [ ] `ISubpromptClassifier` - `classify(text) → Subprompt[]` (types: `fact | feedback | state | action`)
-- [ ] `IContextAssembler` - `assemble(action, retrieved, toolResults) → ContextFrame`
-- [ ] Shared types: `Subprompt`, `ContextFrame`, `RagResult`, `AgentConfig`
+- [x] `ILlm` - chat/completion: `chat(messages, tools?) → LLMResponse`
+- [x] `IMcpClient` - `listTools() → Tool[]`, `callTool(name, args) → ToolResult`
+- [x] `IRag` - `upsert(text, metadata)`, `query(text, k) → RagResult[]`
+- [x] `ISubpromptClassifier` - `classify(text) → Subprompt[]` (types: `fact | feedback | state | action`)
+- [x] `IContextAssembler` - `assemble(action, retrieved, toolResults) → ContextFrame`
+- [x] Shared types: `Subprompt`, `ContextFrame`, `RagResult`, `AgentConfig`
 
 Definition of Done
-- [ ] Contracts define typed success/error envelopes and timeout/cancellation semantics
-- [ ] Tool call/result schemas are explicit and versioned
-- [ ] All interfaces include trace/context propagation fields where needed
+- [x] Contracts define typed success/error envelopes and timeout/cancellation semantics
+- [x] Tool call/result schemas are explicit and versioned
+- [x] All interfaces include trace/context propagation fields where needed
 
 Validation
 - [ ] [CI]     Contract tests for each interface pass using deterministic test doubles
