@@ -19,8 +19,8 @@ Definition of Done
 - [ ] All interfaces include trace/context propagation fields where needed
 
 Validation
-- [ ] Contract tests for each interface pass using deterministic test doubles
-- [ ] Backward compatibility with existing adapter expectations is verified
+- [ ] [CI]     Contract tests for each interface pass using deterministic test doubles
+- [ ] [manual] Backward compatibility with existing adapter expectations is verified
 
 ---
 
@@ -37,8 +37,8 @@ Definition of Done
 - [ ] Adapter-level timeout and cancellation behavior is deterministic
 
 Validation
-- [ ] Integration tests cover nominal flows and edge cases (timeouts, malformed tool args, provider errors)
-- [ ] Golden-path smoke runs confirm no regression in current CLI behavior
+- [ ] [CI]     Integration tests cover nominal flows and edge cases (timeouts, malformed tool args, provider errors)
+- [ ] [manual] Golden-path smoke runs confirm no regression in current CLI behavior
 
 ---
 
@@ -54,8 +54,8 @@ Definition of Done
 - [ ] Memory namespace model is defined (`tenant/user/session`)
 
 Validation
-- [ ] Unit tests cover deduplication, TTL expiry, and namespace isolation
-- [ ] Load smoke test confirms bounded memory growth under repeated upserts
+- [ ] [CI]     Unit tests cover deduplication, TTL expiry, and namespace isolation
+- [ ] [CI]     Load smoke test confirms bounded memory growth under repeated upserts
 
 ---
 
@@ -64,6 +64,7 @@ Validation
 - [ ] LLM-based classifier: system prompt with taxonomy, low temperature
 - [ ] Input: one user message → array of `Subprompt` with type and text
 - [ ] Cache the result for identical text within the request scope
+- [ ] Evaluation dataset: minimum 20 labeled examples covering nominal, ambiguous, and multi-intent inputs
 
 Definition of Done
 - [ ] Classifier output schema is strict and validated
@@ -71,8 +72,8 @@ Definition of Done
 - [ ] Prompt and temperature are versioned as config
 
 Validation
-- [ ] Evaluation set exists for common and ambiguous prompts
-- [ ] Misclassification regression suite runs in CI with deterministic stubs where possible
+- [ ] [manual] Evaluation set exists for common and ambiguous prompts
+- [ ] [CI]     Misclassification regression suite runs in CI with deterministic stubs where possible
 
 ---
 
@@ -88,8 +89,8 @@ Definition of Done
 - [ ] Context frame includes provenance metadata for debugging
 
 Validation
-- [ ] Tests cover over-limit frames and relevance-based truncation behavior
-- [ ] Snapshot tests verify stable `messages[]` assembly for fixed inputs
+- [ ] [CI] Tests cover over-limit frames and relevance-based truncation behavior
+- [ ] [CI] Snapshot tests verify stable `messages[]` assembly for fixed inputs
 
 ---
 
@@ -110,8 +111,8 @@ Definition of Done
 - [ ] Cancellation propagates across LLM call and MCP tool execution
 
 Validation
-- [ ] End-to-end tests cover multi-step tool loops and runaway-prevention scenarios
-- [ ] Fault-injection tests cover MCP failures, empty retrieval, and classifier mistakes
+- [ ] [CI]     End-to-end tests cover multi-step tool loops and runaway-prevention scenarios
+- [ ] [CI]     Fault-injection tests cover MCP failures, empty retrieval, and classifier mistakes
 
 ---
 
@@ -126,8 +127,8 @@ Definition of Done
 - [ ] Request-level timeout and idempotency behavior are defined
 
 Validation
-- [ ] API integration tests cover valid/invalid payloads and tool loop outputs
-- [ ] Smoke test with real client SDK confirms wire compatibility
+- [ ] [CI]     API integration tests cover valid/invalid payloads and tool loop outputs
+- [ ] [manual] Smoke test with real client SDK confirms wire compatibility
 
 ---
 
@@ -140,11 +141,11 @@ Validation
 Definition of Done
 - [ ] Trace correlation id is propagated across classifier, RAG, LLM, and MCP calls
 - [ ] Logs are structured, searchable, and redact sensitive fields
-- [ ] Baseline dashboards exist for latency, errors, tool usage, and retrieval quality
+- [ ] Structured log format is documented and compatible with standard observability tooling (e.g. OpenTelemetry-compatible JSON)
 
 Validation
-- [ ] Observability smoke checks confirm trace continuity across full request lifecycle
-- [ ] Redaction tests confirm secrets and sensitive payload fragments are not logged
+- [ ] [manual] Observability smoke checks confirm trace continuity across full request lifecycle
+- [ ] [CI]     Redaction tests confirm secrets and sensitive payload fragments are not logged
 
 ---
 
@@ -152,25 +153,25 @@ Validation
 
 - [ ] Security guardrails for tool execution (allowlist/denylist, policy checks)
 - [ ] Prompt-injection mitigation policy for tool-using actions
-- [ ] Feature-flagged rollout (`smartAgentV2`) with canary/dual-run support
-- [ ] Rollback procedure is documented and tested
+- [ ] Library exposes a `smartAgentEnabled` boolean config flag to allow consumer-side rollout control
 - [ ] Data governance policy: retention, purge, and session isolation
-- [ ] SLOs defined: p95 latency, error rate budget, max cost/request
 
 Definition of Done
-- [ ] Security review passed for tool execution surfaces
-- [ ] Rollout and rollback rehearsed in pre-production
-- [ ] SLO dashboards and alerts configured
+- [ ] Security threat model for tool execution surfaces is documented (attack surfaces, mitigations, known limitations)
+- [ ] `smartAgentEnabled` flag is respected at all entry points with no partial activation
 
 Validation
-- [ ] Chaos/failure drills executed for MCP outages and model degradation
-- [ ] Canary metrics show no regression against baseline
+- [ ] [CI]     Unit tests cover allowlist/denylist enforcement and policy-check edge cases
+- [ ] [CI]     Prompt-injection test fixtures cover known injection patterns (role confusion, tool-call forgery)
+
+> Note: Operational concerns (rollout strategy, SLO definition, monitoring dashboards, chaos testing)
+> are the responsibility of the consumer. See DEPLOYMENT.md for guidance.
 
 ---
 
 ## Phase 10 - Tests and Hardening
 
-- [ ] Test doubles for each interface (deterministic responses)
+- [ ] Shared test-double package (or export path) is available for consumers testing their own integrations
 - [ ] Component isolation test: replace only one real implementation, keep the rest as test doubles
 - [ ] End-to-end pipeline smoke test via embedded MCP + stub LLM
 - [ ] Regression suite for classifier, retrieval, and tool loop behavior
