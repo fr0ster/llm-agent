@@ -341,7 +341,7 @@ export class SmartAgent {
       traceId,
       total: mcpTools.length,
       selected: selectedTools.length,
-      names: [...ragToolNames],
+      names: selectedTools.map((t) => t.name),
     });
 
     // Step 11: initial context assembly
