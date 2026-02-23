@@ -1,6 +1,11 @@
 port: 3001
 host: 0.0.0.0
 
+# smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP.
+# passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
+# hybrid      — Cline client → passthrough, others → SmartAgent. (default)
+mode: smart
+
 llm:
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat

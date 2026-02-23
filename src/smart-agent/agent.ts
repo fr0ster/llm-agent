@@ -14,7 +14,6 @@ import {
   type Result,
   SmartAgentError,
   type Subprompt,
-  type ToolCallRecord,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
 import type {
@@ -384,7 +383,7 @@ export class SmartAgent {
   // -------------------------------------------------------------------------
 
   private async _runToolLoop(
-    action: Subprompt,
+    _action: Subprompt,
     retrieved: {
       facts: RagResult[];
       feedback: RagResult[];
@@ -398,7 +397,10 @@ export class SmartAgent {
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     const logger = this.deps.logger;
     let toolCallCount = 0;
-    const toolResults: ToolCallRecord[] = [];
+    // Maintain the full conversation history; initialMessages comes from the
+    // assembler (system + user context). We append assistant/tool messages
+    // directly — OpenAI/DeepSeek protocol requires the assistant message with
+    // tool_calls to precede the corresponding tool result messages.
     let messages = initialMessages;
     let content = '';
 
@@ -462,7 +464,25 @@ export class SmartAgent {
         };
       }
 
-      // Execute each tool call
+      // Append assistant message with tool_calls to conversation history.
+      // This is required by the OpenAI/DeepSeek protocol before tool results.
+      messages = [
+        ...messages,
+        {
+          role: 'assistant' as const,
+          content: content || '',
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        },
+      ];
+
+      // Execute each tool call and append result messages
       for (const toolCall of toolCalls) {
         if (
           this.config.maxToolCalls !== undefined &&
@@ -481,20 +501,15 @@ export class SmartAgent {
 
         const toolT0 = Date.now();
         let isError = false;
+        let resultContent: string;
 
         // Policy check — before client lookup
         if (this.deps.toolPolicy) {
           const verdict = this.deps.toolPolicy.check(toolCall.name);
           if (!verdict.allowed) {
             isError = true;
-            toolResults.push({
-              call: toolCall,
-              result: {
-                content:
-                  verdict.reason ?? `Tool "${toolCall.name}" blocked by policy`,
-                isError: true,
-              },
-            });
+            resultContent =
+              verdict.reason ?? `Tool "${toolCall.name}" blocked by policy`;
             logger?.log({
               type: 'tool_call',
               traceId,
@@ -503,6 +518,14 @@ export class SmartAgent {
               durationMs: Date.now() - toolT0,
             });
             toolCallCount++;
+            messages = [
+              ...messages,
+              {
+                role: 'tool' as const,
+                content: resultContent,
+                tool_call_id: toolCall.id,
+              },
+            ];
             continue;
           }
         }
@@ -510,13 +533,7 @@ export class SmartAgent {
         const client = toolClientMap.get(toolCall.name);
         if (!client) {
           isError = true;
-          toolResults.push({
-            call: toolCall,
-            result: {
-              content: `Tool "${toolCall.name}" not found`,
-              isError: true,
-            },
-          });
+          resultContent = `Tool "${toolCall.name}" not found`;
         } else {
           const callResult = await client.callTool(
             toolCall.name,
@@ -525,14 +542,15 @@ export class SmartAgent {
           );
           if (!callResult.ok) {
             isError = true;
-            toolResults.push({
-              call: toolCall,
-              result: { content: callResult.error.message, isError: true },
-            });
+            resultContent = callResult.error.message;
           } else {
-            toolResults.push({ call: toolCall, result: callResult.value });
+            resultContent =
+              typeof callResult.value.content === 'string'
+                ? callResult.value.content
+                : JSON.stringify(callResult.value.content);
           }
         }
+
         logger?.log({
           type: 'tool_call',
           traceId,
@@ -541,24 +559,17 @@ export class SmartAgent {
           durationMs: Date.now() - toolT0,
         });
         toolCallCount++;
-      }
 
-      // Re-assemble with accumulated tool results
-      const reassembled = await this.deps.assembler.assemble(
-        action,
-        retrieved,
-        toolResults,
-        opts,
-      );
-      if (!reassembled.ok) {
-        const code =
-          reassembled.error.code === 'ABORTED' ? 'ABORTED' : 'ASSEMBLER_ERROR';
-        return {
-          ok: false,
-          error: new OrchestratorError(reassembled.error.message, code),
-        };
+        // Append tool result with tool_call_id (required by OpenAI/DeepSeek protocol)
+        messages = [
+          ...messages,
+          {
+            role: 'tool' as const,
+            content: resultContent,
+            tool_call_id: toolCall.id,
+          },
+        ];
       }
-      messages = reassembled.value;
     }
   }
 

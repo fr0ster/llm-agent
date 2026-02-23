@@ -84,6 +84,14 @@ export interface SmartServerPromptsConfig {
   classifier?: string;
 }
 
+/**
+ * Request routing mode:
+ * - `smart`      — all requests go through SmartAgent (RAG tool selection). Best for SAP/ABAP work.
+ * - `passthrough` — all requests go directly to the LLM, no agent. Preserves client tool protocols.
+ * - `hybrid`     — auto-detect: Cline client → passthrough, everything else → SmartAgent. Default.
+ */
+export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
+
 export interface SmartServerConfig {
   /** HTTP server port. Default: 3001 */
   port?: number;
@@ -99,6 +107,11 @@ export interface SmartServerConfig {
   agent?: SmartServerAgentConfig;
   /** Customise system / classifier prompts. */
   prompts?: SmartServerPromptsConfig;
+  /**
+   * Request routing mode. Default: 'hybrid'.
+   * See SmartServerMode for details.
+   */
+  mode?: SmartServerMode;
   /**
    * Log callback. Called for every internal event.
    * Default: no-op. CLI passes a file-writer or console-writer.
@@ -375,28 +388,34 @@ export class SmartServer {
       return;
     }
 
-    // Detect Cline: its system prompt starts with "You are Cline"
-    const systemMsg = body.messages.find((m) => m.role === 'system');
-    const isCline = typeof systemMsg?.content === 'string' && systemMsg.content.trimStart().startsWith('You are Cline');
+    // Resolve effective routing mode
+    const serverMode = this.cfg.mode ?? 'hybrid';
+    const isCline =
+      serverMode === 'hybrid' &&
+      (() => {
+        const systemMsg = body.messages.find((m) => m.role === 'system');
+        return typeof systemMsg?.content === 'string' && systemMsg.content.trimStart().startsWith('You are Cline');
+      })();
+    const usePassthrough = serverMode === 'passthrough' || isCline;
 
     const t0 = Date.now();
-    log({ event: 'request_start', mode: isCline ? 'cline' : 'smart', stream: body.stream ?? false });
+    log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
 
     let finalContent: string;
     let finalFinishReason: 'stop' | 'length';
 
-    if (isCline) {
-      // Passthrough: full history → DeepSeek follows Cline's XML protocol
+    if (usePassthrough) {
+      // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
       const normalizedMessages = body.messages.map((m) => ({
         role: m.role as Message['role'],
         content: extractText(m.content),
       }));
       const llmResult = await mainLlm.chat(normalizedMessages);
-      log({ event: 'request_done', mode: 'cline', ok: llmResult.ok, durationMs: Date.now() - t0 });
+      log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
       finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
       finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
     } else {
-      // SmartAgent: classify + RAG + MCP orchestration
+      // SmartAgent: classify + RAG tool selection + MCP orchestration
       const text = extractText(userMessages[0].content);
       const result = await smartAgent.process(text);
       log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
