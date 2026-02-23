@@ -13,6 +13,10 @@
     "./testing": {
       "import": "./dist/smart-agent/testing/index.js",
       "types": "./dist/smart-agent/testing/index.d.ts"
+    },
+    "./smart-server": {
+      "import": "./dist/smart-agent/smart-server.js",
+      "types": "./dist/smart-agent/smart-server.d.ts"
     }
   },
   "files": [
@@ -43,19 +47,23 @@
     "lint:check": "npx biome check --config-path . src",
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
-    "start:smart": "node --import tsx/esm scripts/start-smart-server.ts",
+    "start:smart": "node --import tsx/esm src/smart-agent/cli.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "axios": "^1.13.5",
-    "dotenv": "^17.3.1"
+    "dotenv": "^17.3.1",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^25.3.0",
     "tsx": "^4",
     "typescript": "^5"
+  },
+  "bin": {
+    "llm-agent": "./dist/smart-agent/cli.js"
   },
   "license": "MIT",
   "author": "Oleksii Kyslytsia <oleksij.kyslytsja@gmail.com>",
