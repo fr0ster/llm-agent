@@ -5,12 +5,12 @@ import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import {
-  SmartAgentError,
   type CallOptions,
   type LlmTool,
   type McpTool,
   type RagResult,
   type Result,
+  SmartAgentError,
   type Subprompt,
   type ToolCallRecord,
 } from './interfaces/types.js';
@@ -155,7 +155,9 @@ export class SmartAgent {
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) {
       const code =
-        classifyResult.error.code === 'ABORTED' ? 'ABORTED' : 'CLASSIFIER_ERROR';
+        classifyResult.error.code === 'ABORTED'
+          ? 'ABORTED'
+          : 'CLASSIFIER_ERROR';
       return {
         ok: false,
         error: new OrchestratorError(classifyResult.error.message, code),
@@ -185,7 +187,12 @@ export class SmartAgent {
     if (actions.length === 0) {
       return {
         ok: true,
-        value: { content: '', iterations: 0, toolCallCount: 0, stopReason: 'stop' },
+        value: {
+          content: '',
+          iterations: 0,
+          toolCallCount: 0,
+          stopReason: 'stop',
+        },
       };
     }
 
@@ -290,14 +297,22 @@ export class SmartAgent {
     for (let iteration = 0; ; iteration++) {
       // Abort check at top of each iteration
       if (opts?.signal?.aborted) {
-        return { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
+        return {
+          ok: false,
+          error: new OrchestratorError('Aborted', 'ABORTED'),
+        };
       }
 
       // Iteration limit guard
       if (iteration >= this.config.maxIterations) {
         return {
           ok: true,
-          value: { content, iterations: iteration, toolCallCount, stopReason: 'iteration_limit' },
+          value: {
+            content,
+            iterations: iteration,
+            toolCallCount,
+            stopReason: 'iteration_limit',
+          },
         };
       }
 
@@ -308,8 +323,7 @@ export class SmartAgent {
         opts,
       );
       if (!resp.ok) {
-        const code =
-          resp.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
+        const code = resp.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
         return {
           ok: false,
           error: new OrchestratorError(resp.error.message, code),
