@@ -11,7 +11,7 @@
 
 import fs from 'node:fs';
 import { parse as parseYaml } from 'yaml';
-import type { SmartServerConfig } from './smart-server.js';
+import type { SmartServerConfig, SmartServerMode } from './smart-server.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -35,6 +35,7 @@ export interface ResolveConfigArgs {
   'mcp-args'?: string | boolean;
   'prompt-system'?: string | boolean;
   'prompt-classifier'?: string | boolean;
+  mode?: string | boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -43,6 +44,12 @@ export interface ResolveConfigArgs {
 
 export const YAML_TEMPLATE = `port: 3001
 host: 0.0.0.0
+
+# Request routing mode:
+#   smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP work.
+#   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
+#   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
+mode: hybrid
 
 llm:
   apiKey: \${DEEPSEEK_API_KEY}
@@ -207,5 +214,12 @@ export function resolveSmartServerConfig(
             ...(promptClassifier ? { classifier: promptClassifier } : {}),
           }
         : undefined,
+
+    mode: (
+      (args['mode'] as string | undefined) ??
+      get(yaml, 'mode') ??
+      env['SMART_AGENT_MODE'] ??
+      'hybrid'
+    ) as SmartServerMode,
   };
 }

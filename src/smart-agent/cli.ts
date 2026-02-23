@@ -11,6 +11,7 @@
  *   npm run start:smart [-- options]
  *
  * Options:
+ *   --env <path>                 .env file to load (default: .env in cwd if exists)
  *   --config <path>              YAML config file (default: smart-server.yaml if exists)
  *                                If path does not exist, writes a config template and exits.
  *   --port <number>              HTTP port (default: 3001)
@@ -25,19 +26,24 @@
  *   --mcp-url <url>              MCP HTTP endpoint
  *   --mcp-command <cmd>          MCP stdio command
  *   --mcp-args <args>            MCP stdio args (space-separated string)
+ *   --mode <mode>                smart | passthrough | hybrid (default: hybrid)
+ *                                  smart       — all requests via SmartAgent (RAG tool selection)
+ *                                  passthrough — all requests directly to LLM (no agent)
+ *                                  hybrid      — Cline → passthrough, others → SmartAgent
  *   --prompt-system <text>       System preamble for ContextAssembler
  *   --prompt-classifier <text>   Override classifier system prompt
  *   --log-file <path>            Log file path (default: smart-server.log)
  *   --log-stdout                 Log to stdout instead of file
  *   --help                       Show this help
  *
- * All options can also be set via environment variables or a YAML config file.
- * Priority: CLI args > YAML config > env vars > defaults.
+ * Secrets vs settings:
+ *   Secrets (API keys) go in .env, settings go in YAML config.
+ *   Priority: CLI args > YAML config > env vars (.env + process env) > defaults.
  *
  * YAML config example (smart-server.yaml):
  *   port: 3001
  *   llm:
- *     apiKey: ${DEEPSEEK_API_KEY}
+ *     apiKey: ${DEEPSEEK_API_KEY}   # resolved from .env
  *     model: deepseek-chat
  *   rag:
  *     type: ollama
@@ -55,6 +61,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import { configDotenv } from 'dotenv';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
 import {
@@ -65,11 +72,12 @@ import {
 } from './config.js';
 
 // ---------------------------------------------------------------------------
-// CLI arg parsing
+// CLI arg parsing — must happen before dotenv so --env is available
 // ---------------------------------------------------------------------------
 
 const { values: args } = parseArgs({
   options: {
+    env:                  { type: 'string' },
     config:               { type: 'string',  short: 'c' },
     port:                 { type: 'string',  short: 'p' },
     host:                 { type: 'string' },
@@ -83,6 +91,7 @@ const { values: args } = parseArgs({
     'mcp-url':            { type: 'string' },
     'mcp-command':        { type: 'string' },
     'mcp-args':           { type: 'string' },
+    mode:                 { type: 'string' },
     'prompt-system':      { type: 'string' },
     'prompt-classifier':  { type: 'string' },
     'log-file':           { type: 'string' },
@@ -101,6 +110,21 @@ if (args['help']) {
       ?.replace(/^[ \t]*\* ?/gm, '') ?? 'See source for usage.\n',
   );
   process.exit(0);
+}
+
+// ---------------------------------------------------------------------------
+// Load .env — explicit --env path, or .env in cwd if it exists
+// ---------------------------------------------------------------------------
+
+const envArg = args['env'] as string | undefined;
+if (envArg) {
+  const result = configDotenv({ path: path.resolve(envArg) });
+  if (!result.parsed) {
+    process.stderr.write(`Warning: could not load env file: ${envArg}\n`);
+  }
+} else {
+  // Silently try .env in cwd; ok if it doesn't exist
+  configDotenv({ path: path.resolve('.env') });
 }
 
 // ---------------------------------------------------------------------------
