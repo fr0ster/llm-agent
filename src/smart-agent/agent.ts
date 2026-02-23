@@ -623,7 +623,7 @@ export class SmartAgent {
         {
           role: 'system',
           content:
-            'Translate the following to English for SAP ABAP tool search. Reply with only the English translation, no explanation.',
+            'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.',
         },
         { role: 'user', content: text },
       ],

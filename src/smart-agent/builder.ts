@@ -303,7 +303,7 @@ export class SmartAgentBuilder {
     const agentCfg: SmartAgentConfig = {
       maxIterations: 10,
       maxToolCalls: 30,
-      ragQueryK: 5,
+      ragQueryK: 10,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
     };
