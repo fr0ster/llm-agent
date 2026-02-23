@@ -38,3 +38,6 @@ jobs:
 
       - name: Test logger
         run: npm run test:logger
+
+      - name: Test policy
+        run: npm run test:policy

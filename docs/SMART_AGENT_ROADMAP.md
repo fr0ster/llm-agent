@@ -146,20 +146,20 @@ Validation
 
 ---
 
-## Phase 9 - Production Readiness
+## Phase 9 - Production Readiness ✅
 
-- [ ] Security guardrails for tool execution (allowlist/denylist, policy checks)
-- [ ] Prompt-injection mitigation policy for tool-using actions
-- [ ] Library exposes a `smartAgentEnabled` boolean config flag to allow consumer-side rollout control
-- [ ] Data governance policy: retention, purge, and session isolation
+- [x] Security guardrails for tool execution (allowlist/denylist, policy checks)
+- [x] Prompt-injection mitigation policy for tool-using actions
+- [x] Library exposes a `smartAgentEnabled` boolean config flag to allow consumer-side rollout control
+- [x] Data governance policy: retention, purge, and session isolation
 
 Definition of Done
-- [ ] Security threat model for tool execution surfaces is documented (attack surfaces, mitigations, known limitations)
-- [ ] `smartAgentEnabled` flag is respected at all entry points with no partial activation
+- [x] Security threat model for tool execution surfaces is documented (attack surfaces, mitigations, known limitations)
+- [x] `smartAgentEnabled` flag is respected at all entry points with no partial activation
 
 Validation
-- [ ] [CI]     Unit tests cover allowlist/denylist enforcement and policy-check edge cases
-- [ ] [CI]     Prompt-injection test fixtures cover known injection patterns (role confusion, tool-call forgery)
+- [x] [CI]     Unit tests cover allowlist/denylist enforcement and policy-check edge cases
+- [x] [CI]     Prompt-injection test fixtures cover known injection patterns (role confusion, tool-call forgery)
 
 > Note: Operational concerns (rollout strategy, SLO definition, monitoring dashboards, chaos testing)
 > are the responsibility of the consumer. See DEPLOYMENT.md for guidance.
