@@ -12,6 +12,7 @@
  *
  * Options:
  *   --config <path>              YAML config file (default: smart-server.yaml if exists)
+ *                                If path does not exist, writes a config template and exits.
  *   --port <number>              HTTP port (default: 3001)
  *   --host <string>              Bind host (default: 0.0.0.0)
  *   --llm-api-key <key>          DeepSeek API key
@@ -54,9 +55,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
-import { parse as parseYaml } from 'yaml';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
+import {
+  generateConfigTemplate,
+  loadYamlConfig,
+  resolveSmartServerConfig,
+  type ResolveConfigArgs,
+} from './config.js';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing
@@ -98,123 +104,60 @@ if (args['help']) {
 }
 
 // ---------------------------------------------------------------------------
-// YAML config loading with ${ENV_VAR} substitution
+// Config file: template generation or loading
 // ---------------------------------------------------------------------------
 
-function resolveEnvVars(value: unknown): unknown {
-  if (typeof value === 'string') {
-    return value.replace(/\$\{([^}]+)\}/g, (_, name: string) => process.env[name] ?? '');
-  }
-  if (Array.isArray(value)) return value.map(resolveEnvVars);
-  if (value !== null && typeof value === 'object') {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, resolveEnvVars(v)]),
-    );
-  }
-  return value;
+const configArg = args['config'] as string | undefined;
+
+// If --config given but file does not exist → generate template and exit
+if (configArg && !fs.existsSync(configArg)) {
+  generateConfigTemplate(configArg);
+  process.stderr.write(`Created config template: ${configArg}\nEdit it and run llm-agent again.\n`);
+  process.exit(0);
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: YAML produces unknown structure
-type YamlConfig = Record<string, any>;
-
-function loadYaml(filePath: string): YamlConfig {
-  const raw = fs.readFileSync(filePath, 'utf8');
-  return resolveEnvVars(parseYaml(raw)) as YamlConfig;
-}
-
-// Auto-detect config file
-const configPath = (args['config'] ?? (fs.existsSync('smart-server.yaml') ? 'smart-server.yaml' : null)) as string | null;
-const yaml: YamlConfig = configPath ? loadYaml(path.resolve(configPath)) : {};
+// Auto-detect existing config file
+const configPath = configArg ?? (fs.existsSync('smart-server.yaml') ? 'smart-server.yaml' : null);
+const yaml = configPath ? loadYamlConfig(path.resolve(configPath)) : {};
 
 // ---------------------------------------------------------------------------
 // Merge: CLI > YAML > env vars > defaults
 // ---------------------------------------------------------------------------
 
-// biome-ignore lint/suspicious/noExplicitAny: helper for nested get
-const get = (obj: any, ...keys: string[]): any => keys.reduce((o, k) => o?.[k], obj);
-
-const apiKey =
-  args['llm-api-key'] ??
-  get(yaml, 'llm', 'apiKey') ??
-  process.env['DEEPSEEK_API_KEY'] ??
-  '';
-
-if (!apiKey) {
-  process.stderr.write(
-    'Error: DeepSeek API key is required. Use --llm-api-key, YAML llm.apiKey, or DEEPSEEK_API_KEY env var.\n',
-  );
+let baseConfig: Omit<SmartServerConfig, 'log'>;
+try {
+  baseConfig = resolveSmartServerConfig(args as ResolveConfigArgs, yaml, process.env);
+} catch (err) {
+  process.stderr.write(`Error: ${String(err)}\n`);
   process.exit(1);
 }
-
-const mcpUrl     = args['mcp-url']     ?? get(yaml, 'mcp', 'url')     ?? process.env['MCP_ENDPOINT'];
-const mcpCommand = args['mcp-command'] ?? get(yaml, 'mcp', 'command') ?? process.env['MCP_COMMAND'];
-const mcpType    = (args['mcp-type']   ?? get(yaml, 'mcp', 'type')    ?? (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null)) as 'http' | 'stdio' | null;
-
-const promptSystem     = args['prompt-system']     ?? get(yaml, 'prompts', 'system')     ?? process.env['PROMPT_SYSTEM']     ?? null;
-const promptClassifier = args['prompt-classifier'] ?? get(yaml, 'prompts', 'classifier') ?? process.env['PROMPT_CLASSIFIER'] ?? null;
-
-const config: SmartServerConfig = {
-  port: Number(args['port'] ?? get(yaml, 'port') ?? process.env['PORT'] ?? 3001),
-  host: args['host'] ?? get(yaml, 'host') ?? '0.0.0.0',
-
-  llm: {
-    apiKey,
-    model:       args['llm-model'] ?? get(yaml, 'llm', 'model') ?? process.env['DEEPSEEK_MODEL'] ?? 'deepseek-chat',
-    temperature: Number(args['llm-temperature'] ?? get(yaml, 'llm', 'temperature') ?? 0.7),
-  },
-
-  rag: {
-    type:  (args['rag-type']  ?? get(yaml, 'rag', 'type')  ?? 'ollama') as 'ollama' | 'in-memory',
-    url:   args['rag-url']   ?? get(yaml, 'rag', 'url')   ?? process.env['OLLAMA_URL']         ?? 'http://localhost:11434',
-    model: args['rag-model'] ?? get(yaml, 'rag', 'model') ?? process.env['OLLAMA_EMBED_MODEL'] ?? 'nomic-embed-text',
-  },
-
-  mcp: mcpType
-    ? {
-        type:    mcpType,
-        url:     mcpUrl,
-        command: mcpCommand,
-        args: (args['mcp-args'] ?? get(yaml, 'mcp', 'args'))
-          ? String(args['mcp-args'] ?? get(yaml, 'mcp', 'args')).split(' ')
-          : undefined,
-      }
-    : undefined,
-
-  agent: {
-    maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
-    maxToolCalls:  Number(get(yaml, 'agent', 'maxToolCalls')  ?? 30),
-    ragQueryK:     Number(get(yaml, 'agent', 'ragQueryK')     ?? 5),
-  },
-
-  prompts: (promptSystem || promptClassifier)
-    ? {
-        ...(promptSystem     ? { system:     promptSystem }     : {}),
-        ...(promptClassifier ? { classifier: promptClassifier } : {}),
-      }
-    : undefined,
-};
 
 // ---------------------------------------------------------------------------
 // Logger: file or stdout
 // ---------------------------------------------------------------------------
 
+// biome-ignore lint/suspicious/noExplicitAny: nested yaml access
+const yamlAny = yaml as any;
 const logToStdout = args['log-stdout'] === true;
 const logFile = logToStdout
   ? null
-  : (args['log-file'] ?? get(yaml, 'log') ?? process.env['LOG_FILE'] ?? 'smart-server.log');
+  : (args['log-file'] ?? yamlAny?.['log'] ?? process.env['LOG_FILE'] ?? 'smart-server.log');
 
 let logStream: fs.WriteStream | null = null;
 if (logFile) {
   logStream = fs.createWriteStream(logFile as string, { flags: 'a' });
 }
 
-config.log = (event) => {
-  const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n';
-  if (logStream) {
-    logStream.write(line);
-  } else {
-    process.stdout.write(line);
-  }
+const config: SmartServerConfig = {
+  ...baseConfig,
+  log: (event) => {
+    const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n';
+    if (logStream) {
+      logStream.write(line);
+    } else {
+      process.stdout.write(line);
+    }
+  },
 };
 
 // ---------------------------------------------------------------------------
