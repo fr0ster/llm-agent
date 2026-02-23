@@ -166,10 +166,15 @@ Validation
 
 ---
 
-## Phase 10 - Tests and Hardening
+## Phase 10 - Tests and Hardening ✅
 
-- [ ] Shared test-double package (or export path) is available for consumers testing their own integrations
-- [ ] Component isolation test: replace only one real implementation, keep the rest as test doubles
-- [ ] End-to-end pipeline smoke test via embedded MCP + stub LLM
-- [ ] Regression suite for classifier, retrieval, and tool loop behavior
-- [ ] Release gate: lint/build/test all green
+- [x] Shared test-double package (or export path) is available for consumers testing their own integrations
+- [x] Component isolation test: replace only one real implementation, keep the rest as test doubles
+- [x] End-to-end pipeline smoke test via embedded MCP + stub LLM
+- [x] Regression suite for classifier, retrieval, and tool loop behavior
+- [x] Release gate: lint/build/test all green
+
+Validation
+- [x] [CI]     12/12 regression tests pass (classifier routing, RAG config, tool loop, policy, session)
+- [x] [CI]     12/12 integration tests pass (real ToolPolicyGuard, HeuristicInjectionDetector, InMemoryRag, ConsoleLogger)
+- [x] [CI]     5/5 E2E tests pass (embedded MCP, tool errors, policy guard, HTTP round-trip)

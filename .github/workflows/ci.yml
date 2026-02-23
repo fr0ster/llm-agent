@@ -41,3 +41,12 @@ jobs:
 
       - name: Test policy
         run: npm run test:policy
+
+      - name: Test regression
+        run: npm run test:regression
+
+      - name: Test integration
+        run: npm run test:integration
+
+      - name: Test E2E
+        run: npm run test:e2e
