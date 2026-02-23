@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import type { Message } from '../types.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
@@ -14,6 +15,7 @@ import {
   type Subprompt,
   type ToolCallRecord,
 } from './interfaces/types.js';
+import type { ILogger } from './logger/index.js';
 
 // ---------------------------------------------------------------------------
 // OrchestratorError
@@ -44,6 +46,7 @@ export interface SmartAgentDeps {
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
   assembler: IContextAssembler;
+  logger?: ILogger;
 }
 
 export interface SmartAgentConfig {
@@ -122,6 +125,9 @@ export class SmartAgent {
       return { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
     }
 
+    const traceId = options?.trace?.traceId ?? randomUUID();
+    const pipelineT0 = Date.now();
+
     // Step 2: set up timeout + merge signals
     let timeoutCleanup: (() => void) | undefined;
     let opts: CallOptions | undefined = options;
@@ -137,7 +143,27 @@ export class SmartAgent {
 
     // Step 3: run pipeline with cleanup guarantee
     try {
-      return await this._runPipeline(text, opts);
+      const result = await this._runPipeline(text, opts, traceId);
+      const durationMs = Date.now() - pipelineT0;
+      if (result.ok) {
+        this.deps.logger?.log({
+          type: 'pipeline_done',
+          traceId,
+          stopReason: result.value.stopReason,
+          iterations: result.value.iterations,
+          toolCallCount: result.value.toolCallCount,
+          durationMs,
+        });
+      } else {
+        this.deps.logger?.log({
+          type: 'pipeline_error',
+          traceId,
+          code: result.error.code,
+          message: result.error.message,
+          durationMs,
+        });
+      }
+      return result;
     } finally {
       timeoutCleanup?.();
     }
@@ -150,9 +176,20 @@ export class SmartAgent {
   private async _runPipeline(
     text: string,
     opts: CallOptions | undefined,
+    traceId: string,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    const logger = this.deps.logger;
+
     // Step 4: classify
+    const classifyT0 = Date.now();
     const classifyResult = await this.deps.classifier.classify(text, opts);
+    logger?.log({
+      type: 'classify',
+      traceId,
+      inputLength: text.length,
+      subpromptCount: classifyResult.ok ? classifyResult.value.length : 0,
+      durationMs: Date.now() - classifyT0,
+    });
     if (!classifyResult.ok) {
       const code =
         classifyResult.error.code === 'ABORTED'
@@ -177,9 +214,17 @@ export class SmartAgent {
       ['state', this.deps.ragStores.state],
     ]);
     await Promise.allSettled(
-      others.map((sp) => {
+      others.map(async (sp) => {
         const store = ragStoreMap.get(sp.type);
-        return store ? store.upsert(sp.text, {}, opts) : Promise.resolve();
+        if (!store) return;
+        const t0 = Date.now();
+        await store.upsert(sp.text, {}, opts);
+        logger?.log({
+          type: 'rag_upsert',
+          traceId,
+          store: sp.type,
+          durationMs: Date.now() - t0,
+        });
       }),
     );
 
@@ -201,10 +246,23 @@ export class SmartAgent {
 
     // Step 9: RAG retrieval (non-fatal — failures fall back to [])
     const k = this.config.ragQueryK ?? 5;
+    const timeQuery = async (store: IRag, storeName: string) => {
+      const t0 = Date.now();
+      const result = await store.query(action.text, k, opts);
+      logger?.log({
+        type: 'rag_query',
+        traceId,
+        store: storeName,
+        k,
+        resultCount: result.ok ? result.value.length : 0,
+        durationMs: Date.now() - t0,
+      });
+      return result;
+    };
     const [factsR, feedbackR, stateR] = await Promise.all([
-      this.deps.ragStores.facts.query(action.text, k, opts),
-      this.deps.ragStores.feedback.query(action.text, k, opts),
-      this.deps.ragStores.state.query(action.text, k, opts),
+      timeQuery(this.deps.ragStores.facts, 'facts'),
+      timeQuery(this.deps.ragStores.feedback, 'feedback'),
+      timeQuery(this.deps.ragStores.state, 'state'),
     ]);
     const facts: RagResult[] = factsR.ok ? factsR.value : [];
     const feedback: RagResult[] = feedbackR.ok ? feedbackR.value : [];
@@ -237,6 +295,7 @@ export class SmartAgent {
       assembleResult.value,
       toolClientMap,
       opts,
+      traceId,
     );
   }
 
@@ -288,7 +347,9 @@ export class SmartAgent {
     initialMessages: Message[],
     toolClientMap: Map<string, IMcpClient>,
     opts: CallOptions | undefined,
+    traceId: string,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    const logger = this.deps.logger;
     let toolCallCount = 0;
     const toolResults: ToolCallRecord[] = [];
     let messages = initialMessages;
@@ -317,11 +378,19 @@ export class SmartAgent {
       }
 
       // LLM call — McpTool and LlmTool are structurally identical; cast directly
+      const llmT0 = Date.now();
       const resp = await this.deps.mainLlm.chat(
         messages,
         retrieved.tools as LlmTool[],
         opts,
       );
+      logger?.log({
+        type: 'llm_call',
+        traceId,
+        iteration,
+        finishReason: resp.ok ? resp.value.finishReason : 'error',
+        durationMs: Date.now() - llmT0,
+      });
       if (!resp.ok) {
         const code = resp.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
         return {
@@ -363,8 +432,11 @@ export class SmartAgent {
           };
         }
 
+        const toolT0 = Date.now();
+        let isError = false;
         const client = toolClientMap.get(toolCall.name);
         if (!client) {
+          isError = true;
           toolResults.push({
             call: toolCall,
             result: {
@@ -379,6 +451,7 @@ export class SmartAgent {
             opts,
           );
           if (!callResult.ok) {
+            isError = true;
             toolResults.push({
               call: toolCall,
               result: { content: callResult.error.message, isError: true },
@@ -387,6 +460,13 @@ export class SmartAgent {
             toolResults.push({ call: toolCall, result: callResult.value });
           }
         }
+        logger?.log({
+          type: 'tool_call',
+          traceId,
+          toolName: toolCall.name,
+          isError,
+          durationMs: Date.now() - toolT0,
+        });
         toolCallCount++;
       }
 
