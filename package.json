@@ -43,6 +43,7 @@
     "lint:check": "npx biome check --config-path . src",
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
+    "start:smart": "node --import tsx/esm scripts/start-smart-server.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
