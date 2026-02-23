@@ -3,8 +3,8 @@ import { describe, it } from 'node:test';
 import { BaseAgent } from '../../../agents/base.js';
 import type { MCPClientWrapper } from '../../../mcp/client.js';
 import type { Message } from '../../../types.js';
-import { LlmAdapter } from '../llm-adapter.js';
 import { LlmError } from '../../interfaces/types.js';
+import { LlmAdapter } from '../llm-adapter.js';
 
 // ---------------------------------------------------------------------------
 // StubAgent — controlled BaseAgent for testing LlmAdapter
@@ -76,7 +76,10 @@ describe('LlmAdapter — success paths', () => {
           message: {
             content: '',
             tool_calls: [
-              { id: 'call_2', function: { name: 'bad_tool', arguments: 'not-json' } },
+              {
+                id: 'call_2',
+                function: { name: 'bad_tool', arguments: 'not-json' },
+              },
             ],
           },
         },
@@ -101,7 +104,9 @@ describe('LlmAdapter — success paths', () => {
       ],
       stop_reason: 'tool_use',
     };
-    const adapter = new LlmAdapter(new StubAgent({ content: 'Thinking...', raw }));
+    const adapter = new LlmAdapter(
+      new StubAgent({ content: 'Thinking...', raw }),
+    );
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.equal(r.value.finishReason, 'tool_calls');
@@ -146,7 +151,9 @@ describe('LlmAdapter — error paths', () => {
 
 describe('LlmAdapter — AbortSignal', () => {
   it('pre-aborted signal → ABORTED without calling provider', async () => {
-    const adapter = new LlmAdapter(new StubAgent({ content: 'should not reach' }));
+    const adapter = new LlmAdapter(
+      new StubAgent({ content: 'should not reach' }),
+    );
     const ctrl = new AbortController();
     ctrl.abort();
     const r = await adapter.chat([USER], undefined, { signal: ctrl.signal });

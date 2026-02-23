@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Message } from '../../types.js';
+import { OrchestratorError, SmartAgent } from '../agent.js';
 import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
@@ -23,7 +24,6 @@ import {
   type Subprompt,
   type ToolCallRecord,
 } from '../interfaces/types.js';
-import { OrchestratorError, SmartAgent } from '../agent.js';
 
 // ---------------------------------------------------------------------------
 // Stub factories

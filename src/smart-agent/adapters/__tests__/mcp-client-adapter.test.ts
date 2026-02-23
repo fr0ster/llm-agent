@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { MCPClientWrapper } from '../../../mcp/client.js';
 import type { ToolCall, ToolResult } from '../../../types.js';
-import { McpClientAdapter } from '../mcp-client-adapter.js';
 import { McpError } from '../../interfaces/types.js';
+import { McpClientAdapter } from '../mcp-client-adapter.js';
 
 // ---------------------------------------------------------------------------
 // Duck-typed mock factory
@@ -17,7 +17,11 @@ function makeClient(overrides: {
 }
 
 const TOOLS_FIXTURE = [
-  { name: 'tool1', description: 'Tool one', inputSchema: { type: 'object', properties: {} } },
+  {
+    name: 'tool1',
+    description: 'Tool one',
+    inputSchema: { type: 'object', properties: {} },
+  },
   { name: 'tool2' }, // missing description + inputSchema → defaults applied
 ];
 
@@ -35,8 +39,8 @@ describe('McpClientAdapter.listTools()', () => {
     assert.equal(r.value.length, 2);
     assert.equal(r.value[0].name, 'tool1');
     assert.equal(r.value[0].description, 'Tool one');
-    assert.equal(r.value[1].description, '');       // default
-    assert.deepEqual(r.value[1].inputSchema, {});   // default
+    assert.equal(r.value[1].description, ''); // default
+    assert.deepEqual(r.value[1].inputSchema, {}); // default
   });
 
   it('error — wraps in McpError', async () => {
