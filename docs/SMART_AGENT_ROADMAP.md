@@ -113,18 +113,18 @@ Validation
 
 ---
 
-## Phase 7 - OpenAI-Compatible HTTP Server (`src/smart-agent/server.ts`)
+## Phase 7 - OpenAI-Compatible HTTP Server (`src/smart-agent/server.ts`) ✅
 
-- [ ] `POST /v1/chat/completions` - accepts standard OpenAI format, returns `SmartAgent.process()`
-- [ ] Support `stream: false` (MVP); streaming comes separately after stabilization
+- [x] `POST /v1/chat/completions` - accepts standard OpenAI format, returns `SmartAgent.process()`
+- [x] Support `stream: false` (MVP); streaming comes separately after stabilization
 
 Definition of Done
-- [ ] Endpoint compatibility with OpenAI request/response schema is documented and tested
-- [ ] Error codes and payloads are stable and contract-tested
-- [ ] Request-level timeout and idempotency behavior are defined
+- [x] Endpoint compatibility with OpenAI request/response schema is documented and tested
+- [x] Error codes and payloads are stable and contract-tested
+- [x] Request-level timeout and idempotency behavior are defined
 
 Validation
-- [ ] [CI]     API integration tests cover valid/invalid payloads and tool loop outputs
+- [x] [CI]     15/15 API integration tests cover valid/invalid payloads, routing, agent errors, timeout, port
 - [ ] [manual] Smoke test with real client SDK confirms wire compatibility
 
 ---
