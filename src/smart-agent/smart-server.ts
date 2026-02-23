@@ -11,20 +11,11 @@ import { randomUUID } from 'node:crypto';
 import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
-import { DeepSeekAgent } from '../agents/deepseek-agent.js';
-import { DeepSeekProvider } from '../llm-providers/deepseek.js';
-import { MCPClientWrapper } from '../mcp/client.js';
 import type { Message } from '../types.js';
-import { LlmAdapter } from './adapters/llm-adapter.js';
-import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
-import { SmartAgent } from './agent.js';
-import type { StopReason } from './agent.js';
-import { LlmClassifier } from './classifier/llm-classifier.js';
-import { ContextAssembler } from './context/context-assembler.js';
-import { TokenCountingLlm } from './llm/token-counting-llm.js';
+import type { SmartAgent, StopReason } from './agent.js';
+import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
+import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
-import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -122,10 +113,10 @@ export interface SmartServerConfig {
 export interface SmartServerHandle {
   /** Actual bound port */
   port: number;
-  /** Gracefully close the HTTP server */
+  /** Gracefully close the HTTP server and MCP connections */
   close(): Promise<void>;
-  /** Accumulated LLM token usage */
-  getUsage(): { prompt_tokens: number; completion_tokens: number; total_tokens: number; requests: number };
+  /** Accumulated LLM token usage (prompt + completion across all requests) */
+  getUsage(): TokenUsage;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,105 +170,24 @@ export class SmartServer {
 
   async start(): Promise<SmartServerHandle> {
     const log = this.cfg.log ?? this.noop;
-
-    // ---- RAG stores --------------------------------------------------------
-    const ragFactory = () => {
-      const r = this.cfg.rag;
-      if (!r || r.type === 'ollama') {
-        return new OllamaRag({
-          ollamaUrl: r?.url,
-          model: r?.model,
-          dedupThreshold: r?.dedupThreshold,
-        });
-      }
-      return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
-    };
-    const factsRag = ragFactory();
-    const feedbackRag = ragFactory();
-    const stateRag = ragFactory();
-
-    // ---- LLM factory -------------------------------------------------------
-    const makeLlm = (temperature: number): TokenCountingLlm => {
-      const provider = new DeepSeekProvider({
-        apiKey: this.cfg.llm.apiKey,
-        model: this.cfg.llm.model ?? 'deepseek-chat',
-        temperature,
-      });
-      const dummyMcp = new MCPClientWrapper({
-        transport: 'embedded',
-        listToolsHandler: async () => [],
-      });
-      const agent = new DeepSeekAgent({ llmProvider: provider, mcpClient: dummyMcp });
-      return new TokenCountingLlm(new LlmAdapter(agent));
-    };
-
-    const mainLlm = makeLlm(this.cfg.llm.temperature ?? 0.7);
-    const classifierLlm = makeLlm(this.cfg.llm.classifierTemperature ?? 0.1);
-
-    // ---- MCP ---------------------------------------------------------------
-    let mcpAdapter: McpClientAdapter | null = null;
-    const mcpCfg = this.cfg.mcp;
-    if (mcpCfg) {
-      try {
-        let wrapper: MCPClientWrapper;
-        if (mcpCfg.type === 'stdio') {
-          wrapper = new MCPClientWrapper({
-            transport: 'stdio',
-            command: mcpCfg.command,
-            args: mcpCfg.args ?? [],
-          });
-        } else {
-          wrapper = new MCPClientWrapper({ transport: 'auto', url: mcpCfg.url });
-        }
-        await wrapper.connect();
-        mcpAdapter = new McpClientAdapter(wrapper);
-        log({ event: 'mcp_connected', type: mcpCfg.type });
-
-        // Vectorize tools at startup
-        const toolsResult = await mcpAdapter.listTools();
-        if (toolsResult.ok) {
-          for (const t of toolsResult.value) {
-            await factsRag.upsert(
-              `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
-              { id: `tool:${t.name}` },
-            );
-          }
-          log({ event: 'tools_vectorized', count: toolsResult.value.length });
-        }
-      } catch (err) {
-        log({ event: 'mcp_connect_failed', error: String(err) });
-      }
-    }
-
-    // ---- SmartAgent --------------------------------------------------------
     const fileLogger: ILogger = { log: (e) => log(e as unknown as Record<string, unknown>) };
-    const agentCfg = this.cfg.agent ?? {};
 
-    const promptsCfg = this.cfg.prompts ?? {};
+    // ---- Build SmartAgent via builder -------------------------------------
+    const agentHandle = await new SmartAgentBuilder({
+      llm: this.cfg.llm,
+      rag: this.cfg.rag,
+      mcp: this.cfg.mcp,
+      agent: this.cfg.agent,
+      prompts: this.cfg.prompts,
+    })
+      .withLogger(fileLogger)
+      .build();
 
-    const smartAgent = new SmartAgent(
-      {
-        mainLlm,
-        mcpClients: mcpAdapter ? [mcpAdapter] : [],
-        ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
-        classifier: new LlmClassifier(classifierLlm, {
-          ...(promptsCfg.classifier ? { systemPrompt: promptsCfg.classifier } : {}),
-        }),
-        assembler: new ContextAssembler({
-          ...(promptsCfg.system ? { systemPromptPreamble: promptsCfg.system } : {}),
-        }),
-        logger: fileLogger,
-      },
-      {
-        maxIterations: agentCfg.maxIterations ?? 10,
-        maxToolCalls: agentCfg.maxToolCalls ?? 30,
-        ragQueryK: agentCfg.ragQueryK ?? 5,
-      },
-    );
+    const { agent: smartAgent, chat, getUsage, close: closeAgent } = agentHandle;
 
     // ---- HTTP server -------------------------------------------------------
     const server = http.createServer((req, res) =>
-      this._handle(req, res, mainLlm, smartAgent, log).catch((err) => {
+      this._handle(req, res, getUsage, smartAgent, chat, log).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(jsonError(String(err), 'server_error'));
@@ -295,9 +205,11 @@ export class SmartServer {
         log({ event: 'server_started', port: actualPort, host });
         resolve({
           port: actualPort,
-          close: () =>
-            new Promise((res, rej) => server.close((e) => (e ? rej(e) : res()))),
-          getUsage: () => mainLlm.getUsage(),
+          close: async () => {
+            await closeAgent();
+            await new Promise<void>((res, rej) => server.close((e) => (e ? rej(e) : res())));
+          },
+          getUsage,
         });
       });
     });
@@ -310,8 +222,9 @@ export class SmartServer {
   private async _handle(
     req: IncomingMessage,
     res: ServerResponse,
-    mainLlm: TokenCountingLlm,
+    getUsage: () => TokenUsage,
     smartAgent: SmartAgent,
+    chat: SmartAgentHandle['chat'],
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
     const urlPath = req.url ?? '/';
@@ -334,13 +247,13 @@ export class SmartServer {
     // GET /v1/usage
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(mainLlm.getUsage()));
+      res.end(JSON.stringify(getUsage()));
       return;
     }
 
     // POST /v1/chat/completions
     if (req.method === 'POST' && (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')) {
-      await this._handleChat(req, res, mainLlm, smartAgent, log);
+      await this._handleChat(req, res, getUsage, smartAgent, chat, log);
       return;
     }
 
@@ -351,8 +264,9 @@ export class SmartServer {
   private async _handleChat(
     req: IncomingMessage,
     res: ServerResponse,
-    mainLlm: TokenCountingLlm,
+    getUsage: () => TokenUsage,
     smartAgent: SmartAgent,
+    chat: SmartAgentHandle['chat'],
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
     const rawBody = await readBody(req);
@@ -412,7 +326,7 @@ export class SmartServer {
         role: m.role as Message['role'],
         content: extractText(m.content),
       }));
-      const llmResult = await mainLlm.chat(normalizedMessages);
+      const llmResult = await chat(normalizedMessages);
       log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
       finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
       finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
@@ -425,14 +339,14 @@ export class SmartServer {
       finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
     }
 
-    this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, mainLlm, finalContent, finalFinishReason);
+    this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
   }
 
   private _sendResponse(
     res: ServerResponse,
     stream: boolean,
     includeUsage: boolean,
-    mainLlm: TokenCountingLlm,
+    getUsage: () => TokenUsage,
     content: string,
     finishReason: 'stop' | 'length',
   ): void {
@@ -450,7 +364,7 @@ export class SmartServer {
       res.write(chunk({}, finishReason));
 
       if (includeUsage) {
-        const u = mainLlm.getUsage();
+        const u = getUsage();
         res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens } })}\n\n`);
       }
 
