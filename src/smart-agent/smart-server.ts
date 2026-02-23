@@ -146,6 +146,16 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+export {
+  YAML_TEMPLATE,
+  generateConfigTemplate,
+  loadYamlConfig,
+  resolveEnvVars,
+  resolveSmartServerConfig,
+  type ResolveConfigArgs,
+  type YamlConfig,
+} from './config.js';
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
