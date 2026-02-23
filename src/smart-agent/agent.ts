@@ -9,6 +9,7 @@ import {
   type CallOptions,
   type LlmTool,
   type McpTool,
+  type RagMetadata,
   type RagResult,
   type Result,
   SmartAgentError,
@@ -16,6 +17,11 @@ import {
   type ToolCallRecord,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
+import type {
+  IPromptInjectionDetector,
+  IToolPolicy,
+  SessionPolicy,
+} from './policy/types.js';
 
 // ---------------------------------------------------------------------------
 // OrchestratorError
@@ -47,6 +53,10 @@ export interface SmartAgentDeps {
   classifier: ISubpromptClassifier;
   assembler: IContextAssembler;
   logger?: ILogger;
+  /** Optional tool execution policy. When absent, all tools are allowed. */
+  toolPolicy?: IToolPolicy;
+  /** Optional prompt-injection detector. When absent, detection is skipped. */
+  injectionDetector?: IPromptInjectionDetector;
 }
 
 export interface SmartAgentConfig {
@@ -60,6 +70,13 @@ export interface SmartAgentConfig {
   tokenLimit?: number;
   /** Number of RAG results to retrieve. Default: 5. */
   ragQueryK?: number;
+  /**
+   * Master enable/disable switch. When false, process() returns DISABLED immediately.
+   * Default: true (undefined = enabled).
+   */
+  smartAgentEnabled?: boolean;
+  /** Data governance policy: namespace isolation and TTL for RAG records. */
+  sessionPolicy?: SessionPolicy;
 }
 
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
@@ -120,6 +137,14 @@ export class SmartAgent {
     text: string,
     options?: CallOptions,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    // Step 0: smartAgentEnabled guard
+    if (this.config.smartAgentEnabled === false) {
+      return {
+        ok: false,
+        error: new OrchestratorError('SmartAgent is disabled', 'DISABLED'),
+      };
+    }
+
     // Step 1: pre-abort check
     if (options?.signal?.aborted) {
       return { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
@@ -143,7 +168,7 @@ export class SmartAgent {
 
     // Step 3: run pipeline with cleanup guarantee
     try {
-      const result = await this._runPipeline(text, opts, traceId);
+      const result = await this._runPipeline(text, opts, traceId, pipelineT0);
       const durationMs = Date.now() - pipelineT0;
       if (result.ok) {
         this.deps.logger?.log({
@@ -177,8 +202,30 @@ export class SmartAgent {
     text: string,
     opts: CallOptions | undefined,
     traceId: string,
+    pipelineT0: number,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     const logger = this.deps.logger;
+
+    // Step 3.5: prompt-injection detection (before classification)
+    if (this.deps.injectionDetector) {
+      const detection = this.deps.injectionDetector.detect(text);
+      if (detection.detected) {
+        logger?.log({
+          type: 'pipeline_error',
+          traceId,
+          code: 'PROMPT_INJECTION',
+          message: `Injection detected: pattern=${detection.pattern ?? 'unknown'}`,
+          durationMs: Date.now() - pipelineT0,
+        });
+        return {
+          ok: false,
+          error: new OrchestratorError(
+            `Prompt injection detected: pattern=${detection.pattern ?? 'unknown'}`,
+            'PROMPT_INJECTION',
+          ),
+        };
+      }
+    }
 
     // Step 4: classify
     const classifyT0 = Date.now();
@@ -218,7 +265,7 @@ export class SmartAgent {
         const store = ragStoreMap.get(sp.type);
         if (!store) return;
         const t0 = Date.now();
-        await store.upsert(sp.text, {}, opts);
+        await store.upsert(sp.text, this._buildRagMetadata(), opts);
         logger?.log({
           type: 'rag_upsert',
           traceId,
@@ -434,6 +481,32 @@ export class SmartAgent {
 
         const toolT0 = Date.now();
         let isError = false;
+
+        // Policy check — before client lookup
+        if (this.deps.toolPolicy) {
+          const verdict = this.deps.toolPolicy.check(toolCall.name);
+          if (!verdict.allowed) {
+            isError = true;
+            toolResults.push({
+              call: toolCall,
+              result: {
+                content:
+                  verdict.reason ?? `Tool "${toolCall.name}" blocked by policy`,
+                isError: true,
+              },
+            });
+            logger?.log({
+              type: 'tool_call',
+              traceId,
+              toolName: toolCall.name,
+              isError: true,
+              durationMs: Date.now() - toolT0,
+            });
+            toolCallCount++;
+            continue;
+          }
+        }
+
         const client = toolClientMap.get(toolCall.name);
         if (!client) {
           isError = true;
@@ -487,5 +560,22 @@ export class SmartAgent {
       }
       messages = reassembled.value;
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Private: RAG metadata builder (data governance)
+  // -------------------------------------------------------------------------
+
+  private _buildRagMetadata(): RagMetadata {
+    const policy = this.config.sessionPolicy;
+    if (!policy) return {};
+    const metadata: RagMetadata = {};
+    if (policy.namespace !== undefined) {
+      metadata.namespace = policy.namespace;
+    }
+    if (policy.maxSessionAgeMs !== undefined) {
+      metadata.ttl = Math.floor((Date.now() + policy.maxSessionAgeMs) / 1000);
+    }
+    return metadata;
   }
 }
