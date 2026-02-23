@@ -325,7 +325,9 @@ export class SmartServer {
     // GET /v1/models
     if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ object: 'list', data: [{ id: 'smart-agent', object: 'model', owned_by: 'smart-agent' }] }));
+      // context_window is intentionally large: smart-agent manages context via RAG,
+      // so client-side context tracking is irrelevant.
+      res.end(JSON.stringify({ object: 'list', data: [{ id: 'smart-agent', object: 'model', owned_by: 'smart-agent', context_window: 2000000 }] }));
       return;
     }
 
@@ -415,8 +417,8 @@ export class SmartServer {
       finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
       finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
     } else {
-      // SmartAgent: classify + RAG tool selection + MCP orchestration
-      const text = extractText(userMessages[0].content);
+      // SmartAgent: classify + RAG tool selection + MCP orchestration — use the LAST user message
+      const text = extractText(userMessages[userMessages.length - 1].content);
       const result = await smartAgent.process(text);
       log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
       finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
