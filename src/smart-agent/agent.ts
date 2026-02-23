@@ -291,10 +291,15 @@ export class SmartAgent {
     const action = actions[0];
 
     // Step 9: RAG retrieval (non-fatal — failures fall back to [])
+    // Tools are vectorized in English; translate the action to English first so
+    // that cross-lingual queries (e.g. Ukrainian) get accurate cosine matches.
+    const ragText = await this._toEnglishForRag(action.text, opts);
+    logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
+
     const k = this.config.ragQueryK ?? 5;
     const timeQuery = async (store: IRag, storeName: string) => {
       const t0 = Date.now();
-      const result = await store.query(action.text, k, opts);
+      const result = await store.query(ragText, k, opts);
       logger?.log({
         type: 'rag_query',
         traceId,
@@ -317,8 +322,30 @@ export class SmartAgent {
     // Step 10: list all MCP tools
     const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
 
+    // Step 10.5: filter tools to RAG-selected ones.
+    // Tools are vectorized at startup with metadata.id = "tool:<name>".
+    // RAG query returns the most relevant tool descriptions — use their ids
+    // to select only those tools as native function definitions for the LLM.
+    const ragToolNames = new Set(
+      facts
+        .map((r) => r.metadata.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+        .map((id) => id.slice('tool:'.length)),
+    );
+    const selectedTools =
+      ragToolNames.size > 0
+        ? mcpTools.filter((t) => ragToolNames.has(t.name))
+        : mcpTools; // fallback: all tools if RAG returned no tool facts
+    logger?.log({
+      type: 'tools_selected',
+      traceId,
+      total: mcpTools.length,
+      selected: selectedTools.length,
+      names: [...ragToolNames],
+    });
+
     // Step 11: initial context assembly
-    const retrieved = { facts, feedback, state, tools: mcpTools };
+    const retrieved = { facts, feedback, state, tools: selectedTools };
     const assembleResult = await this.deps.assembler.assemble(
       action,
       retrieved,
@@ -571,6 +598,39 @@ export class SmartAgent {
         ];
       }
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Private: RAG metadata builder (data governance)
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Private: translate action text to English for cross-lingual RAG matching
+  // -------------------------------------------------------------------------
+
+  /** Returns an English translation of `text` for RAG queries.
+   *  If `text` is already ASCII (English), returns it unchanged.
+   *  Falls back to the original on LLM error. */
+  private async _toEnglishForRag(
+    text: string,
+    opts: CallOptions | undefined,
+  ): Promise<string> {
+    // Skip translation if already ASCII (covers English + SAP identifiers)
+    if (/^[\x00-\x7F]+$/.test(text)) return text;
+
+    const result = await this.deps.mainLlm.chat(
+      [
+        {
+          role: 'system',
+          content:
+            'Translate the following to English for SAP ABAP tool search. Reply with only the English translation, no explanation.',
+        },
+        { role: 'user', content: text },
+      ],
+      [],
+      opts,
+    );
+    return result.ok && result.value.content.trim() ? result.value.content.trim() : text;
   }
 
   // -------------------------------------------------------------------------

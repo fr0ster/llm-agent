@@ -47,4 +47,17 @@ export type LogEvent =
       code: string;
       message: string;
       durationMs: number;
+    }
+  | {
+      type: 'tools_selected';
+      traceId: string;
+      total: number;
+      selected: number;
+      names: string[];
+    }
+  | {
+      type: 'rag_translate';
+      traceId: string;
+      original: string;
+      translated: string;
     };
