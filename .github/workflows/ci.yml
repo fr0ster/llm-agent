@@ -35,3 +35,6 @@ jobs:
 
       - name: Test server
         run: npm run test:server
+
+      - name: Test logger
+        run: npm run test:logger

@@ -129,20 +129,20 @@ Validation
 
 ---
 
-## Phase 8 - Observability
+## Phase 8 - Observability ✅
 
-- [ ] Structured log at each step: classification, RAG hits/misses, tool calls, summary
-- [ ] `DEBUG_SMART_AGENT=true` in `.env` enables detailed output
-- [ ] Should not block release - minimal implementation is enough for debugging
+- [x] Structured log at each step: classification, RAG hits/misses, tool calls, summary
+- [x] `DEBUG_SMART_AGENT=true` in `.env` enables detailed output
+- [x] Should not block release - minimal implementation is enough for debugging
 
 Definition of Done
-- [ ] Trace correlation id is propagated across classifier, RAG, LLM, and MCP calls
-- [ ] Logs are structured, searchable, and redact sensitive fields
-- [ ] Structured log format is documented and compatible with standard observability tooling (e.g. OpenTelemetry-compatible JSON)
+- [x] Trace correlation id is propagated across classifier, RAG, LLM, and MCP calls
+- [x] Logs are structured, searchable, and redact sensitive fields
+- [x] Structured log format is documented and compatible with standard observability tooling (e.g. OpenTelemetry-compatible JSON)
 
 Validation
-- [ ] [manual] Observability smoke checks confirm trace continuity across full request lifecycle
-- [ ] [CI]     Redaction tests confirm secrets and sensitive payload fragments are not logged
+- [x] [manual] Observability smoke checks confirm trace continuity across full request lifecycle
+- [x] [CI]     Redaction tests confirm secrets and sensitive payload fragments are not logged
 
 ---
 
