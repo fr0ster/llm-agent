@@ -91,25 +91,25 @@ Validation
 
 ---
 
-## Phase 6 - `SmartAgent` Orchestrator (`src/smart-agent/agent.ts`)
+## Phase 6 - `SmartAgent` Orchestrator (`src/smart-agent/agent.ts`) ✅
 
-- [ ] DI constructor: `mainLlm`, `helperLlm`, `mcpClients[]`, `ragStores`, `classifier`, `assembler`, `config`
-- [ ] Single-request pipeline:
-  - [ ] Classification → subprompt array
-  - [ ] `fact/feedback/state` → `IRag.upsert()` into corresponding stores
-  - [ ] `action` → `IRag.query()` for facts/feedback/state/tools → `IContextAssembler.assemble()`
-  - [ ] Call `mainLlm.chat()` → tool loop (max `config.maxIterations`)
-  - [ ] Return final text response
-- [ ] Bounded tool loop: `maxIterations`, timeout - completes the request even if LLM keeps asking for tools
+- [x] DI constructor: `mainLlm`, `helperLlm`, `mcpClients[]`, `ragStores`, `classifier`, `assembler`, `config`
+- [x] Single-request pipeline:
+  - [x] Classification → subprompt array
+  - [x] `fact/feedback/state` → `IRag.upsert()` into corresponding stores
+  - [x] `action` → `IRag.query()` for facts/feedback/state/tools → `IContextAssembler.assemble()`
+  - [x] Call `mainLlm.chat()` → tool loop (max `config.maxIterations`)
+  - [x] Return final text response
+- [x] Bounded tool loop: `maxIterations`, `maxToolCalls`, `timeoutMs` via merged AbortSignal
 
 Definition of Done
-- [ ] Orchestrator enforces `maxIterations`, timeout, and max tool calls
-- [ ] Tool failures are recoverable and surfaced through a typed error path
-- [ ] Cancellation propagates across LLM call and MCP tool execution
+- [x] Orchestrator enforces `maxIterations`, timeout, and max tool calls
+- [x] Tool failures are recoverable and surfaced through a typed error path
+- [x] Cancellation propagates across LLM call and MCP tool execution
 
 Validation
-- [ ] [CI]     End-to-end tests cover multi-step tool loops and runaway-prevention scenarios
-- [ ] [CI]     Fault-injection tests cover MCP failures, empty retrieval, and classifier mistakes
+- [x] [CI]     22/22 unit tests pass (multi-step tool loops, runaway-prevention, fault injection)
+- [x] [CI]     Fault-injection tests cover MCP failures, empty retrieval, and classifier mistakes
 
 ---
 

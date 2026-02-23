@@ -1,28 +1,28 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../../types.js';
-import type { IContextAssembler } from '../../interfaces/assembler.js';
-import type { ISubpromptClassifier } from '../../interfaces/classifier.js';
-import type { ILlm } from '../../interfaces/llm.js';
-import type { IMcpClient } from '../../interfaces/mcp-client.js';
-import type { IRag } from '../../interfaces/rag.js';
+import type { Message } from '../../types.js';
+import type { IContextAssembler } from '../interfaces/assembler.js';
+import type { ISubpromptClassifier } from '../interfaces/classifier.js';
+import type { ILlm } from '../interfaces/llm.js';
+import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IRag } from '../interfaces/rag.js';
 import {
   AssemblerError,
+  type CallOptions,
   ClassifierError,
   LlmError,
-  McpError,
-  RagError,
-  type CallOptions,
   type LlmFinishReason,
   type LlmResponse,
   type LlmToolCall,
+  McpError,
   type McpTool,
   type McpToolResult,
+  RagError,
   type RagResult,
   type Result,
   type Subprompt,
   type ToolCallRecord,
-} from '../../interfaces/types.js';
+} from '../interfaces/types.js';
 import { OrchestratorError, SmartAgent } from '../agent.js';
 
 // ---------------------------------------------------------------------------
@@ -53,7 +53,10 @@ function makeLlm(
       callCount++;
       const next = queue.shift();
       if (!next) {
-        return { ok: true, value: { content: 'default', finishReason: 'stop' } };
+        return {
+          ok: true,
+          value: { content: 'default', finishReason: 'stop' },
+        };
       }
       if (next instanceof Error) {
         return { ok: false, error: new LlmError(next.message) };
@@ -70,7 +73,9 @@ function makeLlm(
   };
 }
 
-function makeRag(queryResults: RagResult[] = []): IRag & { upsertCalls: string[] } {
+function makeRag(
+  queryResults: RagResult[] = [],
+): IRag & { upsertCalls: string[] } {
   const upsertCalls: string[] = [];
   return {
     upsertCalls,
@@ -163,8 +168,7 @@ function makeAssembler(result?: Message[] | Error): IContextAssembler {
     ): Promise<Result<Message[], AssemblerError>> {
       const r = result ?? defaultMessages;
       if (r instanceof Error) {
-        const code =
-          r.message === 'ABORTED' ? 'ABORTED' : 'ASSEMBLER_ERROR';
+        const code = r.message === 'ABORTED' ? 'ABORTED' : 'ASSEMBLER_ERROR';
         return { ok: false, error: new AssemblerError(r.message, code) };
       }
       return { ok: true, value: r };
@@ -186,7 +190,10 @@ function makeDefaultDeps(overrides?: {
   assembler?: IContextAssembler;
   mcpClients?: IMcpClient[];
   ragStores?: { facts?: IRag; feedback?: IRag; state?: IRag };
-}): { llm: ILlm & { callCount: number }; deps: ConstructorParameters<typeof SmartAgent>[0] } {
+}): {
+  llm: ILlm & { callCount: number };
+  deps: ConstructorParameters<typeof SmartAgent>[0];
+} {
   const llm = makeLlm(
     overrides?.llmResponses ?? [{ content: 'hello', finishReason: 'stop' }],
   );
@@ -612,7 +619,10 @@ describe('SmartAgent — timeoutMs fires', () => {
         return new Promise<Result<LlmResponse, LlmError>>((resolve) => {
           const id = setTimeout(
             () =>
-              resolve({ ok: true, value: { content: 'done', finishReason: 'stop' } }),
+              resolve({
+                ok: true,
+                value: { content: 'done', finishReason: 'stop' },
+              }),
             100,
           );
           opts?.signal?.addEventListener(
