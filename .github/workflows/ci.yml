@@ -29,3 +29,9 @@ jobs:
 
       - name: Test adapters
         run: npm run test:adapters
+
+      - name: Test agent
+        run: npm run test:agent
+
+      - name: Test server
+        run: npm run test:server

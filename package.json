@@ -15,6 +15,7 @@
     "smoke:adapters": "tsx src/smoke-adapters.ts",
     "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
     "test:agent": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/agent.test.ts",
+    "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
     "dev": "tsx src/cli.ts",
     "dev:llm": "tsx src/cli.ts --llm-only",
     "start": "node dist/cli.js",
