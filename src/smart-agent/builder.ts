@@ -22,7 +22,7 @@ import { LlmAdapter } from './adapters/llm-adapter.js';
 import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
 import { SmartAgent, type SmartAgentConfig, type SmartAgentRagStores } from './agent.js';
 import { LlmClassifier, type LlmClassifierConfig } from './classifier/llm-classifier.js';
-import { ContextAssembler, type ContextAssemblerConfig } from './context/context-assembler.js';
+import { ContextAssembler, type ContextAssemblerConfig } from './context/context-assembler.ts';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
@@ -145,6 +145,12 @@ export class SmartAgentBuilder {
   /** Override the main LLM used in the tool loop. */
   withMainLlm(llm: ILlm): this {
     this._mainLlm = llm;
+    return this;
+  }
+
+  /** Override the helper LLM used for summarization and translation. */
+  withHelperLlm(llm: ILlm): this {
+    this._helperLlm = llm;
     return this;
   }
 
@@ -301,7 +307,10 @@ export class SmartAgentBuilder {
     const classifier: ISubpromptClassifier = this._classifier ?? new LlmClassifier(classifierLlm, classifierCfg);
 
     // ---- Assembler --------------------------------------------------------
-    const assemblerCfg: ContextAssemblerConfig = {};
+    const assemblerCfg: ContextAssemblerConfig = {
+      showReasoning: agentCfg.showReasoning,
+      reasoningInstruction: this.cfg.prompts?.reasoning,
+    };
     if (this.cfg.prompts?.system) assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
     const assembler: IContextAssembler = this._assembler ?? new ContextAssembler(assemblerCfg);
 
@@ -310,6 +319,8 @@ export class SmartAgentBuilder {
       maxIterations: 10,
       maxToolCalls: 30,
       ragQueryK: 10,
+      ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
+      historySummaryPrompt: this.cfg.prompts?.historySummary,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
     };
@@ -317,6 +328,7 @@ export class SmartAgentBuilder {
     const agent = new SmartAgent(
       {
         mainLlm,
+        helperLlm: this._helperLlm,
         mcpClients,
         ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
         classifier,
