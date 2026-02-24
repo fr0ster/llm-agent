@@ -1,13 +1,13 @@
 /**
  * Shared test-double factories for SmartAgent integration testing.
  *
- * Consumers can import from '@mcp-abap-adt/llm-proxy/testing' to build
+ * Consumers can import from '@mcp-abap-adt/llm-agent/testing' to build
  * deterministic stubs for all SmartAgent interfaces without duplicating
  * factory code.
  *
  * @example
  * ```typescript
- * import { makeLlm, makeRag, makeDefaultDeps } from '@mcp-abap-adt/llm-proxy/testing';
+ * import { makeLlm, makeRag, makeDefaultDeps } from '@mcp-abap-adt/llm-agent/testing';
  * ```
  */
 

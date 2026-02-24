@@ -2,7 +2,7 @@
 
 ## Overview
 
-**LLM Proxy** (`@mcp-abap-adt/llm-proxy`) is a minimal orchestration layer between LLM providers and MCP (Model Context Protocol) servers. It surfaces MCP tool catalogs to the LLM and returns the raw LLM response to the consumer — without executing tools itself.
+**LLM Proxy** (`@mcp-abap-adt/llm-agent`) is a minimal orchestration layer between LLM providers and MCP (Model Context Protocol) servers. It surfaces MCP tool catalogs to the LLM and returns the raw LLM response to the consumer — without executing tools itself.
 
 ```
 ┌──────────────────────────────────────────────────────────────┐
@@ -473,7 +473,7 @@ cli.ts            — llm-agent CLI binary (auto-generates config on first run)
 with sensible defaults and allows overriding any one of them.
 
 ```typescript
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-proxy/smart-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/smart-agent';
 
 const { agent, chat, getUsage, close } = await new SmartAgentBuilder({
   llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
@@ -525,7 +525,7 @@ new SmartAgentBuilder({
 OpenAI-compatible HTTP server.
 
 ```typescript
-import { SmartServer } from '@mcp-abap-adt/llm-proxy';
+import { SmartServer } from '@mcp-abap-adt/llm-agent';
 
 const server = new SmartServer({
   port: 3001,
@@ -563,7 +563,7 @@ The `pipeline:` field (or `SmartServerConfig.pipeline`) provides per-component c
 flat config cannot express.
 
 ```typescript
-import type { PipelineConfig } from '@mcp-abap-adt/llm-proxy';
+import type { PipelineConfig } from '@mcp-abap-adt/llm-agent';
 
 const pipeline: PipelineConfig = {
   llm: {

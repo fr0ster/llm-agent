@@ -1,7 +1,7 @@
 {
-  "name": "@mcp-abap-adt/llm-proxy",
+  "name": "@mcp-abap-adt/llm-agent",
   "version": "1.0.0",
-  "description": "Minimal LLM proxy that normalizes provider access and surfaces MCP tools without executing them.",
+  "description": "Smart LLM agent server with MCP tool orchestration and OpenAI-compatible API.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
