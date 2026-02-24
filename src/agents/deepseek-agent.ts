@@ -8,7 +8,7 @@ import type {
   DeepSeekConfig,
   DeepSeekProvider,
 } from '../llm-providers/deepseek.js';
-import type { Message } from '../types.js';
+import type { AgentStreamChunk, Message } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface DeepSeekAgentConfig extends BaseAgentConfig {
@@ -93,5 +93,33 @@ export class DeepSeekAgent extends BaseAgent {
       if (msg.tool_calls !== undefined) formatted.tool_calls = msg.tool_calls;
       return formatted;
     });
+  }
+
+  /**
+   * Stream LLM response with tools — delegates to the shared OpenAI-compatible SSE parser.
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    tools: any[],
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private provider fields
+    const provider = this.llmProvider as any;
+    const baseURL: string = provider.config.baseURL ?? 'https://api.deepseek.com/v1';
+    const functions = this.convertToolsToFunctions(tools);
+
+    yield* this.streamOpenAICompatible(
+      `${baseURL}/chat/completions`,
+      { Authorization: `Bearer ${provider.config.apiKey as string}` },
+      {
+        model: provider.model as string,
+        messages: this.formatMessagesForDeepSeek(messages),
+        tools: functions.length > 0 ? functions : undefined,
+        tool_choice: functions.length > 0 ? 'auto' : undefined,
+        temperature: (provider.config.temperature as number) ?? 0.7,
+        max_tokens: (provider.config.maxTokens as number) ?? 2000,
+        stream: true,
+        stream_options: { include_usage: true },
+      },
+    );
   }
 }

@@ -13,7 +13,7 @@
 ### Provider layer
 - [x] Add optional abstract `streamLLMWithTools()` to `BaseAgent`
 - [x] Implement `streamLLMWithTools()` in `OpenAIAgent` (fetch + SSE parser + tool call accumulation)
-- [ ] Implement `streamLLMWithTools()` in `DeepSeekAgent` (same as OpenAI — compatible API)
+- [x] Implement `streamLLMWithTools()` in `DeepSeekAgent` (same as OpenAI — compatible API)
 - [ ] Implement `streamLLMWithTools()` in `AnthropicAgent` (Anthropic streaming format)
 
 ### Adapter layer
@@ -24,11 +24,38 @@
 - [ ] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
 - [ ] Update `SmartServer._handleChat()` to pipe `processStream()` into live SSE connection
 
-## Phase 13 — OllamaRag Production Hardening
+## Phase 13 — Pluggable Embedding Providers
 
-- [ ] Add `ollamaTimeoutMs` config option
-- [ ] Add retry with backoff on embed API failures
-- [ ] Health-check on startup: warn if Ollama is unreachable
+Replace the current Ollama-only RAG backend with a multi-provider embedding layer.
+YAML config gains `provider` and `apiKey` fields so any supported embedder can be selected.
+
+```yaml
+rag:
+  provider: openai          # openai | ollama | in-memory
+  apiKey: ${OPENAI_API_KEY}
+  model: text-embedding-3-small
+
+# or per-store via pipeline:
+pipeline:
+  rag:
+    facts:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: text-embedding-3-small
+    feedback:
+      provider: in-memory
+```
+
+- [ ] Define `IEmbedder` interface: `embed(text: string) → Promise<number[]>`
+- [ ] Implement `OpenAIEmbedder` (text-embedding-3-small / text-embedding-ada-002)
+- [ ] Implement `OllamaEmbedder` (extract from `OllamaRag`, reuse in new architecture)
+- [ ] Refactor `OllamaRag` → `VectorRag(embedder: IEmbedder)` — embedder-agnostic store
+- [ ] Update `RagStoreConfig` to add `provider` + `apiKey` fields (keep `type` for `in-memory`)
+- [ ] Update `makeRagFromStoreConfig()` in `pipeline.ts` to wire embedder from config
+- [ ] Update `SmartServerRagConfig` flat config: `provider` replaces implicit `type: ollama`
+- [ ] Update YAML template in `config.ts` to show provider examples
+- [ ] Add `ollamaTimeoutMs` config option and retry with backoff on embed API failures
+- [ ] Health-check on startup: warn if embedder endpoint is unreachable
 
 ## Phase 14 — Beta Testing
 
