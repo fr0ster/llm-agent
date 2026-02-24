@@ -64,6 +64,8 @@ export interface SmartServerAgentConfig {
   ragQueryK?: number;
   /** Instruct the agent to explain its strategy. Default: false */
   showReasoning?: boolean;
+  /** History length that triggers auto-summarization. Default: 10 */
+  historyAutoSummarizeLimit?: number;
 }
 
 export interface SmartServerPromptsConfig {
