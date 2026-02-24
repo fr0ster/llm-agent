@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
+import type { Message } from '../types.js';
 import type { SmartAgent, StopReason } from './agent.js';
 import type { CallOptions } from './interfaces/types.js';
 
@@ -134,7 +135,11 @@ export class SmartAgentServer {
     }
 
     const body = parsed as {
-      messages: Array<{ role: string; content: string }>;
+      messages: Array<Message>;
+      temperature?: number;
+      max_tokens?: number;
+      top_p?: number;
+      stream?: boolean;
     };
 
     if (body.messages.length === 0) {
@@ -160,19 +165,21 @@ export class SmartAgentServer {
       return;
     }
 
-    const userMessages = body.messages.filter((m) => m.role === 'user');
-    const text = userMessages[userMessages.length - 1].content;
+    let opts: CallOptions = {
+      temperature: body.temperature,
+      maxTokens: body.max_tokens,
+      topP: body.top_p,
+    };
 
-    let opts: CallOptions | undefined;
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (this.config.requestTimeoutMs) {
       const ctrl = new AbortController();
       timeoutId = setTimeout(() => ctrl.abort(), this.config.requestTimeoutMs);
-      opts = { signal: ctrl.signal };
+      opts.signal = ctrl.signal;
     }
 
     try {
-      const result = await this.agent.process(text, opts);
+      const result = await this.agent.process(body.messages, opts);
 
       if (!result.ok) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -194,7 +201,11 @@ export class SmartAgentServer {
             finish_reason: mapStopReason(result.value.stopReason),
           },
         ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+        usage: {
+          prompt_tokens: result.value.usage?.promptTokens ?? 0,
+          completion_tokens: result.value.usage?.completionTokens ?? 0,
+          total_tokens: result.value.usage?.totalTokens ?? 0,
+        },
       };
 
       res.writeHead(200, { 'Content-Type': 'application/json' });

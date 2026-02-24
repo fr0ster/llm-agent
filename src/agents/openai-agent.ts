@@ -27,6 +27,7 @@ export class OpenAIAgent extends BaseAgent {
   protected async callLLMWithTools(
     messages: Message[],
     tools: any[],
+    options?: any,
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to OpenAI function format
     const functions = this.convertToolsToOpenAIFunctions(tools);
@@ -46,8 +47,10 @@ export class OpenAIAgent extends BaseAgent {
       messages: formattedMessages,
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
-      temperature: config.temperature || 0.7,
-      max_tokens: config.maxTokens || 2000,
+      temperature: options?.temperature ?? config.temperature ?? 0.7,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
+      top_p: options?.topP,
+      stop: options?.stop,
     });
 
     const choice = response.data.choices[0];
@@ -83,6 +86,8 @@ export class OpenAIAgent extends BaseAgent {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content || null, // OpenAI requires null if empty
+      tool_calls: msg.tool_calls,
+      tool_call_id: msg.tool_call_id,
     }));
   }
 }

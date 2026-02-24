@@ -193,7 +193,7 @@ export class ContextAssembler implements IContextAssembler {
       state: RagResult[];
       tools: McpTool[];
     },
-    toolResults: ToolCallRecord[],
+    history: Message[],
     options?: CallOptions,
   ): Promise<Result<Message[], AssemblerError>> {
     try {
@@ -255,15 +255,14 @@ export class ContextAssembler implements IContextAssembler {
         messages.push({ role: 'system', content: parts.join('\n\n') });
       }
 
-      // b. User message with action text
-      messages.push({ role: 'user', content: action.text });
-
-      // c. Tool result messages
-      for (const tr of toolResults) {
-        messages.push({
-          role: 'tool',
-          content: `${tr.call.name}: ${toolResultContent(tr.result)}`,
-        });
+      // b. History or Action
+      if (history.length > 0) {
+        // Filter out existing system messages if we want our RAG-system message to be primary
+        // or just append. Standard OpenAI practice is one system message at the top.
+        const historyWithoutSystem = history.filter(m => m.role !== 'system');
+        messages.push(...historyWithoutSystem);
+      } else {
+        messages.push({ role: 'user', content: action.text });
       }
 
       // 6. Return success

@@ -18,7 +18,7 @@ export interface IContextAssembler {
       state: RagResult[];
       tools: McpTool[];
     },
-    toolResults: ToolCallRecord[],
+    history: Message[],
     options?: CallOptions,
   ): Promise<Result<Message[], AssemblerError>>;
 }

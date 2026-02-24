@@ -85,6 +85,11 @@ export interface SmartAgentResponse {
   iterations: number;
   toolCallCount: number;
   stopReason: StopReason;
+  usage?: {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -133,9 +138,13 @@ export class SmartAgent {
   }
 
   async process(
-    text: string,
+    textOrMessages: string | Message[],
     options?: CallOptions,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    const text = typeof textOrMessages === 'string'
+      ? textOrMessages
+      : textOrMessages.filter(m => m.role === 'user').slice(-1)[0]?.content ?? '';
+
     // Step 0: smartAgentEnabled guard
     if (this.config.smartAgentEnabled === false) {
       return {
@@ -167,7 +176,7 @@ export class SmartAgent {
 
     // Step 3: run pipeline with cleanup guarantee
     try {
-      const result = await this._runPipeline(text, opts, traceId, pipelineT0);
+      const result = await this._runPipeline(textOrMessages, opts, traceId, pipelineT0);
       const durationMs = Date.now() - pipelineT0;
       if (result.ok) {
         this.deps.logger?.log({
@@ -198,12 +207,15 @@ export class SmartAgent {
   // -------------------------------------------------------------------------
 
   private async _runPipeline(
-    text: string,
+    textOrMessages: string | Message[],
     opts: CallOptions | undefined,
     traceId: string,
     pipelineT0: number,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     const logger = this.deps.logger;
+    const text = typeof textOrMessages === 'string'
+      ? textOrMessages
+      : textOrMessages.filter(m => m.role === 'user').slice(-1)[0]?.content ?? '';
 
     // Step 3.5: prompt-injection detection (before classification)
     if (this.deps.injectionDetector) {
@@ -346,10 +358,11 @@ export class SmartAgent {
 
     // Step 11: initial context assembly
     const retrieved = { facts, feedback, state, tools: selectedTools };
+    const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     const assembleResult = await this.deps.assembler.assemble(
       action,
       retrieved,
-      [],
+      history,
       opts,
     );
     if (!assembleResult.ok) {
@@ -430,6 +443,7 @@ export class SmartAgent {
     // tool_calls to precede the corresponding tool result messages.
     let messages = initialMessages;
     let content = '';
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
     for (let iteration = 0; ; iteration++) {
       // Abort check at top of each iteration
@@ -449,6 +463,7 @@ export class SmartAgent {
             iterations: iteration,
             toolCallCount,
             stopReason: 'iteration_limit',
+            usage,
           },
         };
       }
@@ -460,6 +475,13 @@ export class SmartAgent {
         retrieved.tools as LlmTool[],
         opts,
       );
+
+      if (resp.ok && resp.value.usage) {
+        usage.promptTokens += resp.value.usage.promptTokens;
+        usage.completionTokens += resp.value.usage.completionTokens;
+        usage.totalTokens += resp.value.usage.totalTokens;
+      }
+
       logger?.log({
         type: 'llm_call',
         traceId,
@@ -487,6 +509,7 @@ export class SmartAgent {
             iterations: iteration + 1,
             toolCallCount,
             stopReason: 'stop',
+            usage,
           },
         };
       }
@@ -522,6 +545,7 @@ export class SmartAgent {
               iterations: iteration + 1,
               toolCallCount,
               stopReason: 'tool_call_limit',
+              usage,
             },
           };
         }
