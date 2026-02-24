@@ -601,6 +601,9 @@ export class SmartAgent {
         }
 
         if (chunk.toolCalls) {
+          // Pass the toolCall delta directly to the client
+          yield { ok: true, value: { content: '', toolCalls: chunk.toolCalls } };
+
           for (const tc of chunk.toolCalls as any[]) {
             if (!toolCallsMap.has(tc.index)) {
               toolCallsMap.set(tc.index, {

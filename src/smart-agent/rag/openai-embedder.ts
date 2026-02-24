@@ -30,25 +30,39 @@ export class OpenAiEmbedder implements IEmbedder {
 
   async embed(text: string, options?: CallOptions): Promise<number[]> {
     const url = `${this.baseURL}/embeddings`;
-    const res = await fetch(url, {
-      method: 'POST',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`
-      },
-      body: JSON.stringify({ model: this.model, input: text }),
-      signal: options?.signal,
-    });
+    let lastError: Error | undefined;
+    const maxRetries = 3;
 
-    if (!res.ok) {
-      const errorText = await res.text();
-      throw new RagError(
-        `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
-        'EMBED_ERROR',
-      );
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${this.apiKey}`
+          },
+          body: JSON.stringify({ model: this.model, input: text }),
+          signal: options?.signal,
+        });
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new RagError(
+            `OpenAI embed error: HTTP ${res.status} - ${errorText}`,
+            'EMBED_ERROR',
+          );
+        }
+
+        const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
+        return json.data[0].embedding;
+      } catch (err: any) {
+        lastError = err;
+        if (err.name === 'AbortError') throw err;
+        const delay = 500 * (2 ** attempt);
+        await new Promise(resolve => setTimeout(resolve, delay));
+      }
     }
-
-    const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
-    return json.data[0].embedding;
+    
+    throw lastError || new RagError('OpenAI embed failed after retries', 'EMBED_ERROR');
   }
 }

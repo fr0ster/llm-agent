@@ -435,13 +435,27 @@ export class SmartServer {
           continue;
         }
 
-        // Regular content chunk
-        if (chunk.value.content) {
+        // Regular content or tool_calls chunk
+        if (chunk.value.content || chunk.value.toolCalls) {
+          const delta: any = {};
+          if (chunk.value.content) delta.content = chunk.value.content;
+          if (chunk.value.toolCalls) {
+            delta.tool_calls = chunk.value.toolCalls.map((tc: any) => ({
+              index: tc.index,
+              id: tc.id,
+              type: 'function',
+              function: {
+                name: tc.name,
+                arguments: tc.arguments,
+              },
+            }));
+          }
+
           res.write(`data: ${JSON.stringify({
             ...baseResponse,
             choices: [{
               index: 0,
-              delta: { content: chunk.value.content },
+              delta,
               finish_reason: null
             }]
           })}\n\n`);
