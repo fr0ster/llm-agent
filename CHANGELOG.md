@@ -7,29 +7,47 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [1.0.2] — 2026-02-24
+## [1.1.0-beta.1] — 2026-02-24
 
 ### Summary
-Incremental release focused on real streaming support, OpenAI SSE compliance, and fast-path chat 
-intents. Fixes tool-calling protocol issues and implements true hybrid tool orchestration.
+Major architectural upgrade focused on production-grade streaming, hybrid search quality, 
+stability, and multi-intent orchestration. Prepares the agent for complex SAP/ABAP workflows.
 
 ### Added
-- **Verified Operations:** Confirmed stable operation for both simple arithmetic (fast-path) and 
-  complex MCP tool requests (SAP/ADT).
-- **Hybrid Tool Orchestration:** Real-time merging of internal MCP tools with external client 
-  tools (Cline/Goose). Handles local execution vs. remote delegation seamlessly.
-- **Real Incremental Streaming:** True per-token streaming in `SmartAgent` and `SmartServer`.
-- **Chat Intent Fast-path:** New `chat` subprompt type for non-engineering requests that 
-  skips RAG and tool-loop for near-instant responses.
-- **Progress Updates:** Tool execution status streamed to client as content deltas.
-- **OpenAI SSE Compliance:** Server now emits role in the first chunk and finish_reason in a 
-  separate chunk, fixing parse errors in Cline/Goose.
+- **Real Incremental Streaming:** Implemented true per-token streaming for both text and 
+  tool-call deltas, fully compliant with OpenAI SSE protocol.
+- **Hybrid RAG Search:** Combined semantic vector similarity with BM25 lexical scoring for 
+  precise technical term matching (e.g., SAP table names like T100, MARA).
+- **Flexible Embedding Layer:** Introduced `IEmbedder` interface with support for Ollama 
+  and OpenAI-compatible embedding providers.
+- **Hybrid Tool Orchestration:** Agent now seamlessly merges internal MCP tools with 
+  external client tools (Cline/Goose), handling execution or delegation automatically.
+- **Multi-Intent Fast-path:** New `chat` intent for instant responses to simple math/greetings, 
+  bypassing the heavy RAG/Tool pipeline.
+- **Reasoning Mode:** Optional transparent thought process via `<reasoning>` blocks 
+  (enabled via `--agent-show-reasoning` or YAML).
+- **Startup Health Checks:** Immediate diagnostic probes for LLM, RAG, and MCP connectivity on server start.
+- **Helper LLM Integration:** Dedicated secondary model support for background tasks like 
+  RAG query translation and conversation history summarization.
+- **Externalized Prompts:** All internal system prompts (classifier, translation, summary, 
+  reasoning) are now configurable via `smart-server.yaml`.
+- **Hallucination Guard:** Automatic validation of tool calls against known inventory to 
+  prevent agent hangs on impossible tasks.
+- **RAG Namespace Filtering:** Added support for project/session isolation via metadata filters.
 
 ### Fixed
-- **DeepSeek 400 Errors:** Resolved by implementing strict surgical message formatting and 
-  dropping orphaned tool messages that violated the protocol.
-- **Agent Loop Conflict:** Fixed issue where Goose would try to re-execute internal MCP tools.
-- **URL Matching:** More robust path matching in `SmartServer`.
+- **DeepSeek/OpenAI Protocol Compliance:** Fixed 400 Bad Request errors by implementing surgical 
+  message formatting (strict `content: null` for tool calls, no `null` for user/system roles).
+- **Agent Cycle Conflicts:** Resolved issues where client agents (Goose) would try to 
+  re-execute tools already handled by SmartAgent.
+- **Connection Resilience:** Added exponential backoff retries for embedding providers 
+  and auto-reconnect logic for MCP servers.
+- **URL Handling:** Robust matching for `/v1/chat/completions` ignoring trailing slashes 
+  and query parameters.
+
+### Changed
+- Refactored `OllamaRag` into a modular `VectorRag` + `OllamaEmbedder` architecture.
+- Promoted `SmartAgent` to be the primary router for all server requests.
 
 ---
 
