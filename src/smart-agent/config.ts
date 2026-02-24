@@ -63,6 +63,8 @@ rag:
   url: http://localhost:11434
   model: nomic-embed-text
   dedupThreshold: 0.92
+  vectorWeight: 0.7                   # Semantic similarity weight (0..1)
+  keywordWeight: 0.3                  # Lexical matching weight (0..1)
 
 mcp:
   # type: none | http | stdio
@@ -254,6 +256,8 @@ export function resolveSmartServerConfig(
         env['OLLAMA_EMBED_MODEL'] ??
         'nomic-embed-text',
       dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
+      vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
+      keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
     },
 
     mcp: mcpType
