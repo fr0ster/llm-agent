@@ -7,6 +7,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.0.1] — 2026-02-24
+
+### Summary
+
+Maintenance release focused on package identity alignment and release documentation.
+
+### Changed
+
+- npm package renamed to `@mcp-abap-adt/llm-agent` across docs, import examples, CLI help text,
+  and MCP client metadata.
+- Package metadata updated to reflect component-first positioning (Smart LLM-agent building blocks
+  first, default server implementation second).
+- Documentation set reorganized and expanded:
+  - added beta testing plan and incremental streaming plan,
+  - archived legacy architecture analysis/roadmap documents under `docs/archive/`.
+
+---
+
 ## [1.0.0] — 2026-02-24
 
 ### Summary
