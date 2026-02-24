@@ -62,6 +62,8 @@ export interface SmartServerAgentConfig {
   maxToolCalls?: number;
   /** RAG results per query. Default: 5 */
   ragQueryK?: number;
+  /** Instruct the agent to explain its strategy. Default: false */
+  showReasoning?: boolean;
 }
 
 export interface SmartServerPromptsConfig {
@@ -75,6 +77,18 @@ export interface SmartServerPromptsConfig {
    * Must instruct the LLM to return a JSON array of { type, text } objects.
    */
   classifier?: string;
+  /**
+   * Instruction for the reasoning/strategy block (showReasoning mode).
+   */
+  reasoning?: string;
+  /**
+   * Prompt for translating user queries into English for RAG retrieval.
+   */
+  ragTranslate?: string;
+  /**
+   * Prompt for summarizing long conversation history.
+   */
+  historySummary?: string;
 }
 
 /**
@@ -201,6 +215,11 @@ export class SmartServer {
       const classifierCfg = pipeline.llm.classifier ?? pipeline.llm.main;
       const classifierTemp = pipeline.llm.classifier?.temperature ?? 0.1;
       builder = builder.withClassifierLlm(makeLlmFromProvider(classifierCfg, classifierTemp));
+
+      if (pipeline.llm.helper) {
+        const helperTemp = pipeline.llm.helper.temperature ?? 0.1;
+        builder = builder.withHelperLlm(makeLlmFromProvider(pipeline.llm.helper, helperTemp));
+      }
     } else if (pipeline?.llm?.classifier) {
       // Classifier override without main override — unusual but valid
       const temp = pipeline.llm.classifier.temperature ?? 0.1;

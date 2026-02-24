@@ -77,6 +77,15 @@ export interface SmartAgentConfig {
   smartAgentEnabled?: boolean;
   /** Data governance policy: namespace isolation and TTL for RAG records. */
   sessionPolicy?: SessionPolicy;
+  /**
+   * When true, the agent is instructed to explain its reasoning/strategy 
+   * before the main response.
+   */
+  showReasoning?: boolean;
+  /** Custom prompt for query translation for RAG. */
+  ragTranslatePrompt?: string;
+  /** Custom prompt for conversation history summarization. */
+  historySummaryPrompt?: string;
 }
 
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
@@ -318,6 +327,16 @@ export class SmartAgent {
       }
     }
 
+    // Step 3.6: summarize history if needed
+    const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
+    let processedHistory = history;
+    if (this.deps.helperLlm && history.length > 10) {
+      const summaryResult = await this._summarizeHistory(history, opts);
+      if (summaryResult.ok) {
+        processedHistory = summaryResult.value;
+      }
+    }
+
     // Step 4: classify
     const classifyT0 = Date.now();
     const classifyResult = await this.deps.classifier.classify(text, opts);
@@ -369,14 +388,13 @@ export class SmartAgent {
 
     // If it's a chat request, return immediately with the chat flag
     if (chats.length > 0 && actions.length === 0) {
-      const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
       return {
         ok: true,
         value: {
           action: chats[0],
           retrieved: { facts: [], feedback: [], state: [], tools: [] },
           messages: [
-            ...history,
+            ...processedHistory,
             { role: 'user', content: chats.map(c => c.text).join('\n') }
           ],
           toolClientMap: new Map(),
@@ -447,11 +465,10 @@ export class SmartAgent {
 
     // Step 11: initial context assembly
     const retrieved = { facts, feedback, state, tools: selectedTools };
-    const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     const assembleResult = await this.deps.assembler.assemble(
       action,
       retrieved,
-      history,
+      processedHistory,
       opts,
     );
     if (!assembleResult.ok) {
@@ -936,22 +953,20 @@ export class SmartAgent {
   // Private: translate action text to English for cross-lingual RAG matching
   // -------------------------------------------------------------------------
 
-  /** Returns an English translation of `text` for RAG queries.
-   *  If `text` is already ASCII (English), returns it unchanged.
-   *  Falls back to the original on LLM error. */
+  /** Returns an English translation of `text` for RAG queries. */
   private async _toEnglishForRag(
     text: string,
     opts: CallOptions | undefined,
   ): Promise<string> {
-    // Skip translation if already ASCII (covers English + SAP identifiers)
     if (/^[\x00-\x7F]+$/.test(text)) return text;
+
+    const defaultPrompt = 'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.';
 
     const result = await this.deps.mainLlm.chat(
       [
         {
           role: 'system',
-          content:
-            'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.',
+          content: this.config.ragTranslatePrompt || defaultPrompt,
         },
         { role: 'user', content: text },
       ],
@@ -959,6 +974,46 @@ export class SmartAgent {
       opts,
     );
     return result.ok && result.value.content.trim() ? result.value.content.trim() : text;
+  }
+
+  /**
+   * Condenses a long conversation history into a single summary message
+   */
+  private async _summarizeHistory(
+    history: Message[],
+    opts?: CallOptions,
+  ): Promise<Result<Message[], OrchestratorError>> {
+    if (!this.deps.helperLlm) return { ok: true, value: history };
+
+    const toSummarize = history.slice(0, -5);
+    const recent = history.slice(-5);
+
+    if (toSummarize.length === 0) return { ok: true, value: history };
+
+    const defaultPrompt = 'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
+
+    const summaryResp = await this.deps.helperLlm.chat(
+      [
+        ...toSummarize,
+        {
+          role: 'system',
+          content: this.config.historySummaryPrompt || defaultPrompt,
+        },
+      ],
+      [],
+      opts,
+    );
+
+    if (!summaryResp.ok) {
+      return { ok: true, value: history }; // Non-fatal fallback
+    }
+
+    const summaryMessage: Message = {
+      role: 'system',
+      content: `Summary of previous conversation: ${summaryResp.value.content}`,
+    };
+
+    return { ok: true, value: [summaryMessage, ...recent] };
   }
 
   // -------------------------------------------------------------------------

@@ -8,7 +8,6 @@ import {
   type RagResult,
   type Result,
   type Subprompt,
-  type ToolCallRecord,
 } from '../interfaces/types.js';
 
 // ---------------------------------------------------------------------------
@@ -22,7 +21,23 @@ export interface ContextAssemblerConfig {
   systemPromptPreamble?: string;
   /** Emit RAG scores as annotations for observability. Default: false. */
   includeProvenance?: boolean;
+  /**
+   * When true, instructions are added to the system prompt asking the LLM
+   * to explain its reasoning.
+   */
+  showReasoning?: boolean;
+  /**
+   * Optional custom reasoning instruction.
+   */
+  reasoningInstruction?: string;
 }
+
+export const DEFAULT_REASONING_INSTRUCTION = `IMPORTANT: Always start your response with a brief <reasoning> block.
+Explain: 
+1. Which tools you selected and why.
+2. How you interpreted the retrieved context.
+3. Your step-by-step strategy for the current turn.
+The reasoning block must be visible to the user and placed at the very beginning.`;
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -45,14 +60,6 @@ function formatRagEntry(r: RagResult, provenance: boolean): string {
 function buildSection(header: string, entries: string[]): string {
   if (entries.length === 0) return '';
   return `## ${header}\n${entries.join('\n')}`;
-}
-
-/** McpToolResult content → string (JSON.stringify if object) */
-function toolResultContent(result: McpToolResult): string {
-  if (typeof result.content === 'string') {
-    return result.content;
-  }
-  return JSON.stringify(result.content);
 }
 
 /** Combine all sections into system message content */
@@ -98,13 +105,6 @@ function buildSystemContent(
 
 /**
  * Drop entries until total token count fits within budget.
- *
- * Drop priority (lowest first):
- *   1st — tools (last entry first, no score)
- *   2nd — state (lowest score first)
- *   3rd — feedback (lowest score first)
- *   4th — facts (lowest score first)
- * action is never dropped.
  */
 function applyTokenBudget(
   facts: RagResult[],
@@ -120,7 +120,6 @@ function applyTokenBudget(
   state: RagResult[];
   tools: McpTool[];
 } {
-  // Work on mutable copies (already sorted by caller)
   let mutableFacts = [...facts];
   let mutableFeedback = [...feedback];
   let mutableState = [...state];
@@ -138,36 +137,14 @@ function applyTokenBudget(
   };
 
   while (totalTokens() > maxTokens) {
-    // Drop tools last entry first
-    if (mutableTools.length > 0) {
-      mutableTools = mutableTools.slice(0, -1);
-      continue;
-    }
-    // Drop state lowest score first (already sorted desc, so last = lowest)
-    if (mutableState.length > 0) {
-      mutableState = mutableState.slice(0, -1);
-      continue;
-    }
-    // Drop feedback lowest score first
-    if (mutableFeedback.length > 0) {
-      mutableFeedback = mutableFeedback.slice(0, -1);
-      continue;
-    }
-    // Drop facts lowest score first
-    if (mutableFacts.length > 0) {
-      mutableFacts = mutableFacts.slice(0, -1);
-      continue;
-    }
-    // Nothing left to drop
+    if (mutableTools.length > 0) { mutableTools = mutableTools.slice(0, -1); continue; }
+    if (mutableState.length > 0) { mutableState = mutableState.slice(0, -1); continue; }
+    if (mutableFeedback.length > 0) { mutableFeedback = mutableFeedback.slice(0, -1); continue; }
+    if (mutableFacts.length > 0) { mutableFacts = mutableFacts.slice(0, -1); continue; }
     break;
   }
 
-  return {
-    facts: mutableFacts,
-    feedback: mutableFeedback,
-    state: mutableState,
-    tools: mutableTools,
-  };
+  return { facts: mutableFacts, feedback: mutableFeedback, state: mutableState, tools: mutableTools };
 }
 
 // ---------------------------------------------------------------------------
@@ -178,11 +155,15 @@ export class ContextAssembler implements IContextAssembler {
   private readonly maxTokens: number | undefined;
   private readonly systemPromptPreamble: string | undefined;
   private readonly includeProvenance: boolean;
+  private readonly showReasoning: boolean;
+  private readonly reasoningInstruction: string | undefined;
 
   constructor(config?: ContextAssemblerConfig) {
     this.maxTokens = config?.maxTokens;
     this.systemPromptPreamble = config?.systemPromptPreamble;
     this.includeProvenance = config?.includeProvenance ?? false;
+    this.showReasoning = config?.showReasoning ?? false;
+    this.reasoningInstruction = config?.reasoningInstruction;
   }
 
   async assemble(
@@ -197,81 +178,50 @@ export class ContextAssembler implements IContextAssembler {
     options?: CallOptions,
   ): Promise<Result<Message[], AssemblerError>> {
     try {
-      // 1. Check abort signal
       if (options?.signal?.aborted) {
         return { ok: false, error: new AssemblerError('Aborted', 'ABORTED') };
       }
 
-      // 2. Sort facts, feedback, state by score descending (stable copy, no mutation)
-      const sortedFacts = [...retrieved.facts].sort(
-        (a, b) => b.score - a.score,
-      );
-      const sortedFeedback = [...retrieved.feedback].sort(
-        (a, b) => b.score - a.score,
-      );
-      const sortedState = [...retrieved.state].sort(
-        (a, b) => b.score - a.score,
-      );
-      let tools = [...retrieved.tools];
+      const sortedFacts = [...retrieved.facts].sort((a, b) => b.score - a.score);
+      const sortedFeedback = [...retrieved.feedback].sort((a, b) => b.score - a.score);
+      const sortedState = [...retrieved.state].sort((a, b) => b.score - a.score);
+      const tools = [...retrieved.tools];
 
-      let facts = sortedFacts;
-      let feedback = sortedFeedback;
-      let state = sortedState;
+      let finalFacts = sortedFacts;
+      let finalFeedback = sortedFeedback;
+      let finalState = sortedState;
+      let finalTools = tools;
 
-      // 3. Apply token budget if configured
       if (this.maxTokens !== undefined) {
-        const actionTokens = estimateTokens(action.text);
-        const budgeted = applyTokenBudget(
-          facts,
-          feedback,
-          state,
-          tools,
-          actionTokens,
-          this.maxTokens,
-          this.includeProvenance,
-        );
-        facts = budgeted.facts;
-        feedback = budgeted.feedback;
-        state = budgeted.state;
-        tools = budgeted.tools;
+        const budgeted = applyTokenBudget(sortedFacts, sortedFeedback, sortedState, tools, estimateTokens(action.text), this.maxTokens, this.includeProvenance);
+        finalFacts = budgeted.facts;
+        finalFeedback = budgeted.feedback;
+        finalState = budgeted.state;
+        finalTools = budgeted.tools;
       }
 
-      // 4. Build system content
-      const systemContent = buildSystemContent(
-        facts,
-        feedback,
-        state,
-        tools,
-        this.includeProvenance,
-      );
-
-      // 5. Assemble messages
+      const systemContent = buildSystemContent(finalFacts, finalFeedback, finalState, finalTools, this.includeProvenance);
       const messages: Message[] = [];
 
-      // a. System message (only if preamble or content is non-empty)
       const preamble = this.systemPromptPreamble ?? '';
-      if (preamble || systemContent) {
-        const parts = [preamble, systemContent].filter(Boolean);
+      if (preamble || systemContent || this.showReasoning) {
+        const parts = [
+          preamble,
+          this.showReasoning ? (this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION) : '',
+          systemContent
+        ].filter(Boolean);
         messages.push({ role: 'system', content: parts.join('\n\n') });
       }
 
-      // b. History or Action
       if (history.length > 0) {
-        // Filter out existing system messages if we want our RAG-system message to be primary
-        // or just append. Standard OpenAI practice is one system message at the top.
-        const historyWithoutSystem = history.filter(m => m.role !== 'system');
-        messages.push(...historyWithoutSystem);
+        messages.push(...history.filter(m => m.role !== 'system'));
       } else {
         messages.push({ role: 'user', content: action.text });
       }
 
-      // 6. Return success
       return { ok: true, value: messages };
     } catch (err) {
-      return {
-        ok: false,
-        error: new AssemblerError(String(err), 'ASSEMBLER_ERROR'),
-      };
+      return { ok: false, error: new AssemblerError(String(err), 'ASSEMBLER_ERROR') };
     }
   }
 }

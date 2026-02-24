@@ -47,6 +47,8 @@ export interface PipelineConfig {
   llm?: {
     /** Primary LLM for the tool-call loop. */
     main: PipelineLlmProviderConfig;
+    /** Optional helper LLM for summarization and translation. */
+    helper?: PipelineLlmProviderConfig;
     /** LLM used by the intent classifier. If absent, main config is reused at 0.1 temp. */
     classifier?: PipelineLlmProviderConfig;
   };

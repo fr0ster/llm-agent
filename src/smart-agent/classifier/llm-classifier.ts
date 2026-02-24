@@ -35,7 +35,7 @@ const VALID_TYPES: ReadonlySet<string> = new Set<SubpromptType>([
   'chat',
 ]);
 
-const DEFAULT_SYSTEM_PROMPT = `You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
+export const DEFAULT_CLASSIFIER_PROMPT = `You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
   - "fact"     : a factual statement to remember for future sessions
   - "feedback" : a correction or evaluation of your previous response
   - "state"    : user context, preferences, or session-specific settings
@@ -124,7 +124,7 @@ export class LlmClassifier implements ISubpromptClassifier {
     private readonly llm: ILlm,
     config?: LlmClassifierConfig,
   ) {
-    this.systemPrompt = config?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
+    this.systemPrompt = config?.systemPrompt ?? DEFAULT_CLASSIFIER_PROMPT;
     this.promptVersion = config?.promptVersion ?? 'v1';
     this.cache = (config?.enableCache ?? true) ? new Map() : null;
   }

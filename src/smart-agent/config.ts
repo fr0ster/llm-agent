@@ -35,6 +35,7 @@ export interface ResolveConfigArgs {
   'mcp-args'?: string | boolean;
   'prompt-system'?: string | boolean;
   'prompt-classifier'?: string | boolean;
+  'agent-show-reasoning'?: boolean;
   mode?: string | boolean;
 }
 
@@ -78,10 +79,30 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 10
+  showReasoning: false                # Explain strategy at start of response
 
 # prompts:
-#   system: "You are a helpful assistant."
-#   classifier: null
+#   system: "You are a helpful assistant specialized in SAP ABAP development."
+#   classifier: |
+#     You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
+#       - "fact"     : a factual statement to remember for future sessions
+#       - "feedback" : a correction or evaluation of your previous response
+#       - "state"    : user context, preferences, or session-specific settings
+#       - "action"   : a request to perform a task using tools, analyze a codebase, or do engineering work
+#       - "chat"     : general questions, simple math, small talk, or any request that DOES NOT require tools or project context
+#     Return ONLY a valid JSON array of { "type": "<type>", "text": "<subprompt text>" }.
+#     If the message is simple math or a greeting, always use "chat".
+#   reasoning: |
+#     IMPORTANT: Always start your response with a brief <reasoning> block.
+#     Explain: 
+#     1. Which tools you selected and why.
+#     2. How you interpreted the retrieved context.
+#     3. Your step-by-step strategy for the current turn.
+#     The reasoning block must be visible to the user and placed at the very beginning.
+#   ragTranslate: |
+#     You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.
+#   historySummary: |
+#     Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.
 
 log: smart-server.log                 # path to log file; omit for stdout
 
@@ -197,6 +218,9 @@ export function resolveSmartServerConfig(
     get(yaml, 'prompts', 'classifier') ??
     env['PROMPT_CLASSIFIER'] ??
     null;
+  const promptReasoning = get(yaml, 'prompts', 'reasoning') ?? null;
+  const promptRagTranslate = get(yaml, 'prompts', 'ragTranslate') ?? null;
+  const promptHistorySummary = get(yaml, 'prompts', 'historySummary') ?? null;
 
   return {
     port: Number((args['port'] as string | undefined) ?? get(yaml, 'port') ?? env['PORT'] ?? 4004),
@@ -247,13 +271,17 @@ export function resolveSmartServerConfig(
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
+      showReasoning: Boolean(args['agent-show-reasoning'] ?? get(yaml, 'agent', 'showReasoning') ?? false),
     },
 
     prompts:
-      promptSystem || promptClassifier
+      promptSystem || promptClassifier || promptReasoning || promptRagTranslate || promptHistorySummary
         ? {
             ...(promptSystem ? { system: promptSystem } : {}),
             ...(promptClassifier ? { classifier: promptClassifier } : {}),
+            ...(promptReasoning ? { reasoning: promptReasoning } : {}),
+            ...(promptRagTranslate ? { ragTranslate: promptRagTranslate } : {}),
+            ...(promptHistorySummary ? { historySummary: promptHistorySummary } : {}),
           }
         : undefined,
 
