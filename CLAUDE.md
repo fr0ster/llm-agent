@@ -86,6 +86,7 @@ Copy `.env.template` to `.env`. Key variables:
 
 ## Docs
 
-- `docs/ARCHITECTURE.md` — deep dive into design decisions and data flows
-- `docs/SMART_AGENT_ARCHITECTURE.md` — draft design for future smart orchestrated agent (not yet implemented)
+- `docs/ARCHITECTURE.md` — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
+- `docs/INCREMENTAL_STREAMING_PLAN.md` — plan and open research questions for real incremental streaming
+- `docs/BETA_TESTING_PLAN.md` — manual beta testing scenarios
 - `src/mcp/README.md` — MCP transport configuration details
