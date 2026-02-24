@@ -71,8 +71,10 @@ export interface SmartServerAgentConfig {
   maxIterations?: number;
   /** Max total tool calls. Default: 30 */
   maxToolCalls?: number;
-  /** RAG results per query. Default: 5 */
+  /** RAG results per query. Default: 10 */
   ragQueryK?: number;
+  /** Timeout for the entire request pipeline in ms. Unset = no timeout. */
+  timeoutMs?: number;
 }
 
 export interface SmartServerDebugConfig {

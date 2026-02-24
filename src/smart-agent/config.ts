@@ -53,6 +53,8 @@ host: 0.0.0.0
 #   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
 mode: hybrid
 
+# Flat llm: section always uses the DeepSeek adapter.
+# To use OpenAI or Anthropic as the main LLM, use pipeline.llm.main below instead.
 llm:
   apiKey: \${DEEPSEEK_API_KEY}
   model: deepseek-chat
@@ -61,11 +63,11 @@ llm:
 
 rag:
   provider: ollama                    # openai | ollama | in-memory
-  url: http://localhost:11434         # Ollama URL or OpenAI-compatible endpoint
+  url: http://localhost:11434         # Ollama base URL (ignored when provider: openai)
   model: nomic-embed-text             # nomic-embed-text | text-embedding-3-small | etc.
   dedupThreshold: 0.92
   # apiKey: \${OPENAI_API_KEY}         # required when provider: openai
-  # timeoutMs: 30000                  # embed request timeout in ms (with retry for ollama)
+  # timeoutMs: 30000                  # embed HTTP timeout in ms (ollama retries 3× with backoff)
 
 mcp:
   type: http                          # http | stdio
@@ -78,6 +80,7 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 10
+  # timeoutMs: 120000                 # overall request pipeline timeout in ms
 
 # prompts:
 #   system: "You are a helpful assistant."
@@ -90,6 +93,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 
 # --- Advanced pipeline config (optional) ------------------------------------
 # When present, overrides / extends the flat llm / rag / mcp fields above.
+# Use pipeline.llm.main to select a non-DeepSeek LLM provider.
 # pipeline:
 #   llm:
 #     main:
@@ -105,10 +109,12 @@ log: smart-server.log                 # path to log file; omit for stdout
 #
 #   rag:
 #     facts:
-#       provider: openai
+#       provider: openai              # openai | ollama | in-memory
 #       apiKey: \${OPENAI_API_KEY}
 #       model: text-embedding-3-small
 #       dedupThreshold: 0.92
+#       # url: https://custom-openai-compatible/v1
+#       # timeoutMs: 30000
 #     feedback:
 #       provider: in-memory
 #     state:
@@ -266,6 +272,9 @@ export function resolveSmartServerConfig(
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
+      ...(get(yaml, 'agent', 'timeoutMs') !== undefined
+        ? { timeoutMs: Number(get(yaml, 'agent', 'timeoutMs')) }
+        : {}),
     },
 
     prompts:
