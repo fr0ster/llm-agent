@@ -265,6 +265,16 @@ export class SmartAgentServer {
               { index: 0, delta: { content: chunk.delta }, finish_reason: null },
             ],
           });
+        } else if (chunk.type === 'reasoning') {
+          sendEvent({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [
+              { index: 0, delta: { reasoning: chunk.delta }, finish_reason: null },
+            ],
+          });
         } else if (chunk.type === 'usage') {
           sendEvent({
             id,

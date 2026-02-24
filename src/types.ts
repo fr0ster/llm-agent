@@ -61,6 +61,7 @@ export interface LLMProviderConfig {
 
 export type AgentStreamChunk =
   | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | { type: 'tool_calls'; toolCalls: ToolCall[] }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
   | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };

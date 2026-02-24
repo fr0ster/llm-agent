@@ -75,6 +75,15 @@ export interface SmartServerAgentConfig {
   ragQueryK?: number;
 }
 
+export interface SmartServerDebugConfig {
+  /**
+   * When true, injects a reasoning instruction into the system prompt and
+   * parses <thinking>/<reasoning> blocks from streamed text, re-emitting them
+   * as `{ delta: { reasoning } }` SSE chunks. Default: false.
+   */
+  llmReasoning?: boolean;
+}
+
 export interface SmartServerPromptsConfig {
   /**
    * Preamble prepended to the system message assembled by ContextAssembler.
@@ -121,6 +130,10 @@ export interface SmartServerConfig {
    * llm / rag / mcp fields for the components it specifies.
    */
   pipeline?: PipelineConfig;
+  /**
+   * Debug / development flags.
+   */
+  debug?: SmartServerDebugConfig;
   /**
    * Log callback. Called for every internal event.
    * Default: no-op. CLI passes a file-writer or console-writer.
@@ -198,7 +211,10 @@ export class SmartServer {
       llm: this.cfg.llm,
       rag: this.cfg.rag,
       mcp: pipeline?.mcp ?? this.cfg.mcp,
-      agent: this.cfg.agent,
+      agent: {
+        ...this.cfg.agent,
+        ...(this.cfg.debug?.llmReasoning ? { llmReasoning: true } : {}),
+      },
       prompts: this.cfg.prompts,
     }).withLogger(fileLogger);
 

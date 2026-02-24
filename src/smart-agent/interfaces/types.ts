@@ -115,6 +115,7 @@ export interface LlmResponse {
 
 export type LlmStreamChunk =
   | { type: 'text'; delta: string }
+  | { type: 'reasoning'; delta: string }
   | { type: 'tool_calls'; toolCalls: LlmToolCall[] }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
   | { type: 'done'; finishReason: LlmFinishReason };

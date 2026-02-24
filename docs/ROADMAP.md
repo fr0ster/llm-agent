@@ -69,11 +69,11 @@ debug:
   llmReasoning: true   # inject reasoning instruction into system prompt
 ```
 
-- [ ] Add `debug.llmReasoning` flag to `SmartServerConfig` and YAML schema
-- [ ] In `ContextAssembler` (or `SmartAgent`): when flag is set, append reasoning instruction to system message
-- [ ] Add `{ type: 'reasoning', text: string }` chunk variant to `LlmStreamChunk` / `AgentStreamChunk`
-- [ ] Parse `<reasoning>` or `<thinking>` blocks from streamed text and re-emit as reasoning chunks
-- [ ] `SmartServer`: include reasoning chunks in SSE stream (or filter them based on a separate `includeReasoning` flag)
+- [x] Add `debug.llmReasoning` flag to `SmartServerConfig` and YAML schema
+- [x] In `ContextAssembler` (or `SmartAgent`): when flag is set, append reasoning instruction to system message
+- [x] Add `{ type: 'reasoning', text: string }` chunk variant to `LlmStreamChunk` / `AgentStreamChunk`
+- [x] Parse `<reasoning>` or `<thinking>` blocks from streamed text and re-emit as reasoning chunks
+- [x] `SmartServer`: include reasoning chunks in SSE stream (or filter them based on a separate `includeReasoning` flag)
 
 ## Phase 15 — Beta Testing
 

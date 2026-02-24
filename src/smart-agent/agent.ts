@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Message } from '../types.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
+import { ThinkingStreamParser } from './utils/thinking-stream-parser.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
@@ -78,6 +79,12 @@ export interface SmartAgentConfig {
   smartAgentEnabled?: boolean;
   /** Data governance policy: namespace isolation and TTL for RAG records. */
   sessionPolicy?: SessionPolicy;
+  /**
+   * When true, injects a reasoning instruction into the system prompt and
+   * parses <thinking>/<reasoning> blocks from streamed text, re-emitting them
+   * as { type: 'reasoning' } chunks in processStream().
+   */
+  llmReasoning?: boolean;
 }
 
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
@@ -364,10 +371,14 @@ export class SmartAgent {
     }
 
     // Step 12: tool loop
+    const initialMessages = this.config.llmReasoning
+      ? this._injectReasoningInstruction(assembleResult.value)
+      : assembleResult.value;
+
     return this._runToolLoop(
       action,
       retrieved,
-      assembleResult.value,
+      initialMessages,
       toolClientMap,
       opts,
       traceId,
@@ -603,6 +614,25 @@ export class SmartAgent {
   }
 
   // -------------------------------------------------------------------------
+  // Private: inject reasoning instruction into assembled messages
+  // -------------------------------------------------------------------------
+
+  private _injectReasoningInstruction(messages: Message[]): Message[] {
+    const INSTRUCTION =
+      '\n\nBefore every response, tool call, or decision, explain your ' +
+      'reasoning inside <thinking>...</thinking> tags. Be thorough and show ' +
+      'your thought process. After the thinking block, give your actual response.';
+
+    const sysIdx = messages.findIndex((m) => m.role === 'system');
+    if (sysIdx === -1) {
+      return [{ role: 'system', content: INSTRUCTION.trim() }, ...messages];
+    }
+    return messages.map((m, i) =>
+      i === sysIdx ? { ...m, content: m.content + INSTRUCTION } : m,
+    );
+  }
+
+  // -------------------------------------------------------------------------
   // Private: RAG metadata builder (data governance)
   // -------------------------------------------------------------------------
 
@@ -778,9 +808,13 @@ export class SmartAgent {
 
     logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
 
+    const streamInitialMessages = this.config.llmReasoning
+      ? this._injectReasoningInstruction(assembleResult.value)
+      : assembleResult.value;
+
     yield* this._runStreamingToolLoop(
       retrieved,
-      assembleResult.value,
+      streamInitialMessages,
       toolClientMap,
       opts,
       traceId,
@@ -819,16 +853,30 @@ export class SmartAgent {
       let isStreamingDone = false;
 
       if (this.deps.mainLlm.streamChat) {
-        // Streaming path
+        // Streaming path — optionally parse <thinking>/<reasoning> blocks
+        const parser = this.config.llmReasoning ? new ThinkingStreamParser() : null;
+
         for await (const chunk of this.deps.mainLlm.streamChat(messages, retrieved.tools as LlmTool[], opts)) {
           if (chunk.type === 'text') {
-            yield chunk;
+            if (parser) {
+              for (const parsed of parser.push(chunk.delta)) yield parsed;
+            } else {
+              yield chunk;
+            }
+          } else if (chunk.type === 'reasoning') {
+            yield chunk; // pass through any reasoning from the provider itself
           } else if (chunk.type === 'tool_calls') {
+            if (parser) {
+              for (const parsed of parser.flush()) yield parsed;
+            }
             accumulatedToolCalls = chunk.toolCalls;
             yield chunk;
           } else if (chunk.type === 'usage') {
             yield chunk;
           } else if (chunk.type === 'done') {
+            if (parser) {
+              for (const parsed of parser.flush()) yield parsed;
+            }
             finalFinishReason = chunk.finishReason;
             if (chunk.finishReason !== 'tool_calls') {
               yield chunk;
@@ -843,7 +891,15 @@ export class SmartAgent {
           yield { type: 'done', finishReason: 'error' };
           return;
         }
-        if (resp.value.content) yield { type: 'text', delta: resp.value.content };
+        if (resp.value.content) {
+          if (this.config.llmReasoning) {
+            const parser = new ThinkingStreamParser();
+            for (const parsed of parser.push(resp.value.content)) yield parsed;
+            for (const parsed of parser.flush()) yield parsed;
+          } else {
+            yield { type: 'text', delta: resp.value.content };
+          }
+        }
         accumulatedToolCalls = resp.value.toolCalls;
         finalFinishReason = resp.value.finishReason === 'tool_calls' ? 'tool_calls' : 'stop';
         if (finalFinishReason !== 'tool_calls') {

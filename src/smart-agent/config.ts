@@ -85,6 +85,9 @@ agent:
 
 log: smart-server.log                 # path to log file; omit for stdout
 
+# debug:
+#   llmReasoning: true   # inject reasoning instruction into system prompt; parse <thinking> blocks
+
 # --- Advanced pipeline config (optional) ------------------------------------
 # When present, overrides / extends the flat llm / rag / mcp fields above.
 # pipeline:
@@ -283,5 +286,12 @@ export function resolveSmartServerConfig(
     // Pass through pipeline config as-is — env-var substitution was already applied
     // by loadYamlConfig, so no further transformation is needed here.
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
+
+    debug: {
+      llmReasoning:
+        Boolean(get(yaml, 'debug', 'llmReasoning')) ||
+        env['DEBUG_LLM_REASON'] === 'true' ||
+        false,
+    },
   };
 }
