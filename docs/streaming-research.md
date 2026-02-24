@@ -345,6 +345,94 @@ for await (const chunk of stream) { /* process */ }
 
 ---
 
+## 3. Reference Implementations: LiteLLM, Ollama, vLLM
+
+### Cross-server comparison
+
+| Behavior | OpenAI spec | LiteLLM | Ollama | vLLM |
+|---|---|---|---|---|
+| `data: [DONE]\n\n` at end | yes | pass-through | yes | yes |
+| `usage` on intermediate chunks | omitted | omitted (deleted) | omitted (`omitempty`) | omitted |
+| Final usage chunk `choices` | `[]` | `[StreamingChoices(...)]` ← **deviation** | `[]` (explicit) | `[]` (explicit) |
+| `finish_reason: null` on intermediate | explicit null | depends on upstream | explicit null (`*string`, no omitempty) | pre-v0.9.0 yes; v0.9.0+ **omitted** (bug) |
+| `finish_reason` placement | separate empty-delta chunk | separate chunk | **combined** with final content ← deviation | **combined** with final content ← deviation |
+| Tool call first chunk | `id`+`type`+`index`+`name`+`arguments:""` | pass-through | full tool call in one chunk ← deviation | incremental (bugs with specific `tool_choice`) |
+| Tool call argument streaming | incremental per-token | pass-through | **all at once** ← deviation | incremental per-token |
+| `role` in delta | first chunk only | pass-through | **every chunk** ← deviation | first chunk only |
+| `stream_options.include_usage` | yes | yes | yes (Feb 2026) | yes |
+
+---
+
+### LiteLLM
+
+Key files: `litellm/litellm_core_utils/streaming_handler.py`, `litellm/types/utils.py`
+
+- Primarily a pass-through proxy — normalizes upstream chunks and re-serializes to SSE
+- Uses `exclude_unset=True` on `model_dump()` — unset fields are omitted (not sent as null)
+- `usage` is explicitly deleted from intermediate chunks before serialization
+- Final usage chunk: `choices: [StreamingChoices(finish_reason=None)]` — single choice with empty delta, **not** `choices: []` as OpenAI spec requires
+- `finish_reason` in a separate empty-delta chunk (matching OpenAI)
+- Normalizes missing `type: "function"` in tool call deltas from upstream
+- `[DONE]` comes from upstream — LiteLLM does not generate its own
+
+---
+
+### Ollama
+
+Key files: `middleware/openai.go` (`ChatWriter`), `openai/openai.go` (`ToChunk`, `ToToolCalls`)
+
+```go
+// ChatWriter.writeResponse() — SSE serialization
+w.ResponseWriter.Write([]byte(fmt.Sprintf("data: %s\n\n", d)))
+if chatResponse.Done {
+    if w.streamOptions != nil && w.streamOptions.IncludeUsage {
+        c.Usage = &u
+        c.Choices = []openai.ChunkChoice{}   // correct: empty array on usage chunk
+        w.ResponseWriter.Write([]byte(fmt.Sprintf("data: %s\n\n", d)))
+    }
+    w.ResponseWriter.Write([]byte("data: [DONE]\n\n"))
+}
+```
+
+Deviations:
+- `role: "assistant"` on **every** chunk, not just the first
+- Tool calls sent **all at once in a single chunk** (not incrementally)
+- `finish_reason` combined with final content in the same chunk (not separate)
+- `SystemFingerprint` hardcoded as `"fp_ollama"`
+- No `completion_tokens_details` in usage
+
+---
+
+### vLLM
+
+Key file: `vllm/entrypoints/openai/chat_completion/serving.py`
+
+```python
+data = chunk.model_dump_json(exclude_none=True)   # v0.9.0+
+yield f"data: {data}\n\n"
+yield "data: [DONE]\n\n"
+```
+
+Deviations:
+- v0.9.0+: `finish_reason: null` **omitted** from intermediate chunks (should be explicit null per spec) — regression from `exclude_none=True`
+- `finish_reason` combined with final content (not separate empty-delta chunk)
+- Known bugs: `type: "function"` and `id` missing from first tool chunk when `tool_choice` is a specific function
+- Known bug: `function.name` repeated in every argument delta chunk (clients accumulate concatenated names)
+- Final usage chunk correctly uses `choices: []`
+- Extension: `continuous_usage_stats` — usage in every chunk (non-standard)
+
+---
+
+### Conclusions for SmartAgent implementation
+
+1. **`finish_reason` in a separate empty-delta chunk** — follow OpenAI spec and LiteLLM; Ollama/vLLM deviate here but Cline doesn't check `finish_reason` anyway (relies on stream close)
+2. **Usage chunk `choices: []`** — use empty array, not `[StreamingChoices(...)]`; Ollama and vLLM do it correctly
+3. **Intermediate chunks: omit `usage`** entirely (or send `null`) — all implementations agree
+4. **Tool call streaming: incremental** — follow OpenAI/vLLM pattern; Ollama's all-at-once is a known limitation
+5. **`role` only on first chunk** — Ollama sends it on every chunk but spec says first only; Cline handles both
+
+---
+
 ## Sources
 
 - [OpenAI API Reference — Chat Completions Streaming](https://platform.openai.com/docs/api-reference/chat-streaming)
@@ -353,3 +441,10 @@ for await (const chunk of stream) { /* process */ }
 - [OpenAI Python SDK — ChatCompletionChunk type](https://github.com/openai/openai-python/blob/main/src/openai/types/chat/chat_completion_chunk.py)
 - [Usage stats for streaming — OpenAI Community](https://community.openai.com/t/usage-stats-now-available-when-using-streaming-with-the-chat-completions-api-or-completions-api/738156)
 - [Streaming chunk format with multiple tool calls — OpenAI Community](https://community.openai.com/t/streaming-chunk-format-with-multiple-choices-or-tool-calls/1351422)
+- [LiteLLM streaming_handler.py](https://github.com/BerriAI/litellm/blob/main/litellm/litellm_core_utils/streaming_handler.py)
+- [LiteLLM types/utils.py](https://github.com/BerriAI/litellm/blob/main/litellm/types/utils.py)
+- [Ollama middleware/openai.go](https://github.com/ollama/ollama/blob/main/middleware/openai.go)
+- [Ollama openai/openai.go](https://github.com/ollama/ollama/blob/main/openai/openai.go)
+- [vLLM chat_completion/serving.py](https://github.com/vllm-project/vllm/blob/main/vllm/entrypoints/openai/chat_completion/serving.py)
+- [vLLM issue #19650 — finish_reason:null regression](https://github.com/vllm-project/vllm/issues/19650)
+- [vLLM issue #14951 — function.name repeated in every delta](https://github.com/vllm-project/vllm/issues/14951)
