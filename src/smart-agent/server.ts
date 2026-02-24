@@ -179,6 +179,49 @@ export class SmartAgentServer {
     }
 
     try {
+      if (body.stream) {
+        res.writeHead(200, {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          Connection: 'keep-alive',
+        });
+
+        const id = `chatcmpl-${randomUUID()}`;
+        const created = Math.floor(Date.now() / 1000);
+
+        for await (const chunk of this.agent.streamProcess(body.messages, opts)) {
+          if (!chunk.ok) {
+            res.write(`data: ${jsonError(chunk.error.message, 'server_error')}\n\n`);
+            break;
+          }
+
+          const response = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [
+              {
+                index: 0,
+                delta: { content: chunk.value.content },
+                finish_reason: chunk.value.finishReason ? mapStopReason(chunk.value.finishReason as StopReason) : null,
+              },
+            ],
+            usage: chunk.value.usage ? {
+              prompt_tokens: chunk.value.usage.promptTokens,
+              completion_tokens: chunk.value.usage.completionTokens,
+              total_tokens: chunk.value.usage.totalTokens,
+            } : null,
+          };
+
+          res.write(`data: ${JSON.stringify(response)}\n\n`);
+        }
+
+        res.write('data: [DONE]\n\n');
+        res.end();
+        return;
+      }
+
       const result = await this.agent.process(body.messages, opts);
 
       if (!result.ok) {

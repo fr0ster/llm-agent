@@ -65,6 +65,10 @@ export class AnthropicProvider extends BaseLLMProvider {
     }
   }
 
+  async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
+    throw new Error('Streaming is not implemented for AnthropicProvider');
+  }
+
   /**
    * Format messages for Anthropic API
    */

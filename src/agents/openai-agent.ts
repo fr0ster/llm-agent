@@ -63,6 +63,25 @@ export class OpenAIAgent extends BaseAgent {
   }
 
   /**
+   * Stream OpenAI response
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    _tools: any[],
+    _options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }> {
+    // For now, tools are handled by the main loop which calls callLLMWithTools.
+    // This streaming method is primarily for the final response.
+    const stream = this.llmProvider.streamChat(messages);
+    for await (const chunk of stream) {
+      yield {
+        content: chunk.content,
+        raw: chunk.raw,
+      };
+    }
+  }
+
+  /**
    * Convert MCP tools to OpenAI function format
    */
   private convertToolsToOpenAIFunctions(tools: any[]): any[] {

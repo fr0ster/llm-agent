@@ -13,6 +13,7 @@
  */
 
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import { BaseLLMProvider } from './base.js';
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
   /**
@@ -62,21 +63,20 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
  * Uses SAP Cloud SDK executeHttpRequest for authentication and destination handling.
  * All LLM providers are accessed through SAP AI Core, not directly.
  */
-export class SapCoreAIProvider {
+export class SapCoreAIProvider extends BaseLLMProvider {
   private destinationName: string;
   private model: string;
-  private config: SapCoreAIConfig;
   private httpClient: SapCoreAIConfig['httpClient'];
   private log?: any; // Optional logger
 
   constructor(config: SapCoreAIConfig) {
+    super(config);
     if (!config.destinationName) {
       throw new Error('SAP destination name is required for SapCoreAIProvider');
     }
 
     this.destinationName = config.destinationName;
     this.model = config.model || 'gpt-4o-mini'; // Default model
-    this.config = config;
     this.httpClient = config.httpClient;
     this.log = config.log;
   }
@@ -162,6 +162,10 @@ export class SapCoreAIProvider {
         `SAP Core AI API error: ${error.response?.data?.error?.message || error.message}`,
       );
     }
+  }
+
+  async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
+    throw new Error('Streaming is not implemented for SapCoreAIProvider');
   }
 
   /**

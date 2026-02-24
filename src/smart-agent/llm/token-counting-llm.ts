@@ -4,6 +4,7 @@ import type {
   CallOptions,
   LlmError,
   LlmResponse,
+  LlmStreamChunk,
   LlmTool,
   Result,
 } from '../interfaces/types.js';
@@ -65,6 +66,20 @@ export class TokenCountingLlm implements ILlm {
     }
 
     return result;
+  }
+
+  async *streamChat(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    const stream = this.inner.streamChat(messages, tools, options);
+    for await (const chunk of stream) {
+      if (chunk.ok) {
+        // Optional: track usage from stream chunks if provider provides it
+      }
+      yield chunk;
+    }
   }
 
   /** Returns a snapshot of accumulated usage. */

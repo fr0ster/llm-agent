@@ -25,6 +25,14 @@ export interface CallOptions {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
+  stream?: boolean;
+}
+
+export interface LlmStreamChunk {
+  content: string;
+  toolCalls?: LlmToolCall[];
+  finishReason?: LlmFinishReason;
+  usage?: LlmUsage;
 }
 
 // ---------------------------------------------------------------------------

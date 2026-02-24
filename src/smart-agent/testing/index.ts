@@ -25,6 +25,7 @@ import {
   LlmError,
   type LlmFinishReason,
   type LlmResponse,
+  type LlmStreamChunk,
   type LlmToolCall,
   McpError,
   type McpTool,
@@ -72,6 +73,29 @@ export function makeLlm(
         return { ok: false, error: new LlmError(next.message) };
       }
       return {
+        ok: true,
+        value: {
+          content: next.content,
+          toolCalls: next.toolCalls,
+          finishReason: next.finishReason ?? 'stop',
+        },
+      };
+    },
+    async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+      callCount++;
+      const next = queue.shift();
+      if (!next) {
+        yield {
+          ok: true,
+          value: { content: 'default', finishReason: 'stop' },
+        };
+        return;
+      }
+      if (next instanceof Error) {
+        yield { ok: false, error: new LlmError(next.message) };
+        return;
+      }
+      yield {
         ok: true,
         value: {
           content: next.content,

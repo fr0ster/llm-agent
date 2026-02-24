@@ -14,6 +14,7 @@ import {
   type CallOptions,
   LlmError,
   type LlmResponse,
+  type LlmStreamChunk,
   type LlmTool,
   type LlmToolCall,
   type Result,
@@ -134,6 +135,55 @@ function parseProviderResponse(raw: {
   };
 }
 
+/**
+ * parseStreamChunk
+ *
+ * Extracts content delta and other info from a stream chunk.
+ */
+function parseStreamChunk(raw: {
+  content: string;
+  raw?: unknown;
+}): LlmStreamChunk {
+  // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
+  const providerRaw = raw.raw as any;
+
+  if (!providerRaw) {
+    return { content: raw.content };
+  }
+
+  // OpenAI / DeepSeek format for chunks
+  if (providerRaw.choices?.[0]?.delta) {
+    const delta = providerRaw.choices[0].delta;
+    const toolCalls: LlmToolCall[] = [];
+
+    if (delta.tool_calls) {
+      for (const tc of delta.tool_calls) {
+        let args: Record<string, unknown> = {};
+        if (tc.function?.arguments) {
+          try {
+            args = JSON.parse(tc.function.arguments);
+          } catch {
+            args = {};
+          }
+        }
+        toolCalls.push({
+          id: tc.id,
+          name: tc.function?.name || '',
+          arguments: args,
+        });
+      }
+    }
+
+    return {
+      content: delta.content || '',
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      finishReason: providerRaw.choices[0].finish_reason || undefined,
+    };
+  }
+
+  return { content: raw.content };
+}
+
 // ---------------------------------------------------------------------------
 // LlmAdapter
 // ---------------------------------------------------------------------------
@@ -170,6 +220,42 @@ export class LlmAdapter implements ILlm {
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
       return { ok: false, error: new LlmError(String(err)) };
+    }
+  }
+
+  async *streamChat(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+    try {
+      const mcpTools =
+        tools?.map((t) => ({
+          name: t.name,
+          description: t.description,
+          inputSchema: t.inputSchema,
+        })) ?? [];
+
+      // streamLLMWithTools is protected
+      // biome-ignore lint/suspicious/noExplicitAny: intentional protected-access workaround
+      const stream = (this.agent as any).streamLLMWithTools(
+        messages,
+        mcpTools,
+        options,
+      ) as AsyncIterable<{
+        content: string;
+        raw?: unknown;
+      }>;
+
+      for await (const chunk of stream) {
+        if (options?.signal?.aborted) {
+          throw new LlmError('Aborted', 'ABORTED');
+        }
+        yield { ok: true, value: parseStreamChunk(chunk) };
+      }
+    } catch (err) {
+      if (err instanceof LlmError) yield { ok: false, error: err };
+      else yield { ok: false, error: new LlmError(String(err)) };
     }
   }
 }
