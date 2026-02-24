@@ -220,7 +220,7 @@ export class SmartAgent {
   }
 
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
-    if (/^[\x00-\x7F]+$/.test(text)) return text;
+    if (/^[\x00-\x7F]+$/.test(text) || text.length < 15) return text;
     const dp = 'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.';
     const llm = this.deps.helperLlm || this.deps.mainLlm;
     const res = await llm.chat([{ role: 'system', content: this.config.ragTranslatePrompt || dp }, { role: 'user', content: text }], [], opts);
