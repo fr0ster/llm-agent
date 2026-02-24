@@ -9,7 +9,7 @@ services.
 ## Prerequisites
 
 - Node.js >= 18 installed
-- `npm install -g @mcp-abap-adt/llm-proxy` (or built from source: `npm run build`)
+- `npm install -g @mcp-abap-adt/llm-agent` (or built from source: `npm run build`)
 - At least one LLM API key (`DEEPSEEK_API_KEY` or `OPENAI_API_KEY`)
 - Ollama running locally with `nomic-embed-text` pulled (scenarios marked **[ollama]**)
 - An MCP server reachable over HTTP or stdio (scenarios marked **[mcp]**)

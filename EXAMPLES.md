@@ -135,7 +135,7 @@ pipeline:
 ### Example S6: Programmatic SmartServer embedding
 
 ```typescript
-import { SmartServer } from '@mcp-abap-adt/llm-proxy';
+import { SmartServer } from '@mcp-abap-adt/llm-agent';
 
 const server = new SmartServer({
   port: 3001,
@@ -160,9 +160,9 @@ process.on('SIGTERM', async () => {
 ### Example S7: SmartAgentBuilder — custom components
 
 ```typescript
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-proxy';
-import { InMemoryRag } from '@mcp-abap-adt/llm-proxy/smart-agent/rag';
-import { ConsoleLogger } from '@mcp-abap-adt/llm-proxy/smart-agent/logger';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent/smart-agent/rag';
+import { ConsoleLogger } from '@mcp-abap-adt/llm-agent/smart-agent/logger';
 
 const sharedRag = new InMemoryRag();
 
@@ -371,7 +371,7 @@ npm run dev
 ### Example: Using in Your Own Code
 
 ```typescript
-import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 
 // Create LLM provider
 const llmProvider = new OpenAIProvider({

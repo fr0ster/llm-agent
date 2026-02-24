@@ -11,7 +11,7 @@ OpenAI-compatible client (Cline, Cursor, Continue) to it and use it as a drop-in
 ## Install
 
 ```bash
-npm install -g @mcp-abap-adt/llm-proxy
+npm install -g @mcp-abap-adt/llm-agent
 ```
 
 Or run from source:
