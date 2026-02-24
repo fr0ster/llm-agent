@@ -1,10 +1,11 @@
-port: 3001
+port: 4004
 host: 0.0.0.0
 
-# smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP.
-# passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
-# hybrid      — Cline client → passthrough, others → SmartAgent. (default)
-mode: smart
+# Request routing mode:
+#   smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP work.
+#   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
+#   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
+mode: hybrid
 
 llm:
   apiKey: ${DEEPSEEK_API_KEY}
@@ -19,21 +20,13 @@ rag:
   dedupThreshold: 0.92
 
 mcp:
-  type: http                          # http | stdio
-  url: http://localhost:3000/mcp/stream/http
-  # For stdio:
-  # type: stdio
-  # command: node
-  # args: path/to/mcp-server/dist/index.js
+  # type: none | http | stdio
+  type: http
+  url: http://localhost:3001/mcp/stream/http
 
 agent:
   maxIterations: 10
   maxToolCalls: 30
-  ragQueryK: 5
+  ragQueryK: 10
 
-# Optional: customise prompts
-# prompts:
-#   system: "You are a helpful assistant specialized in SAP ABAP development."
-#   classifier: null   # omit or set to null to use the built-in classifier prompt
-
-log: smart-server.log                 # path to log file; remove for stdout
+log: smart-server.log

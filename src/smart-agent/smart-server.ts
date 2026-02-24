@@ -14,6 +14,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { Message } from '../types.js';
 import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
+import type { LlmStreamChunk } from './interfaces/types.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import { makeLlmFromProvider, makeRagFromStoreConfig, type PipelineConfig } from './pipeline.js';
@@ -85,7 +86,7 @@ export interface SmartServerPromptsConfig {
 export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
 
 export interface SmartServerConfig {
-  /** HTTP server port. Default: 3001 */
+  /** HTTP server port. Default: 4004 */
   port?: number;
   /** Bind host. Default: '0.0.0.0' */
   host?: string;
@@ -215,11 +216,11 @@ export class SmartServer {
 
     const agentHandle = await builder.build();
 
-    const { agent: smartAgent, chat, getUsage, close: closeAgent } = agentHandle;
+    const { agent: smartAgent, chat, streamChat, getUsage, close: closeAgent } = agentHandle;
 
     // ---- HTTP server -------------------------------------------------------
     const server = http.createServer((req, res) =>
-      this._handle(req, res, getUsage, smartAgent, chat, log).catch((err) => {
+      this._handle(req, res, getUsage, smartAgent, chat, streamChat, log).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(jsonError(String(err), 'server_error'));
@@ -228,7 +229,7 @@ export class SmartServer {
     );
 
     return new Promise((resolve, reject) => {
-      const port = this.cfg.port ?? 3001;
+      const port = this.cfg.port ?? 4004;
       const host = this.cfg.host ?? '0.0.0.0';
       server.on('error', reject);
       server.listen(port, host, () => {
@@ -257,6 +258,7 @@ export class SmartServer {
     getUsage: () => TokenUsage,
     smartAgent: SmartAgent,
     chat: SmartAgentHandle['chat'],
+    streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
     const urlPath = req.url ?? '/';
@@ -285,7 +287,7 @@ export class SmartServer {
 
     // POST /v1/chat/completions
     if (req.method === 'POST' && (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')) {
-      await this._handleChat(req, res, getUsage, smartAgent, chat, log);
+      await this._handleChat(req, res, getUsage, smartAgent, chat, streamChat, log);
       return;
     }
 
@@ -299,6 +301,7 @@ export class SmartServer {
     getUsage: () => TokenUsage,
     smartAgent: SmartAgent,
     chat: SmartAgentHandle['chat'],
+    streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
     const rawBody = await readBody(req);
@@ -325,7 +328,9 @@ export class SmartServer {
     };
 
     const extractText = (c: MsgContent): string => {
+      if (c === null || c === undefined) return '';
       if (typeof c === 'string') return c;
+      if (!Array.isArray(c)) return '';
       return c.filter((b) => b.type === 'text' && b.text).map((b) => b.text!).join('\n');
     };
 
@@ -349,62 +354,111 @@ export class SmartServer {
     const t0 = Date.now();
     log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
 
-    let finalContent: string;
-    let finalFinishReason: 'stop' | 'length';
+    // Helper to get options
+    const opts = {
+      stream: body.stream,
+    };
 
-    if (usePassthrough) {
-      // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
+    if (body.stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      const id = `chatcmpl-${randomUUID()}`;
+      const created = Math.floor(Date.now() / 1000);
+
       const normalizedMessages = body.messages.map((m) => ({
         role: m.role as Message['role'],
         content: extractText(m.content),
       }));
-      const llmResult = await chat(normalizedMessages);
-      log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
-      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
-      finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
-    } else {
-      // SmartAgent: classify + RAG tool selection + MCP orchestration — use the LAST user message
-      const text = extractText(userMessages[userMessages.length - 1].content);
-      const result = await smartAgent.process(text);
-      log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
-      finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
-    }
 
-    this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
-  }
+      // In hybrid mode, we still want to use the full history if possible
+      const stream = usePassthrough
+        ? streamChat(normalizedMessages, undefined, opts)
+        : smartAgent.streamProcess(normalizedMessages, opts);
 
-  private _sendResponse(
-    res: ServerResponse,
-    stream: boolean,
-    includeUsage: boolean,
-    getUsage: () => TokenUsage,
-    content: string,
-    finishReason: 'stop' | 'length',
-  ): void {
-    const id = `chatcmpl-${randomUUID()}`;
-    const created = Math.floor(Date.now() / 1000);
+      for await (const chunk of stream) {
+        if (!chunk.ok) {
+          res.write(`data: ${jsonError(chunk.error.message, 'server_error')}\n\n`);
+          break;
+        }
 
-    if (stream) {
-      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'close' });
+        const response = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          choices: [
+            {
+              index: 0,
+              delta: { content: chunk.value.content },
+              finish_reason: chunk.value.finishReason ? mapStopReason(chunk.value.finishReason as StopReason) : null,
+            },
+          ],
+          usage: chunk.value.usage ? {
+            prompt_tokens: chunk.value.usage.promptTokens,
+            completion_tokens: chunk.value.usage.completionTokens,
+            total_tokens: chunk.value.usage.totalTokens,
+          } : null,
+        };
 
-      const chunk = (delta: Record<string, unknown>, fr: string | null) =>
-        `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta, logprobs: null, finish_reason: fr }] })}\n\n`;
-
-      res.write(chunk({ role: 'assistant', content: '' }, null));
-      res.write(chunk({ content }, null));
-      res.write(chunk({}, finishReason));
-
-      if (includeUsage) {
-        const u = getUsage();
-        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens } })}\n\n`);
+        res.write(`data: ${JSON.stringify(response)}\n\n`);
       }
 
       res.write('data: [DONE]\n\n');
       res.end();
-    } else {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ id, object: 'chat.completion', created, model: 'smart-agent', choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: finishReason }], usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 } }));
+      return;
     }
+
+    let finalContent: string;
+    let finalFinishReason: 'stop' | 'length';
+    let finalUsage: any = null;
+
+    const normalizedMessages = body.messages.map((m) => ({
+      role: m.role as Message['role'],
+      content: extractText(m.content),
+    }));
+
+    if (usePassthrough) {
+      const llmResult = await chat(normalizedMessages);
+      log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
+      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
+      finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
+      if (llmResult.ok && llmResult.value.usage) {
+        finalUsage = {
+          prompt_tokens: llmResult.value.usage.promptTokens,
+          completion_tokens: llmResult.value.usage.completionTokens,
+          total_tokens: llmResult.value.usage.totalTokens,
+        };
+      }
+    } else {
+      const result = await smartAgent.process(normalizedMessages);
+      log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
+      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+      finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+      if (result.ok && result.value.usage) {
+        finalUsage = {
+          prompt_tokens: result.value.usage.promptTokens,
+          completion_tokens: result.value.usage.completionTokens,
+          total_tokens: result.value.usage.totalTokens,
+        };
+      }
+    }
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({
+      id: `chatcmpl-${randomUUID()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: 'smart-agent',
+      choices: [{
+        index: 0,
+        message: { role: 'assistant', content: finalContent },
+        finish_reason: finalFinishReason
+      }],
+      usage: finalUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
+    }));
   }
 }

@@ -95,11 +95,20 @@ export class DeepSeekAgent extends BaseAgent {
     });
   }
 
+  /**
+   * Stream DeepSeek response
+   */
   protected async *streamLLMWithTools(
-    _messages: Message[],
+    messages: Message[],
     _tools: any[],
     _options?: any,
   ): AsyncIterable<{ content: string; raw?: unknown }> {
-    throw new Error('Streaming is not implemented for DeepSeekAgent');
+    const stream = this.llmProvider.streamChat(messages);
+    for await (const chunk of stream) {
+      yield {
+        content: chunk.content,
+        raw: chunk.raw,
+      };
+    }
   }
 }

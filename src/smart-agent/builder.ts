@@ -104,6 +104,8 @@ export interface SmartAgentHandle {
    * Used by SmartServer passthrough mode to forward the full message history.
    */
   chat: ILlm['chat'];
+  /** Direct LLM streaming chat. */
+  streamChat: ILlm['streamChat'];
   /**
    * Returns accumulated LLM token usage (prompt + completion + total + requests).
    * Only counts calls made through the default DeepSeek LLM.
@@ -329,6 +331,7 @@ export class SmartAgentBuilder {
     return {
       agent,
       chat: (messages, tools, options) => mainLlm.chat(messages, tools, options),
+      streamChat: (messages, tools, options) => mainLlm.streamChat(messages, tools, options),
       getUsage: () => {
         const main = defaultMainLlm?.getUsage() ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, requests: 0 };
         const classifier = defaultClassifierLlm?.getUsage() ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, requests: 0 };

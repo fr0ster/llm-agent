@@ -42,7 +42,7 @@ export interface ResolveConfigArgs {
 // YAML template
 // ---------------------------------------------------------------------------
 
-export const YAML_TEMPLATE = `port: 3001
+export const YAML_TEMPLATE = `port: 4004
 host: 0.0.0.0
 
 # Request routing mode:
@@ -64,11 +64,15 @@ rag:
   dedupThreshold: 0.92
 
 mcp:
-  type: http                          # http | stdio
-  url: http://localhost:3000/mcp/stream/http
+  # type: none | http | stdio
+  # To disable MCP, set type to 'none'
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+  # Example for local stdio MCP:
   # type: stdio
   # command: node
-  # args: path/to/mcp-server/dist/index.js
+  # args: path/to/server.js
 
 agent:
   maxIterations: 10
@@ -180,11 +184,8 @@ export function resolveSmartServerConfig(
   const mcpUrl = (args['mcp-url'] as string | undefined) ?? get(yaml, 'mcp', 'url') ?? env['MCP_ENDPOINT'];
   const mcpCommand =
     (args['mcp-command'] as string | undefined) ?? get(yaml, 'mcp', 'command') ?? env['MCP_COMMAND'];
-  const mcpType = (
-    (args['mcp-type'] as string | undefined) ??
-    get(yaml, 'mcp', 'type') ??
-    (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null)
-  ) as 'http' | 'stdio' | null;
+  const mcpTypeRaw = (args['mcp-type'] as string | undefined) ?? get(yaml, 'mcp', 'type') ?? (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null);
+  const mcpType = (mcpTypeRaw === 'none' ? null : mcpTypeRaw) as 'http' | 'stdio' | null;
 
   const promptSystem =
     (args['prompt-system'] as string | undefined) ??
@@ -198,7 +199,7 @@ export function resolveSmartServerConfig(
     null;
 
   return {
-    port: Number((args['port'] as string | undefined) ?? get(yaml, 'port') ?? env['PORT'] ?? 3001),
+    port: Number((args['port'] as string | undefined) ?? get(yaml, 'port') ?? env['PORT'] ?? 4004),
     host: (args['host'] as string | undefined) ?? get(yaml, 'host') ?? '0.0.0.0',
 
     llm: {
@@ -234,8 +235,8 @@ export function resolveSmartServerConfig(
     mcp: mcpType
       ? {
           type: mcpType,
-          url: mcpUrl,
-          command: mcpCommand,
+          url: mcpUrl || undefined,
+          command: mcpCommand || undefined,
           args: ((args['mcp-args'] as string | undefined) ?? get(yaml, 'mcp', 'args'))
             ? String((args['mcp-args'] as string | undefined) ?? get(yaml, 'mcp', 'args')).split(' ')
             : undefined,
