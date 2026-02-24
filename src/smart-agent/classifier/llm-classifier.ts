@@ -39,8 +39,8 @@ export const DEFAULT_CLASSIFIER_PROMPT = `You are an intent classifier. Decompos
   - "fact"     : critical technical constraints, rules, or domain knowledge (e.g. "ABAP Cloud forbids direct table access").
   - "state"    : project context, team roles, or temporary environmental observations (e.g. "Kristina approves decisions", "Sky is blue").
   - "feedback" : correction or evaluation of your previous response.
-  - "chat"     : greetings, simple math, or very short small talk (e.g. "Hello", "2+2").
-  - "action"   : DEFAULT CATEGORY. Any request to perform a task, answer a technical question, or anything that doesn't fit the above.
+  - "chat"     : greetings, simple math, or very short small talk, and impossible non-engineering requests (e.g. "Hello", "2+2", "Brew coffee").
+  - "action"   : DEFAULT CATEGORY. Any request to perform a technical task, answer an engineering question, or anything requiring tools.
 Return ONLY a valid JSON array of { "type": "<type>", "text": "<subprompt text>" }.
 If in doubt, always use "action".`;
 
