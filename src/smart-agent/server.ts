@@ -135,6 +135,7 @@ export class SmartAgentServer {
 
     const body = parsed as {
       messages: Array<{ role: string; content: string }>;
+      stream?: boolean;
     };
 
     if (body.messages.length === 0) {
@@ -163,46 +164,150 @@ export class SmartAgentServer {
     const userMessages = body.messages.filter((m) => m.role === 'user');
     const text = userMessages[userMessages.length - 1].content;
 
-    let opts: CallOptions | undefined;
+    // Single AbortController handles both timeout and client disconnect.
+    const abortCtrl = new AbortController();
+    req.on('close', () => abortCtrl.abort());
+
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
     if (this.config.requestTimeoutMs) {
-      const ctrl = new AbortController();
-      timeoutId = setTimeout(() => ctrl.abort(), this.config.requestTimeoutMs);
-      opts = { signal: ctrl.signal };
+      timeoutId = setTimeout(
+        () => abortCtrl.abort(),
+        this.config.requestTimeoutMs,
+      );
     }
 
+    const opts: CallOptions = { signal: abortCtrl.signal };
+
     try {
-      const result = await this.agent.process(text, opts);
-
-      if (!result.ok) {
-        res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(
-          jsonError(result.error.message, 'server_error', result.error.code),
-        );
-        return;
+      if (body.stream === true) {
+        await this._handleStreamingChat(text, opts, res);
+      } else {
+        await this._handleChat(text, opts, res);
       }
-
-      const response = {
-        id: `chatcmpl-${randomUUID()}`,
-        object: 'chat.completion',
-        created: Math.floor(Date.now() / 1000),
-        model: 'smart-agent',
-        choices: [
-          {
-            index: 0,
-            message: { role: 'assistant', content: result.value.content },
-            finish_reason: mapStopReason(result.value.stopReason),
-          },
-        ],
-        usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
-      };
-
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(response));
     } finally {
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Non-streaming response
+  // -------------------------------------------------------------------------
+
+  private async _handleChat(
+    text: string,
+    opts: CallOptions,
+    res: ServerResponse,
+  ): Promise<void> {
+    const result = await this.agent.process(text, opts);
+
+    if (!result.ok) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(result.error.message, 'server_error', result.error.code),
+      );
+      return;
+    }
+
+    const response = {
+      id: `chatcmpl-${randomUUID()}`,
+      object: 'chat.completion',
+      created: Math.floor(Date.now() / 1000),
+      model: 'smart-agent',
+      choices: [
+        {
+          index: 0,
+          message: { role: 'assistant', content: result.value.content },
+          finish_reason: mapStopReason(result.value.stopReason),
+        },
+      ],
+      usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+    };
+
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(response));
+  }
+
+  // -------------------------------------------------------------------------
+  // Streaming SSE response — pipes processStream() into the live connection
+  // -------------------------------------------------------------------------
+
+  private async _handleStreamingChat(
+    text: string,
+    opts: CallOptions,
+    res: ServerResponse,
+  ): Promise<void> {
+    const id = `chatcmpl-${randomUUID()}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const sendEvent = (data: unknown): void => {
+      if (!res.destroyed) {
+        res.write(`data: ${JSON.stringify(data)}\n\n`);
+      }
+    };
+
+    try {
+      for await (const chunk of this.agent.processStream(text, opts)) {
+        if (chunk.type === 'text') {
+          sendEvent({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [
+              { index: 0, delta: { content: chunk.delta }, finish_reason: null },
+            ],
+          });
+        } else if (chunk.type === 'usage') {
+          sendEvent({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [],
+            usage: {
+              prompt_tokens: chunk.promptTokens,
+              completion_tokens: chunk.completionTokens,
+              total_tokens: chunk.promptTokens + chunk.completionTokens,
+            },
+          });
+        } else if (chunk.type === 'done') {
+          // Map internal finish reasons to OpenAI SSE values.
+          // 'error' and 'tool_calls' (should not occur here) → 'stop'.
+          const finishReason: 'stop' | 'length' =
+            chunk.finishReason === 'length' ? 'length' : 'stop';
+          sendEvent({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+          });
+        }
+        // tool_calls chunks are handled internally by SmartAgent — skip.
+      }
+    } catch {
+      // Generator threw (e.g. signal aborted before first yield).
+      // Send a terminal stop chunk so the client can close cleanly.
+      sendEvent({
+        id,
+        object: 'chat.completion.chunk',
+        created,
+        model: 'smart-agent',
+        choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+      });
+    }
+
+    if (!res.destroyed) {
+      res.write('data: [DONE]\n\n');
+      res.end();
     }
   }
 

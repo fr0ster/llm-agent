@@ -22,7 +22,7 @@
 
 ### Orchestration
 - [x] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
-- [ ] Update `SmartServer._handleChat()` to pipe `processStream()` into live SSE connection
+- [x] Update `SmartServer._handleChat()` to pipe `processStream()` into live SSE connection
 
 ## Phase 13 — Pluggable Embedding Providers
 
