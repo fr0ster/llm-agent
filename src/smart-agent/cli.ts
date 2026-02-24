@@ -14,7 +14,7 @@
  *   --env <path>                 .env file to load (default: .env in cwd if exists)
  *   --config <path>              YAML config file (default: smart-server.yaml if exists)
  *                                If path does not exist, writes a config template and exits.
- *   --port <number>              HTTP port (default: 3001)
+ *   --port <number>              HTTP port (default: 4004)
  *   --host <string>              Bind host (default: 0.0.0.0)
  *   --llm-api-key <key>          DeepSeek API key
  *   --llm-model <model>          DeepSeek model (default: deepseek-chat)
@@ -41,7 +41,7 @@
  *   Priority: CLI args > YAML config > env vars (.env + process env) > defaults.
  *
  * YAML config example (smart-server.yaml):
- *   port: 3001
+ *   port: 4004
  *   llm:
  *     apiKey: ${DEEPSEEK_API_KEY}   # resolved from .env
  *     model: deepseek-chat
