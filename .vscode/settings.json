@@ -2,9 +2,12 @@
   "cSpell.language": "en",
   "cSpell.words": [
     "agentic",
+    "chatcmpl",
     "exfiltration",
     "homoglyphs",
+    "logprobs",
     "SIEM",
+    "streamparser",
     "subprompt",
     "subprompts",
     "upserted",
