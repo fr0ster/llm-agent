@@ -3,7 +3,7 @@
  * llm-agent — Global CLI for SmartServer
  *
  * Install globally:
- *   npm install -g @mcp-abap-adt/llm-proxy
+ *   npm install -g @mcp-abap-adt/llm-agent
  *   llm-agent [options]
  *
  * Or run directly:
