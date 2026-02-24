@@ -2,7 +2,7 @@
 
 ## Phase 12 — Real Incremental Streaming
 
-- [ ] Research: OpenAI SSE wire format (tool_calls deltas, finish_reason, stream_options)
+- [x] Research: OpenAI SSE wire format (tool_calls deltas, finish_reason, stream_options)
 - [ ] Research: how Cline processes streaming chunks on the client side
 - [ ] Add `streamChat() → AsyncGenerator<LlmChunk>` to `ILlm` (optional, non-breaking)
 - [ ] Implement streaming in provider agents (DeepSeek, OpenAI, Anthropic)
