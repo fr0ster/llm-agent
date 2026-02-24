@@ -58,17 +58,22 @@ export class DeepSeekProvider extends BaseLLMProvider {
 
   async *streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse> {
     try {
+      const body = {
+        model: this.model,
+        messages: this.formatMessages(messages),
+        tools: tools && tools.length > 0 ? tools : undefined,
+        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+        temperature: this.config.temperature || 0.7,
+        max_tokens: this.config.maxTokens || 2000,
+        stream: true,
+      };
+
+      // DEBUG: Log the payload that causes 400
+      console.error('[DeepSeek Request]', JSON.stringify(body, null, 2));
+
       const response = await this.client.post(
         '/chat/completions',
-        {
-          model: this.model,
-          messages: this.formatMessages(messages),
-          tools: tools && tools.length > 0 ? tools : undefined,
-          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature: this.config.temperature || 0.7,
-          max_tokens: this.config.maxTokens || 2000,
-          stream: true,
-        },
+        body,
         { responseType: 'stream' },
       );
 
@@ -113,23 +118,32 @@ export class DeepSeekProvider extends BaseLLMProvider {
    * Format messages for DeepSeek API
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map((msg) => {
-      const formatted: any = {
+    const formatted: any[] = [];
+    
+    for (const msg of messages) {
+      const entry: any = {
         role: msg.role,
         content: msg.content ?? "",
       };
       
       if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-        formatted.tool_calls = msg.tool_calls;
-        formatted.content = msg.content || null; 
+        // Only include tool_calls that have a name
+        const validCalls = msg.tool_calls.filter(tc => tc.function?.name);
+        if (validCalls.length > 0) {
+          entry.tool_calls = validCalls;
+          entry.content = msg.content || null;
+        }
       }
       
-      if (msg.role === 'tool' && msg.tool_call_id) {
-        formatted.tool_call_id = msg.tool_call_id;
-        formatted.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      if (msg.role === 'tool') {
+        if (!msg.tool_call_id) continue; // SKIP broken tool messages
+        entry.tool_call_id = msg.tool_call_id;
+        entry.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
       }
       
-      return formatted;
-    });
+      formatted.push(entry);
+    }
+    
+    return formatted;
   }
 }
