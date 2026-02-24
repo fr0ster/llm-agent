@@ -6,6 +6,10 @@ import type {
   Result,
 } from './types.js';
 
+export interface IEmbedder {
+  embed(text: string, options?: CallOptions): Promise<number[]>;
+}
+
 export interface IRag {
   upsert(
     text: string,

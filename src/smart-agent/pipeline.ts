@@ -105,6 +105,27 @@ export function makeLlmFromProvider(cfg: PipelineLlmProviderConfig, temperature:
   }
 }
 
+import { VectorRag } from './rag/vector-rag.js';
+import { OllamaEmbedder } from './rag/ollama-rag.js';
+import { OpenAiEmbedder } from './rag/openai-embedder.js';
+
+// ... (imports)
+
+export interface PipelineRagStoreConfig {
+  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
+  type?: 'ollama' | 'openai' | 'in-memory';
+  /** Base URL for embedding service */
+  url?: string;
+  /** API key (for openai type) */
+  apiKey?: string;
+  /** Embedding model name */
+  model?: string;
+  /** Cosine similarity dedup threshold. Default: 0.92 */
+  dedupThreshold?: number;
+}
+
+// ... (other parts)
+
 /**
  * Creates an IRag instance from a PipelineRagStoreConfig.
  * Defaults to OllamaRag when type is absent or 'ollama'.
@@ -113,9 +134,23 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
   if (cfg.type === 'in-memory') {
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
   }
-  return new OllamaRag({
+
+  if (cfg.type === 'openai') {
+    if (!cfg.apiKey) {
+      throw new Error('OpenAI API key is required for openai RAG type');
+    }
+    const embedder = new OpenAiEmbedder({
+      apiKey: cfg.apiKey,
+      baseURL: cfg.url,
+      model: cfg.model,
+    });
+    return new VectorRag(embedder, { dedupThreshold: cfg.dedupThreshold });
+  }
+
+  // Default to Ollama
+  const embedder = new OllamaEmbedder({
     ollamaUrl: cfg.url,
     model: cfg.model,
-    dedupThreshold: cfg.dedupThreshold,
   });
+  return new VectorRag(embedder, { dedupThreshold: cfg.dedupThreshold });
 }
