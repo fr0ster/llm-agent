@@ -301,6 +301,17 @@ export class SmartAgentBuilder {
       mcpClients = connected;
     }
 
+    // ---- SmartAgent Config (needed for assembler) ------------------------
+    const agentCfg: SmartAgentConfig = {
+      maxIterations: 10,
+      maxToolCalls: 30,
+      ragQueryK: 10,
+      ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
+      historySummaryPrompt: this.cfg.prompts?.historySummary,
+      ...this.cfg.agent,
+      ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
+    };
+
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
     if (this.cfg.prompts?.classifier) classifierCfg.systemPrompt = this.cfg.prompts.classifier;
@@ -313,17 +324,6 @@ export class SmartAgentBuilder {
     };
     if (this.cfg.prompts?.system) assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
     const assembler: IContextAssembler = this._assembler ?? new ContextAssembler(assemblerCfg);
-
-    // ---- SmartAgent -------------------------------------------------------
-    const agentCfg: SmartAgentConfig = {
-      maxIterations: 10,
-      maxToolCalls: 30,
-      ragQueryK: 10,
-      ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
-      historySummaryPrompt: this.cfg.prompts?.historySummary,
-      ...this.cfg.agent,
-      ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
-    };
 
     const agent = new SmartAgent(
       {
