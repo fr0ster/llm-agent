@@ -48,6 +48,8 @@
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
     "start:smart": "node --import tsx/esm src/smart-agent/cli.ts",
+    "server:start": "npm run start:smart",
+    "client:test-stream": "node --import tsx/esm scripts/test-stream-client.ts",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
