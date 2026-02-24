@@ -214,7 +214,7 @@ export function makeAssembler(result?: Message[] | Error): IContextAssembler {
         state: RagResult[];
         tools: McpTool[];
       },
-      _toolResults: ToolCallRecord[],
+      _history: Message[],
       _opts?: CallOptions,
     ): Promise<Result<Message[], AssemblerError>> {
       const r = result ?? defaultMessages;

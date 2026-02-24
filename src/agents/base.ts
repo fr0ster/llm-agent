@@ -112,6 +112,7 @@ export abstract class BaseAgent {
   protected abstract callLLMWithTools(
     messages: Message[],
     tools: any[],
+    options?: any,
   ): Promise<{ content: string; raw?: unknown }>;
 
   /**

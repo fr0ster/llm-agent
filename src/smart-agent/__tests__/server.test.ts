@@ -57,10 +57,10 @@ function httpRequest(
 
 function makeAgent(
   result: SmartAgentResponse | OrchestratorError,
-  capture?: { text?: string },
+  capture?: { text?: any },
 ): SmartAgent {
   return {
-    async process(text: string, _opts?: CallOptions) {
+    async process(text: any, _opts?: CallOptions) {
       if (capture) {
         capture.text = text;
       }
@@ -174,7 +174,7 @@ describe('SmartAgentServer — finish_reason: tool_call_limit → length', () =>
 
 describe('SmartAgentServer — text extraction: single user message', () => {
   it('passes user message content to agent.process()', async () => {
-    const capture: { text?: string } = {};
+    const capture: { text?: any } = {};
     const agent = makeAgent(
       { content: 'ok', iterations: 1, toolCallCount: 0, stopReason: 'stop' },
       capture,
@@ -185,7 +185,9 @@ describe('SmartAgentServer — text extraction: single user message', () => {
       await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
         messages: [{ role: 'user', content: 'What is the weather?' }],
       });
-      assert.equal(capture.text, 'What is the weather?');
+      assert.deepEqual(capture.text, [
+        { role: 'user', content: 'What is the weather?' },
+      ]);
     } finally {
       await handle.close();
     }
@@ -194,7 +196,7 @@ describe('SmartAgentServer — text extraction: single user message', () => {
 
 describe('SmartAgentServer — text extraction: multi-message → last user message', () => {
   it('passes last user message content to agent.process()', async () => {
-    const capture: { text?: string } = {};
+    const capture: { text?: any } = {};
     const agent = makeAgent(
       { content: 'ok', iterations: 1, toolCallCount: 0, stopReason: 'stop' },
       capture,
@@ -202,14 +204,15 @@ describe('SmartAgentServer — text extraction: multi-message → last user mess
     const server = new SmartAgentServer(agent);
     const handle = await server.start();
     try {
+      const messages = [
+        { role: 'user', content: 'First question' },
+        { role: 'assistant', content: 'First answer' },
+        { role: 'user', content: 'Second question' },
+      ];
       await httpRequest(handle.port, 'POST', '/v1/chat/completions', {
-        messages: [
-          { role: 'user', content: 'First question' },
-          { role: 'assistant', content: 'First answer' },
-          { role: 'user', content: 'Second question' },
-        ],
+        messages,
       });
-      assert.equal(capture.text, 'Second question');
+      assert.deepEqual(capture.text, messages);
     } finally {
       await handle.close();
     }
@@ -460,7 +463,7 @@ describe('SmartAgentServer — requestTimeoutMs → signal propagated to agent',
     let receivedSignal: AbortSignal | undefined;
 
     const slowAgent: SmartAgent = {
-      async process(_text: string, opts?: CallOptions) {
+      async process(_messages: any, opts?: CallOptions) {
         receivedSignal = opts?.signal;
         await new Promise<void>((resolve) => {
           if (opts?.signal) {

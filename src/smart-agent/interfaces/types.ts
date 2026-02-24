@@ -21,6 +21,10 @@ export interface TraceContext {
 export interface CallOptions {
   trace?: TraceContext;
   signal?: AbortSignal;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  stop?: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -102,10 +106,17 @@ export interface LlmToolCall {
 
 export type LlmFinishReason = 'stop' | 'tool_calls' | 'length' | 'error';
 
+export interface LlmUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+}
+
 export interface LlmResponse {
   content: string;
   toolCalls?: LlmToolCall[];
   finishReason: LlmFinishReason;
+  usage?: LlmUsage;
   raw?: unknown;
 }
 
