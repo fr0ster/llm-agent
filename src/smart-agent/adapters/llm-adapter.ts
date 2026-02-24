@@ -154,22 +154,15 @@ function parseStreamChunk(raw: {
   // OpenAI / DeepSeek format for chunks
   if (providerRaw.choices?.[0]?.delta) {
     const delta = providerRaw.choices[0].delta;
-    const toolCalls: LlmToolCall[] = [];
+    const toolCalls: any[] = [];
 
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
-        let args: Record<string, unknown> = {};
-        if (tc.function?.arguments) {
-          try {
-            args = JSON.parse(tc.function.arguments);
-          } catch {
-            args = {};
-          }
-        }
         toolCalls.push({
+          index: tc.index,
           id: tc.id,
-          name: tc.function?.name || '',
-          arguments: args,
+          name: tc.function?.name,
+          arguments: tc.function?.arguments,
         });
       }
     }

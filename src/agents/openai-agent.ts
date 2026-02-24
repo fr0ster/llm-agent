@@ -67,12 +67,13 @@ export class OpenAIAgent extends BaseAgent {
    */
   protected async *streamLLMWithTools(
     messages: Message[],
-    _tools: any[],
-    _options?: any,
+    tools: any[],
+    options?: any,
   ): AsyncIterable<{ content: string; raw?: unknown }> {
-    // For now, tools are handled by the main loop which calls callLLMWithTools.
-    // This streaming method is primarily for the final response.
-    const stream = this.llmProvider.streamChat(messages);
+    const functions = this.convertToolsToOpenAIFunctions(tools);
+    const formattedMessages = this.formatMessagesForOpenAI(messages);
+
+    const stream = this.llmProvider.streamChat(formattedMessages, functions);
     for await (const chunk of stream) {
       yield {
         content: chunk.content,

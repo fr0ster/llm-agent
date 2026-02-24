@@ -31,11 +31,13 @@ export class DeepSeekProvider extends BaseLLMProvider {
     });
   }
 
-  async chat(messages: Message[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: any[]): Promise<LLMResponse> {
     try {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
         messages: this.formatMessages(messages),
+        tools: tools && tools.length > 0 ? tools : undefined,
+        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
         temperature: this.config.temperature || 0.7,
         max_tokens: this.config.maxTokens || 2000,
       });
@@ -54,13 +56,15 @@ export class DeepSeekProvider extends BaseLLMProvider {
     }
   }
 
-  async *streamChat(messages: Message[]): AsyncIterable<LLMResponse> {
+  async *streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse> {
     try {
       const response = await this.client.post(
         '/chat/completions',
         {
           model: this.model,
           messages: this.formatMessages(messages),
+          tools: tools && tools.length > 0 ? tools : undefined,
+          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
           temperature: this.config.temperature || 0.7,
           max_tokens: this.config.maxTokens || 2000,
           stream: true,
@@ -111,7 +115,9 @@ export class DeepSeekProvider extends BaseLLMProvider {
   private formatMessages(messages: Message[]): any[] {
     return messages.map((msg) => ({
       role: msg.role,
-      content: msg.content,
+      content: msg.content || null,
+      tool_calls: (msg as any).tool_calls,
+      tool_call_id: (msg as any).tool_call_id,
     }));
   }
 }

@@ -93,11 +93,12 @@ export class SmartAgentServer {
     req: IncomingMessage,
     res: ServerResponse,
   ): Promise<void> {
-    const { method, url } = req;
+    const { method, url: rawUrl } = req;
+    const urlPath = (rawUrl || '/').split('?')[0].replace(/\/$/, '') || '/';
 
-    if (url !== '/v1/chat/completions') {
+    if (urlPath !== '/v1/chat/completions' && urlPath !== '/chat/completions') {
       res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(jsonError(`Cannot ${method} ${url}`, 'invalid_request_error'));
+      res.end(jsonError(`Cannot ${method} ${rawUrl}`, 'invalid_request_error'));
       return;
     }
 
@@ -189,32 +190,81 @@ export class SmartAgentServer {
         const id = `chatcmpl-${randomUUID()}`;
         const created = Math.floor(Date.now() / 1000);
 
+        let firstChunk = true;
+        let lastUsage: any = null;
+
         for await (const chunk of this.agent.streamProcess(body.messages, opts)) {
           if (!chunk.ok) {
             res.write(`data: ${jsonError(chunk.error.message, 'server_error')}\n\n`);
             break;
           }
 
-          const response = {
+          if (chunk.value.usage) {
+            lastUsage = {
+              prompt_tokens: chunk.value.usage.promptTokens,
+              completion_tokens: chunk.value.usage.completionTokens,
+              total_tokens: chunk.value.usage.totalTokens,
+            };
+          }
+
+          const baseResponse = {
             id,
             object: 'chat.completion.chunk',
             created,
             model: 'smart-agent',
-            choices: [
-              {
-                index: 0,
-                delta: { content: chunk.value.content },
-                finish_reason: chunk.value.finishReason ? mapStopReason(chunk.value.finishReason as StopReason) : null,
-              },
-            ],
-            usage: chunk.value.usage ? {
-              prompt_tokens: chunk.value.usage.promptTokens,
-              completion_tokens: chunk.value.usage.completionTokens,
-              total_tokens: chunk.value.usage.totalTokens,
-            } : null,
+            usage: null,
           };
 
-          res.write(`data: ${JSON.stringify(response)}\n\n`);
+          // First chunk should include the role
+          if (firstChunk) {
+            res.write(`data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                delta: { role: 'assistant', content: chunk.value.content || '' },
+                finish_reason: null
+              }]
+            })}\n\n`);
+            firstChunk = false;
+            // If the first chunk also had a finish reason, handle it in the next loop iteration or next step
+            if (!chunk.value.finishReason) continue;
+          }
+
+          // Regular content chunk
+          if (chunk.value.content && !firstChunk) {
+            res.write(`data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                delta: { content: chunk.value.content },
+                finish_reason: null
+              }]
+            })}\n\n`);
+          }
+
+          // Finish reason in a separate chunk
+          if (chunk.value.finishReason) {
+            res.write(`data: ${JSON.stringify({
+              ...baseResponse,
+              choices: [{
+                index: 0,
+                delta: {},
+                finish_reason: mapStopReason(chunk.value.finishReason as StopReason)
+              }]
+            })}\n\n`);
+          }
+        }
+
+        // Usage chunk if we have it
+        if (lastUsage) {
+          res.write(`data: ${JSON.stringify({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [],
+            usage: lastUsage,
+          })}\n\n`);
         }
 
         res.write('data: [DONE]\n\n');

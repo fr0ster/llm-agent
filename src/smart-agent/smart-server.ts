@@ -261,19 +261,18 @@ export class SmartServer {
     streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
-    const urlPath = req.url ?? '/';
+    const rawUrl = req.url ?? '/';
+    const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
 
     for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
 
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
 
-    log({ event: 'http_request', method: req.method, url: urlPath });
+    log({ event: 'http_request', method: req.method, url: rawUrl, normalizedPath: urlPath });
 
     // GET /v1/models
     if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      // context_window is intentionally large: smart-agent manages context via RAG,
-      // so client-side context tracking is irrelevant.
       res.end(JSON.stringify({ object: 'list', data: [{ id: 'smart-agent', object: 'model', owned_by: 'smart-agent', context_window: 2000000 }] }));
       return;
     }
@@ -374,10 +373,12 @@ export class SmartServer {
         content: extractText(m.content),
       }));
 
-      // In hybrid mode, we still want to use the full history if possible
       const stream = usePassthrough
         ? streamChat(normalizedMessages, undefined, opts)
         : smartAgent.streamProcess(normalizedMessages, opts);
+
+      let firstChunk = true;
+      let lastUsage: any = null;
 
       for await (const chunk of stream) {
         if (!chunk.ok) {
@@ -385,26 +386,71 @@ export class SmartServer {
           break;
         }
 
-        const response = {
+        if (chunk.value.usage) {
+          lastUsage = {
+            prompt_tokens: chunk.value.usage.promptTokens,
+            completion_tokens: chunk.value.usage.completionTokens,
+            total_tokens: chunk.value.usage.totalTokens,
+          };
+        }
+
+        const baseResponse = {
           id,
           object: 'chat.completion.chunk',
           created,
           model: 'smart-agent',
-          choices: [
-            {
-              index: 0,
-              delta: { content: chunk.value.content },
-              finish_reason: chunk.value.finishReason ? mapStopReason(chunk.value.finishReason as StopReason) : null,
-            },
-          ],
-          usage: chunk.value.usage ? {
-            prompt_tokens: chunk.value.usage.promptTokens,
-            completion_tokens: chunk.value.usage.completionTokens,
-            total_tokens: chunk.value.usage.totalTokens,
-          } : null,
+          usage: null,
         };
 
-        res.write(`data: ${JSON.stringify(response)}\n\n`);
+        // First chunk should include the role
+        if (firstChunk) {
+          res.write(`data: ${JSON.stringify({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              delta: { role: 'assistant', content: chunk.value.content || '' },
+              finish_reason: null
+            }]
+          })}\n\n`);
+          firstChunk = false;
+          continue;
+        }
+
+        // Regular content chunk
+        if (chunk.value.content) {
+          res.write(`data: ${JSON.stringify({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              delta: { content: chunk.value.content },
+              finish_reason: null
+            }]
+          })}\n\n`);
+        }
+
+        // Finish reason in a separate chunk
+        if (chunk.value.finishReason) {
+          res.write(`data: ${JSON.stringify({
+            ...baseResponse,
+            choices: [{
+              index: 0,
+              delta: {},
+              finish_reason: mapStopReason(chunk.value.finishReason as StopReason)
+            }]
+          })}\n\n`);
+        }
+      }
+
+      // Usage chunk if requested
+      if (body.stream_options?.include_usage && lastUsage) {
+        res.write(`data: ${JSON.stringify({
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: 'smart-agent',
+          choices: [],
+          usage: lastUsage,
+        })}\n\n`);
       }
 
       res.write('data: [DONE]\n\n');

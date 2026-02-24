@@ -243,7 +243,15 @@ export class SmartAgent {
         return;
       }
 
-      const { action, retrieved, messages, toolClientMap } = preLoop.value;
+      const { action, retrieved, messages, toolClientMap, isChat } = preLoop.value;
+
+      if (isChat) {
+        const stream = this.deps.mainLlm.streamChat(messages, [], opts);
+        for await (const chunk of stream) {
+          yield chunk;
+        }
+        return;
+      }
 
       // Run tool loop with streaming for the final call
       const stream = this._runStreamingToolLoop(
@@ -274,9 +282,15 @@ export class SmartAgent {
     pipelineT0: number,
   ): Promise<Result<{
     action: Subprompt;
-    retrieved: any;
+    retrieved: {
+      facts: RagResult[];
+      feedback: RagResult[];
+      state: RagResult[];
+      tools: McpTool[];
+    };
     messages: Message[];
     toolClientMap: Map<string, IMcpClient>;
+    isChat?: boolean;
   }, OrchestratorError>> {
     const logger = this.deps.logger;
     const text = typeof textOrMessages === 'string'
@@ -329,7 +343,8 @@ export class SmartAgent {
 
     // Step 5: split into actions vs. non-actions
     const actions = subprompts.filter((sp) => sp.type === 'action');
-    const others = subprompts.filter((sp) => sp.type !== 'action');
+    const chats = subprompts.filter((sp) => sp.type === 'chat');
+    const others = subprompts.filter((sp) => sp.type !== 'action' && sp.type !== 'chat');
 
     // Step 6: upsert non-action subprompts (non-fatal)
     const ragStoreMap = new Map<string, IRag>([
@@ -352,11 +367,29 @@ export class SmartAgent {
       }),
     );
 
-    // Step 7: no actions
-    if (actions.length === 0) {
+    // If it's a chat request, return immediately with the chat flag
+    if (chats.length > 0 && actions.length === 0) {
+      const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
+      return {
+        ok: true,
+        value: {
+          action: chats[0],
+          retrieved: { facts: [], feedback: [], state: [], tools: [] },
+          messages: [
+            ...history,
+            { role: 'user', content: chats.map(c => c.text).join('\n') }
+          ],
+          toolClientMap: new Map(),
+          isChat: true
+        }
+      };
+    }
+
+    // Step 7: no actions or chat intents
+    if (actions.length === 0 && chats.length === 0) {
       return {
         ok: false,
-        error: new OrchestratorError('No actions found in prompt', 'NO_ACTIONS'),
+        error: new OrchestratorError('No intent found in prompt', 'NO_ACTIONS'),
       };
     }
 
@@ -464,7 +497,22 @@ export class SmartAgent {
       return preLoop;
     }
 
-    const { action, retrieved, messages, toolClientMap } = preLoop.value;
+    const { action, retrieved, messages, toolClientMap, isChat } = preLoop.value;
+
+    if (isChat) {
+      const resp = await this.deps.mainLlm.chat(messages, [], opts);
+      if (!resp.ok) return { ok: false, error: new OrchestratorError(resp.error.message, 'LLM_ERROR') };
+      return {
+        ok: true,
+        value: {
+          content: resp.value.content,
+          iterations: 1,
+          toolCallCount: 0,
+          stopReason: 'stop',
+          usage: resp.value.usage
+        }
+      };
+    }
 
     // Step 12: tool loop
     return this._runToolLoop(
@@ -493,6 +541,7 @@ export class SmartAgent {
     const logger = this.deps.logger;
     let toolCallCount = 0;
     let messages = initialMessages;
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
     for (let iteration = 0; ; iteration++) {
       if (opts?.signal?.aborted) {
@@ -503,76 +552,106 @@ export class SmartAgent {
       if (iteration >= this.config.maxIterations) {
         yield {
           ok: true,
-          value: { content: '', finishReason: 'length' },
+          value: { content: '', finishReason: 'length', usage },
         };
         return;
       }
 
-      // We don't know if this is the last iteration yet.
-      // But we can try to call chat() first to see if it wants tool calls.
-      // If it DOES NOT want tool calls, we should have used streamChat().
-      // This is a bit tricky. A better way: always use chat() until it's a stop reason.
-      // Then, re-run the final call with streamChat(). 
-      // Downside: double call for the final message. 
-      // Alternative: always stream and buffer tool calls.
-
-      const llmT0 = Date.now();
-      const resp = await this.deps.mainLlm.chat(
+      const stream = this.deps.mainLlm.streamChat(
         messages,
         retrieved.tools as LlmTool[],
         opts,
       );
 
-      if (!resp.ok) {
-        yield {
-          ok: false,
-          error: new OrchestratorError(resp.error.message, 'LLM_ERROR'),
-        };
-        return;
+      let content = '';
+      let finishReason: LlmFinishReason | undefined;
+      const toolCallsMap = new Map<number, {
+        id: string;
+        name: string;
+        arguments: string;
+      }>();
+
+      for await (const chunkResult of stream) {
+        if (!chunkResult.ok) {
+          yield { ok: false, error: new OrchestratorError(chunkResult.error.message, 'LLM_ERROR') };
+          return;
+        }
+
+        const chunk = chunkResult.value;
+        if (chunk.content) {
+          content += chunk.content;
+          yield { ok: true, value: { content: chunk.content } };
+        }
+
+        if (chunk.toolCalls) {
+          for (const tc of chunk.toolCalls as any[]) {
+            if (!toolCallsMap.has(tc.index)) {
+              toolCallsMap.set(tc.index, {
+                id: tc.id || '',
+                name: tc.name || '',
+                arguments: tc.arguments || '',
+              });
+            } else {
+              const existing = toolCallsMap.get(tc.index)!;
+              if (tc.id) existing.id = tc.id;
+              if (tc.name) existing.name = tc.name;
+              if (tc.arguments) existing.arguments += tc.arguments;
+            }
+          }
+        }
+
+        if (chunk.finishReason) {
+          finishReason = chunk.finishReason;
+        }
+
+        if (chunk.usage) {
+          usage.promptTokens += chunk.usage.promptTokens;
+          usage.completionTokens += chunk.usage.completionTokens;
+          usage.totalTokens += chunk.usage.totalTokens;
+        }
       }
 
-      const toolCalls = resp.value.toolCalls;
+      const toolCalls = Array.from(toolCallsMap.values()).map(tc => {
+        let args = {};
+        try {
+          args = JSON.parse(tc.arguments);
+        } catch {
+          args = {};
+        }
+        return { id: tc.id, name: tc.name, arguments: args };
+      });
 
-      // No tool calls → this was the final response. 
-      // To provide a real stream, we should have streamed this. 
-      // Since we already have the full response, we yield it as one chunk or split it.
-      if (resp.value.finishReason !== 'tool_calls' || !toolCalls?.length) {
+      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         yield {
           ok: true,
-          value: {
-            content: resp.value.content,
-            finishReason: resp.value.finishReason,
-            usage: resp.value.usage,
-          },
+          value: { content: '', finishReason: finishReason || 'stop', usage },
         };
         return;
       }
 
-      // Handle tool calls (same logic as _runToolLoop)
+      // Add assistant message with tool calls to history
       messages = [
         ...messages,
         {
-          role: 'assistant' as const,
-          content: resp.value.content || '',
-          tool_calls: toolCalls.map((tc) => ({
+          role: 'assistant',
+          content: content || null,
+          tool_calls: toolCalls.map(tc => ({
             id: tc.id,
-            type: 'function' as const,
-            function: {
-              name: tc.name,
-              arguments: JSON.stringify(tc.arguments),
-            },
-          })),
-        },
+            type: 'function',
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) }
+          }))
+        }
       ];
 
+      // Execute tool calls
       for (const toolCall of toolCalls) {
-        if (
-          this.config.maxToolCalls !== undefined &&
-          toolCallCount >= this.config.maxToolCalls
-        ) {
-          yield { ok: true, value: { content: '', finishReason: 'length' } };
+        if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) {
+          yield { ok: true, value: { content: '', finishReason: 'length', usage } };
           return;
         }
+
+        // Emit progress update
+        yield { ok: true, value: { content: `\n\n[SmartAgent: Executing ${toolCall.name}...]\n` } };
 
         const toolT0 = Date.now();
         let resultContent: string;
@@ -581,11 +660,7 @@ export class SmartAgent {
         if (!client) {
           resultContent = `Tool "${toolCall.name}" not found`;
         } else {
-          const callResult = await client.callTool(
-            toolCall.name,
-            toolCall.arguments,
-            opts,
-          );
+          const callResult = await client.callTool(toolCall.name, toolCall.arguments, opts);
           resultContent = !callResult.ok
             ? callResult.error.message
             : typeof callResult.value.content === 'string'
@@ -605,7 +680,7 @@ export class SmartAgent {
         messages = [
           ...messages,
           {
-            role: 'tool' as const,
+            role: 'tool',
             content: resultContent,
             tool_call_id: toolCall.id,
           },
