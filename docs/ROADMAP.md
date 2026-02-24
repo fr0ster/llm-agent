@@ -11,7 +11,7 @@
 - [x] Add optional `streamChat()` to `ILlm` interface
 
 ### Provider layer
-- [ ] Add optional abstract `streamLLMWithTools()` to `BaseAgent`
+- [x] Add optional abstract `streamLLMWithTools()` to `BaseAgent`
 - [ ] Implement `streamLLMWithTools()` in `OpenAIAgent` (fetch + SSE parser + tool call accumulation)
 - [ ] Implement `streamLLMWithTools()` in `DeepSeekAgent` (same as OpenAI — compatible API)
 - [ ] Implement `streamLLMWithTools()` in `AnthropicAgent` (Anthropic streaming format)

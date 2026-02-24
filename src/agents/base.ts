@@ -11,7 +11,7 @@
 
 import type { LLMProvider } from '../llm-providers/base.js';
 import { type MCPClientConfig, MCPClientWrapper } from '../mcp/client.js';
-import type { AgentResponse, Message } from '../types.js';
+import type { AgentResponse, AgentStreamChunk, Message } from '../types.js';
 
 export interface BaseAgentConfig {
   /**
@@ -113,6 +113,16 @@ export abstract class BaseAgent {
     messages: Message[],
     tools: any[],
   ): Promise<{ content: string; raw?: unknown }>;
+
+  /**
+   * Stream LLM response with tools.
+   * Optional — subclasses that support HTTP-level streaming implement this.
+   * Yields typed chunks; always ends with a { type: 'done' } chunk.
+   */
+  protected streamLLMWithTools?(
+    messages: Message[],
+    tools: any[],
+  ): AsyncGenerator<AgentStreamChunk, void, unknown>;
 
   /**
    * Clear conversation history

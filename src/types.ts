@@ -54,3 +54,13 @@ export interface LLMProviderConfig {
   temperature?: number;
   maxTokens?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Streaming types (used by BaseAgent subclasses)
+// ---------------------------------------------------------------------------
+
+export type AgentStreamChunk =
+  | { type: 'text'; delta: string }
+  | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };
