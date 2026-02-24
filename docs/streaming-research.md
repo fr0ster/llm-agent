@@ -246,7 +246,102 @@ for await (const chunk of stream) {
 
 ## 2. Cline Streaming Behavior
 
-_TODO — research in progress_
+### Incremental vs buffered
+
+Cline processes chunks **incrementally** — it does not buffer until `finish_reason`.
+Each SSE chunk is handled in a `for await (const chunk of stream)` loop in `/src/core/task/index.ts`.
+Text tokens appear in the UI as they arrive via `this.say("text", content, ..., partial=true)`.
+
+`finish_reason` is never explicitly checked — the OpenAI SDK async iterator ends naturally
+when the stream closes (server sends `[DONE]`). A server that sends `finish_reason` but keeps
+the stream open causes Cline to hang.
+
+---
+
+### Tool call delta accumulation
+
+Cline uses a dedicated `ToolCallProcessor` class (`/src/core/api/transform/tool-call-processor.ts`)
+that accumulates deltas across chunks:
+
+```typescript
+export class ToolCallProcessor {
+  *processToolCallDeltas(toolCallDeltas) {
+    for (const toolCallDelta of toolCallDeltas) {
+      if (toolCallDelta.id) this.lastToolCall.id = toolCallDelta.id
+      if (toolCallDelta.function?.name) this.lastToolCall.name = toolCallDelta.function.name
+      if (this.lastToolCall.id && this.lastToolCall.name && toolCallDelta.function?.arguments) {
+        yield { type: 'tool_calls', tool_call: { ... } }
+      }
+    }
+  }
+}
+```
+
+Arguments are parsed incrementally with `@streamparser/json`.
+Tool **execution** happens only after the stream ends: finalized tool use blocks are collected
+via `toolUseHandler.getAllFinalizedToolUses()` after the loop, then executed.
+
+---
+
+### Native tool calls vs XML mode
+
+Cline has two modes for tool calling:
+
+**XML mode (default for custom OpenAI-compatible endpoints):**
+- No `tools` array is sent to the API
+- Server must return tool calls as XML in `delta.content` (e.g. `<read_file>...</read_file>`)
+- `parseAssistantMessageV2()` re-parses the accumulated text on every chunk looking for XML tags
+- Text emitted in `delta.content` that doesn't match XML tags is shown as plain text
+
+**Native tool calls mode (`nativeToolCallEnabled: true`):**
+- Cline sends a `tools` array and expects `delta.tool_calls` in chunks
+- Text emitted in `delta.content` is shown as plain text and NOT executed as a tool
+- Must be explicitly enabled in global state — not automatic for custom endpoints
+
+**Implication for SmartAgent:** if SmartAgent emits tool-call events as plain text in
+`delta.content`, Cline will display them as text (not execute them) when in native mode.
+In XML mode, the server must produce Cline-compatible XML.
+
+---
+
+### SSE parser
+
+Cline uses the **official `openai` npm SDK** — no custom SSE parser:
+
+```typescript
+import OpenAI from 'openai'
+const stream = await client.chat.completions.create({
+  model, messages, stream: true,
+  stream_options: { include_usage: true },
+  ...getOpenAIToolParams(tools),
+})
+for await (const chunk of stream) { /* process */ }
+```
+
+---
+
+### Known compatibility issues with custom OpenAI-compatible servers
+
+| Issue | Detail |
+|---|---|
+| `usage: null` breaks context bar | Cline reads `chunk.usage.prompt_tokens` unconditionally — returns 0 if null |
+| Tool ID length limit | Max 40 chars (`MAX_TOOL_CALL_ID_LENGTH`). Longer IDs are silently truncated |
+| `stream_options` rejection | Cline always sends `stream_options: { include_usage: true }` — servers that reject it return 400 |
+| Native tool calls not auto-enabled | Must explicitly set `nativeToolCallEnabled: true` for custom endpoints |
+| `finish_reason` not checked | Cline relies on stream close, not `finish_reason`. Wrong `finish_reason` value has no effect |
+
+---
+
+### Key source files
+
+| File | Role |
+|---|---|
+| `/src/core/api/providers/openai.ts` | OpenAI-compatible provider; iterates chunks |
+| `/src/core/api/transform/tool-call-processor.ts` | Accumulates tool call deltas |
+| `/src/core/task/StreamResponseHandler.ts` | `ToolUseHandler` (JSON streaming parser) |
+| `/src/core/task/index.ts` | Main `for await` loop (~line 2649) |
+| `/src/core/assistant-message/parse-assistant-message.ts` | XML-based tool call parser |
+| `/src/shared/net.ts` | `createOpenAIClient` factory |
 
 ---
 
