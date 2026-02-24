@@ -86,6 +86,11 @@ export interface SmartAgentConfig {
   ragTranslatePrompt?: string;
   /** Custom prompt for conversation history summarization. */
   historySummaryPrompt?: string;
+  /** 
+   * History length (in messages) that triggers auto-summarization. 
+   * Default: 10.
+   */
+  historyAutoSummarizeLimit?: number;
 }
 
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
@@ -330,7 +335,8 @@ export class SmartAgent {
     // Step 3.6: summarize history if needed
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     let processedHistory = history;
-    if (this.deps.helperLlm && history.length > 10) {
+    const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
+    if (this.deps.helperLlm && history.length > summarizeLimit) {
       const summaryResult = await this._summarizeHistory(history, opts);
       if (summaryResult.ok) {
         processedHistory = summaryResult.value;
@@ -965,7 +971,9 @@ export class SmartAgent {
 
     const defaultPrompt = 'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.';
 
-    const result = await this.deps.mainLlm.chat(
+    const llm = this.deps.helperLlm || this.deps.mainLlm;
+
+    const result = await llm.chat(
       [
         {
           role: 'system',

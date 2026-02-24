@@ -82,6 +82,7 @@ agent:
   maxToolCalls: 30
   ragQueryK: 10
   showReasoning: false                # Explain strategy at start of response
+  historyAutoSummarizeLimit: 10       # History length to trigger compression
 
 # prompts:
 #   system: "You are a helpful assistant specialized in SAP ABAP development."
@@ -276,6 +277,7 @@ export function resolveSmartServerConfig(
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
       showReasoning: Boolean(args['agent-show-reasoning'] ?? get(yaml, 'agent', 'showReasoning') ?? false),
+      historyAutoSummarizeLimit: Number(get(yaml, 'agent', 'historyAutoSummarizeLimit') ?? 10),
     },
 
     prompts:
