@@ -88,7 +88,7 @@ export class AssemblerError extends SmartAgentError {
 // Subprompt
 // ---------------------------------------------------------------------------
 
-export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action';
+export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action' | 'chat';
 
 export interface Subprompt {
   type: SubpromptType;

@@ -32,18 +32,18 @@ const VALID_TYPES: ReadonlySet<string> = new Set<SubpromptType>([
   'feedback',
   'state',
   'action',
+  'chat',
 ]);
 
-const DEFAULT_SYSTEM_PROMPT = `You are an intent classifier. Given a user message, decompose it into one or
-more subprompts and classify each as exactly one of:
-  - "fact"     : a factual statement to remember
-  - "feedback" : a correction or evaluation of a previous response
-  - "state"    : current user context / preferences / session state
-  - "action"   : a request to do something or answer a question
+const DEFAULT_SYSTEM_PROMPT = `You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
+  - "fact"     : a factual statement to remember for future sessions
+  - "feedback" : a correction or evaluation of your previous response
+  - "state"    : user context, preferences, or session-specific settings
+  - "action"   : a request to perform a task using tools, analyze a codebase, or do engineering work
+  - "chat"     : general questions, simple math, small talk, or any request that DOES NOT require tools or project context
 
-Return ONLY a valid JSON array with no markdown fences.
-Each element: { "type": "<type>", "text": "<subprompt text>" }
-If the message fits one intent, return a single-element array.`;
+Return ONLY a valid JSON array of { "type": "<type>", "text": "<subprompt text>" }.
+If the message is simple math or a greeting, always use "chat".`;
 
 // ---------------------------------------------------------------------------
 // Module-private helpers

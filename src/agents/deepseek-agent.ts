@@ -100,10 +100,13 @@ export class DeepSeekAgent extends BaseAgent {
    */
   protected async *streamLLMWithTools(
     messages: Message[],
-    _tools: any[],
+    tools: any[],
     _options?: any,
   ): AsyncIterable<{ content: string; raw?: unknown }> {
-    const stream = this.llmProvider.streamChat(messages);
+    const functions = this.convertToolsToFunctions(tools);
+    const formattedMessages = this.formatMessagesForDeepSeek(messages);
+
+    const stream = this.llmProvider.streamChat(formattedMessages, functions);
     for await (const chunk of stream) {
       yield {
         content: chunk.content,

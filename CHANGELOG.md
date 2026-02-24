@@ -7,6 +7,30 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.0.2] — 2026-02-24
+
+### Summary
+Incremental release focused on real streaming support, OpenAI SSE compliance, and fast-path chat 
+intents. Fixes tool-calling protocol issues with DeepSeek/OpenAI.
+
+### Added
+- **Real Incremental Streaming:** True per-token streaming in `SmartAgent` and `SmartServer`.
+- **Chat Intent Fast-path:** New `chat` subprompt type for non-engineering requests (math, greetings) 
+  that skips RAG and tool-loop for near-instant responses.
+- **Progress Updates:** Tool execution status streamed to client as content deltas.
+- **OpenAI SSE Compliance:** Server now emits role in the first chunk and finish_reason in a 
+  separate chunk, fixing parse errors in some clients (e.g. Cline).
+- **Streaming Usage:** Support for `stream_options.include_usage` with a dedicated usage chunk.
+
+### Fixed
+- **Tool-calling Protocol:** Fixed 400 Bad Request from DeepSeek by preserving `tool_calls` and 
+  `tool_call_id` in message history and using `content: null` for assistant messages with tools.
+- **Streaming Parser:** Improved SSE chunk parsing for incremental tool deltas.
+- **URL Matching:** More robust path matching in `SmartServer` (handles trailing slashes and 
+  query parameters).
+
+---
+
 ## [1.0.1] — 2026-02-24
 
 ### Summary
