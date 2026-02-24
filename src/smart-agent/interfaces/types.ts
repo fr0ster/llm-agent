@@ -110,6 +110,16 @@ export interface LlmResponse {
 }
 
 // ---------------------------------------------------------------------------
+// Streaming types
+// ---------------------------------------------------------------------------
+
+export type LlmStreamChunk =
+  | { type: 'text'; delta: string }
+  | { type: 'tool_calls'; toolCalls: LlmToolCall[] }
+  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | { type: 'done'; finishReason: LlmFinishReason };
+
+// ---------------------------------------------------------------------------
 // MCP types
 // ---------------------------------------------------------------------------
 

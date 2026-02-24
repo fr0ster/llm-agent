@@ -4,11 +4,25 @@
 
 - [x] Research: OpenAI SSE wire format (tool_calls deltas, finish_reason, stream_options)
 - [x] Research: how Cline processes streaming chunks on the client side
-- [ ] Add `streamChat() → AsyncGenerator<LlmChunk>` to `ILlm` (optional, non-breaking)
-- [ ] Implement streaming in provider agents (DeepSeek, OpenAI, Anthropic)
-- [ ] Update `LlmAdapter` and `TokenCountingLlm` to pass through the stream
-- [ ] Add `SmartAgent.processStream()` — yields text chunks + tool-call events per subprompt
-- [ ] Update `SmartServer` to pipe `processStream()` into live SSE connection
+- [x] Research: reference implementations (LiteLLM, Ollama, vLLM)
+
+### Types & interfaces
+- [x] Add `LlmStreamChunk` union type to `interfaces/types.ts`
+- [x] Add optional `streamChat()` to `ILlm` interface
+
+### Provider layer
+- [ ] Add optional abstract `streamLLMWithTools()` to `BaseAgent`
+- [ ] Implement `streamLLMWithTools()` in `OpenAIAgent` (fetch + SSE parser + tool call accumulation)
+- [ ] Implement `streamLLMWithTools()` in `DeepSeekAgent` (same as OpenAI — compatible API)
+- [ ] Implement `streamLLMWithTools()` in `AnthropicAgent` (Anthropic streaming format)
+
+### Adapter layer
+- [ ] Implement `streamChat()` in `LlmAdapter` (delegates to `agent.streamLLMWithTools()`)
+- [ ] Implement `streamChat()` in `TokenCountingLlm` (wraps inner, accumulates usage from usage chunk)
+
+### Orchestration
+- [ ] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
+- [ ] Update `SmartServer._handleChat()` to pipe `processStream()` into live SSE connection
 
 ## Phase 13 — OllamaRag Production Hardening
 
