@@ -4,6 +4,7 @@ import type {
   CallOptions,
   LlmError,
   LlmResponse,
+  LlmStreamChunk,
   LlmTool,
   Result,
 } from '../interfaces/types.js';
@@ -65,6 +66,27 @@ export class TokenCountingLlm implements ILlm {
     }
 
     return result;
+  }
+
+  async *streamChat(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    if (!this.inner.streamChat) {
+      throw new Error('Inner ILlm does not support streaming');
+    }
+
+    this.usage.requests++;
+
+    for await (const chunk of this.inner.streamChat(messages, tools, options)) {
+      if (chunk.type === 'usage') {
+        this.usage.prompt_tokens += chunk.promptTokens;
+        this.usage.completion_tokens += chunk.completionTokens;
+        this.usage.total_tokens += chunk.promptTokens + chunk.completionTokens;
+      }
+      yield chunk;
+    }
   }
 
   /** Returns a snapshot of accumulated usage. */

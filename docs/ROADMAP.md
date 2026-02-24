@@ -17,8 +17,8 @@
 - [x] Implement `streamLLMWithTools()` in `AnthropicAgent` (Anthropic streaming format)
 
 ### Adapter layer
-- [ ] Implement `streamChat()` in `LlmAdapter` (delegates to `agent.streamLLMWithTools()`)
-- [ ] Implement `streamChat()` in `TokenCountingLlm` (wraps inner, accumulates usage from usage chunk)
+- [x] Implement `streamChat()` in `LlmAdapter` (delegates to `agent.streamLLMWithTools()`)
+- [x] Implement `streamChat()` in `TokenCountingLlm` (wraps inner, accumulates usage from usage chunk)
 
 ### Orchestration
 - [ ] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
@@ -57,9 +57,27 @@ pipeline:
 - [ ] Add `ollamaTimeoutMs` config option and retry with backoff on embed API failures
 - [ ] Health-check on startup: warn if embedder endpoint is unreachable
 
-## Phase 14 — Beta Testing
+## Phase 14 — LLM Reasoning Debug Mode
 
-Run after Phase 12. Scenarios in `docs/BETA_TESTING_PLAN.md`.
+When debug mode is enabled, the agent injects an instruction into the system prompt
+requiring the LLM to explain its reasoning before every action or tool call.
+Reasoning appears in the stream as a typed chunk so it can be displayed separately
+in the UI or suppressed in production.
+
+```yaml
+debug:
+  llmReasoning: true   # inject reasoning instruction into system prompt
+```
+
+- [ ] Add `debug.llmReasoning` flag to `SmartServerConfig` and YAML schema
+- [ ] In `ContextAssembler` (or `SmartAgent`): when flag is set, append reasoning instruction to system message
+- [ ] Add `{ type: 'reasoning', text: string }` chunk variant to `LlmStreamChunk` / `AgentStreamChunk`
+- [ ] Parse `<reasoning>` or `<thinking>` blocks from streamed text and re-emit as reasoning chunks
+- [ ] `SmartServer`: include reasoning chunks in SSE stream (or filter them based on a separate `includeReasoning` flag)
+
+## Phase 15 — Beta Testing
+
+Run after Phase 12–14. Scenarios in `docs/BETA_TESTING_PLAN.md`.
 
 - [ ] T1 — First-run config generation
 - [ ] T2 — Minimal startup (in-memory RAG, no MCP)

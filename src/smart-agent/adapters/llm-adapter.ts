@@ -14,6 +14,7 @@ import {
   type CallOptions,
   LlmError,
   type LlmResponse,
+  type LlmStreamChunk,
   type LlmTool,
   type LlmToolCall,
   type Result,
@@ -144,6 +145,40 @@ export class LlmAdapter implements ILlm {
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
       return { ok: false, error: new LlmError(String(err)) };
+    }
+  }
+
+  async *streamChat(
+    messages: Message[],
+    tools?: LlmTool[],
+    options?: CallOptions,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    // biome-ignore lint/suspicious/noExplicitAny: intentional protected-access workaround
+    const agentStream = (this.agent as any).streamLLMWithTools as
+      | ((messages: Message[], tools: unknown[]) => AsyncGenerator<LlmStreamChunk, void, unknown>)
+      | undefined;
+
+    if (!agentStream) {
+      throw new LlmError('This provider does not support streaming', 'STREAMING_NOT_SUPPORTED');
+    }
+
+    if (options?.signal?.aborted) {
+      throw new LlmError('Aborted', 'ABORTED');
+    }
+
+    const mcpTools = tools?.map((t) => ({
+      name: t.name,
+      description: t.description,
+      inputSchema: t.inputSchema,
+    })) ?? [];
+
+    const gen = agentStream.call(this.agent, messages, mcpTools);
+
+    for await (const chunk of gen) {
+      if (options?.signal?.aborted) {
+        throw new LlmError('Aborted', 'ABORTED');
+      }
+      yield chunk as LlmStreamChunk;
     }
   }
 }
