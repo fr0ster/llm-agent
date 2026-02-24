@@ -132,6 +132,7 @@ if (envArg) {
 // ---------------------------------------------------------------------------
 
 const configArg = args['config'] as string | undefined;
+const DEFAULT_CONFIG_FILE = 'smart-server.yaml';
 
 // If --config given but file does not exist → generate template and exit
 if (configArg && !fs.existsSync(configArg)) {
@@ -140,9 +141,19 @@ if (configArg && !fs.existsSync(configArg)) {
   process.exit(0);
 }
 
-// Auto-detect existing config file
-const configPath = configArg ?? (fs.existsSync('smart-server.yaml') ? 'smart-server.yaml' : null);
-const yaml = configPath ? loadYamlConfig(path.resolve(configPath)) : {};
+// No --config and no smart-server.yaml in cwd → generate default template and exit
+if (!configArg && !fs.existsSync(DEFAULT_CONFIG_FILE)) {
+  generateConfigTemplate(DEFAULT_CONFIG_FILE);
+  process.stderr.write(
+    `No config file found. Created ${DEFAULT_CONFIG_FILE} with defaults.\n` +
+    `Put your API keys in .env, adjust settings in ${DEFAULT_CONFIG_FILE}, then run llm-agent again.\n`,
+  );
+  process.exit(0);
+}
+
+// Load config file (explicit path or auto-detected default)
+const configPath = configArg ?? DEFAULT_CONFIG_FILE;
+const yaml = loadYamlConfig(path.resolve(configPath));
 
 // ---------------------------------------------------------------------------
 // Merge: CLI > YAML > env vars > defaults

@@ -150,22 +150,30 @@ const get = (obj: any, ...keys: string[]): any => keys.reduce((o, k) => o?.[k], 
 
 /**
  * Merge: CLI args > YAML config > env vars > defaults.
- * Throws Error if apiKey is empty — caller must catch and exit(1).
+ * Throws Error if no API key can be resolved — caller must catch and exit(1).
+ * When pipeline.llm.main is present its apiKey is used as fallback, so the
+ * flat llm.apiKey is not required.
  */
 export function resolveSmartServerConfig(
   args: ResolveConfigArgs = {},
   yaml: YamlConfig = {},
   env: NodeJS.ProcessEnv = process.env,
 ): Omit<SmartServerConfig, 'log'> {
-  const apiKey =
+  const flatApiKey =
     (args['llm-api-key'] as string | undefined) ??
     get(yaml, 'llm', 'apiKey') ??
     env['DEEPSEEK_API_KEY'] ??
     '';
 
-  if (!apiKey) {
+  // pipeline.llm.main.apiKey serves as fallback when the flat section is absent
+  const pipelineApiKey = get(yaml, 'pipeline', 'llm', 'main', 'apiKey') as string | undefined;
+  const hasPipelineLlm = !!get(yaml, 'pipeline', 'llm', 'main');
+
+  const apiKey = flatApiKey || pipelineApiKey || '';
+
+  if (!apiKey && !hasPipelineLlm) {
     throw new Error(
-      'DeepSeek API key is required. Use --llm-api-key, YAML llm.apiKey, or DEEPSEEK_API_KEY env var.',
+      'LLM API key is required. Set --llm-api-key, YAML llm.apiKey, DEEPSEEK_API_KEY, or pipeline.llm.main.apiKey.',
     );
   }
 
