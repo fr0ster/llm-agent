@@ -1,10 +1,5 @@
 /**
  * SmartServer — embeddable OpenAI-compatible HTTP server backed by SmartAgent.
- *
- * Can be used standalone (via CLI) or embedded in any Node.js application:
- *
- *   const server = new SmartServer({ llm: { apiKey: 'sk-...' } });
- *   const { port, close } = await server.start();
  */
 
 import { randomUUID } from 'node:crypto';
@@ -24,121 +19,63 @@ import { makeLlmFromProvider, makeRagFromStoreConfig, type PipelineConfig } from
 // ---------------------------------------------------------------------------
 
 export interface SmartServerLlmConfig {
-  /** DeepSeek API key (required) */
   apiKey: string;
-  /** Default: 'deepseek-chat' */
   model?: string;
-  /** Main LLM temperature. Default: 0.7 */
   temperature?: number;
-  /** Classifier LLM temperature. Default: 0.1 */
+  maxTokens?: number;
   classifierTemperature?: number;
 }
 
 export interface SmartServerRagConfig {
-  /** 'ollama' uses real neural embeddings; 'in-memory' uses bag-of-words. Default: 'ollama' */
-  type?: 'ollama' | 'in-memory';
-  /** Ollama base URL. Default: 'http://localhost:11434' */
+  type?: 'ollama' | 'openai' | 'in-memory';
   url?: string;
-  /** Ollama embedding model. Default: 'nomic-embed-text' */
   model?: string;
-  /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  vectorWeight?: number;
+  keywordWeight?: number;
 }
 
 export interface SmartServerMcpConfig {
   type: 'http' | 'stdio';
-  /** HTTP: MCP endpoint URL */
   url?: string;
-  /** stdio: command to spawn */
   command?: string;
-  /** stdio: command arguments */
   args?: string[];
 }
 
 export interface SmartServerAgentConfig {
-  /** Max LLM iterations in tool loop. Default: 10 */
   maxIterations?: number;
-  /** Max total tool calls. Default: 30 */
   maxToolCalls?: number;
-  /** RAG results per query. Default: 5 */
   ragQueryK?: number;
-  /** Instruct the agent to explain its strategy. Default: false */
   showReasoning?: boolean;
-  /** History length that triggers auto-summarization. Default: 10 */
   historyAutoSummarizeLimit?: number;
 }
 
 export interface SmartServerPromptsConfig {
-  /**
-   * Preamble prepended to the system message assembled by ContextAssembler.
-   * Use it to give the agent a persona or domain instructions.
-   */
   system?: string;
-  /**
-   * Override the intent-classifier system prompt.
-   * Must instruct the LLM to return a JSON array of { type, text } objects.
-   */
   classifier?: string;
-  /**
-   * Instruction for the reasoning/strategy block (showReasoning mode).
-   */
   reasoning?: string;
-  /**
-   * Prompt for translating user queries into English for RAG retrieval.
-   */
   ragTranslate?: string;
-  /**
-   * Prompt for summarizing long conversation history.
-   */
   historySummary?: string;
 }
 
-/**
- * Request routing mode:
- * - `smart`      — all requests go through SmartAgent (RAG tool selection). Best for SAP/ABAP work.
- * - `passthrough` — all requests go directly to the LLM, no agent. Preserves client tool protocols.
- * - `hybrid`     — auto-detect: Cline client → passthrough, everything else → SmartAgent. Default.
- */
 export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
 
 export interface SmartServerConfig {
-  /** HTTP server port. Default: 4004 */
   port?: number;
-  /** Bind host. Default: '0.0.0.0' */
   host?: string;
-  /** LLM provider config (required) */
   llm: SmartServerLlmConfig;
-  /** RAG / embeddings config. Default: ollama with nomic-embed-text */
   rag?: SmartServerRagConfig;
-  /** MCP connection. If omitted, agent runs without tools */
   mcp?: SmartServerMcpConfig;
-  /** SmartAgent orchestration config */
   agent?: SmartServerAgentConfig;
-  /** Customise system / classifier prompts. */
   prompts?: SmartServerPromptsConfig;
-  /**
-   * Request routing mode. Default: 'hybrid'.
-   * See SmartServerMode for details.
-   */
   mode?: SmartServerMode;
-  /**
-   * Optional pipeline overrides. When present, takes precedence over the flat
-   * llm / rag / mcp fields for the components it specifies.
-   */
   pipeline?: PipelineConfig;
-  /**
-   * Log callback. Called for every internal event.
-   * Default: no-op. CLI passes a file-writer or console-writer.
-   */
   log?: (event: Record<string, unknown>) => void;
 }
 
 export interface SmartServerHandle {
-  /** Actual bound port */
   port: number;
-  /** Gracefully close the HTTP server and MCP connections */
   close(): Promise<void>;
-  /** Accumulated LLM token usage (prompt + completion across all requests) */
   getUsage(): TokenUsage;
 }
 
@@ -196,9 +133,6 @@ export class SmartServer {
     const fileLogger: ILogger = { log: (e) => log(e as unknown as Record<string, unknown>) };
     const pipeline = this.cfg.pipeline;
 
-    // ---- Build SmartAgent via builder -------------------------------------
-    // pipeline.mcp (if present) replaces the flat mcp field so that multiple
-    // MCP servers can be connected simultaneously.
     let builder = new SmartAgentBuilder({
       llm: this.cfg.llm,
       rag: this.cfg.rag,
@@ -207,23 +141,17 @@ export class SmartServer {
       prompts: this.cfg.prompts,
     }).withLogger(fileLogger);
 
-    // Apply pipeline overrides — only the components explicitly specified
     if (pipeline?.llm?.main) {
       const temp = pipeline.llm.main.temperature ?? 0.7;
       builder = builder.withMainLlm(makeLlmFromProvider(pipeline.llm.main, temp));
-
-      // If no explicit classifier, reuse main config at classifier temperature so
-      // the builder never falls back to the (potentially absent) flat llm.apiKey.
       const classifierCfg = pipeline.llm.classifier ?? pipeline.llm.main;
       const classifierTemp = pipeline.llm.classifier?.temperature ?? 0.1;
       builder = builder.withClassifierLlm(makeLlmFromProvider(classifierCfg, classifierTemp));
-
       if (pipeline.llm.helper) {
         const helperTemp = pipeline.llm.helper.temperature ?? 0.1;
         builder = builder.withHelperLlm(makeLlmFromProvider(pipeline.llm.helper, helperTemp));
       }
     } else if (pipeline?.llm?.classifier) {
-      // Classifier override without main override — unusual but valid
       const temp = pipeline.llm.classifier.temperature ?? 0.1;
       builder = builder.withClassifierLlm(makeLlmFromProvider(pipeline.llm.classifier, temp));
     }
@@ -236,10 +164,8 @@ export class SmartServer {
     }
 
     const agentHandle = await builder.build();
-
     const { agent: smartAgent, chat, streamChat, getUsage, close: closeAgent } = agentHandle;
 
-    // ---- HTTP server -------------------------------------------------------
     const server = http.createServer((req, res) =>
       this._handle(req, res, getUsage, smartAgent, chat, streamChat, log).catch((err) => {
         if (!res.headersSent) {
@@ -269,10 +195,6 @@ export class SmartServer {
     });
   }
 
-  // -------------------------------------------------------------------------
-  // Request handler
-  // -------------------------------------------------------------------------
-
   private async _handle(
     req: IncomingMessage,
     res: ServerResponse,
@@ -284,33 +206,24 @@ export class SmartServer {
   ): Promise<void> {
     const rawUrl = req.url ?? '/';
     const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
-
     for (const [k, v] of Object.entries(CORS_HEADERS)) res.setHeader(k, v);
-
     if (req.method === 'OPTIONS') { res.writeHead(204); res.end(); return; }
-
     log({ event: 'http_request', method: req.method, url: rawUrl, normalizedPath: urlPath });
 
-    // GET /v1/models
     if (req.method === 'GET' && (urlPath === '/v1/models' || urlPath === '/models')) {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ object: 'list', data: [{ id: 'smart-agent', object: 'model', owned_by: 'smart-agent', context_window: 2000000 }] }));
       return;
     }
-
-    // GET /v1/usage
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getUsage()));
       return;
     }
-
-    // POST /v1/chat/completions
     if (req.method === 'POST' && (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')) {
       await this._handleChat(req, res, getUsage, smartAgent, chat, streamChat, log);
       return;
     }
-
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'));
   }
@@ -325,33 +238,30 @@ export class SmartServer {
     log: (e: Record<string, unknown>) => void,
   ): Promise<void> {
     const rawBody = await readBody(req);
-
     let parsed: unknown;
     try { parsed = JSON.parse(rawBody); } catch {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
       return;
     }
-
     if (typeof parsed !== 'object' || parsed === null || !Array.isArray((parsed as Record<string, unknown>).messages)) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
       res.end(jsonError('messages must be a non-empty array', 'invalid_request_error'));
       return;
     }
 
-    type ContentBlock = { type: string; text?: string };
-    type MsgContent = string | ContentBlock[];
     const body = parsed as {
-      messages: Array<{ role: string; content: MsgContent }>;
+      messages: Array<{ role: string; content: any }>;
+      tools?: any[];
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
     };
 
-    const extractText = (c: MsgContent): string => {
+    const extractText = (c: any): string => {
       if (c === null || c === undefined) return '';
       if (typeof c === 'string') return c;
       if (!Array.isArray(c)) return '';
-      return c.filter((b) => b.type === 'text' && b.text).map((b) => b.text!).join('\n');
+      return c.filter((b: any) => b.type === 'text' && b.text).map((b: any) => b.text!).join('\n');
     };
 
     const userMessages = body.messages.filter((m) => m.role === 'user');
@@ -361,43 +271,25 @@ export class SmartServer {
       return;
     }
 
-    // Resolve effective routing mode
-    const serverMode = this.cfg.mode ?? 'hybrid';
-    const isCline =
-      serverMode === 'hybrid' &&
-      (() => {
-        const systemMsg = body.messages.find((m) => m.role === 'system');
-        return typeof systemMsg?.content === 'string' && systemMsg.content.trimStart().startsWith('You are Cline');
-      })();
-    const usePassthrough = serverMode === 'passthrough' || isCline;
-
     const t0 = Date.now();
-    log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
+    log({ event: 'request_start', stream: body.stream ?? false });
 
-    // Helper to get options
     const opts = {
       stream: body.stream,
+      externalTools: body.tools,
     };
 
-    if (body.stream) {
-      res.writeHead(200, {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        Connection: 'keep-alive',
-      });
+    const normalizedMessages = body.messages.map((m) => ({
+      role: m.role as Message['role'],
+      content: extractText(m.content),
+    }));
 
+    if (body.stream) {
+      res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
 
-      const normalizedMessages = body.messages.map((m) => ({
-        role: m.role as Message['role'],
-        content: extractText(m.content),
-      }));
-
-      const stream = usePassthrough
-        ? streamChat(normalizedMessages, undefined, opts)
-        : smartAgent.streamProcess(normalizedMessages, opts);
-
+      const stream = smartAgent.streamProcess(normalizedMessages, opts);
       let firstChunk = true;
       let lastUsage: any = null;
 
@@ -406,7 +298,6 @@ export class SmartServer {
           res.write(`data: ${jsonError(chunk.error.message, 'server_error')}\n\n`);
           break;
         }
-
         if (chunk.value.usage) {
           lastUsage = {
             prompt_tokens: chunk.value.usage.promptTokens,
@@ -414,30 +305,14 @@ export class SmartServer {
             total_tokens: chunk.value.usage.totalTokens,
           };
         }
+        const baseResponse = { id, object: 'chat.completion.chunk', created, model: 'smart-agent', usage: null };
 
-        const baseResponse = {
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: 'smart-agent',
-          usage: null,
-        };
-
-        // First chunk should include the role
         if (firstChunk) {
-          res.write(`data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              delta: { role: 'assistant', content: chunk.value.content || '' },
-              finish_reason: null
-            }]
-          })}\n\n`);
+          res.write(`data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: { role: 'assistant', content: chunk.value.content || '' }, finish_reason: null }] })}\n\n`);
           firstChunk = false;
-          continue;
+          if (!chunk.value.finishReason && !chunk.value.toolCalls) continue;
         }
 
-        // Regular content or tool_calls chunk
         if (chunk.value.content || chunk.value.toolCalls) {
           const delta: any = {};
           if (chunk.value.content) delta.content = chunk.value.content;
@@ -446,86 +321,32 @@ export class SmartServer {
               index: tc.index,
               id: tc.id,
               type: 'function',
-              function: {
-                name: tc.name,
-                arguments: tc.arguments,
-              },
+              function: { name: tc.name, arguments: tc.arguments },
             }));
           }
-
-          res.write(`data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              delta,
-              finish_reason: null
-            }]
-          })}\n\n`);
+          res.write(`data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);
         }
 
-        // Finish reason in a separate chunk
         if (chunk.value.finishReason) {
-          res.write(`data: ${JSON.stringify({
-            ...baseResponse,
-            choices: [{
-              index: 0,
-              delta: {},
-              finish_reason: mapStopReason(chunk.value.finishReason as StopReason)
-            }]
-          })}\n\n`);
+          res.write(`data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: mapStopReason(chunk.value.finishReason as StopReason) }] })}\n\n`);
         }
       }
 
-      // Usage chunk if requested
       if (body.stream_options?.include_usage && lastUsage) {
-        res.write(`data: ${JSON.stringify({
-          id,
-          object: 'chat.completion.chunk',
-          created,
-          model: 'smart-agent',
-          choices: [],
-          usage: lastUsage,
-        })}\n\n`);
+        res.write(`data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: lastUsage })}\n\n`);
       }
-
       res.write('data: [DONE]\n\n');
       res.end();
       return;
     }
 
-    let finalContent: string;
-    let finalFinishReason: 'stop' | 'length';
-    let finalUsage: any = null;
-
-    const normalizedMessages = body.messages.map((m) => ({
-      role: m.role as Message['role'],
-      content: extractText(m.content),
-    }));
-
-    if (usePassthrough) {
-      const llmResult = await chat(normalizedMessages);
-      log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
-      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
-      finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
-      if (llmResult.ok && llmResult.value.usage) {
-        finalUsage = {
-          prompt_tokens: llmResult.value.usage.promptTokens,
-          completion_tokens: llmResult.value.usage.completionTokens,
-          total_tokens: llmResult.value.usage.totalTokens,
-        };
-      }
-    } else {
-      const result = await smartAgent.process(normalizedMessages);
-      log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
-      finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
-      if (result.ok && result.value.usage) {
-        finalUsage = {
-          prompt_tokens: result.value.usage.promptTokens,
-          completion_tokens: result.value.usage.completionTokens,
-          total_tokens: result.value.usage.totalTokens,
-        };
-      }
+    const result = await smartAgent.process(normalizedMessages, opts);
+    log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
+    const finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+    const finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+    let finalUsage = null;
+    if (result.ok && result.value.usage) {
+      finalUsage = { prompt_tokens: result.value.usage.promptTokens, completion_tokens: result.value.usage.completionTokens, total_tokens: result.value.usage.totalTokens };
     }
 
     res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -534,11 +355,7 @@ export class SmartServer {
       object: 'chat.completion',
       created: Math.floor(Date.now() / 1000),
       model: 'smart-agent',
-      choices: [{
-        index: 0,
-        message: { role: 'assistant', content: finalContent },
-        finish_reason: finalFinishReason
-      }],
+      choices: [{ index: 0, message: { role: 'assistant', content: finalContent }, finish_reason: finalFinishReason }],
       usage: finalUsage || { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 }
     }));
   }

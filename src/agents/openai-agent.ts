@@ -71,9 +71,8 @@ export class OpenAIAgent extends BaseAgent {
     options?: any,
   ): AsyncIterable<{ content: string; raw?: unknown }> {
     const functions = this.convertToolsToOpenAIFunctions(tools);
-    const formattedMessages = this.formatMessagesForOpenAI(messages);
 
-    const stream = this.llmProvider.streamChat(formattedMessages, functions);
+    const stream = this.llmProvider.streamChat(messages, functions);
     for await (const chunk of stream) {
       yield {
         content: chunk.content,

@@ -88,13 +88,13 @@ agent:
 #   system: "You are a helpful assistant specialized in SAP ABAP development."
 #   classifier: |
 #     You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
-#       - "fact"     : a factual statement to remember for future sessions
-#       - "feedback" : a correction or evaluation of your previous response
-#       - "state"    : user context, preferences, or session-specific settings
-#       - "action"   : a request to perform a task using tools, analyze a codebase, or do engineering work
-#       - "chat"     : general questions, simple math, small talk, or any request that DOES NOT require tools or project context
+#       - "fact"     : critical technical constraints, rules, or domain knowledge (e.g. "ABAP Cloud forbids direct table access"). Store these for long-term reference.
+#       - "state"    : project context, team roles, or temporary environmental observations (e.g. "Kristina approves decisions", "Sky is blue", "It is raining"). These represent the current situation.
+#       - "feedback" : correction or evaluation of your previous response.
+#       - "action"   : a request to perform a task using tools (e.g. "Read table T100", "Brew coffee").
+#       - "chat"     : greetings, simple math, or small talk that doesn't need to be remembered (e.g. "Hello", "2+2").
 #     Return ONLY a valid JSON array of { "type": "<type>", "text": "<subprompt text>" }.
-#     If the message is simple math or a greeting, always use "chat".
+#     If a message has multiple unrelated parts, split them into separate objects.
 #   reasoning: |
 #     IMPORTANT: Always start your response with a brief <reasoning> block.
 #     Explain: 
