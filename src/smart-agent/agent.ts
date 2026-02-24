@@ -168,7 +168,9 @@ export class SmartAgent {
       }
 
       if (options?.externalTools && options.externalTools.length > 0) {
-        const stream = this.deps.mainLlm.streamChat(messages, options.externalTools, opts);
+        // Filter out invalid tools from client (e.g. missing name)
+        const validTools = options.externalTools.filter(t => t.name || (t as any).function?.name);
+        const stream = this.deps.mainLlm.streamChat(messages, validTools, opts);
         for await (const chunk of stream) yield chunk;
         return;
       }
