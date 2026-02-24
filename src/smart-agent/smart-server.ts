@@ -194,8 +194,14 @@ export class SmartServer {
     if (pipeline?.llm?.main) {
       const temp = pipeline.llm.main.temperature ?? 0.7;
       builder = builder.withMainLlm(makeLlmFromProvider(pipeline.llm.main, temp));
-    }
-    if (pipeline?.llm?.classifier) {
+
+      // If no explicit classifier, reuse main config at classifier temperature so
+      // the builder never falls back to the (potentially absent) flat llm.apiKey.
+      const classifierCfg = pipeline.llm.classifier ?? pipeline.llm.main;
+      const classifierTemp = pipeline.llm.classifier?.temperature ?? 0.1;
+      builder = builder.withClassifierLlm(makeLlmFromProvider(classifierCfg, classifierTemp));
+    } else if (pipeline?.llm?.classifier) {
+      // Classifier override without main override — unusual but valid
       const temp = pipeline.llm.classifier.temperature ?? 0.1;
       builder = builder.withClassifierLlm(makeLlmFromProvider(pipeline.llm.classifier, temp));
     }
