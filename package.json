@@ -44,6 +44,7 @@
     "lint:check": "npx biome check --config-path . src",
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
+    "publish:beta": "npm run release:check && npm publish --tag beta",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
