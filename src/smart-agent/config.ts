@@ -73,13 +73,46 @@ mcp:
 agent:
   maxIterations: 10
   maxToolCalls: 30
-  ragQueryK: 5
+  ragQueryK: 10
 
 # prompts:
 #   system: "You are a helpful assistant."
 #   classifier: null
 
 log: smart-server.log                 # path to log file; omit for stdout
+
+# --- Advanced pipeline config (optional) ------------------------------------
+# When present, overrides / extends the flat llm / rag / mcp fields above.
+# pipeline:
+#   llm:
+#     main:
+#       provider: deepseek            # deepseek | openai | anthropic
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
+#       temperature: 0.7
+#     classifier:                     # optional; if absent, main config is reused at 0.1 temp
+#       provider: openai
+#       apiKey: \${OPENAI_API_KEY}
+#       model: gpt-4o-mini
+#       temperature: 0.1
+#
+#   rag:
+#     facts:
+#       type: ollama
+#       url: http://localhost:11434
+#       model: nomic-embed-text
+#       dedupThreshold: 0.92
+#     feedback:
+#       type: in-memory
+#     state:
+#       type: in-memory
+#
+#   mcp:
+#     - type: http
+#       url: http://sap-server:3000/mcp/stream/http
+#     - type: stdio
+#       command: npx
+#       args: [github-mcp-server]
 `;
 
 // ---------------------------------------------------------------------------
@@ -204,7 +237,7 @@ export function resolveSmartServerConfig(
     agent: {
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
-      ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 5),
+      ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
     },
 
     prompts:
@@ -221,5 +254,9 @@ export function resolveSmartServerConfig(
       env['SMART_AGENT_MODE'] ??
       'hybrid'
     ) as SmartServerMode,
+
+    // Pass through pipeline config as-is — env-var substitution was already applied
+    // by loadYamlConfig, so no further transformation is needed here.
+    ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
   };
 }

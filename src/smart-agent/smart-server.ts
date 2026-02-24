@@ -12,10 +12,11 @@ import http from 'node:http';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 
 import type { Message } from '../types.js';
-import type { SmartAgent, StopReason } from './agent.js';
+import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
+import { makeLlmFromProvider, makeRagFromStoreConfig, type PipelineConfig } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -104,6 +105,11 @@ export interface SmartServerConfig {
    */
   mode?: SmartServerMode;
   /**
+   * Optional pipeline overrides. When present, takes precedence over the flat
+   * llm / rag / mcp fields for the components it specifies.
+   */
+  pipeline?: PipelineConfig;
+  /**
    * Log callback. Called for every internal event.
    * Default: no-op. CLI passes a file-writer or console-writer.
    */
@@ -171,17 +177,37 @@ export class SmartServer {
   async start(): Promise<SmartServerHandle> {
     const log = this.cfg.log ?? this.noop;
     const fileLogger: ILogger = { log: (e) => log(e as unknown as Record<string, unknown>) };
+    const pipeline = this.cfg.pipeline;
 
     // ---- Build SmartAgent via builder -------------------------------------
-    const agentHandle = await new SmartAgentBuilder({
+    // pipeline.mcp (if present) replaces the flat mcp field so that multiple
+    // MCP servers can be connected simultaneously.
+    let builder = new SmartAgentBuilder({
       llm: this.cfg.llm,
       rag: this.cfg.rag,
-      mcp: this.cfg.mcp,
+      mcp: pipeline?.mcp ?? this.cfg.mcp,
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
-    })
-      .withLogger(fileLogger)
-      .build();
+    }).withLogger(fileLogger);
+
+    // Apply pipeline overrides — only the components explicitly specified
+    if (pipeline?.llm?.main) {
+      const temp = pipeline.llm.main.temperature ?? 0.7;
+      builder = builder.withMainLlm(makeLlmFromProvider(pipeline.llm.main, temp));
+    }
+    if (pipeline?.llm?.classifier) {
+      const temp = pipeline.llm.classifier.temperature ?? 0.1;
+      builder = builder.withClassifierLlm(makeLlmFromProvider(pipeline.llm.classifier, temp));
+    }
+    if (pipeline?.rag) {
+      const stores: Partial<SmartAgentRagStores> = {};
+      if (pipeline.rag.facts) stores.facts = makeRagFromStoreConfig(pipeline.rag.facts);
+      if (pipeline.rag.feedback) stores.feedback = makeRagFromStoreConfig(pipeline.rag.feedback);
+      if (pipeline.rag.state) stores.state = makeRagFromStoreConfig(pipeline.rag.state);
+      builder = builder.withRag(stores);
+    }
+
+    const agentHandle = await builder.build();
 
     const { agent: smartAgent, chat, getUsage, close: closeAgent } = agentHandle;
 
