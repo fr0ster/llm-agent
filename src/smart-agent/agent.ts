@@ -339,7 +339,7 @@ export class SmartAgent {
       const toolCalls = resp.value.toolCalls;
       if (resp.value.finishReason !== 'tool_calls' || !toolCalls?.length) return { ok: true, value: { content, iterations: iteration + 1, toolCallCount, stopReason: 'stop', usage } };
 
-      messages = [...messages, { role: 'assistant', content: content || '', tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
+      messages = [...messages, { role: 'assistant', content: content || null, tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
 
       for (const toolCall of toolCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) return { ok: true, value: { content, iterations: iteration + 1, toolCallCount, stopReason: 'tool_call_limit', usage } };
