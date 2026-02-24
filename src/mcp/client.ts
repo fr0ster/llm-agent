@@ -214,7 +214,7 @@ export class MCPClientWrapper {
 
       this.client = new Client(
         {
-          name: 'llm-proxy',
+          name: 'llm-agent',
           version: '0.1.0',
         },
         {
@@ -247,7 +247,7 @@ export class MCPClientWrapper {
 
       this.client = new Client(
         {
-          name: 'llm-proxy',
+          name: 'llm-agent',
           version: '0.1.0',
         },
         {

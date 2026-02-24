@@ -27,7 +27,7 @@ This agent acts as a thin orchestration layer between LLM providers and MCP (Mod
 ## Installation
 
 ```bash
-npm install @mcp-abap-adt/llm-proxy
+npm install @mcp-abap-adt/llm-agent
 ```
 
 ## Usage
@@ -45,7 +45,7 @@ When using the agent embedded in your application (e.g., in `cloud-llm-hub` CAP 
 
 ```typescript
 // srv/agent-service.ts
-import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 export default class AgentService extends cds.Service {
@@ -106,7 +106,7 @@ See [Embedded Usage Guide](../../docs/LLM_AGENT_EMBEDDED_USAGE.md) for complete 
 ### Basic Example (Stdio Transport)
 
 ```typescript
-import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import { SapCoreAIAgent, SapCoreAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 import { executeHttpRequest } from '@sap-cloud-sdk/http-client';
 
 // Create SAP AI Core provider
@@ -145,7 +145,7 @@ console.log(response.message);
 ### HTTP Transport (Auto-Detection)
 
 ```typescript
-import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import { Agent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 
 const llmProvider = new OpenAIProvider({
   apiKey: process.env.OPENAI_API_KEY!,
@@ -204,7 +204,7 @@ The agent can be imported and used directly in CAP services, similar to how `mcp
 
 ```typescript
 // srv/agent-service.ts
-import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-proxy';
+import { Agent, OpenAIProvider } from '@mcp-abap-adt/llm-agent';
 
 export default class AgentService extends cds.Service {
   private agent: Agent;
