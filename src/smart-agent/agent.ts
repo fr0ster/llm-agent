@@ -7,7 +7,9 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import {
   type CallOptions,
+  type LlmStreamChunk,
   type LlmTool,
+  type LlmToolCall,
   type McpTool,
   type RagMetadata,
   type RagResult,
@@ -648,5 +650,264 @@ export class SmartAgent {
       metadata.ttl = Math.floor((Date.now() + policy.maxSessionAgeMs) / 1000);
     }
     return metadata;
+  }
+
+  // -------------------------------------------------------------------------
+  // Public: streaming pipeline
+  // -------------------------------------------------------------------------
+
+  /**
+   * Streaming version of `process()`.
+   * Yields LlmStreamChunk objects as tokens arrive from the LLM.
+   * Tool-call events are yielded between loop iterations.
+   * Always ends with a { type: 'done' } chunk.
+   */
+  async *processStream(
+    text: string,
+    options?: CallOptions,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    if (this.config.smartAgentEnabled === false) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+
+    if (options?.signal?.aborted) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+
+    const traceId = options?.trace?.traceId ?? randomUUID();
+    const pipelineT0 = Date.now();
+
+    let timeoutCleanup: (() => void) | undefined;
+    let opts: CallOptions | undefined = options;
+
+    if (this.config.timeoutMs) {
+      const { signal: timeoutSignal, clear } = createTimeoutSignal(this.config.timeoutMs);
+      timeoutCleanup = clear;
+      const merged = mergeSignals(options?.signal, timeoutSignal);
+      opts = { ...options, signal: merged.signal };
+    }
+
+    try {
+      yield* this._runPipelineStream(text, opts, traceId, pipelineT0);
+    } finally {
+      timeoutCleanup?.();
+    }
+  }
+
+  private async *_runPipelineStream(
+    text: string,
+    opts: CallOptions | undefined,
+    traceId: string,
+    pipelineT0: number,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    const logger = this.deps.logger;
+
+    // Injection detection
+    if (this.deps.injectionDetector) {
+      const detection = this.deps.injectionDetector.detect(text);
+      if (detection.detected) {
+        logger?.log({ type: 'pipeline_error', traceId, code: 'PROMPT_INJECTION', message: `Injection detected`, durationMs: Date.now() - pipelineT0 });
+        yield { type: 'done', finishReason: 'error' };
+        return;
+      }
+    }
+
+    // Classify
+    const classifyResult = await this.deps.classifier.classify(text, opts);
+    if (!classifyResult.ok) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+    const subprompts = classifyResult.value;
+    const actions = subprompts.filter((sp) => sp.type === 'action');
+    const others = subprompts.filter((sp) => sp.type !== 'action');
+
+    // Upsert non-actions (non-fatal)
+    const ragStoreMap = new Map<string, IRag>([
+      ['fact', this.deps.ragStores.facts],
+      ['feedback', this.deps.ragStores.feedback],
+      ['state', this.deps.ragStores.state],
+    ]);
+    await Promise.allSettled(
+      others.map((sp) => {
+        const store = ragStoreMap.get(sp.type);
+        return store?.upsert(sp.text, this._buildRagMetadata(), opts);
+      }),
+    );
+
+    if (actions.length === 0) {
+      yield { type: 'done', finishReason: 'stop' };
+      return;
+    }
+
+    const action = actions[0];
+
+    // RAG retrieval
+    const ragText = await this._toEnglishForRag(action.text, opts);
+    const k = this.config.ragQueryK ?? 5;
+    const [factsR, feedbackR, stateR] = await Promise.all([
+      this.deps.ragStores.facts.query(ragText, k, opts),
+      this.deps.ragStores.feedback.query(ragText, k, opts),
+      this.deps.ragStores.state.query(ragText, k, opts),
+    ]);
+    const facts: RagResult[] = factsR.ok ? factsR.value : [];
+    const feedback: RagResult[] = feedbackR.ok ? feedbackR.value : [];
+    const state: RagResult[] = stateR.ok ? stateR.value : [];
+
+    // List tools
+    const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
+    const ragToolNames = new Set(
+      facts
+        .map((r) => r.metadata.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+        .map((id) => id.slice('tool:'.length)),
+    );
+    const selectedTools = ragToolNames.size > 0
+      ? mcpTools.filter((t) => ragToolNames.has(t.name))
+      : mcpTools;
+
+    // Assemble initial context
+    const retrieved = { facts, feedback, state, tools: selectedTools };
+    const assembleResult = await this.deps.assembler.assemble(action, retrieved, [], opts);
+    if (!assembleResult.ok) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+
+    logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
+
+    yield* this._runStreamingToolLoop(
+      retrieved,
+      assembleResult.value,
+      toolClientMap,
+      opts,
+      traceId,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // Private: streaming tool loop
+  // -------------------------------------------------------------------------
+
+  private async *_runStreamingToolLoop(
+    retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] },
+    initialMessages: Message[],
+    toolClientMap: Map<string, IMcpClient>,
+    opts: CallOptions | undefined,
+    traceId: string,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    const logger = this.deps.logger;
+    let messages = initialMessages;
+    let toolCallCount = 0;
+
+    for (let iteration = 0; ; iteration++) {
+      if (opts?.signal?.aborted) {
+        yield { type: 'done', finishReason: 'error' };
+        return;
+      }
+
+      if (iteration >= this.config.maxIterations) {
+        yield { type: 'done', finishReason: 'stop' };
+        return;
+      }
+
+      const llmT0 = Date.now();
+      let accumulatedToolCalls: LlmToolCall[] | undefined;
+      let finalFinishReason: LlmStreamChunk & { type: 'done' } extends { finishReason: infer R } ? R : never = 'stop';
+      let isStreamingDone = false;
+
+      if (this.deps.mainLlm.streamChat) {
+        // Streaming path
+        for await (const chunk of this.deps.mainLlm.streamChat(messages, retrieved.tools as LlmTool[], opts)) {
+          if (chunk.type === 'text') {
+            yield chunk;
+          } else if (chunk.type === 'tool_calls') {
+            accumulatedToolCalls = chunk.toolCalls;
+            yield chunk;
+          } else if (chunk.type === 'usage') {
+            yield chunk;
+          } else if (chunk.type === 'done') {
+            finalFinishReason = chunk.finishReason;
+            if (chunk.finishReason !== 'tool_calls') {
+              yield chunk;
+              isStreamingDone = true;
+            }
+          }
+        }
+      } else {
+        // Fallback: non-streaming chat, emit full content as single text chunk
+        const resp = await this.deps.mainLlm.chat(messages, retrieved.tools as LlmTool[], opts);
+        if (!resp.ok) {
+          yield { type: 'done', finishReason: 'error' };
+          return;
+        }
+        if (resp.value.content) yield { type: 'text', delta: resp.value.content };
+        accumulatedToolCalls = resp.value.toolCalls;
+        finalFinishReason = resp.value.finishReason === 'tool_calls' ? 'tool_calls' : 'stop';
+        if (finalFinishReason !== 'tool_calls') {
+          yield { type: 'done', finishReason: finalFinishReason };
+          isStreamingDone = true;
+        }
+      }
+
+      logger?.log({ type: 'llm_call', traceId, iteration, finishReason: finalFinishReason, durationMs: Date.now() - llmT0 });
+
+      if (isStreamingDone || !accumulatedToolCalls?.length) {
+        if (!isStreamingDone) yield { type: 'done', finishReason: 'stop' };
+        return;
+      }
+
+      // Append assistant message with tool_calls before executing them
+      messages = [
+        ...messages,
+        {
+          role: 'assistant' as const,
+          content: '',
+          tool_calls: accumulatedToolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+          })),
+        },
+      ];
+
+      // Execute tool calls
+      for (const toolCall of accumulatedToolCalls) {
+        if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) {
+          yield { type: 'done', finishReason: 'stop' };
+          return;
+        }
+
+        let resultContent: string;
+
+        if (this.deps.toolPolicy) {
+          const verdict = this.deps.toolPolicy.check(toolCall.name);
+          if (!verdict.allowed) {
+            resultContent = verdict.reason ?? `Tool "${toolCall.name}" blocked by policy`;
+            logger?.log({ type: 'tool_call', traceId, toolName: toolCall.name, isError: true, durationMs: 0 });
+            toolCallCount++;
+            messages = [...messages, { role: 'tool' as const, content: resultContent, tool_call_id: toolCall.id }];
+            continue;
+          }
+        }
+
+        const client = toolClientMap.get(toolCall.name);
+        if (!client) {
+          resultContent = `Tool "${toolCall.name}" not found`;
+        } else {
+          const toolT0 = Date.now();
+          const callResult = await client.callTool(toolCall.name, toolCall.arguments, opts);
+          logger?.log({ type: 'tool_call', traceId, toolName: toolCall.name, isError: !callResult.ok, durationMs: Date.now() - toolT0 });
+          resultContent = callResult.ok
+            ? (typeof callResult.value.content === 'string' ? callResult.value.content : JSON.stringify(callResult.value.content))
+            : callResult.error.message;
+        }
+
+        toolCallCount++;
+        messages = [...messages, { role: 'tool' as const, content: resultContent, tool_call_id: toolCall.id }];
+      }
+    }
   }
 }

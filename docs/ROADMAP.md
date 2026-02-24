@@ -21,7 +21,7 @@
 - [x] Implement `streamChat()` in `TokenCountingLlm` (wraps inner, accumulates usage from usage chunk)
 
 ### Orchestration
-- [ ] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
+- [x] Add `SmartAgent.processStream()` — yields chunks from each LLM call + tool-call events
 - [ ] Update `SmartServer._handleChat()` to pipe `processStream()` into live SSE connection
 
 ## Phase 13 — Pluggable Embedding Providers
