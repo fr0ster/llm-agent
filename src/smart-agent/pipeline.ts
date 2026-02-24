@@ -124,6 +124,10 @@ export interface PipelineRagStoreConfig {
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  /** Weight for vector search (0..1). Default: 0.7 */
+  vectorWeight?: number;
+  /** Weight for keyword search (0..1). Default: 0.3 */
+  keywordWeight?: number;
 }
 
 // ... (other parts)
@@ -146,7 +150,11 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
       baseURL: cfg.url,
       model: cfg.model,
     });
-    return new VectorRag(embedder, { dedupThreshold: cfg.dedupThreshold });
+    return new VectorRag(embedder, {
+      dedupThreshold: cfg.dedupThreshold,
+      vectorWeight: cfg.vectorWeight,
+      keywordWeight: cfg.keywordWeight,
+    });
   }
 
   // Default to Ollama
@@ -154,5 +162,9 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
     ollamaUrl: cfg.url,
     model: cfg.model,
   });
-  return new VectorRag(embedder, { dedupThreshold: cfg.dedupThreshold });
+  return new VectorRag(embedder, {
+    dedupThreshold: cfg.dedupThreshold,
+    vectorWeight: cfg.vectorWeight,
+    keywordWeight: cfg.keywordWeight,
+  });
 }
