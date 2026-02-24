@@ -116,17 +116,16 @@ export class DeepSeekProvider extends BaseLLMProvider {
     return messages.map((msg) => {
       const formatted: any = {
         role: msg.role,
-        content: msg.content,
+        content: msg.content ?? "",
       };
       
       if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
         formatted.tool_calls = msg.tool_calls;
-        formatted.content = null; 
+        formatted.content = msg.content || null; 
       }
       
       if (msg.role === 'tool' && msg.tool_call_id) {
         formatted.tool_call_id = msg.tool_call_id;
-        // Ensure content is a string for tool role
         formatted.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
       }
       
