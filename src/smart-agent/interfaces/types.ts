@@ -26,6 +26,10 @@ export interface CallOptions {
   topP?: number;
   stop?: string[];
   stream?: boolean;
+  /** Filter RAG results by namespace or other metadata. */
+  ragFilter?: {
+    namespace?: string;
+  };
 }
 
 export interface LlmStreamChunk {

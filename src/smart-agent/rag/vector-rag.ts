@@ -54,24 +54,36 @@ export class VectorRag implements IRag {
   }
 
   /**
-   * Simple lexical scorer: calculates token overlap between query and record.
-   * Case-insensitive, ignores common stop words or punctuation.
+   * BM25 Lexical Scorer.
+   * Proper term weighting based on Inverse Document Frequency.
    */
-  private lexicalScore(query: string, text: string): number {
+  private bm25Score(query: string, text: string): number {
     const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9]/).filter(t => t.length > 1);
-    const queryTokens = new Set(tokenize(query));
-    const textTokens = tokenize(text);
+    const queryTokens = tokenize(query);
+    const docTokens = tokenize(text);
     
-    if (queryTokens.size === 0) return 0;
-    
-    let matches = 0;
-    for (const token of textTokens) {
-      if (queryTokens.has(token)) matches++;
+    if (queryTokens.length === 0 || docTokens.length === 0) return 0;
+
+    // Corpus stats
+    const avgDocLength = this.records.reduce((acc, r) => acc + tokenize(r.text).length, 0) / (this.records.length || 1);
+    const k1 = 1.2;
+    const b = 0.75;
+
+    let score = 0;
+    for (const token of new Set(queryTokens)) {
+      // Document frequency
+      const df = this.records.filter(r => tokenize(r.text).includes(token)).length;
+      const idf = Math.log((this.records.length - df + 0.5) / (df + 0.5) + 1);
+      
+      // Term frequency in current doc
+      const tf = docTokens.filter(t => t === token).length;
+      
+      const tfScored = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
+      score += idf * tfScored;
     }
     
-    // Normalize: fraction of query tokens found in text
-    // We cap it at 1.0
-    return Math.min(matches / queryTokens.size, 1.0);
+    // Normalize to [0, 1] range (rough approximation for fusion)
+    return Math.min(score / 5, 1.0);
   }
 
   async upsert(
@@ -124,11 +136,17 @@ export class VectorRag implements IRag {
     try {
       const nowSecs = Date.now() / 1000;
       const queryVector = await this.embedder.embed(text, options);
+      const targetNamespace = options?.ragFilter?.namespace;
 
       const scored = this.records
         .filter((r) => {
           if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
             return false;
+          
+          // Apply dynamic filter from CallOptions
+          if (targetNamespace !== undefined && r.metadata.namespace !== targetNamespace)
+            return false;
+
           if (
             this.namespace !== undefined &&
             r.metadata.namespace !== undefined &&
@@ -139,7 +157,7 @@ export class VectorRag implements IRag {
         })
         .map((r) => {
           const vScore = this.cosine(queryVector, r.vector);
-          const lScore = this.lexicalScore(text, r.text);
+          const lScore = this.bm25Score(text, r.text);
           
           // Hybrid Fusion: Weighted Sum
           const combinedScore = (vScore * this.vectorWeight) + (lScore * this.keywordWeight);
@@ -157,6 +175,15 @@ export class VectorRag implements IRag {
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+    }
+  }
+
+  async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
+    try {
+      await this.embedder.embed('ping', options);
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return { ok: false, error: new RagError(`RAG health check failed: ${String(err)}`, 'HEALTH_CHECK_ERROR') };
     }
   }
 }

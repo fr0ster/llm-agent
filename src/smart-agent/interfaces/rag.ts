@@ -22,4 +22,6 @@ export interface IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>>;
+
+  healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
 }

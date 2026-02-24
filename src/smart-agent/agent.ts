@@ -44,6 +44,29 @@ function createTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => vo
 export class SmartAgent {
   constructor(private readonly deps: SmartAgentDeps, private readonly config: SmartAgentConfig) {}
 
+  async healthCheck(options?: CallOptions): Promise<Result<{ llm: boolean; rag: boolean; mcp: { name: string; ok: boolean; error?: string }[] }, OrchestratorError>> {
+    const results = { llm: false, rag: false, mcp: [] as { name: string; ok: boolean; error?: string }[] };
+
+    // 1. Check LLM (try simple chat)
+    try {
+      const llmRes = await this.deps.mainLlm.chat([{ role: 'user', content: 'ping' }], [], { ...options, maxTokens: 1 });
+      results.llm = llmRes.ok;
+    } catch { results.llm = false; }
+
+    // 2. Check RAG (facts store is primary)
+    const ragRes = await this.deps.ragStores.facts.healthCheck(options);
+    results.rag = ragRes.ok;
+
+    // 3. Check all MCP clients
+    const mcpChecks = await Promise.all(this.deps.mcpClients.map(async client => {
+      const tools = await client.listTools(options);
+      return { name: 'mcp-client', ok: tools.ok, error: tools.ok ? undefined : (tools.error as any).message };
+    }));
+    results.mcp = mcpChecks;
+
+    return { ok: true, value: results };
+  }
+
   async process(textOrMessages: string | Message[], options?: CallOptions): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     return this._runPipeline(textOrMessages, options, randomUUID(), Date.now());
   }

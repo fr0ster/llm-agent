@@ -166,6 +166,16 @@ export class SmartServer {
     const agentHandle = await builder.build();
     const { agent: smartAgent, chat, streamChat, getUsage, close: closeAgent } = agentHandle;
 
+    // Run health check on startup
+    smartAgent.healthCheck().then(res => {
+      if (res.ok) {
+        const v = res.value;
+        const mcpStatus = v.mcp.every(m => m.ok) ? 'OK' : 'PARTIAL/FAIL';
+        console.error(`[Health] LLM: ${v.llm ? 'OK' : 'FAIL'}, RAG: ${v.rag ? 'OK' : 'FAIL'}, MCP: ${mcpStatus}`);
+        v.mcp.filter(m => !m.ok).forEach(m => console.error(`  - MCP Error: ${m.error}`));
+      }
+    }).catch(e => console.error(`[Health] Unexpected check error: ${e}`));
+
     const server = http.createServer((req, res) =>
       this._handle(req, res, getUsage, smartAgent, chat, streamChat, log).catch((err) => {
         if (!res.headersSent) {
