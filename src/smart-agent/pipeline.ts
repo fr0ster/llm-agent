@@ -1,11 +1,5 @@
 /**
  * Pipeline configuration types and factory helpers for SmartServer.
- *
- * Provides granular, per-component control that the flat SmartServerConfig
- * cannot express:
- *   - Different LLM providers for main vs. classifier
- *   - Per-store RAG configuration (facts / feedback / state)
- *   - Multiple simultaneous MCP servers (array)
  */
 
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
@@ -19,7 +13,9 @@ import { LlmAdapter } from './adapters/llm-adapter.js';
 import type { IRag } from './interfaces/rag.js';
 import { TokenCountingLlm } from './llm/token-counting-llm.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
+import { VectorRag } from './rag/vector-rag.js';
+import { OllamaEmbedder } from './rag/ollama-rag.js';
+import { OpenAiEmbedder } from './rag/openai-embedder.js';
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -33,14 +29,20 @@ export interface PipelineLlmProviderConfig {
 }
 
 export interface PipelineRagStoreConfig {
-  /** 'ollama' uses neural embeddings; 'in-memory' uses bag-of-words. Default: 'ollama' */
-  type?: 'ollama' | 'in-memory';
-  /** Ollama base URL. Default: 'http://localhost:11434' */
+  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
+  type?: 'ollama' | 'openai' | 'in-memory';
+  /** Base URL for embedding service */
   url?: string;
-  /** Ollama embedding model. Default: 'nomic-embed-text' */
+  /** API key (for openai type) */
+  apiKey?: string;
+  /** Embedding model name */
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  /** Weight for vector search (0..1). Default: 0.7 */
+  vectorWeight?: number;
+  /** Weight for keyword search (0..1). Default: 0.3 */
+  keywordWeight?: number;
 }
 
 export interface PipelineConfig {
@@ -73,11 +75,6 @@ export interface PipelineConfig {
 // Factories
 // ---------------------------------------------------------------------------
 
-/**
- * Creates a TokenCountingLlm wrapping the provider described by `cfg`.
- * The `temperature` parameter overrides cfg.temperature so callers can
- * normalise main (0.7) vs. classifier (0.1) temps independently.
- */
 export function makeLlmFromProvider(cfg: PipelineLlmProviderConfig, temperature: number): TokenCountingLlm {
   const dummyMcp = new MCPClientWrapper({
     transport: 'embedded',
@@ -107,35 +104,6 @@ export function makeLlmFromProvider(cfg: PipelineLlmProviderConfig, temperature:
   }
 }
 
-import { VectorRag } from './rag/vector-rag.js';
-import { OllamaEmbedder } from './rag/ollama-rag.js';
-import { OpenAiEmbedder } from './rag/openai-embedder.js';
-
-// ... (imports)
-
-export interface PipelineRagStoreConfig {
-  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
-  type?: 'ollama' | 'openai' | 'in-memory';
-  /** Base URL for embedding service */
-  url?: string;
-  /** API key (for openai type) */
-  apiKey?: string;
-  /** Embedding model name */
-  model?: string;
-  /** Cosine similarity dedup threshold. Default: 0.92 */
-  dedupThreshold?: number;
-  /** Weight for vector search (0..1). Default: 0.7 */
-  vectorWeight?: number;
-  /** Weight for keyword search (0..1). Default: 0.3 */
-  keywordWeight?: number;
-}
-
-// ... (other parts)
-
-/**
- * Creates an IRag instance from a PipelineRagStoreConfig.
- * Defaults to OllamaRag when type is absent or 'ollama'.
- */
 export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
   if (cfg.type === 'in-memory') {
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
@@ -157,7 +125,6 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
     });
   }
 
-  // Default to Ollama
   const embedder = new OllamaEmbedder({
     ollamaUrl: cfg.url,
     model: cfg.model,

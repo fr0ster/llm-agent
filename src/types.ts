@@ -11,7 +11,7 @@ export interface Message {
    * - 'tool': Tool/function result
    */
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
+  content: string | null;
   /** For role='tool': ID of the tool call this result corresponds to (OpenAI/DeepSeek protocol) */
   tool_call_id?: string;
   /** For role='assistant': tool calls requested by the LLM (OpenAI/DeepSeek protocol) */

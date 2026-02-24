@@ -22,7 +22,7 @@ import { LlmAdapter } from './adapters/llm-adapter.js';
 import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
 import { SmartAgent, type SmartAgentConfig, type SmartAgentRagStores } from './agent.js';
 import { LlmClassifier, type LlmClassifierConfig } from './classifier/llm-classifier.js';
-import { ContextAssembler, type ContextAssemblerConfig } from './context/context-assembler.ts';
+import { ContextAssembler, type ContextAssemblerConfig } from './context/context-assembler.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
@@ -50,11 +50,13 @@ export interface BuilderLlmConfig {
 }
 
 export interface BuilderRagConfig {
-  /** 'ollama' uses neural embeddings; 'in-memory' uses bag-of-words. Default: 'ollama' */
-  type?: 'ollama' | 'in-memory';
-  /** Ollama base URL. Default: 'http://localhost:11434' */
+  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
+  type?: 'ollama' | 'openai' | 'in-memory';
+  /** Base URL for embedding service */
   url?: string;
-  /** Ollama embedding model. Default: 'nomic-embed-text' */
+  /** API key (for openai type) */
+  apiKey?: string;
+  /** Embedding model name */
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
@@ -75,6 +77,12 @@ export interface BuilderPromptsConfig {
   system?: string;
   /** Override the intent-classifier system prompt. */
   classifier?: string;
+  /** Instruction for the reasoning/strategy block. */
+  reasoning?: string;
+  /** Prompt for query translation for RAG. */
+  ragTranslate?: string;
+  /** Prompt for history summarization. */
+  historySummary?: string;
 }
 
 export interface SmartAgentBuilderConfig {
@@ -125,6 +133,7 @@ export class SmartAgentBuilder {
 
   // Custom overrides — when set, the corresponding default is not created
   private _mainLlm?: ILlm;
+  private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
   private _ragStores?: Partial<SmartAgentRagStores>;
   private _mcpClients?: IMcpClient[];
