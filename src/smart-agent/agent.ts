@@ -168,8 +168,21 @@ export class SmartAgent {
       }
 
       if (options?.externalTools && options.externalTools.length > 0) {
-        // Filter out invalid tools from client (e.g. missing name)
-        const validTools = options.externalTools.filter(t => t.name || (t as any).function?.name);
+        // Normalize external tools (Cline format) to our internal tool format
+        const validTools = options.externalTools
+          .map(t => {
+            if (t.name) return t; // Already internal format
+            if ((t as any).function?.name) {
+              return {
+                name: (t as any).function.name,
+                description: (t as any).function.description || '',
+                inputSchema: (t as any).function.parameters || { type: 'object', properties: {} }
+              };
+            }
+            return null;
+          })
+          .filter((t): t is LlmTool => t !== null);
+
         const stream = this.deps.mainLlm.streamChat(messages, validTools, opts);
         for await (const chunk of stream) yield chunk;
         return;
@@ -218,7 +231,16 @@ export class SmartAgent {
     }));
 
     if (chats.length > 0 && actions.length === 0) {
-      return { ok: true, value: { action: chats[0], retrieved: { facts: [], feedback: [], state: [], tools: [] }, messages: [...processedHistory, { role: 'user', content: chats.map(c => c.text).join('\n') }], toolClientMap: new Map(), isChat: true } };
+      return {
+        ok: true,
+        value: {
+          action: chats[0],
+          retrieved: { facts: [], feedback: [], state: [], tools: [] },
+          messages: processedHistory, // Use processedHistory directly, it already contains the user message
+          toolClientMap: new Map(),
+          isChat: true
+        }
+      };
     }
 
     if (actions.length === 0) return { ok: false, error: new OrchestratorError('No actionable intent found', 'NO_ACTIONS') };
