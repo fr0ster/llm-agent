@@ -46,16 +46,16 @@ pipeline:
       provider: in-memory
 ```
 
-- [ ] Define `IEmbedder` interface: `embed(text: string) → Promise<number[]>`
-- [ ] Implement `OpenAIEmbedder` (text-embedding-3-small / text-embedding-ada-002)
-- [ ] Implement `OllamaEmbedder` (extract from `OllamaRag`, reuse in new architecture)
-- [ ] Refactor `OllamaRag` → `VectorRag(embedder: IEmbedder)` — embedder-agnostic store
-- [ ] Update `RagStoreConfig` to add `provider` + `apiKey` fields (keep `type` for `in-memory`)
-- [ ] Update `makeRagFromStoreConfig()` in `pipeline.ts` to wire embedder from config
-- [ ] Update `SmartServerRagConfig` flat config: `provider` replaces implicit `type: ollama`
-- [ ] Update YAML template in `config.ts` to show provider examples
-- [ ] Add `ollamaTimeoutMs` config option and retry with backoff on embed API failures
-- [ ] Health-check on startup: warn if embedder endpoint is unreachable
+- [x] Define `IEmbedder` interface: `embed(text: string) → Promise<number[]>`
+- [x] Implement `OpenAIEmbedder` (text-embedding-3-small / text-embedding-ada-002)
+- [x] Implement `OllamaEmbedder` (extract from `OllamaRag`, reuse in new architecture)
+- [x] Refactor `OllamaRag` → `VectorRag(embedder: IEmbedder)` — embedder-agnostic store
+- [x] Update `RagStoreConfig` to add `provider` + `apiKey` fields (keep `type` for `in-memory`)
+- [x] Update `makeRagFromStoreConfig()` in `pipeline.ts` to wire embedder from config
+- [x] Update `SmartServerRagConfig` flat config: `provider` replaces implicit `type: ollama`
+- [x] Update YAML template in `config.ts` to show provider examples
+- [x] Add `ollamaTimeoutMs` config option and retry with backoff on embed API failures
+- [x] Health-check on startup: warn if embedder endpoint is unreachable
 
 ## Phase 14 — LLM Reasoning Debug Mode
 

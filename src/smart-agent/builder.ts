@@ -30,8 +30,10 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import type { ILogger } from './logger/types.js';
 import type { IPromptInjectionDetector, IToolPolicy, SessionPolicy } from './policy/types.js';
+import { OllamaEmbedder } from './rag/embedders/ollama-embedder.js';
+import { OpenAIEmbedder } from './rag/embedders/openai-embedder.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
+import { VectorRag } from './rag/vector-rag.js';
 import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 
 // ---------------------------------------------------------------------------
@@ -50,14 +52,26 @@ export interface BuilderLlmConfig {
 }
 
 export interface BuilderRagConfig {
-  /** 'ollama' uses neural embeddings; 'in-memory' uses bag-of-words. Default: 'ollama' */
+  /**
+   * Embedding provider. Default: 'ollama'.
+   * 'openai' requires `apiKey`. 'in-memory' uses bag-of-words (no network).
+   */
+  provider?: 'openai' | 'ollama' | 'in-memory';
+  /**
+   * Backward-compat alias for `provider`. If both are set, `provider` wins.
+   * @deprecated Use `provider` instead.
+   */
   type?: 'ollama' | 'in-memory';
-  /** Ollama base URL. Default: 'http://localhost:11434' */
+  /** API key — required when `provider: openai`. */
+  apiKey?: string;
+  /** Embedder base URL. Default: 'http://localhost:11434' (Ollama). */
   url?: string;
-  /** Ollama embedding model. Default: 'nomic-embed-text' */
+  /** Embedding model name. */
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  /** Timeout for embed HTTP calls in ms. Default: 30 000 */
+  timeoutMs?: number;
 }
 
 export interface BuilderMcpConfig {
@@ -231,19 +245,52 @@ export class SmartAgentBuilder {
     // ---- Default RAG factory ---------------------------------------------
     const makeDefaultRag = (): IRag => {
       const r = this.cfg.rag;
-      if (!r || r.type !== 'in-memory') {
-        return new OllamaRag({
-          ollamaUrl: r?.url,
-          model: r?.model,
-          dedupThreshold: r?.dedupThreshold,
-        });
+      const provider = r?.provider ?? r?.type ?? 'ollama';
+
+      if (provider === 'in-memory') {
+        return new InMemoryRag({ dedupThreshold: r?.dedupThreshold });
       }
-      return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
+
+      if (provider === 'openai') {
+        const embedder = new OpenAIEmbedder({
+          apiKey: r?.apiKey ?? '',
+          model: r?.model,
+          timeoutMs: r?.timeoutMs,
+        });
+        return new VectorRag({ embedder, dedupThreshold: r?.dedupThreshold });
+      }
+
+      // ollama (default)
+      const embedder = new OllamaEmbedder({
+        url: r?.url,
+        model: r?.model,
+        timeoutMs: r?.timeoutMs,
+      });
+      return new VectorRag({ embedder, dedupThreshold: r?.dedupThreshold });
     };
 
     const factsRag: IRag = this._ragStores?.facts ?? makeDefaultRag();
     const feedbackRag: IRag = this._ragStores?.feedback ?? makeDefaultRag();
     const stateRag: IRag = this._ragStores?.state ?? makeDefaultRag();
+
+    // Startup health check — non-fatal; logs a warning if embedder is unreachable
+    for (const [name, rag] of [
+      ['facts', factsRag],
+      ['feedback', feedbackRag],
+      ['state', stateRag],
+    ] as const) {
+      if (rag.checkHealth) {
+        rag.checkHealth().catch((err: unknown) => {
+          log?.log({
+            type: 'pipeline_error',
+            traceId: 'builder',
+            code: 'EMBED_HEALTH_WARN',
+            message: `${name} embedder unreachable: ${err}`,
+            durationMs: 0,
+          });
+        });
+      }
+    }
 
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];

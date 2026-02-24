@@ -34,14 +34,26 @@ export interface SmartServerLlmConfig {
 }
 
 export interface SmartServerRagConfig {
-  /** 'ollama' uses real neural embeddings; 'in-memory' uses bag-of-words. Default: 'ollama' */
+  /**
+   * Embedding provider. Default: 'ollama'.
+   * 'openai' requires `apiKey`. 'in-memory' uses bag-of-words (no network).
+   */
+  provider?: 'openai' | 'ollama' | 'in-memory';
+  /**
+   * Backward-compat alias for `provider`. If both are set, `provider` wins.
+   * @deprecated Use `provider` instead.
+   */
   type?: 'ollama' | 'in-memory';
-  /** Ollama base URL. Default: 'http://localhost:11434' */
+  /** API key — required when `provider: openai`. */
+  apiKey?: string;
+  /** Embedder base URL. Default: 'http://localhost:11434' (Ollama). */
   url?: string;
-  /** Ollama embedding model. Default: 'nomic-embed-text' */
+  /** Embedding model name. */
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  /** Timeout for embed HTTP calls in ms. Default: 30 000 */
+  timeoutMs?: number;
 }
 
 export interface SmartServerMcpConfig {

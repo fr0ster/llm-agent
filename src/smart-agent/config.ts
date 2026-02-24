@@ -26,6 +26,8 @@ export interface ResolveConfigArgs {
   'llm-api-key'?: string | boolean;
   'llm-model'?: string | boolean;
   'llm-temperature'?: string | boolean;
+  'rag-provider'?: string | boolean;
+  'rag-api-key'?: string | boolean;
   'rag-type'?: string | boolean;
   'rag-url'?: string | boolean;
   'rag-model'?: string | boolean;
@@ -58,10 +60,12 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory
-  url: http://localhost:11434
-  model: nomic-embed-text
+  provider: ollama                    # openai | ollama | in-memory
+  url: http://localhost:11434         # Ollama URL or OpenAI-compatible endpoint
+  model: nomic-embed-text             # nomic-embed-text | text-embedding-3-small | etc.
   dedupThreshold: 0.92
+  # apiKey: \${OPENAI_API_KEY}         # required when provider: openai
+  # timeoutMs: 30000                  # embed request timeout in ms (with retry for ollama)
 
 mcp:
   type: http                          # http | stdio
@@ -98,14 +102,14 @@ log: smart-server.log                 # path to log file; omit for stdout
 #
 #   rag:
 #     facts:
-#       type: ollama
-#       url: http://localhost:11434
-#       model: nomic-embed-text
+#       provider: openai
+#       apiKey: \${OPENAI_API_KEY}
+#       model: text-embedding-3-small
 #       dedupThreshold: 0.92
 #     feedback:
-#       type: in-memory
+#       provider: in-memory
 #     state:
-#       type: in-memory
+#       provider: in-memory
 #
 #   mcp:
 #     - type: http
@@ -215,9 +219,19 @@ export function resolveSmartServerConfig(
     },
 
     rag: {
-      type: ((args['rag-type'] as string | undefined) ?? get(yaml, 'rag', 'type') ?? 'ollama') as
-        | 'ollama'
-        | 'in-memory',
+      provider: (
+        (args['rag-provider'] as string | undefined) ??
+        get(yaml, 'rag', 'provider') ??
+        (args['rag-type'] as string | undefined) ??
+        get(yaml, 'rag', 'type') ??
+        env['RAG_PROVIDER'] ??
+        'ollama'
+      ) as 'openai' | 'ollama' | 'in-memory',
+      apiKey:
+        (args['rag-api-key'] as string | undefined) ??
+        get(yaml, 'rag', 'apiKey') ??
+        env['RAG_API_KEY'] ??
+        undefined,
       url:
         (args['rag-url'] as string | undefined) ??
         get(yaml, 'rag', 'url') ??
@@ -227,8 +241,11 @@ export function resolveSmartServerConfig(
         (args['rag-model'] as string | undefined) ??
         get(yaml, 'rag', 'model') ??
         env['OLLAMA_EMBED_MODEL'] ??
-        'nomic-embed-text',
+        undefined,
       dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
+      timeoutMs: get(yaml, 'rag', 'timeoutMs') !== undefined
+        ? Number(get(yaml, 'rag', 'timeoutMs'))
+        : undefined,
     },
 
     mcp: mcpType

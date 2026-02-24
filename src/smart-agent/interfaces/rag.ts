@@ -18,4 +18,10 @@ export interface IRag {
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>>;
+
+  /**
+   * Optional startup health check. When present, SmartAgentBuilder calls it
+   * once during build() and logs a warning if it throws (non-fatal).
+   */
+  checkHealth?(): Promise<void>;
 }
