@@ -73,6 +73,19 @@ export interface SmartAgentConfig {
   /** Number of RAG results to retrieve. Default: 5. */
   ragQueryK?: number;
   /**
+   * Minimum cosine similarity score for a RAG result to be included in the LLM
+   * context. Results below this threshold are discarded.
+   *
+   * - When a tool fact's score is below the threshold it is excluded from both
+   *   `## Known Facts` and the `tools` parameter sent to the LLM.
+   * - If ALL tool facts are excluded the LLM receives NO tools and answers
+   *   freely (e.g. a math question with an ABAP-only MCP server).
+   * - The threshold only applies to the facts store. feedback / state results
+   *   are always included (they carry session context, not tool descriptions).
+   * - Set to 0 (default) to disable filtering and keep current behaviour.
+   */
+  ragMinScore?: number;
+  /**
    * Master enable/disable switch. When false, process() returns DISABLED immediately.
    * Default: true (undefined = enabled).
    */
@@ -85,6 +98,18 @@ export interface SmartAgentConfig {
    * as { type: 'reasoning' } chunks in processStream().
    */
   llmReasoning?: boolean;
+  /**
+   * System prompt used when translating non-ASCII user text to English for
+   * cross-lingual RAG matching. Override to match your domain.
+   * Default: neutral translation instruction.
+   */
+  ragTranslationPrompt?: string;
+  /**
+   * Instruction appended to the system message when `llmReasoning` is true.
+   * Override to customise the reasoning format.
+   * Default: instructs the LLM to use <thinking> tags.
+   */
+  reasoningPrompt?: string;
 }
 
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
@@ -315,6 +340,9 @@ export class SmartAgent {
         store: storeName,
         k,
         resultCount: result.ok ? result.value.length : 0,
+        results: result.ok
+          ? result.value.map((r) => ({ score: r.score, id: r.metadata.id, text: r.text.slice(0, 120) }))
+          : [],
         durationMs: Date.now() - t0,
       });
       return result;
@@ -335,26 +363,40 @@ export class SmartAgent {
     // Tools are vectorized at startup with metadata.id = "tool:<name>".
     // RAG query returns the most relevant tool descriptions — use their ids
     // to select only those tools as native function definitions for the LLM.
+    //
+    // Score filtering: facts below ragMinScore are excluded so the LLM is not
+    // offered irrelevant tools (e.g. ABAP tools for a math question).
+    // Fallback to ALL tools only when the facts store is empty (tools not yet
+    // vectorized), never when store has entries but none passed the threshold.
+    const minScore = this.config.ragMinScore ?? 0;
+    const relevantFacts = minScore > 0
+      ? facts.filter((r) => r.score >= minScore)
+      : facts;
     const ragToolNames = new Set(
-      facts
+      relevantFacts
         .map((r) => r.metadata.id as string | undefined)
         .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
         .map((id) => id.slice('tool:'.length)),
     );
-    const selectedTools =
-      ragToolNames.size > 0
-        ? mcpTools.filter((t) => ragToolNames.has(t.name))
-        : mcpTools; // fallback: all tools if RAG returned no tool facts
+    const toolsVectorized = facts.length > 0; // store is non-empty → tools were indexed
+    const selectedTools = toolsVectorized
+      ? mcpTools.filter((t) => ragToolNames.has(t.name)) // empty set → no tools offered
+      : mcpTools; // fallback: tools not indexed yet → offer all
     logger?.log({
       type: 'tools_selected',
       traceId,
       total: mcpTools.length,
+      minScore,
+      relevantFactsCount: relevantFacts.length,
       selected: selectedTools.length,
       names: selectedTools.map((t) => t.name),
+      filteredOut: facts.length - relevantFacts.length,
     });
 
     // Step 11: initial context assembly
-    const retrieved = { facts, feedback, state, tools: selectedTools };
+    // Use relevantFacts (score-filtered) so that low-score tool descriptions
+    // are not injected into ## Known Facts in the system message.
+    const retrieved = { facts: relevantFacts, feedback, state, tools: selectedTools };
     const assembleResult = await this.deps.assembler.assemble(
       action,
       retrieved,
@@ -468,6 +510,17 @@ export class SmartAgent {
 
       // LLM call — McpTool and LlmTool are structurally identical; cast directly
       const llmT0 = Date.now();
+      // Log what context is sent to LLM before the call
+      const sysMsg = messages.find((m) => m.role === 'system');
+      logger?.log({
+        type: 'llm_context',
+        traceId,
+        iteration,
+        messageCount: messages.length,
+        toolCount: retrieved.tools.length,
+        toolNames: retrieved.tools.map((t) => t.name),
+        systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
+      });
       const resp = await this.deps.mainLlm.chat(
         messages,
         retrieved.tools as LlmTool[],
@@ -478,6 +531,7 @@ export class SmartAgent {
         traceId,
         iteration,
         finishReason: resp.ok ? resp.value.finishReason : 'error',
+        toolCallsRequested: resp.ok ? (resp.value.toolCalls?.length ?? 0) : 0,
         durationMs: Date.now() - llmT0,
       });
       if (!resp.ok) {
@@ -618,10 +672,13 @@ export class SmartAgent {
   // -------------------------------------------------------------------------
 
   private _injectReasoningInstruction(messages: Message[]): Message[] {
-    const INSTRUCTION =
+    const DEFAULT_REASONING_PROMPT =
       '\n\nBefore every response, tool call, or decision, explain your ' +
       'reasoning inside <thinking>...</thinking> tags. Be thorough and show ' +
       'your thought process. After the thinking block, give your actual response.';
+    const INSTRUCTION = this.config.reasoningPrompt
+      ? `\n\n${this.config.reasoningPrompt}`
+      : DEFAULT_REASONING_PROMPT;
 
     const sysIdx = messages.findIndex((m) => m.role === 'system');
     if (sysIdx === -1) {
@@ -640,23 +697,36 @@ export class SmartAgent {
   // Private: translate action text to English for cross-lingual RAG matching
   // -------------------------------------------------------------------------
 
-  /** Returns an English translation of `text` for RAG queries.
-   *  If `text` is already ASCII (English), returns it unchanged.
-   *  Falls back to the original on LLM error. */
+  /**
+   * Translates non-ASCII `text` to English for cross-lingual RAG matching.
+   *
+   * MCP tool descriptions are always in English, so users who write in other
+   * languages need their query translated before the cosine similarity search.
+   * The prompt must be domain-neutral — any domain bias causes ambiguous words
+   * to be mis-translated (e.g. "Склади" → "Warehouses" instead of "Add").
+   *
+   * Alternative: switch to a multilingual embedding model (e.g.
+   * `multilingual-e5-base`) — then translation is unnecessary and this step
+   * can be disabled by setting `ragTranslationPrompt` to an empty string.
+   */
   private async _toEnglishForRag(
     text: string,
     opts: CallOptions | undefined,
   ): Promise<string> {
-    // Skip translation if already ASCII (covers English + SAP identifiers)
+    // Skip if already ASCII (English text, SAP identifiers, etc.)
     if (/^[\x00-\x7F]+$/.test(text)) return text;
+
+    // Empty string disables translation (e.g. when using a multilingual model).
+    if (this.config.ragTranslationPrompt === '') return text;
+
+    const DEFAULT_TRANSLATION_PROMPT =
+      'Translate the following text to English, preserving the exact original ' +
+      'intent. Do not add domain-specific context or reinterpret ambiguous words. ' +
+      'Reply with only the translation, no explanation.';
 
     const result = await this.deps.mainLlm.chat(
       [
-        {
-          role: 'system',
-          content:
-            'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.',
-        },
+        { role: 'system', content: this.config.ragTranslationPrompt ?? DEFAULT_TRANSLATION_PROMPT },
         { role: 'user', content: text },
       ],
       [],
@@ -776,11 +846,28 @@ export class SmartAgent {
 
     // RAG retrieval
     const ragText = await this._toEnglishForRag(action.text, opts);
+    logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
     const k = this.config.ragQueryK ?? 5;
+    const streamQuery = async (store: IRag, storeName: string) => {
+      const t0 = Date.now();
+      const result = await store.query(ragText, k, opts);
+      logger?.log({
+        type: 'rag_query',
+        traceId,
+        store: storeName,
+        k,
+        resultCount: result.ok ? result.value.length : 0,
+        results: result.ok
+          ? result.value.map((r) => ({ score: r.score, id: r.metadata.id, text: r.text.slice(0, 120) }))
+          : [],
+        durationMs: Date.now() - t0,
+      });
+      return result;
+    };
     const [factsR, feedbackR, stateR] = await Promise.all([
-      this.deps.ragStores.facts.query(ragText, k, opts),
-      this.deps.ragStores.feedback.query(ragText, k, opts),
-      this.deps.ragStores.state.query(ragText, k, opts),
+      streamQuery(this.deps.ragStores.facts, 'facts'),
+      streamQuery(this.deps.ragStores.feedback, 'feedback'),
+      streamQuery(this.deps.ragStores.state, 'state'),
     ]);
     const facts: RagResult[] = factsR.ok ? factsR.value : [];
     const feedback: RagResult[] = feedbackR.ok ? feedbackR.value : [];
@@ -788,23 +875,51 @@ export class SmartAgent {
 
     // List tools
     const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
+    const minScore = this.config.ragMinScore ?? 0;
+    const relevantFacts = minScore > 0
+      ? facts.filter((r) => r.score >= minScore)
+      : facts;
     const ragToolNames = new Set(
-      facts
+      relevantFacts
         .map((r) => r.metadata.id as string | undefined)
         .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
         .map((id) => id.slice('tool:'.length)),
     );
-    const selectedTools = ragToolNames.size > 0
+    const toolsVectorized = facts.length > 0;
+    const selectedTools = toolsVectorized
       ? mcpTools.filter((t) => ragToolNames.has(t.name))
       : mcpTools;
+    logger?.log({
+      type: 'tools_selected',
+      traceId,
+      total: mcpTools.length,
+      minScore,
+      relevantFactsCount: relevantFacts.length,
+      selected: selectedTools.length,
+      names: selectedTools.map((t) => t.name),
+      filteredOut: facts.length - relevantFacts.length,
+    });
 
-    // Assemble initial context
-    const retrieved = { facts, feedback, state, tools: selectedTools };
+    // Assemble initial context — use relevantFacts to avoid injecting
+    // low-score tool descriptions into the system message.
+    const retrieved = { facts: relevantFacts, feedback, state, tools: selectedTools };
     const assembleResult = await this.deps.assembler.assemble(action, retrieved, [], opts);
     if (!assembleResult.ok) {
       yield { type: 'done', finishReason: 'error' };
       return;
     }
+
+    // Log context going into LLM
+    const sysMsg = assembleResult.value.find((m) => m.role === 'system');
+    logger?.log({
+      type: 'llm_context',
+      traceId,
+      iteration: 0,
+      messageCount: assembleResult.value.length,
+      toolCount: selectedTools.length,
+      toolNames: selectedTools.map((t) => t.name),
+      systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
+    });
 
     logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
 
@@ -908,7 +1023,7 @@ export class SmartAgent {
         }
       }
 
-      logger?.log({ type: 'llm_call', traceId, iteration, finishReason: finalFinishReason, durationMs: Date.now() - llmT0 });
+      logger?.log({ type: 'llm_call', traceId, iteration, finishReason: finalFinishReason, toolCallsRequested: accumulatedToolCalls?.length ?? 0, durationMs: Date.now() - llmT0 });
 
       if (isStreamingDone || !accumulatedToolCalls?.length) {
         if (!isStreamingDone) yield { type: 'done', finishReason: 'stop' };

@@ -89,6 +89,17 @@ export interface BuilderPromptsConfig {
   system?: string;
   /** Override the intent-classifier system prompt. */
   classifier?: string;
+  /**
+   * System prompt used when translating non-ASCII user text to English for
+   * cross-lingual RAG matching. Override to match your domain (e.g. SAP,
+   * 3D printing, medical). Default: neutral translation instruction.
+   */
+  ragTranslation?: string;
+  /**
+   * Instruction appended to the system message when `debug.llmReasoning` is
+   * true. Override to customise the reasoning format / tag names.
+   */
+  reasoning?: string;
 }
 
 export interface SmartAgentBuilderConfig {
@@ -98,7 +109,10 @@ export interface SmartAgentBuilderConfig {
   rag?: BuilderRagConfig;
   /** MCP connection(s). Pass an array to connect multiple servers simultaneously. */
   mcp?: BuilderMcpConfig | BuilderMcpConfig[];
-  /** SmartAgent orchestration limits. */
+  /**
+   * SmartAgent orchestration limits.
+   * Includes `ragMinScore` to filter irrelevant tool facts from LLM context.
+   */
   agent?: Partial<SmartAgentConfig>;
   /** System / classifier prompt overrides. */
   prompts?: BuilderPromptsConfig;
@@ -357,6 +371,8 @@ export class SmartAgentBuilder {
       ragQueryK: 10,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
+      ...(this.cfg.prompts?.ragTranslation ? { ragTranslationPrompt: this.cfg.prompts.ragTranslation } : {}),
+      ...(this.cfg.prompts?.reasoning ? { reasoningPrompt: this.cfg.prompts.reasoning } : {}),
     };
 
     const agent = new SmartAgent(

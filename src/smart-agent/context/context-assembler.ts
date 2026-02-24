@@ -174,14 +174,27 @@ function applyTokenBudget(
 // ContextAssembler
 // ---------------------------------------------------------------------------
 
+/**
+ * Default preamble used when no `systemPromptPreamble` is configured.
+ *
+ * Establishes the LLM as a general-purpose assistant so it does not
+ * over-restrict itself to ABAP/SAP operations just because ABAP tools
+ * happen to appear in the retrieved context.
+ */
+const DEFAULT_SYSTEM_PREAMBLE =
+  'You are a helpful AI assistant. Answer any question you can directly and accurately. ' +
+  'When the user request requires a tool, use the available tools. ' +
+  'For all other requests — including general knowledge, calculations, or conversation — answer without tools.';
+
 export class ContextAssembler implements IContextAssembler {
   private readonly maxTokens: number | undefined;
-  private readonly systemPromptPreamble: string | undefined;
+  private readonly systemPromptPreamble: string;
   private readonly includeProvenance: boolean;
 
   constructor(config?: ContextAssemblerConfig) {
     this.maxTokens = config?.maxTokens;
-    this.systemPromptPreamble = config?.systemPromptPreamble;
+    // Allow empty string to suppress the default preamble entirely.
+    this.systemPromptPreamble = config?.systemPromptPreamble ?? DEFAULT_SYSTEM_PREAMBLE;
     this.includeProvenance = config?.includeProvenance ?? false;
   }
 

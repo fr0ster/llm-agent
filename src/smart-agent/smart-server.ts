@@ -73,6 +73,13 @@ export interface SmartServerAgentConfig {
   maxToolCalls?: number;
   /** RAG results per query. Default: 10 */
   ragQueryK?: number;
+  /**
+   * Minimum cosine similarity score [0–1] for a RAG fact to be included in
+   * the LLM context. Facts below this threshold — including tool descriptions
+   * — are excluded. If no tool facts pass, the LLM receives NO tools and
+   * answers freely. Default: 0 (no filtering).
+   */
+  ragMinScore?: number;
   /** Timeout for the entire request pipeline in ms. Unset = no timeout. */
   timeoutMs?: number;
 }
@@ -97,6 +104,18 @@ export interface SmartServerPromptsConfig {
    * Must instruct the LLM to return a JSON array of { type, text } objects.
    */
   classifier?: string;
+  /**
+   * System prompt used when translating non-ASCII user text to English for
+   * cross-lingual RAG tool matching. Tailor it to your domain so ambiguous
+   * words resolve correctly (e.g. add SAP / 3D-printing context).
+   * Default: neutral translation instruction.
+   */
+  ragTranslation?: string;
+  /**
+   * Instruction appended to the system message when `debug.llmReasoning` is
+   * enabled. Override to customise the reasoning tag format.
+   */
+  reasoning?: string;
 }
 
 /**
@@ -372,15 +391,17 @@ export class SmartServer {
       serverMode === 'hybrid' &&
       (() => {
         const systemMsg = body.messages.find((m) => m.role === 'system');
-        return typeof systemMsg?.content === 'string' && systemMsg.content.trimStart().startsWith('You are Cline');
+        if (!systemMsg) return false;
+        return extractText(systemMsg.content).trimStart().startsWith('You are Cline');
       })();
     const usePassthrough = serverMode === 'passthrough' || isCline;
 
     const t0 = Date.now();
     log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
 
-    let finalContent: string;
-    let finalFinishReason: 'stop' | 'length';
+    // Single AbortController handles client disconnect for all paths.
+    const abortCtrl = new AbortController();
+    req.on('close', () => abortCtrl.abort());
 
     if (usePassthrough) {
       // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
@@ -390,18 +411,78 @@ export class SmartServer {
       }));
       const llmResult = await chat(normalizedMessages);
       log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
-      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
-      finalFinishReason = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
-    } else {
-      // SmartAgent: classify + RAG tool selection + MCP orchestration — use the LAST user message
+      const finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
+      const finalFinishReason: 'stop' | 'length' = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
+      this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+    } else if (body.stream === true) {
+      // Smart mode + streaming: pipe processStream() into a live SSE connection.
       const text = extractText(userMessages[userMessages.length - 1].content);
-      const result = await smartAgent.process(text);
+      await this._handleSmartStream(res, smartAgent, text, abortCtrl.signal, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+    } else {
+      // Smart mode + non-streaming: classify + RAG tool selection + MCP orchestration.
+      const text = extractText(userMessages[userMessages.length - 1].content);
+      const result = await smartAgent.process(text, { signal: abortCtrl.signal });
       log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
-      finalFinishReason = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+      const finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+      const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+      this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+    }
+  }
+
+  private async _handleSmartStream(
+    res: ServerResponse,
+    smartAgent: SmartAgent,
+    text: string,
+    signal: AbortSignal,
+    log: (e: Record<string, unknown>) => void,
+    t0: number,
+    includeUsage: boolean,
+    getUsage: () => TokenUsage,
+  ): Promise<void> {
+    const id = `chatcmpl-${randomUUID()}`;
+    const created = Math.floor(Date.now() / 1000);
+
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      Connection: 'keep-alive',
+    });
+
+    const sendEvent = (data: unknown): void => {
+      if (!res.destroyed) res.write(`data: ${JSON.stringify(data)}\n\n`);
+    };
+
+    let ok = true;
+    try {
+      for await (const chunk of smartAgent.processStream(text, { signal })) {
+        if (chunk.type === 'text') {
+          sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: chunk.delta }, finish_reason: null }] });
+        } else if (chunk.type === 'reasoning') {
+          sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { reasoning: chunk.delta }, finish_reason: null }] });
+        } else if (chunk.type === 'usage') {
+          sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: { prompt_tokens: chunk.promptTokens, completion_tokens: chunk.completionTokens, total_tokens: chunk.promptTokens + chunk.completionTokens } });
+        } else if (chunk.type === 'done') {
+          const finishReason: 'stop' | 'length' = chunk.finishReason === 'length' ? 'length' : 'stop';
+          sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: {}, finish_reason: finishReason }] });
+        }
+        // tool_calls chunks are handled internally by SmartAgent — skip.
+      }
+    } catch {
+      ok = false;
+      sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
     }
 
-    this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+    if (includeUsage) {
+      const u = getUsage();
+      sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens } });
+    }
+
+    log({ event: 'request_done', mode: 'smart', ok, durationMs: Date.now() - t0 });
+
+    if (!res.destroyed) {
+      res.write('data: [DONE]\n\n');
+      res.end();
+    }
   }
 
   private _sendResponse(

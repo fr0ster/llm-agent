@@ -17,6 +17,7 @@ export type LogEvent =
       store: string;
       k: number;
       resultCount: number;
+      results: Array<{ score: number; id: unknown; text: string }>;
       durationMs: number;
     }
   | {
@@ -24,7 +25,17 @@ export type LogEvent =
       traceId: string;
       iteration: number;
       finishReason: string;
+      toolCallsRequested: number;
       durationMs: number;
+    }
+  | {
+      type: 'llm_context';
+      traceId: string;
+      iteration: number;
+      messageCount: number;
+      toolCount: number;
+      toolNames: string[];
+      systemPromptPreview: string | null;
     }
   | {
       type: 'tool_call';
@@ -52,8 +63,11 @@ export type LogEvent =
       type: 'tools_selected';
       traceId: string;
       total: number;
+      minScore: number;
+      relevantFactsCount: number;
       selected: number;
       names: string[];
+      filteredOut: number;
     }
   | {
       type: 'rag_translate';

@@ -80,11 +80,36 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 10
+  # ragMinScore: 0.55                 # min cosine score to include a tool in LLM context (0 = off)
+                                    # Depends on embedding model: nomic-embed-text scores ~0.40 for
+                                    # unrelated pairs, so use 0.50+ to filter irrelevant tools.
   # timeoutMs: 120000                 # overall request pipeline timeout in ms
 
 # prompts:
-#   system: "You are a helpful assistant."
+#   system: >
+#     You are a helpful AI assistant. Use tools only when the request requires
+#     system operations. Answer general questions directly.
 #   classifier: null
+#
+#   # ragTranslation — controls cross-lingual RAG matching.
+#   #
+#   # MCP tool descriptions are in English. When users write in other languages
+#   # the default neutral translation prompt is used so the query can be matched
+#   # against English tool embeddings.
+#   #
+#   # Two alternatives to translation:
+#   #   1. Switch to a multilingual embedding model (e.g. multilingual-e5-base
+#   #      via Ollama) — set ragTranslation: "" to disable translation entirely.
+#   #   2. Keep the default prompt — works well for most languages; falls back
+#   #      to the original text on LLM error.
+#   #
+#   # Do NOT add domain-specific context here (no "SAP expert", "3D printer",
+#   # etc.) — domain bias causes ambiguous words to be mis-translated.
+#   #
+#   # ragTranslation: ""   # disable (use when embedding model is multilingual)
+#
+#   # reasoning: >
+#   #   Before every response explain your reasoning inside <thinking> tags.
 
 log: smart-server.log                 # path to log file; omit for stdout
 
@@ -209,6 +234,14 @@ export function resolveSmartServerConfig(
     get(yaml, 'prompts', 'classifier') ??
     env['PROMPT_CLASSIFIER'] ??
     null;
+  const promptRagTranslation =
+    get(yaml, 'prompts', 'ragTranslation') ??
+    env['PROMPT_RAG_TRANSLATION'] ??
+    null;
+  const promptReasoning =
+    get(yaml, 'prompts', 'reasoning') ??
+    env['PROMPT_REASONING'] ??
+    null;
 
   return {
     port: Number((args['port'] as string | undefined) ?? get(yaml, 'port') ?? env['PORT'] ?? 3001),
@@ -272,16 +305,21 @@ export function resolveSmartServerConfig(
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
+      ...(get(yaml, 'agent', 'ragMinScore') !== undefined
+        ? { ragMinScore: Number(get(yaml, 'agent', 'ragMinScore')) }
+        : {}),
       ...(get(yaml, 'agent', 'timeoutMs') !== undefined
         ? { timeoutMs: Number(get(yaml, 'agent', 'timeoutMs')) }
         : {}),
     },
 
     prompts:
-      promptSystem || promptClassifier
+      promptSystem || promptClassifier || promptRagTranslation || promptReasoning
         ? {
             ...(promptSystem ? { system: promptSystem } : {}),
             ...(promptClassifier ? { classifier: promptClassifier } : {}),
+            ...(promptRagTranslation ? { ragTranslation: promptRagTranslation } : {}),
+            ...(promptReasoning ? { reasoning: promptReasoning } : {}),
           }
         : undefined,
 

@@ -13,7 +13,7 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory
+  provider: ollama                    # openai | ollama | in-memory
   url: http://localhost:11434
   model: nomic-embed-text
   dedupThreshold: 0.92
@@ -30,10 +30,16 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 5
+  ragMinScore: 0.55                   # min cosine score to offer a tool to LLM (0 = off)
+                                    # nomic-embed-text scores ~0.40 for unrelated pairs — use 0.50+
 
-# Optional: customise prompts
 # prompts:
-#   system: "You are a helpful assistant specialized in SAP ABAP development."
-#   classifier: null   # omit or set to null to use the built-in classifier prompt
+#   system: "You are a helpful AI assistant. Use tools only for system operations."
+#   classifier: null
+#   # ragTranslation — translates non-English queries for cross-lingual RAG matching.
+#   # MCP tool descriptions are in English, so translation helps non-English users.
+#   # Do NOT add domain hints (SAP/printer/etc) — use a neutral translation prompt.
+#   # To disable (if using a multilingual embedding model): ragTranslation: ""
+#   # ragTranslation: null   # null = use built-in neutral translation prompt
 
 log: smart-server.log                 # path to log file; remove for stdout
