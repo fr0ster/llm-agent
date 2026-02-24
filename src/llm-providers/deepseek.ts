@@ -115,28 +115,39 @@ export class DeepSeekProvider extends BaseLLMProvider {
   }
 
   /**
-   * Format messages for DeepSeek API
+   * Format messages for DeepSeek API with strict protocol enforcement.
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map((msg) => {
-      const formatted: any = {
+    const formatted: any[] = [];
+
+    for (const msg of messages) {
+      // 1. Skip tool messages without required tool_call_id
+      if (msg.role === 'tool' && !msg.tool_call_id) {
+        continue;
+      }
+
+      const entry: any = {
         role: msg.role,
         content: msg.content ?? "",
       };
-      
+
+      // 2. Handle assistant messages with tool calls
       if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
-        formatted.tool_calls = msg.tool_calls;
-        // OpenAI/DeepSeek requirement: content must be null if tool_calls are present
-        formatted.content = msg.content || null; 
+        entry.tool_calls = msg.tool_calls;
+        // DeepSeek requirement: content MUST be null if tool_calls is present
+        entry.content = msg.content || null;
       }
-      
-      if (msg.role === 'tool' && msg.tool_call_id) {
-        formatted.tool_call_id = msg.tool_call_id;
-        // Tool messages must have string content
-        formatted.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? "");
+
+      // 3. Handle tool messages
+      if (msg.role === 'tool') {
+        entry.tool_call_id = msg.tool_call_id;
+        // Tool content must be a string
+        entry.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? "");
       }
-      
-      return formatted;
-    });
+
+      formatted.push(entry);
+    }
+
+    return formatted;
   }
 }
