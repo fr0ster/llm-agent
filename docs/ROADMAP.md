@@ -12,7 +12,7 @@
 
 ### Provider layer
 - [x] Add optional abstract `streamLLMWithTools()` to `BaseAgent`
-- [ ] Implement `streamLLMWithTools()` in `OpenAIAgent` (fetch + SSE parser + tool call accumulation)
+- [x] Implement `streamLLMWithTools()` in `OpenAIAgent` (fetch + SSE parser + tool call accumulation)
 - [ ] Implement `streamLLMWithTools()` in `DeepSeekAgent` (same as OpenAI — compatible API)
 - [ ] Implement `streamLLMWithTools()` in `AnthropicAgent` (Anthropic streaming format)
 
