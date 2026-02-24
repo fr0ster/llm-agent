@@ -104,4 +104,12 @@ export class AnthropicAgent extends BaseAgent {
       };
     });
   }
+
+  protected async *streamLLMWithTools(
+    _messages: Message[],
+    _tools: any[],
+    _options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }> {
+    throw new Error('Streaming is not implemented for AnthropicAgent');
+  }
 }

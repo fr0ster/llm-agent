@@ -94,4 +94,12 @@ export class DeepSeekAgent extends BaseAgent {
       return formatted;
     });
   }
+
+  protected async *streamLLMWithTools(
+    _messages: Message[],
+    _tools: any[],
+    _options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }> {
+    throw new Error('Streaming is not implemented for DeepSeekAgent');
+  }
 }

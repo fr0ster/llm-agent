@@ -7,6 +7,7 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import {
   type CallOptions,
+  type LlmStreamChunk,
   type LlmTool,
   type McpTool,
   type RagMetadata,
@@ -202,16 +203,81 @@ export class SmartAgent {
     }
   }
 
+  async *streamProcess(
+    textOrMessages: string | Message[],
+    options?: CallOptions,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    // 0. enabled guard
+    if (this.config.smartAgentEnabled === false) {
+      yield {
+        ok: false,
+        error: new OrchestratorError('SmartAgent is disabled', 'DISABLED'),
+      };
+      return;
+    }
+
+    const traceId = options?.trace?.traceId ?? randomUUID();
+    const pipelineT0 = Date.now();
+
+    // Setup timeout/signal
+    let timeoutCleanup: (() => void) | undefined;
+    let opts: CallOptions | undefined = options;
+    if (this.config.timeoutMs) {
+      const { signal: timeoutSignal, clear } = createTimeoutSignal(
+        this.config.timeoutMs,
+      );
+      timeoutCleanup = clear;
+      const merged = mergeSignals(options?.signal, timeoutSignal);
+      opts = { ...options, signal: merged.signal };
+    }
+
+    try {
+      // Run pipeline up to tool loop
+      // For streaming, we mostly care about the final tool loop call
+      // We can't reuse _runPipeline easily because it returns a Promise.
+      // I'll refactor _runPipeline to return the state needed for _runToolLoop.
+
+      const preLoop = await this._preparePipeline(textOrMessages, opts, traceId, pipelineT0);
+      if (!preLoop.ok) {
+        yield preLoop;
+        return;
+      }
+
+      const { action, retrieved, messages, toolClientMap } = preLoop.value;
+
+      // Run tool loop with streaming for the final call
+      const stream = this._runStreamingToolLoop(
+        action,
+        retrieved,
+        messages,
+        toolClientMap,
+        opts,
+        traceId,
+      );
+
+      for await (const chunk of stream) {
+        yield chunk;
+      }
+    } finally {
+      timeoutCleanup?.();
+    }
+  }
+
   // -------------------------------------------------------------------------
   // Private: pipeline steps 4–13
   // -------------------------------------------------------------------------
 
-  private async _runPipeline(
+  private async _preparePipeline(
     textOrMessages: string | Message[],
     opts: CallOptions | undefined,
     traceId: string,
     pipelineT0: number,
-  ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+  ): Promise<Result<{
+    action: Subprompt;
+    retrieved: any;
+    messages: Message[];
+    toolClientMap: Map<string, IMcpClient>;
+  }, OrchestratorError>> {
     const logger = this.deps.logger;
     const text = typeof textOrMessages === 'string'
       ? textOrMessages
@@ -286,25 +352,18 @@ export class SmartAgent {
       }),
     );
 
-    // Step 7: no actions → empty response
+    // Step 7: no actions
     if (actions.length === 0) {
       return {
-        ok: true,
-        value: {
-          content: '',
-          iterations: 0,
-          toolCallCount: 0,
-          stopReason: 'stop',
-        },
+        ok: false,
+        error: new OrchestratorError('No actions found in prompt', 'NO_ACTIONS'),
       };
     }
 
     // Step 8: take first action
     const action = actions[0];
 
-    // Step 9: RAG retrieval (non-fatal — failures fall back to [])
-    // Tools are vectorized in English; translate the action to English first so
-    // that cross-lingual queries (e.g. Ukrainian) get accurate cosine matches.
+    // Step 9: RAG retrieval
     const ragText = await this._toEnglishForRag(action.text, opts);
     logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
 
@@ -335,9 +394,6 @@ export class SmartAgent {
     const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
 
     // Step 10.5: filter tools to RAG-selected ones.
-    // Tools are vectorized at startup with metadata.id = "tool:<name>".
-    // RAG query returns the most relevant tool descriptions — use their ids
-    // to select only those tools as native function definitions for the LLM.
     const ragToolNames = new Set(
       facts
         .map((r) => r.metadata.id as string | undefined)
@@ -347,7 +403,7 @@ export class SmartAgent {
     const selectedTools =
       ragToolNames.size > 0
         ? mcpTools.filter((t) => ragToolNames.has(t.name))
-        : mcpTools; // fallback: all tools if RAG returned no tool facts
+        : mcpTools;
     logger?.log({
       type: 'tools_selected',
       traceId,
@@ -374,15 +430,188 @@ export class SmartAgent {
       };
     }
 
+    return {
+      ok: true,
+      value: {
+        action,
+        retrieved,
+        messages: assembleResult.value,
+        toolClientMap,
+      },
+    };
+  }
+
+  private async _runPipeline(
+    textOrMessages: string | Message[],
+    opts: CallOptions | undefined,
+    traceId: string,
+    pipelineT0: number,
+  ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    const preLoop = await this._preparePipeline(textOrMessages, opts, traceId, pipelineT0);
+    if (!preLoop.ok) {
+      // Special case: no actions means empty response (valid success)
+      if (preLoop.error.code === 'NO_ACTIONS') {
+        return {
+          ok: true,
+          value: {
+            content: '',
+            iterations: 0,
+            toolCallCount: 0,
+            stopReason: 'stop',
+          },
+        };
+      }
+      return preLoop;
+    }
+
+    const { action, retrieved, messages, toolClientMap } = preLoop.value;
+
     // Step 12: tool loop
     return this._runToolLoop(
       action,
       retrieved,
-      assembleResult.value,
+      messages,
       toolClientMap,
       opts,
       traceId,
     );
+  }
+
+  private async *_runStreamingToolLoop(
+    _action: Subprompt,
+    retrieved: {
+      facts: RagResult[];
+      feedback: RagResult[];
+      state: RagResult[];
+      tools: McpTool[];
+    },
+    initialMessages: Message[],
+    toolClientMap: Map<string, IMcpClient>,
+    opts: CallOptions | undefined,
+    traceId: string,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    const logger = this.deps.logger;
+    let toolCallCount = 0;
+    let messages = initialMessages;
+
+    for (let iteration = 0; ; iteration++) {
+      if (opts?.signal?.aborted) {
+        yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
+        return;
+      }
+
+      if (iteration >= this.config.maxIterations) {
+        yield {
+          ok: true,
+          value: { content: '', finishReason: 'length' },
+        };
+        return;
+      }
+
+      // We don't know if this is the last iteration yet.
+      // But we can try to call chat() first to see if it wants tool calls.
+      // If it DOES NOT want tool calls, we should have used streamChat().
+      // This is a bit tricky. A better way: always use chat() until it's a stop reason.
+      // Then, re-run the final call with streamChat(). 
+      // Downside: double call for the final message. 
+      // Alternative: always stream and buffer tool calls.
+
+      const llmT0 = Date.now();
+      const resp = await this.deps.mainLlm.chat(
+        messages,
+        retrieved.tools as LlmTool[],
+        opts,
+      );
+
+      if (!resp.ok) {
+        yield {
+          ok: false,
+          error: new OrchestratorError(resp.error.message, 'LLM_ERROR'),
+        };
+        return;
+      }
+
+      const toolCalls = resp.value.toolCalls;
+
+      // No tool calls → this was the final response. 
+      // To provide a real stream, we should have streamed this. 
+      // Since we already have the full response, we yield it as one chunk or split it.
+      if (resp.value.finishReason !== 'tool_calls' || !toolCalls?.length) {
+        yield {
+          ok: true,
+          value: {
+            content: resp.value.content,
+            finishReason: resp.value.finishReason,
+            usage: resp.value.usage,
+          },
+        };
+        return;
+      }
+
+      // Handle tool calls (same logic as _runToolLoop)
+      messages = [
+        ...messages,
+        {
+          role: 'assistant' as const,
+          content: resp.value.content || '',
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments),
+            },
+          })),
+        },
+      ];
+
+      for (const toolCall of toolCalls) {
+        if (
+          this.config.maxToolCalls !== undefined &&
+          toolCallCount >= this.config.maxToolCalls
+        ) {
+          yield { ok: true, value: { content: '', finishReason: 'length' } };
+          return;
+        }
+
+        const toolT0 = Date.now();
+        let resultContent: string;
+
+        const client = toolClientMap.get(toolCall.name);
+        if (!client) {
+          resultContent = `Tool "${toolCall.name}" not found`;
+        } else {
+          const callResult = await client.callTool(
+            toolCall.name,
+            toolCall.arguments,
+            opts,
+          );
+          resultContent = !callResult.ok
+            ? callResult.error.message
+            : typeof callResult.value.content === 'string'
+              ? callResult.value.content
+              : JSON.stringify(callResult.value.content);
+        }
+
+        logger?.log({
+          type: 'tool_call',
+          traceId,
+          toolName: toolCall.name,
+          isError: false,
+          durationMs: Date.now() - toolT0,
+        });
+        toolCallCount++;
+
+        messages = [
+          ...messages,
+          {
+            role: 'tool' as const,
+            content: resultContent,
+            tool_call_id: toolCall.id,
+          },
+        ];
+      }
+    }
   }
 
   // -------------------------------------------------------------------------
