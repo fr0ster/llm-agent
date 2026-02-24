@@ -11,23 +11,25 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Summary
 Incremental release focused on real streaming support, OpenAI SSE compliance, and fast-path chat 
-intents. Fixes tool-calling protocol issues with DeepSeek/OpenAI.
+intents. Fixes tool-calling protocol issues and implements true hybrid tool orchestration.
 
 ### Added
+- **Verified Operations:** Confirmed stable operation for both simple arithmetic (fast-path) and 
+  complex MCP tool requests (SAP/ADT).
+- **Hybrid Tool Orchestration:** Real-time merging of internal MCP tools with external client 
+  tools (Cline/Goose). Handles local execution vs. remote delegation seamlessly.
 - **Real Incremental Streaming:** True per-token streaming in `SmartAgent` and `SmartServer`.
-- **Chat Intent Fast-path:** New `chat` subprompt type for non-engineering requests (math, greetings) 
-  that skips RAG and tool-loop for near-instant responses.
+- **Chat Intent Fast-path:** New `chat` subprompt type for non-engineering requests that 
+  skips RAG and tool-loop for near-instant responses.
 - **Progress Updates:** Tool execution status streamed to client as content deltas.
 - **OpenAI SSE Compliance:** Server now emits role in the first chunk and finish_reason in a 
-  separate chunk, fixing parse errors in some clients (e.g. Cline).
-- **Streaming Usage:** Support for `stream_options.include_usage` with a dedicated usage chunk.
+  separate chunk, fixing parse errors in Cline/Goose.
 
 ### Fixed
-- **Tool-calling Protocol:** Fixed 400 Bad Request from DeepSeek by preserving `tool_calls` and 
-  `tool_call_id` in message history and using `content: null` for assistant messages with tools.
-- **Streaming Parser:** Improved SSE chunk parsing for incremental tool deltas.
-- **URL Matching:** More robust path matching in `SmartServer` (handles trailing slashes and 
-  query parameters).
+- **DeepSeek 400 Errors:** Resolved by implementing strict surgical message formatting and 
+  dropping orphaned tool messages that violated the protocol.
+- **Agent Loop Conflict:** Fixed issue where Goose would try to re-execute internal MCP tools.
+- **URL Matching:** More robust path matching in `SmartServer`.
 
 ---
 
