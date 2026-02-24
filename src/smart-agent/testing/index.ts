@@ -124,6 +124,9 @@ export function makeRag(
     async query(): Promise<Result<RagResult[], RagError>> {
       return { ok: true, value: queryResults };
     },
+    async healthCheck(): Promise<Result<void, RagError>> {
+      return { ok: true, value: undefined };
+    },
   };
 }
 
@@ -137,6 +140,9 @@ export function makeFailingRag(): IRag & { upsertCalls: string[] } {
     },
     async query(): Promise<Result<RagResult[], RagError>> {
       return { ok: false, error: new RagError('Query failed') };
+    },
+    async healthCheck(): Promise<Result<void, RagError>> {
+      return { ok: false, error: new RagError('Health check failed') };
     },
   };
 }
@@ -168,6 +174,9 @@ export function makeMetadataRag(queryResults: RagResult[] = []): IRag & {
     ): Promise<Result<RagResult[], RagError>> {
       queryCalls.push({ text, k });
       return { ok: true, value: queryResults };
+    },
+    async healthCheck(): Promise<Result<void, RagError>> {
+      return { ok: true, value: undefined };
     },
   };
 }
