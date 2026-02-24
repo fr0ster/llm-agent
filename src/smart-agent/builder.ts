@@ -82,8 +82,8 @@ export interface SmartAgentBuilderConfig {
   llm: BuilderLlmConfig;
   /** RAG store config for default Ollama/InMemory stores. */
   rag?: BuilderRagConfig;
-  /** MCP connection. If omitted, agent runs without tools. */
-  mcp?: BuilderMcpConfig;
+  /** MCP connection(s). Pass an array to connect multiple servers simultaneously. */
+  mcp?: BuilderMcpConfig | BuilderMcpConfig[];
   /** SmartAgent orchestration limits. */
   agent?: Partial<SmartAgentConfig>;
   /** System / classifier prompt overrides. */
@@ -252,41 +252,45 @@ export class SmartAgentBuilder {
     if (this._mcpClients) {
       // Caller-provided clients: skip auto-connect and vectorization
       mcpClients = this._mcpClients;
-    } else if (this.cfg.mcp) {
-      const mcpCfg = this.cfg.mcp;
-      try {
-        let wrapper: MCPClientWrapper;
-        if (mcpCfg.type === 'stdio') {
-          wrapper = new MCPClientWrapper({
-            transport: 'stdio',
-            command: mcpCfg.command,
-            args: mcpCfg.args ?? [],
-          });
-        } else {
-          wrapper = new MCPClientWrapper({ transport: 'auto', url: mcpCfg.url });
-        }
-        await wrapper.connect();
-        const adapter = new McpClientAdapter(wrapper);
-        log?.log({ type: 'pipeline_done', traceId: 'builder', stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: 0 });
-
-        // Vectorize tools into factsRag for RAG-based tool selection
-        const toolsResult = await adapter.listTools();
-        if (toolsResult.ok) {
-          for (const t of toolsResult.value) {
-            await factsRag.upsert(
-              `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
-              { id: `tool:${t.name}` },
-            );
-          }
-        }
-
-        mcpClients = [adapter];
-        closeFns.push(() => wrapper.disconnect?.() ?? Promise.resolve());
-      } catch {
-        mcpClients = [];
-      }
     } else {
-      mcpClients = [];
+      const mcpList = this.cfg.mcp
+        ? (Array.isArray(this.cfg.mcp) ? this.cfg.mcp : [this.cfg.mcp])
+        : [];
+      const connected: IMcpClient[] = [];
+      for (const mcpCfg of mcpList) {
+        try {
+          let wrapper: MCPClientWrapper;
+          if (mcpCfg.type === 'stdio') {
+            wrapper = new MCPClientWrapper({
+              transport: 'stdio',
+              command: mcpCfg.command,
+              args: mcpCfg.args ?? [],
+            });
+          } else {
+            wrapper = new MCPClientWrapper({ transport: 'auto', url: mcpCfg.url });
+          }
+          await wrapper.connect();
+          const adapter = new McpClientAdapter(wrapper);
+          log?.log({ type: 'pipeline_done', traceId: 'builder', stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: 0 });
+
+          // Vectorize tools into factsRag for RAG-based tool selection
+          const toolsResult = await adapter.listTools();
+          if (toolsResult.ok) {
+            for (const t of toolsResult.value) {
+              await factsRag.upsert(
+                `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
+                { id: `tool:${t.name}` },
+              );
+            }
+          }
+
+          connected.push(adapter);
+          closeFns.push(() => wrapper.disconnect?.() ?? Promise.resolve());
+        } catch {
+          // Skip failed MCP connections — agent continues without that server
+        }
+      }
+      mcpClients = connected;
     }
 
     // ---- Classifier -------------------------------------------------------
