@@ -293,16 +293,27 @@ export class MCPClientWrapper {
       return this.tools;
     }
 
-    if (!this.client) {
-      await this.connect();
-    }
-
-    if (this.tools.length === 0) {
+    const performList = async () => {
+      if (!this.client) {
+        await this.connect();
+      }
       const response = await this.client!.listTools();
       this.tools = response.tools || [];
-    }
+      return this.tools;
+    };
 
-    return this.tools;
+    try {
+      return await performList();
+    } catch (error: any) {
+      try {
+        console.warn(`MCP listTools failed, attempting reconnect: ${error.message}`);
+        await this.disconnect();
+        await this.connect();
+        return await performList();
+      } catch (_retryError) {
+        return this.tools; // Return cached tools if reconnect fails
+      }
+    }
   }
 
   /**
@@ -325,30 +336,6 @@ export class MCPClientWrapper {
             toolCall.name,
             toolCall.arguments,
           );
-        } else if (this.config.serverInstance?.server) {
-          // Use MCP Server instance directly via CallToolRequest
-          // The server has request handlers registered, we need to call them
-          const { CallToolRequestSchema } = await import(
-            '@modelcontextprotocol/sdk/types.js'
-          );
-
-          // Create a request object that matches CallToolRequest format
-          const request = {
-            jsonrpc: '2.0' as const,
-            id: 1,
-            method: 'tools/call',
-            params: {
-              name: toolCall.name,
-              arguments: toolCall.arguments,
-            },
-          };
-
-          // Call the handler directly
-          // The server.setRequestHandler registers handlers, but we need to access them
-          // This is a limitation - provide toolCallHandler for embedded mode
-          throw new Error(
-            'Direct server.callTool() requires toolCallHandler. Provide toolCallHandler in mcpConfig.',
-          );
         } else {
           throw new Error(
             'No tool call handler available in embedded mode. Provide toolCallHandler in mcpConfig.',
@@ -370,28 +357,43 @@ export class MCPClientWrapper {
       }
     }
 
-    if (!this.client) {
-      await this.connect();
-    }
-
-    try {
-      const response = await this.client!.callTool({
+    const performCall = async () => {
+      if (!this.client) {
+        await this.connect();
+      }
+      return await this.client!.callTool({
         name: toolCall.name,
         arguments: toolCall.arguments,
       });
+    };
 
+    try {
+      const response = await performCall();
       return {
         toolCallId: toolCall.id,
         name: toolCall.name,
         result: response.content,
       };
     } catch (error: any) {
-      return {
-        toolCallId: toolCall.id,
-        name: toolCall.name,
-        result: null,
-        error: error.message || 'Tool execution failed',
-      };
+      // Auto-reconnect logic: if it fails, try to connect again and retry once
+      try {
+        console.warn(`MCP call failed, attempting reconnect: ${error.message}`);
+        await this.disconnect();
+        await this.connect();
+        const response = await performCall();
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          result: response.content,
+        };
+      } catch (retryError: any) {
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          result: null,
+          error: retryError.message || 'Tool execution failed after reconnect',
+        };
+      }
     }
   }
 
