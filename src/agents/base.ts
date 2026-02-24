@@ -125,6 +125,122 @@ export abstract class BaseAgent {
   ): AsyncGenerator<AgentStreamChunk, void, unknown>;
 
   /**
+   * Shared SSE parser for OpenAI-compatible streaming endpoints.
+   * Handles text deltas, tool call accumulation, usage chunk, and [DONE] sentinel.
+   * Used by OpenAIAgent and DeepSeekAgent (identical wire format).
+   */
+  protected async *streamOpenAICompatible(
+    url: string,
+    headers: Record<string, string>,
+    // biome-ignore lint/suspicious/noExplicitAny: request body has no stable type
+    body: Record<string, any>,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`LLM streaming error: HTTP ${res.status} — ${text}`);
+    }
+    if (!res.body) throw new Error('LLM streaming error: no response body');
+
+    // index → accumulated tool call
+    const toolCallMap = new Map<number, { id: string; name: string; arguments: string }>();
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') continue;
+
+          // biome-ignore lint/suspicious/noExplicitAny: raw SSE JSON has no stable type
+          let chunk: any;
+          try { chunk = JSON.parse(data); } catch { continue; }
+
+          // usage-only chunk — choices is empty array
+          if (Array.isArray(chunk.choices) && chunk.choices.length === 0) {
+            const u = chunk.usage;
+            if (u) {
+              yield {
+                type: 'usage',
+                promptTokens: (u.prompt_tokens as number) ?? 0,
+                completionTokens: (u.completion_tokens as number) ?? 0,
+              };
+            }
+            continue;
+          }
+
+          const choice = chunk.choices?.[0];
+          if (!choice) continue;
+          const delta = choice.delta ?? {};
+
+          // text token
+          if (typeof delta.content === 'string' && delta.content.length > 0) {
+            yield { type: 'text', delta: delta.content };
+          }
+
+          // tool call deltas — accumulate by index
+          if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+              const idx: number = tc.index;
+              if (!toolCallMap.has(idx)) {
+                toolCallMap.set(idx, { id: tc.id ?? '', name: tc.function?.name ?? '', arguments: '' });
+              }
+              if (tc.function?.arguments) {
+                toolCallMap.get(idx)!.arguments += tc.function.arguments as string;
+              }
+            }
+          }
+
+          // finish_reason arrives in a separate empty-delta chunk
+          if (choice.finish_reason) {
+            finishReason =
+              choice.finish_reason === 'tool_calls' ? 'tool_calls'
+              : choice.finish_reason === 'length' ? 'length'
+              : 'stop';
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    // flush accumulated tool calls before done
+    if (toolCallMap.size > 0) {
+      const toolCalls = [...toolCallMap.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try { return JSON.parse(tc.arguments) as Record<string, unknown>; } catch { return {}; }
+          })(),
+        }));
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
+  }
+
+  /**
    * Clear conversation history
    */
   clearHistory(): void {
