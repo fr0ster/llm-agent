@@ -167,7 +167,6 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         if (chunk.content) { content += chunk.content; yield { ok: true, value: { content: chunk.content } }; }
         if (chunk.toolCalls) {
-          yield { ok: true, value: { content: '', toolCalls: chunk.toolCalls } };
           for (const tc of chunk.toolCalls as any[]) {
             if (!toolCallsMap.has(tc.index)) { toolCallsMap.set(tc.index, { id: tc.id || '', name: tc.name || '', arguments: tc.arguments || '' }); }
             else { const ex = toolCallsMap.get(tc.index)!; if (tc.id) ex.id = tc.id; if (tc.name) ex.name = tc.name; if (tc.arguments) ex.arguments += tc.arguments; }
