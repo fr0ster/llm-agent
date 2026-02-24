@@ -178,3 +178,34 @@ Validation
 - [x] [CI]     12/12 regression tests pass (classifier routing, RAG config, tool loop, policy, session)
 - [x] [CI]     12/12 integration tests pass (real ToolPolicyGuard, HeuristicInjectionDetector, InMemoryRag, ConsoleLogger)
 - [x] [CI]     5/5 E2E tests pass (embedded MCP, tool errors, policy guard, HTTP round-trip)
+
+---
+
+## Phase 11 - SmartAgentBuilder + SmartServer + Pipeline Configuration ✅
+
+- [x] `SmartAgentBuilder` fluent DI builder — wires all components with sensible defaults; each component overridable independently via `.with*()` methods
+- [x] `SmartAgentBuilder.mcp` accepts single config or array — multiple MCP servers connected and tool-vectorized in a single `build()` call
+- [x] `SmartServer` — embeddable OpenAI-compatible HTTP server backed by SmartAgent
+- [x] Request routing modes: `smart`, `passthrough`, `hybrid` (auto-detects Cline)
+- [x] `SmartServerConfig` — typed config with flat fields for all components
+- [x] YAML-based configuration: `smart-server.yaml` with `${ENV_VAR}` substitution
+- [x] `resolveSmartServerConfig` — merges CLI args > YAML > env vars > defaults
+- [x] `llm-agent` CLI binary — auto-generates `smart-server.yaml` on first run, supports `--config`, `--env`, and all override flags
+- [x] `pipeline:` YAML section — per-component overrides: main/classifier LLM providers, per-store RAG (facts/feedback/state), multi-MCP array
+- [x] `makeLlmFromProvider()` — exhaustive switch over `deepseek | openai | anthropic`; returns `TokenCountingLlm`
+- [x] `makeRagFromStoreConfig()` — creates `OllamaRag` or `InMemoryRag` from store config
+- [x] LLM API key optional when `pipeline.llm.main.apiKey` is present (no flat `llm:` block required)
+- [x] Classifier auto-reuses main LLM at 0.1 temp when `pipeline.llm.classifier` is absent
+
+Definition of Done
+- [x] Single `llm-agent` binary is sufficient to run the full stack from install
+- [x] YAML config is self-documenting (fully commented template generated on first run)
+- [x] Pipeline section is backwards compatible — existing YAML without `pipeline:` works unchanged
+- [x] Type safety: `PipelineLlmProviderConfig.provider` is a union literal with exhaustive switch
+
+Validation
+- [ ] [manual] Beta smoke: fresh install → `llm-agent` → auto-generates config → edit `.env` → restart → server starts
+- [ ] [manual] Connect Cline/Cursor to `http://localhost:3001/v1` and issue a tool-using request
+- [ ] [manual] Multi-MCP array: two servers configured, tools from both appear in RAG query logs
+- [ ] [manual] `pipeline.llm` with different providers for main and classifier — verify via `rag_translate` log entries
+- [ ] [manual] `pipeline.llm.main` only (no flat `llm:`) — server starts, correct provider used

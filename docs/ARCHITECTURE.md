@@ -368,3 +368,284 @@ For the CLI test launcher (`src/cli.ts`), configuration comes from environment v
 | `npm run lint` | Lint and auto-fix with Biome |
 | `npm run format` | Format with Biome |
 | `npm run clean` | Remove `dist/` |
+
+---
+
+---
+
+# SmartAgent Architecture
+
+SmartAgent is the production orchestration layer built on top of the thin proxy. It is shipped as
+the `llm-agent` CLI binary and as an embeddable `SmartServer` class.
+
+## Overview
+
+```
+Client (Cline / Cursor / any OpenAI-compatible)
+        │  POST /v1/chat/completions
+        ▼
+┌──────────────────────────────────────────────┐
+│  SmartServer  (src/smart-agent/smart-server.ts)│
+│  OpenAI-compatible HTTP server               │
+│                                              │
+│  mode=hybrid  ──────────────────────────────►│ passthrough → mainLlm.chat()
+│               └──────────────────────────────►│ smart      → SmartAgent.process()
+└─────────────────────┬────────────────────────┘
+                       │
+                       ▼
+┌──────────────────────────────────────────────┐
+│  SmartAgent  (src/smart-agent/agent.ts)       │
+│                                              │
+│  1. ISubpromptClassifier  — classify intent  │
+│  2. IRag (facts/feedback/state) — memory     │
+│  3. IContextAssembler     — build frame      │
+│  4. ILlm  (tool loop)     — call + execute   │
+│  5. IMcpClient[]          — tool execution   │
+└──────────────────────────────────────────────┘
+```
+
+## Request Lifecycle
+
+```
+SmartAgent.process(userMessage)
+  │
+  ├─ 1. ISubpromptClassifier.classify()
+  │      → [{type: 'fact'|'feedback'|'state'|'action', text}]
+  │
+  ├─ 2. IRag.upsert()  — persist fact / feedback / state subprompts
+  │
+  ├─ 3. IRag.query()   — retrieve relevant facts, feedback, state, tools
+  │
+  ├─ 4. IContextAssembler.assemble()
+  │      → messages[] (action + retrieved context + tool results)
+  │
+  └─ 5. Tool loop (maxIterations):
+         ILlm.chat(messages, tools)
+           → if tool_calls: IMcpClient.callTool() → append result → repeat
+           → if stop: return final text
+```
+
+## Core Interfaces (`src/smart-agent/interfaces/`)
+
+| Interface | Contract |
+|---|---|
+| `ILlm` | `chat(messages, tools?, options?) → Result<LlmResponse, LlmError>` |
+| `IMcpClient` | `listTools() → Tool[]`, `callTool(name, args) → ToolResult` |
+| `IRag` | `upsert(text, metadata)`, `query(text, k) → RagResult[]` |
+| `ISubpromptClassifier` | `classify(text) → Subprompt[]` |
+| `IContextAssembler` | `assemble(action, retrieved, toolResults) → messages[]` |
+| `ILogger` | `log(event)` |
+
+## Reference Implementations
+
+| Interface | Default Implementation | Notes |
+|---|---|---|
+| `ILlm` | `LlmAdapter(BaseAgent)` + `TokenCountingLlm` | Wraps existing provider agents |
+| `IMcpClient` | `McpClientAdapter(MCPClientWrapper)` | Reuses the thin proxy MCP layer |
+| `IRag` | `OllamaRag` / `InMemoryRag` | Two stores: neural (Ollama) or bag-of-words |
+| `ISubpromptClassifier` | `LlmClassifier` | LLM call at low temperature |
+| `IContextAssembler` | `ContextAssembler` | Token-budget-aware frame builder |
+
+## Source Layout (`src/smart-agent/`)
+
+```
+interfaces/       — ILlm, IMcpClient, IRag, ISubpromptClassifier, IContextAssembler
+adapters/         — LlmAdapter (BaseAgent→ILlm), McpClientAdapter (MCPClientWrapper→IMcpClient)
+rag/              — OllamaRag, InMemoryRag
+classifier/       — LlmClassifier
+context/          — ContextAssembler
+llm/              — TokenCountingLlm (decorator, accumulates usage stats)
+logger/           — ConsoleLogger, types
+policy/           — ToolPolicyGuard, HeuristicInjectionDetector
+agent.ts          — SmartAgent orchestrator
+builder.ts        — SmartAgentBuilder (fluent DI builder)
+smart-server.ts   — SmartServer (HTTP server + config types)
+pipeline.ts       — PipelineConfig types + makeLlmFromProvider / makeRagFromStoreConfig
+config.ts         — YAML loading, env-var substitution, resolveSmartServerConfig
+cli.ts            — llm-agent CLI binary (auto-generates config on first run)
+```
+
+---
+
+## SmartAgentBuilder
+
+`SmartAgentBuilder` (`src/smart-agent/builder.ts`) is a fluent DI builder that wires all components
+with sensible defaults and allows overriding any one of them.
+
+```typescript
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-proxy/smart-agent';
+
+const { agent, chat, getUsage, close } = await new SmartAgentBuilder({
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  rag: { type: 'in-memory' },
+  mcp: { type: 'http', url: 'http://localhost:3000/mcp/stream/http' },
+})
+  .withLogger(myLogger)          // optional: custom logger
+  .withToolPolicy(myPolicy)      // optional: allow/deny list
+  .build();
+
+const result = await agent.process('List all ABAP programs');
+await close();
+```
+
+### Fluent overrides
+
+| Method | Description |
+|---|---|
+| `.withMainLlm(llm)` | Override the main LLM used in the tool loop |
+| `.withClassifierLlm(llm)` | Override the LLM used by the intent classifier |
+| `.withRag(stores)` | Override individual RAG stores (`facts`, `feedback`, `state`) |
+| `.withMcpClients(clients)` | Inject pre-connected MCP clients (skips auto-connect) |
+| `.withClassifier(c)` | Override the intent classifier |
+| `.withAssembler(a)` | Override the context assembler |
+| `.withLogger(l)` | Set a logger for pipeline events |
+| `.withToolPolicy(p)` | Set an allow/deny policy for tool calls |
+| `.withInjectionDetector(d)` | Set a prompt-injection detector |
+
+### Multi-MCP
+
+Pass an array to `mcp` to connect multiple servers simultaneously. All tools from all servers are
+vectorized into `factsRag` for RAG-based selection:
+
+```typescript
+new SmartAgentBuilder({
+  llm: { apiKey: '...' },
+  mcp: [
+    { type: 'http', url: 'http://sap-server/mcp/stream/http' },
+    { type: 'stdio', command: 'npx', args: ['github-mcp-server'] },
+  ],
+})
+```
+
+---
+
+## SmartServer
+
+`SmartServer` (`src/smart-agent/smart-server.ts`) wraps `SmartAgentBuilder` behind an
+OpenAI-compatible HTTP server.
+
+```typescript
+import { SmartServer } from '@mcp-abap-adt/llm-proxy';
+
+const server = new SmartServer({
+  port: 3001,
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  rag: { type: 'in-memory' },
+  mcp: { type: 'http', url: 'http://localhost:3000/mcp/stream/http' },
+  mode: 'hybrid',
+  log: (event) => console.log(JSON.stringify(event)),
+});
+
+const { port, close, getUsage } = await server.start();
+console.log(`Listening on port ${port}`);
+```
+
+### SmartServerConfig fields
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `port` | `number` | `3001` | HTTP bind port |
+| `host` | `string` | `'0.0.0.0'` | Bind address |
+| `llm` | `SmartServerLlmConfig` | required | LLM credentials and model |
+| `rag` | `SmartServerRagConfig` | `ollama` | RAG / embeddings config |
+| `mcp` | `SmartServerMcpConfig` | — | MCP connection (single) |
+| `agent` | `SmartServerAgentConfig` | — | maxIterations, maxToolCalls, ragQueryK |
+| `prompts` | `SmartServerPromptsConfig` | — | system / classifier prompt overrides |
+| `mode` | `SmartServerMode` | `'hybrid'` | Routing mode |
+| `pipeline` | `PipelineConfig` | — | Advanced per-component overrides |
+| `log` | `(event) => void` | no-op | Structured log callback |
+
+---
+
+## Pipeline Configuration
+
+The `pipeline:` field (or `SmartServerConfig.pipeline`) provides per-component control that the
+flat config cannot express.
+
+```typescript
+import type { PipelineConfig } from '@mcp-abap-adt/llm-proxy';
+
+const pipeline: PipelineConfig = {
+  llm: {
+    main: { provider: 'deepseek', apiKey: '...', model: 'deepseek-chat', temperature: 0.7 },
+    classifier: { provider: 'openai', apiKey: '...', model: 'gpt-4o-mini', temperature: 0.1 },
+  },
+  rag: {
+    facts:    { type: 'ollama', url: 'http://localhost:11434', model: 'nomic-embed-text' },
+    feedback: { type: 'in-memory' },
+    state:    { type: 'in-memory' },
+  },
+  mcp: [
+    { type: 'http', url: 'http://sap-server/mcp/stream/http' },
+    { type: 'stdio', command: 'npx', args: ['github-mcp-server'] },
+  ],
+};
+```
+
+### Pipeline factories (`src/smart-agent/pipeline.ts`)
+
+| Function | Description |
+|---|---|
+| `makeLlmFromProvider(cfg, temperature)` | Creates `TokenCountingLlm` for `deepseek`, `openai`, or `anthropic` |
+| `makeRagFromStoreConfig(cfg)` | Creates `OllamaRag` or `InMemoryRag` from a store config |
+
+### Precedence rules
+
+- `pipeline.llm.main` → sets main LLM; also used as classifier fallback if `classifier` absent
+- `pipeline.llm.classifier` → sets classifier LLM independently
+- `pipeline.rag.*` → overrides individual stores; unspecified stores use the flat `rag:` config
+- `pipeline.mcp` → replaces the flat `mcp:` field entirely (array of servers)
+- Flat `llm.apiKey` is not required when `pipeline.llm.main.apiKey` is present
+
+---
+
+## YAML Configuration Reference
+
+`smart-server.yaml` is loaded by the `llm-agent` CLI and by `loadYamlConfig()`. Environment
+variables are substituted with `${VAR}` syntax before YAML parsing.
+
+```yaml
+port: 3001
+host: 0.0.0.0
+mode: hybrid           # smart | passthrough | hybrid
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+  classifierTemperature: 0.1
+
+rag:
+  type: ollama         # ollama | in-memory
+  url: http://localhost:11434
+  model: nomic-embed-text
+  dedupThreshold: 0.92
+
+mcp:
+  type: http           # http | stdio
+  url: http://localhost:3000/mcp/stream/http
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 10
+
+prompts:
+  system: "You are a helpful assistant."
+  classifier: null
+
+log: smart-server.log  # omit for stdout
+
+# Optional pipeline overrides (see Pipeline Configuration above)
+pipeline:
+  llm:
+    main: ...
+    classifier: ...
+  rag:
+    facts: ...
+    feedback: ...
+    state: ...
+  mcp:
+    - type: http
+      url: ...
+```
