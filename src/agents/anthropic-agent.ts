@@ -9,7 +9,7 @@ import type {
   AnthropicConfig,
   AnthropicProvider,
 } from '../llm-providers/anthropic.js';
-import type { Message } from '../types.js';
+import type { AgentStreamChunk, Message } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface AnthropicAgentConfig extends BaseAgentConfig {
@@ -103,5 +103,40 @@ export class AnthropicAgent extends BaseAgent {
         content: msg.content,
       };
     });
+  }
+
+  /**
+   * Stream LLM response with tools — delegates to the Anthropic SSE parser.
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    tools: any[],
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    // biome-ignore lint/suspicious/noExplicitAny: accessing private provider fields
+    const provider = this.llmProvider as any;
+    const baseURL: string = provider.config.baseURL ?? 'https://api.anthropic.com/v1';
+
+    const systemMessage = messages.find((m) => m.role === 'system');
+    const conversationMessages = messages.filter((m) => m.role !== 'system');
+    const anthropicTools = this.convertToolsToAnthropicTools(tools);
+
+    const body: Record<string, unknown> = {
+      model: provider.model as string,
+      messages: this.formatMessagesForAnthropic(conversationMessages),
+      max_tokens: (provider.config.maxTokens as number) ?? 2000,
+      temperature: (provider.config.temperature as number) ?? 0.7,
+      stream: true,
+    };
+    if (systemMessage) body.system = systemMessage.content;
+    if (anthropicTools.length > 0) body.tools = anthropicTools;
+
+    yield* this.streamAnthropicCompatible(
+      `${baseURL}/messages`,
+      {
+        'x-api-key': provider.config.apiKey as string,
+        'anthropic-version': '2023-06-01',
+      },
+      body,
+    );
   }
 }

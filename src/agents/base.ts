@@ -241,6 +241,133 @@ export abstract class BaseAgent {
   }
 
   /**
+   * SSE parser for Anthropic streaming (`POST /messages`).
+   *
+   * Anthropic SSE uses named events:
+   *   event: content_block_start | content_block_delta | message_delta | message_stop | ping
+   *   data: { type, ... }
+   *
+   * Text arrives as content_block_delta / text_delta.
+   * Tool input arrives as content_block_delta / input_json_delta — accumulated by block index.
+   * Usage and stop_reason arrive in message_start + message_delta.
+   */
+  protected async *streamAnthropicCompatible(
+    url: string,
+    headers: Record<string, string>,
+    // biome-ignore lint/suspicious/noExplicitAny: request body has no stable type
+    body: Record<string, any>,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`Anthropic streaming error: HTTP ${res.status} — ${text}`);
+    }
+    if (!res.body) throw new Error('Anthropic streaming error: no response body');
+
+    // block index → tool accumulator
+    const toolBlocks = new Map<number, { id: string; name: string; partialJson: string }>();
+    const textIndexes = new Set<number>();
+    let inputTokens = 0;
+    let outputTokens = 0;
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    let currentEvent = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+
+          if (trimmed.startsWith('event: ')) {
+            currentEvent = trimmed.slice(7);
+            continue;
+          }
+
+          if (!trimmed.startsWith('data: ')) continue;
+
+          // biome-ignore lint/suspicious/noExplicitAny: raw SSE JSON has no stable type
+          let evt: any;
+          try { evt = JSON.parse(trimmed.slice(6)); } catch { continue; }
+
+          if (currentEvent === 'message_start') {
+            inputTokens = (evt.message?.usage?.input_tokens as number) ?? 0;
+            continue;
+          }
+
+          if (currentEvent === 'content_block_start') {
+            const idx: number = evt.index;
+            const block = evt.content_block;
+            if (block?.type === 'tool_use') {
+              toolBlocks.set(idx, { id: block.id ?? '', name: block.name ?? '', partialJson: '' });
+            } else if (block?.type === 'text') {
+              textIndexes.add(idx);
+            }
+            continue;
+          }
+
+          if (currentEvent === 'content_block_delta') {
+            const idx: number = evt.index;
+            const delta = evt.delta;
+            if (delta?.type === 'text_delta' && typeof delta.text === 'string' && delta.text.length > 0) {
+              yield { type: 'text', delta: delta.text };
+            } else if (delta?.type === 'input_json_delta' && typeof delta.partial_json === 'string') {
+              const tool = toolBlocks.get(idx);
+              if (tool) tool.partialJson += delta.partial_json;
+            }
+            continue;
+          }
+
+          if (currentEvent === 'message_delta') {
+            outputTokens = (evt.usage?.output_tokens as number) ?? 0;
+            const stopReason: string = evt.delta?.stop_reason ?? '';
+            finishReason =
+              stopReason === 'tool_use' ? 'tool_calls'
+              : stopReason === 'max_tokens' ? 'length'
+              : 'stop';
+            continue;
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    if (inputTokens > 0 || outputTokens > 0) {
+      yield { type: 'usage', promptTokens: inputTokens, completionTokens: outputTokens };
+    }
+
+    if (toolBlocks.size > 0) {
+      const toolCalls = [...toolBlocks.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try { return JSON.parse(tc.partialJson) as Record<string, unknown>; } catch { return {}; }
+          })(),
+        }));
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
+  }
+
+  /**
    * Clear conversation history
    */
   clearHistory(): void {
