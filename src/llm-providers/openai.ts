@@ -127,11 +127,23 @@ export class OpenAIProvider extends BaseLLMProvider {
    * Format messages for OpenAI API
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content || null,
-      tool_calls: (msg as any).tool_calls,
-      tool_call_id: (msg as any).tool_call_id,
-    }));
+    return messages.map((msg) => {
+      const formatted: any = {
+        role: msg.role,
+        content: msg.content,
+      };
+      
+      if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+        formatted.tool_calls = msg.tool_calls;
+        formatted.content = null;
+      }
+      
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        formatted.tool_call_id = msg.tool_call_id;
+        formatted.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content);
+      }
+      
+      return formatted;
+    });
   }
 }
