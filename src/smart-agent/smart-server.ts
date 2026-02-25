@@ -329,7 +329,7 @@ export class SmartServer {
               index: tc.index,
               id: tc.id,
               type: 'function',
-              function: { name: tc.name, arguments: tc.arguments },
+              function: { name: tc.name, arguments: typeof tc.arguments === 'string' ? tc.arguments : JSON.stringify(tc.arguments) },
             }));
           }
           res.write(`data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`);

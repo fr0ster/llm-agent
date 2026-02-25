@@ -44,6 +44,14 @@ function createTimeoutSignal(ms: number): { signal: AbortSignal; clear: () => vo
 export class SmartAgent {
   constructor(private readonly deps: SmartAgentDeps, private readonly config: SmartAgentConfig) {}
 
+  async healthCheck(options?: CallOptions): Promise<Result<{ llm: boolean; rag: boolean; mcp: { name: string; ok: boolean; error?: string }[] }, OrchestratorError>> {
+    const results = { llm: false, rag: false, mcp: [] as { name: string; ok: boolean; error?: string }[] };
+    try { const llmRes = await this.deps.mainLlm.chat([{ role: 'user', content: 'ping' }], [], { ...options, maxTokens: 1 }); results.llm = llmRes.ok; } catch { results.llm = false; }
+    const ragRes = await this.deps.ragStores.facts.healthCheck(options); results.rag = ragRes.ok;
+    const mcpChecks = await Promise.all(this.deps.mcpClients.map(async client => { const tools = await client.listTools(options); return { name: 'mcp-client', ok: tools.ok, error: tools.ok ? undefined : (tools.error as any).message }; }));
+    results.mcp = mcpChecks; return { ok: true, value: results };
+  }
+
   async process(textOrMessages: string | Message[], options?: CallOptions): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     for await (const chunk of this.streamProcess(textOrMessages, options)) {
@@ -67,14 +75,12 @@ export class SmartAgent {
 
     try {
       if (mode === 'pass') {
-        // PASS MODE: Pure proxy
         const messages = typeof textOrMessages === 'string' ? [{ role: 'user', content: textOrMessages }] : textOrMessages;
         const stream = this.deps.mainLlm.streamChat(messages, options?.externalTools || [], opts);
         for await (const chunk of stream) yield chunk;
         return;
       }
 
-      // Prepare pipeline: Classification and RAG Upsert (facts/state)
       const initResult = await this._preparePipeline(textOrMessages, opts, traceId, pipelineT0);
       if (!initResult.ok) { yield initResult; return; }
       const { subprompts, processedHistory, toolClientMap } = initResult.value;
@@ -89,14 +95,18 @@ export class SmartAgent {
       const actionsAndChats = subprompts.filter(sp => sp.type === 'action' || sp.type === 'chat');
 
       for (const sp of actionsAndChats) {
+        opts?.sessionLogger?.logStep(`processing_subprompt_${sp.type}`, { sp });
         const isSapContext = sp.context === 'sap-abap' || mode === 'hard';
         let subContent = '';
 
         if (sp.type === 'chat' && mode !== 'hard') {
-          const stream = this.deps.mainLlm.streamChat([...currentHistory, { role: 'user', content: sp.text }], [], opts);
+          const messages = [...currentHistory, { role: 'user', content: sp.text }];
+          opts?.sessionLogger?.logStep(`llm_chat_request`, { messages });
+          const stream = this.deps.mainLlm.streamChat(messages, [], opts);
           for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
+          opts?.sessionLogger?.logStep(`llm_chat_response`, { subContent });
         } else {
-          // Technical or Hard Mode path
+          // PER-ACTION TOOL SELECTION: RAG query for this specific task
           const ragText = await this._toEnglishForRag(sp.text, opts);
           const k = this.config.ragQueryK ?? 10;
           const [fR, fbR, sR] = await Promise.all([this.deps.ragStores.facts.query(ragText, k, opts), this.deps.ragStores.feedback.query(ragText, k, opts), this.deps.ragStores.state.query(ragText, k, opts)]);
@@ -111,6 +121,8 @@ export class SmartAgent {
           if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
 
           const activeTools = mode === 'hard' ? (retrieved.tools as LlmTool[]) : [...(retrieved.tools as LlmTool[]), ...externalTools];
+          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name) });
+
           const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, mode === 'hard' ? [] : externalTools, activeTools);
           for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
         }
@@ -124,9 +136,7 @@ export class SmartAgent {
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
-    if (this.deps.helperLlm && history.length > summarizeLimit) { 
-      const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value;
-    }
+    if (this.deps.helperLlm && history.length > summarizeLimit) { const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value; }
 
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) return { ok: false, error: new OrchestratorError(classifyResult.error.message, 'CLASSIFIER_ERROR') };
@@ -151,7 +161,9 @@ export class SmartAgent {
       if (opts?.signal?.aborted) { yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') }; return; }
       if (iteration >= this.config.maxIterations) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
 
-      opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, { messages, tools: activeTools.map(t => t.name) });
+      // LOG FULL STATE FOR DEBUGGING
+      opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, { messages, tools: activeTools });
+      
       const stream = this.deps.mainLlm.streamChat(messages, activeTools, opts);
       let content = ''; let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -173,7 +185,11 @@ export class SmartAgent {
       const toolCalls = Array.from(toolCallsMap.values()).map(tc => { let args = {}; try { args = JSON.parse(tc.arguments); } catch { args = {}; } return { id: tc.id, name: tc.name, arguments: args }; });
       opts?.sessionLogger?.logStep(`llm_response_iter_${iteration + 1}`, { content, toolCalls, finishReason });
 
-      if (finishReason !== 'tool_calls' || toolCalls.length === 0) { yield { ok: true, value: { content: '', finishReason: finishReason || 'stop', usage } }; return; }
+      if (finishReason !== 'tool_calls' || toolCalls.length === 0) { 
+        opts?.sessionLogger?.logStep('final_response', { content, usage });
+        yield { ok: true, value: { content: '', finishReason: finishReason || 'stop', usage } }; 
+        return; 
+      }
 
       const internalCalls = toolCalls.filter(tc => toolClientMap.has(tc.name));
       const validExternalCalls = toolCalls.filter(tc => externalToolNames.has(tc.name));
@@ -181,18 +197,30 @@ export class SmartAgent {
 
       if (hallucinations.length > 0) {
         messages = [...messages, { role: 'assistant', content: content || null, tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
-        for (const h of hallucinations) { messages = [...messages, { role: 'tool', content: `Error: Tool "${h.name}" not found.`, tool_call_id: h.id }]; }
+        for (const h of hallucinations) {
+          const errorMsg = `Error: Tool "${h.name}" not found.`;
+          opts?.sessionLogger?.logStep(`hallucination_detected`, { toolName: h.name });
+          messages = [...messages, { role: 'tool', content: errorMsg, tool_call_id: h.id }];
+        }
         continue;
       }
 
-      if (validExternalCalls.length > 0) { yield { ok: true, value: { content: '', toolCalls: validExternalCalls, finishReason: 'tool_calls', usage } }; return; }
+      if (validExternalCalls.length > 0) {
+        opts?.sessionLogger?.logStep('external_tool_delegation', { toolCalls: validExternalCalls });
+        yield { ok: true, value: { content: '', toolCalls: validExternalCalls, finishReason: 'tool_calls', usage } };
+        return;
+      }
 
       if (content || internalCalls.length > 0) messages = [...messages, { role: 'assistant', content: content || null, tool_calls: internalCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
       for (const tc of internalCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
         yield { ok: true, value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` } };
+        
+        opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, { arguments: tc.arguments });
         const res = await toolClientMap.get(tc.name)!.callTool(tc.name, tc.arguments, opts);
         const text = !res.ok ? res.error.message : typeof res.value.content === 'string' ? res.value.content : JSON.stringify(res.value.content);
+        opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
+        
         toolCallCount++; messages = [...messages, { role: 'tool', content: text, tool_call_id: tc.id }];
       }
     }
@@ -203,6 +231,17 @@ export class SmartAgent {
     const settled = await Promise.allSettled(this.deps.mcpClients.map(async client => ({ client, result: await client.listTools(opts) })));
     for (const e of settled) { if (e.status === 'fulfilled' && e.value.result.ok) { for (const t of e.value.result.value) { if (!toolClientMap.has(t.name)) { tools.push(t); toolClientMap.set(t.name, e.value.client); } } } }
     return { tools, toolClientMap };
+  }
+
+  private async _runToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const stream = this._runStreamingToolLoop(_action, retrieved, initialMessages, toolClientMap, opts, traceId, [], []);
+    for await (const chunk of stream) {
+      if (!chunk.ok) return chunk;
+      if (chunk.value.content) content += chunk.value.content;
+      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
+    }
+    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
   }
 
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
