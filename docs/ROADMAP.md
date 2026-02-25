@@ -41,3 +41,49 @@
 - **Goal:** Quality assurance.
 - **Implementation:** Automated regression tests for RAG retrieval quality using a set of "golden" SAP queries.
 
+---
+
+## Phase 15 - Protocol Contracts & Patch Elimination [PLANNED] 🚀
+
+### 1. Document Legitimate Edge Cases
+- **Goal:** Preserve robustness that reflects real protocol constraints.
+- **Implementation:** Add explicit documentation for:
+  - SSE parsing guarantees and chunk ordering
+  - Tool-call protocol invariants
+  - MCP reconnect and fallback behavior
+  - Loop safety limits (max iterations, max tool calls, abort handling)
+
+### 2. Replace Unsafe Casts in Critical Paths
+- **Goal:** Remove patch-style typing shortcuts from protocol/runtime flows.
+- **Implementation:** Introduce normalized DTOs for streaming tool-call deltas and remove `as unknown as ...` from:
+  - smart-agent orchestration loop
+  - smart-server SSE emission path
+  - LLM adapter chunk bridge logic
+
+### 3. Formalize External Tool Input Contract
+- **Goal:** Stop heuristic parsing of external tool formats.
+- **Implementation:** Add a strict normalizer/validator for external tools (OpenAI-compatible and internal shapes), with clear rejection behavior for invalid payloads.
+
+### 4. Remove Protected-Access Adapter Debt
+- **Goal:** Eliminate `(this.agent as any)` access to protected methods.
+- **Implementation:** Define a public, typed execution interface between `BaseAgent` and adapter layer for chat/stream calls.
+
+### 5. Improve Parse Observability
+- **Goal:** Avoid silent protocol degradation.
+- **Implementation:** Replace silent parse skips with structured diagnostics and counters while keeping runtime resilience.
+
+### 6. Add Protocol Contract Tests
+- **Goal:** Convert protocol assumptions into executable guarantees.
+- **Implementation:** Add test coverage for:
+  - fragmented tool arguments across chunks
+  - orphaned tool messages
+  - hallucinated tool calls
+  - finish_reason and usage chunk sequencing
+  - MCP reconnect and fallback scenarios
+
+### Definition of Done
+- No unsafe cast chains (`as unknown as ...`) in critical protocol paths.
+- No protected method access via `any` in adapter code.
+- Protocol edge-case behavior is documented and linked from README/docs.
+- Contract tests pass for streaming/tool-call protocol scenarios.
+- `npm run lint:check` and `npm run build` are green.
