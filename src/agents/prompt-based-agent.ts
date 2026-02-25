@@ -6,7 +6,7 @@
  */
 
 import type { LLMProvider } from '../llm-providers/base.js';
-import type { Message } from '../types.js';
+import type { AgentStreamChunk, Message } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface PromptBasedAgentConfig extends BaseAgentConfig {
@@ -51,7 +51,7 @@ export class PromptBasedAgent extends BaseAgent {
     _messages: Message[],
     _tools: any[],
     _options?: any,
-  ): AsyncIterable<{ content: string; raw?: unknown }> {
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     throw new Error('Streaming is not implemented for PromptBasedAgent');
   }
 

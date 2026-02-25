@@ -9,6 +9,7 @@ export type {
   ContextFrame,
   LlmFinishReason,
   LlmResponse,
+  LlmStreamChunk,
   LlmTool,
   LlmToolCall,
   McpTool,

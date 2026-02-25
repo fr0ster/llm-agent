@@ -9,7 +9,7 @@ import type {
   AnthropicConfig,
   AnthropicProvider,
 } from '../llm-providers/anthropic.js';
-import type { Message } from '../types.js';
+import type { AgentStreamChunk, Message } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface AnthropicAgentConfig extends BaseAgentConfig {
@@ -109,7 +109,7 @@ export class AnthropicAgent extends BaseAgent {
     _messages: Message[],
     _tools: any[],
     _options?: any,
-  ): AsyncIterable<{ content: string; raw?: unknown }> {
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     throw new Error('Streaming is not implemented for AnthropicAgent');
   }
 }

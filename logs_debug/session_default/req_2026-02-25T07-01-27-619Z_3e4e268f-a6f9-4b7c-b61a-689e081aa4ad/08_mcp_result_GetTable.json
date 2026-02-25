@@ -1,3 +1,0 @@
-{
-  "result": "[{\"type\":\"text\",\"text\":\"{\\n  \\\"success\\\": true,\\n  \\\"table_name\\\": \\\"T002\\\",\\n  \\\"version\\\": \\\"active\\\",\\n  \\\"table_data\\\": \\\"@EndUserText.label : 'Language Keys (Component BC-I18)'\\\\n@AbapCatalog.enhancement.category : #NOT_EXTENSIBLE\\\\n@AbapCatalog.tableCategory : #TRANSPARENT\\\\n@AbapCatalog.deliveryClass : #S\\\\n@AbapCatalog.dataMaintenance : #RESTRICTED\\\\ndefine table t002 {\\\\n\\\\n  key spras : spras not null;\\\\n  laspez    : laspez not null;\\\\n  lahq      : lahq;\\\\n  laiso     : laiso;\\\\n\\\\n}\\\",\\n  \\\"status\\\": 200,\\n  \\\"status_text\\\": \\\"OK\\\"\\n}\"}]"
-}

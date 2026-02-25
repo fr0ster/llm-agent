@@ -6,7 +6,7 @@
  */
 
 import type { OpenAIConfig, OpenAIProvider } from '../llm-providers/openai.js';
-import type { Message } from '../types.js';
+import type { AgentStreamChunk, Message } from '../types.js';
 import { BaseAgent, type BaseAgentConfig } from './base.js';
 
 export interface OpenAIAgentConfig extends BaseAgentConfig {
@@ -69,16 +69,34 @@ export class OpenAIAgent extends BaseAgent {
     messages: Message[],
     tools: any[],
     options?: any,
-  ): AsyncIterable<{ content: string; raw?: unknown }> {
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToOpenAIFunctions(tools);
 
-    const stream = this.llmProvider.streamChat(messages, functions);
-    for await (const chunk of stream) {
-      yield {
-        content: chunk.content,
-        raw: chunk.raw,
-      };
+    // biome-ignore lint/suspicious/noExplicitAny: accessing provider internals
+    const provider = this.llmProvider as any;
+    const baseURL: string = provider.config.baseURL || 'https://api.openai.com/v1';
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${provider.config.apiKey as string}`,
+    };
+    if (provider.config.organization) {
+      headers['OpenAI-Organization'] = provider.config.organization as string;
     }
+    if (provider.config.project) {
+      headers['OpenAI-Project'] = provider.config.project as string;
+    }
+
+    yield* this.streamOpenAICompatible(`${baseURL}/chat/completions`, headers, {
+      model: provider.model as string,
+      messages: this.formatMessagesForOpenAI(messages),
+      tools: functions.length > 0 ? functions : undefined,
+      tool_choice: functions.length > 0 ? 'auto' : undefined,
+      temperature: options?.temperature ?? provider.config.temperature ?? 0.7,
+      max_tokens: options?.maxTokens ?? provider.config.maxTokens ?? 2000,
+      top_p: options?.topP,
+      stop: options?.stop,
+      stream: true,
+      stream_options: { include_usage: true },
+    });
   }
 
   /**

@@ -1,8 +1,0 @@
-{
-  "arguments": {
-    "table_name": "Z_TABLE_5",
-    "ddl_code": "@EndUserText.label : 'Table 5 based on T002 structure'\n@AbapCatalog.tableCategory : #TRANSPARENT\ndefine table z_table_5 {\n  key spras : spras not null;\n  laspez    : laspez not null;\n  lahq      : lahq;\n  laiso     : laiso;\n}",
-    "package_name": "$TMP",
-    "description": "Table 5 based on T002 structure"
-  }
-}

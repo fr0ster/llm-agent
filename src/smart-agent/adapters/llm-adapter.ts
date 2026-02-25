@@ -8,7 +8,7 @@
  */
 
 import type { BaseAgent } from '../../agents/base.js';
-import type { Message } from '../../types.js';
+import type { AgentStreamChunk as CoreAgentStreamChunk, Message } from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
 import {
   type CallOptions,
@@ -140,10 +140,40 @@ function parseProviderResponse(raw: {
  *
  * Extracts content delta and other info from a stream chunk.
  */
-function parseStreamChunk(raw: {
-  content: string;
-  raw?: unknown;
-}): LlmStreamChunk {
+function parseStreamChunk(
+  raw:
+    | {
+        content: string;
+        raw?: unknown;
+      }
+    | CoreAgentStreamChunk,
+): LlmStreamChunk {
+  if ('type' in raw) {
+    if (raw.type === 'text') {
+      return { content: raw.delta };
+    }
+    if (raw.type === 'tool_calls') {
+      return {
+        content: '',
+        toolCalls: raw.toolCalls,
+      };
+    }
+    if (raw.type === 'usage') {
+      return {
+        content: '',
+        usage: {
+          promptTokens: raw.promptTokens,
+          completionTokens: raw.completionTokens,
+          totalTokens: raw.promptTokens + raw.completionTokens,
+        },
+      };
+    }
+    return {
+      content: '',
+      finishReason: raw.finishReason,
+    };
+  }
+
   // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
   const providerRaw = raw.raw as any;
 
@@ -235,10 +265,13 @@ export class LlmAdapter implements ILlm {
         messages,
         mcpTools,
         options,
-      ) as AsyncIterable<{
-        content: string;
-        raw?: unknown;
-      }>;
+      ) as AsyncIterable<
+        | {
+            content: string;
+            raw?: unknown;
+          }
+        | CoreAgentStreamChunk
+      >;
 
       for await (const chunk of stream) {
         if (options?.signal?.aborted) {
