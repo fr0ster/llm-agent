@@ -102,6 +102,16 @@ npm run test:all
 
 # Development with hot-reload
 npm run dev
+
+# Smart server production entrypoint
+npm run start
+
+# Legacy compatibility aliases
+npm run start:smart
+npm run dev:llm
+npm run start:llm
+npm run test
+npm run test:llm
 ```
 
 ## License

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { BaseAgent } from '../../../agents/base.js';
 import type { MCPClientWrapper } from '../../../mcp/client.js';
-import type { Message } from '../../../types.js';
+import type { AgentStreamChunk, Message } from '../../../types.js';
 import { LlmError } from '../../interfaces/types.js';
 import { LlmAdapter } from '../llm-adapter.js';
 
@@ -14,6 +14,9 @@ class StubAgent extends BaseAgent {
   constructor(
     private readonly _resp: { content: string; raw?: unknown },
     private readonly _err?: Error,
+    private readonly _streamChunks: Array<
+      { content: string; raw?: unknown } | AgentStreamChunk
+    > = [],
   ) {
     // BaseAgent stores mcpClient but never calls it in callLLMWithTools path
     super({ mcpClient: {} as unknown as MCPClientWrapper });
@@ -23,6 +26,18 @@ class StubAgent extends BaseAgent {
   protected async callLLMWithTools(_msgs: Message[], _tools: any[]) {
     if (this._err) throw this._err;
     return this._resp;
+  }
+
+  // biome-ignore lint/suspicious/noExplicitAny: matches BaseAgent signature
+  protected async *streamLLMWithTools(_msgs: Message[], _tools: any[]) {
+    if (this._err) throw this._err;
+    if (this._streamChunks.length === 0) {
+      yield { content: this._resp.content, raw: this._resp.raw };
+      return;
+    }
+    for (const c of this._streamChunks) {
+      yield c;
+    }
   }
 }
 
@@ -91,6 +106,36 @@ describe('LlmAdapter — success paths', () => {
     assert.deepEqual(r.value.toolCalls?.[0].arguments, {});
   });
 
+  it('malformed tool args emits parse diagnostic', async () => {
+    const raw = {
+      choices: [
+        {
+          message: {
+            content: '',
+            tool_calls: [
+              {
+                id: 'call_2',
+                function: { name: 'bad_tool', arguments: 'not-json' },
+              },
+            ],
+          },
+        },
+      ],
+    };
+    const events: Array<{ name: string; data: unknown }> = [];
+    const adapter = new LlmAdapter(new StubAgent({ content: '', raw }));
+    const r = await adapter.chat([USER], undefined, {
+      sessionLogger: {
+        logStep(name, data) {
+          events.push({ name, data });
+        },
+      },
+    });
+    assert.ok(r.ok);
+    const diagnostics = events.filter((e) => e.name === 'llm_parse_diagnostic');
+    assert.equal(diagnostics.length, 1);
+  });
+
   it('Anthropic format — parses tool_use blocks', async () => {
     const raw = {
       content: [
@@ -125,6 +170,48 @@ describe('LlmAdapter — success paths', () => {
     assert.ok(r.ok);
     assert.equal(r.value.finishReason, 'stop');
     assert.equal(r.value.toolCalls, undefined);
+  });
+
+  it('stream tool delta without index emits diagnostic and is ignored', async () => {
+    const events: Array<{ name: string; data: unknown }> = [];
+    const adapter = new LlmAdapter(
+      new StubAgent({ content: '' }, undefined, [
+        {
+          content: '',
+          raw: {
+            choices: [
+              {
+                delta: {
+                  tool_calls: [
+                    {
+                      id: 'c1',
+                      function: { name: 'broken', arguments: '{}' },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        },
+      ]),
+    );
+    const chunks: unknown[] = [];
+    for await (const chunk of adapter.streamChat([USER], undefined, {
+      sessionLogger: {
+        logStep(name, data) {
+          events.push({ name, data });
+        },
+      },
+    })) {
+      chunks.push(chunk);
+    }
+    const diagnostics = events.filter((e) => e.name === 'llm_parse_diagnostic');
+    assert.equal(diagnostics.length, 1);
+    assert.equal(
+      (chunks[0] as { ok: boolean; value?: { toolCalls?: unknown[] } }).value
+        ?.toolCalls,
+      undefined,
+    );
   });
 });
 

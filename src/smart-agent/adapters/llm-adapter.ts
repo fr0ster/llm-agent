@@ -1,13 +1,8 @@
 /**
  * LlmAdapter — wraps BaseAgent as ILlm.
- *
- * NOTE: callLLMWithTools() is protected on BaseAgent, so we access it via
- * `(this.agent as any).callLLMWithTools(...)`. This is intentional technical
- * debt: Phase 2 adapts existing code without modifying it. A future phase can
- * make the method public or extract it to a separate interface.
  */
 
-import type { BaseAgent } from '../../agents/base.js';
+import type { BaseAgentLlmBridge } from '../../agents/base.js';
 import type {
   AgentStreamChunk as CoreAgentStreamChunk,
   Message,
@@ -24,6 +19,15 @@ import {
   type Result,
   type SmartAgentError,
 } from '../interfaces/types.js';
+
+type ParseStage = 'response' | 'stream';
+type ParseDiagnostic = {
+  stage: ParseStage;
+  code: string;
+  message: string;
+  details?: Record<string, unknown>;
+};
+type ParseDiagnosticSink = (event: ParseDiagnostic) => void;
 
 // ---------------------------------------------------------------------------
 // Module-private helper
@@ -56,10 +60,13 @@ function withAbort<T>(
  * OpenAI / DeepSeek: raw.choices[0].message.tool_calls, raw.usage
  * Anthropic:         raw.content[].type === 'tool_use', raw.usage
  */
-function parseProviderResponse(raw: {
-  content: string;
-  raw?: unknown;
-}): LlmResponse {
+function parseProviderResponse(
+  raw: {
+    content: string;
+    raw?: unknown;
+  },
+  onDiagnostic?: ParseDiagnosticSink,
+): LlmResponse {
   // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
   const providerRaw = raw.raw as any;
 
@@ -93,6 +100,15 @@ function parseProviderResponse(raw: {
       try {
         args = JSON.parse(tc.function.arguments);
       } catch {
+        onDiagnostic?.({
+          stage: 'response',
+          code: 'TOOL_ARGUMENTS_JSON_PARSE_FAILED',
+          message: 'Failed to parse tool call arguments JSON',
+          details: {
+            toolId: tc.id,
+            toolName: tc.function?.name,
+          },
+        });
         args = {};
       }
       toolCalls.push({ id: tc.id, name: tc.function.name, arguments: args });
@@ -149,6 +165,7 @@ function parseStreamChunk(
         raw?: unknown;
       }
     | CoreAgentStreamChunk,
+  onDiagnostic?: ParseDiagnosticSink,
 ): LlmStreamChunk {
   if ('type' in raw) {
     if (raw.type === 'text') {
@@ -190,6 +207,14 @@ function parseStreamChunk(
 
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
+        if (typeof tc.index !== 'number') {
+          onDiagnostic?.({
+            stage: 'stream',
+            code: 'STREAM_TOOL_DELTA_MISSING_INDEX',
+            message: 'Tool-call delta is missing numeric index',
+          });
+          continue;
+        }
         toolCalls.push({
           index: tc.index,
           id: tc.id,
@@ -214,7 +239,7 @@ function parseStreamChunk(
 // ---------------------------------------------------------------------------
 
 export class LlmAdapter implements ILlm {
-  constructor(private readonly agent: BaseAgent) {}
+  constructor(private readonly agent: BaseAgentLlmBridge) {}
 
   async chat(
     messages: Message[],
@@ -222,6 +247,11 @@ export class LlmAdapter implements ILlm {
     options?: CallOptions,
   ): Promise<Result<LlmResponse, LlmError>> {
     try {
+      const onDiagnostic: ParseDiagnosticSink | undefined =
+        options?.sessionLogger
+          ? (event) =>
+              options.sessionLogger?.logStep('llm_parse_diagnostic', event)
+          : undefined;
       const mcpTools =
         tools?.map((t) => ({
           name: t.name,
@@ -229,15 +259,8 @@ export class LlmAdapter implements ILlm {
           inputSchema: t.inputSchema,
         })) ?? [];
 
-      // callLLMWithTools is protected; accessing via type assertion is
-      // documented technical debt — see class-level note above.
       const raw = await withAbort(
-        // biome-ignore lint/suspicious/noExplicitAny: intentional protected-access workaround
-        (this.agent as any).callLLMWithTools(
-          messages,
-          mcpTools,
-          options,
-        ) as Promise<{
+        this.agent.callWithTools(messages, mcpTools, options) as Promise<{
           content: string;
           raw?: unknown;
         }>,
@@ -245,7 +268,7 @@ export class LlmAdapter implements ILlm {
         () => new LlmError('Aborted', 'ABORTED'),
       );
 
-      return { ok: true, value: parseProviderResponse(raw) };
+      return { ok: true, value: parseProviderResponse(raw, onDiagnostic) };
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
       return { ok: false, error: new LlmError(String(err)) };
@@ -258,6 +281,11 @@ export class LlmAdapter implements ILlm {
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
     try {
+      const onDiagnostic: ParseDiagnosticSink | undefined =
+        options?.sessionLogger
+          ? (event) =>
+              options.sessionLogger?.logStep('llm_parse_diagnostic', event)
+          : undefined;
       const mcpTools =
         tools?.map((t) => ({
           name: t.name,
@@ -265,9 +293,7 @@ export class LlmAdapter implements ILlm {
           inputSchema: t.inputSchema,
         })) ?? [];
 
-      // streamLLMWithTools is protected
-      // biome-ignore lint/suspicious/noExplicitAny: intentional protected-access workaround
-      const stream = (this.agent as any).streamLLMWithTools(
+      const stream = this.agent.streamWithTools(
         messages,
         mcpTools,
         options,
@@ -283,7 +309,7 @@ export class LlmAdapter implements ILlm {
         if (options?.signal?.aborted) {
           throw new LlmError('Aborted', 'ABORTED');
         }
-        yield { ok: true, value: parseStreamChunk(chunk) };
+        yield { ok: true, value: parseStreamChunk(chunk, onDiagnostic) };
       }
     } catch (err) {
       if (err instanceof LlmError) yield { ok: false, error: err };
