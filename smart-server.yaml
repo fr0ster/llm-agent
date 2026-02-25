@@ -7,6 +7,45 @@ host: 0.0.0.0
 #   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
 mode: smart
 
+# --- Unified Multi-Model Pipeline (Advanced) --------------------------------
+# Use this section to assign different models for different internal tasks.
+# When pipeline is present, it can extend or override the flat llm/rag/mcp settings.
+pipeline:
+  llm:
+    main:                             # Primary LLM for tool loops and final answers
+      provider: deepseek              # deepseek | openai | anthropic
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat            # e.g., deepseek-chat or gpt-4o
+      temperature: 0.7
+    
+    classifier:                       # Rapid intent classification
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o-mini
+      temperature: 0.1
+    
+    helper:                           # RAG translation and history summarization
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o-mini
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: ollama
+      url: http://localhost:11434
+      model: nomic-embed-text
+      dedupThreshold: 0.92
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://localhost:3001/mcp/stream/http
+
+# --- Legacy Flat Config (Optional Fallbacks) --------------------------------
 llm:
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
@@ -14,17 +53,12 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory
+  type: ollama
   url: http://localhost:11434
   model: nomic-embed-text
   dedupThreshold: 0.92
   vectorWeight: 0.7
   keywordWeight: 0.3
-
-mcp:
-  # type: none | http | stdio
-  type: http
-  url: http://localhost:3001/mcp/stream/http
 
 agent:
   maxIterations: 10
