@@ -79,10 +79,18 @@ pipeline:
   llm:
     main:
       provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
       model: deepseek-chat
+    classifier:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
     helper:
-      provider: openai
-      model: gpt-4o-mini  # Used for fast summarization/translation
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat  # Used for fast summarization/translation
+      temperature: 0.1
 
 # Feature Toggles
 agent:

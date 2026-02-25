@@ -76,14 +76,14 @@ agent:
 #       model: deepseek-chat
 #       temperature: 0.7
 #     classifier:                     # optional; if absent, main config is reused
-#       provider: openai
-#       apiKey: \${OPENAI_API_KEY}
-#       model: gpt-4o-mini
+#       provider: deepseek
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
 #       temperature: 0.1
 #     helper:                         # optional; if absent, main config is reused
-#       provider: openai
-#       apiKey: \${OPENAI_API_KEY}
-#       model: gpt-4o-mini
+#       provider: deepseek
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
 #       temperature: 0.1
 #
 #   rag:

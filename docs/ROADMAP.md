@@ -98,3 +98,15 @@
 - Protocol edge-case behavior is documented and linked from README/docs.
 - Contract tests pass for streaming/tool-call protocol scenarios.
 - `npm run lint:check` and `npm run build` are green.
+
+---
+
+## Phase 16 - Test Debt Closure [DONE] ✅
+
+- [x] 1. Stabilize regression suite assertions against current SmartAgent contract ✅
+- **Goal:** Remove failures caused by outdated expectations from earlier orchestration phases.
+- **Implementation:** Update `regression.test.ts` to assert current behavior (single-shot context assembly model, stream-accumulated response content, client call-count verification for tool execution paths).
+
+- [x] 2. Keep deprecated Phase-9 suite non-blocking ✅
+- **Goal:** Preserve historical coverage context without breaking CI on obsolete contracts.
+- **Implementation:** Keep `agent-phase9.test.ts` explicitly deprecated/skipped until replaced by modern contract tests.
