@@ -268,6 +268,7 @@ export class SmartAgent {
       traceId,
       inputLength: text.length,
       subpromptCount: classifyResult.ok ? classifyResult.value.length : 0,
+      subprompts: classifyResult.ok ? classifyResult.value.map((sp) => ({ type: sp.type, text: sp.text })) : [],
       durationMs: Date.now() - classifyT0,
     });
     if (!classifyResult.ok) {
@@ -836,7 +837,16 @@ export class SmartAgent {
     }
 
     // Classify
+    const classifyT0Stream = Date.now();
     const classifyResult = await this.deps.classifier.classify(text, opts);
+    logger?.log({
+      type: 'classify',
+      traceId,
+      inputLength: text.length,
+      subpromptCount: classifyResult.ok ? classifyResult.value.length : 0,
+      subprompts: classifyResult.ok ? classifyResult.value.map((sp) => ({ type: sp.type, text: sp.text })) : [],
+      durationMs: Date.now() - classifyT0Stream,
+    });
     if (!classifyResult.ok) {
       yield { type: 'done', finishReason: 'error' };
       return;

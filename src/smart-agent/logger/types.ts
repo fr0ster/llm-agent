@@ -8,6 +8,7 @@ export type LogEvent =
       traceId: string;
       inputLength: number;
       subpromptCount: number;
+      subprompts: Array<{ type: string; text: string }>;
       durationMs: number;
     }
   | { type: 'rag_upsert'; traceId: string; store: string; durationMs: number }

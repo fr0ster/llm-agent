@@ -133,7 +133,14 @@ export interface SmartServerPromptsConfig {
  * Request routing mode:
  * - `smart`      — all requests go through SmartAgent (RAG tool selection). Best for SAP/ABAP work.
  * - `passthrough` — all requests go directly to the LLM, no agent. Preserves client tool protocols.
- * - `hybrid`     — auto-detect: Cline client → passthrough, everything else → SmartAgent. Default.
+ * - `hybrid`     — auto-detect by system prompt:
+ *     • "You are Cline…"                               → passthrough
+ *     • "You are a general-purpose AI agent called goose…" → SmartAgent
+ *     • no system prompt                               → SmartAgent
+ *     • any other system prompt                        → passthrough
+ *   The Goose prefix (and any extra prefixes from `smartSystemPrefixes`) are the only
+ *   system-prompt patterns that are forwarded to SmartAgent; everything else is treated
+ *   as a client-owned context and sent to the LLM directly.
  */
 export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
 
@@ -157,6 +164,13 @@ export interface SmartServerConfig {
    * See SmartServerMode for details.
    */
   mode?: SmartServerMode;
+  /**
+   * In `hybrid` mode, system-prompt prefixes that route to SmartAgent.
+   * Requests whose system prompt starts with one of these strings go through
+   * the full pipeline; all others go to passthrough.
+   * Default: `['You are a general-purpose AI agent called goose']`
+   */
+  smartSystemPrefixes?: string[];
   /**
    * Optional pipeline overrides. When present, takes precedence over the flat
    * llm / rag / mcp fields for the components it specifies.
@@ -409,14 +423,15 @@ export class SmartServer {
 
     // Resolve effective routing mode
     const serverMode = this.cfg.mode ?? 'hybrid';
-    const isCline =
-      serverMode === 'hybrid' &&
-      (() => {
-        const systemMsg = body.messages.find((m) => m.role === 'system');
-        if (!systemMsg) return false;
-        return extractText(systemMsg.content).trimStart().startsWith('You are Cline');
-      })();
-    const usePassthrough = serverMode === 'passthrough' || isCline;
+    const systemMsg = body.messages.find((m) => m.role === 'system');
+    const systemText = systemMsg ? extractText(systemMsg.content).trimStart() : '';
+    const defaultSmartPrefixes = ['You are a general-purpose AI agent called goose'];
+    const smartPrefixes = this.cfg.smartSystemPrefixes ?? defaultSmartPrefixes;
+    const isCline = serverMode === 'hybrid' && systemText.startsWith('You are Cline');
+    // In hybrid mode: passthrough when system prompt is present but not a known smart-agent prefix.
+    // This catches internal meta-requests (e.g. Goose title generation) that carry arbitrary system prompts.
+    const isUnknownSystem = serverMode === 'hybrid' && !!systemText && !smartPrefixes.some((p) => systemText.startsWith(p));
+    const usePassthrough = serverMode === 'passthrough' || isCline || isUnknownSystem;
 
     const t0 = Date.now();
     log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });

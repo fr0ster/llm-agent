@@ -74,6 +74,34 @@ debug:
 - [x] Add `{ type: 'reasoning', text: string }` chunk variant to `LlmStreamChunk` / `AgentStreamChunk`
 - [x] Parse `<reasoning>` or `<thinking>` blocks from streamed text and re-emit as reasoning chunks
 - [x] `SmartServer`: include reasoning chunks in SSE stream (or filter them based on a separate `includeReasoning` flag)
+- [x] All agent prompts (system, classifier, ragTranslation, reasoning) exposed in generated YAML with actual defaults and overridable via config
+- [x] Fix empty-string `ragTranslation: ""` not propagating (truthiness check → `!== null` / `!== undefined`)
+
+## Phase 16 — Session Debug Logging
+
+Per-session directory with numbered JSON files capturing the full request/response trace.
+
+```yaml
+debug:
+  sessions: ./sessions   # enable per-session logging; path to directory
+```
+
+- [x] Add `SessionLogger` class (`src/smart-agent/logger/session-logger.ts`)
+- [x] Add new `LogEvent` types: `client_request`, `client_response`, `llm_request`, `llm_response`
+- [x] `SessionLogger` creates `<baseDir>/<YYYY-MM-DDTHH-MM-SS>-<traceId[:8]>/` per request
+- [x] Each event → separate numbered JSON file (`000_client_request.json`, `001_rag_translate.json`, …)
+- [x] `SmartServer._handleChat` generates `requestId`, logs `client_request` / `client_response`, passes `trace.traceId` to agent
+- [x] `SmartAgent._runToolLoop` and `_runStreamingToolLoop` log `llm_request` / `llm_response` per iteration
+- [x] `debug.sessions` added to YAML template (commented) and to config resolver
+- [x] Fix premature `pipeline_done` in `_runPipelineStream` — moved after `yield*` streaming loop
+
+## Phase 17 — Compound Query Handling
+
+Classifier splits compound requests ("Add 5+9 and read T100") into multiple subprompts;
+agent previously only processed the first `action`. Now all actions are merged.
+
+- [x] Merge all `action` subprompts into a single compound action in `_runPipeline` (non-streaming)
+- [x] Merge all `action` subprompts into a single compound action in `_runPipelineStream` (streaming)
 
 ## Phase 15 — Beta Testing
 
