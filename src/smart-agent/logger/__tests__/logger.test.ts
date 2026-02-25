@@ -9,11 +9,14 @@ import type { IMcpClient } from '../../interfaces/mcp-client.js';
 import type { IRag } from '../../interfaces/rag.js';
 import {
   AssemblerError,
+  type ActionNode,
   type CallOptions,
   ClassifierError,
+  type ClassifierResult,
   LlmError,
   type LlmFinishReason,
   type LlmResponse,
+  type LlmTool,
   type LlmToolCall,
   McpError,
   type McpTool,
@@ -107,13 +110,22 @@ function makeMcpClient(
   };
 }
 
-function makeClassifier(result: Subprompt[] | Error): ISubpromptClassifier {
+function makeClassifier(result: ClassifierResult | Subprompt[] | Error): ISubpromptClassifier {
   return {
-    async classify(): Promise<Result<Subprompt[], ClassifierError>> {
+    async classify(): Promise<Result<ClassifierResult, ClassifierError>> {
       if (result instanceof Error) {
         const code =
           result.message === 'ABORTED' ? 'ABORTED' : 'CLASSIFIER_ERROR';
         return { ok: false, error: new ClassifierError(result.message, code) };
+      }
+      if (Array.isArray(result)) {
+        const stores = (result as Subprompt[])
+          .filter((s) => s.type !== 'action')
+          .map((s) => ({ type: s.type as 'fact' | 'feedback' | 'state', text: s.text }));
+        const actions: ActionNode[] = (result as Subprompt[])
+          .filter((s) => s.type === 'action')
+          .map((s, i) => ({ id: i, text: s.text, dependsOn: [] }));
+        return { ok: true, value: { stores, actions } };
       }
       return { ok: true, value: result };
     },
@@ -140,6 +152,19 @@ function makeAssembler(result?: Message[] | Error): IContextAssembler {
         return { ok: false, error: new AssemblerError(r.message, code) };
       }
       return { ok: true, value: r };
+    },
+    async augment(
+      clientMessages: Message[],
+      _ragContext: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[] },
+      additionalTools: LlmTool[],
+      clientTools: LlmTool[],
+    ): Promise<Result<{ messages: Message[]; tools: LlmTool[] }, AssemblerError>> {
+      const seen = new Set<string>();
+      const tools: LlmTool[] = [];
+      for (const t of [...clientTools, ...additionalTools]) {
+        if (!seen.has(t.name)) { seen.add(t.name); tools.push(t); }
+      }
+      return { ok: true, value: { messages: [...clientMessages], tools } };
     },
   };
 }
@@ -184,7 +209,7 @@ const DEFAULT_CONFIG = { maxIterations: 5 };
 // ---------------------------------------------------------------------------
 
 describe('Logger — classify event emitted', () => {
-  it('type=classify, inputLength>0, subpromptCount>=0, durationMs>=0', async () => {
+  it('type=classify, inputLength>0, stores/actions arrays, durationMs>=0', async () => {
     const caplog = makeCapturingLogger();
     const deps = makeDefaultDeps({ logger: caplog });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
@@ -194,7 +219,8 @@ describe('Logger — classify event emitted', () => {
     assert.ok(ev, 'classify event not found');
     assert.equal(ev.type, 'classify');
     assert.ok(ev.inputLength > 0, 'inputLength should be > 0');
-    assert.ok(ev.subpromptCount >= 0, 'subpromptCount should be >= 0');
+    assert.ok(Array.isArray(ev.stores), 'stores should be an array');
+    assert.ok(Array.isArray(ev.actions), 'actions should be an array');
     assert.ok(ev.durationMs >= 0, 'durationMs should be >= 0');
   });
 });
@@ -513,7 +539,8 @@ describe('ConsoleLogger — enabled=true writes JSON to stderr', () => {
         type: 'classify',
         traceId: 'tid',
         inputLength: 10,
-        subpromptCount: 1,
+        stores: [],
+        actions: [],
         durationMs: 5,
       });
     } finally {
@@ -548,7 +575,8 @@ describe('ConsoleLogger — enabled=false is silent', () => {
         type: 'classify',
         traceId: 'tid',
         inputLength: 10,
-        subpromptCount: 1,
+        stores: [],
+        actions: [],
         durationMs: 5,
       });
     } finally {

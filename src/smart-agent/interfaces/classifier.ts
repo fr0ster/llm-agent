@@ -1,13 +1,13 @@
 import type {
   CallOptions,
   ClassifierError,
+  ClassifierResult,
   Result,
-  Subprompt,
 } from './types.js';
 
 export interface ISubpromptClassifier {
   classify(
     text: string,
     options?: CallOptions,
-  ): Promise<Result<Subprompt[], ClassifierError>>;
+  ): Promise<Result<ClassifierResult, ClassifierError>>;
 }

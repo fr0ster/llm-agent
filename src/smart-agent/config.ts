@@ -48,9 +48,10 @@ export const YAML_TEMPLATE = `port: 3001
 host: 0.0.0.0
 
 # Request routing mode:
-#   smart       — all requests via SmartAgent (RAG tool selection).
+#   hard        — client system prompt and tools ignored; agent builds everything from user text.
+#   smart       — preserves client history and tools; augments with RAG context.
 #   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
-#   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
+#   hybrid      — auto-detect: Cline client → passthrough, others → smart. (default)
 mode: hybrid
 
 # Flat llm: section always uses the DeepSeek adapter.

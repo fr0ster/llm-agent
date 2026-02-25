@@ -73,7 +73,7 @@ export class AssemblerError extends SmartAgentError {
 }
 
 // ---------------------------------------------------------------------------
-// Subprompt
+// Subprompt (legacy — still used by ContextAssembler.assemble() action param)
 // ---------------------------------------------------------------------------
 
 export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action';
@@ -81,6 +81,23 @@ export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action';
 export interface Subprompt {
   type: SubpromptType;
   text: string;
+}
+
+// ---------------------------------------------------------------------------
+// Classifier graph types
+// ---------------------------------------------------------------------------
+
+export interface ActionNode {
+  /** 0-based index; stable within a single ClassifierResult. */
+  id: number;
+  text: string;
+  /** ids of ActionNodes that must complete before this one can run. */
+  dependsOn: number[];
+}
+
+export interface ClassifierResult {
+  stores: Array<{ type: 'fact' | 'feedback' | 'state'; text: string }>;
+  actions: ActionNode[];
 }
 
 // ---------------------------------------------------------------------------

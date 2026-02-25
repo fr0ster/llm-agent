@@ -2,12 +2,12 @@ import type { Message } from '../../types.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
 import {
+  type ActionNode,
   type CallOptions,
   ClassifierError,
+  type ClassifierResult,
   type Result,
   type SmartAgentError,
-  type Subprompt,
-  type SubpromptType,
 } from '../interfaces/types.js';
 
 // ---------------------------------------------------------------------------
@@ -15,35 +15,28 @@ import {
 // ---------------------------------------------------------------------------
 
 export interface LlmClassifierConfig {
-  /** Override default system prompt. */
-  systemPrompt?: string;
-  /** Prompt version tag logged for observability. Default: 'v1'. */
-  promptVersion?: string;
   /** Cache results for identical input text within the instance lifetime. Default: true. */
   enableCache?: boolean;
+  /** Prompt version tag logged for observability. Default: 'v2'. */
+  promptVersion?: string;
 }
 
 // ---------------------------------------------------------------------------
-// Constants
+// System prompts
 // ---------------------------------------------------------------------------
 
-const VALID_TYPES: ReadonlySet<string> = new Set<SubpromptType>([
-  'fact',
-  'feedback',
-  'state',
-  'action',
-]);
+const STORES_SYSTEM_PROMPT =
+  'Given the user message, find what should be stored in memory.\n' +
+  'Return ONLY a valid JSON object: {"stores":[{"type":"fact"|"feedback"|"state","text":"..."}]}\n' +
+  'If nothing to store, return {"stores":[]}.';
 
-const DEFAULT_SYSTEM_PROMPT = `You are an intent classifier. Given a user message, decompose it into one or
-more subprompts and classify each as exactly one of:
-  - "fact"     : a factual statement to remember
-  - "feedback" : a correction or evaluation of a previous response
-  - "state"    : current user context / preferences / session state
-  - "action"   : a request to do something or answer a question
-
-Return ONLY a valid JSON array with no markdown fences.
-Each element: { "type": "<type>", "text": "<subprompt text>" }
-If the message fits one intent, return a single-element array.`;
+const ACTIONS_SYSTEM_PROMPT =
+  'Given the user message, find every action the user wants performed.\n' +
+  'Build a dependency graph: if action B requires results from action A, set B.dependsOn=[A.id].\n' +
+  'Independent actions have dependsOn:[].\n' +
+  'Return ONLY a valid JSON object:\n' +
+  '{"actions":[{"id":0,"text":"...","dependsOn":[]},{"id":1,"text":"...","dependsOn":[0]}]}\n' +
+  'If nothing to do, return {"actions":[]}.';
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -56,42 +49,86 @@ function stripCodeFence(s: string): string {
     .trim();
 }
 
-function parseSubprompts(raw: string): Subprompt[] {
+function parseStores(
+  raw: string,
+): Array<{ type: 'fact' | 'feedback' | 'state'; text: string }> {
   const cleaned = stripCodeFence(raw);
-
   let parsed: unknown;
   try {
     parsed = JSON.parse(cleaned);
   } catch {
     throw new ClassifierError(
-      `LLM returned non-JSON: ${cleaned.slice(0, 120)}`,
+      `LLM returned non-JSON for stores: ${cleaned.slice(0, 120)}`,
       'PARSE_ERROR',
     );
   }
-
-  if (!Array.isArray(parsed)) {
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !Array.isArray((parsed as Record<string, unknown>).stores)
+  ) {
     throw new ClassifierError(
-      'LLM response is not a JSON array',
+      'LLM stores response missing "stores" array',
       'SCHEMA_ERROR',
     );
   }
-
-  for (const entry of parsed) {
+  const stores = (parsed as Record<string, unknown>).stores as unknown[];
+  const VALID_STORE_TYPES = new Set(['fact', 'feedback', 'state']);
+  for (const entry of stores) {
     if (
       typeof entry !== 'object' ||
       entry === null ||
-      !VALID_TYPES.has((entry as Record<string, unknown>).type as string) ||
+      !VALID_STORE_TYPES.has((entry as Record<string, unknown>).type as string) ||
       typeof (entry as Record<string, unknown>).text !== 'string' ||
       ((entry as Record<string, unknown>).text as string).length === 0
     ) {
       throw new ClassifierError(
-        `Invalid subprompt entry: ${JSON.stringify(entry)}`,
+        `Invalid store entry: ${JSON.stringify(entry)}`,
         'SCHEMA_ERROR',
       );
     }
   }
+  return stores as Array<{ type: 'fact' | 'feedback' | 'state'; text: string }>;
+}
 
-  return parsed as Subprompt[];
+function parseActions(raw: string): ActionNode[] {
+  const cleaned = stripCodeFence(raw);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new ClassifierError(
+      `LLM returned non-JSON for actions: ${cleaned.slice(0, 120)}`,
+      'PARSE_ERROR',
+    );
+  }
+  if (
+    typeof parsed !== 'object' ||
+    parsed === null ||
+    !Array.isArray((parsed as Record<string, unknown>).actions)
+  ) {
+    throw new ClassifierError(
+      'LLM actions response missing "actions" array',
+      'SCHEMA_ERROR',
+    );
+  }
+  const actions = (parsed as Record<string, unknown>).actions as unknown[];
+  for (const entry of actions) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof (entry as Record<string, unknown>).id !== 'number' ||
+      typeof (entry as Record<string, unknown>).text !== 'string' ||
+      ((entry as Record<string, unknown>).text as string).length === 0 ||
+      !Array.isArray((entry as Record<string, unknown>).dependsOn)
+    ) {
+      throw new ClassifierError(
+        `Invalid action entry: ${JSON.stringify(entry)}`,
+        'SCHEMA_ERROR',
+      );
+    }
+  }
+  return actions as ActionNode[];
 }
 
 function withAbort<T>(
@@ -104,9 +141,7 @@ function withAbort<T>(
   return Promise.race([
     promise,
     new Promise<never>((_, reject) => {
-      signal.addEventListener('abort', () => reject(makeError()), {
-        once: true,
-      });
+      signal.addEventListener('abort', () => reject(makeError()), { once: true });
     }),
   ]);
 }
@@ -116,29 +151,24 @@ function withAbort<T>(
 // ---------------------------------------------------------------------------
 
 export class LlmClassifier implements ISubpromptClassifier {
-  private readonly systemPrompt: string;
   private readonly promptVersion: string;
-  private readonly cache: Map<string, Subprompt[]> | null;
+  private readonly cache: Map<string, ClassifierResult> | null;
 
   constructor(
     private readonly llm: ILlm,
     config?: LlmClassifierConfig,
   ) {
-    this.systemPrompt = config?.systemPrompt ?? DEFAULT_SYSTEM_PROMPT;
-    this.promptVersion = config?.promptVersion ?? 'v1';
+    this.promptVersion = config?.promptVersion ?? 'v2';
     this.cache = (config?.enableCache ?? true) ? new Map() : null;
   }
 
   async classify(
     text: string,
     options?: CallOptions,
-  ): Promise<Result<Subprompt[], ClassifierError>> {
+  ): Promise<Result<ClassifierResult, ClassifierError>> {
     try {
       if (options?.signal?.aborted) {
-        return {
-          ok: false,
-          error: new ClassifierError('Aborted', 'ABORTED'),
-        };
+        return { ok: false, error: new ClassifierError('Aborted', 'ABORTED') };
       }
 
       if (this.cache?.has(text)) {
@@ -146,35 +176,57 @@ export class LlmClassifier implements ISubpromptClassifier {
         return { ok: true, value: this.cache.get(text)! };
       }
 
-      const messages: Message[] = [
-        { role: 'system', content: this.systemPrompt },
-        { role: 'user', content: text },
-      ];
-
       console.debug(
         `[LlmClassifier] classify promptVersion=${this.promptVersion}`,
       );
 
-      const llmResult = await withAbort(
-        this.llm.chat(messages, [], options),
-        options?.signal,
-        () => new ClassifierError('Aborted', 'ABORTED'),
-      );
+      const storesMessages: Message[] = [
+        { role: 'system', content: STORES_SYSTEM_PROMPT },
+        { role: 'user', content: text },
+      ];
+      const actionsMessages: Message[] = [
+        { role: 'system', content: ACTIONS_SYSTEM_PROMPT },
+        { role: 'user', content: text },
+      ];
 
-      if (!llmResult.ok) {
+      // Both calls are independent — run in parallel
+      const [storesLlmResult, actionsLlmResult] = await Promise.all([
+        withAbort(
+          this.llm.chat(storesMessages, [], options),
+          options?.signal,
+          () => new ClassifierError('Aborted', 'ABORTED'),
+        ),
+        withAbort(
+          this.llm.chat(actionsMessages, [], options),
+          options?.signal,
+          () => new ClassifierError('Aborted', 'ABORTED'),
+        ),
+      ]);
+
+      if (!storesLlmResult.ok) {
         const code =
-          llmResult.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
+          storesLlmResult.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
         return {
           ok: false,
-          error: new ClassifierError(llmResult.error.message, code),
+          error: new ClassifierError(storesLlmResult.error.message, code),
+        };
+      }
+      if (!actionsLlmResult.ok) {
+        const code =
+          actionsLlmResult.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
+        return {
+          ok: false,
+          error: new ClassifierError(actionsLlmResult.error.message, code),
         };
       }
 
-      const subprompts = parseSubprompts(llmResult.value.content);
+      const stores = parseStores(storesLlmResult.value.content);
+      const actions = parseActions(actionsLlmResult.value.content);
 
-      this.cache?.set(text, subprompts);
+      const result: ClassifierResult = { stores, actions };
+      this.cache?.set(text, result);
 
-      return { ok: true, value: subprompts };
+      return { ok: true, value: result };
     } catch (err) {
       if (err instanceof ClassifierError) {
         return { ok: false, error: err };

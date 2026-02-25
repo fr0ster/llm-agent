@@ -133,16 +133,11 @@ export interface SmartServerPromptsConfig {
  * Request routing mode:
  * - `smart`      — all requests go through SmartAgent (RAG tool selection). Best for SAP/ABAP work.
  * - `passthrough` — all requests go directly to the LLM, no agent. Preserves client tool protocols.
- * - `hybrid`     — auto-detect by system prompt:
- *     • "You are Cline…"                               → passthrough
- *     • "You are a general-purpose AI agent called goose…" → SmartAgent
- *     • no system prompt                               → SmartAgent
- *     • any other system prompt                        → passthrough
- *   The Goose prefix (and any extra prefixes from `smartSystemPrefixes`) are the only
- *   system-prompt patterns that are forwarded to SmartAgent; everything else is treated
- *   as a client-owned context and sent to the LLM directly.
+ * - `hybrid`     — auto-detect: Cline client → passthrough, everything else → SmartAgent. Default.
+ * - `hard`       — client system prompt and tools are ignored; SmartAgent builds everything from
+ *                  the user message alone (strongest enrichment, maximum agent control).
  */
-export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
+export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid' | 'hard';
 
 export interface SmartServerConfig {
   /** HTTP server port. Default: 3001 */
@@ -164,13 +159,6 @@ export interface SmartServerConfig {
    * See SmartServerMode for details.
    */
   mode?: SmartServerMode;
-  /**
-   * In `hybrid` mode, system-prompt prefixes that route to SmartAgent.
-   * Requests whose system prompt starts with one of these strings go through
-   * the full pipeline; all others go to passthrough.
-   * Default: `['You are a general-purpose AI agent called goose']`
-   */
-  smartSystemPrefixes?: string[];
   /**
    * Optional pipeline overrides. When present, takes precedence over the flat
    * llm / rag / mcp fields for the components it specifies.
@@ -402,6 +390,7 @@ export class SmartServer {
     type MsgContent = string | ContentBlock[];
     const body = parsed as {
       messages: Array<{ role: string; content: MsgContent }>;
+      tools?: Array<{ type?: string; function?: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
     };
@@ -423,18 +412,20 @@ export class SmartServer {
 
     // Resolve effective routing mode
     const serverMode = this.cfg.mode ?? 'hybrid';
-    const systemMsg = body.messages.find((m) => m.role === 'system');
-    const systemText = systemMsg ? extractText(systemMsg.content).trimStart() : '';
-    const defaultSmartPrefixes = ['You are a general-purpose AI agent called goose'];
-    const smartPrefixes = this.cfg.smartSystemPrefixes ?? defaultSmartPrefixes;
-    const isCline = serverMode === 'hybrid' && systemText.startsWith('You are Cline');
-    // In hybrid mode: passthrough when system prompt is present but not a known smart-agent prefix.
-    // This catches internal meta-requests (e.g. Goose title generation) that carry arbitrary system prompts.
-    const isUnknownSystem = serverMode === 'hybrid' && !!systemText && !smartPrefixes.some((p) => systemText.startsWith(p));
-    const usePassthrough = serverMode === 'passthrough' || isCline || isUnknownSystem;
+    const systemText = (() => {
+      const systemMsg = body.messages.find((m) => m.role === 'system');
+      return systemMsg ? extractText(systemMsg.content) : '';
+    })();
+
+    const isCline = serverMode === 'hybrid' && systemText.trimStart().startsWith('You are Cline');
+    const usePass = serverMode === 'passthrough' || isCline;
+    const useHard = serverMode === 'hard';
+    const useSmart = serverMode === 'smart' || (serverMode === 'hybrid' && !isCline);
+
+    const effectiveMode = usePass ? 'passthrough' : useHard ? 'hard' : 'smart';
 
     const t0 = Date.now();
-    log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
+    log({ event: 'request_start', mode: effectiveMode, serverMode, stream: body.stream ?? false });
 
     // Log full client request for session debugging.
     logger.log({
@@ -447,8 +438,18 @@ export class SmartServer {
     const abortCtrl = new AbortController();
     req.on('close', () => abortCtrl.abort());
 
+    // Parse client tools from the request body (used by smart mode)
+    const clientTools: import('./interfaces/types.js').LlmTool[] = (body.tools ?? [])
+      .filter((t) => t.function?.name)
+      .map((t) => ({
+        // biome-ignore lint/style/noNonNullAssertion: guarded by filter above
+        name: t.function!.name,
+        description: t.function?.description ?? '',
+        inputSchema: (t.function?.parameters ?? {}) as Record<string, unknown>,
+      }));
+
     let finalContent = '';
-    if (usePassthrough) {
+    if (usePass) {
       // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
       const normalizedMessages = body.messages.map((m) => ({
         role: m.role as Message['role'],
@@ -459,18 +460,40 @@ export class SmartServer {
       finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
       const finalFinishReason: 'stop' | 'length' = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
       this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
-    } else if (body.stream === true) {
-      // Smart mode + streaming: pipe processStream() into a live SSE connection.
+    } else if (useHard) {
+      // Hard mode: client system prompt and tools ignored; agent builds everything from user text.
       const text = extractText(userMessages[userMessages.length - 1].content);
-      finalContent = await this._handleSmartStream(res, smartAgent, text, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+      if (body.stream === true) {
+        finalContent = await this._handleSmartStream(res, smartAgent, text, undefined, undefined, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+      } else {
+        const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
+        log({ event: 'request_done', mode: 'hard', ok: result.ok, durationMs: Date.now() - t0 });
+        finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+        const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+        this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+      }
+    } else if (useSmart) {
+      // Smart mode: preserve client history + tools; augment with RAG context.
+      const text = extractText(userMessages[userMessages.length - 1].content);
+      const normalizedMessages: Message[] = body.messages.map((m) => ({
+        role: m.role as Message['role'],
+        content: extractText(m.content),
+      }));
+      if (body.stream === true) {
+        finalContent = await this._handleSmartStream(res, smartAgent, text, normalizedMessages, clientTools, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+      } else {
+        // Non-streaming smart mode: use process() with hard fallback (clientMessages not supported by process())
+        const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
+        log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
+        finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+        const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
+        this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+      }
     } else {
-      // Smart mode + non-streaming: classify + RAG tool selection + MCP orchestration.
-      const text = extractText(userMessages[userMessages.length - 1].content);
-      const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
-      log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
-      const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
-      this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+      // Unreachable fallback
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(jsonError('Unknown routing mode', 'server_error'));
+      return;
     }
 
     // Log final response for session debugging.
@@ -487,6 +510,8 @@ export class SmartServer {
     res: ServerResponse,
     smartAgent: SmartAgent,
     text: string,
+    clientMessages: Message[] | undefined,
+    clientTools: import('./interfaces/types.js').LlmTool[] | undefined,
     opts: import('./interfaces/types.js').CallOptions,
     log: (e: Record<string, unknown>) => void,
     t0: number,
@@ -506,10 +531,14 @@ export class SmartServer {
       if (!res.destroyed) res.write(`data: ${JSON.stringify(data)}\n\n`);
     };
 
+    const streamOpts = clientMessages
+      ? { ...opts, clientMessages, ...(clientTools ? { clientTools } : {}) }
+      : opts;
+
     let ok = true;
     let accumulated = '';
     try {
-      for await (const chunk of smartAgent.processStream(text, opts)) {
+      for await (const chunk of smartAgent.processStream(text, streamOpts)) {
         if (chunk.type === 'text') {
           accumulated += chunk.delta;
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: chunk.delta }, finish_reason: null }] });

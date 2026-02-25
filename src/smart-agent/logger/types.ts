@@ -1,3 +1,5 @@
+import type { ActionNode } from '../interfaces/types.js';
+
 export interface ILogger {
   log(event: LogEvent): void;
 }
@@ -7,8 +9,8 @@ export type LogEvent =
       type: 'classify';
       traceId: string;
       inputLength: number;
-      subpromptCount: number;
-      subprompts: Array<{ type: string; text: string }>;
+      stores: Array<{ type: string; text: string }>;
+      actions: ActionNode[];
       durationMs: number;
     }
   | { type: 'rag_upsert'; traceId: string; store: string; durationMs: number }

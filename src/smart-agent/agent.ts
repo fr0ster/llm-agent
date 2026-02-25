@@ -7,7 +7,9 @@ import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import {
+  type ActionNode,
   type CallOptions,
+  type ClassifierResult,
   type LlmStreamChunk,
   type LlmTool,
   type LlmToolCall,
@@ -153,6 +155,85 @@ function createTimeoutSignal(ms: number): {
   return { signal: ctrl.signal, clear: () => clearTimeout(id) };
 }
 
+/**
+ * Topological sort using Kahn's algorithm.
+ * Returns nodes in dependency order (actions with no deps first).
+ * Throws if a cycle is detected.
+ */
+function topologicalSort(actions: ActionNode[]): ActionNode[] {
+  if (actions.length === 0) return [];
+
+  const idxById = new Map<number, number>(actions.map((a, i) => [a.id, i]));
+  const inDegree = new Map<number, number>(actions.map((a) => [a.id, 0]));
+
+  // Validate all dependsOn ids exist and compute in-degrees
+  for (const action of actions) {
+    for (const dep of action.dependsOn) {
+      if (!idxById.has(dep)) {
+        throw new OrchestratorError(
+          `Action ${action.id} depends on unknown id ${dep}`,
+          'TOPO_SORT_ERROR',
+        );
+      }
+      inDegree.set(action.id, (inDegree.get(action.id) ?? 0) + 1);
+    }
+  }
+
+  const queue: ActionNode[] = actions.filter((a) => (inDegree.get(a.id) ?? 0) === 0);
+  const result: ActionNode[] = [];
+
+  while (queue.length > 0) {
+    // biome-ignore lint/style/noNonNullAssertion: queue.length > 0
+    const node = queue.shift()!;
+    result.push(node);
+
+    // Decrement in-degree of nodes that depend on this node
+    for (const dependent of actions) {
+      if (dependent.dependsOn.includes(node.id)) {
+        const newDegree = (inDegree.get(dependent.id) ?? 0) - 1;
+        inDegree.set(dependent.id, newDegree);
+        if (newDegree === 0) {
+          queue.push(dependent);
+        }
+      }
+    }
+  }
+
+  if (result.length !== actions.length) {
+    throw new OrchestratorError(
+      'Circular dependency detected in action graph',
+      'TOPO_SORT_ERROR',
+    );
+  }
+
+  return result;
+}
+
+/**
+ * Deduplicate RagResults by metadata.id, keeping the highest-scoring occurrence.
+ *
+ * When the same tool appears in results from multiple actions (e.g. GetTable
+ * scores 0.40 for "Add 9 to 5" and 0.65 for "Read structure of table T100"),
+ * keeping the first occurrence would discard the high-score hit after
+ * minScore filtering. Keeping the max preserves the correct tools.
+ */
+function dedupeRagResults(results: RagResult[]): RagResult[] {
+  const best = new Map<unknown, RagResult>();
+  const noId: RagResult[] = [];
+  for (const r of results) {
+    const id = r.metadata.id;
+    if (id === undefined) {
+      noId.push(r);
+      continue;
+    }
+    const existing = best.get(id);
+    if (!existing || r.score > existing.score) {
+      best.set(id, r);
+    }
+  }
+  return [...best.values(), ...noId];
+}
+
 // ---------------------------------------------------------------------------
 // SmartAgent
 // ---------------------------------------------------------------------------
@@ -267,8 +348,8 @@ export class SmartAgent {
       type: 'classify',
       traceId,
       inputLength: text.length,
-      subpromptCount: classifyResult.ok ? classifyResult.value.length : 0,
-      subprompts: classifyResult.ok ? classifyResult.value.map((sp) => ({ type: sp.type, text: sp.text })) : [],
+      stores: classifyResult.ok ? classifyResult.value.stores.map((s) => ({ type: s.type, text: s.text })) : [],
+      actions: classifyResult.ok ? classifyResult.value.actions : [],
       durationMs: Date.now() - classifyT0,
     });
     if (!classifyResult.ok) {
@@ -282,20 +363,16 @@ export class SmartAgent {
       };
     }
 
-    const subprompts = classifyResult.value;
+    const { stores, actions } = classifyResult.value;
 
-    // Step 5: split into actions vs. non-actions
-    const actions = subprompts.filter((sp) => sp.type === 'action');
-    const others = subprompts.filter((sp) => sp.type !== 'action');
-
-    // Step 6: upsert non-action subprompts (non-fatal)
+    // Step 6: upsert stores (non-fatal)
     const ragStoreMap = new Map<string, IRag>([
       ['fact', this.deps.ragStores.facts],
       ['feedback', this.deps.ragStores.feedback],
       ['state', this.deps.ragStores.state],
     ]);
     await Promise.allSettled(
-      others.map(async (sp) => {
+      stores.map(async (sp) => {
         const store = ragStoreMap.get(sp.type);
         if (!store) return;
         const t0 = Date.now();
@@ -322,86 +399,19 @@ export class SmartAgent {
       };
     }
 
-    // Step 8: merge all action subprompts into one compound action so that
-    // requests like "Add 5 and 9. Read table T100 structure." are fully handled.
-    // Multiple actions are joined with newlines; single action is used as-is.
-    const action: Subprompt = actions.length === 1
-      ? actions[0]
-      : { type: 'action', text: actions.map((a) => a.text).join('\n') };
+    // Step 8: topological sort + per-action RAG queries
+    const ordered = topologicalSort(actions);
+    const { facts, feedback, state, selectedTools, toolClientMap } =
+      await this._ragAndToolsForActions(ordered, opts, traceId);
 
-    // Step 9: RAG retrieval (non-fatal — failures fall back to [])
-    // Tools are vectorized in English; translate the action to English first so
-    // that cross-lingual queries (e.g. Ukrainian) get accurate cosine matches.
-    const ragText = await this._toEnglishForRag(action.text, opts);
-    logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
-
-    const k = this.config.ragQueryK ?? 5;
-    const timeQuery = async (store: IRag, storeName: string) => {
-      const t0 = Date.now();
-      const result = await store.query(ragText, k, opts);
-      logger?.log({
-        type: 'rag_query',
-        traceId,
-        store: storeName,
-        k,
-        resultCount: result.ok ? result.value.length : 0,
-        results: result.ok
-          ? result.value.map((r) => ({ score: r.score, id: r.metadata.id, text: r.text.slice(0, 120) }))
-          : [],
-        durationMs: Date.now() - t0,
-      });
-      return result;
-    };
-    const [factsR, feedbackR, stateR] = await Promise.all([
-      timeQuery(this.deps.ragStores.facts, 'facts'),
-      timeQuery(this.deps.ragStores.feedback, 'feedback'),
-      timeQuery(this.deps.ragStores.state, 'state'),
-    ]);
-    const facts: RagResult[] = factsR.ok ? factsR.value : [];
-    const feedback: RagResult[] = feedbackR.ok ? feedbackR.value : [];
-    const state: RagResult[] = stateR.ok ? stateR.value : [];
-
-    // Step 10: list all MCP tools
-    const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
-
-    // Step 10.5: filter tools to RAG-selected ones.
-    // Tools are vectorized at startup with metadata.id = "tool:<name>".
-    // RAG query returns the most relevant tool descriptions — use their ids
-    // to select only those tools as native function definitions for the LLM.
-    //
-    // Score filtering: facts below ragMinScore are excluded so the LLM is not
-    // offered irrelevant tools (e.g. ABAP tools for a math question).
-    // Fallback to ALL tools only when the facts store is empty (tools not yet
-    // vectorized), never when store has entries but none passed the threshold.
-    const minScore = this.config.ragMinScore ?? 0;
-    const relevantFacts = minScore > 0
-      ? facts.filter((r) => r.score >= minScore)
-      : facts;
-    const ragToolNames = new Set(
-      relevantFacts
-        .map((r) => r.metadata.id as string | undefined)
-        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
-        .map((id) => id.slice('tool:'.length)),
-    );
-    const toolsVectorized = facts.length > 0; // store is non-empty → tools were indexed
-    const selectedTools = toolsVectorized
-      ? mcpTools.filter((t) => ragToolNames.has(t.name)) // empty set → no tools offered
-      : mcpTools; // fallback: tools not indexed yet → offer all
-    logger?.log({
-      type: 'tools_selected',
-      traceId,
-      total: mcpTools.length,
-      minScore,
-      relevantFactsCount: relevantFacts.length,
-      selected: selectedTools.length,
-      names: selectedTools.map((t) => t.name),
-      filteredOut: facts.length - relevantFacts.length,
-    });
+    // Build compound action text (union of all actions in dependency order)
+    const action: Subprompt =
+      ordered.length === 1
+        ? { type: 'action', text: ordered[0].text }
+        : { type: 'action', text: ordered.map((a) => a.text).join('\n') };
 
     // Step 11: initial context assembly
-    // Use relevantFacts (score-filtered) so that low-score tool descriptions
-    // are not injected into ## Known Facts in the system message.
-    const retrieved = { facts: relevantFacts, feedback, state, tools: selectedTools };
+    const retrieved = { facts, feedback, state, tools: selectedTools };
     const assembleResult = await this.deps.assembler.assemble(
       action,
       retrieved,
@@ -430,6 +440,99 @@ export class SmartAgent {
       opts,
       traceId,
     );
+  }
+
+  // -------------------------------------------------------------------------
+  // Private: RAG + tool selection across ordered actions (for hard pipeline)
+  // -------------------------------------------------------------------------
+
+  private async _ragAndToolsForActions(
+    ordered: ActionNode[],
+    opts: CallOptions | undefined,
+    traceId: string,
+  ): Promise<{
+    facts: RagResult[];
+    feedback: RagResult[];
+    state: RagResult[];
+    selectedTools: McpTool[];
+    toolClientMap: Map<string, IMcpClient>;
+  }> {
+    const logger = this.deps.logger;
+    const k = this.config.ragQueryK ?? 5;
+    const minScore = this.config.ragMinScore ?? 0;
+
+    // Collect RAG results for all actions
+    let allFacts: RagResult[] = [];
+    let allFeedback: RagResult[] = [];
+    let allState: RagResult[] = [];
+
+    for (const action of ordered) {
+      const ragText = await this._toEnglishForRag(action.text, opts);
+      logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
+
+      const timeQuery = async (store: IRag, storeName: string) => {
+        const t0 = Date.now();
+        const result = await store.query(ragText, k, opts);
+        logger?.log({
+          type: 'rag_query',
+          traceId,
+          store: storeName,
+          k,
+          resultCount: result.ok ? result.value.length : 0,
+          results: result.ok
+            ? result.value.map((r) => ({ score: r.score, id: r.metadata.id, text: r.text.slice(0, 120) }))
+            : [],
+          durationMs: Date.now() - t0,
+        });
+        return result;
+      };
+
+      const [factsR, feedbackR, stateR] = await Promise.all([
+        timeQuery(this.deps.ragStores.facts, 'facts'),
+        timeQuery(this.deps.ragStores.feedback, 'feedback'),
+        timeQuery(this.deps.ragStores.state, 'state'),
+      ]);
+
+      if (factsR.ok) allFacts = allFacts.concat(factsR.value);
+      if (feedbackR.ok) allFeedback = allFeedback.concat(feedbackR.value);
+      if (stateR.ok) allState = allState.concat(stateR.value);
+    }
+
+    // Deduplicate by metadata.id
+    const facts = dedupeRagResults(allFacts);
+    const feedback = dedupeRagResults(allFeedback);
+    const state = dedupeRagResults(allState);
+
+    // List all MCP tools
+    const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
+
+    // Filter tools by RAG score
+    const relevantFacts = minScore > 0
+      ? facts.filter((r) => r.score >= minScore)
+      : facts;
+    const ragToolNames = new Set(
+      relevantFacts
+        .map((r) => r.metadata.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+        .map((id) => id.slice('tool:'.length)),
+    );
+    const toolsVectorized = facts.length > 0;
+    const selectedTools = toolsVectorized
+      ? mcpTools.filter((t) => ragToolNames.has(t.name))
+      : mcpTools;
+
+    logger?.log({
+      type: 'tools_selected',
+      traceId,
+      total: mcpTools.length,
+      minScore,
+      relevantFactsCount: relevantFacts.length,
+      selected: selectedTools.length,
+      names: selectedTools.map((t) => t.name),
+      filteredOut: facts.length - relevantFacts.length,
+    });
+
+    return { facts: relevantFacts, feedback, state, selectedTools, toolClientMap };
   }
 
   // -------------------------------------------------------------------------
@@ -712,24 +815,11 @@ export class SmartAgent {
   }
 
   // -------------------------------------------------------------------------
-  // Private: RAG metadata builder (data governance)
-  // -------------------------------------------------------------------------
-
-  // -------------------------------------------------------------------------
   // Private: translate action text to English for cross-lingual RAG matching
   // -------------------------------------------------------------------------
 
   /**
    * Translates non-ASCII `text` to English for cross-lingual RAG matching.
-   *
-   * MCP tool descriptions are always in English, so users who write in other
-   * languages need their query translated before the cosine similarity search.
-   * The prompt must be domain-neutral — any domain bias causes ambiguous words
-   * to be mis-translated (e.g. "Склади" → "Warehouses" instead of "Add").
-   *
-   * Alternative: switch to a multilingual embedding model (e.g.
-   * `multilingual-e5-base`) — then translation is unnecessary and this step
-   * can be disabled by setting `ragTranslationPrompt` to an empty string.
    */
   private async _toEnglishForRag(
     text: string,
@@ -783,10 +873,14 @@ export class SmartAgent {
    * Yields LlmStreamChunk objects as tokens arrive from the LLM.
    * Tool-call events are yielded between loop iterations.
    * Always ends with a { type: 'done' } chunk.
+   *
+   * When `opts.clientMessages` and/or `opts.clientTools` are provided the
+   * smart pipeline is used: client history is preserved and RAG context is
+   * appended to the system message.  Otherwise the hard pipeline is used.
    */
   async *processStream(
     text: string,
-    options?: CallOptions,
+    options?: CallOptions & { clientMessages?: Message[]; clientTools?: LlmTool[] },
   ): AsyncGenerator<LlmStreamChunk, void, unknown> {
     if (this.config.smartAgentEnabled === false) {
       yield { type: 'done', finishReason: 'error' };
@@ -802,7 +896,8 @@ export class SmartAgent {
     const pipelineT0 = Date.now();
 
     let timeoutCleanup: (() => void) | undefined;
-    let opts: CallOptions | undefined = options;
+    let opts: CallOptions & { clientMessages?: Message[]; clientTools?: LlmTool[] } =
+      options ?? {};
 
     if (this.config.timeoutMs) {
       const { signal: timeoutSignal, clear } = createTimeoutSignal(this.config.timeoutMs);
@@ -812,10 +907,175 @@ export class SmartAgent {
     }
 
     try {
-      yield* this._runPipelineStream(text, opts, traceId, pipelineT0);
+      if (opts.clientMessages) {
+        yield* this._runPipelineSmart(opts.clientMessages, opts.clientTools ?? [], opts, traceId, pipelineT0);
+      } else {
+        yield* this._runPipelineStream(text, opts, traceId, pipelineT0);
+      }
     } finally {
       timeoutCleanup?.();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Private: smart pipeline (preserves client history)
+  // -------------------------------------------------------------------------
+
+  private async *_runPipelineSmart(
+    clientMessages: Message[],
+    clientTools: LlmTool[],
+    opts: CallOptions | undefined,
+    traceId: string,
+    pipelineT0: number,
+  ): AsyncGenerator<LlmStreamChunk, void, unknown> {
+    const logger = this.deps.logger;
+
+    // Extract last user message text for classification
+    const userMessages = clientMessages.filter((m) => m.role === 'user');
+    if (userMessages.length === 0) {
+      yield { type: 'done', finishReason: 'stop' };
+      return;
+    }
+    const lastUserContent = userMessages[userMessages.length - 1].content;
+    const text = typeof lastUserContent === 'string'
+      ? lastUserContent
+      : String(lastUserContent);
+
+    // Injection detection
+    if (this.deps.injectionDetector) {
+      const detection = this.deps.injectionDetector.detect(text);
+      if (detection.detected) {
+        logger?.log({ type: 'pipeline_error', traceId, code: 'PROMPT_INJECTION', message: 'Injection detected', durationMs: Date.now() - pipelineT0 });
+        yield { type: 'done', finishReason: 'error' };
+        return;
+      }
+    }
+
+    // Step 1: classify
+    const classifyT0 = Date.now();
+    const classifyResult = await this.deps.classifier.classify(text, opts);
+    logger?.log({
+      type: 'classify',
+      traceId,
+      inputLength: text.length,
+      stores: classifyResult.ok ? classifyResult.value.stores.map((s) => ({ type: s.type, text: s.text })) : [],
+      actions: classifyResult.ok ? classifyResult.value.actions : [],
+      durationMs: Date.now() - classifyT0,
+    });
+    if (!classifyResult.ok) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+    const { stores, actions } = classifyResult.value;
+
+    // Step 2: upsert stores (non-fatal)
+    const ragStoreMap = new Map<string, IRag>([
+      ['fact', this.deps.ragStores.facts],
+      ['feedback', this.deps.ragStores.feedback],
+      ['state', this.deps.ragStores.state],
+    ]);
+    await Promise.allSettled(
+      stores.map((sp) => {
+        const store = ragStoreMap.get(sp.type);
+        return store?.upsert(sp.text, this._buildRagMetadata(), opts);
+      }),
+    );
+
+    // Step 3: topological walk actions → RAG + tools
+    const ordered = actions.length > 0 ? topologicalSort(actions) : [];
+    const k = this.config.ragQueryK ?? 5;
+    const minScore = this.config.ragMinScore ?? 0;
+
+    let allFacts: RagResult[] = [];
+    let allFeedback: RagResult[] = [];
+    let allState: RagResult[] = [];
+
+    for (const action of ordered) {
+      const ragText = await this._toEnglishForRag(action.text, opts);
+      logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
+
+      const [factsR, feedbackR, stateR] = await Promise.all([
+        this.deps.ragStores.facts.query(ragText, k, opts),
+        this.deps.ragStores.feedback.query(ragText, k, opts),
+        this.deps.ragStores.state.query(ragText, k, opts),
+      ]);
+      if (factsR.ok) allFacts = allFacts.concat(factsR.value);
+      if (feedbackR.ok) allFeedback = allFeedback.concat(feedbackR.value);
+      if (stateR.ok) allState = allState.concat(stateR.value);
+    }
+
+    const facts = dedupeRagResults(allFacts);
+    const feedback = dedupeRagResults(allFeedback);
+    const state = dedupeRagResults(allState);
+
+    // Step 4: get MCP tools + filter
+    const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
+    const relevantFacts = minScore > 0
+      ? facts.filter((r) => r.score >= minScore)
+      : facts;
+    const ragToolNames = new Set(
+      relevantFacts
+        .map((r) => r.metadata.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+        .map((id) => id.slice('tool:'.length)),
+    );
+    const toolsVectorized = facts.length > 0;
+    const ourTools: LlmTool[] = (
+      toolsVectorized
+        ? mcpTools.filter((t) => ragToolNames.has(t.name))
+        : mcpTools
+    ) as LlmTool[];
+
+    logger?.log({
+      type: 'tools_selected',
+      traceId,
+      total: mcpTools.length,
+      minScore,
+      relevantFactsCount: relevantFacts.length,
+      selected: ourTools.length,
+      names: ourTools.map((t) => t.name),
+      filteredOut: facts.length - relevantFacts.length,
+    });
+
+    // Step 5+6: augment client messages with RAG context + merge tools
+    const augmentResult = await this.deps.assembler.augment(
+      clientMessages,
+      { facts: relevantFacts, feedback, state },
+      ourTools,
+      clientTools,
+    );
+    if (!augmentResult.ok) {
+      yield { type: 'done', finishReason: 'error' };
+      return;
+    }
+
+    const { messages: augmentedMessages, tools: mergedTools } = augmentResult.value;
+    const smartMessages = this.config.llmReasoning
+      ? this._injectReasoningInstruction(augmentedMessages)
+      : augmentedMessages;
+
+    const sysMsg = smartMessages.find((m) => m.role === 'system');
+    logger?.log({
+      type: 'llm_context',
+      traceId,
+      iteration: 0,
+      messageCount: smartMessages.length,
+      toolCount: mergedTools.length,
+      toolNames: mergedTools.map((t) => t.name),
+      systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
+    });
+
+    // Use mergedTools as the "retrieved" tools for the streaming loop
+    const retrieved = { facts: relevantFacts, feedback, state, tools: mergedTools as unknown as McpTool[] };
+    yield* this._runStreamingToolLoop(
+      retrieved,
+      smartMessages,
+      toolClientMap,
+      opts,
+      traceId,
+    );
+
+    logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
   }
 
   private async *_runPipelineStream(
@@ -830,7 +1090,7 @@ export class SmartAgent {
     if (this.deps.injectionDetector) {
       const detection = this.deps.injectionDetector.detect(text);
       if (detection.detected) {
-        logger?.log({ type: 'pipeline_error', traceId, code: 'PROMPT_INJECTION', message: `Injection detected`, durationMs: Date.now() - pipelineT0 });
+        logger?.log({ type: 'pipeline_error', traceId, code: 'PROMPT_INJECTION', message: 'Injection detected', durationMs: Date.now() - pipelineT0 });
         yield { type: 'done', finishReason: 'error' };
         return;
       }
@@ -843,26 +1103,24 @@ export class SmartAgent {
       type: 'classify',
       traceId,
       inputLength: text.length,
-      subpromptCount: classifyResult.ok ? classifyResult.value.length : 0,
-      subprompts: classifyResult.ok ? classifyResult.value.map((sp) => ({ type: sp.type, text: sp.text })) : [],
+      stores: classifyResult.ok ? classifyResult.value.stores.map((s) => ({ type: s.type, text: s.text })) : [],
+      actions: classifyResult.ok ? classifyResult.value.actions : [],
       durationMs: Date.now() - classifyT0Stream,
     });
     if (!classifyResult.ok) {
       yield { type: 'done', finishReason: 'error' };
       return;
     }
-    const subprompts = classifyResult.value;
-    const actions = subprompts.filter((sp) => sp.type === 'action');
-    const others = subprompts.filter((sp) => sp.type !== 'action');
+    const { stores, actions } = classifyResult.value;
 
-    // Upsert non-actions (non-fatal)
+    // Upsert stores (non-fatal)
     const ragStoreMap = new Map<string, IRag>([
       ['fact', this.deps.ragStores.facts],
       ['feedback', this.deps.ragStores.feedback],
       ['state', this.deps.ragStores.state],
     ]);
     await Promise.allSettled(
-      others.map((sp) => {
+      stores.map((sp) => {
         const store = ragStoreMap.get(sp.type);
         return store?.upsert(sp.text, this._buildRagMetadata(), opts);
       }),
@@ -873,71 +1131,19 @@ export class SmartAgent {
       return;
     }
 
-    // Step 8 (stream): merge all action subprompts into one compound action so that
-    // requests like "Add 5 and 9. Read table T100 structure." are fully handled.
-    const action: Subprompt = actions.length === 1
-      ? actions[0]
-      : { type: 'action', text: actions.map((a) => a.text).join('\n') };
+    // Topological sort + per-action RAG
+    const ordered = topologicalSort(actions);
+    const { facts, feedback, state, selectedTools, toolClientMap } =
+      await this._ragAndToolsForActions(ordered, opts, traceId);
 
-    // RAG retrieval
-    const ragText = await this._toEnglishForRag(action.text, opts);
-    logger?.log({ type: 'rag_translate', traceId, original: action.text, translated: ragText });
-    const k = this.config.ragQueryK ?? 5;
-    const streamQuery = async (store: IRag, storeName: string) => {
-      const t0 = Date.now();
-      const result = await store.query(ragText, k, opts);
-      logger?.log({
-        type: 'rag_query',
-        traceId,
-        store: storeName,
-        k,
-        resultCount: result.ok ? result.value.length : 0,
-        results: result.ok
-          ? result.value.map((r) => ({ score: r.score, id: r.metadata.id, text: r.text.slice(0, 120) }))
-          : [],
-        durationMs: Date.now() - t0,
-      });
-      return result;
-    };
-    const [factsR, feedbackR, stateR] = await Promise.all([
-      streamQuery(this.deps.ragStores.facts, 'facts'),
-      streamQuery(this.deps.ragStores.feedback, 'feedback'),
-      streamQuery(this.deps.ragStores.state, 'state'),
-    ]);
-    const facts: RagResult[] = factsR.ok ? factsR.value : [];
-    const feedback: RagResult[] = feedbackR.ok ? feedbackR.value : [];
-    const state: RagResult[] = stateR.ok ? stateR.value : [];
+    // Build compound action
+    const action: Subprompt =
+      ordered.length === 1
+        ? { type: 'action', text: ordered[0].text }
+        : { type: 'action', text: ordered.map((a) => a.text).join('\n') };
 
-    // List tools
-    const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
-    const minScore = this.config.ragMinScore ?? 0;
-    const relevantFacts = minScore > 0
-      ? facts.filter((r) => r.score >= minScore)
-      : facts;
-    const ragToolNames = new Set(
-      relevantFacts
-        .map((r) => r.metadata.id as string | undefined)
-        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
-        .map((id) => id.slice('tool:'.length)),
-    );
-    const toolsVectorized = facts.length > 0;
-    const selectedTools = toolsVectorized
-      ? mcpTools.filter((t) => ragToolNames.has(t.name))
-      : mcpTools;
-    logger?.log({
-      type: 'tools_selected',
-      traceId,
-      total: mcpTools.length,
-      minScore,
-      relevantFactsCount: relevantFacts.length,
-      selected: selectedTools.length,
-      names: selectedTools.map((t) => t.name),
-      filteredOut: facts.length - relevantFacts.length,
-    });
-
-    // Assemble initial context — use relevantFacts to avoid injecting
-    // low-score tool descriptions into the system message.
-    const retrieved = { facts: relevantFacts, feedback, state, tools: selectedTools };
+    // Assemble initial context
+    const retrieved = { facts, feedback, state, tools: selectedTools };
     const assembleResult = await this.deps.assembler.assemble(action, retrieved, [], opts);
     if (!assembleResult.ok) {
       yield { type: 'done', finishReason: 'error' };

@@ -3,6 +3,7 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import {
   AssemblerError,
   type CallOptions,
+  type LlmTool,
   type McpTool,
   type McpToolResult,
   type RagResult,
@@ -281,6 +282,83 @@ export class ContextAssembler implements IContextAssembler {
 
       // 6. Return success
       return { ok: true, value: messages };
+    } catch (err) {
+      return {
+        ok: false,
+        error: new AssemblerError(String(err), 'ASSEMBLER_ERROR'),
+      };
+    }
+  }
+
+  async augment(
+    clientMessages: Message[],
+    ragContext: {
+      facts: RagResult[];
+      feedback: RagResult[];
+      state: RagResult[];
+    },
+    additionalTools: LlmTool[],
+    clientTools: LlmTool[],
+  ): Promise<Result<{ messages: Message[]; tools: LlmTool[] }, AssemblerError>> {
+    try {
+      // Build RAG context section to append to system message
+      const sections: string[] = [];
+
+      const factsSection = buildSection(
+        'Known Facts',
+        ragContext.facts.map((r) => formatRagEntry(r, this.includeProvenance)),
+      );
+      if (factsSection) sections.push(factsSection);
+
+      const feedbackSection = buildSection(
+        'Feedback',
+        ragContext.feedback.map((r) => formatRagEntry(r, this.includeProvenance)),
+      );
+      if (feedbackSection) sections.push(feedbackSection);
+
+      const stateSection = buildSection(
+        'Current State',
+        ragContext.state.map((r) => formatRagEntry(r, this.includeProvenance)),
+      );
+      if (stateSection) sections.push(stateSection);
+
+      const agentContextSection = sections.length > 0
+        ? `\n\n## Agent Context\n${sections.join('\n\n')}`
+        : '';
+
+      // Find or create system message
+      const sysIdx = clientMessages.findIndex((m) => m.role === 'system');
+      let messages: Message[];
+      if (sysIdx === -1) {
+        if (agentContextSection) {
+          messages = [
+            { role: 'system', content: agentContextSection.trimStart() },
+            ...clientMessages,
+          ];
+        } else {
+          messages = [...clientMessages];
+        }
+      } else {
+        messages = clientMessages.map((m, i) => {
+          if (i !== sysIdx) return m;
+          return {
+            ...m,
+            content: (m.content as string) + agentContextSection,
+          };
+        });
+      }
+
+      // Merge tools: client tools first, then additional (dedup by name)
+      const seen = new Set<string>();
+      const tools: LlmTool[] = [];
+      for (const t of [...clientTools, ...additionalTools]) {
+        if (!seen.has(t.name)) {
+          seen.add(t.name);
+          tools.push(t);
+        }
+      }
+
+      return { ok: true, value: { messages, tools } };
     } catch (err) {
       return {
         ok: false,

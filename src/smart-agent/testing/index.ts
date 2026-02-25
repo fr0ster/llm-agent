@@ -20,11 +20,14 @@ import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IRag } from '../interfaces/rag.js';
 import {
   AssemblerError,
+  type ActionNode,
   type CallOptions,
   ClassifierError,
+  type ClassifierResult,
   LlmError,
   type LlmFinishReason,
   type LlmResponse,
+  type LlmTool,
   type LlmToolCall,
   McpError,
   type McpTool,
@@ -183,16 +186,26 @@ export function makeMcpClient(
 // ---------------------------------------------------------------------------
 
 export function makeClassifier(
-  result: Subprompt[] | Error,
+  result: ClassifierResult | Subprompt[] | Error,
   onCall?: () => void,
 ): ISubpromptClassifier {
   return {
-    async classify(): Promise<Result<Subprompt[], ClassifierError>> {
+    async classify(): Promise<Result<ClassifierResult, ClassifierError>> {
       onCall?.();
       if (result instanceof Error) {
         const code =
           result.message === 'ABORTED' ? 'ABORTED' : 'CLASSIFIER_ERROR';
         return { ok: false, error: new ClassifierError(result.message, code) };
+      }
+      // Backward-compat: accept legacy Subprompt[] and convert to ClassifierResult
+      if (Array.isArray(result)) {
+        const stores = (result as Subprompt[])
+          .filter((s) => s.type !== 'action')
+          .map((s) => ({ type: s.type as 'fact' | 'feedback' | 'state', text: s.text }));
+        const actions: ActionNode[] = (result as Subprompt[])
+          .filter((s) => s.type === 'action')
+          .map((s, i) => ({ id: i, text: s.text, dependsOn: [] }));
+        return { ok: true, value: { stores, actions } };
       }
       return { ok: true, value: result };
     },
@@ -223,6 +236,19 @@ export function makeAssembler(result?: Message[] | Error): IContextAssembler {
         return { ok: false, error: new AssemblerError(r.message, code) };
       }
       return { ok: true, value: r };
+    },
+    async augment(
+      clientMessages: Message[],
+      _ragContext: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[] },
+      additionalTools: LlmTool[],
+      clientTools: LlmTool[],
+    ): Promise<Result<{ messages: Message[]; tools: LlmTool[] }, AssemblerError>> {
+      const seen = new Set<string>();
+      const tools: LlmTool[] = [];
+      for (const t of [...clientTools, ...additionalTools]) {
+        if (!seen.has(t.name)) { seen.add(t.name); tools.push(t); }
+      }
+      return { ok: true, value: { messages: [...clientMessages], tools } };
     },
   };
 }

@@ -356,7 +356,6 @@ export class SmartAgentBuilder {
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
-    if (this.cfg.prompts?.classifier) classifierCfg.systemPrompt = this.cfg.prompts.classifier;
     const classifier: ISubpromptClassifier = this._classifier ?? new LlmClassifier(classifierLlm, classifierCfg);
 
     // ---- Assembler --------------------------------------------------------
