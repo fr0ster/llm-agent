@@ -1,0 +1,33 @@
+{
+  "arguments": {
+    "structure_name": "ZSTR5",
+    "package_name": "$TMP",
+    "fields": [
+      {
+        "name": "SPRAS",
+        "data_type": "CHAR",
+        "length": 1,
+        "description": "Language Key"
+      },
+      {
+        "name": "LASPEZ",
+        "data_type": "CHAR",
+        "length": 1,
+        "description": "Special Language Flag"
+      },
+      {
+        "name": "LAHQ",
+        "data_type": "CHAR",
+        "length": 1,
+        "description": "Language for High Quality Translation"
+      },
+      {
+        "name": "LAISO",
+        "data_type": "CHAR",
+        "length": 2,
+        "description": "2-Character ISO Language Code"
+      }
+    ],
+    "description": "Structure 5 based on T002"
+  }
+}

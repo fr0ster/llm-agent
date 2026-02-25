@@ -1,0 +1,18 @@
+{
+  "content": "Давайте спробуємо отримати опис таблиці T002 через DescribeByList:",
+  "toolCalls": [
+    {
+      "id": "call_00_roqnsbtqzjkRlkAsWRRj7tqf",
+      "name": "DescribeByList",
+      "arguments": {
+        "objects": [
+          {
+            "name": "T002",
+            "type": "TABLE"
+          }
+        ]
+      }
+    }
+  ],
+  "finishReason": "tool_calls"
+}
