@@ -18,6 +18,10 @@ import {
   type Subprompt,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
+import {
+  isToolContextUnavailableError,
+  ToolAvailabilityRegistry,
+} from './policy/tool-availability-registry.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
@@ -55,6 +59,7 @@ export interface SmartAgentDeps {
 export interface SmartAgentConfig {
   maxIterations: number;
   maxToolCalls?: number;
+  toolUnavailableTtlMs?: number;
   timeoutMs?: number;
   tokenLimit?: number;
   ragQueryK?: number;
@@ -104,10 +109,16 @@ function createTimeoutSignal(ms: number): {
 }
 
 export class SmartAgent {
+  private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
+
   constructor(
     private readonly deps: SmartAgentDeps,
     private readonly config: SmartAgentConfig,
-  ) {}
+  ) {
+    this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
+      this.config.toolUnavailableTtlMs,
+    );
+  }
 
   async healthCheck(options?: CallOptions): Promise<
     Result<
@@ -205,7 +216,20 @@ export class SmartAgent {
     }
 
     const mode = this.config.mode || 'smart';
-    const externalTools = normalizeExternalTools(options?.externalTools);
+    const sessionId = options?.sessionId ?? 'default';
+    const normalizedExternalTools = normalizeExternalTools(
+      options?.externalTools,
+    );
+    const { allowed: externalTools, blocked: blockedExternalTools } =
+      this.toolAvailabilityRegistry.filterTools(
+        sessionId,
+        normalizedExternalTools,
+      );
+    if (blockedExternalTools.length > 0) {
+      opts?.sessionLogger?.logStep('external_tools_filtered_by_registry', {
+        blocked: blockedExternalTools,
+      });
+    }
     opts?.sessionLogger?.logStep('pipeline_start', { mode, textOrMessages });
 
     try {
@@ -289,6 +313,16 @@ export class SmartAgent {
         // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
         finalTools = externalTools;
       }
+      const filteredTools = this.toolAvailabilityRegistry.filterTools(
+        sessionId,
+        finalTools,
+      );
+      finalTools = filteredTools.allowed;
+      if (filteredTools.blocked.length > 0) {
+        opts?.sessionLogger?.logStep('active_tools_filtered_by_registry', {
+          blocked: filteredTools.blocked,
+        });
+      }
 
       // 3. Assemble Context once
       const mainAction =
@@ -325,6 +359,7 @@ export class SmartAgent {
         toolClientMap,
         opts,
         traceId,
+        sessionId,
         mode === 'hard' ? [] : externalTools,
         finalTools,
       );
@@ -409,6 +444,7 @@ export class SmartAgent {
     toolClientMap: Map<string, IMcpClient>,
     opts: CallOptions | undefined,
     _traceId: string,
+    sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
@@ -416,6 +452,7 @@ export class SmartAgent {
     let messages = initialMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const externalToolNames = new Set(externalTools.map((t) => t.name));
+    let currentTools = activeTools;
     for (let iteration = 0; ; iteration++) {
       if (opts?.signal?.aborted) {
         yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
@@ -428,11 +465,22 @@ export class SmartAgent {
         };
         return;
       }
+      const filteredForIteration = this.toolAvailabilityRegistry.filterTools(
+        sessionId,
+        currentTools,
+      );
+      currentTools = filteredForIteration.allowed;
+      if (filteredForIteration.blocked.length > 0) {
+        opts?.sessionLogger?.logStep('active_tools_filtered_in_iteration', {
+          iteration: iteration + 1,
+          blocked: filteredForIteration.blocked,
+        });
+      }
       opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
         messages,
-        tools: activeTools,
+        tools: currentTools,
       });
-      const stream = this.deps.mainLlm.streamChat(messages, activeTools, opts);
+      const stream = this.deps.mainLlm.streamChat(messages, currentTools, opts);
       let content = '';
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
@@ -521,9 +569,48 @@ export class SmartAgent {
       const validExternalCalls = toolCalls.filter((tc) =>
         externalToolNames.has(tc.name),
       );
-      const hallucinations = toolCalls.filter(
-        (tc) => !toolClientMap.has(tc.name) && !externalToolNames.has(tc.name),
+      const blockedToolNames =
+        this.toolAvailabilityRegistry.getBlockedToolNames(sessionId);
+      const blockedCalls = toolCalls.filter((tc) =>
+        blockedToolNames.has(tc.name),
       );
+      const hallucinations = toolCalls.filter(
+        (tc) =>
+          !blockedToolNames.has(tc.name) &&
+          !toolClientMap.has(tc.name) &&
+          !externalToolNames.has(tc.name),
+      );
+      if (blockedCalls.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: content || null,
+            tool_calls: blockedCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+        for (const blocked of blockedCalls) {
+          messages = [
+            ...messages,
+            {
+              role: 'tool' as const,
+              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
+              tool_call_id: blocked.id,
+            },
+          ];
+        }
+        opts?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
+          toolNames: blockedCalls.map((tc) => tc.name),
+        });
+        continue;
+      }
       if (hallucinations.length > 0) {
         messages = [
           ...messages,
@@ -601,6 +688,18 @@ export class SmartAgent {
           : typeof res.value.content === 'string'
             ? res.value.content
             : JSON.stringify(res.value.content);
+        if (!res.ok && isToolContextUnavailableError(text)) {
+          const entry = this.toolAvailabilityRegistry.block(
+            sessionId,
+            tc.name,
+            text,
+          );
+          currentTools = currentTools.filter((t) => t.name !== tc.name);
+          opts?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
+            reason: text,
+            blockedUntil: entry.blockedUntil,
+          });
+        }
         opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
         toolCallCount++;
         messages = [

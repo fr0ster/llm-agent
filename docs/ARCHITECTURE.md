@@ -132,6 +132,14 @@ Accepted shapes:
 
 Invalid tool shapes are dropped during normalization instead of flowing into runtime logic as opaque objects.
 
+### Session Tool Availability Contract
+
+Tools can be protocol-valid but temporarily unavailable in the current environment/session.
+
+- Runtime-unavailable tools are temporarily blocked with TTL in a session-scoped registry.
+- Blocked tools are excluded from subsequent LLM tool contexts within the session window.
+- The agent emits diagnostics for both block events and blocked-tool interceptions.
+
 ## Legitimate vs Suspicious Edge Cases
 
 Decision rule:

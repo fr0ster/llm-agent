@@ -81,6 +81,13 @@
   - finish_reason and usage chunk sequencing
   - MCP reconnect and fallback scenarios
 
+### 7. Session Tool Availability Registry
+- **Goal:** Distinguish protocol-valid tools from runtime-unavailable tools in a given environment/session.
+- **Implementation:** Add session-scoped TTL blacklist/cooldown with diagnostics:
+  - block tools temporarily after context-unavailable execution failures
+  - filter blocked tools from active tool context before next LLM call
+  - keep behavior configurable (`strict`/`permissive` boundary handling remains in 15.3)
+
 ### Definition of Done
 - No unsafe cast chains (`as unknown as ...`) in critical protocol paths.
 - No protected method access via `any` in adapter code.
