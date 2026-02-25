@@ -60,6 +60,7 @@ mcp:
 agent:
   maxIterations: 10
   maxToolCalls: 30
+  toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
   showReasoning: false                # Explain strategy at start of response
   historyAutoSummarizeLimit: 10       # History length to trigger compression
@@ -250,6 +251,9 @@ export function resolveSmartServerConfig(
     agent: {
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
+      toolUnavailableTtlMs: Number(
+        get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
+      ),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
       showReasoning: Boolean(
         args['agent-show-reasoning'] ??

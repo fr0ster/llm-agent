@@ -20,6 +20,7 @@ export interface TraceContext {
 
 export interface CallOptions {
   trace?: TraceContext;
+  sessionId?: string;
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;

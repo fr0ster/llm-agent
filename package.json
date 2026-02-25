@@ -31,7 +31,7 @@
     "test:agent": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/agent.test.ts",
     "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
     "test:logger": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/logger/__tests__/logger.test.ts",
-    "test:policy": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/policy/__tests__/tool-policy-guard.test.ts src/smart-agent/policy/__tests__/heuristic-injection-detector.test.ts src/smart-agent/__tests__/agent-phase9.test.ts",
+    "test:policy": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/policy/__tests__/tool-policy-guard.test.ts src/smart-agent/policy/__tests__/heuristic-injection-detector.test.ts src/smart-agent/policy/__tests__/tool-availability-registry.test.ts src/smart-agent/__tests__/agent-phase9.test.ts",
     "test:regression": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/regression.test.ts",
     "test:integration": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/integration.test.ts",
     "test:e2e": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/e2e.test.ts",

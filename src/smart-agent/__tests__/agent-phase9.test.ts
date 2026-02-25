@@ -44,9 +44,17 @@ function makeLlm(
   >,
 ): ILlm {
   const queue = [...responses];
+  const pullNext = ():
+    | {
+        content: string;
+        toolCalls?: LlmToolCall[];
+        finishReason?: LlmFinishReason;
+      }
+    | Error
+    | undefined => queue.shift();
   return {
     async chat(): Promise<Result<LlmResponse, LlmError>> {
-      const next = queue.shift();
+      const next = pullNext();
       if (!next)
         return {
           ok: true,
@@ -55,6 +63,25 @@ function makeLlm(
       if (next instanceof Error)
         return { ok: false, error: new LlmError(next.message) };
       return {
+        ok: true,
+        value: {
+          content: next.content,
+          toolCalls: next.toolCalls,
+          finishReason: next.finishReason ?? 'stop',
+        },
+      };
+    },
+    async *streamChat() {
+      const next = pullNext();
+      if (!next) {
+        yield { ok: true, value: { content: 'default', finishReason: 'stop' } };
+        return;
+      }
+      if (next instanceof Error) {
+        yield { ok: false, error: new LlmError(next.message) };
+        return;
+      }
+      yield {
         ok: true,
         value: {
           content: next.content,

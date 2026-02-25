@@ -51,6 +51,7 @@ export interface SmartServerMcpConfig {
 export interface SmartServerAgentConfig {
   maxIterations?: number;
   maxToolCalls?: number;
+  toolUnavailableTtlMs?: number;
   ragQueryK?: number;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
@@ -407,6 +408,7 @@ export class SmartServer {
     const opts = {
       stream: body.stream,
       externalTools,
+      sessionId,
       trace: { traceId },
       sessionLogger,
     };
