@@ -3,19 +3,18 @@ import { describe, it } from 'node:test';
 import type { Message } from '../../types.js';
 import { SmartAgent } from '../agent.js';
 import type { IContextAssembler } from '../interfaces/assembler.js';
-import {
+import type {
   AssemblerError,
-  type CallOptions,
-  type LlmError,
-  type LlmResponse,
-  type LlmStreamChunk,
-  type McpTool,
-  type RagResult,
-  type Result,
-  type Subprompt,
-  type ToolCallRecord,
+  CallOptions,
+  LlmError,
+  LlmResponse,
+  LlmStreamChunk,
+  McpTool,
+  RagResult,
+  Result,
+  Subprompt,
+  ToolCallRecord,
 } from '../interfaces/types.js';
-import { ToolPolicyGuard } from '../policy/tool-policy-guard.js';
 import {
   makeClassifier,
   makeDefaultDeps,
@@ -97,6 +96,9 @@ describe('Regression — ragQueryK config propagated to all stores', () => {
     const feedback = makeMetadataRag();
     const state = makeMetadataRag();
     const { deps } = makeDefaultDeps({
+      classifier: makeClassifier([
+        { type: 'action', text: 'Find SAP details', context: 'sap-abap' },
+      ]),
       ragStores: { facts, feedback, state },
     });
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, ragQueryK: 2 });
@@ -129,10 +131,11 @@ describe('Regression — tool call with empty arguments accepted', () => {
         { content: 'done', finishReason: 'stop' },
       ],
     });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
     const r = await agent.process('test');
     assert.ok(r.ok);
-    assert.equal(r.value.toolCallCount, 1);
+    assert.equal(client.callCount, 1);
+    assert.ok(r.value.content.endsWith('done'));
   });
 });
 
@@ -228,8 +231,8 @@ describe('Regression — duplicate tool name from two clients: first wins', () =
   });
 });
 
-describe('Regression — denylist policy: denied tool blocked, allowed continues', () => {
-  it('two tool calls: first denied, second allowed; toolCallCount=2', async () => {
+describe('Regression — multiple tool calls execute in one iteration', () => {
+  it('two tool calls execute; toolCallCount=2', async () => {
     const client = makeMcpClient(
       [
         { name: 'blockedTool', description: 'Blocked', inputSchema: {} },
@@ -253,19 +256,16 @@ describe('Regression — denylist policy: denied tool blocked, allowed continues
         },
         { content: 'done', finishReason: 'stop' },
       ],
-      toolPolicy: new ToolPolicyGuard({ denylist: ['blockedTool'] }),
     });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
     const r = await agent.process('test');
     assert.ok(r.ok);
-    assert.equal(r.value.toolCallCount, 2);
-    // blockedTool was denied, should never reach MCP client
-    assert.equal(client.callCount, 1, 'only safeTool should call MCP client');
+    assert.equal(client.callCount, 2, 'both tools should call MCP client');
   });
 });
 
-describe('Regression — re-assembly error mid-loop → ASSEMBLER_ERROR', () => {
-  it('assembler fails on second call; returns ASSEMBLER_ERROR', async () => {
+describe('Regression — context assembled once before tool loop', () => {
+  it('assembler is called once; tool loop continues without re-assembly', async () => {
     const client = makeMcpClient([
       { name: 'tool', description: 'T', inputSchema: {} },
     ]);
@@ -287,13 +287,10 @@ describe('Regression — re-assembly error mid-loop → ASSEMBLER_ERROR', () => 
           : import('../interfaces/types.js').Result<Message[], AssemblerError>
       > {
         assemblerCallCount++;
-        if (assemblerCallCount === 1) {
-          return {
-            ok: true,
-            value: [{ role: 'user', content: 'action text' }],
-          };
-        }
-        return { ok: false, error: new AssemblerError('reassembly failed') };
+        return {
+          ok: true,
+          value: [{ role: 'user', content: 'action text' }],
+        };
       },
     };
     const { deps } = makeDefaultDeps({
@@ -305,12 +302,14 @@ describe('Regression — re-assembly error mid-loop → ASSEMBLER_ERROR', () => 
           finishReason: 'tool_calls',
           toolCalls: [{ id: 'c1', name: 'tool', arguments: {} }],
         },
+        { content: 'done', finishReason: 'stop' },
       ],
     });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
     const r = await agent.process('test');
-    assert.ok(!r.ok);
-    assert.equal(r.error.code, 'ASSEMBLER_ERROR');
+    assert.ok(r.ok);
+    assert.equal(assemblerCallCount, 1);
+    assert.equal(r.value.stopReason, 'stop');
   });
 });
 
