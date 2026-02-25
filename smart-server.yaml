@@ -43,3 +43,6 @@ agent:
 #   # ragTranslation: null   # null = use built-in neutral translation prompt
 
 log: smart-server.log                 # path to log file; remove for stdout
+
+debug:
+  sessions: ./sessions               # per-request session logs → sessions/<timestamp>-<id>/events.ndjson

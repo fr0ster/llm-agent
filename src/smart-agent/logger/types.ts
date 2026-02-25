@@ -74,4 +74,34 @@ export type LogEvent =
       traceId: string;
       original: string;
       translated: string;
+    }
+  | {
+      /** Full incoming request from the client (smart-server only). */
+      type: 'client_request';
+      traceId: string;
+      messages: Array<{ role: string; content: string }>;
+    }
+  | {
+      /** Final response sent back to the client (smart-server only). */
+      type: 'client_response';
+      traceId: string;
+      content: string;
+      durationMs: number;
+    }
+  | {
+      /** Complete context sent to the LLM before each chat call. */
+      type: 'llm_request';
+      traceId: string;
+      iteration: number;
+      messages: Array<{ role: string; content: string }>;
+      toolNames: string[];
+    }
+  | {
+      /** Full LLM response after each chat call. */
+      type: 'llm_response';
+      traceId: string;
+      iteration: number;
+      content: string;
+      toolCalls: Array<{ name: string; arguments: unknown }>;
+      finishReason: string;
     };

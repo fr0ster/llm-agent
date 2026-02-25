@@ -16,6 +16,7 @@ import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
+import { SessionLogger } from './logger/session-logger.js';
 import { makeLlmFromProvider, makeRagFromStoreConfig, type PipelineConfig } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -91,6 +92,16 @@ export interface SmartServerDebugConfig {
    * as `{ delta: { reasoning } }` SSE chunks. Default: false.
    */
   llmReasoning?: boolean;
+  /**
+   * Directory for per-session debug logs. When set, each client request gets
+   * a sub-directory with an `events.ndjson` file that contains:
+   *   - client_request  — full incoming message array
+   *   - rag_translate, rag_query, tools_selected, llm_context — pipeline events
+   *   - llm_request / llm_response — full LLM message context and responses
+   *   - client_response — final content sent back to the client
+   * Omit to disable session logging.
+   */
+  sessions?: string;
 }
 
 export interface SmartServerPromptsConfig {
@@ -223,6 +234,12 @@ export class SmartServer {
   async start(): Promise<SmartServerHandle> {
     const log = this.cfg.log ?? this.noop;
     const fileLogger: ILogger = { log: (e) => log(e as unknown as Record<string, unknown>) };
+    const sessionLogger = this.cfg.debug?.sessions
+      ? new SessionLogger(this.cfg.debug.sessions)
+      : null;
+    const logger: ILogger = sessionLogger
+      ? { log: (e) => { fileLogger.log(e); sessionLogger.log(e); } }
+      : fileLogger;
     const pipeline = this.cfg.pipeline;
 
     // ---- Build SmartAgent via builder -------------------------------------
@@ -237,7 +254,7 @@ export class SmartServer {
         ...(this.cfg.debug?.llmReasoning ? { llmReasoning: true } : {}),
       },
       prompts: this.cfg.prompts,
-    }).withLogger(fileLogger);
+    }).withLogger(logger);
 
     // Apply pipeline overrides — only the components explicitly specified
     if (pipeline?.llm?.main) {
@@ -268,7 +285,7 @@ export class SmartServer {
 
     // ---- HTTP server -------------------------------------------------------
     const server = http.createServer((req, res) =>
-      this._handle(req, res, getUsage, smartAgent, chat, log).catch((err) => {
+      this._handle(req, res, getUsage, smartAgent, chat, log, logger).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
           res.end(jsonError(String(err), 'server_error'));
@@ -307,6 +324,7 @@ export class SmartServer {
     smartAgent: SmartAgent,
     chat: SmartAgentHandle['chat'],
     log: (e: Record<string, unknown>) => void,
+    logger: ILogger,
   ): Promise<void> {
     const urlPath = req.url ?? '/';
 
@@ -334,7 +352,7 @@ export class SmartServer {
 
     // POST /v1/chat/completions
     if (req.method === 'POST' && (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')) {
-      await this._handleChat(req, res, getUsage, smartAgent, chat, log);
+      await this._handleChat(req, res, getUsage, smartAgent, chat, log, logger);
       return;
     }
 
@@ -349,6 +367,7 @@ export class SmartServer {
     smartAgent: SmartAgent,
     chat: SmartAgentHandle['chat'],
     log: (e: Record<string, unknown>) => void,
+    logger: ILogger,
   ): Promise<void> {
     const rawBody = await readBody(req);
 
@@ -385,6 +404,9 @@ export class SmartServer {
       return;
     }
 
+    // Request ID — used for session logging and agent traceId correlation.
+    const requestId = randomUUID();
+
     // Resolve effective routing mode
     const serverMode = this.cfg.mode ?? 'hybrid';
     const isCline =
@@ -399,10 +421,18 @@ export class SmartServer {
     const t0 = Date.now();
     log({ event: 'request_start', mode: usePassthrough ? 'passthrough' : 'smart', serverMode, stream: body.stream ?? false });
 
+    // Log full client request for session debugging.
+    logger.log({
+      type: 'client_request',
+      traceId: requestId,
+      messages: body.messages.map((m) => ({ role: m.role, content: extractText(m.content) })),
+    });
+
     // Single AbortController handles client disconnect for all paths.
     const abortCtrl = new AbortController();
     req.on('close', () => abortCtrl.abort());
 
+    let finalContent = '';
     if (usePassthrough) {
       // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
       const normalizedMessages = body.messages.map((m) => ({
@@ -411,34 +441,43 @@ export class SmartServer {
       }));
       const llmResult = await chat(normalizedMessages);
       log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
-      const finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
+      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
       const finalFinishReason: 'stop' | 'length' = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
       this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
     } else if (body.stream === true) {
       // Smart mode + streaming: pipe processStream() into a live SSE connection.
       const text = extractText(userMessages[userMessages.length - 1].content);
-      await this._handleSmartStream(res, smartAgent, text, abortCtrl.signal, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+      finalContent = await this._handleSmartStream(res, smartAgent, text, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
     } else {
       // Smart mode + non-streaming: classify + RAG tool selection + MCP orchestration.
       const text = extractText(userMessages[userMessages.length - 1].content);
-      const result = await smartAgent.process(text, { signal: abortCtrl.signal });
+      const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
       log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-      const finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+      finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
       const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
       this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
     }
+
+    // Log final response for session debugging.
+    logger.log({
+      type: 'client_response',
+      traceId: requestId,
+      content: finalContent,
+      durationMs: Date.now() - t0,
+    });
   }
 
+  /** Returns the accumulated text content sent to the client. */
   private async _handleSmartStream(
     res: ServerResponse,
     smartAgent: SmartAgent,
     text: string,
-    signal: AbortSignal,
+    opts: import('./interfaces/types.js').CallOptions,
     log: (e: Record<string, unknown>) => void,
     t0: number,
     includeUsage: boolean,
     getUsage: () => TokenUsage,
-  ): Promise<void> {
+  ): Promise<string> {
     const id = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
 
@@ -453,9 +492,11 @@ export class SmartServer {
     };
 
     let ok = true;
+    let accumulated = '';
     try {
-      for await (const chunk of smartAgent.processStream(text, { signal })) {
+      for await (const chunk of smartAgent.processStream(text, opts)) {
         if (chunk.type === 'text') {
+          accumulated += chunk.delta;
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: chunk.delta }, finish_reason: null }] });
         } else if (chunk.type === 'reasoning') {
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { reasoning: chunk.delta }, finish_reason: null }] });
@@ -483,6 +524,8 @@ export class SmartServer {
       res.write('data: [DONE]\n\n');
       res.end();
     }
+
+    return accumulated;
   }
 
   private _sendResponse(

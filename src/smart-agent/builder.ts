@@ -371,8 +371,8 @@ export class SmartAgentBuilder {
       ragQueryK: 10,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
-      ...(this.cfg.prompts?.ragTranslation ? { ragTranslationPrompt: this.cfg.prompts.ragTranslation } : {}),
-      ...(this.cfg.prompts?.reasoning ? { reasoningPrompt: this.cfg.prompts.reasoning } : {}),
+      ...(this.cfg.prompts?.ragTranslation !== undefined ? { ragTranslationPrompt: this.cfg.prompts.ragTranslation } : {}),
+      ...(this.cfg.prompts?.reasoning !== undefined ? { reasoningPrompt: this.cfg.prompts.reasoning } : {}),
     };
 
     const agent = new SmartAgent(

@@ -48,7 +48,7 @@ export const YAML_TEMPLATE = `port: 3001
 host: 0.0.0.0
 
 # Request routing mode:
-#   smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP work.
+#   smart       — all requests via SmartAgent (RAG tool selection).
 #   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
 #   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
 mode: hybrid
@@ -85,36 +85,57 @@ agent:
                                     # unrelated pairs, so use 0.50+ to filter irrelevant tools.
   # timeoutMs: 120000                 # overall request pipeline timeout in ms
 
+# ---------------------------------------------------------------------------
+# Prompts — all optional. Shown below with their built-in defaults so you can
+# inspect and customise any part of the agent's instruction set.
+# Uncomment and edit to override. Set ragTranslation: "" to disable translation.
+# ---------------------------------------------------------------------------
 # prompts:
-#   system: >
-#     You are a helpful AI assistant. Use tools only when the request requires
-#     system operations. Answer general questions directly.
-#   classifier: null
 #
-#   # ragTranslation — controls cross-lingual RAG matching.
-#   #
-#   # MCP tool descriptions are in English. When users write in other languages
-#   # the default neutral translation prompt is used so the query can be matched
-#   # against English tool embeddings.
-#   #
-#   # Two alternatives to translation:
-#   #   1. Switch to a multilingual embedding model (e.g. multilingual-e5-base
-#   #      via Ollama) — set ragTranslation: "" to disable translation entirely.
-#   #   2. Keep the default prompt — works well for most languages; falls back
-#   #      to the original text on LLM error.
-#   #
-#   # Do NOT add domain-specific context here (no "SAP expert", "3D printer",
-#   # etc.) — domain bias causes ambiguous words to be mis-translated.
-#   #
-#   # ragTranslation: ""   # disable (use when embedding model is multilingual)
+#   # Prepended to every LLM context window. Sets the overall persona and
+#   # tool-use policy. Keep domain-agnostic to avoid biasing the LLM.
+#   system: >-
+#     You are a helpful AI assistant. Answer any question you can directly
+#     and accurately. When the user request requires a tool, use the available
+#     tools. For all other requests — including general knowledge,
+#     calculations, or conversation — answer without tools.
 #
-#   # reasoning: >
-#   #   Before every response explain your reasoning inside <thinking> tags.
+#   # Decomposes user messages into typed subprompts (fact / feedback / state /
+#   # action). The LLM must return a JSON array of { "type", "text" } objects.
+#   classifier: >-
+#     You are an intent classifier. Given a user message, decompose it into
+#     one or more subprompts and classify each as exactly one of:
+#       - "fact"     : a factual statement to remember
+#       - "feedback" : a correction or evaluation of a previous response
+#       - "state"    : current user context / preferences / session state
+#       - "action"   : a request to do something or answer a question
+#     Return ONLY a valid JSON array with no markdown fences.
+#     Each element: { "type": "<type>", "text": "<subprompt text>" }
+#     If the message fits one intent, return a single-element array.
+#
+#   # Translates non-ASCII queries to English for cross-lingual RAG tool matching.
+#   # MCP tool descriptions are always in English; translation improves matching.
+#   # Set to "" to disable (when using a multilingual embedding model).
+#   # Do NOT add domain context here — neutral phrasing preserves user intent.
+#   ragTranslation: >-
+#     Translate the following text to English, preserving the exact original
+#     intent. Do not add domain-specific context or reinterpret ambiguous
+#     words. Reply with only the translation, no explanation.
+#
+#   # Appended to the system prompt when debug.llmReasoning: true.
+#   reasoning: >-
+#     Before every response, tool call, or decision, explain your reasoning
+#     inside <thinking>...</thinking> tags. Be thorough and show your thought
+#     process. After the thinking block, give your actual response.
 
 log: smart-server.log                 # path to log file; omit for stdout
 
 # debug:
 #   llmReasoning: true   # inject reasoning instruction into system prompt; parse <thinking> blocks
+#   sessions: ./sessions # per-request session debug directory; omit to disable
+#                        # Each request creates <sessions>/<timestamp>-<id>/events.ndjson with:
+#                        #   client_request, rag_translate, rag_query, tools_selected,
+#                        #   llm_context, llm_request, llm_response, client_response
 
 # --- Advanced pipeline config (optional) ------------------------------------
 # When present, overrides / extends the flat llm / rag / mcp fields above.
@@ -314,12 +335,12 @@ export function resolveSmartServerConfig(
     },
 
     prompts:
-      promptSystem || promptClassifier || promptRagTranslation || promptReasoning
+      promptSystem !== null || promptClassifier !== null || promptRagTranslation !== null || promptReasoning !== null
         ? {
-            ...(promptSystem ? { system: promptSystem } : {}),
-            ...(promptClassifier ? { classifier: promptClassifier } : {}),
-            ...(promptRagTranslation ? { ragTranslation: promptRagTranslation } : {}),
-            ...(promptReasoning ? { reasoning: promptReasoning } : {}),
+            ...(promptSystem !== null ? { system: promptSystem } : {}),
+            ...(promptClassifier !== null ? { classifier: promptClassifier } : {}),
+            ...(promptRagTranslation !== null ? { ragTranslation: promptRagTranslation } : {}),
+            ...(promptReasoning !== null ? { reasoning: promptReasoning } : {}),
           }
         : undefined,
 
@@ -339,6 +360,9 @@ export function resolveSmartServerConfig(
         Boolean(get(yaml, 'debug', 'llmReasoning')) ||
         env['DEBUG_LLM_REASON'] === 'true' ||
         false,
+      ...(get(yaml, 'debug', 'sessions') !== undefined
+        ? { sessions: String(get(yaml, 'debug', 'sessions')) }
+        : env['DEBUG_SESSIONS'] ? { sessions: env['DEBUG_SESSIONS'] } : {}),
     },
   };
 }

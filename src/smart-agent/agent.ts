@@ -321,8 +321,12 @@ export class SmartAgent {
       };
     }
 
-    // Step 8: take first action
-    const action = actions[0];
+    // Step 8: merge all action subprompts into one compound action so that
+    // requests like "Add 5 and 9. Read table T100 structure." are fully handled.
+    // Multiple actions are joined with newlines; single action is used as-is.
+    const action: Subprompt = actions.length === 1
+      ? actions[0]
+      : { type: 'action', text: actions.map((a) => a.text).join('\n') };
 
     // Step 9: RAG retrieval (non-fatal — failures fall back to [])
     // Tools are vectorized in English; translate the action to English first so
@@ -521,6 +525,13 @@ export class SmartAgent {
         toolNames: retrieved.tools.map((t) => t.name),
         systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
       });
+      logger?.log({
+        type: 'llm_request',
+        traceId,
+        iteration,
+        messages: messages.map((m) => ({ role: m.role, content: String(m.content) })),
+        toolNames: (retrieved.tools as LlmTool[]).map((t) => t.name),
+      });
       const resp = await this.deps.mainLlm.chat(
         messages,
         retrieved.tools as LlmTool[],
@@ -534,6 +545,16 @@ export class SmartAgent {
         toolCallsRequested: resp.ok ? (resp.value.toolCalls?.length ?? 0) : 0,
         durationMs: Date.now() - llmT0,
       });
+      if (resp.ok) {
+        logger?.log({
+          type: 'llm_response',
+          traceId,
+          iteration,
+          content: resp.value.content,
+          toolCalls: resp.value.toolCalls?.map((tc) => ({ name: tc.name, arguments: tc.arguments })) ?? [],
+          finishReason: resp.value.finishReason,
+        });
+      }
       if (!resp.ok) {
         const code = resp.error.code === 'ABORTED' ? 'ABORTED' : 'LLM_ERROR';
         return {
@@ -842,7 +863,11 @@ export class SmartAgent {
       return;
     }
 
-    const action = actions[0];
+    // Step 8 (stream): merge all action subprompts into one compound action so that
+    // requests like "Add 5 and 9. Read table T100 structure." are fully handled.
+    const action: Subprompt = actions.length === 1
+      ? actions[0]
+      : { type: 'action', text: actions.map((a) => a.text).join('\n') };
 
     // RAG retrieval
     const ragText = await this._toEnglishForRag(action.text, opts);
@@ -921,8 +946,6 @@ export class SmartAgent {
       systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
     });
 
-    logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
-
     const streamInitialMessages = this.config.llmReasoning
       ? this._injectReasoningInstruction(assembleResult.value)
       : assembleResult.value;
@@ -934,6 +957,9 @@ export class SmartAgent {
       opts,
       traceId,
     );
+
+    // Log pipeline_done after streaming tool loop fully completes (not before).
+    logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
   }
 
   // -------------------------------------------------------------------------
@@ -966,6 +992,16 @@ export class SmartAgent {
       let accumulatedToolCalls: LlmToolCall[] | undefined;
       let finalFinishReason: LlmStreamChunk & { type: 'done' } extends { finishReason: infer R } ? R : never = 'stop';
       let isStreamingDone = false;
+      let accumulatedContent = '';
+
+      // Log full request context for session debugging.
+      logger?.log({
+        type: 'llm_request',
+        traceId,
+        iteration,
+        messages: messages.map((m) => ({ role: m.role, content: String(m.content) })),
+        toolNames: (retrieved.tools as LlmTool[]).map((t) => t.name),
+      });
 
       if (this.deps.mainLlm.streamChat) {
         // Streaming path — optionally parse <thinking>/<reasoning> blocks
@@ -973,6 +1009,7 @@ export class SmartAgent {
 
         for await (const chunk of this.deps.mainLlm.streamChat(messages, retrieved.tools as LlmTool[], opts)) {
           if (chunk.type === 'text') {
+            accumulatedContent += chunk.delta;
             if (parser) {
               for (const parsed of parser.push(chunk.delta)) yield parsed;
             } else {
@@ -1024,6 +1061,14 @@ export class SmartAgent {
       }
 
       logger?.log({ type: 'llm_call', traceId, iteration, finishReason: finalFinishReason, toolCallsRequested: accumulatedToolCalls?.length ?? 0, durationMs: Date.now() - llmT0 });
+      logger?.log({
+        type: 'llm_response',
+        traceId,
+        iteration,
+        content: accumulatedContent,
+        toolCalls: accumulatedToolCalls?.map((tc) => ({ name: tc.name, arguments: tc.arguments })) ?? [],
+        finishReason: finalFinishReason,
+      });
 
       if (isStreamingDone || !accumulatedToolCalls?.length) {
         if (!isStreamingDone) yield { type: 'done', finishReason: 'stop' };
