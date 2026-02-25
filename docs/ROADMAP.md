@@ -64,15 +64,15 @@
 - **Goal:** Stop heuristic parsing of external tool formats.
 - **Implementation:** Add a strict normalizer/validator for external tools (OpenAI-compatible and internal shapes), with clear rejection behavior for invalid payloads.
 
-- [ ] 4. Remove Protected-Access Adapter Debt
+- [x] 4. Remove Protected-Access Adapter Debt ✅
 - **Goal:** Eliminate `(this.agent as any)` access to protected methods.
 - **Implementation:** Define a public, typed execution interface between `BaseAgent` and adapter layer for chat/stream calls.
 
-- [ ] 5. Improve Parse Observability
+- [x] 5. Improve Parse Observability ✅
 - **Goal:** Avoid silent protocol degradation.
 - **Implementation:** Replace silent parse skips with structured diagnostics and counters while keeping runtime resilience.
 
-- [ ] 6. Add Protocol Contract Tests
+- [x] 6. Add Protocol Contract Tests ✅
 - **Goal:** Convert protocol assumptions into executable guarantees.
 - **Implementation:** Add test coverage for:
   - fragmented tool arguments across chunks
@@ -87,6 +87,10 @@
   - block tools temporarily after context-unavailable execution failures
   - filter blocked tools from active tool context before next LLM call
   - keep behavior configurable (`strict`/`permissive` boundary handling remains in 15.3)
+
+- [x] 8. Harmonize Runtime/Dev/Test Commands Across Branches ✅
+- **Goal:** Preserve operational command compatibility after unification.
+- **Implementation:** Restore and align key npm scripts from predecessor branches (`dev:llm`, `start:llm`, `start:smart`, `test`, `test:llm`) while keeping SmartServer-first defaults.
 
 ### Definition of Done
 - No unsafe cast chains (`as unknown as ...`) in critical protocol paths.

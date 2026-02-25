@@ -35,10 +35,23 @@ export interface AgentCallOptions {
   stop?: string[];
 }
 
+export interface BaseAgentLlmBridge {
+  callWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): Promise<{ content: string; raw?: unknown }>;
+  streamWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown>;
+}
+
 /**
  * Base Agent class - provides common logic for all agent implementations
  */
-export abstract class BaseAgent {
+export abstract class BaseAgent implements BaseAgentLlmBridge {
   protected mcpClient: MCPClientWrapper;
   protected conversationHistory: Message[] = [];
   protected tools: unknown[] = [];
@@ -131,6 +144,29 @@ export abstract class BaseAgent {
     tools: unknown[],
     options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown>;
+
+  /**
+   * Public typed bridge for adapter layer. Keeps provider-specific logic in
+   * protected methods while removing adapter-side `any` access.
+   */
+  async callWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): Promise<{ content: string; raw?: unknown }> {
+    return this.callLLMWithTools(messages, tools, options);
+  }
+
+  /**
+   * Public typed bridge for streaming adapter layer.
+   */
+  streamWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    return this.streamLLMWithTools(messages, tools, options);
+  }
 
   /**
    * Shared SSE parser for OpenAI-compatible streaming endpoints.

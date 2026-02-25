@@ -6,8 +6,12 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import {
   AssemblerError,
   type CallOptions,
+  type LlmError,
+  type LlmResponse,
+  type LlmStreamChunk,
   type McpTool,
   type RagResult,
+  type Result,
   type Subprompt,
   type ToolCallRecord,
 } from '../interfaces/types.js';
@@ -129,6 +133,69 @@ describe('Regression — tool call with empty arguments accepted', () => {
     const r = await agent.process('test');
     assert.ok(r.ok);
     assert.equal(r.value.toolCallCount, 1);
+  });
+});
+
+describe('Regression — fragmented stream tool arguments are accumulated by index', () => {
+  it('assembles partial arguments and executes tool with merged JSON object', async () => {
+    let llmCall = 0;
+    let capturedArgs: Record<string, unknown> | null = null;
+    const streamLlm = {
+      async chat(): Promise<Result<LlmResponse, LlmError>> {
+        return { ok: true, value: { content: 'unused', finishReason: 'stop' } };
+      },
+      async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
+        llmCall++;
+        if (llmCall === 1) {
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              toolCalls: [
+                {
+                  index: 0,
+                  id: 'c1',
+                  name: 'sum',
+                  arguments: '{"a":1,',
+                },
+              ],
+            },
+          };
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              toolCalls: [{ index: 0, arguments: '"b":2}' }],
+              finishReason: 'tool_calls',
+            },
+          };
+          return;
+        }
+        yield { ok: true, value: { content: 'done', finishReason: 'stop' } };
+      },
+    };
+    const mcpClient = {
+      async listTools() {
+        return {
+          ok: true as const,
+          value: [{ name: 'sum', description: 'sum', inputSchema: {} }],
+        };
+      },
+      async callTool(_name: string, args: Record<string, unknown>) {
+        capturedArgs = args;
+        return { ok: true as const, value: { content: '3' } };
+      },
+    };
+    const { deps } = makeDefaultDeps({
+      mcpClients: [mcpClient],
+      llmResponses: [{ content: 'unused', finishReason: 'stop' }],
+    });
+    deps.mainLlm = streamLlm;
+    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const r = await agent.process('sum');
+    assert.ok(r.ok);
+    assert.deepEqual(capturedArgs, { a: 1, b: 2 });
+    assert.ok(r.value.content.endsWith('done'));
   });
 });
 
