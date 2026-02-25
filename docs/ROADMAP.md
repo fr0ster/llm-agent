@@ -43,9 +43,9 @@
 
 ---
 
-## Phase 15 - Protocol Contracts & Patch Elimination [IN PROGRESS] 🚧
+## Phase 15 - Protocol Contracts & Patch Elimination
 
-### 1. Document Legitimate Edge Cases [DONE] ✅
+- [x] 1. Document Legitimate Edge Cases ✅
 - **Goal:** Preserve robustness that reflects real protocol constraints.
 - **Implementation:** Add explicit documentation for:
   - SSE parsing guarantees and chunk ordering
@@ -53,26 +53,26 @@
   - MCP reconnect and fallback behavior
   - Loop safety limits (max iterations, max tool calls, abort handling)
 
-### 2. Replace Unsafe Casts in Critical Paths [DONE] ✅
+- [x] 2. Replace Unsafe Casts in Critical Paths ✅
 - **Goal:** Remove patch-style typing shortcuts from protocol/runtime flows.
 - **Implementation:** Introduce normalized DTOs for streaming tool-call deltas and remove `as unknown as ...` from:
   - smart-agent orchestration loop
   - smart-server SSE emission path
   - LLM adapter chunk bridge logic
 
-### 3. Formalize External Tool Input Contract [DONE] ✅
+- [x] 3. Formalize External Tool Input Contract ✅
 - **Goal:** Stop heuristic parsing of external tool formats.
 - **Implementation:** Add a strict normalizer/validator for external tools (OpenAI-compatible and internal shapes), with clear rejection behavior for invalid payloads.
 
-### 4. Remove Protected-Access Adapter Debt [OPEN] ⏳
+- [ ] 4. Remove Protected-Access Adapter Debt
 - **Goal:** Eliminate `(this.agent as any)` access to protected methods.
 - **Implementation:** Define a public, typed execution interface between `BaseAgent` and adapter layer for chat/stream calls.
 
-### 5. Improve Parse Observability [OPEN] ⏳
+- [ ] 5. Improve Parse Observability
 - **Goal:** Avoid silent protocol degradation.
 - **Implementation:** Replace silent parse skips with structured diagnostics and counters while keeping runtime resilience.
 
-### 6. Add Protocol Contract Tests [OPEN] ⏳
+- [ ] 6. Add Protocol Contract Tests
 - **Goal:** Convert protocol assumptions into executable guarantees.
 - **Implementation:** Add test coverage for:
   - fragmented tool arguments across chunks
@@ -81,7 +81,7 @@
   - finish_reason and usage chunk sequencing
   - MCP reconnect and fallback scenarios
 
-### 7. Session Tool Availability Registry [DONE] ✅
+- [x] 7. Session Tool Availability Registry ✅
 - **Goal:** Distinguish protocol-valid tools from runtime-unavailable tools in a given environment/session.
 - **Implementation:** Add session-scoped TTL blacklist/cooldown with diagnostics:
   - block tools temporarily after context-unavailable execution failures
