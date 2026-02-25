@@ -25,6 +25,37 @@ Client (OpenAI-compatible)
            -> Policy guards (tool policy + injection detector)
 ```
 
+## Embeddable Component Contract (No YAML)
+
+For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
+
+Primary embeddable surfaces:
+- package export `@mcp-abap-adt/llm-agent/smart-server` -> `SmartServer`
+- package export `@mcp-abap-adt/llm-agent/testing` -> deterministic test doubles for consumer integration tests
+
+Minimal programmatic integration:
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+
+const server = new SmartServer({
+  llm: {
+    apiKey: process.env.DEEPSEEK_API_KEY!,
+    model: 'deepseek-chat',
+  },
+  mode: 'smart',
+});
+
+const handle = await server.start();
+// handle.port, handle.getUsage(), handle.close()
+```
+
+`SmartServer` public contract:
+- input: `SmartServerConfig`
+- output: `Promise<SmartServerHandle>`
+- lifecycle: `start()` -> `{ port, getUsage, close }`
+- protocol: OpenAI-compatible `/v1/chat/completions` (JSON + SSE)
+
 ## Request Lifecycle
 
 ### 1. Server Boundary
@@ -88,6 +119,23 @@ Stores are split by intent:
 - Smart stack uses `IMcpClient` abstraction.
 - Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.
+
+## Internal Interfaces and Default Implementations
+
+| Interface | Role | Default implementation |
+|---|---|---|
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `SmartAgentBuilder` |
+| `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
+| `IContextAssembler` | Builds final model context window | `ContextAssembler` |
+| `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag` (Ollama/OpenAI embedders) or `InMemoryRag` |
+| `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
+| `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
+| `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
+| `ILogger` | Structured logging sink | `ConsoleLogger` / `SessionLogger` / injected custom logger |
+
+Builder wiring entrypoint:
+- `src/smart-agent/builder.ts` (`SmartAgentBuilder`)
+- supports default wiring plus per-component overrides through `.with*()` methods
 
 ## Execution Modes
 
@@ -200,7 +248,6 @@ src/
 
 ## Current Technical Debt (Explicit)
 
-- `LlmAdapter` still accesses protected legacy agent methods via `(this.agent as any)`.
 - Some legacy modules retain permissive typing that should be narrowed.
 
 These are tracked in `docs/ROADMAP.md` (Phase 15).
