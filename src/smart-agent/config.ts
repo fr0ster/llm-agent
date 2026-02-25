@@ -101,18 +101,9 @@ agent:
 #     tools. For all other requests — including general knowledge,
 #     calculations, or conversation — answer without tools.
 #
-#   # Decomposes user messages into typed subprompts (fact / feedback / state /
-#   # action). The LLM must return a JSON array of { "type", "text" } objects.
-#   classifier: >-
-#     You are an intent classifier. Given a user message, decompose it into
-#     one or more subprompts and classify each as exactly one of:
-#       - "fact"     : a factual statement to remember
-#       - "feedback" : a correction or evaluation of a previous response
-#       - "state"    : current user context / preferences / session state
-#       - "action"   : a request to do something or answer a question
-#     Return ONLY a valid JSON array with no markdown fences.
-#     Each element: { "type": "<type>", "text": "<subprompt text>" }
-#     If the message fits one intent, return a single-element array.
+#   # NOTE: classifier prompt override is not currently wired — the two-step
+#   # classifier (stores + action-graph) uses its own built-in JSON schemas.
+#   # classifier: ~
 #
 #   # Translates non-ASCII queries to English for cross-lingual RAG tool matching.
 #   # MCP tool descriptions are always in English; translation improves matching.
