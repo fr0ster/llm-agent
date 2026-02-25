@@ -88,7 +88,7 @@ agent:
 #     Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.
 
 log: smart-server.log                 # path to log file; omit for stdout
-# logDir: logs                        # Directory for detailed session debug logs
+# logDir: sessions                    # Directory for detailed session debug logs
 `;
 
 export function resolveEnvVars(value: unknown, env: NodeJS.ProcessEnv = process.env): unknown {
