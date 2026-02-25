@@ -23,6 +23,11 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
+import {
+  getStreamToolCallName,
+  toToolCallDelta,
+} from './utils/tool-call-deltas.js';
 
 export class OrchestratorError extends SmartAgentError {
   constructor(message: string, code = 'ORCHESTRATOR_ERROR') {
@@ -200,6 +205,7 @@ export class SmartAgent {
     }
 
     const mode = this.config.mode || 'smart';
+    const externalTools = normalizeExternalTools(options?.externalTools);
     opts?.sessionLogger?.logStep('pipeline_start', { mode, textOrMessages });
 
     try {
@@ -210,7 +216,7 @@ export class SmartAgent {
             : textOrMessages;
         const stream = this.deps.mainLlm.streamChat(
           messages,
-          (options?.externalTools as LlmTool[] | undefined) || [],
+          externalTools,
           opts,
         );
         for await (const chunk of stream) yield chunk;
@@ -229,32 +235,6 @@ export class SmartAgent {
         return;
       }
       const { subprompts, processedHistory, toolClientMap } = initResult.value;
-
-      const externalTools = (options?.externalTools || [])
-        .map((rawTool) => {
-          const t = rawTool as {
-            name?: string;
-            description?: string;
-            inputSchema?: Record<string, unknown>;
-            function?: {
-              name?: string;
-              description?: string;
-              parameters?: Record<string, unknown>;
-            };
-          };
-          if (t.name) return t as LlmTool;
-          if (t.function?.name)
-            return {
-              name: t.function.name,
-              description: t.function.description || '',
-              inputSchema: t.function.parameters || {
-                type: 'object',
-                properties: {},
-              },
-            };
-          return null;
-        })
-        .filter((t): t is LlmTool => t !== null);
 
       // 2. Decide context and tools for the WHOLE request
       const actions = subprompts.filter((sp) => sp.type === 'action');
@@ -477,7 +457,7 @@ export class SmartAgent {
         }
         if (chunk.toolCalls) {
           const externalDeltas = chunk.toolCalls.filter((tc) =>
-            externalToolNames.has(tc.name),
+            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
           );
           if (externalDeltas.length > 0) {
             yield {
@@ -485,13 +465,11 @@ export class SmartAgent {
               value: { content: '', toolCalls: externalDeltas },
             };
           }
-          const toolCallDeltas = chunk.toolCalls as unknown as Array<{
-            index: number;
-            id?: string;
-            name?: string;
-            arguments?: string;
-          }>;
-          for (const tc of toolCallDeltas) {
+          for (const [
+            fallbackIndex,
+            rawToolCall,
+          ] of chunk.toolCalls.entries()) {
+            const tc = toToolCallDelta(rawToolCall, fallbackIndex);
             if (!toolCallsMap.has(tc.index)) {
               toolCallsMap.set(tc.index, {
                 id: tc.id || '',

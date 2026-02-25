@@ -38,7 +38,7 @@ export interface CallOptions {
 
 export interface LlmStreamChunk {
   content: string;
-  toolCalls?: LlmToolCall[];
+  toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
   usage?: LlmUsage;
 }
@@ -123,6 +123,15 @@ export interface LlmToolCall {
   name: string;
   arguments: Record<string, unknown>;
 }
+
+export interface LlmToolCallDelta {
+  index: number;
+  id?: string;
+  name?: string;
+  arguments?: string;
+}
+
+export type StreamToolCall = LlmToolCall | LlmToolCallDelta;
 
 export type LlmFinishReason = 'stop' | 'tool_calls' | 'length' | 'error';
 
