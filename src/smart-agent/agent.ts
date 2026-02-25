@@ -53,7 +53,13 @@ export class SmartAgent {
   }
 
   async process(textOrMessages: string | Message[], options?: CallOptions): Promise<Result<SmartAgentResponse, OrchestratorError>> {
-    return this._runPipeline(textOrMessages, options, randomUUID(), Date.now());
+    let content = ''; let usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    for await (const chunk of this.streamProcess(textOrMessages, options)) {
+      if (!chunk.ok) return chunk;
+      if (chunk.value.content) content += chunk.value.content;
+      if (chunk.value.usage) { usage.promptTokens += chunk.value.usage.promptTokens; usage.completionTokens += chunk.value.usage.completionTokens; usage.totalTokens += chunk.value.usage.totalTokens; }
+    }
+    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage } };
   }
 
   async *streamProcess(textOrMessages: string | Message[], options?: CallOptions & { externalTools?: any[] }): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
@@ -65,39 +71,34 @@ export class SmartAgent {
     if (this.config.timeoutMs) { const { signal, clear } = createTimeoutSignal(this.config.timeoutMs); timeoutCleanup = clear; const merged = mergeSignals(options?.signal, signal); opts = { ...options, signal: merged.signal }; }
 
     try {
-      // 1. Initial Processing (Classification, Summarization, RAG for Facts/State)
       const initResult = await this._preparePipeline(textOrMessages, opts, traceId, pipelineT0);
       if (!initResult.ok) { yield initResult; return; }
       const { subprompts, processedHistory, toolClientMap } = initResult.value;
 
-      // 2. Identify external tools
-      const externalTools = (options?.externalTools || []).map(t => {
-        if (t.name) return t;
-        if (t.function?.name) return { name: t.function.name, description: t.function.description || '', inputSchema: t.function.parameters || { type: 'object', properties: {} } };
-        return null;
-      }).filter((t): t is LlmTool => t !== null);
-
       let currentHistory = processedHistory;
-      let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-
-      // 3. Process actionable subprompts SEQUENTIALLY to preserve neutrality
+      
       const actionsAndChats = subprompts.filter(sp => sp.type === 'action' || sp.type === 'chat');
       
       for (const sp of actionsAndChats) {
-        if (sp.type === 'chat') {
-          // CHAT PATH: No RAG, no tools, neutral context
-          const stream = this.deps.mainLlm.streamChat([...currentHistory, { role: 'user', content: sp.text }], [], opts);
-          let subContent = '';
+        opts?.sessionLogger?.logStep(`processing_subprompt_${sp.type}`, { sp });
+
+        // DYNAMIC CONTEXT ISOLATION
+        const isSapContext = sp.context === 'sap-abap';
+        let subContent = '';
+
+        if (sp.type === 'chat' || !isSapContext) {
+          // NEUTRAL PATH: No SAP tools, generic assistant persona
+          const neutralSystemMsg: Message = { 
+            role: 'system', 
+            content: 'You are a helpful and neutral AI assistant. Perform the requested task accurately. Do not assume technical context unless explicitly requested.' 
+          };
+          const stream = this.deps.mainLlm.streamChat([neutralSystemMsg, ...currentHistory, { role: 'user', content: sp.text }], [], opts);
           for await (const chunk of stream) {
-            if (chunk.ok) {
-              if (chunk.value.content) subContent += chunk.value.content;
-              if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-            }
+            if (chunk.ok && chunk.value.content) subContent += chunk.value.content;
             yield chunk;
           }
-          currentHistory = [...currentHistory, { role: 'user', content: sp.text }, { role: 'assistant', content: subContent }];
         } else {
-          // ACTION PATH: RAG retrieval + Tools
+          // TECHNICAL SAP PATH: Use RAG and SAP Tools
           const ragText = await this._toEnglishForRag(sp.text, opts);
           const k = this.config.ragQueryK ?? 10;
           const [fR, fbR, sR] = await Promise.all([this.deps.ragStores.facts.query(ragText, k, opts), this.deps.ragStores.feedback.query(ragText, k, opts), this.deps.ragStores.state.query(ragText, k, opts)]);
@@ -111,17 +112,13 @@ export class SmartAgent {
           const assembleResult = await this.deps.assembler.assemble(sp, retrieved, currentHistory, opts);
           if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
 
-          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, externalTools);
-          let subContent = '';
+          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, []);
           for await (const chunk of stream) {
-            if (chunk.ok) {
-              if (chunk.value.content) subContent += chunk.value.content;
-              if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-            }
+            if (chunk.ok && chunk.value.content) subContent += chunk.value.content;
             yield chunk;
           }
-          // Note: history update for complex action loops is handled within _runStreamingToolLoop or requires tracking
         }
+        currentHistory = [...currentHistory, { role: 'user', content: sp.text }, { role: 'assistant', content: subContent }];
       }
     } finally { timeoutCleanup?.(); }
   }
@@ -142,26 +139,11 @@ export class SmartAgent {
     const others = subprompts.filter(sp => sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback');
     const ragStoreMap = new Map<string, IRag>([['fact', this.deps.ragStores.facts], ['feedback', this.deps.ragStores.feedback], ['state', this.deps.ragStores.state]]);
     await Promise.allSettled(others.map(async sp => { 
-      const s = ragStoreMap.get(sp.type); 
-      if (s) {
-        opts?.sessionLogger?.logStep(`rag_upsert_${sp.type}`, { text: sp.text });
-        await s.upsert(sp.text, this._buildRagMetadata(), opts); 
-      }
+      const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); 
     }));
 
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
-  }
-
-  private async _runPipeline(textOrMessages: string | Message[], opts: CallOptions | undefined, traceId: string, pipelineT0: number): Promise<Result<SmartAgentResponse, OrchestratorError>> {
-    // Note: process() is now a wrapper around streamProcess for consistency
-    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    for await (const chunk of this.streamProcess(textOrMessages, opts)) {
-      if (!chunk.ok) return chunk;
-      if (chunk.value.content) content += chunk.value.content;
-      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-    }
-    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
   }
 
   private async *_runStreamingToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string, externalTools: LlmTool[]): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
@@ -209,7 +191,6 @@ export class SmartAgent {
       }
 
       if (validExternalCalls.length > 0) {
-        opts?.sessionLogger?.logStep('external_tool_delegation', { toolCalls: validExternalCalls });
         yield { ok: true, value: { content: '', toolCalls: validExternalCalls, finishReason: 'tool_calls', usage } };
         return;
       }
@@ -234,21 +215,9 @@ export class SmartAgent {
     return { tools, toolClientMap };
   }
 
-  private async _runToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string): Promise<Result<SmartAgentResponse, OrchestratorError>> {
-    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    // Normal process() now uses the same stream-based logic for consistency
-    const stream = this._runStreamingToolLoop(_action, retrieved, initialMessages, toolClientMap, opts, traceId, []);
-    for await (const chunk of stream) {
-      if (!chunk.ok) return chunk;
-      if (chunk.value.content) content += chunk.value.content;
-      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-    }
-    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
-  }
-
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
     if (/^[\x00-\x7F]+$/.test(text) || text.length < 15) return text;
-    const dp = 'Translate the following user request to English. If it contains technical terms, preserve and expand them with technical synonyms. If it is general chat, just translate it. Reply with only the expanded English terms, no explanation.';
+    const dp = 'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the translation.';
     const llm = this.deps.helperLlm || this.deps.mainLlm;
     const res = await llm.chat([{ role: 'system', content: this.config.ragTranslatePrompt || dp }, { role: 'user', content: text }], [], opts);
     return res.ok && res.value.content.trim() ? res.value.content.trim() : text;
