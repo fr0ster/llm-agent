@@ -18,16 +18,21 @@ export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. De
 For each task, identify:
   - "type": chat (greetings/math), action (tasks), fact (knowledge), state (context), feedback.
   - "text": the actual task description.
-  - "context": the domain of the task (e.g., "sap-abap", "math", "general-knowledge").
-  - "dependency": "independent" or the "text" of the task this depends on.
+  - "context": the domain of the task (e.g., "sap-abap", "math", "general").
+  - "dependency": "independent" or "coupled" (if it's part of a conditional chain).
 
-Example: "Read T002 and add 5+9"
+CRITICAL RULES:
+1. If tasks are conditionally linked (e.g., "Do A, and IF it fails then do B"), KEEP THEM TOGETHER in one "action" subprompt.
+2. If tasks are independent (e.g., "Check weather AND add 5+5"), SPLIT them.
+3. Be strictly neutral. Only assign "sap-abap" context if SAP terms are present.
+
+Example: "Read table T100, if fails then read its structure. Also tell me a joke."
 Result: [
-  {"type": "action", "text": "Read structure of table T002", "context": "sap-abap", "dependency": "independent"},
-  {"type": "chat", "text": "Add 5 and 9", "context": "math", "dependency": "independent"}
+  {"type": "action", "text": "Read content of table T100, if not possible read its structure", "context": "sap-abap", "dependency": "independent"},
+  {"type": "chat", "text": "Tell a joke", "context": "general", "dependency": "independent"}
 ]
 
-Return ONLY a JSON array. Be strictly neutral. Do not assume everything is SAP ABAP unless it explicitly mentions SAP terms.`;
+Return ONLY a JSON array.`;
 
 function stripCodeFence(s: string): string {
   return s.replace(/^```(?:json)?\s*/i, '').replace(/\s*```\s*$/, '').trim();
