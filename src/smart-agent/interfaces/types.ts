@@ -101,6 +101,10 @@ export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action' | 'chat';
 export interface Subprompt {
   type: SubpromptType;
   text: string;
+  /** Semantic context: 'sap-abap', 'math', 'general', etc. */
+  context?: string;
+  /** ID of a subprompt this one depends on, or 'independent'. */
+  dependency?: string | 'independent';
 }
 
 // ---------------------------------------------------------------------------
