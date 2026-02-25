@@ -114,8 +114,8 @@ export class SmartAgent {
         retrieved = { facts, feedback: fbR.ok ? fbR.value : [], state: sR.ok ? sR.value : [], tools: selectedMcpTools };
         finalTools = mode === 'hard' ? (selectedMcpTools as LlmTool[]) : [...(selectedMcpTools as LlmTool[]), ...externalTools];
       } else {
-        // Chat only or general actions: No SAP tools to prevent bias
-        finalTools = mode === 'hard' ? [] : externalTools;
+        // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
+        finalTools = externalTools;
       }
 
       // 3. Assemble Context once
