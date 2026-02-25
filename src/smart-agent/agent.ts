@@ -46,7 +46,7 @@ export class SmartAgent {
 
   async healthCheck(options?: CallOptions): Promise<Result<{ llm: boolean; rag: boolean; mcp: { name: string; ok: boolean; error?: string }[] }, OrchestratorError>> {
     const results = { llm: false, rag: false, mcp: [] as { name: string; ok: boolean; error?: string }[] };
-    try { const llmRes = await this.deps.mainLlm.chat([{ role: 'user', content: 'ping' }], [], { ...options, maxTokens: 1 }); results.llm = llmRes.ok; } catch { results.llm = false; }
+    try { const llmRes = await this.deps.mainLlm.chat([{ role: 'user' as const, content: 'ping' }], [], { ...options, maxTokens: 1 }); results.llm = llmRes.ok; } catch { results.llm = false; }
     const ragRes = await this.deps.ragStores.facts.healthCheck(options); results.rag = ragRes.ok;
     const mcpChecks = await Promise.all(this.deps.mcpClients.map(async client => { const tools = await client.listTools(options); return { name: 'mcp-client', ok: tools.ok, error: tools.ok ? undefined : (tools.error as any).message }; }));
     results.mcp = mcpChecks; return { ok: true, value: results };
@@ -101,10 +101,8 @@ export class SmartAgent {
 
         if (sp.type === 'chat' && mode !== 'hard') {
           const messages: Message[] = [...currentHistory, { role: 'user' as const, content: sp.text }];
-          opts?.sessionLogger?.logStep(`llm_chat_request`, { messages });
           const stream = this.deps.mainLlm.streamChat(messages, [], opts);
           for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
-          opts?.sessionLogger?.logStep(`llm_chat_response`, { subContent });
         } else {
           const ragText = await this._toEnglishForRag(sp.text, opts);
           const k = this.config.ragQueryK ?? 10;
@@ -119,18 +117,10 @@ export class SmartAgent {
           const assembleResult = await this.deps.assembler.assemble(sp, retrieved, currentHistory, opts);
           if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
 
-          // INTELLECTUAL TOOL FILTERING: If we have SAP context and SAP tools, hide general Python tools to prevent hallucinations
-          let finalToolsForIter = [...(retrieved.tools as LlmTool[])];
-          if (isSapContext && retrieved.tools.length > 0) {
-            // Keep only essential non-SAP tools if needed, but here we prioritize SAP tools to fix the SQLite hallucination
-            finalToolsForIter = [...(retrieved.tools as LlmTool[])];
-          } else {
-            finalToolsForIter = [...(retrieved.tools as LlmTool[]), ...externalTools];
-          }
+          const activeTools = mode === 'hard' ? (retrieved.tools as LlmTool[]) : [...(retrieved.tools as LlmTool[]), ...externalTools];
+          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name), finalTools: activeTools.map(t => t.name) });
 
-          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name), finalTools: finalToolsForIter.map(t => t.name) });
-
-          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, isSapContext ? [] : externalTools, finalToolsForIter);
+          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, externalTools, activeTools);
           for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
         }
         currentHistory = [...currentHistory, { role: 'user' as const, content: sp.text }, { role: 'assistant' as const, content: subContent }];
@@ -145,30 +135,15 @@ export class SmartAgent {
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
     if (this.deps.helperLlm && history.length > summarizeLimit) { const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value; }
-
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) return { ok: false, error: new OrchestratorError(classifyResult.error.message, 'CLASSIFIER_ERROR') };
     opts?.sessionLogger?.logStep('classifier_response', { subprompts: classifyResult.value });
-
     const subprompts = classifyResult.value;
     const others = subprompts.filter(sp => sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback');
     const ragStoreMap = new Map<string, IRag>([['fact', this.deps.ragStores.facts], ['feedback', this.deps.ragStores.feedback], ['state', this.deps.ragStores.state]]);
-    await Promise.allSettled(others.map(async sp => { 
-      const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); 
-    }));
-
+    await Promise.allSettled(others.map(async sp => { const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); }));
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
-  }
-
-  private async _runPipeline(textOrMessages: string | Message[], opts: CallOptions | undefined, traceId: string, pipelineT0: number): Promise<Result<SmartAgentResponse, OrchestratorError>> {
-    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    for await (const chunk of this.streamProcess(textOrMessages, opts)) {
-      if (!chunk.ok) return chunk;
-      if (chunk.value.content) content += chunk.value.content;
-      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-    }
-    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
   }
 
   private async *_runStreamingToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string, externalTools: LlmTool[], activeTools: LlmTool[]): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
@@ -186,6 +161,10 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         if (chunk.content) { content += chunk.content; yield { ok: true, value: { content: chunk.content } }; }
         if (chunk.toolCalls) {
+          // Identify tools that belong to the client (Goose/Cline)
+          const externalDeltas = chunk.toolCalls.filter(tc => externalToolNames.has(tc.name));
+          // Yield ONLY external tool calls to the client. Keep internal ones hidden.
+          if (externalDeltas.length > 0) { yield { ok: true, value: { content: '', toolCalls: externalDeltas } }; }
           for (const tc of chunk.toolCalls as any[]) {
             if (!toolCallsMap.has(tc.index)) { toolCallsMap.set(tc.index, { id: tc.id || '', name: tc.name || '', arguments: tc.arguments || '' }); }
             else { const ex = toolCallsMap.get(tc.index)!; if (tc.id) ex.id = tc.id; if (tc.name) ex.name = tc.name; if (tc.arguments) ex.arguments += tc.arguments; }
@@ -205,7 +184,11 @@ export class SmartAgent {
         for (const h of hallucinations) { messages = [...messages, { role: 'tool' as const, content: `Error: Tool "${h.name}" not found.`, tool_call_id: h.id }]; }
         continue;
       }
-      if (validExternalCalls.length > 0) { opts?.sessionLogger?.logStep('external_tool_delegation', { toolCalls: validExternalCalls }); yield { ok: true, value: { content: '', toolCalls: validExternalCalls, finishReason: 'tool_calls', usage } }; return; }
+      if (validExternalCalls.length > 0) {
+        // External calls were already yielded as deltas, just stop our loop.
+        yield { ok: true, value: { content: '', finishReason: 'tool_calls', usage } };
+        return;
+      }
       if (content || internalCalls.length > 0) messages = [...messages, { role: 'assistant' as const, content: content || null, tool_calls: internalCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
       for (const tc of internalCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
@@ -224,17 +207,6 @@ export class SmartAgent {
     const settled = await Promise.allSettled(this.deps.mcpClients.map(async client => ({ client, result: await client.listTools(opts) })));
     for (const e of settled) { if (e.status === 'fulfilled' && e.value.result.ok) { for (const t of e.value.result.value) { if (!toolClientMap.has(t.name)) { tools.push(t); toolClientMap.set(t.name, e.value.client); } } } }
     return { tools, toolClientMap };
-  }
-
-  private async _runToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string): Promise<Result<SmartAgentResponse, OrchestratorError>> {
-    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
-    const stream = this._runStreamingToolLoop(_action, retrieved, initialMessages, toolClientMap, opts, traceId, [], []);
-    for await (const chunk of stream) {
-      if (!chunk.ok) return chunk;
-      if (chunk.value.content) content += chunk.value.content;
-      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
-    }
-    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
   }
 
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
