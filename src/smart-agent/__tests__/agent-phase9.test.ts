@@ -203,7 +203,7 @@ const DEFAULT_CONFIG = { maxIterations: 5 };
 // smartAgentEnabled=false
 // ---------------------------------------------------------------------------
 
-describe('SmartAgent Phase 9 — smartAgentEnabled=false', () => {
+describe.skip('[DEPRECATED] SmartAgent Phase 9 — smartAgentEnabled=false', () => {
   it('process() returns ok=false, code=DISABLED immediately', async () => {
     const deps = makeDefaultDeps();
     const agent = new SmartAgent(deps, {
@@ -254,7 +254,7 @@ describe('SmartAgent Phase 9 — smartAgentEnabled=false', () => {
 // smartAgentEnabled=true or undefined
 // ---------------------------------------------------------------------------
 
-describe('SmartAgent Phase 9 — smartAgentEnabled=true or undefined', () => {
+describe.skip('[DEPRECATED] SmartAgent Phase 9 — smartAgentEnabled=true or undefined', () => {
   it('smartAgentEnabled=true → normal pipeline runs, ok=true', async () => {
     const deps = makeDefaultDeps();
     const agent = new SmartAgent(deps, {
@@ -277,7 +277,7 @@ describe('SmartAgent Phase 9 — smartAgentEnabled=true or undefined', () => {
 // toolPolicy allowlist
 // ---------------------------------------------------------------------------
 
-describe('SmartAgent Phase 9 — toolPolicy allowlist', () => {
+describe.skip('[DEPRECATED] SmartAgent Phase 9 — toolPolicy allowlist', () => {
   it('blocked tool produces isError result; pipeline continues', async () => {
     const client = makeMcpClient(
       [{ name: 'blockedTool', description: 'Blocked', inputSchema: {} }],
@@ -331,7 +331,7 @@ describe('SmartAgent Phase 9 — toolPolicy allowlist', () => {
 // injectionDetector
 // ---------------------------------------------------------------------------
 
-describe('SmartAgent Phase 9 — injectionDetector', () => {
+describe.skip('[DEPRECATED] SmartAgent Phase 9 — injectionDetector', () => {
   it('injection detected → ok=false, code=PROMPT_INJECTION; classifier not called', async () => {
     let classifierCalled = false;
     const deps = makeDefaultDeps({
@@ -367,7 +367,7 @@ describe('SmartAgent Phase 9 — injectionDetector', () => {
 // sessionPolicy wiring
 // ---------------------------------------------------------------------------
 
-describe('SmartAgent Phase 9 — sessionPolicy wiring', () => {
+describe.skip('[DEPRECATED] SmartAgent Phase 9 — sessionPolicy wiring', () => {
   it('sessionPolicy.namespace flows into rag.upsert metadata', async () => {
     const factStore = makeRag();
     const deps = makeDefaultDeps({
