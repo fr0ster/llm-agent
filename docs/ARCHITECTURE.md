@@ -49,6 +49,59 @@
 
 ---
 
+## Protocol Invariants & Legitimate Edge Cases
+
+This section defines protocol-level behaviors that are intentionally implemented as **required robustness**, not accidental patches.
+
+### 1. Streaming (OpenAI-Compatible SSE)
+
+- SSE chunks may arrive fragmented and out of semantic order.
+- Tool call arguments may arrive in multiple deltas and must be accumulated by `index`.
+- Usage can arrive as a separate chunk with empty `choices`.
+- `[DONE]` is terminal and the stream must emit a final completion state.
+
+Reference implementation:
+- `src/agents/base.ts` (`streamOpenAICompatible`)
+
+### 2. Tool-Call Message Integrity
+
+- Assistant messages with `tool_calls` must preserve protocol-compatible shape.
+- Orphaned `tool` messages (without matching `tool_call_id`) are invalid and must be ignored.
+- Non-assistant roles must not carry `null` content in provider payloads.
+
+Reference implementation:
+- `src/llm-providers/openai.ts` (`formatMessages`)
+- `src/llm-providers/deepseek.ts` (`formatMessages`)
+
+### 3. Hallucinated Tool Names
+
+- If the LLM emits tool calls for unknown tools, the system must not crash or execute arbitrary behavior.
+- Unknown tool calls are fed back into the conversation as tool errors to allow self-correction.
+
+Reference implementation:
+- `src/smart-agent/agent.ts` (`_runStreamingToolLoop`)
+
+### 4. Loop Safety Boundaries
+
+- Execution must stop on:
+  - abort signal,
+  - max iteration limit,
+  - max tool call limit.
+- These are hard safety constraints to prevent infinite loops and runaway tool execution.
+
+Reference implementation:
+- `src/smart-agent/agent.ts` (`streamProcess`, `_runStreamingToolLoop`)
+
+### 5. MCP Transport Resilience
+
+- MCP calls and tool listing can fail transiently.
+- Client performs reconnect + retry once and falls back safely (cached tools or error result).
+
+Reference implementation:
+- `src/mcp/client.ts` (`listTools`, `callTool`)
+
+---
+
 ## Project Structure
 
 ```
