@@ -64,28 +64,51 @@ agent:
   showReasoning: false                # Explain strategy at start of response
   historyAutoSummarizeLimit: 10       # History length to trigger compression
 
+# --- Advanced Multi-Model Pipeline (optional) -------------------------------
+# Use this section to assign different models for different internal tasks.
+# pipeline:
+#   llm:
+#     main:
+#       provider: deepseek            # deepseek | openai | anthropic
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
+#       temperature: 0.7
+#     classifier:                     # optional; if absent, main config is reused
+#       provider: openai
+#       apiKey: \${OPENAI_API_KEY}
+#       model: gpt-4o-mini
+#       temperature: 0.1
+#     helper:                         # optional; if absent, main config is reused
+#       provider: openai
+#       apiKey: \${OPENAI_API_KEY}
+#       model: gpt-4o-mini
+#       temperature: 0.1
+#
+#   rag:
+#     facts:
+#       type: ollama
+#       url: http://localhost:11434
+#       model: nomic-embed-text
+#       dedupThreshold: 0.92
+#     feedback:
+#       type: in-memory
+#     state:
+#       type: in-memory
+#
+#   mcp:
+#     - type: http
+#       url: http://localhost:3001/mcp/stream/http
+
 # prompts:
 #   system: "You are a helpful assistant specialized in SAP ABAP development."
 #   classifier: |
-#     You are an intent classifier. Decompose the user message into one or more subprompts and classify each as:
-#       - "fact"     : critical technical constraints, rules, or domain knowledge (e.g. "ABAP Cloud forbids direct table access").
-#       - "state"    : project context, team roles, or temporary environmental observations (e.g. "Kristina approves decisions", "Sky is blue").
-#       - "feedback" : correction or evaluation of your previous response.
-#       - "chat"     : greetings, simple math, or very short small talk (e.g. "Hello", "2+2").
-#       - "action"   : DEFAULT CATEGORY. Any request to perform a task, answer a technical question, or anything that doesn't fit the above.
-#     Return ONLY a valid JSON array of { "type": "<type>", "text": "<subprompt text>" }.
-#     If in doubt, always use "action".
+#     You are an intent classifier... (see source for full default prompt)
 #   reasoning: |
-#     IMPORTANT: Always start your response with a brief <reasoning> block.
-#     Explain: 
-#     1. Which tools you selected and why.
-#     2. How you interpreted the retrieved context.
-#     3. Your step-by-step strategy for the current turn.
-#     The reasoning block must be visible to the user and placed at the very beginning.
+#     IMPORTANT: Always start your response with a brief <reasoning> block...
 #   ragTranslate: |
-#     Translate the following user request to English. If it contains technical terms, preserve and expand them with technical synonyms. If it is general chat, just translate it. Reply with only the expanded English terms, no explanation.
+#     Translate the user request to English for search purposes...
 #   historySummary: |
-#     Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.
+#     Summarize the conversation so far...
 
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
