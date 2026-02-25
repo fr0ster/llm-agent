@@ -445,12 +445,15 @@ export class SmartServer {
       return systemMsg ? extractText(systemMsg.content) : '';
     })();
 
-    // Cline uses XML tool calls in content; JSON function-calling is incompatible.
-    // Route Cline to passthrough regardless of server mode so it gets its own
-    // XML-format responses and can execute tools correctly.
-    const isCline = (serverMode === 'hybrid' || serverMode === 'smart') && systemText.trimStart().startsWith('You are Cline');
-    const usePass = serverMode === 'passthrough' || isCline;
-    const useHard = serverMode === 'hard';
+    // Cline uses XML tool calls in content which is incompatible with JSON function-calling.
+    // In smart mode: route Cline to hard pipeline — agent executes MCP tools itself and
+    //   returns clean text. Cline never sees JSON tool_calls. Works even when Cline has
+    //   no SAP MCP configured, because the agent holds the MCP connection.
+    // In hybrid mode: route Cline to passthrough — preserves Cline's own XML tool protocol
+    //   (useful when Cline has its own full MCP setup and no agent MCP overlap).
+    const isCline = systemText.trimStart().startsWith('You are Cline');
+    const usePass = serverMode === 'passthrough' || (serverMode === 'hybrid' && isCline);
+    const useHard = serverMode === 'hard' || (serverMode === 'smart' && isCline);
     const useSmart = !usePass && !useHard;
 
     const effectiveMode = usePass ? 'passthrough' : useHard ? 'hard' : 'smart';
@@ -517,13 +520,29 @@ export class SmartServer {
       }
     } else if (useHard) {
       // Hard mode: client system prompt and tools ignored; agent builds everything from user text.
-      const text = extractText(userMessages[userMessages.length - 1].content);
+      // When Cline is the caller, it requires every response to contain an XML tool call.
+      // We wrap the agent's text result in <attempt_completion> so Cline accepts it as a
+      // completed task without expecting further XML tool interactions.
+      //
+      // Cline embeds <task>...</task> in the user message alongside <environment_details>
+      // and task_progress blocks. Extract only the <task> content so the classifier
+      // sees the pure user intent, not file-system state that would bias tool selection.
+      const rawText = extractText(userMessages[userMessages.length - 1].content);
+      const taskMatch = rawText.match(/<task>([\s\S]*?)<\/task>/);
+      const text = taskMatch ? taskMatch[1].trim() : rawText;
       if (body.stream === true) {
-        finalContent = await this._handleSmartStream(res, smartAgent, text, undefined, undefined, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
+        const rawContent = await this._handleSmartStream(res, smartAgent, text, undefined, undefined, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage, isCline);
+        finalContent = rawContent;
       } else {
         const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
         log({ event: 'request_done', mode: 'hard', ok: result.ok, durationMs: Date.now() - t0 });
-        finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+        let hardContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
+        // Wrap for Cline: it expects every response to contain an XML tool call.
+        // <attempt_completion> signals task done and is accepted by Cline as a valid tool use.
+        if (isCline && !hardContent.includes('<attempt_completion>')) {
+          hardContent = `<attempt_completion>\n<result>\n${hardContent}\n</result>\n</attempt_completion>`;
+        }
+        finalContent = hardContent;
         const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
         this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
       }
@@ -614,6 +633,7 @@ export class SmartServer {
     t0: number,
     includeUsage: boolean,
     getUsage: () => TokenUsage,
+    wrapForCline = false,
   ): Promise<string> {
     const id = `chatcmpl-${randomUUID()}`;
     const created = Math.floor(Date.now() / 1000);
@@ -634,6 +654,15 @@ export class SmartServer {
 
     let ok = true;
     let accumulated = '';
+
+    // For Cline hard mode: emit opening <attempt_completion> wrapper before pipeline content.
+    // Cline requires every response to contain an XML tool use. The agent returns plain text,
+    // so we wrap it in <attempt_completion><result>…</result></attempt_completion>.
+    // We send the prefix first so even an empty-content pipeline yields a valid Cline response.
+    if (wrapForCline) {
+      sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: '<attempt_completion>\n<result>\n' }, finish_reason: null }] });
+    }
+
     try {
       for await (const chunk of smartAgent.processStream(text, streamOpts)) {
         if (chunk.type === 'text') {
@@ -665,6 +694,10 @@ export class SmartServer {
             }],
           });
         } else if (chunk.type === 'done') {
+          // For Cline: close the wrapper before the finish_reason event.
+          if (wrapForCline) {
+            sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: '\n</result>\n</attempt_completion>' }, finish_reason: null }] });
+          }
           const finishReason: 'stop' | 'length' | 'tool_calls' =
             chunk.finishReason === 'length' ? 'length' :
             chunk.finishReason === 'tool_calls' ? 'tool_calls' : 'stop';
@@ -674,6 +707,9 @@ export class SmartServer {
       }
     } catch {
       ok = false;
+      if (wrapForCline) {
+        sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { content: '\n</result>\n</attempt_completion>' }, finish_reason: null }] });
+      }
       sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] });
     }
 

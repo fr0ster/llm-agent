@@ -36,21 +36,25 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 5
-  ragMinScore: 0.55                   # min cosine score to offer a tool to LLM (0 = off)
-                                      # nomic-embed-text scores ~0.40 for unrelated pairs — use 0.50+
+  ragMinScore: 0.45                   # min cosine score to offer a tool to LLM (0 = off)
+                                      # nomic-embed-text scores ~0.40 for unrelated pairs — use 0.45+
   # timeoutMs: 120000                 # overall request pipeline timeout in ms
 
 # ---------------------------------------------------------------------------
 # Prompts — all optional. Uncomment and edit to override built-in defaults.
 # ---------------------------------------------------------------------------
-# prompts:
-#
-#   # Prepended to every LLM context window. Sets persona and tool-use policy.
-#   system: >-
-#     You are a helpful AI assistant. Answer any question you can directly
-#     and accurately. When the user request requires a tool, use the available
-#     tools. For all other requests — including general knowledge,
-#     calculations, or conversation — answer without tools.
+prompts:
+  # Prepended to every LLM context window. Sets persona and tool-use policy.
+  system: >-
+    You are a helpful AI assistant. Answer any question you can directly
+    and accurately. When the user request requires a tool, use the available
+    tools. For all other requests — including general knowledge,
+    calculations, or conversation — answer without tools.
+
+    ## Tool selection rules
+    - To read the STRUCTURE, DEFINITION, or FIELDS of an ABAP table → use GetTable.
+    - To read the DATA, ROWS, or CONTENTS of an ABAP table → use GetTableContents.
+    - Never call GetTableContents when the user asks for structure, fields, or metadata.
 #
 #   # NOTE: classifier prompt override is not currently wired — the two-step
 #   # classifier (stores + action-graph) uses its own built-in JSON schemas.
