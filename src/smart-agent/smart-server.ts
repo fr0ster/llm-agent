@@ -531,12 +531,57 @@ export class SmartServer {
       if (body.stream === true) {
         finalContent = await this._handleSmartStream(res, smartAgent, text, normalizedMessages, clientTools, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
       } else {
-        // Non-streaming smart mode: use process() with hard fallback (clientMessages not supported by process())
-        const result = await smartAgent.process(text, { trace: { traceId: requestId }, signal: abortCtrl.signal });
-        log({ event: 'request_done', mode: 'smart', ok: result.ok, durationMs: Date.now() - t0 });
-        finalContent = result.ok ? (result.value.content || '(no response)') : `Error: ${result.error.message}`;
-        const finalFinishReason: 'stop' | 'length' = result.ok ? mapStopReason(result.value.stopReason) : 'stop';
-        this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+        // Non-streaming smart mode: collect from processStream so clientMessages are preserved.
+        let accText = '';
+        let accToolCalls: Array<{ id: string; name: string; arguments: Record<string, unknown> }> | undefined;
+        let nonStreamFinish: 'stop' | 'length' | 'tool_calls' = 'stop';
+        const streamOpts = {
+          trace: { traceId: requestId },
+          signal: abortCtrl.signal,
+          clientMessages: normalizedMessages,
+          ...(clientTools.length > 0 ? { clientTools } : {}),
+        };
+        try {
+          for await (const chunk of smartAgent.processStream(text, streamOpts)) {
+            if (chunk.type === 'text') accText += chunk.delta;
+            else if (chunk.type === 'client_tool_calls') accToolCalls = chunk.toolCalls;
+            else if (chunk.type === 'done') {
+              if (chunk.finishReason === 'length') nonStreamFinish = 'length';
+              else if (chunk.finishReason === 'tool_calls') nonStreamFinish = 'tool_calls';
+            }
+          }
+        } catch (err) {
+          log({ event: 'request_done', mode: 'smart', ok: false, durationMs: Date.now() - t0 });
+          finalContent = `Error: ${String(err)}`;
+          this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, 'stop');
+          return;
+        }
+        log({ event: 'request_done', mode: 'smart', ok: true, durationMs: Date.now() - t0 });
+        if (nonStreamFinish === 'tool_calls' && accToolCalls?.length) {
+          finalContent = accText;
+          const nsId = `chatcmpl-${randomUUID()}`;
+          const nsCreated = Math.floor(Date.now() / 1000);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({
+            id: nsId, object: 'chat.completion', created: nsCreated, model: 'smart-agent',
+            choices: [{
+              index: 0,
+              message: {
+                role: 'assistant',
+                content: accText || null,
+                tool_calls: accToolCalls.map((tc, idx) => ({
+                  index: idx, id: tc.id, type: 'function',
+                  function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+                })),
+              },
+              finish_reason: 'tool_calls',
+            }],
+            usage: { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0 },
+          }));
+        } else {
+          finalContent = accText || '(no response)';
+          this._sendResponse(res, false, body.stream_options?.include_usage ?? false, getUsage, finalContent, nonStreamFinish === 'length' ? 'length' : 'stop');
+        }
       }
     } else {
       // Unreachable fallback

@@ -516,10 +516,9 @@ export class SmartAgent {
         .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
         .map((id) => id.slice('tool:'.length)),
     );
-    const toolsVectorized = facts.length > 0;
-    const selectedTools = toolsVectorized
-      ? mcpTools.filter((t) => ragToolNames.has(t.name))
-      : mcpTools;
+    // Trust RAG: only include tools that RAG found relevant.
+    // If RAG returned nothing (unrelated actions like "install ripgrep"), ourTools = [].
+    const selectedTools = mcpTools.filter((t) => ragToolNames.has(t.name));
 
     logger?.log({
       type: 'tools_selected',
@@ -1014,27 +1013,18 @@ export class SmartAgent {
       ? facts.filter((r) => r.score >= minScore)
       : facts;
 
-    // When no actions were found, no MCP tools are needed — the LLM should
-    // only use client tools. Using all MCP tools here would send 100+ tool
-    // schemas to the LLM for no reason, inflating context and causing it to
-    // call irrelevant SAP tools (mirrors v1.1.0-beta.3 isSapRequired logic).
-    let ourTools: LlmTool[];
-    if (ordered.length === 0) {
-      ourTools = [];
-    } else {
-      const ragToolNames = new Set(
-        relevantFacts
-          .map((r) => r.metadata.id as string | undefined)
-          .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
-          .map((id) => id.slice('tool:'.length)),
-      );
-      const toolsVectorized = facts.length > 0;
-      ourTools = (
-        toolsVectorized
-          ? mcpTools.filter((t) => ragToolNames.has(t.name))
-          : mcpTools
-      ) as LlmTool[];
-    }
+    // Select only MCP tools that RAG found relevant to the classified actions.
+    // When no actions exist or RAG returned nothing for the actions (e.g. shell
+    // commands that have no SAP relevance), ourTools = [] — LLM uses only client tools.
+    const ragToolNames = new Set(
+      relevantFacts
+        .map((r) => r.metadata.id as string | undefined)
+        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+        .map((id) => id.slice('tool:'.length)),
+    );
+    const ourTools: LlmTool[] = ordered.length === 0
+      ? []
+      : mcpTools.filter((t) => ragToolNames.has(t.name)) as LlmTool[];
 
     logger?.log({
       type: 'tools_selected',
