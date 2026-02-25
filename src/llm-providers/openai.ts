@@ -45,7 +45,7 @@ export class OpenAIProvider extends BaseLLMProvider {
     });
   }
 
-  async chat(messages: Message[], tools?: any[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
     try {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
@@ -63,14 +63,21 @@ export class OpenAIProvider extends BaseLLMProvider {
         finishReason: choice.finish_reason,
         raw: response.data,
       };
-    } catch (error: any) {
-      throw new Error(
-        `OpenAI API error: ${error.response?.data?.error?.message || error.message}`,
-      );
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? (error.response?.data as { error?: { message?: string } })?.error
+            ?.message || error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(`OpenAI API error: ${message}`);
     }
   }
 
-  async *streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse> {
+  async *streamChat(
+    messages: Message[],
+    tools?: unknown[],
+  ): AsyncIterable<LLMResponse> {
     try {
       const response = await this.client.post(
         '/chat/completions',
@@ -111,42 +118,53 @@ export class OpenAIProvider extends BaseLLMProvider {
                 raw: parsed,
               };
             }
-          } catch (e) {
+          } catch (_e) {
             // Ignore parse errors for incomplete chunks
           }
         }
       }
-    } catch (error: any) {
-      throw new Error(
-        `OpenAI Streaming error: ${error.response?.data?.error?.message || error.message}`,
-      );
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? (error.response?.data as { error?: { message?: string } })?.error
+            ?.message || error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(`OpenAI Streaming error: ${message}`);
     }
   }
 
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */
-  private formatMessages(messages: Message[]): any[] {
-    const formatted: any[] = [];
+  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+    const formatted: Array<Record<string, unknown>> = [];
 
     for (const msg of messages) {
       if (msg.role === 'tool' && !msg.tool_call_id) {
         continue;
       }
 
-      const entry: any = {
+      const entry: Record<string, unknown> = {
         role: msg.role,
-        content: msg.content ?? "",
+        content: msg.content ?? '',
       };
 
-      if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      if (
+        msg.role === 'assistant' &&
+        msg.tool_calls &&
+        msg.tool_calls.length > 0
+      ) {
         entry.tool_calls = msg.tool_calls;
         entry.content = msg.content || null;
       }
 
       if (msg.role === 'tool') {
         entry.tool_call_id = msg.tool_call_id;
-        entry.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? "");
+        entry.content =
+          typeof msg.content === 'string'
+            ? msg.content
+            : JSON.stringify(msg.content ?? '');
       }
 
       formatted.push(entry);

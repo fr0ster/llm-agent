@@ -4,7 +4,6 @@ import {
   AssemblerError,
   type CallOptions,
   type McpTool,
-  type McpToolResult,
   type RagResult,
   type Result,
   type Subprompt,
@@ -137,14 +136,31 @@ function applyTokenBudget(
   };
 
   while (totalTokens() > maxTokens) {
-    if (mutableTools.length > 0) { mutableTools = mutableTools.slice(0, -1); continue; }
-    if (mutableState.length > 0) { mutableState = mutableState.slice(0, -1); continue; }
-    if (mutableFeedback.length > 0) { mutableFeedback = mutableFeedback.slice(0, -1); continue; }
-    if (mutableFacts.length > 0) { mutableFacts = mutableFacts.slice(0, -1); continue; }
+    if (mutableTools.length > 0) {
+      mutableTools = mutableTools.slice(0, -1);
+      continue;
+    }
+    if (mutableState.length > 0) {
+      mutableState = mutableState.slice(0, -1);
+      continue;
+    }
+    if (mutableFeedback.length > 0) {
+      mutableFeedback = mutableFeedback.slice(0, -1);
+      continue;
+    }
+    if (mutableFacts.length > 0) {
+      mutableFacts = mutableFacts.slice(0, -1);
+      continue;
+    }
     break;
   }
 
-  return { facts: mutableFacts, feedback: mutableFeedback, state: mutableState, tools: mutableTools };
+  return {
+    facts: mutableFacts,
+    feedback: mutableFeedback,
+    state: mutableState,
+    tools: mutableTools,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -182,9 +198,15 @@ export class ContextAssembler implements IContextAssembler {
         return { ok: false, error: new AssemblerError('Aborted', 'ABORTED') };
       }
 
-      const sortedFacts = [...retrieved.facts].sort((a, b) => b.score - a.score);
-      const sortedFeedback = [...retrieved.feedback].sort((a, b) => b.score - a.score);
-      const sortedState = [...retrieved.state].sort((a, b) => b.score - a.score);
+      const sortedFacts = [...retrieved.facts].sort(
+        (a, b) => b.score - a.score,
+      );
+      const sortedFeedback = [...retrieved.feedback].sort(
+        (a, b) => b.score - a.score,
+      );
+      const sortedState = [...retrieved.state].sort(
+        (a, b) => b.score - a.score,
+      );
       const tools = [...retrieved.tools];
 
       let finalFacts = sortedFacts;
@@ -193,35 +215,54 @@ export class ContextAssembler implements IContextAssembler {
       let finalTools = tools;
 
       if (this.maxTokens !== undefined) {
-        const budgeted = applyTokenBudget(sortedFacts, sortedFeedback, sortedState, tools, estimateTokens(action.text), this.maxTokens, this.includeProvenance);
+        const budgeted = applyTokenBudget(
+          sortedFacts,
+          sortedFeedback,
+          sortedState,
+          tools,
+          estimateTokens(action.text),
+          this.maxTokens,
+          this.includeProvenance,
+        );
         finalFacts = budgeted.facts;
         finalFeedback = budgeted.feedback;
         finalState = budgeted.state;
         finalTools = budgeted.tools;
       }
 
-      const systemContent = buildSystemContent(finalFacts, finalFeedback, finalState, finalTools, this.includeProvenance);
+      const systemContent = buildSystemContent(
+        finalFacts,
+        finalFeedback,
+        finalState,
+        finalTools,
+        this.includeProvenance,
+      );
       const messages: Message[] = [];
 
       const preamble = this.systemPromptPreamble ?? '';
       if (preamble || systemContent || this.showReasoning) {
         const parts = [
           preamble,
-          this.showReasoning ? (this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION) : '',
-          systemContent
+          this.showReasoning
+            ? this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION
+            : '',
+          systemContent,
         ].filter(Boolean);
         messages.push({ role: 'system', content: parts.join('\n\n') });
       }
 
       if (history.length > 0) {
-        messages.push(...history.filter(m => m.role !== 'system'));
+        messages.push(...history.filter((m) => m.role !== 'system'));
       } else {
         messages.push({ role: 'user', content: action.text });
       }
 
       return { ok: true, value: messages };
     } catch (err) {
-      return { ok: false, error: new AssemblerError(String(err), 'ASSEMBLER_ERROR') };
+      return {
+        ok: false,
+        error: new AssemblerError(String(err), 'ASSEMBLER_ERROR'),
+      };
     }
   }
 }

@@ -48,13 +48,16 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
     method: string;
     url: string;
     headers?: Record<string, string>;
-    data?: any;
-  }) => Promise<{ data: any }>;
+    data?: unknown;
+  }) => Promise<{ data: Record<string, unknown> }>;
 
   /**
    * Optional logger instance
    */
-  log?: any;
+  log?: {
+    debug(message: string, meta?: Record<string, unknown>): void;
+    error(message: string, meta?: Record<string, unknown>): void;
+  };
 }
 
 /**
@@ -67,7 +70,7 @@ export class SapCoreAIProvider extends BaseLLMProvider {
   private destinationName: string;
   private model: string;
   private httpClient: SapCoreAIConfig['httpClient'];
-  private log?: any; // Optional logger
+  private log?: SapCoreAIConfig['log']; // Optional logger
 
   constructor(config: SapCoreAIConfig) {
     super(config);
@@ -99,7 +102,7 @@ export class SapCoreAIProvider extends BaseLLMProvider {
         max_tokens: this.config.maxTokens || 2000,
       };
 
-      let response: { data: any };
+      let response: { data: Record<string, unknown> };
 
       if (this.httpClient) {
         // Use provided HTTP client (typically SAP Cloud SDK)
@@ -132,7 +135,9 @@ export class SapCoreAIProvider extends BaseLLMProvider {
         );
       }
 
-      const choice = response.data.choices?.[0];
+      const choice = (
+        response.data.choices as Array<Record<string, unknown>>
+      )?.[0];
 
       if (!choice) {
         throw new Error('No response from SAP Core AI');
@@ -145,33 +150,41 @@ export class SapCoreAIProvider extends BaseLLMProvider {
       }
 
       return {
-        content: choice.message?.content || '',
-        finishReason: choice.finish_reason,
+        content:
+          ((choice.message as Record<string, unknown> | undefined)
+            ?.content as string) || '',
+        finishReason: choice.finish_reason as string | undefined,
         raw: response.data,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      const responseData =
+        error instanceof Error && 'response' in error
+          ? (error as { response?: { data?: unknown } }).response?.data
+          : undefined;
       if (this.log) {
         this.log.error('SAP Core AI API error', {
           destination: this.destinationName,
-          error: error.message,
-          response: error.response?.data,
+          error: message,
+          response: responseData as Record<string, unknown> | undefined,
         });
       }
 
-      throw new Error(
-        `SAP Core AI API error: ${error.response?.data?.error?.message || error.message}`,
-      );
+      throw new Error(`SAP Core AI API error: ${message}`);
     }
   }
 
   async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
+    if (_messages.length < 0) {
+      yield { content: '', finishReason: 'error' };
+    }
     throw new Error('Streaming is not implemented for SapCoreAIProvider');
   }
 
   /**
    * Format messages for SAP Core AI API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content,

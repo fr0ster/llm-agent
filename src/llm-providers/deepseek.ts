@@ -29,7 +29,7 @@ export class DeepSeekProvider extends BaseLLMProvider {
     });
   }
 
-  async chat(messages: Message[], tools?: any[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
     try {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
@@ -40,13 +40,26 @@ export class DeepSeekProvider extends BaseLLMProvider {
         max_tokens: this.config.maxTokens || 2000,
       });
       const choice = response.data.choices[0];
-      return { content: choice.message.content || '', finishReason: choice.finish_reason, raw: response.data };
-    } catch (error: any) {
-      throw new Error(`DeepSeek API error: ${error.response?.data?.error?.message || error.message}`);
+      return {
+        content: choice.message.content || '',
+        finishReason: choice.finish_reason,
+        raw: response.data,
+      };
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? (error.response?.data as { error?: { message?: string } })?.error
+            ?.message || error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(`DeepSeek API error: ${message}`);
     }
   }
 
-  async *streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse> {
+  async *streamChat(
+    messages: Message[],
+    tools?: unknown[],
+  ): AsyncIterable<LLMResponse> {
     try {
       const response = await this.client.post(
         '/chat/completions',
@@ -77,13 +90,23 @@ export class DeepSeekProvider extends BaseLLMProvider {
             const parsed = JSON.parse(data);
             const choice = parsed.choices[0];
             if (choice?.delta) {
-              yield { content: choice.delta.content || '', finishReason: choice.finish_reason, raw: parsed };
+              yield {
+                content: choice.delta.content || '',
+                finishReason: choice.finish_reason,
+                raw: parsed,
+              };
             }
-          } catch (e) {}
+          } catch (_e) {}
         }
       }
-    } catch (error: any) {
-      throw new Error(`DeepSeek Streaming error: ${error.response?.data?.error?.message || error.message}`);
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? (error.response?.data as { error?: { message?: string } })?.error
+            ?.message || error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(`DeepSeek Streaming error: ${message}`);
     }
   }
 
@@ -91,14 +114,21 @@ export class DeepSeekProvider extends BaseLLMProvider {
    * Format messages with strict protocol enforcement.
    * Drops orphaned tool messages and ensures correct content types.
    */
-  private formatMessages(messages: Message[]): any[] {
-    const formatted: any[] = [];
+  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+    const formatted: Array<Record<string, unknown>> = [];
     const knownToolCallIds = new Set<string>();
 
     for (const msg of messages) {
-      const entry: any = { role: msg.role, content: msg.content ?? "" };
+      const entry: Record<string, unknown> = {
+        role: msg.role,
+        content: msg.content ?? '',
+      };
 
-      if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+      if (
+        msg.role === 'assistant' &&
+        msg.tool_calls &&
+        msg.tool_calls.length > 0
+      ) {
         entry.tool_calls = msg.tool_calls;
         entry.content = msg.content || null; // Protocol requirement
         for (const tc of msg.tool_calls) if (tc.id) knownToolCallIds.add(tc.id);
@@ -106,13 +136,18 @@ export class DeepSeekProvider extends BaseLLMProvider {
 
       if (msg.role === 'tool') {
         // Drop tool messages that don't have a matching call ID in history
-        if (!msg.tool_call_id || !knownToolCallIds.has(msg.tool_call_id)) continue;
+        if (!msg.tool_call_id || !knownToolCallIds.has(msg.tool_call_id))
+          continue;
         entry.tool_call_id = msg.tool_call_id;
-        entry.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? "");
+        entry.content =
+          typeof msg.content === 'string'
+            ? msg.content
+            : JSON.stringify(msg.content ?? '');
       }
 
       // Final safety check: non-assistant roles MUST have string content
-      if (entry.role !== 'assistant' && entry.content === null) entry.content = "";
+      if (entry.role !== 'assistant' && entry.content === null)
+        entry.content = '';
 
       formatted.push(entry);
     }

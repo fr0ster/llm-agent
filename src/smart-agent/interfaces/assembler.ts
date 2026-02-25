@@ -6,7 +6,6 @@ import type {
   RagResult,
   Result,
   Subprompt,
-  ToolCallRecord,
 } from './types.js';
 
 export interface IContextAssembler {

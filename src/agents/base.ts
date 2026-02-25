@@ -9,7 +9,6 @@
  * This base class provides common logic, subclasses implement LLM-specific tool handling.
  */
 
-import type { LLMProvider } from '../llm-providers/base.js';
 import { type MCPClientConfig, MCPClientWrapper } from '../mcp/client.js';
 import type { AgentResponse, AgentStreamChunk, Message } from '../types.js';
 
@@ -29,13 +28,20 @@ export interface BaseAgentConfig {
   maxIterations?: number;
 }
 
+export interface AgentCallOptions {
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  stop?: string[];
+}
+
 /**
  * Base Agent class - provides common logic for all agent implementations
  */
 export abstract class BaseAgent {
   protected mcpClient: MCPClientWrapper;
   protected conversationHistory: Message[] = [];
-  protected tools: any[] = [];
+  protected tools: unknown[] = [];
 
   constructor(config: BaseAgentConfig) {
     // Initialize MCP client
@@ -59,7 +65,7 @@ export abstract class BaseAgent {
       await this.mcpClient.connect();
       // Load tools once connected
       this.tools = await this.mcpClient.listTools();
-    } catch (error: any) {
+    } catch (error: unknown) {
       // If connection fails, agent will work without tools (LLM-only mode)
       // Set empty tools array to ensure agent can still process messages
       this.tools = [];
@@ -97,10 +103,12 @@ export abstract class BaseAgent {
         message: llmResponse.content,
         raw: llmResponse.raw,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return {
         message: '',
-        error: error.message || 'Agent processing failed',
+        error: errorMessage || 'Agent processing failed',
       };
     }
   }
@@ -111,8 +119,8 @@ export abstract class BaseAgent {
    */
   protected abstract callLLMWithTools(
     messages: Message[],
-    tools: any[],
-    options?: any,
+    tools: unknown[],
+    options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }>;
 
   /**
@@ -120,8 +128,8 @@ export abstract class BaseAgent {
    */
   protected abstract streamLLMWithTools(
     messages: Message[],
-    tools: any[],
-    options?: any,
+    tools: unknown[],
+    options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown>;
 
   /**
@@ -131,8 +139,7 @@ export abstract class BaseAgent {
   protected async *streamOpenAICompatible(
     url: string,
     headers: Record<string, string>,
-    // biome-ignore lint/suspicious/noExplicitAny: request body has no stable type
-    body: Record<string, any>,
+    body: Record<string, unknown>,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const res = await fetch(url, {
       method: 'POST',
@@ -175,8 +182,7 @@ export abstract class BaseAgent {
           const data = trimmed.slice(6);
           if (data === '[DONE]') continue;
 
-          // biome-ignore lint/suspicious/noExplicitAny: raw SSE JSON has no stable type
-          let chunk: any;
+          let chunk: Record<string, unknown>;
           try {
             chunk = JSON.parse(data);
           } catch {
@@ -184,7 +190,9 @@ export abstract class BaseAgent {
           }
 
           if (Array.isArray(chunk.choices) && chunk.choices.length === 0) {
-            const usage = chunk.usage;
+            const usage = chunk.usage as
+              | { prompt_tokens?: number; completion_tokens?: number }
+              | undefined;
             if (usage) {
               yield {
                 type: 'usage',
@@ -195,7 +203,14 @@ export abstract class BaseAgent {
             continue;
           }
 
-          const choice = chunk.choices?.[0];
+          const choice = (
+            chunk.choices as Array<Record<string, unknown>>
+          )?.[0] as
+            | {
+                delta?: Record<string, unknown>;
+                finish_reason?: string;
+              }
+            | undefined;
           if (!choice) continue;
           const delta = choice.delta ?? {};
 
@@ -204,7 +219,11 @@ export abstract class BaseAgent {
           }
 
           if (Array.isArray(delta.tool_calls)) {
-            for (const tc of delta.tool_calls) {
+            for (const tc of delta.tool_calls as Array<{
+              index: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>) {
               const index = tc.index as number;
               if (!toolCallMap.has(index)) {
                 toolCallMap.set(index, {
@@ -214,7 +233,10 @@ export abstract class BaseAgent {
                 });
               }
               if (tc.function?.arguments) {
-                toolCallMap.get(index)!.arguments += tc.function.arguments as string;
+                const accumulated = toolCallMap.get(index);
+                if (accumulated) {
+                  accumulated.arguments += tc.function.arguments as string;
+                }
               }
             }
           }

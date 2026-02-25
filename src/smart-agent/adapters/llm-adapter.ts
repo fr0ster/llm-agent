@@ -8,7 +8,10 @@
  */
 
 import type { BaseAgent } from '../../agents/base.js';
-import type { AgentStreamChunk as CoreAgentStreamChunk, Message } from '../../types.js';
+import type {
+  AgentStreamChunk as CoreAgentStreamChunk,
+  Message,
+} from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
 import {
   type CallOptions,
@@ -64,15 +67,13 @@ function parseProviderResponse(raw: {
   }
 
   const toolCalls: LlmToolCall[] = [];
-  let usage: LlmResponse['usage'] = undefined;
+  let usage: LlmResponse['usage'];
 
   // Extract usage
   if (providerRaw.usage) {
     usage = {
       promptTokens:
-        providerRaw.usage.prompt_tokens ??
-        providerRaw.usage.input_tokens ??
-        0,
+        providerRaw.usage.prompt_tokens ?? providerRaw.usage.input_tokens ?? 0,
       completionTokens:
         providerRaw.usage.completion_tokens ??
         providerRaw.usage.output_tokens ??
@@ -184,7 +185,7 @@ function parseStreamChunk(
   // OpenAI / DeepSeek format for chunks
   if (providerRaw.choices?.[0]?.delta) {
     const delta = providerRaw.choices[0].delta;
-    const toolCalls: any[] = [];
+    const toolCalls: Array<Record<string, unknown>> = [];
 
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
@@ -199,7 +200,10 @@ function parseStreamChunk(
 
     return {
       content: delta.content || '',
-      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      toolCalls:
+        toolCalls.length > 0
+          ? (toolCalls as unknown as LlmToolCall[])
+          : undefined,
       finishReason: providerRaw.choices[0].finish_reason || undefined,
     };
   }
@@ -231,7 +235,11 @@ export class LlmAdapter implements ILlm {
       // documented technical debt — see class-level note above.
       const raw = await withAbort(
         // biome-ignore lint/suspicious/noExplicitAny: intentional protected-access workaround
-        (this.agent as any).callLLMWithTools(messages, mcpTools, options) as Promise<{
+        (this.agent as any).callLLMWithTools(
+          messages,
+          mcpTools,
+          options,
+        ) as Promise<{
           content: string;
           raw?: unknown;
         }>,

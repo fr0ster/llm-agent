@@ -1,8 +1,5 @@
 import type { IEmbedder } from '../interfaces/rag.js';
-import {
-  type CallOptions,
-  RagError,
-} from '../interfaces/types.js';
+import { type CallOptions, RagError } from '../interfaces/types.js';
 
 export interface OpenAiEmbedderConfig {
   /** API key for OpenAI-compatible service */
@@ -20,7 +17,10 @@ export class OpenAiEmbedder implements IEmbedder {
 
   constructor(config: OpenAiEmbedderConfig) {
     this.apiKey = config.apiKey;
-    this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(/\/$/, '');
+    this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(
+      /\/$/,
+      '',
+    );
     this.model = config.model ?? 'text-embedding-3-small';
 
     if (!this.apiKey) {
@@ -37,9 +37,9 @@ export class OpenAiEmbedder implements IEmbedder {
       try {
         const res = await fetch(url, {
           method: 'POST',
-          headers: { 
+          headers: {
             'Content-Type': 'application/json',
-            'Authorization': `Bearer ${this.apiKey}`
+            Authorization: `Bearer ${this.apiKey}`,
           },
           body: JSON.stringify({ model: this.model, input: text }),
           signal: options?.signal,
@@ -53,16 +53,21 @@ export class OpenAiEmbedder implements IEmbedder {
           );
         }
 
-        const json = (await res.json()) as { data: Array<{ embedding: number[] }> };
+        const json = (await res.json()) as {
+          data: Array<{ embedding: number[] }>;
+        };
         return json.data[0].embedding;
-      } catch (err: any) {
-        lastError = err;
-        if (err.name === 'AbortError') throw err;
-        const delay = 500 * (2 ** attempt);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (err instanceof Error && err.name === 'AbortError') throw err;
+        const delay = 500 * 2 ** attempt;
+        await new Promise((resolve) => setTimeout(resolve, delay));
       }
     }
-    
-    throw lastError || new RagError('OpenAI embed failed after retries', 'EMBED_ERROR');
+
+    throw (
+      lastError ||
+      new RagError('OpenAI embed failed after retries', 'EMBED_ERROR')
+    );
   }
 }

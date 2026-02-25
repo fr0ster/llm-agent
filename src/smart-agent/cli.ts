@@ -63,14 +63,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { configDotenv } from 'dotenv';
-import type { SmartServerConfig } from './smart-server.js';
-import { SmartServer } from './smart-server.js';
 import {
   generateConfigTemplate,
   loadYamlConfig,
-  resolveSmartServerConfig,
   type ResolveConfigArgs,
+  resolveSmartServerConfig,
 } from './config.js';
+import type { SmartServerConfig } from './smart-server.js';
+import { SmartServer } from './smart-server.js';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing — must happen before dotenv so --env is available
@@ -78,36 +78,37 @@ import {
 
 const { values: args } = parseArgs({
   options: {
-    env:                  { type: 'string' },
-    config:               { type: 'string',  short: 'c' },
-    port:                 { type: 'string',  short: 'p' },
-    host:                 { type: 'string' },
-    'llm-api-key':        { type: 'string' },
-    'llm-model':          { type: 'string' },
-    'llm-temperature':    { type: 'string' },
-    'rag-type':           { type: 'string' },
-    'rag-url':            { type: 'string' },
-    'rag-model':          { type: 'string' },
-    'mcp-type':           { type: 'string' },
-    'mcp-url':            { type: 'string' },
-    'mcp-command':        { type: 'string' },
-    'mcp-args':           { type: 'string' },
-    mode:                 { type: 'string' },
-    'prompt-system':      { type: 'string' },
-    'prompt-classifier':  { type: 'string' },
+    env: { type: 'string' },
+    config: { type: 'string', short: 'c' },
+    port: { type: 'string', short: 'p' },
+    host: { type: 'string' },
+    'llm-api-key': { type: 'string' },
+    'llm-model': { type: 'string' },
+    'llm-temperature': { type: 'string' },
+    'rag-type': { type: 'string' },
+    'rag-url': { type: 'string' },
+    'rag-model': { type: 'string' },
+    'mcp-type': { type: 'string' },
+    'mcp-url': { type: 'string' },
+    'mcp-command': { type: 'string' },
+    'mcp-args': { type: 'string' },
+    mode: { type: 'string' },
+    'prompt-system': { type: 'string' },
+    'prompt-classifier': { type: 'string' },
     'agent-show-reasoning': { type: 'boolean' },
-    'log-file':           { type: 'string' },
-    'log-stdout':         { type: 'boolean' },
-    help:                 { type: 'boolean', short: 'h' },
+    'log-file': { type: 'string' },
+    'log-stdout': { type: 'boolean' },
+    help: { type: 'boolean', short: 'h' },
   },
   allowPositionals: false,
   strict: false,
 });
 
-if (args['help']) {
+if (args.help) {
   // Print the JSDoc comment at the top of this file as help text
   process.stdout.write(
-    fs.readFileSync(new URL(import.meta.url), 'utf8')
+    fs
+      .readFileSync(new URL(import.meta.url), 'utf8')
       .match(/^(?:#![^\n]*\n)?\/\*\*([\s\S]*?)\*\//)?.[1]
       ?.replace(/^[ \t]*\* ?/gm, '') ?? 'See source for usage.\n',
   );
@@ -118,7 +119,7 @@ if (args['help']) {
 // Load .env — explicit --env path, or .env in cwd if it exists
 // ---------------------------------------------------------------------------
 
-const envArg = args['env'] as string | undefined;
+const envArg = args.env as string | undefined;
 if (envArg) {
   const result = configDotenv({ path: path.resolve(envArg) });
   if (!result.parsed) {
@@ -133,13 +134,15 @@ if (envArg) {
 // Config file: template generation or loading
 // ---------------------------------------------------------------------------
 
-const configArg = args['config'] as string | undefined;
+const configArg = args.config as string | undefined;
 const DEFAULT_CONFIG_FILE = 'smart-server.yaml';
 
 // If --config given but file does not exist → generate template and exit
 if (configArg && !fs.existsSync(configArg)) {
   generateConfigTemplate(configArg);
-  process.stderr.write(`Created config template: ${configArg}\nEdit it and run llm-agent again.\n`);
+  process.stderr.write(
+    `Created config template: ${configArg}\nEdit it and run llm-agent again.\n`,
+  );
   process.exit(0);
 }
 
@@ -148,7 +151,7 @@ if (!configArg && !fs.existsSync(DEFAULT_CONFIG_FILE)) {
   generateConfigTemplate(DEFAULT_CONFIG_FILE);
   process.stderr.write(
     `No config file found. Created ${DEFAULT_CONFIG_FILE} with defaults.\n` +
-    `Put your API keys in .env, adjust settings in ${DEFAULT_CONFIG_FILE}, then run llm-agent again.\n`,
+      `Put your API keys in .env, adjust settings in ${DEFAULT_CONFIG_FILE}, then run llm-agent again.\n`,
   );
   process.exit(0);
 }
@@ -163,7 +166,11 @@ const yaml = loadYamlConfig(path.resolve(configPath));
 
 let baseConfig: Omit<SmartServerConfig, 'log'>;
 try {
-  baseConfig = resolveSmartServerConfig(args as ResolveConfigArgs, yaml, process.env);
+  baseConfig = resolveSmartServerConfig(
+    args as ResolveConfigArgs,
+    yaml,
+    process.env,
+  );
 } catch (err) {
   process.stderr.write(`Error: ${String(err)}\n`);
   process.exit(1);
@@ -178,7 +185,10 @@ const yamlAny = yaml as any;
 const logToStdout = args['log-stdout'] === true;
 const logFile = logToStdout
   ? null
-  : (args['log-file'] ?? yamlAny?.['log'] ?? process.env['LOG_FILE'] ?? 'smart-server.log');
+  : (args['log-file'] ??
+    yamlAny?.log ??
+    process.env.LOG_FILE ??
+    'smart-server.log');
 
 let logStream: fs.WriteStream | null = null;
 if (logFile) {
@@ -188,7 +198,7 @@ if (logFile) {
 const config: SmartServerConfig = {
   ...baseConfig,
   log: (event) => {
-    const line = JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n';
+    const line = `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`;
     if (logStream) {
       logStream.write(line);
     } else {

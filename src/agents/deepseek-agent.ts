@@ -4,12 +4,13 @@
  * DeepSeek supports function calling similar to OpenAI via the `tools` parameter.
  */
 
-import type {
-  DeepSeekConfig,
-  DeepSeekProvider,
-} from '../llm-providers/deepseek.js';
+import type { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import type { AgentStreamChunk, Message } from '../types.js';
-import { BaseAgent, type BaseAgentConfig } from './base.js';
+import {
+  type AgentCallOptions,
+  BaseAgent,
+  type BaseAgentConfig,
+} from './base.js';
 
 export interface DeepSeekAgentConfig extends BaseAgentConfig {
   llmProvider: DeepSeekProvider;
@@ -28,7 +29,7 @@ export class DeepSeekAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: unknown[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to DeepSeek function format (same as OpenAI)
     const functions = this.convertToolsToFunctions(tools);
@@ -37,7 +38,19 @@ export class DeepSeekAgent extends BaseAgent {
     const formattedMessages = this.formatMessagesForDeepSeek(messages);
 
     // Access DeepSeek client and config
-    const deepseekProvider = this.llmProvider as any;
+    const deepseekProvider = this.llmProvider as unknown as {
+      client: {
+        post(
+          path: string,
+          body: Record<string, unknown>,
+        ): Promise<{ data: Record<string, unknown> }>;
+      };
+      model: string;
+      config: {
+        temperature?: number;
+        maxTokens?: number;
+      };
+    };
     const client = deepseekProvider.client;
     const model = deepseekProvider.model;
     const config = deepseekProvider.config;
@@ -52,11 +65,13 @@ export class DeepSeekAgent extends BaseAgent {
       max_tokens: config.maxTokens || 2000,
     });
 
-    const choice = response.data.choices[0];
-    const message = choice.message;
+    const choice = (
+      response.data.choices as Array<Record<string, unknown>>
+    )?.[0];
+    const message = (choice?.message as Record<string, unknown>) ?? {};
 
     return {
-      content: message.content || '',
+      content: (message.content as string) || '',
       raw: response.data,
     };
   }
@@ -64,26 +79,37 @@ export class DeepSeekAgent extends BaseAgent {
   /**
    * Convert MCP tools to DeepSeek function format
    */
-  private convertToolsToFunctions(tools: any[]): any[] {
-    return tools.map((tool) => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description || '',
-        parameters: tool.inputSchema || {
-          type: 'object',
-          properties: {},
+  private convertToolsToFunctions(
+    tools: unknown[],
+  ): Array<Record<string, unknown>> {
+    return tools.map((rawTool) => {
+      const tool = rawTool as {
+        name?: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      };
+      return {
+        type: 'function',
+        function: {
+          name: tool.name ?? '',
+          description: tool.description || '',
+          parameters: tool.inputSchema || {
+            type: 'object',
+            properties: {},
+          },
         },
-      },
-    }));
+      };
+    });
   }
 
   /**
    * Format messages for DeepSeek API (same as OpenAI)
    */
-  private formatMessagesForDeepSeek(messages: Message[]): any[] {
+  private formatMessagesForDeepSeek(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     return messages.map((msg) => {
-      const formatted: any = {
+      const formatted: Record<string, unknown> = {
         role: msg.role,
         // assistant messages with tool_calls must have content=null per OpenAI/DeepSeek protocol
         content: (msg.tool_calls?.length ? null : msg.content) ?? null,
@@ -100,14 +126,22 @@ export class DeepSeekAgent extends BaseAgent {
    */
   protected async *streamLLMWithTools(
     messages: Message[],
-    tools: any[],
-    _options?: any,
+    tools: unknown[],
+    _options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToFunctions(tools);
 
-    // biome-ignore lint/suspicious/noExplicitAny: accessing provider internals
-    const provider = this.llmProvider as any;
-    const baseURL: string = provider.config.baseURL || 'https://api.deepseek.com/v1';
+    const provider = this.llmProvider as unknown as {
+      model: string;
+      config: {
+        apiKey: string;
+        baseURL?: string;
+        temperature?: number;
+        maxTokens?: number;
+      };
+    };
+    const baseURL: string =
+      provider.config.baseURL || 'https://api.deepseek.com/v1';
 
     yield* this.streamOpenAICompatible(
       `${baseURL}/chat/completions`,

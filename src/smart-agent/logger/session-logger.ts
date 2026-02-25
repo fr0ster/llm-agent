@@ -8,13 +8,16 @@ export class SessionLogger {
   constructor(
     private readonly baseLogDir: string | null,
     private readonly sessionId: string,
-    private readonly traceId: string
+    private readonly traceId: string,
   ) {
     if (!this.baseLogDir) return;
 
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const sessionPath = path.join(this.baseLogDir, `session_${this.sessionId}`);
-    this.requestDir = path.join(sessionPath, `req_${timestamp}_${this.traceId}`);
+    this.requestDir = path.join(
+      sessionPath,
+      `req_${timestamp}_${this.traceId}`,
+    );
 
     try {
       fs.mkdirSync(this.requestDir, { recursive: true });
@@ -24,12 +27,12 @@ export class SessionLogger {
     }
   }
 
-  logStep(name: string, data: any): void {
+  logStep(name: string, data: unknown): void {
     if (!this.requestDir) return;
 
     const fileName = `${String(this.fileIndex).padStart(2, '0')}_${name}.json`;
     const filePath = path.join(this.requestDir, fileName);
-    
+
     try {
       fs.writeFileSync(filePath, JSON.stringify(data, null, 2), 'utf8');
       this.fileIndex++;

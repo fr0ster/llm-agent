@@ -35,7 +35,6 @@ import {
   type RagResult,
   type Result,
   type Subprompt,
-  type ToolCallRecord,
 } from '../interfaces/types.js';
 import type { ILogger, LogEvent } from '../logger/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';

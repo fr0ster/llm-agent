@@ -20,19 +20,33 @@ import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
-import { SmartAgent, type SmartAgentConfig, type SmartAgentRagStores } from './agent.js';
-import { LlmClassifier, type LlmClassifierConfig } from './classifier/llm-classifier.js';
-import { ContextAssembler, type ContextAssemblerConfig } from './context/context-assembler.js';
+import {
+  SmartAgent,
+  type SmartAgentConfig,
+  type SmartAgentRagStores,
+} from './agent.js';
+import {
+  LlmClassifier,
+  type LlmClassifierConfig,
+} from './classifier/llm-classifier.js';
+import {
+  ContextAssembler,
+  type ContextAssemblerConfig,
+} from './context/context-assembler.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
+import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
-import type { IPromptInjectionDetector, IToolPolicy, SessionPolicy } from './policy/types.js';
+import type {
+  IPromptInjectionDetector,
+  IToolPolicy,
+  SessionPolicy,
+} from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
-import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 
 // ---------------------------------------------------------------------------
 // Config types (builder-owned — no dependency on SmartServerConfig)
@@ -235,15 +249,27 @@ export class SmartAgentBuilder {
         transport: 'embedded',
         listToolsHandler: async () => [],
       });
-      const agent = new DeepSeekAgent({ llmProvider: provider, mcpClient: dummyMcp });
+      const agent = new DeepSeekAgent({
+        llmProvider: provider,
+        mcpClient: dummyMcp,
+      });
       return new TokenCountingLlm(new LlmAdapter(agent));
     };
 
-    const defaultMainLlm = this._mainLlm ? null : makeDefaultLlm(this.cfg.llm.temperature ?? 0.7);
-    const defaultClassifierLlm = this._classifierLlm ? null : makeDefaultLlm(this.cfg.llm.classifierTemperature ?? 0.1);
+    const defaultMainLlm = this._mainLlm
+      ? null
+      : makeDefaultLlm(this.cfg.llm.temperature ?? 0.7);
+    const defaultClassifierLlm = this._classifierLlm
+      ? null
+      : makeDefaultLlm(this.cfg.llm.classifierTemperature ?? 0.1);
 
-    const mainLlm: ILlm = this._mainLlm ?? defaultMainLlm!;
-    const classifierLlm: ILlm = this._classifierLlm ?? defaultClassifierLlm!;
+    const mainLlmCandidate = this._mainLlm ?? defaultMainLlm;
+    const classifierLlmCandidate = this._classifierLlm ?? defaultClassifierLlm;
+    if (!mainLlmCandidate || !classifierLlmCandidate) {
+      throw new Error('Failed to initialize default LLM dependencies');
+    }
+    const mainLlm: ILlm = mainLlmCandidate;
+    const classifierLlm: ILlm = classifierLlmCandidate;
 
     // ---- Default RAG factory ---------------------------------------------
     const makeDefaultRag = (): IRag => {
@@ -271,7 +297,9 @@ export class SmartAgentBuilder {
       mcpClients = this._mcpClients;
     } else {
       const mcpList = this.cfg.mcp
-        ? (Array.isArray(this.cfg.mcp) ? this.cfg.mcp : [this.cfg.mcp])
+        ? Array.isArray(this.cfg.mcp)
+          ? this.cfg.mcp
+          : [this.cfg.mcp]
         : [];
       const connected: IMcpClient[] = [];
       for (const mcpCfg of mcpList) {
@@ -284,11 +312,21 @@ export class SmartAgentBuilder {
               args: mcpCfg.args ?? [],
             });
           } else {
-            wrapper = new MCPClientWrapper({ transport: 'auto', url: mcpCfg.url });
+            wrapper = new MCPClientWrapper({
+              transport: 'auto',
+              url: mcpCfg.url,
+            });
           }
           await wrapper.connect();
           const adapter = new McpClientAdapter(wrapper);
-          log?.log({ type: 'pipeline_done', traceId: 'builder', stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: 0 });
+          log?.log({
+            type: 'pipeline_done',
+            traceId: 'builder',
+            stopReason: 'stop',
+            iterations: 0,
+            toolCallCount: 0,
+            durationMs: 0,
+          });
 
           // Vectorize tools into factsRag for RAG-based tool selection
           const toolsResult = await adapter.listTools();
@@ -319,21 +357,27 @@ export class SmartAgentBuilder {
       historySummaryPrompt: this.cfg.prompts?.historySummary,
       historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
       ...this.cfg.agent,
-      ...(this.cfg.sessionPolicy ? { sessionPolicy: this.cfg.sessionPolicy } : {}),
+      ...(this.cfg.sessionPolicy
+        ? { sessionPolicy: this.cfg.sessionPolicy }
+        : {}),
     };
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
-    if (this.cfg.prompts?.classifier) classifierCfg.systemPrompt = this.cfg.prompts.classifier;
-    const classifier: ISubpromptClassifier = this._classifier ?? new LlmClassifier(classifierLlm, classifierCfg);
+    if (this.cfg.prompts?.classifier)
+      classifierCfg.systemPrompt = this.cfg.prompts.classifier;
+    const classifier: ISubpromptClassifier =
+      this._classifier ?? new LlmClassifier(classifierLlm, classifierCfg);
 
     // ---- Assembler --------------------------------------------------------
     const assemblerCfg: ContextAssemblerConfig = {
       showReasoning: agentCfg.showReasoning,
       reasoningInstruction: this.cfg.prompts?.reasoning,
     };
-    if (this.cfg.prompts?.system) assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
-    const assembler: IContextAssembler = this._assembler ?? new ContextAssembler(assemblerCfg);
+    if (this.cfg.prompts?.system)
+      assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
+    const assembler: IContextAssembler =
+      this._assembler ?? new ContextAssembler(assemblerCfg);
 
     const agent = new SmartAgent(
       {
@@ -345,21 +389,36 @@ export class SmartAgentBuilder {
         assembler,
         ...(log ? { logger: log } : {}),
         ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
-        ...(this._injectionDetector ? { injectionDetector: this._injectionDetector } : {}),
+        ...(this._injectionDetector
+          ? { injectionDetector: this._injectionDetector }
+          : {}),
       },
       agentCfg,
     );
 
     return {
       agent,
-      chat: (messages, tools, options) => mainLlm.chat(messages, tools, options),
-      streamChat: (messages, tools, options) => mainLlm.streamChat(messages, tools, options),
+      chat: (messages, tools, options) =>
+        mainLlm.chat(messages, tools, options),
+      streamChat: (messages, tools, options) =>
+        mainLlm.streamChat(messages, tools, options),
       getUsage: () => {
-        const main = defaultMainLlm?.getUsage() ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, requests: 0 };
-        const classifier = defaultClassifierLlm?.getUsage() ?? { prompt_tokens: 0, completion_tokens: 0, total_tokens: 0, requests: 0 };
+        const main = defaultMainLlm?.getUsage() ?? {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          requests: 0,
+        };
+        const classifier = defaultClassifierLlm?.getUsage() ?? {
+          prompt_tokens: 0,
+          completion_tokens: 0,
+          total_tokens: 0,
+          requests: 0,
+        };
         return {
           prompt_tokens: main.prompt_tokens + classifier.prompt_tokens,
-          completion_tokens: main.completion_tokens + classifier.completion_tokens,
+          completion_tokens:
+            main.completion_tokens + classifier.completion_tokens,
           total_tokens: main.total_tokens + classifier.total_tokens,
           requests: main.requests + classifier.requests,
         };

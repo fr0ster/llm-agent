@@ -5,9 +5,13 @@
  * Tools are passed as JSON schema, and LLM returns function calls in response.
  */
 
-import type { OpenAIConfig, OpenAIProvider } from '../llm-providers/openai.js';
+import type { OpenAIProvider } from '../llm-providers/openai.js';
 import type { AgentStreamChunk, Message } from '../types.js';
-import { BaseAgent, type BaseAgentConfig } from './base.js';
+import {
+  type AgentCallOptions,
+  BaseAgent,
+  type BaseAgentConfig,
+} from './base.js';
 
 export interface OpenAIAgentConfig extends BaseAgentConfig {
   llmProvider: OpenAIProvider;
@@ -26,8 +30,8 @@ export class OpenAIAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
-    options?: any,
+    tools: unknown[],
+    options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to OpenAI function format
     const functions = this.convertToolsToOpenAIFunctions(tools);
@@ -36,7 +40,19 @@ export class OpenAIAgent extends BaseAgent {
     const formattedMessages = this.formatMessagesForOpenAI(messages);
 
     // Access OpenAI client and config
-    const openaiProvider = this.llmProvider as any;
+    const openaiProvider = this.llmProvider as unknown as {
+      client: {
+        post(
+          path: string,
+          body: Record<string, unknown>,
+        ): Promise<{ data: Record<string, unknown> }>;
+      };
+      model: string;
+      config: {
+        temperature?: number;
+        maxTokens?: number;
+      };
+    };
     const client = openaiProvider.client;
     const model = openaiProvider.model;
     const config = openaiProvider.config;
@@ -53,11 +69,13 @@ export class OpenAIAgent extends BaseAgent {
       stop: options?.stop,
     });
 
-    const choice = response.data.choices[0];
-    const message = choice.message;
+    const choice = (
+      response.data.choices as Array<Record<string, unknown>>
+    )?.[0];
+    const message = (choice?.message as Record<string, unknown>) ?? {};
 
     return {
-      content: message.content || '',
+      content: (message.content as string) || '',
       raw: response.data,
     };
   }
@@ -67,14 +85,24 @@ export class OpenAIAgent extends BaseAgent {
    */
   protected async *streamLLMWithTools(
     messages: Message[],
-    tools: any[],
-    options?: any,
+    tools: unknown[],
+    options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToOpenAIFunctions(tools);
 
-    // biome-ignore lint/suspicious/noExplicitAny: accessing provider internals
-    const provider = this.llmProvider as any;
-    const baseURL: string = provider.config.baseURL || 'https://api.openai.com/v1';
+    const provider = this.llmProvider as unknown as {
+      model: string;
+      config: {
+        apiKey: string;
+        baseURL?: string;
+        organization?: string;
+        project?: string;
+        temperature?: number;
+        maxTokens?: number;
+      };
+    };
+    const baseURL: string =
+      provider.config.baseURL || 'https://api.openai.com/v1';
     const headers: Record<string, string> = {
       Authorization: `Bearer ${provider.config.apiKey as string}`,
     };
@@ -102,24 +130,35 @@ export class OpenAIAgent extends BaseAgent {
   /**
    * Convert MCP tools to OpenAI function format
    */
-  private convertToolsToOpenAIFunctions(tools: any[]): any[] {
-    return tools.map((tool) => ({
-      type: 'function',
-      function: {
-        name: tool.name,
-        description: tool.description || '',
-        parameters: tool.inputSchema || {
-          type: 'object',
-          properties: {},
+  private convertToolsToOpenAIFunctions(
+    tools: unknown[],
+  ): Array<Record<string, unknown>> {
+    return tools.map((rawTool) => {
+      const tool = rawTool as {
+        name?: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      };
+      return {
+        type: 'function',
+        function: {
+          name: tool.name ?? '',
+          description: tool.description || '',
+          parameters: tool.inputSchema || {
+            type: 'object',
+            properties: {},
+          },
         },
-      },
-    }));
+      };
+    });
   }
 
   /**
    * Format messages for OpenAI API
    */
-  private formatMessagesForOpenAI(messages: Message[]): any[] {
+  private formatMessagesForOpenAI(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     return messages.map((msg) => ({
       role: msg.role,
       content: msg.content || null, // OpenAI requires null if empty

@@ -3,19 +3,19 @@
  */
 
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
-import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
-import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
+import { AnthropicProvider } from '../llm-providers/anthropic.js';
+import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { OpenAIProvider } from '../llm-providers/openai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import type { IRag } from './interfaces/rag.js';
 import { TokenCountingLlm } from './llm/token-counting-llm.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { VectorRag } from './rag/vector-rag.js';
 import { OllamaEmbedder } from './rag/ollama-rag.js';
 import { OpenAiEmbedder } from './rag/openai-embedder.js';
+import { VectorRag } from './rag/vector-rag.js';
 
 // ---------------------------------------------------------------------------
 // Config types
@@ -75,7 +75,10 @@ export interface PipelineConfig {
 // Factories
 // ---------------------------------------------------------------------------
 
-export function makeLlmFromProvider(cfg: PipelineLlmProviderConfig, temperature: number): TokenCountingLlm {
+export function makeLlmFromProvider(
+  cfg: PipelineLlmProviderConfig,
+  temperature: number,
+): TokenCountingLlm {
   const dummyMcp = new MCPClientWrapper({
     transport: 'embedded',
     listToolsHandler: async () => [],
@@ -83,18 +86,39 @@ export function makeLlmFromProvider(cfg: PipelineLlmProviderConfig, temperature:
 
   switch (cfg.provider) {
     case 'deepseek': {
-      const provider = new DeepSeekProvider({ apiKey: cfg.apiKey, model: cfg.model, temperature });
-      const agent = new DeepSeekAgent({ llmProvider: provider, mcpClient: dummyMcp });
+      const provider = new DeepSeekProvider({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        temperature,
+      });
+      const agent = new DeepSeekAgent({
+        llmProvider: provider,
+        mcpClient: dummyMcp,
+      });
       return new TokenCountingLlm(new LlmAdapter(agent));
     }
     case 'openai': {
-      const provider = new OpenAIProvider({ apiKey: cfg.apiKey, model: cfg.model, temperature });
-      const agent = new OpenAIAgent({ llmProvider: provider, mcpClient: dummyMcp });
+      const provider = new OpenAIProvider({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        temperature,
+      });
+      const agent = new OpenAIAgent({
+        llmProvider: provider,
+        mcpClient: dummyMcp,
+      });
       return new TokenCountingLlm(new LlmAdapter(agent));
     }
     case 'anthropic': {
-      const provider = new AnthropicProvider({ apiKey: cfg.apiKey, model: cfg.model, temperature });
-      const agent = new AnthropicAgent({ llmProvider: provider, mcpClient: dummyMcp });
+      const provider = new AnthropicProvider({
+        apiKey: cfg.apiKey,
+        model: cfg.model,
+        temperature,
+      });
+      const agent = new AnthropicAgent({
+        llmProvider: provider,
+        mcpClient: dummyMcp,
+      });
       return new TokenCountingLlm(new LlmAdapter(agent));
     }
     default: {

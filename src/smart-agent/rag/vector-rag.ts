@@ -1,4 +1,4 @@
-import type { IRag, IEmbedder } from '../interfaces/rag.js';
+import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -33,7 +33,7 @@ export class VectorRag implements IRag {
 
   constructor(
     private readonly embedder: IEmbedder,
-    config: VectorRagConfig = {}
+    config: VectorRagConfig = {},
   ) {
     this.dedupThreshold = config.dedupThreshold ?? 0.92;
     this.namespace = config.namespace;
@@ -58,30 +58,40 @@ export class VectorRag implements IRag {
    * Proper term weighting based on Inverse Document Frequency.
    */
   private bm25Score(query: string, text: string): number {
-    const tokenize = (s: string) => s.toLowerCase().split(/[^a-z0-9]/).filter(t => t.length > 1);
+    const tokenize = (s: string) =>
+      s
+        .toLowerCase()
+        .split(/[^a-z0-9]/)
+        .filter((t) => t.length > 1);
     const queryTokens = tokenize(query);
     const docTokens = tokenize(text);
-    
+
     if (queryTokens.length === 0 || docTokens.length === 0) return 0;
 
     // Corpus stats
-    const avgDocLength = this.records.reduce((acc, r) => acc + tokenize(r.text).length, 0) / (this.records.length || 1);
+    const avgDocLength =
+      this.records.reduce((acc, r) => acc + tokenize(r.text).length, 0) /
+      (this.records.length || 1);
     const k1 = 1.2;
     const b = 0.75;
 
     let score = 0;
     for (const token of new Set(queryTokens)) {
       // Document frequency
-      const df = this.records.filter(r => tokenize(r.text).includes(token)).length;
+      const df = this.records.filter((r) =>
+        tokenize(r.text).includes(token),
+      ).length;
       const idf = Math.log((this.records.length - df + 0.5) / (df + 0.5) + 1);
-      
+
       // Term frequency in current doc
-      const tf = docTokens.filter(t => t === token).length;
-      
-      const tfScored = (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
+      const tf = docTokens.filter((t) => t === token).length;
+
+      const tfScored =
+        (tf * (k1 + 1)) /
+        (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
       score += idf * tfScored;
     }
-    
+
     // Normalize to [0, 1] range (rough approximation for fusion)
     return Math.min(score / 5, 1.0);
   }
@@ -142,9 +152,12 @@ export class VectorRag implements IRag {
         .filter((r) => {
           if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
             return false;
-          
+
           // Apply dynamic filter from CallOptions
-          if (targetNamespace !== undefined && r.metadata.namespace !== targetNamespace)
+          if (
+            targetNamespace !== undefined &&
+            r.metadata.namespace !== targetNamespace
+          )
             return false;
 
           if (
@@ -158,10 +171,11 @@ export class VectorRag implements IRag {
         .map((r) => {
           const vScore = this.cosine(queryVector, r.vector);
           const lScore = this.bm25Score(text, r.text);
-          
+
           // Hybrid Fusion: Weighted Sum
-          const combinedScore = (vScore * this.vectorWeight) + (lScore * this.keywordWeight);
-          
+          const combinedScore =
+            vScore * this.vectorWeight + lScore * this.keywordWeight;
+
           return {
             text: r.text,
             metadata: r.metadata,
@@ -183,7 +197,13 @@ export class VectorRag implements IRag {
       await this.embedder.embed('ping', options);
       return { ok: true, value: undefined };
     } catch (err) {
-      return { ok: false, error: new RagError(`RAG health check failed: ${String(err)}`, 'HEALTH_CHECK_ERROR') };
+      return {
+        ok: false,
+        error: new RagError(
+          `RAG health check failed: ${String(err)}`,
+          'HEALTH_CHECK_ERROR',
+        ),
+      };
     }
   }
 }

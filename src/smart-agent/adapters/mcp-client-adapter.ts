@@ -81,7 +81,13 @@ export class McpClientAdapter implements IMcpClient {
       return {
         ok: true,
         value: {
-          content: result.error ?? result.result,
+          content:
+            typeof (result.error ?? result.result) === 'string' ||
+            typeof (result.error ?? result.result) === 'object'
+              ? ((result.error ?? result.result) as
+                  | string
+                  | Record<string, unknown>)
+              : String(result.error ?? result.result),
           isError: !!result.error,
         },
       };

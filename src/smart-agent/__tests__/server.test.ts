@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
+import type { Message } from '../../types.js';
 import {
   OrchestratorError,
   type SmartAgent,
@@ -57,10 +58,10 @@ function httpRequest(
 
 function makeAgent(
   result: SmartAgentResponse | OrchestratorError,
-  capture?: { text?: any },
+  capture?: { text?: Message[] | string },
 ): SmartAgent {
   return {
-    async process(text: any, _opts?: CallOptions) {
+    async process(text: Message[] | string, _opts?: CallOptions) {
       if (capture) {
         capture.text = text;
       }
@@ -174,7 +175,7 @@ describe('SmartAgentServer — finish_reason: tool_call_limit → length', () =>
 
 describe('SmartAgentServer — text extraction: single user message', () => {
   it('passes user message content to agent.process()', async () => {
-    const capture: { text?: any } = {};
+    const capture: { text?: Message[] | string } = {};
     const agent = makeAgent(
       { content: 'ok', iterations: 1, toolCallCount: 0, stopReason: 'stop' },
       capture,
@@ -196,7 +197,7 @@ describe('SmartAgentServer — text extraction: single user message', () => {
 
 describe('SmartAgentServer — text extraction: multi-message → last user message', () => {
   it('passes last user message content to agent.process()', async () => {
-    const capture: { text?: any } = {};
+    const capture: { text?: Message[] | string } = {};
     const agent = makeAgent(
       { content: 'ok', iterations: 1, toolCallCount: 0, stopReason: 'stop' },
       capture,
@@ -463,7 +464,7 @@ describe('SmartAgentServer — requestTimeoutMs → signal propagated to agent',
     let receivedSignal: AbortSignal | undefined;
 
     const slowAgent: SmartAgent = {
-      async process(_messages: any, opts?: CallOptions) {
+      async process(_messages: Message[] | string, opts?: CallOptions) {
         receivedSignal = opts?.signal;
         await new Promise<void>((resolve) => {
           if (opts?.signal) {
@@ -508,53 +509,76 @@ describe('SmartAgentServer — streaming', () => {
   it('follows OpenAI SSE format: role first, separate finish_reason, usage at end', async () => {
     const mockAgent: SmartAgent = {
       async *streamProcess() {
-        yield { ok: true as const, value: { content: 'Hello', usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 } } };
-        yield { ok: true as const, value: { content: ' world', finishReason: 'stop', usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 } } };
-      }
+        yield {
+          ok: true as const,
+          value: {
+            content: 'Hello',
+            usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+          },
+        };
+        yield {
+          ok: true as const,
+          value: {
+            content: ' world',
+            finishReason: 'stop',
+            usage: { promptTokens: 1, completionTokens: 2, totalTokens: 3 },
+          },
+        };
+      },
     } as unknown as SmartAgent;
 
     const server = new SmartAgentServer(mockAgent);
     const handle = await server.start();
     try {
-      const res = await new Promise<{ status: number; lines: string[] }>((resolve, reject) => {
-        const req = request({
-          host: '127.0.0.1',
-          port: handle.port,
-          method: 'POST',
-          path: '/v1/chat/completions',
-          headers: { 'Content-Type': 'application/json' }
-        }, (innerRes) => {
-          const lines: string[] = [];
-          let buffer = '';
-          innerRes.on('data', (c) => {
-            buffer += c.toString();
-            const parts = buffer.split('\n');
-            buffer = parts.pop() || '';
-            for (const p of parts) if (p.trim()) lines.push(p);
-          });
-          innerRes.on('end', () => {
-            if (buffer.trim()) lines.push(buffer);
-            resolve({ status: innerRes.statusCode ?? 0, lines });
-          });
-        });
-        req.on('error', reject);
-        req.write(JSON.stringify({ messages: [{ role: 'user', content: 'hi' }], stream: true }));
-        req.end();
-      });
+      const res = await new Promise<{ status: number; lines: string[] }>(
+        (resolve, reject) => {
+          const req = request(
+            {
+              host: '127.0.0.1',
+              port: handle.port,
+              method: 'POST',
+              path: '/v1/chat/completions',
+              headers: { 'Content-Type': 'application/json' },
+            },
+            (innerRes) => {
+              const lines: string[] = [];
+              let buffer = '';
+              innerRes.on('data', (c) => {
+                buffer += c.toString();
+                const parts = buffer.split('\n');
+                buffer = parts.pop() || '';
+                for (const p of parts) if (p.trim()) lines.push(p);
+              });
+              innerRes.on('end', () => {
+                if (buffer.trim()) lines.push(buffer);
+                resolve({ status: innerRes.statusCode ?? 0, lines });
+              });
+            },
+          );
+          req.on('error', reject);
+          req.write(
+            JSON.stringify({
+              messages: [{ role: 'user', content: 'hi' }],
+              stream: true,
+            }),
+          );
+          req.end();
+        },
+      );
 
       assert.equal(res.status, 200);
-      
+
       const jsonLines = res.lines
-        .filter(l => l.startsWith('data: ') && l !== 'data: [DONE]')
-        .map(l => JSON.parse(l.slice(6)));
+        .filter((l) => l.startsWith('data: ') && l !== 'data: [DONE]')
+        .map((l) => JSON.parse(l.slice(6)));
 
       // Line 1: Role
       assert.equal(jsonLines[0].choices[0].delta.role, 'assistant');
       assert.equal(jsonLines[0].choices[0].delta.content, 'Hello');
-      
+
       // Line 2: Content (world)
       assert.equal(jsonLines[1].choices[0].delta.content, ' world');
-      
+
       // Line 3: Finish reason
       assert.equal(jsonLines[2].choices[0].finish_reason, 'stop');
       assert.deepEqual(jsonLines[2].choices[0].delta, {});
@@ -563,7 +587,6 @@ describe('SmartAgentServer — streaming', () => {
       assert.ok(jsonLines[3].usage);
       assert.equal(jsonLines[3].usage.total_tokens, 3);
       assert.equal(jsonLines[3].choices.length, 0);
-
     } finally {
       await handle.close();
     }

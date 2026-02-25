@@ -32,7 +32,7 @@ export interface CallOptions {
   };
   /** Detailed session debugger logger. */
   sessionLogger?: {
-    logStep(name: string, data: any): void;
+    logStep(name: string, data: unknown): void;
   };
 }
 
