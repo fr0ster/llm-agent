@@ -13,31 +13,31 @@
 
 ---
 
-## Phase 13 - Search Quality & Professional Hardening [PLANNED] 🚀
+## Phase 13 - Search Quality & Professional Hardening [DONE] ✅
 
-### 1. BM25 Lexical Scorer
-- **Goal:** Improve SAP tool selection accuracy.
-- **Implementation:** Replace simple keyword overlap with BM25 algorithm to properly weigh unique technical terms (like `T100` or `MARA`).
-- **Benefit:** Massive precision boost when dealing with hundreds of specialized SAP tools.
-
-### 2. Startup Health Checks
-- **Goal:** Fail fast and provide clear diagnostics.
-- **Implementation:** Validate connectivity to Ollama, MCP servers, and LLM providers during `llm-agent` startup.
-- **Benefit:** Instant feedback if a dependency (like your SAP ADT server on 3001) is down.
-
-### 3. Metadata & Context Filtering
-- **Goal:** Advanced long-term memory management.
-- **Implementation:** Add support for RAG filtering based on `namespace` (project isolation) and `ttl` (temporal relevance) directly in the query pipeline.
-- **Benefit:** Prevents "context pollution" from unrelated projects or obsolete information.
-
-### 4. Hybrid Search Tuning
-- **Goal:** Expose more control over RAG behavior.
-- **Implementation:** Make `vectorWeight` and `keywordWeight` fully adjustable via CLI flags and YAML for different domains.
+- [x] **Startup Health Checks:** Immediate diagnostic probes for LLM, RAG, and MCP connectivity on server start.
+- [x] **BM25 Lexical Scorer:** Proper term weighting based on IDF for precise technical tool matching.
+- [x] **Metadata & Namespace Filtering:** Support for project/session isolation in RAG queries.
+- [x] **Smart 2.0 Orchestration:** Unified single-turn execution with contextual persona isolation.
+- [x] **Session Debug Auditing:** Structured logging of full context windows and LLM exchanges into `sessions/`.
 
 ---
 
-## Phase 14 - Observability & Tooling [FUTURE] 🛠️
+## Phase 14 - Advanced Reliability & Tooling [PLANNED] 🚀
 
-- [ ] **Reasoning UI:** Improve how reasoning blocks are rendered in different clients.
-- [ ] **Trace Export:** Export structured logs to OpenTelemetry compatible backends.
-- [ ] **Evaluation Suite:** Automated regression tests for RAG retrieval quality using a set of "golden" SAP queries.
+### 1. Hybrid Search Tuning
+- **Goal:** Expose more control over RAG behavior.
+- **Implementation:** Make `vectorWeight` and `keywordWeight` fully adjustable via CLI flags and YAML for different domains.
+
+### 2. Multi-Action Dependency Resolver
+- **Goal:** Handle complex tasks that depend on previous results more robustly.
+- **Implementation:** Improve the "coupled" dependency logic in the classifier to guide the agent through multi-step workflows.
+
+### 3. Trace Export (OTEL)
+- **Goal:** Professional observability.
+- **Implementation:** Export structured logs to OpenTelemetry compatible backends (Jaeger, Honeycomb).
+
+### 4. Evaluation Suite
+- **Goal:** Quality assurance.
+- **Implementation:** Automated regression tests for RAG retrieval quality using a set of "golden" SAP queries.
+
