@@ -58,6 +58,7 @@ mcp:
   url: http://localhost:3001/mcp/stream/http
 
 agent:
+  externalToolsValidationMode: permissive  # permissive | strict
   maxIterations: 10
   maxToolCalls: 30
   toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
@@ -249,6 +250,11 @@ export function resolveSmartServerConfig(
         }
       : undefined,
     agent: {
+      externalToolsValidationMode: (get(
+        yaml,
+        'agent',
+        'externalToolsValidationMode',
+      ) ?? 'permissive') as string as 'permissive' | 'strict',
       maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
       maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
       toolUnavailableTtlMs: Number(

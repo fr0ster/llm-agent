@@ -131,6 +131,9 @@ Accepted shapes:
 - OpenAI-compatible `{ type: 'function', function: { name, description, parameters } }`-like shape (name/function-derived)
 
 Invalid tool shapes are dropped during normalization instead of flowing into runtime logic as opaque objects.
+Validation mode is configurable at request boundary:
+- `permissive` (default): invalid client tools are dropped and logged.
+- `strict`: request is rejected with `400 invalid_request_error` and a validation code.
 
 ### Session Tool Availability Contract
 

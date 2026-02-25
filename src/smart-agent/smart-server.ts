@@ -17,7 +17,10 @@ import {
   makeRagFromStoreConfig,
   type PipelineConfig,
 } from './pipeline.js';
-import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
+import {
+  type ExternalToolValidationCode,
+  normalizeAndValidateExternalTools,
+} from './utils/external-tools-normalizer.js';
 import { toToolCallDelta } from './utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +52,7 @@ export interface SmartServerMcpConfig {
 }
 
 export interface SmartServerAgentConfig {
+  externalToolsValidationMode?: 'permissive' | 'strict';
   maxIterations?: number;
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
@@ -98,6 +102,21 @@ function mapStopReason(r: StopReason): 'stop' | 'length' {
 function jsonError(message: string, type: string, code?: string): string {
   return JSON.stringify({
     error: { message, type, ...(code ? { code } : {}) },
+  });
+}
+
+function jsonValidationError(
+  message: string,
+  code: ExternalToolValidationCode,
+  param: string,
+): string {
+  return JSON.stringify({
+    error: {
+      message,
+      type: 'invalid_request_error',
+      code,
+      param,
+    },
   });
 }
 
@@ -364,7 +383,6 @@ export class SmartServer {
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
     };
-    const externalTools = normalizeExternalTools(body.tools);
 
     const extractText = (c: unknown): string => {
       if (c === null || c === undefined) return '';
@@ -401,6 +419,39 @@ export class SmartServer {
       sessionId,
       traceId,
     );
+    const toolsValidationMode =
+      this.cfg.agent?.externalToolsValidationMode ?? 'permissive';
+    const externalToolsValidation = normalizeAndValidateExternalTools(
+      body.tools,
+    );
+    const externalTools = externalToolsValidation.tools;
+    if (externalToolsValidation.errors.length > 0) {
+      log({
+        event: 'invalid_external_tools_detected',
+        traceId,
+        sessionId,
+        mode: toolsValidationMode,
+        count: externalToolsValidation.errors.length,
+        errors: externalToolsValidation.errors,
+      });
+      sessionLogger.logStep('invalid_external_tools_detected', {
+        mode: toolsValidationMode,
+        count: externalToolsValidation.errors.length,
+        errors: externalToolsValidation.errors,
+      });
+      if (toolsValidationMode === 'strict') {
+        const firstError = externalToolsValidation.errors[0];
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonValidationError(
+            firstError.message,
+            firstError.code,
+            firstError.param,
+          ),
+        );
+        return;
+      }
+    }
 
     const t0 = Date.now();
     log({ event: 'request_start', stream: body.stream ?? false, traceId });
@@ -417,12 +468,21 @@ export class SmartServer {
       role: m.role as Message['role'],
       content: extractText(m.content),
     }));
+    const invalidToolsHeader =
+      externalToolsValidation.errors.length > 0
+        ? {
+            'x-smartagent-invalid-tools': String(
+              externalToolsValidation.errors.length,
+            ),
+          }
+        : {};
 
     if (body.stream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
         'Cache-Control': 'no-cache',
         Connection: 'keep-alive',
+        ...invalidToolsHeader,
       });
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
@@ -521,7 +581,10 @@ export class SmartServer {
       };
     }
 
-    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.writeHead(200, {
+      'Content-Type': 'application/json',
+      ...invalidToolsHeader,
+    });
     res.end(
       JSON.stringify({
         id: `chatcmpl-${randomUUID()}`,
