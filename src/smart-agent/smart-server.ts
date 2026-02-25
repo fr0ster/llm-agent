@@ -378,7 +378,12 @@ export class SmartServer {
     }
 
     const body = parsed as {
-      messages: Array<{ role: string; content: unknown }>;
+      messages: Array<{
+        role: string;
+        content: unknown;
+        tool_call_id?: unknown;
+        tool_calls?: unknown;
+      }>;
       tools?: unknown[];
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
@@ -464,10 +469,62 @@ export class SmartServer {
       sessionLogger,
     };
 
-    const normalizedMessages = body.messages.map((m) => ({
-      role: m.role as Message['role'],
-      content: extractText(m.content),
-    }));
+    const normalizedMessages = body.messages
+      .map((m) => {
+        const role = m.role as Message['role'];
+        const normalizedMessage: Message = {
+          role,
+          content: extractText(m.content),
+        };
+
+        if (role === 'tool') {
+          if (typeof m.tool_call_id === 'string' && m.tool_call_id.trim()) {
+            normalizedMessage.tool_call_id = m.tool_call_id;
+          } else {
+            sessionLogger.logStep('drop_orphan_tool_message', {
+              reason: 'missing_tool_call_id',
+            });
+            return null;
+          }
+        }
+
+        if (role === 'assistant' && Array.isArray(m.tool_calls)) {
+          const toolCalls = m.tool_calls
+            .filter(
+              (
+                tc,
+              ): tc is {
+                id: string;
+                type: 'function';
+                function: { name: string; arguments: string };
+              } =>
+                typeof tc === 'object' &&
+                tc !== null &&
+                typeof (tc as { id?: unknown }).id === 'string' &&
+                (tc as { type?: unknown }).type === 'function' &&
+                typeof (tc as { function?: { name?: unknown } }).function
+                  ?.name === 'string' &&
+                typeof (tc as { function?: { arguments?: unknown } }).function
+                  ?.arguments === 'string',
+            )
+            .map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.function.name,
+                arguments: tc.function.arguments,
+              },
+            }));
+
+          if (toolCalls.length > 0) {
+            normalizedMessage.tool_calls = toolCalls;
+            if (!normalizedMessage.content) normalizedMessage.content = null;
+          }
+        }
+
+        return normalizedMessage;
+      })
+      .filter((m): m is Message => m !== null);
     const invalidToolsHeader =
       externalToolsValidation.errors.length > 0
         ? {
