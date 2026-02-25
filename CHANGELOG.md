@@ -14,6 +14,7 @@ Major architectural upgrade focused on production-grade streaming, hybrid search
 stability, and multi-intent orchestration. Prepares the agent for complex SAP/ABAP workflows.
 
 ### Added
+- **Command Postfix:** Renamed the global CLI command to `llm-agent-beta` for this release.
 - **Real Incremental Streaming:** Implemented true per-token streaming for both text and 
   tool-call deltas, fully compliant with OpenAI SSE protocol.
 - **Hybrid RAG Search:** Combined semantic vector similarity with BM25 lexical scoring for 
