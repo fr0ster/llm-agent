@@ -2,10 +2,10 @@ port: 4004
 host: 0.0.0.0
 
 # Request routing mode:
-#   smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP work.
-#   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
-#   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
-mode: hybrid
+#   hard        — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
+#   pass        — Transparent proxy. Logs everything but modifies nothing.
+#   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+mode: smart
 
 llm:
   apiKey: ${DEEPSEEK_API_KEY}
@@ -18,6 +18,8 @@ rag:
   url: http://localhost:11434
   model: nomic-embed-text
   dedupThreshold: 0.92
+  vectorWeight: 0.7
+  keywordWeight: 0.3
 
 mcp:
   # type: none | http | stdio
@@ -28,6 +30,8 @@ agent:
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 10
+  showReasoning: false
+  historyAutoSummarizeLimit: 10
 
 log: smart-server.log
 logDir: sessions
