@@ -29,22 +29,22 @@ Client (OpenAI-compatible)
 
 ```mermaid
 flowchart LR
-  App[Consumer App] --> SS[SmartServer]
-  SS --> B[SmartAgentBuilder]
-  B --> SA[SmartAgent]
+  App("Consumer App") --> SS("SmartServer")
+  SS --> B("SmartAgentBuilder")
+  B --> SA("SmartAgent")
 
-  B --> LMain[ILlm main]
-  B --> LCls[ILlm classifier]
-  B --> LHelp[ILlm helper]
-  B --> CfgC[ISubpromptClassifier]
-  B --> Ctx[IContextAssembler]
-  B --> MCPS[IMcpClient[]]
-  B --> RF[IRag facts]
-  B --> RFB[IRag feedback]
-  B --> RS[IRag state]
-  B --> TP[IToolPolicy optional]
-  B --> ID[IPromptInjectionDetector optional]
-  B --> LG[ILogger optional]
+  B --> LMain("ILlm main")
+  B --> LCls("ILlm classifier")
+  B --> LHelp("ILlm helper")
+  B --> CfgC("ISubpromptClassifier")
+  B --> Ctx("IContextAssembler")
+  B --> MCPS("IMcpClient list")
+  B --> RF("IRag facts")
+  B --> RFB("IRag feedback")
+  B --> RS("IRag state")
+  B --> TP("IToolPolicy optional")
+  B --> ID("IPromptInjectionDetector optional")
+  B --> LG("ILogger optional")
 
   SA --> LMain
   SA --> LCls
@@ -59,12 +59,12 @@ flowchart LR
   SA --> ID
   SA --> LG
 
-  LMain -. default .-> TC[TokenCountingLlm]
-  TC --> LA[LlmAdapter]
-  LA --> BA[BaseAgent bridge]
+  LMain --> TC("TokenCountingLlm default")
+  TC --> LA("LlmAdapter")
+  LA --> BA("BaseAgent bridge")
 
-  MCPS -. default .-> MCA[McpClientAdapter]
-  MCA --> MCPW[MCPClientWrapper]
+  MCPS --> MCA("McpClientAdapter default")
+  MCA --> MCPW("MCPClientWrapper")
 ```
 
 ## Embeddable Component Contract (No YAML)
