@@ -7,6 +7,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0-beta.3] — 2026-02-25
+
+### Summary
+Configuration and developer experience refinement. Exposes the full power of the multi-model 
+pipeline and advanced routing modes in the YAML template.
+
+### Added
+- **Multi-Model Pipeline Documentation:** YAML generator now produces a template that 
+  explicitly demonstrates how to configure separate LLMs for `main`, `classifier`, 
+  and `helper` roles.
+- **Routing Mode Documentation:** Clear descriptions for `hard`, `pass`, and `smart` 
+  modes added to the YAML template.
+- **Improved YAML Defaults:** Updated template with hybrid RAG weights and session 
+  logging placeholders.
+
+---
+
 ## [1.1.0-beta.2] — 2026-02-25
 
 ### Summary
