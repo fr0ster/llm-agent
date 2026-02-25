@@ -13,6 +13,7 @@ import type { LlmStreamChunk } from './interfaces/types.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import { makeLlmFromProvider, makeRagFromStoreConfig, type PipelineConfig } from './pipeline.js';
+import { SessionLogger } from './logger/session-logger.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -71,6 +72,7 @@ export interface SmartServerConfig {
   mode?: SmartServerMode;
   pipeline?: PipelineConfig;
   log?: (event: Record<string, unknown>) => void;
+  logDir?: string;
 }
 
 export interface SmartServerHandle {
@@ -165,16 +167,6 @@ export class SmartServer {
 
     const agentHandle = await builder.build();
     const { agent: smartAgent, chat, streamChat, getUsage, close: closeAgent } = agentHandle;
-
-    // Run health check on startup
-    smartAgent.healthCheck().then(res => {
-      if (res.ok) {
-        const v = res.value;
-        const mcpStatus = v.mcp.every(m => m.ok) ? 'OK' : 'PARTIAL/FAIL';
-        console.error(`[Health] LLM: ${v.llm ? 'OK' : 'FAIL'}, RAG: ${v.rag ? 'OK' : 'FAIL'}, MCP: ${mcpStatus}`);
-        v.mcp.filter(m => !m.ok).forEach(m => console.error(`  - MCP Error: ${m.error}`));
-      }
-    }).catch(e => console.error(`[Health] Unexpected check error: ${e}`));
 
     const server = http.createServer((req, res) =>
       this._handle(req, res, getUsage, smartAgent, chat, streamChat, log).catch((err) => {
@@ -281,12 +273,18 @@ export class SmartServer {
       return;
     }
 
+    const traceId = randomUUID();
+    const sessionId = (req.headers['x-session-id'] as string) || 'default';
+    const sessionLogger = new SessionLogger(this.cfg.logDir || null, sessionId, traceId);
+
     const t0 = Date.now();
-    log({ event: 'request_start', stream: body.stream ?? false });
+    log({ event: 'request_start', stream: body.stream ?? false, traceId });
 
     const opts = {
       stream: body.stream,
       externalTools: body.tools,
+      trace: { traceId },
+      sessionLogger
     };
 
     const normalizedMessages = body.messages.map((m) => ({

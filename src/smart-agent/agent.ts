@@ -46,25 +46,10 @@ export class SmartAgent {
 
   async healthCheck(options?: CallOptions): Promise<Result<{ llm: boolean; rag: boolean; mcp: { name: string; ok: boolean; error?: string }[] }, OrchestratorError>> {
     const results = { llm: false, rag: false, mcp: [] as { name: string; ok: boolean; error?: string }[] };
-
-    // 1. Check LLM (try simple chat)
-    try {
-      const llmRes = await this.deps.mainLlm.chat([{ role: 'user', content: 'ping' }], [], { ...options, maxTokens: 1 });
-      results.llm = llmRes.ok;
-    } catch { results.llm = false; }
-
-    // 2. Check RAG (facts store is primary)
-    const ragRes = await this.deps.ragStores.facts.healthCheck(options);
-    results.rag = ragRes.ok;
-
-    // 3. Check all MCP clients
-    const mcpChecks = await Promise.all(this.deps.mcpClients.map(async client => {
-      const tools = await client.listTools(options);
-      return { name: 'mcp-client', ok: tools.ok, error: tools.ok ? undefined : (tools.error as any).message };
-    }));
-    results.mcp = mcpChecks;
-
-    return { ok: true, value: results };
+    try { const llmRes = await this.deps.mainLlm.chat([{ role: 'user', content: 'ping' }], [], { ...options, maxTokens: 1 }); results.llm = llmRes.ok; } catch { results.llm = false; }
+    const ragRes = await this.deps.ragStores.facts.healthCheck(options); results.rag = ragRes.ok;
+    const mcpChecks = await Promise.all(this.deps.mcpClients.map(async client => { const tools = await client.listTools(options); return { name: 'mcp-client', ok: tools.ok, error: tools.ok ? undefined : (tools.error as any).message }; }));
+    results.mcp = mcpChecks; return { ok: true, value: results };
   }
 
   async process(textOrMessages: string | Message[], options?: CallOptions): Promise<Result<SmartAgentResponse, OrchestratorError>> {
@@ -85,8 +70,14 @@ export class SmartAgent {
       const { action, retrieved, messages, toolClientMap, isChat } = preLoop.value;
 
       if (isChat) {
+        opts?.sessionLogger?.logStep('llm_chat_request', { messages });
         const stream = this.deps.mainLlm.streamChat(messages, [], opts);
-        for await (const chunk of stream) yield chunk;
+        let finalContent = '';
+        for await (const chunk of stream) {
+          if (chunk.ok && chunk.value.content) finalContent += chunk.value.content;
+          yield chunk;
+        }
+        opts?.sessionLogger?.logStep('llm_chat_response', { content: finalContent });
         return;
       }
 
@@ -102,24 +93,42 @@ export class SmartAgent {
   }
 
   private async _preparePipeline(textOrMessages: string | Message[], opts: CallOptions | undefined, traceId: string, pipelineT0: number): Promise<Result<{ action: Subprompt; retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }; messages: Message[]; toolClientMap: Map<string, IMcpClient>; isChat?: boolean }, OrchestratorError>> {
+    opts?.sessionLogger?.logStep('client_request', { textOrMessages });
     const text = typeof textOrMessages === 'string' ? textOrMessages : textOrMessages.filter(m => m.role === 'user').slice(-1)[0]?.content ?? '';
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
-    if (this.deps.helperLlm && history.length > summarizeLimit) { const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value; }
+    if (this.deps.helperLlm && history.length > summarizeLimit) { 
+      opts?.sessionLogger?.logStep('summarization_start', { historyLength: history.length });
+      const res = await this._summarizeHistory(history, opts); 
+      if (res.ok) {
+        processedHistory = res.value;
+        opts?.sessionLogger?.logStep('summarization_done', { processedHistory });
+      }
+    }
 
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) return { ok: false, error: new OrchestratorError(classifyResult.error.message, 'CLASSIFIER_ERROR') };
+    opts?.sessionLogger?.logStep('classifier_response', { subprompts: classifyResult.value });
 
     const subprompts = classifyResult.value;
     const others = subprompts.filter(sp => sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback');
     const ragStoreMap = new Map<string, IRag>([['fact', this.deps.ragStores.facts], ['feedback', this.deps.ragStores.feedback], ['state', this.deps.ragStores.state]]);
-    await Promise.allSettled(others.map(async sp => { const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); }));
+    await Promise.allSettled(others.map(async sp => { 
+      const s = ragStoreMap.get(sp.type); 
+      if (s) {
+        opts?.sessionLogger?.logStep(`rag_upsert_${sp.type}`, { text: sp.text });
+        await s.upsert(sp.text, this._buildRagMetadata(), opts); 
+      }
+    }));
 
     const actions = subprompts.filter(sp => sp.type === 'action');
     const chats = subprompts.filter(sp => sp.type === 'chat');
 
-    if (chats.length > 0 && actions.length === 0) return { ok: true, value: { action: chats[0], retrieved: { facts: [], feedback: [], state: [], tools: [] }, messages: processedHistory, toolClientMap: new Map(), isChat: true } };
+    if (chats.length > 0 && actions.length === 0) {
+      return { ok: true, value: { action: chats[0], retrieved: { facts: [], feedback: [], state: [], tools: [] }, messages: processedHistory, toolClientMap: new Map(), isChat: true } };
+    }
+
     if (actions.length === 0) return { ok: false, error: new OrchestratorError('No intent', 'NO_ACTIONS') };
 
     const action = actions[0];
@@ -130,13 +139,14 @@ export class SmartAgent {
     const { tools: mcpTools, toolClientMap } = await this._listAllTools(opts);
     const facts = fR.ok ? fR.value : [];
     const ragToolNames = new Set(facts.map(r => r.metadata.id as string).filter(id => id?.startsWith('tool:')).map(id => id.slice(5)));
-    
-    // SMART TOOL SELECTION: If RAG found tools, use only them. If not, don't overwhelm with all 134 tools.
     const selectedTools = ragToolNames.size > 0 ? mcpTools.filter(t => ragToolNames.has(t.name)) : [];
 
     const retrieved = { facts, feedback: fbR.ok ? fbR.value : [], state: sR.ok ? sR.value : [], tools: selectedTools };
+    opts?.sessionLogger?.logStep('rag_retrieval_done', { ragText, retrieved });
+
     const assembleResult = await this.deps.assembler.assemble(action, retrieved, processedHistory, opts);
     if (!assembleResult.ok) return { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') };
+    opts?.sessionLogger?.logStep('context_assembled', { messages: assembleResult.value });
 
     return { ok: true, value: { action, retrieved, messages: assembleResult.value, toolClientMap } };
   }
@@ -162,6 +172,8 @@ export class SmartAgent {
       if (iteration >= this.config.maxIterations) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
 
       const activeTools = [...(retrieved.tools as LlmTool[]), ...externalTools];
+      opts?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, { messages, tools: activeTools.map(t => t.name) });
+      
       const stream = this.deps.mainLlm.streamChat(messages, activeTools, opts);
       let content = ''; let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<number, { id: string; name: string; arguments: string }>();
@@ -181,35 +193,44 @@ export class SmartAgent {
       }
 
       const toolCalls = Array.from(toolCallsMap.values()).map(tc => { let args = {}; try { args = JSON.parse(tc.arguments); } catch { args = {}; } return { id: tc.id, name: tc.name, arguments: args }; });
-      if (finishReason !== 'tool_calls' || toolCalls.length === 0) { yield { ok: true, value: { content: '', finishReason: finishReason || 'stop', usage } }; return; }
+      opts?.sessionLogger?.logStep(`llm_response_iter_${iteration + 1}`, { content, toolCalls, finishReason });
 
-      // Identify internal vs external vs invalid
+      if (finishReason !== 'tool_calls' || toolCalls.length === 0) { 
+        opts?.sessionLogger?.logStep('final_response', { content, usage });
+        yield { ok: true, value: { content: '', finishReason: finishReason || 'stop', usage } }; 
+        return; 
+      }
+
       const internalCalls = toolCalls.filter(tc => toolClientMap.has(tc.name));
       const validExternalCalls = toolCalls.filter(tc => externalToolNames.has(tc.name));
       const hallucinations = toolCalls.filter(tc => !toolClientMap.has(tc.name) && !externalToolNames.has(tc.name));
 
-      // If hallucinated tools exist, tell the model and retry
       if (hallucinations.length > 0) {
         messages = [...messages, { role: 'assistant', content: content || null, tool_calls: toolCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
         for (const h of hallucinations) {
-          messages = [...messages, { role: 'tool', content: `Error: Tool "${h.name}" not found. Available tools are: ${activeTools.map(t => t.name).join(', ')}`, tool_call_id: h.id }];
+          const errorMsg = `Error: Tool "${h.name}" not found.`;
+          opts?.sessionLogger?.logStep(`hallucination_detected`, { toolName: h.name });
+          messages = [...messages, { role: 'tool', content: errorMsg, tool_call_id: h.id }];
         }
         continue;
       }
 
-      // If we have external calls, we yield them and STOP our loop
       if (validExternalCalls.length > 0) {
+        opts?.sessionLogger?.logStep('external_tool_delegation', { toolCalls: validExternalCalls });
         yield { ok: true, value: { content: '', toolCalls: validExternalCalls, finishReason: 'tool_calls', usage } };
         return;
       }
 
-      // Execute internal calls
       if (content || internalCalls.length > 0) messages = [...messages, { role: 'assistant', content: content || null, tool_calls: internalCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
       for (const tc of internalCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
         yield { ok: true, value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` } };
+        
+        opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, { arguments: tc.arguments });
         const res = await toolClientMap.get(tc.name)!.callTool(tc.name, tc.arguments, opts);
         const text = !res.ok ? res.error.message : typeof res.value.content === 'string' ? res.value.content : JSON.stringify(res.value.content);
+        opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
+        
         toolCallCount++; messages = [...messages, { role: 'tool', content: text, tool_call_id: tc.id }];
       }
     }
@@ -244,7 +265,7 @@ export class SmartAgent {
 
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
     if (/^[\x00-\x7F]+$/.test(text) || text.length < 15) return text;
-    const dp = 'You are an SAP ABAP expert. Translate the following user request to English and expand it with relevant SAP technical terms: ABAP object types, SAP table names (e.g. TDEVC for packages, TADIR for repository objects, T100 for messages), operation keywords (read, search, filter, list, create, update), and function descriptors. This expansion is used for semantic tool search. Reply with only the expanded English terms, no explanation.';
+    const dp = 'Translate the following user request to English. If it contains technical terms, preserve and expand them with technical synonyms. If it is general chat, just translate it. Reply with only the expanded English terms, no explanation.';
     const llm = this.deps.helperLlm || this.deps.mainLlm;
     const res = await llm.chat([{ role: 'system', content: this.config.ragTranslatePrompt || dp }, { role: 'user', content: text }], [], opts);
     return res.ok && res.value.content.trim() ? res.value.content.trim() : text;
