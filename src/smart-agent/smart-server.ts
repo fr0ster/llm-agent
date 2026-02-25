@@ -59,7 +59,7 @@ export interface SmartServerPromptsConfig {
   historySummary?: string;
 }
 
-export type SmartServerMode = 'smart' | 'passthrough' | 'hybrid';
+export type SmartServerMode = 'hard' | 'pass' | 'smart';
 
 export interface SmartServerConfig {
   port?: number;
