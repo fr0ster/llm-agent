@@ -109,16 +109,28 @@ export class SmartAgent {
           const ragText = await this._toEnglishForRag(sp.text, opts);
           const k = this.config.ragQueryK ?? 10;
           const [fR, fbR, sR] = await Promise.all([this.deps.ragStores.facts.query(ragText, k, opts), this.deps.ragStores.feedback.query(ragText, k, opts), this.deps.ragStores.state.query(ragText, k, opts)]);
+          
           const { tools: mcpTools } = await this._listAllTools(opts);
           const facts = fR.ok ? fR.value : [];
           const ragToolNames = new Set(facts.map(r => r.metadata.id as string).filter(id => id?.startsWith('tool:')).map(id => id.slice(5)));
           const selectedTools = ragToolNames.size > 0 ? mcpTools.filter(t => ragToolNames.has(t.name)) : (mode === 'hard' ? mcpTools : []);
+
           const retrieved = { facts, feedback: fbR.ok ? fbR.value : [], state: sR.ok ? sR.value : [], tools: selectedTools };
           const assembleResult = await this.deps.assembler.assemble(sp, retrieved, currentHistory, opts);
           if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
-          const activeTools = mode === 'hard' ? (retrieved.tools as LlmTool[]) : [...(retrieved.tools as LlmTool[]), ...externalTools];
-          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name) });
-          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, mode === 'hard' ? [] : externalTools, activeTools);
+
+          // INTELLECTUAL TOOL FILTERING: If we have SAP context and SAP tools, hide general Python tools to prevent hallucinations
+          let finalToolsForIter = [...(retrieved.tools as LlmTool[])];
+          if (isSapContext && retrieved.tools.length > 0) {
+            // Keep only essential non-SAP tools if needed, but here we prioritize SAP tools to fix the SQLite hallucination
+            finalToolsForIter = [...(retrieved.tools as LlmTool[])];
+          } else {
+            finalToolsForIter = [...(retrieved.tools as LlmTool[]), ...externalTools];
+          }
+
+          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name), finalTools: finalToolsForIter.map(t => t.name) });
+
+          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, isSapContext ? [] : externalTools, finalToolsForIter);
           for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
         }
         currentHistory = [...currentHistory, { role: 'user' as const, content: sp.text }, { role: 'assistant' as const, content: subContent }];
@@ -133,13 +145,18 @@ export class SmartAgent {
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
     if (this.deps.helperLlm && history.length > summarizeLimit) { const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value; }
+
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) return { ok: false, error: new OrchestratorError(classifyResult.error.message, 'CLASSIFIER_ERROR') };
     opts?.sessionLogger?.logStep('classifier_response', { subprompts: classifyResult.value });
+
     const subprompts = classifyResult.value;
     const others = subprompts.filter(sp => sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback');
     const ragStoreMap = new Map<string, IRag>([['fact', this.deps.ragStores.facts], ['feedback', this.deps.ragStores.feedback], ['state', this.deps.ragStores.state]]);
-    await Promise.allSettled(others.map(async sp => { const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); }));
+    await Promise.allSettled(others.map(async sp => { 
+      const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); 
+    }));
+
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
   }
@@ -209,9 +226,20 @@ export class SmartAgent {
     return { tools, toolClientMap };
   }
 
+  private async _runToolLoop(_action: Subprompt, retrieved: { facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }, initialMessages: Message[], toolClientMap: Map<string, IMcpClient>, opts: CallOptions | undefined, traceId: string): Promise<Result<SmartAgentResponse, OrchestratorError>> {
+    let content = ''; let totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const stream = this._runStreamingToolLoop(_action, retrieved, initialMessages, toolClientMap, opts, traceId, [], []);
+    for await (const chunk of stream) {
+      if (!chunk.ok) return chunk;
+      if (chunk.value.content) content += chunk.value.content;
+      if (chunk.value.usage) { totalUsage.promptTokens += chunk.value.usage.promptTokens; totalUsage.completionTokens += chunk.value.usage.completionTokens; totalUsage.totalTokens += chunk.value.usage.totalTokens; }
+    }
+    return { ok: true, value: { content, iterations: 1, toolCallCount: 0, stopReason: 'stop', usage: totalUsage } };
+  }
+
   private async _toEnglishForRag(text: string, opts: CallOptions | undefined): Promise<string> {
     if (/^[\x00-\x7F]+$/.test(text) || text.length < 15) return text;
-    const dp = 'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the translation.';
+    const dp = 'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the expanded English terms, no explanation.';
     const llm = this.deps.helperLlm || this.deps.mainLlm;
     const res = await llm.chat([{ role: 'system' as const, content: this.config.ragTranslatePrompt || dp }, { role: 'user' as const, content: text }], [], opts);
     return res.ok && res.value.content.trim() ? res.value.content.trim() : text;
