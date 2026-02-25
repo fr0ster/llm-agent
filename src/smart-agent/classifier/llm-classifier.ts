@@ -57,11 +57,24 @@ function withAbort<T>(promise: Promise<T>, signal: AbortSignal | undefined, make
   return Promise.race([promise, new Promise<never>((_, reject) => { signal.addEventListener('abort', () => reject(makeError()), { once: true }); })]);
 }
 
+// ---------------------------------------------------------------------------
+// Config
+// ---------------------------------------------------------------------------
+
+export interface LlmClassifierConfig {
+  /** Override default system prompt. */
+  systemPrompt?: string;
+  /** Prompt version tag logged for observability. Default: 'v1'. */
+  promptVersion?: string;
+  /** Cache results for identical input text within the instance lifetime. Default: true. */
+  enableCache?: boolean;
+}
+
 export class LlmClassifier implements ISubpromptClassifier {
   private readonly systemPrompt: string;
   private readonly cache: Map<string, Subprompt[]> | null;
 
-  constructor(private readonly llm: ILlm, config?: { systemPrompt?: string; enableCache?: boolean }) {
+  constructor(private readonly llm: ILlm, config?: LlmClassifierConfig) {
     this.systemPrompt = config?.systemPrompt ?? DEFAULT_CLASSIFIER_PROMPT;
     this.cache = (config?.enableCache ?? true) ? new Map() : null;
   }
