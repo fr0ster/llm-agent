@@ -32,10 +32,10 @@ export const YAML_TEMPLATE = `port: 4004
 host: 0.0.0.0
 
 # Request routing mode:
-#   smart       — all requests via SmartAgent (RAG tool selection). Best for SAP/ABAP work.
-#   passthrough — all requests directly to LLM (no agent). Preserves Cline XML protocol.
-#   hybrid      — auto-detect: Cline client → passthrough, others → SmartAgent. (default)
-mode: hybrid
+#   hard        — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
+#   pass        — Transparent proxy. Logs everything but modifies nothing.
+#   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+mode: smart
 
 llm:
   apiKey: \${DEEPSEEK_API_KEY}
