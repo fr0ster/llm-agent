@@ -1,0 +1,14 @@
+{
+  "arguments": {
+    "objects": [
+      {
+        "name": "Z5",
+        "type": "TABLE"
+      },
+      {
+        "name": "Z9",
+        "type": "TABLE"
+      }
+    ]
+  }
+}

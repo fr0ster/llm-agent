@@ -1,0 +1,13 @@
+{
+  "content": "Я прочитаю структуру таблиці T002 та складемо таблиці 5 та 9. Спочатку перевірю, що це за таблиця.",
+  "toolCalls": [
+    {
+      "id": "call_00_any18Q2VGSlYoQxRxFTYAuiR",
+      "name": "GetTable",
+      "arguments": {
+        "table_name": "T002"
+      }
+    }
+  ],
+  "finishReason": "tool_calls"
+}
