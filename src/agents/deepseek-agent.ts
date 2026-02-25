@@ -85,10 +85,33 @@ export class DeepSeekAgent extends BaseAgent {
     return messages.map((msg) => {
       const formatted: any = {
         role: msg.role,
-        content: msg.content,
+        // assistant messages with tool_calls must have content=null per OpenAI/DeepSeek protocol
+        content: (msg.tool_calls?.length ? null : msg.content) ?? null,
       };
-
+      if (msg.tool_call_id !== undefined)
+        formatted.tool_call_id = msg.tool_call_id;
+      if (msg.tool_calls !== undefined) formatted.tool_calls = msg.tool_calls;
       return formatted;
     });
+  }
+
+  /**
+   * Stream DeepSeek response
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    tools: any[],
+    _options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }> {
+    const functions = this.convertToolsToFunctions(tools);
+
+    // Pass raw messages; DeepSeekProvider.streamChat will handle the final formatting
+    const stream = this.llmProvider.streamChat(messages, functions);
+    for await (const chunk of stream) {
+      yield {
+        content: chunk.content,
+        raw: chunk.raw,
+      };
+    }
   }
 }

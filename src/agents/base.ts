@@ -112,7 +112,17 @@ export abstract class BaseAgent {
   protected abstract callLLMWithTools(
     messages: Message[],
     tools: any[],
+    options?: any,
   ): Promise<{ content: string; raw?: unknown }>;
+
+  /**
+   * Stream LLM with tools - LLM-specific implementation
+   */
+  protected abstract streamLLMWithTools(
+    messages: Message[],
+    tools: any[],
+    options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }>;
 
   /**
    * Clear conversation history

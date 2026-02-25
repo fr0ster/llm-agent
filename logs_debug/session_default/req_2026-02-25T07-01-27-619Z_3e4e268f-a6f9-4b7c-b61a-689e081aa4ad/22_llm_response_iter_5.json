@@ -1,0 +1,22 @@
+{
+  "content": "Тепер давайте створимо таблиці 5 та 9. Спочатку перевіримо, чи вони вже існують:",
+  "toolCalls": [
+    {
+      "id": "call_00_hhD9If4vGTtWXnDAqgobywqJ",
+      "name": "DescribeByList",
+      "arguments": {
+        "objects": [
+          {
+            "name": "Z5",
+            "type": "TABLE"
+          },
+          {
+            "name": "Z9",
+            "type": "TABLE"
+          }
+        ]
+      }
+    }
+  ],
+  "finishReason": "tool_calls"
+}

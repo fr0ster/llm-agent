@@ -27,6 +27,7 @@ export class PromptBasedAgent extends BaseAgent {
   protected async callLLMWithTools(
     messages: Message[],
     tools: any[],
+    options?: any,
   ): Promise<{ content: string; raw?: unknown }> {
     // Build system message with tool descriptions
     const systemMessage = this.buildSystemMessageWithTools(tools);
@@ -44,6 +45,14 @@ export class PromptBasedAgent extends BaseAgent {
       content: response.content,
       raw: response.raw,
     };
+  }
+
+  protected async *streamLLMWithTools(
+    _messages: Message[],
+    _tools: any[],
+    _options?: any,
+  ): AsyncIterable<{ content: string; raw?: unknown }> {
+    throw new Error('Streaming is not implemented for PromptBasedAgent');
   }
 
   /**

@@ -8,12 +8,12 @@ export interface LLMProvider {
   /**
    * Send a chat message and get response
    */
-  chat(messages: Message[]): Promise<LLMResponse>;
+  chat(messages: Message[], tools?: any[]): Promise<LLMResponse>;
 
   /**
-   * Stream chat response (optional, for future implementation)
+   * Stream chat response
    */
-  streamChat?(messages: Message[]): AsyncGenerator<LLMResponse>;
+  streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse>;
 
   /**
    * Get available models
@@ -28,7 +28,9 @@ export abstract class BaseLLMProvider implements LLMProvider {
     this.config = config;
   }
 
-  abstract chat(messages: Message[]): Promise<LLMResponse>;
+  abstract chat(messages: Message[], tools?: any[]): Promise<LLMResponse>;
+
+  abstract streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse>;
 
   /**
    * Validate configuration

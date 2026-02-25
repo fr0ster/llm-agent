@@ -45,11 +45,13 @@ export class OpenAIProvider extends BaseLLMProvider {
     });
   }
 
-  async chat(messages: Message[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: any[]): Promise<LLMResponse> {
     try {
       const response = await this.client.post('/chat/completions', {
         model: this.model,
         messages: this.formatMessages(messages),
+        tools: tools && tools.length > 0 ? tools : undefined,
+        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
         temperature: this.config.temperature || 0.7,
         max_tokens: this.config.maxTokens || 2000,
       });
@@ -68,13 +70,88 @@ export class OpenAIProvider extends BaseLLMProvider {
     }
   }
 
+  async *streamChat(messages: Message[], tools?: any[]): AsyncIterable<LLMResponse> {
+    try {
+      const response = await this.client.post(
+        '/chat/completions',
+        {
+          model: this.model,
+          messages: this.formatMessages(messages),
+          tools: tools && tools.length > 0 ? tools : undefined,
+          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
+          temperature: this.config.temperature || 0.7,
+          max_tokens: this.config.maxTokens || 2000,
+          stream: true,
+        },
+        { responseType: 'stream' },
+      );
+
+      const stream = response.data;
+      let buffer = '';
+
+      for await (const chunk of stream) {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          if (data === '[DONE]') break;
+
+          try {
+            const parsed = JSON.parse(data);
+            const choice = parsed.choices[0];
+            if (choice.delta) {
+              yield {
+                content: choice.delta.content || '',
+                finishReason: choice.finish_reason,
+                raw: parsed,
+              };
+            }
+          } catch (e) {
+            // Ignore parse errors for incomplete chunks
+          }
+        }
+      }
+    } catch (error: any) {
+      throw new Error(
+        `OpenAI Streaming error: ${error.response?.data?.error?.message || error.message}`,
+      );
+    }
+  }
+
   /**
-   * Format messages for OpenAI API
+   * Format messages for OpenAI API with strict protocol enforcement.
    */
   private formatMessages(messages: Message[]): any[] {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+    const formatted: any[] = [];
+
+    for (const msg of messages) {
+      if (msg.role === 'tool' && !msg.tool_call_id) {
+        continue;
+      }
+
+      const entry: any = {
+        role: msg.role,
+        content: msg.content ?? "",
+      };
+
+      if (msg.role === 'assistant' && msg.tool_calls && msg.tool_calls.length > 0) {
+        entry.tool_calls = msg.tool_calls;
+        entry.content = msg.content || null;
+      }
+
+      if (msg.role === 'tool') {
+        entry.tool_call_id = msg.tool_call_id;
+        entry.content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content ?? "");
+      }
+
+      formatted.push(entry);
+    }
+
+    return formatted;
   }
 }

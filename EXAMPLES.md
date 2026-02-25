@@ -1,6 +1,192 @@
 # LLM Proxy Usage Examples
 
-## Quick Start Examples
+---
+
+## SmartServer Examples
+
+### Example S1: Minimal — DeepSeek + in-memory RAG, no MCP
+
+```yaml
+# smart-server.yaml
+port: 3001
+mode: hybrid
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+rag:
+  type: in-memory
+```
+
+```bash
+echo "DEEPSEEK_API_KEY=sk-xxx" > .env
+llm-agent
+# → listening on http://0.0.0.0:3001
+```
+
+Connect any OpenAI-compatible client to `http://localhost:3001/v1`.
+
+---
+
+### Example S2: DeepSeek + Ollama + SAP MCP server
+
+```yaml
+# smart-server.yaml
+port: 3001
+mode: smart
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+mcp:
+  type: http
+  url: http://localhost:3000/mcp/stream/http
+agent:
+  maxIterations: 10
+  ragQueryK: 10
+log: smart-server.log
+```
+
+```bash
+llm-agent
+```
+
+---
+
+### Example S3: Different LLM providers for main vs. classifier
+
+```yaml
+# smart-server.yaml
+port: 3001
+mode: hybrid
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}     # fallback if pipeline.llm.main absent
+
+pipeline:
+  llm:
+    main:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.7
+    classifier:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o-mini
+      temperature: 0.1
+  rag:
+    facts:
+      type: ollama
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+  mcp:
+    - type: http
+      url: http://sap-server:3000/mcp/stream/http
+```
+
+---
+
+### Example S4: Multiple MCP servers simultaneously
+
+```yaml
+pipeline:
+  mcp:
+    - type: http
+      url: http://sap-server:3000/mcp/stream/http
+    - type: stdio
+      command: npx
+      args: [github-mcp-server]
+```
+
+Tools from both servers are vectorized into the facts RAG on startup. The agent selects tools
+semantically across the combined catalog.
+
+---
+
+### Example S5: Pipeline-only config (no flat `llm:` block)
+
+When `pipeline.llm.main` is set, the flat `llm.apiKey` is not required:
+
+```yaml
+# smart-server.yaml — no top-level llm: block needed
+port: 3001
+mode: smart
+pipeline:
+  llm:
+    main:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o
+  rag:
+    facts:
+      type: in-memory
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+```
+
+---
+
+### Example S6: Programmatic SmartServer embedding
+
+```typescript
+import { SmartServer } from '@mcp-abap-adt/llm-agent';
+
+const server = new SmartServer({
+  port: 3001,
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  rag: { type: 'in-memory' },
+  mcp: { type: 'http', url: 'http://localhost:3000/mcp/stream/http' },
+  mode: 'hybrid',
+  log: (event) => console.log(JSON.stringify(event)),
+});
+
+const { port, close, getUsage } = await server.start();
+console.log(`Smart agent listening on port ${port}`);
+
+// Graceful shutdown
+process.on('SIGTERM', async () => {
+  await close();
+});
+```
+
+---
+
+### Example S7: SmartAgentBuilder — custom components
+
+```typescript
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent/smart-agent/rag';
+import { ConsoleLogger } from '@mcp-abap-adt/llm-agent/smart-agent/logger';
+
+const sharedRag = new InMemoryRag();
+
+const { agent, getUsage, close } = await new SmartAgentBuilder({
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  mcp: [
+    { type: 'http', url: 'http://sap-server/mcp/stream/http' },
+    { type: 'stdio', command: 'npx', args: ['github-mcp-server'] },
+  ],
+})
+  .withRag({ facts: sharedRag, feedback: sharedRag, state: sharedRag })
+  .withLogger(new ConsoleLogger())
+  .build();
+
+const result = await agent.process('List all open GitHub issues tagged with sap-abap');
+console.log(result.ok ? result.value.content : result.error.message);
+
+console.log('Token usage:', getUsage());
+await close();
+```
+
+---
+
+## Quick Start Examples (Legacy — Thin Proxy CLI)
 
 ### Example 0: Test LLM Only (Without MCP)
 
@@ -185,7 +371,7 @@ npm run dev
 ### Example: Using in Your Own Code
 
 ```typescript
-import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-proxy';
+import { OpenAIAgent, OpenAIProvider, MCPClientWrapper } from '@mcp-abap-adt/llm-agent';
 
 // Create LLM provider
 const llmProvider = new OpenAIProvider({

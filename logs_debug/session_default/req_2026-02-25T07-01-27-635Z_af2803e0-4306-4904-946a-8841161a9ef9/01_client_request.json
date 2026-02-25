@@ -1,0 +1,12 @@
+{
+  "textOrMessages": [
+    {
+      "role": "system",
+      "content": "Reply with only a description in four words or less"
+    },
+    {
+      "role": "user",
+      "content": "Here are the first few user messages:\nПрочитай структуру таблиці T002. склади 5 та 9.\n\nBased on the conversation so far, provide a concise description of this session in 4 words or less. This will be used for finding the session later in a UI with limited space - reply *ONLY* with the description"
+    }
+  ]
+}
