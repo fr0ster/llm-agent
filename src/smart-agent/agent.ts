@@ -81,6 +81,7 @@ export class SmartAgent {
         return;
       }
 
+      // 1. Unified Preparation
       const initResult = await this._preparePipeline(textOrMessages, opts, traceId, pipelineT0);
       if (!initResult.ok) { yield initResult; return; }
       const { subprompts, processedHistory, toolClientMap } = initResult.value;
@@ -91,40 +92,43 @@ export class SmartAgent {
         return null;
       }).filter((t): t is LlmTool => t !== null);
 
-      let currentHistory = mode === 'hard' ? [] : processedHistory;
-      const actionsAndChats = subprompts.filter(sp => sp.type === 'action' || sp.type === 'chat');
+      // 2. Decide context and tools for the WHOLE request
+      const actions = subprompts.filter(sp => sp.type === 'action');
+      const isSapRequired = actions.some(a => a.context === 'sap-abap') || mode === 'hard';
+      
+      let finalTools: LlmTool[] = [];
+      let retrieved = { facts: [] as RagResult[], feedback: [] as RagResult[], state: [] as RagResult[], tools: [] as McpTool[] };
 
-      for (const sp of actionsAndChats) {
-        opts?.sessionLogger?.logStep(`processing_subprompt_${sp.type}`, { sp });
-        const isSapContext = sp.context === 'sap-abap' || mode === 'hard';
-        let subContent = '';
-
-        if (sp.type === 'chat' && mode !== 'hard') {
-          const messages: Message[] = [...currentHistory, { role: 'user' as const, content: sp.text }];
-          const stream = this.deps.mainLlm.streamChat(messages, [], opts);
-          for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
-        } else {
-          const ragText = await this._toEnglishForRag(sp.text, opts);
-          const k = this.config.ragQueryK ?? 10;
-          const [fR, fbR, sR] = await Promise.all([this.deps.ragStores.facts.query(ragText, k, opts), this.deps.ragStores.feedback.query(ragText, k, opts), this.deps.ragStores.state.query(ragText, k, opts)]);
-          
-          const { tools: mcpTools } = await this._listAllTools(opts);
-          const facts = fR.ok ? fR.value : [];
-          const ragToolNames = new Set(facts.map(r => r.metadata.id as string).filter(id => id?.startsWith('tool:')).map(id => id.slice(5)));
-          const selectedTools = ragToolNames.size > 0 ? mcpTools.filter(t => ragToolNames.has(t.name)) : (mode === 'hard' ? mcpTools : []);
-
-          const retrieved = { facts, feedback: fbR.ok ? fbR.value : [], state: sR.ok ? sR.value : [], tools: selectedTools };
-          const assembleResult = await this.deps.assembler.assemble(sp, retrieved, currentHistory, opts);
-          if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
-
-          const activeTools = mode === 'hard' ? (retrieved.tools as LlmTool[]) : [...(retrieved.tools as LlmTool[]), ...externalTools];
-          opts?.sessionLogger?.logStep(`subprompt_context`, { sp, retrievedTools: retrieved.tools.map(t => t.name), externalTools: externalTools.map(t => t.name), finalTools: activeTools.map(t => t.name) });
-
-          const stream = this._runStreamingToolLoop(sp, retrieved, assembleResult.value, toolClientMap, opts, traceId, externalTools, activeTools);
-          for await (const chunk of stream) { if (chunk.ok && chunk.value.content) subContent += chunk.value.content; yield chunk; }
-        }
-        currentHistory = [...currentHistory, { role: 'user' as const, content: sp.text }, { role: 'assistant' as const, content: subContent }];
+      if (isSapRequired) {
+        // Collect all action texts for RAG
+        const combinedActionText = actions.map(a => a.text).join(' ');
+        const ragText = await this._toEnglishForRag(combinedActionText, opts);
+        const k = this.config.ragQueryK ?? 10;
+        const [fR, fbR, sR] = await Promise.all([this.deps.ragStores.facts.query(ragText, k, opts), this.deps.ragStores.feedback.query(ragText, k, opts), this.deps.ragStores.state.query(ragText, k, opts)]);
+        
+        const { tools: mcpTools } = await this._listAllTools(opts);
+        const facts = fR.ok ? fR.value : [];
+        const ragToolNames = new Set(facts.map(r => r.metadata.id as string).filter(id => id?.startsWith('tool:')).map(id => id.slice(5)));
+        const selectedMcpTools = ragToolNames.size > 0 ? mcpTools.filter(t => ragToolNames.has(t.name)) : (mode === 'hard' ? mcpTools : []);
+        
+        retrieved = { facts, feedback: fbR.ok ? fbR.value : [], state: sR.ok ? sR.value : [], tools: selectedMcpTools };
+        finalTools = mode === 'hard' ? (selectedMcpTools as LlmTool[]) : [...(selectedMcpTools as LlmTool[]), ...externalTools];
+      } else {
+        // Chat only or general actions: No SAP tools to prevent bias
+        finalTools = mode === 'hard' ? [] : externalTools;
       }
+
+      // 3. Assemble Context once
+      const mainAction = actions.length > 0 ? actions[0] : (subprompts.find(sp => sp.type === 'chat') || subprompts[0]);
+      const assembleResult = await this.deps.assembler.assemble(mainAction, retrieved, processedHistory, opts);
+      if (!assembleResult.ok) { yield { ok: false, error: new OrchestratorError(assembleResult.error.message, 'ASSEMBLER_ERROR') }; return; }
+
+      opts?.sessionLogger?.logStep(`final_context_assembled`, { messages: assembleResult.value, tools: finalTools.map(t => t.name) });
+
+      // 4. Single Streaming Loop
+      const stream = this._runStreamingToolLoop(mainAction, retrieved, assembleResult.value, toolClientMap, opts, traceId, mode === 'hard' ? [] : externalTools, finalTools);
+      for await (const chunk of stream) yield chunk;
+
     } finally { timeoutCleanup?.(); }
   }
 
@@ -135,13 +139,18 @@ export class SmartAgent {
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
     if (this.deps.helperLlm && history.length > summarizeLimit) { const res = await this._summarizeHistory(history, opts); if (res.ok) processedHistory = res.value; }
+
     const classifyResult = await this.deps.classifier.classify(text, opts);
     if (!classifyResult.ok) return { ok: false, error: new OrchestratorError(classifyResult.error.message, 'CLASSIFIER_ERROR') };
     opts?.sessionLogger?.logStep('classifier_response', { subprompts: classifyResult.value });
+
     const subprompts = classifyResult.value;
     const others = subprompts.filter(sp => sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback');
     const ragStoreMap = new Map<string, IRag>([['fact', this.deps.ragStores.facts], ['feedback', this.deps.ragStores.feedback], ['state', this.deps.ragStores.state]]);
-    await Promise.allSettled(others.map(async sp => { const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); }));
+    await Promise.allSettled(others.map(async sp => { 
+      const s = ragStoreMap.get(sp.type); if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts); 
+    }));
+
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
   }
@@ -161,9 +170,7 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         if (chunk.content) { content += chunk.content; yield { ok: true, value: { content: chunk.content } }; }
         if (chunk.toolCalls) {
-          // Identify tools that belong to the client (Goose/Cline)
           const externalDeltas = chunk.toolCalls.filter(tc => externalToolNames.has(tc.name));
-          // Yield ONLY external tool calls to the client. Keep internal ones hidden.
           if (externalDeltas.length > 0) { yield { ok: true, value: { content: '', toolCalls: externalDeltas } }; }
           for (const tc of chunk.toolCalls as any[]) {
             if (!toolCallsMap.has(tc.index)) { toolCallsMap.set(tc.index, { id: tc.id || '', name: tc.name || '', arguments: tc.arguments || '' }); }
@@ -184,11 +191,7 @@ export class SmartAgent {
         for (const h of hallucinations) { messages = [...messages, { role: 'tool' as const, content: `Error: Tool "${h.name}" not found.`, tool_call_id: h.id }]; }
         continue;
       }
-      if (validExternalCalls.length > 0) {
-        // External calls were already yielded as deltas, just stop our loop.
-        yield { ok: true, value: { content: '', finishReason: 'tool_calls', usage } };
-        return;
-      }
+      if (validExternalCalls.length > 0) { yield { ok: true, value: { content: '', finishReason: 'tool_calls', usage } }; return; }
       if (content || internalCalls.length > 0) messages = [...messages, { role: 'assistant' as const, content: content || null, tool_calls: internalCalls.map(tc => ({ id: tc.id, type: 'function' as const, function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }];
       for (const tc of internalCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) { yield { ok: true, value: { content: '', finishReason: 'length', usage } }; return; }
