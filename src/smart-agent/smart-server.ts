@@ -387,17 +387,45 @@ export class SmartServer {
     }
 
     type ContentBlock = { type: string; text?: string };
-    type MsgContent = string | ContentBlock[];
+    type MsgContent = string | ContentBlock[] | null;
+    type BodyMessage = {
+      role: string;
+      content: MsgContent;
+      /** Present on assistant messages that requested tool calls */
+      tool_calls?: Array<{ id: string; type: string; function: { name: string; arguments: string } }>;
+      /** Present on tool result messages */
+      tool_call_id?: string;
+    };
     const body = parsed as {
-      messages: Array<{ role: string; content: MsgContent }>;
+      messages: Array<BodyMessage>;
       tools?: Array<{ type?: string; function?: { name: string; description?: string; parameters?: Record<string, unknown> } }>;
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
     };
 
+    // content may be null in assistant messages that only carry tool_calls
     const extractText = (c: MsgContent): string => {
+      if (c == null) return '';
       if (typeof c === 'string') return c;
       return c.filter((b) => b.type === 'text' && b.text).map((b) => b.text!).join('\n');
+    };
+
+    // Preserve tool_calls / tool_call_id so conversation history stays intact
+    // across multi-turn tool exchanges (smart / passthrough modes).
+    const normalizeMessage = (m: BodyMessage): Message => {
+      const msg: Message = {
+        role: m.role as Message['role'],
+        content: extractText(m.content),
+      };
+      if (m.tool_calls?.length) {
+        msg.tool_calls = m.tool_calls.map((tc) => ({
+          id: tc.id,
+          type: 'function' as const,
+          function: tc.function,
+        }));
+      }
+      if (m.tool_call_id) msg.tool_call_id = m.tool_call_id;
+      return msg;
     };
 
     const userMessages = body.messages.filter((m) => m.role === 'user');
@@ -450,16 +478,40 @@ export class SmartServer {
 
     let finalContent = '';
     if (usePass) {
-      // Passthrough: full message history → LLM directly. Preserves client tool protocols (e.g. Cline XML).
-      const normalizedMessages = body.messages.map((m) => ({
-        role: m.role as Message['role'],
-        content: extractText(m.content),
-      }));
-      const llmResult = await chat(normalizedMessages);
+      // Passthrough: full message history + client tools → LLM directly.
+      // Tool calls in the response are forwarded to the client as OpenAI SSE
+      // so the client (Cline, Goose) can execute them and continue the conversation.
+      const normalizedMessages = body.messages.map(normalizeMessage);
+      const llmResult = await chat(
+        normalizedMessages,
+        clientTools.length > 0 ? clientTools : undefined,
+        { signal: abortCtrl.signal },
+      );
       log({ event: 'request_done', mode: 'passthrough', ok: llmResult.ok, durationMs: Date.now() - t0 });
-      finalContent = llmResult.ok ? (llmResult.value.content || '(no response)') : `Error: ${llmResult.error.message}`;
-      const finalFinishReason: 'stop' | 'length' = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
-      this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent, finalFinishReason);
+
+      const passToolCalls = llmResult.ok ? llmResult.value.toolCalls : undefined;
+      finalContent = llmResult.ok ? (llmResult.value.content || '') : `Error: ${llmResult.error.message}`;
+
+      if (body.stream === true && passToolCalls?.length) {
+        // Streaming passthrough with tool_calls: send SSE and forward tool calls.
+        const ptId = `chatcmpl-${randomUUID()}`;
+        const ptCreated = Math.floor(Date.now() / 1000);
+        res.writeHead(200, { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', Connection: 'keep-alive' });
+        const sendPt = (data: unknown) => { if (!res.destroyed) res.write(`data: ${JSON.stringify(data)}\n\n`); };
+        if (finalContent) {
+          sendPt({ id: ptId, object: 'chat.completion.chunk', created: ptCreated, model: 'smart-agent', choices: [{ index: 0, delta: { content: finalContent }, finish_reason: null }] });
+        }
+        sendPt({ id: ptId, object: 'chat.completion.chunk', created: ptCreated, model: 'smart-agent', choices: [{ index: 0, delta: { tool_calls: passToolCalls.map((tc, idx) => ({ index: idx, id: tc.id, type: 'function', function: { name: tc.name, arguments: JSON.stringify(tc.arguments) } })) }, finish_reason: null }] });
+        sendPt({ id: ptId, object: 'chat.completion.chunk', created: ptCreated, model: 'smart-agent', choices: [{ index: 0, delta: {}, finish_reason: 'tool_calls' }] });
+        if (body.stream_options?.include_usage) {
+          const u = getUsage();
+          sendPt({ id: ptId, object: 'chat.completion.chunk', created: ptCreated, model: 'smart-agent', choices: [], usage: { prompt_tokens: u.prompt_tokens, completion_tokens: u.completion_tokens, total_tokens: u.total_tokens } });
+        }
+        if (!res.destroyed) { res.write('data: [DONE]\n\n'); res.end(); }
+      } else {
+        const finalFinishReason: 'stop' | 'length' = llmResult.ok && llmResult.value.finishReason === 'length' ? 'length' : 'stop';
+        this._sendResponse(res, body.stream ?? false, body.stream_options?.include_usage ?? false, getUsage, finalContent || '(no response)', finalFinishReason);
+      }
     } else if (useHard) {
       // Hard mode: client system prompt and tools ignored; agent builds everything from user text.
       const text = extractText(userMessages[userMessages.length - 1].content);
@@ -475,10 +527,7 @@ export class SmartServer {
     } else if (useSmart) {
       // Smart mode: preserve client history + tools; augment with RAG context.
       const text = extractText(userMessages[userMessages.length - 1].content);
-      const normalizedMessages: Message[] = body.messages.map((m) => ({
-        role: m.role as Message['role'],
-        content: extractText(m.content),
-      }));
+      const normalizedMessages: Message[] = body.messages.map(normalizeMessage);
       if (body.stream === true) {
         finalContent = await this._handleSmartStream(res, smartAgent, text, normalizedMessages, clientTools, { trace: { traceId: requestId }, signal: abortCtrl.signal }, log, t0, body.stream_options?.include_usage ?? false, getUsage);
       } else {
@@ -546,11 +595,34 @@ export class SmartServer {
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: { reasoning: chunk.delta }, finish_reason: null }] });
         } else if (chunk.type === 'usage') {
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: { prompt_tokens: chunk.promptTokens, completion_tokens: chunk.completionTokens, total_tokens: chunk.promptTokens + chunk.completionTokens } });
+        } else if (chunk.type === 'client_tool_calls') {
+          // Forward client tool calls to the caller in OpenAI streaming format.
+          // The client (Goose / Cline) will execute them and continue the conversation.
+          sendEvent({
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: 'smart-agent',
+            choices: [{
+              index: 0,
+              delta: {
+                tool_calls: chunk.toolCalls.map((tc, idx) => ({
+                  index: idx,
+                  id: tc.id,
+                  type: 'function',
+                  function: { name: tc.name, arguments: JSON.stringify(tc.arguments) },
+                })),
+              },
+              finish_reason: null,
+            }],
+          });
         } else if (chunk.type === 'done') {
-          const finishReason: 'stop' | 'length' = chunk.finishReason === 'length' ? 'length' : 'stop';
+          const finishReason: 'stop' | 'length' | 'tool_calls' =
+            chunk.finishReason === 'length' ? 'length' :
+            chunk.finishReason === 'tool_calls' ? 'tool_calls' : 'stop';
           sendEvent({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [{ index: 0, delta: {}, finish_reason: finishReason }] });
         }
-        // tool_calls chunks are handled internally by SmartAgent — skip.
+        // Internal tool_calls chunks (agent MCP) are handled by SmartAgent — skip.
       }
     } catch {
       ok = false;

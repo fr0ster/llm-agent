@@ -1013,18 +1013,28 @@ export class SmartAgent {
     const relevantFacts = minScore > 0
       ? facts.filter((r) => r.score >= minScore)
       : facts;
-    const ragToolNames = new Set(
-      relevantFacts
-        .map((r) => r.metadata.id as string | undefined)
-        .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
-        .map((id) => id.slice('tool:'.length)),
-    );
-    const toolsVectorized = facts.length > 0;
-    const ourTools: LlmTool[] = (
-      toolsVectorized
-        ? mcpTools.filter((t) => ragToolNames.has(t.name))
-        : mcpTools
-    ) as LlmTool[];
+
+    // When no actions were found, no MCP tools are needed — the LLM should
+    // only use client tools. Using all MCP tools here would send 100+ tool
+    // schemas to the LLM for no reason, inflating context and causing it to
+    // call irrelevant SAP tools (mirrors v1.1.0-beta.3 isSapRequired logic).
+    let ourTools: LlmTool[];
+    if (ordered.length === 0) {
+      ourTools = [];
+    } else {
+      const ragToolNames = new Set(
+        relevantFacts
+          .map((r) => r.metadata.id as string | undefined)
+          .filter((id): id is string => typeof id === 'string' && id.startsWith('tool:'))
+          .map((id) => id.slice('tool:'.length)),
+      );
+      const toolsVectorized = facts.length > 0;
+      ourTools = (
+        toolsVectorized
+          ? mcpTools.filter((t) => ragToolNames.has(t.name))
+          : mcpTools
+      ) as LlmTool[];
+    }
 
     logger?.log({
       type: 'tools_selected',
@@ -1065,14 +1075,18 @@ export class SmartAgent {
       systemPromptPreview: sysMsg ? (sysMsg.content as string).slice(0, 300) : null,
     });
 
-    // Use mergedTools as the "retrieved" tools for the streaming loop
+    // Use mergedTools as the "retrieved" tools for the streaming loop.
+    // Pass clientToolNames so the loop can route tool calls correctly:
+    //   toolClientMap (agent MCP) wins on conflict, client tools are passthrough.
     const retrieved = { facts: relevantFacts, feedback, state, tools: mergedTools as unknown as McpTool[] };
+    const clientToolNames = new Set(clientTools.map((t) => t.name));
     yield* this._runStreamingToolLoop(
       retrieved,
       smartMessages,
       toolClientMap,
       opts,
       traceId,
+      clientToolNames,
     );
 
     logger?.log({ type: 'pipeline_done', traceId, stopReason: 'stop', iterations: 0, toolCallCount: 0, durationMs: Date.now() - pipelineT0 });
@@ -1188,6 +1202,9 @@ export class SmartAgent {
     toolClientMap: Map<string, IMcpClient>,
     opts: CallOptions | undefined,
     traceId: string,
+    /** Names of tools owned by the client. Calls to these are yielded as
+     *  client_tool_calls and the loop stops so the client can execute them. */
+    clientToolNames = new Set<string>(),
   ): AsyncGenerator<LlmStreamChunk, void, unknown> {
     const logger = this.deps.logger;
     let messages = initialMessages;
@@ -1305,6 +1322,10 @@ export class SmartAgent {
         },
       ];
 
+      // Separate client passthrough calls from agent MCP calls.
+      // Agent MCP wins on name conflict (toolClientMap takes precedence).
+      const clientPassthrough: LlmToolCall[] = [];
+
       // Execute tool calls
       for (const toolCall of accumulatedToolCalls) {
         if (this.config.maxToolCalls !== undefined && toolCallCount >= this.config.maxToolCalls) {
@@ -1326,6 +1347,11 @@ export class SmartAgent {
         }
 
         const client = toolClientMap.get(toolCall.name);
+        if (!client && clientToolNames.has(toolCall.name)) {
+          // Client tool — collect for passthrough; agent MCP already ran first
+          clientPassthrough.push(toolCall);
+          continue;
+        }
         if (!client) {
           resultContent = `Tool "${toolCall.name}" not found`;
         } else {
@@ -1339,6 +1365,14 @@ export class SmartAgent {
 
         toolCallCount++;
         messages = [...messages, { role: 'tool' as const, content: resultContent, tool_call_id: toolCall.id }];
+      }
+
+      // Passthrough collected client tool calls and stop the loop so the
+      // client can execute them and continue the conversation.
+      if (clientPassthrough.length > 0) {
+        yield { type: 'client_tool_calls', toolCalls: clientPassthrough };
+        yield { type: 'done', finishReason: 'tool_calls' };
+        return;
       }
     }
   }

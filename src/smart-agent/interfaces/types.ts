@@ -134,6 +134,13 @@ export type LlmStreamChunk =
   | { type: 'text'; delta: string }
   | { type: 'reasoning'; delta: string }
   | { type: 'tool_calls'; toolCalls: LlmToolCall[] }
+  /**
+   * Emitted by SmartAgent when the LLM requests a tool that belongs to the
+   * client (not an agent MCP tool). The server should forward these as
+   * OpenAI-compatible tool_calls with finish_reason 'tool_calls' so the
+   * client can execute them and continue the conversation.
+   */
+  | { type: 'client_tool_calls'; toolCalls: LlmToolCall[] }
   | { type: 'usage'; promptTokens: number; completionTokens: number }
   | { type: 'done'; finishReason: LlmFinishReason };
 
