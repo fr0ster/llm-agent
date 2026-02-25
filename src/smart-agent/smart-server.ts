@@ -445,10 +445,13 @@ export class SmartServer {
       return systemMsg ? extractText(systemMsg.content) : '';
     })();
 
-    const isCline = serverMode === 'hybrid' && systemText.trimStart().startsWith('You are Cline');
+    // Cline uses XML tool calls in content; JSON function-calling is incompatible.
+    // Route Cline to passthrough regardless of server mode so it gets its own
+    // XML-format responses and can execute tools correctly.
+    const isCline = (serverMode === 'hybrid' || serverMode === 'smart') && systemText.trimStart().startsWith('You are Cline');
     const usePass = serverMode === 'passthrough' || isCline;
     const useHard = serverMode === 'hard';
-    const useSmart = serverMode === 'smart' || (serverMode === 'hybrid' && !isCline);
+    const useSmart = !usePass && !useHard;
 
     const effectiveMode = usePass ? 'passthrough' : useHard ? 'hard' : 'smart';
 
