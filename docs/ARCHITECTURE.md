@@ -25,6 +25,48 @@ Client (OpenAI-compatible)
            -> Policy guards (tool policy + injection detector)
 ```
 
+### Dependency Graph (Detailed)
+
+```mermaid
+flowchart LR
+  App[Consumer App] --> SS[SmartServer]
+  SS --> B[SmartAgentBuilder]
+  B --> SA[SmartAgent]
+
+  B --> LMain[ILlm main]
+  B --> LCls[ILlm classifier]
+  B --> LHelp[ILlm helper]
+  B --> CfgC[ISubpromptClassifier]
+  B --> Ctx[IContextAssembler]
+  B --> MCPS[IMcpClient[]]
+  B --> RF[IRag facts]
+  B --> RFB[IRag feedback]
+  B --> RS[IRag state]
+  B --> TP[IToolPolicy optional]
+  B --> ID[IPromptInjectionDetector optional]
+  B --> LG[ILogger optional]
+
+  SA --> LMain
+  SA --> LCls
+  SA --> LHelp
+  SA --> CfgC
+  SA --> Ctx
+  SA --> MCPS
+  SA --> RF
+  SA --> RFB
+  SA --> RS
+  SA --> TP
+  SA --> ID
+  SA --> LG
+
+  LMain -. default .-> TC[TokenCountingLlm]
+  TC --> LA[LlmAdapter]
+  LA --> BA[BaseAgent bridge]
+
+  MCPS -. default .-> MCA[McpClientAdapter]
+  MCA --> MCPW[MCPClientWrapper]
+```
+
 ## Embeddable Component Contract (No YAML)
 
 For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
