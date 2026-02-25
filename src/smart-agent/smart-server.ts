@@ -9,7 +9,6 @@ import http from 'node:http';
 import type { Message } from '../types.js';
 import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
-import type { LlmTool } from './interfaces/types.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
@@ -18,6 +17,8 @@ import {
   makeRagFromStoreConfig,
   type PipelineConfig,
 } from './pipeline.js';
+import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
+import { toToolCallDelta } from './utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -358,10 +359,11 @@ export class SmartServer {
 
     const body = parsed as {
       messages: Array<{ role: string; content: unknown }>;
-      tools?: LlmTool[];
+      tools?: unknown[];
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
     };
+    const externalTools = normalizeExternalTools(body.tools);
 
     const extractText = (c: unknown): string => {
       if (c === null || c === undefined) return '';
@@ -404,7 +406,7 @@ export class SmartServer {
 
     const opts = {
       stream: body.stream,
-      externalTools: body.tools,
+      externalTools,
       trace: { traceId },
       sessionLogger,
     };
@@ -465,24 +467,18 @@ export class SmartServer {
           const delta: Record<string, unknown> = {};
           if (chunk.value.content) delta.content = chunk.value.content;
           if (chunk.value.toolCalls) {
-            const toolCallDeltas = chunk.value.toolCalls as Array<{
-              index: number;
-              id?: string;
-              name?: string;
-              arguments?: string | Record<string, unknown>;
-            }>;
-            delta.tool_calls = toolCallDeltas.map((tc) => ({
-              index: tc.index,
-              id: tc.id,
-              type: 'function',
-              function: {
-                name: tc.name,
-                arguments:
-                  typeof tc.arguments === 'string'
-                    ? tc.arguments
-                    : JSON.stringify(tc.arguments),
-              },
-            }));
+            delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
+              const tc = toToolCallDelta(call, index);
+              return {
+                index: tc.index,
+                id: tc.id,
+                type: 'function',
+                function: {
+                  name: tc.name,
+                  arguments: tc.arguments || '',
+                },
+              };
+            });
           }
           res.write(
             `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,

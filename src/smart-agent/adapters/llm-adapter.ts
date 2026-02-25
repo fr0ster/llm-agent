@@ -20,6 +20,7 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   type LlmToolCall,
+  type LlmToolCallDelta,
   type Result,
   type SmartAgentError,
 } from '../interfaces/types.js';
@@ -185,7 +186,7 @@ function parseStreamChunk(
   // OpenAI / DeepSeek format for chunks
   if (providerRaw.choices?.[0]?.delta) {
     const delta = providerRaw.choices[0].delta;
-    const toolCalls: Array<Record<string, unknown>> = [];
+    const toolCalls: LlmToolCallDelta[] = [];
 
     if (delta.tool_calls) {
       for (const tc of delta.tool_calls) {
@@ -200,10 +201,7 @@ function parseStreamChunk(
 
     return {
       content: delta.content || '',
-      toolCalls:
-        toolCalls.length > 0
-          ? (toolCalls as unknown as LlmToolCall[])
-          : undefined,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
       finishReason: providerRaw.choices[0].finish_reason || undefined,
     };
   }
