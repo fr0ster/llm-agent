@@ -7,6 +7,36 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [1.1.0-beta.2] — 2026-02-25
+
+### Summary
+Advanced architectural iteration focusing on semantic task decomposition, agent neutrality, 
+and comprehensive session auditing. Introduces "Smart 2.0" orchestration logic.
+
+### Added
+- **Smart 2.0 Orchestration:** Single-turn unified orchestration that handles multiple intents 
+  in one LLM cycle while maintaining strict context isolation.
+- **Semantic Intent Analysis:** Upgraded classifier that identifies task context (math, sap-abap, general) 
+  and dependencies to apply appropriate personas and tools.
+- **Session Debug Logging:** Comprehensive audit system that logs every step of the agent pipeline 
+  into a structured directory hierarchy (`sessions/session_id/req_id/`).
+- **Contextual Tool Filtering:** Intelligent tool selection that hides specialized SAP tools 
+  during general tasks (like simple math) to prevent model hallucinations and bias.
+- **Radical Neutrality:** Improved translation and system prompts to ensure the agent remains 
+  a neutral assistant unless explicitly performing technical SAP/ABAP work.
+
+### Fixed
+- **Streaming Protocol Errors:** Fixed a critical issue where tool call arguments were 
+  passed as objects instead of strings in SSE chunks.
+- **Agent Initiative Loops:** Resolved cases where the agent would take unnecessary initiative 
+  on simple tasks due to technical context "poisoning".
+- **Message History Duplication:** Eliminated redundant user messages in the history during 
+  multi-step processing.
+- **TypeScript Type Safety:** Resolved several structural and role-typing issues in `SmartAgent` 
+  and `SmartServer`.
+
+---
+
 ## [1.1.0-beta.1] — 2026-02-24
 
 ### Summary
