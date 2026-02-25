@@ -30,3 +30,4 @@ agent:
   ragQueryK: 10
 
 log: smart-server.log
+logDir: /tmp/llm-agent

@@ -30,6 +30,10 @@ export interface CallOptions {
   ragFilter?: {
     namespace?: string;
   };
+  /** Detailed session debugger logger. */
+  sessionLogger?: {
+    logStep(name: string, data: any): void;
+  };
 }
 
 export interface LlmStreamChunk {
