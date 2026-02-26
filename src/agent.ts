@@ -86,10 +86,12 @@ export class Agent {
         message: llmResponse.content,
         raw: llmResponse.raw,
       };
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
       return {
         message: '',
-        error: error.message || 'Agent processing failed',
+        error: errorMessage || 'Agent processing failed',
       };
     }
   }
@@ -97,7 +99,9 @@ export class Agent {
   /**
    * Build system message with tool definitions
    */
-  private buildSystemMessage(tools: any[]): string {
+  private buildSystemMessage(
+    tools: Array<{ name?: string; description?: string }>,
+  ): string {
     const toolDescriptions = tools
       .map((tool) => {
         return `- ${tool.name}: ${tool.description || 'No description'}`;

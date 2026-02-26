@@ -1,0 +1,300 @@
+/**
+ * Shared config utilities for SmartServer.
+ */
+
+import fs from 'node:fs';
+import { parse as parseYaml } from 'yaml';
+import type { SmartServerConfig, SmartServerMode } from './smart-server.js';
+
+export type YamlConfig = Record<string, unknown>;
+
+export interface ResolveConfigArgs {
+  port?: string | boolean;
+  host?: string | boolean;
+  'llm-api-key'?: string | boolean;
+  'llm-model'?: string | boolean;
+  'llm-temperature'?: string | boolean;
+  'rag-type'?: string | boolean;
+  'rag-url'?: string | boolean;
+  'rag-model'?: string | boolean;
+  'mcp-type'?: string | boolean;
+  'mcp-url'?: string | boolean;
+  'mcp-command'?: string | boolean;
+  'mcp-args'?: string | boolean;
+  'prompt-system'?: string | boolean;
+  'prompt-classifier'?: string | boolean;
+  'agent-show-reasoning'?: boolean;
+  'log-dir'?: string;
+  mode?: string | boolean;
+}
+
+export const YAML_TEMPLATE = `port: 4004
+host: 0.0.0.0
+
+# Request routing mode:
+#   hard        — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
+#   pass        — Transparent proxy. Logs everything but modifies nothing.
+#   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+mode: smart
+
+llm:
+  apiKey: \${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+  classifierTemperature: 0.1
+
+rag:
+  type: ollama                        # ollama | in-memory
+  url: http://localhost:11434
+  model: nomic-embed-text
+  dedupThreshold: 0.92
+  vectorWeight: 0.7                   # Semantic similarity weight (0..1)
+  keywordWeight: 0.3                  # Lexical matching weight (0..1)
+
+mcp:
+  # type: none | http | stdio
+  # To disable MCP, set type to 'none'
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+agent:
+  externalToolsValidationMode: permissive  # permissive | strict
+  maxIterations: 10
+  maxToolCalls: 30
+  toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
+  ragQueryK: 10
+  showReasoning: false                # Explain strategy at start of response
+  historyAutoSummarizeLimit: 10       # History length to trigger compression
+
+# --- Advanced Multi-Model Pipeline (optional) -------------------------------
+# Use this section to assign different models for different internal tasks.
+# pipeline:
+#   llm:
+#     main:
+#       provider: deepseek            # deepseek | openai | anthropic
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
+#       temperature: 0.7
+#     classifier:                     # optional; if absent, main config is reused
+#       provider: deepseek
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
+#       temperature: 0.1
+#     helper:                         # optional; if absent, main config is reused
+#       provider: deepseek
+#       apiKey: \${DEEPSEEK_API_KEY}
+#       model: deepseek-chat
+#       temperature: 0.1
+#
+#   rag:
+#     facts:
+#       type: ollama
+#       url: http://localhost:11434
+#       model: nomic-embed-text
+#       dedupThreshold: 0.92
+#     feedback:
+#       type: in-memory
+#     state:
+#       type: in-memory
+#
+#   mcp:
+#     - type: http
+#       url: http://localhost:3001/mcp/stream/http
+
+# prompts:
+#   system: "You are a helpful assistant specialized in SAP ABAP development."
+#   classifier: |
+#     You are an intent classifier... (see source for full default prompt)
+#   reasoning: |
+#     IMPORTANT: Always start your response with a brief <reasoning> block...
+#   ragTranslate: |
+#     Translate the user request to English for search purposes...
+#   historySummary: |
+#     Summarize the conversation so far...
+
+log: smart-server.log                 # path to log file; omit for stdout
+# logDir: sessions                    # Directory for detailed session debug logs
+`;
+
+export function resolveEnvVars(
+  value: unknown,
+  env: NodeJS.ProcessEnv = process.env,
+): unknown {
+  if (typeof value === 'string')
+    return value.replace(/\$\{([^}]+)\}/g, (_, n) => env[n] ?? '');
+  if (Array.isArray(value)) return value.map((v) => resolveEnvVars(v, env));
+  if (value !== null && typeof value === 'object')
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+        k,
+        resolveEnvVars(v, env),
+      ]),
+    );
+  return value;
+}
+
+export function loadYamlConfig(
+  filePath: string,
+  env: NodeJS.ProcessEnv = process.env,
+): YamlConfig {
+  const raw = fs.readFileSync(filePath, 'utf8');
+  return resolveEnvVars(parseYaml(raw), env) as YamlConfig;
+}
+
+export function generateConfigTemplate(outputPath: string): void {
+  fs.writeFileSync(outputPath, YAML_TEMPLATE, 'utf8');
+}
+
+const get = (obj: unknown, ...keys: string[]): unknown =>
+  keys.reduce<unknown>((o, k) => {
+    if (o !== null && typeof o === 'object' && k in o) {
+      return (o as Record<string, unknown>)[k];
+    }
+    return undefined;
+  }, obj);
+
+export function resolveSmartServerConfig(
+  args: ResolveConfigArgs = {},
+  yaml: YamlConfig = {},
+  env: NodeJS.ProcessEnv = process.env,
+): Omit<SmartServerConfig, 'log'> {
+  const flatApiKey =
+    (args['llm-api-key'] as string) ??
+    get(yaml, 'llm', 'apiKey') ??
+    env.DEEPSEEK_API_KEY ??
+    '';
+  const pipelineApiKey = get(yaml, 'pipeline', 'llm', 'main', 'apiKey') as
+    | string
+    | undefined;
+  const apiKey = flatApiKey || pipelineApiKey || '';
+  if (!apiKey && !get(yaml, 'pipeline', 'llm', 'main'))
+    throw new Error('LLM API key is required');
+
+  const mcpUrl =
+    (args['mcp-url'] as string) ?? get(yaml, 'mcp', 'url') ?? env.MCP_ENDPOINT;
+  const mcpCommand =
+    (args['mcp-command'] as string) ??
+    get(yaml, 'mcp', 'command') ??
+    env.MCP_COMMAND;
+  const mcpTypeRaw =
+    (args['mcp-type'] as string) ??
+    get(yaml, 'mcp', 'type') ??
+    (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null);
+  const mcpType = (mcpTypeRaw === 'none' ? null : mcpTypeRaw) as
+    | 'http'
+    | 'stdio'
+    | null;
+
+  const promptSystem =
+    (args['prompt-system'] as string) ??
+    get(yaml, 'prompts', 'system') ??
+    env.PROMPT_SYSTEM ??
+    null;
+  const promptClassifier =
+    (args['prompt-classifier'] as string) ??
+    get(yaml, 'prompts', 'classifier') ??
+    env.PROMPT_CLASSIFIER ??
+    null;
+  const promptReasoning = get(yaml, 'prompts', 'reasoning') ?? null;
+  const promptRagTranslate = get(yaml, 'prompts', 'ragTranslate') ?? null;
+  const promptHistorySummary = get(yaml, 'prompts', 'historySummary') ?? null;
+
+  return {
+    port: Number(
+      (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
+    ),
+    host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
+    llm: {
+      apiKey,
+      model:
+        (args['llm-model'] as string) ??
+        get(yaml, 'llm', 'model') ??
+        env.DEEPSEEK_MODEL ??
+        'deepseek-chat',
+      temperature: Number(
+        (args['llm-temperature'] as string) ??
+          get(yaml, 'llm', 'temperature') ??
+          0.7,
+      ),
+      classifierTemperature: Number(
+        get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
+      ),
+    },
+    rag: {
+      type: ((args['rag-type'] as string) ??
+        get(yaml, 'rag', 'type') ??
+        'ollama') as 'ollama' | 'in-memory',
+      url:
+        (args['rag-url'] as string) ??
+        get(yaml, 'rag', 'url') ??
+        env.OLLAMA_URL ??
+        'http://localhost:11434',
+      model:
+        (args['rag-model'] as string) ??
+        get(yaml, 'rag', 'model') ??
+        env.OLLAMA_EMBED_MODEL ??
+        'nomic-embed-text',
+      dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
+      vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
+      keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
+    },
+    mcp: mcpType
+      ? {
+          type: mcpType,
+          url: mcpUrl || undefined,
+          command: mcpCommand || undefined,
+          args:
+            (args['mcp-args'] as string) || get(yaml, 'mcp', 'args')
+              ? String(args['mcp-args'] || get(yaml, 'mcp', 'args')).split(' ')
+              : undefined,
+        }
+      : undefined,
+    agent: {
+      externalToolsValidationMode: (get(
+        yaml,
+        'agent',
+        'externalToolsValidationMode',
+      ) ?? 'permissive') as string as 'permissive' | 'strict',
+      maxIterations: Number(get(yaml, 'agent', 'maxIterations') ?? 10),
+      maxToolCalls: Number(get(yaml, 'agent', 'maxToolCalls') ?? 30),
+      toolUnavailableTtlMs: Number(
+        get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
+      ),
+      ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
+      showReasoning: Boolean(
+        args['agent-show-reasoning'] ??
+          get(yaml, 'agent', 'showReasoning') ??
+          false,
+      ),
+      historyAutoSummarizeLimit: Number(
+        get(yaml, 'agent', 'historyAutoSummarizeLimit') ?? 10,
+      ),
+    },
+    prompts:
+      promptSystem ||
+      promptClassifier ||
+      promptReasoning ||
+      promptRagTranslate ||
+      promptHistorySummary
+        ? {
+            ...(promptSystem ? { system: promptSystem } : {}),
+            ...(promptClassifier ? { classifier: promptClassifier } : {}),
+            ...(typeof promptReasoning === 'string'
+              ? { reasoning: promptReasoning }
+              : {}),
+            ...(typeof promptRagTranslate === 'string'
+              ? { ragTranslate: promptRagTranslate }
+              : {}),
+            ...(typeof promptHistorySummary === 'string'
+              ? { historySummary: promptHistorySummary }
+              : {}),
+          }
+        : undefined,
+    mode: ((args.mode as string) ??
+      get(yaml, 'mode') ??
+      env.SMART_AGENT_MODE ??
+      'hybrid') as SmartServerMode,
+    logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
+    ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
+  };
+}

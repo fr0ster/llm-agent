@@ -8,22 +8,30 @@ export interface Message {
    * - 'user': User input
    * - 'assistant': LLM response
    * - 'system': System instructions
-   * - 'tool': Tool/function result (reserved for external consumers)
+   * - 'tool': Tool/function result
    */
   role: 'user' | 'assistant' | 'system' | 'tool';
-  content: string;
+  content: string | null;
+  /** For role='tool': ID of the tool call this result corresponds to (OpenAI/DeepSeek protocol) */
+  tool_call_id?: string;
+  /** For role='assistant': tool calls requested by the LLM (OpenAI/DeepSeek protocol) */
+  tool_calls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
 }
 
 export interface ToolCall {
   id: string;
   name: string;
-  arguments: Record<string, any>;
+  arguments: Record<string, unknown>;
 }
 
 export interface ToolResult {
   toolCallId: string;
   name: string;
-  result: any;
+  result: unknown;
   error?: string;
 }
 
@@ -46,3 +54,13 @@ export interface LLMProviderConfig {
   temperature?: number;
   maxTokens?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Streaming types (used by BaseAgent subclasses)
+// ---------------------------------------------------------------------------
+
+export type AgentStreamChunk =
+  | { type: 'text'; delta: string }
+  | { type: 'tool_calls'; toolCalls: ToolCall[] }
+  | { type: 'usage'; promptTokens: number; completionTokens: number }
+  | { type: 'done'; finishReason: 'stop' | 'tool_calls' | 'length' | 'error' };

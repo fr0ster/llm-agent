@@ -9,6 +9,16 @@ import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
 import type { ToolCall, ToolResult } from '../types.js';
 
+type McpToolDef = {
+  name: string;
+  description?: string;
+  inputSchema?: Record<string, unknown>;
+};
+
+type EmbeddedServerInstance = {
+  server?: unknown;
+};
+
 export type TransportType =
   | 'stdio'
   | 'sse'
@@ -39,33 +49,39 @@ export interface MCPClientConfig {
    * - server.setRequestHandler() method for ListToolsRequestSchema and CallToolRequestSchema
    * - Or provide tools list and tool call handler directly
    */
-  serverInstance?: any;
+  serverInstance?: EmbeddedServerInstance;
 
   /**
    * For embedded mode: Direct access to tools registry
    * If provided, listTools() will use this instead of calling server
    */
   toolsRegistry?: {
-    getAllTools: () => any[];
+    getAllTools: () => McpToolDef[];
   };
 
   /**
    * For embedded mode: Direct tool call handler
    * If provided, callTool() will use this instead of calling server
    */
-  toolCallHandler?: (name: string, args: Record<string, any>) => Promise<any>;
+  toolCallHandler?: (
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
 
   /**
    * Direct tools list provider (DI)
    * Use this to supply tools without relying on MCP transport details.
    */
-  listToolsHandler?: () => Promise<any[]>;
+  listToolsHandler?: () => Promise<McpToolDef[]>;
 
   /**
    * Direct tool call provider (DI)
    * Use this to supply tool execution without relying on MCP transport details.
    */
-  callToolHandler?: (name: string, args: Record<string, any>) => Promise<any>;
+  callToolHandler?: (
+    name: string,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
 
   /**
    * For stdio: command and args to execute
@@ -101,7 +117,7 @@ export interface MCPClientConfig {
 export class MCPClientWrapper {
   private client: Client | null = null;
   private config: MCPClientConfig;
-  private tools: any[] = [];
+  private tools: McpToolDef[] = [];
   private detectedTransport: TransportType;
   private sessionId?: string;
 
@@ -214,7 +230,7 @@ export class MCPClientWrapper {
 
       this.client = new Client(
         {
-        name: 'llm-proxy',
+          name: 'llm-agent',
           version: '0.1.0',
         },
         {
@@ -247,7 +263,7 @@ export class MCPClientWrapper {
 
       this.client = new Client(
         {
-        name: 'llm-proxy',
+          name: 'llm-agent',
           version: '0.1.0',
         },
         {
@@ -287,22 +303,40 @@ export class MCPClientWrapper {
   /**
    * Get list of available tools
    */
-  async listTools(): Promise<any[]> {
+  async listTools(): Promise<McpToolDef[]> {
     // For embedded mode, tools are already loaded in connect()
     if (this.detectedTransport === 'embedded') {
       return this.tools;
     }
 
-    if (!this.client) {
-      await this.connect();
-    }
-
-    if (this.tools.length === 0) {
-      const response = await this.client!.listTools();
+    const performList = async () => {
+      if (!this.client) {
+        await this.connect();
+      }
+      const response = await this.client?.listTools();
+      if (!response) {
+        throw new Error('MCP listTools returned no response');
+      }
       this.tools = response.tools || [];
-    }
+      return this.tools;
+    };
 
-    return this.tools;
+    try {
+      return await performList();
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      try {
+        console.warn(
+          `MCP listTools failed, attempting reconnect: ${errorMessage}`,
+        );
+        await this.disconnect();
+        await this.connect();
+        return await performList();
+      } catch (_retryError) {
+        return this.tools; // Return cached tools if reconnect fails
+      }
+    }
   }
 
   /**
@@ -312,7 +346,7 @@ export class MCPClientWrapper {
     // For embedded mode, use direct handler or server instance
     if (this.detectedTransport === 'embedded') {
       try {
-        let result: any;
+        let result: unknown;
 
         if (this.config.callToolHandler) {
           result = await this.config.callToolHandler(
@@ -325,73 +359,78 @@ export class MCPClientWrapper {
             toolCall.name,
             toolCall.arguments,
           );
-        } else if (this.config.serverInstance?.server) {
-          // Use MCP Server instance directly via CallToolRequest
-          // The server has request handlers registered, we need to call them
-          const { CallToolRequestSchema } = await import(
-            '@modelcontextprotocol/sdk/types.js'
-          );
-
-          // Create a request object that matches CallToolRequest format
-          const request = {
-            jsonrpc: '2.0' as const,
-            id: 1,
-            method: 'tools/call',
-            params: {
-              name: toolCall.name,
-              arguments: toolCall.arguments,
-            },
-          };
-
-          // Call the handler directly
-          // The server.setRequestHandler registers handlers, but we need to access them
-          // This is a limitation - provide toolCallHandler for embedded mode
-          throw new Error(
-            'Direct server.callTool() requires toolCallHandler. Provide toolCallHandler in mcpConfig.',
-          );
         } else {
           throw new Error(
             'No tool call handler available in embedded mode. Provide toolCallHandler in mcpConfig.',
           );
         }
 
+        const normalizedResult =
+          typeof result === 'object' && result !== null && 'content' in result
+            ? (result as { content: unknown }).content
+            : result;
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
-          result: result.content || result,
+          result: normalizedResult,
         };
-      } catch (error: any) {
+      } catch (error: unknown) {
+        const errorMessage =
+          error instanceof Error ? error.message : String(error);
         return {
           toolCallId: toolCall.id,
           name: toolCall.name,
           result: null,
-          error: error.message || 'Tool execution failed',
+          error: errorMessage || 'Tool execution failed',
         };
       }
     }
 
-    if (!this.client) {
-      await this.connect();
-    }
-
-    try {
-      const response = await this.client!.callTool({
+    const performCall = async () => {
+      if (!this.client) {
+        await this.connect();
+      }
+      const response = await this.client?.callTool({
         name: toolCall.name,
         arguments: toolCall.arguments,
       });
+      if (!response) {
+        throw new Error('MCP callTool returned no response');
+      }
+      return response;
+    };
 
+    try {
+      const response = await performCall();
       return {
         toolCallId: toolCall.id,
         name: toolCall.name,
         result: response.content,
       };
-    } catch (error: any) {
-      return {
-        toolCallId: toolCall.id,
-        name: toolCall.name,
-        result: null,
-        error: error.message || 'Tool execution failed',
-      };
+    } catch (error: unknown) {
+      const errorMessage =
+        error instanceof Error ? error.message : String(error);
+      // Auto-reconnect logic: if it fails, try to connect again and retry once
+      try {
+        console.warn(`MCP call failed, attempting reconnect: ${errorMessage}`);
+        await this.disconnect();
+        await this.connect();
+        const response = await performCall();
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          result: response.content,
+        };
+      } catch (retryError: unknown) {
+        const retryErrorMessage =
+          retryError instanceof Error ? retryError.message : String(retryError);
+        return {
+          toolCallId: toolCall.id,
+          name: toolCall.name,
+          result: null,
+          error: retryErrorMessage || 'Tool execution failed after reconnect',
+        };
+      }
     }
   }
 

@@ -1,370 +1,295 @@
 # Architecture
 
-## Overview
+## Scope
 
-**LLM Proxy** (`@mcp-abap-adt/llm-proxy`) is a minimal orchestration layer between LLM providers and MCP (Model Context Protocol) servers. It surfaces MCP tool catalogs to the LLM and returns the raw LLM response to the consumer — without executing tools itself.
+`@mcp-abap-adt/llm-agent` currently contains two layers:
 
-```
-┌──────────────────────────────────────────────────────────────┐
-│                     Consumer / CLI                            │
-│              (CAP service, application, cli.ts)               │
-└───────────┬──────────────────────────────┬───────────────────┘
-            │  process(message)            │  callTool(toolCall)
-            ▼                              ▼
-┌───────────────────────┐      ┌───────────────────────────────┐
-│     Agent Layer        │      │      MCPClientWrapper          │
-│  (BaseAgent subclass)  │◄────►│  (src/mcp/client.ts)          │
-│                        │      │                               │
-│  • Conversation history│      │  ┌─────────────────────────┐  │
-│  • Tool formatting     │      │  │  Transport Layer         │  │
-│  • LLM communication   │      │  │                         │  │
-└───────────┬────────────┘      │  │  stdio | sse | stream-  │  │
-            │                   │  │          http | embedded │  │
-            ▼                   │  └────────────┬────────────┘  │
-┌───────────────────────┐      │               │               │
-│   LLM Provider         │      │               ▼               │
-│  (SapCoreAIProvider    │      │  ┌─────────────────────────┐  │
-│   or direct providers) │      │  │  @modelcontextprotocol/ │  │
-│                        │      │  │  sdk                    │  │
-└───────────┬────────────┘      │  └─────────────────────────┘  │
-            │                   └───────────────────────────────┘
-            ▼
-┌───────────────────────┐
-│    SAP AI Core         │
-│  (proxy / gateway)     │
-│                        │
-│  Routes to:            │
-│  • OpenAI              │
-│  • Anthropic           │
-│  • DeepSeek            │
-└────────────────────────┘
+1. **Legacy core (`src/agents`, `src/llm-providers`, `src/mcp`)**
+- Provider-specific agent implementations and direct MCP integration.
+- Kept for backward compatibility and adapter reuse.
+
+2. **Smart Agent stack (`src/smart-agent`)**
+- Orchestrated pipeline with classification, RAG retrieval, policy checks, MCP execution loop, and OpenAI-compatible HTTP serving.
+- This is the primary runtime architecture for new work.
+
+## Runtime Topology (Smart Stack)
+
+```text
+Client (OpenAI-compatible)
+  -> SmartServer (HTTP/SSE)
+     -> SmartAgentBuilder (wiring + defaults/overrides)
+        -> SmartAgent (orchestration loop)
+           -> ILlm (main/helper/classifier via adapters)
+           -> IRag stores (facts/feedback/state)
+           -> IMcpClient[] (one or many MCP endpoints)
+           -> Policy guards (tool policy + injection detector)
 ```
 
-### Key Design Decisions
+### Dependency Graph (Detailed)
 
-1. **No automatic tool execution.** The agent surfaces tool calls from the LLM but never executes them. The consumer decides what to do with `AgentResponse.raw`.
-2. **Multiple provider paths are supported.** The library supports both direct providers (`OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`) and `SapCoreAIProvider` (SAP AI Core gateway). SAP AI Core is the recommended production path in SAP environments.
-3. **Multi-transport MCP.** A single `MCPClientWrapper` handles Stdio, SSE, Streamable HTTP, and embedded (in-process) transports with automatic detection.
-4. **Minimal dependencies.** Only three runtime dependencies: `@modelcontextprotocol/sdk`, `axios`, `dotenv`.
+```mermaid
+flowchart LR
+  App("Consumer App") --> SS("SmartServer")
+  SS --> B("SmartAgentBuilder")
+  B --> SA("SmartAgent")
 
----
+  B --> LMain("ILlm main")
+  B --> LCls("ILlm classifier")
+  B --> LHelp("ILlm helper")
+  B --> CfgC("ISubpromptClassifier")
+  B --> Ctx("IContextAssembler")
+  B --> MCPS("IMcpClient list")
+  B --> RF("IRag facts")
+  B --> RFB("IRag feedback")
+  B --> RS("IRag state")
+  B --> TP("IToolPolicy optional")
+  B --> ID("IPromptInjectionDetector optional")
+  B --> LG("ILogger optional")
 
-## Project Structure
+  SA --> LMain
+  SA --> LCls
+  SA --> LHelp
+  SA --> CfgC
+  SA --> Ctx
+  SA --> MCPS
+  SA --> RF
+  SA --> RFB
+  SA --> RS
+  SA --> TP
+  SA --> ID
+  SA --> LG
 
-```
-src/
-├── index.ts                    # Public API — re-exports everything
-├── cli.ts                      # CLI test launcher (dev tool, not part of library API)
-├── agent.ts                    # Legacy Agent class (deprecated)
-├── types.ts                    # Core type definitions
-├── agents/
-│   ├── index.ts                # Barrel exports
-│   ├── base.ts                 # BaseAgent — abstract class with shared logic
-│   ├── openai-agent.ts         # Native function calling (OpenAI tools API)
-│   ├── anthropic-agent.ts      # Native tools API (Anthropic content blocks)
-│   ├── deepseek-agent.ts       # Native function calling (OpenAI-compatible)
-│   ├── prompt-based-agent.ts   # Fallback — tools described in system prompt
-│   └── sap-core-ai-agent.ts    # Thin wrapper over PromptBasedAgent for SAP AI Core
-├── llm-providers/
-│   ├── index.ts                # Barrel exports
-│   ├── base.ts                 # LLMProvider interface + BaseLLMProvider abstract class
-│   ├── openai.ts               # Direct OpenAI API provider
-│   ├── anthropic.ts            # Direct Anthropic API provider
-│   ├── deepseek.ts             # Direct DeepSeek API provider
-│   └── sap-core-ai.ts          # SAP AI Core gateway provider
-└── mcp/
-    ├── client.ts               # MCPClientWrapper — multi-transport MCP client
-    └── README.md               # Transport configuration documentation
-```
+  LMain --> TC("TokenCountingLlm default")
+  TC --> LA("LlmAdapter")
+  LA --> BA("BaseAgent bridge")
 
----
-
-## Core Types
-
-All shared contracts are defined in `src/types.ts`:
-
-| Type | Purpose |
-|---|---|
-| `Message` | Chat message with `role` (user / assistant / system / tool) and `content` |
-| `ToolCall` | LLM-requested tool invocation: `id`, `name`, `arguments` |
-| `ToolResult` | Result of a tool execution: `toolCallId`, `name`, `result`, `error?` |
-| `AgentResponse` | What `agent.process()` returns: `message`, `raw?`, `error?` |
-| `LLMResponse` | What a provider's `chat()` returns: `content`, `raw?`, `finishReason?` |
-| `LLMProviderConfig` | Base provider config: `apiKey`, `baseURL?`, `model?`, `temperature?`, `maxTokens?` |
-
----
-
-## Agent Layer
-
-### Class Hierarchy
-
-The agent layer uses the **Template Method** pattern. `BaseAgent` defines the processing loop; subclasses plug in provider-specific tool formatting.
-
-```
-BaseAgent (abstract)
-├── OpenAIAgent              — native function calling via `tools` param
-├── AnthropicAgent           — native tools API with content blocks
-├── DeepSeekAgent            — OpenAI-compatible function calling
-└── PromptBasedAgent         — tools described in system prompt text
-    └── SapCoreAIAgent       — recommended agent, extends PromptBasedAgent
+  MCPS --> MCA("McpClientAdapter default")
+  MCA --> MCPW("MCPClientWrapper")
 ```
 
-### BaseAgent Lifecycle
+## Embeddable Component Contract (No YAML)
 
-```
-  constructor(config)
-       │
-       ▼
-  connect()  ─────► mcpClient.connect()
-       │                    │
-       │             mcpClient.listTools()
-       │                    │
-       │              this.tools = [...]
-       ▼
-  process(userMessage)
-       │
-       ├── 1. Push { role: 'user', content } to conversationHistory
-       │
-       ├── 2. callLLMWithTools(conversationHistory, tools)
-       │       │
-       │       └── [abstract — implemented by subclass]
-       │
-       ├── 3. Push { role: 'assistant', content } to conversationHistory
-       │
-       └── 4. Return AgentResponse { message, raw? }
-```
+For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
 
-The `process()` method performs a **single-turn request-response**. There is no automatic tool execution loop — `maxIterations` exists in the config but is reserved for future use.
+Primary embeddable surfaces:
+- package export `@mcp-abap-adt/llm-agent/smart-server` -> `SmartServer`
+- package export `@mcp-abap-adt/llm-agent/testing` -> deterministic test doubles for consumer integration tests
 
-### How Each Agent Handles Tools
+Minimal programmatic integration:
 
-| Agent | Strategy | API Format |
-|---|---|---|
-| `OpenAIAgent` | Converts MCP tools to OpenAI function calling schema. Passes `tools` and `tool_choice: 'auto'` in the request body. | `POST /chat/completions` with `tools: [{ type: 'function', function: { name, description, parameters } }]` |
-| `AnthropicAgent` | Converts MCP tools to Anthropic tool format. Extracts system message into a separate field. Iterates response content blocks. | `POST /messages` with `tools: [{ name, description, input_schema }]` |
-| `DeepSeekAgent` | Identical to OpenAI (DeepSeek uses OpenAI-compatible API). | Same as OpenAI |
-| `PromptBasedAgent` | Injects tool descriptions directly into the system prompt. Asks the LLM to respond with JSON or `TOOL_CALL:` format. | Standard `chat(messages)` — no native tool API |
-| `SapCoreAIAgent` | Inherits PromptBasedAgent. Placeholder for future SAP AI Core-specific tool handling. | Same as PromptBasedAgent |
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
 
-> **Note:** `OpenAIAgent`, `AnthropicAgent`, and `DeepSeekAgent` bypass the `LLMProvider.chat()` interface and access provider internals (`client`, `model`, `config`) via `as any` cast, because `chat()` does not accept tool definitions. Only `PromptBasedAgent` uses the high-level `LLMProvider.chat()` method.
-
-### Legacy Agent (src/agent.ts)
-
-The original `Agent` class follows a simpler prompt-based approach: it injects tool names into the system prompt on every `process()` call. It is deprecated in favor of the `BaseAgent` hierarchy but remains exported for backward compatibility.
-
----
-
-## LLM Provider Layer
-
-### Interface
-
-```typescript
-interface LLMProvider {
-  chat(messages: Message[]): Promise<LLMResponse>;
-  streamChat?(messages: Message[]): AsyncGenerator<LLMResponse>;  // planned
-  getModels?(): Promise<string[]>;                                 // optional
-}
-```
-
-All providers return the same `LLMResponse` shape, making them interchangeable at the `chat()` level.
-
-### Providers
-
-| Provider | Auth | API | Status |
-|---|---|---|---|
-| `SapCoreAIProvider` | SAP Destination (via Cloud SDK `httpClient` injection) or fallback URL | `POST /v1/chat/completions` (OpenAI-compatible) | Recommended for SAP deployment paths |
-| `OpenAIProvider` | Bearer token | `POST /chat/completions` | Supported (used by CLI) |
-| `AnthropicProvider` | `x-api-key` + `anthropic-version` header | `POST /messages` | Supported (used by CLI) |
-| `DeepSeekProvider` | Bearer token | `POST /chat/completions` | Supported (used by CLI) |
-
-### SapCoreAIProvider (SAP AI Core Gateway)
-
-SAP AI Core acts as a unified gateway. The `model` field determines which backend LLM the request is routed to:
-
-```
-model: 'gpt-4o-mini'        → SAP AI Core → OpenAI
-model: 'claude-3-5-sonnet'  → SAP AI Core → Anthropic
-model: 'deepseek-chat'      → SAP AI Core → DeepSeek
-```
-
-Two modes of HTTP communication:
-
-1. **Production** — an injected `httpClient` function (typically `executeHttpRequest` from SAP Cloud SDK) handles authentication and destination routing.
-2. **Standalone fallback** — raw `axios` calls to `SAP_CORE_AI_URL` env var (for testing without SAP SDK).
-
----
-
-## MCP Layer
-
-### MCPClientWrapper
-
-`MCPClientWrapper` (`src/mcp/client.ts`) is the single abstraction for all MCP communication. Agents and consumers never use the `@modelcontextprotocol/sdk` directly.
-
-### Transport Types
-
-| Transport | SDK Class | Protocol | Use Case |
-|---|---|---|---|
-| `stdio` | `StdioClientTransport` | JSON-RPC over stdin/stdout | Local MCP server processes |
-| `sse` | `StreamableHTTPClientTransport` | Server-Sent Events | Web apps, simple streaming |
-| `stream-http` | `StreamableHTTPClientTransport` | Streamable HTTP (bidirectional NDJSON) | Production, complex workflows |
-| `auto` | (resolved at runtime) | Detected from URL patterns | Default / convenience |
-| `embedded` | (none) | Direct function calls in-process | Testing, same-process MCP server |
-
-> Both `sse` and `stream-http` use the same SDK class (`StreamableHTTPClientTransport`). The SDK handles protocol differences internally.
-
-### Transport Auto-Detection
-
-When `transport` is `auto` (default) or omitted:
-
-1. If `listToolsHandler`, `callToolHandler`, or `serverInstance` is provided → `embedded`
-2. If URL contains `/sse` → `sse`
-3. If URL contains `/stream/http` or `/http` → `stream-http`
-4. Any other HTTP/HTTPS URL → `stream-http`
-5. If `command` is provided → `stdio`
-6. Otherwise → error with helpful message
-
-### API
-
-| Method | Description |
-|---|---|
-| `connect()` | Establish connection and load tool catalog |
-| `listTools()` | Return cached tool descriptors |
-| `callTool(toolCall)` | Execute a single tool (returns `ToolResult`) |
-| `callTools(toolCalls)` | Execute multiple tools in parallel |
-| `disconnect()` | Close connection |
-| `getTransport()` | Return detected transport type |
-| `getSessionId()` | Return HTTP session ID (stream-http / sse) |
-
-### Embedded Mode
-
-Embedded mode enables dependency injection for testing and same-process MCP servers:
-
-```typescript
-const mcpClient = new MCPClientWrapper({
-  listToolsHandler: async () => [...tools],
-  callToolHandler: async (name, args) => { /* execute */ },
+const server = new SmartServer({
+  llm: {
+    apiKey: process.env.DEEPSEEK_API_KEY!,
+    model: 'deepseek-chat',
+  },
+  mode: 'smart',
 });
+
+const handle = await server.start();
+// handle.port, handle.getUsage(), handle.close()
 ```
 
-No network I/O occurs — tools are resolved via provided handler functions.
+`SmartServer` public contract:
+- input: `SmartServerConfig`
+- output: `Promise<SmartServerHandle>`
+- lifecycle: `start()` -> `{ port, getUsage, close }`
+- protocol: OpenAI-compatible `/v1/chat/completions` (JSON + SSE)
 
----
+## Request Lifecycle
 
-## Data Flow
+### 1. Server Boundary
 
-### Single-Turn Agent Flow (normal usage)
+Entry points:
+- `src/smart-agent/smart-server.ts` (`SmartServer`)
+- `src/smart-agent/server.ts` (`SmartAgentServer`, lightweight/legacy test server)
 
-```
-Consumer                  Agent                  LLM Provider           MCP
-   │                        │                        │                   │
-   │  process("message")    │                        │                   │
-   │───────────────────────►│                        │                   │
-   │                        │  callLLMWithTools()    │                   │
-   │                        │  (format tools for     │                   │
-   │                        │   specific provider)   │                   │
-   │                        │───────────────────────►│                   │
-   │                        │                        │  HTTP request to  │
-   │                        │                        │  LLM endpoint     │
-   │                        │                        │  (/chat/completions
-   │                        │                        │   or /messages)   │
-   │                        │                        │──────────────────► (OpenAI/Anthropic/DeepSeek/SAP AI Core)
-   │                        │                        │
-   │                        │                        │◄────────────────── response
-   │                        │◄───────────────────────│                   │
-   │                        │                        │                   │
-   │  AgentResponse         │                        │                   │
-   │  { message, raw }      │                        │                   │
-   │◄───────────────────────│                        │                   │
-   │                        │                        │                   │
-   │  (consumer parses raw  │                        │                   │
-   │   for tool_calls and   │  optional: callTool()  │                   │
-   │   executes them via    │────────────────────────────────────────────►│
-   │   mcpClient.callTool)  │                        │                   │
-```
+`SmartServer` responsibilities:
+- Parse/validate OpenAI-compatible requests (`/v1/chat/completions`).
+- Normalize message content blocks into text.
+- Normalize external tool definitions with `normalizeExternalTools()`.
+- Emit SSE chunks in OpenAI-compatible sequence.
+- Build and hold `SmartAgent` via `SmartAgentBuilder`.
 
-### MCP Connection Flow
+### 2. Orchestration Core
 
-```
-MCPClientWrapper
-       │
-       ├── detectTransport() ── resolves transport type from config
-       │
-       ├── connect()
-       │     │
-       │     ├── [embedded] load tools from handler/registry
-       │     │
-       │     ├── [stdio] spawn process → StdioClientTransport → Client.connect()
-       │     │
-       │     └── [sse/stream-http] StreamableHTTPClientTransport → Client.connect()
-       │           │
-       │           └── capture sessionId
-       │
-       ├── listTools() → return cached tools[]
-       │
-       ├── callTool(toolCall) → delegate to client or handler
-       │
-       └── disconnect() → Client.close()
-```
+Main implementation:
+- `src/smart-agent/agent.ts` (`SmartAgent`)
 
----
+Pipeline stages:
+1. Pre-flight and timeout/abort merging.
+2. Subprompt classification (`ISubpromptClassifier`).
+3. Optional history summarization (helper LLM).
+4. RAG retrieval for action subprompts (`facts/feedback/state`).
+5. MCP tool catalog retrieval and tool selection.
+6. Context assembly (`IContextAssembler`).
+7. Streaming tool loop:
+- stream model output,
+- accumulate tool-call deltas,
+- execute internal MCP tools,
+- return external tool calls to caller,
+- enforce loop/tool limits.
 
-## Configuration
+### 3. LLM Integration
 
-There is no dedicated configuration module. Configuration flows through typed constructor parameters at every layer:
+Abstractions:
+- `src/smart-agent/interfaces/llm.ts`
+- `src/smart-agent/adapters/llm-adapter.ts`
 
-| Layer | Config Type | Key Fields |
+`LlmAdapter` bridges legacy `BaseAgent` implementations to smart-agent `ILlm`.
+Providers can be configured through pipeline config (`deepseek`, `openai`, `anthropic`) in:
+- `src/smart-agent/pipeline.ts`
+
+### 4. RAG Layer
+
+Core contracts and implementations:
+- `src/smart-agent/interfaces/rag.ts`
+- `src/smart-agent/rag/vector-rag.ts`
+- `src/smart-agent/rag/in-memory-rag.ts`
+- `src/smart-agent/rag/ollama-rag.ts`
+- `src/smart-agent/rag/openai-embedder.ts`
+
+Stores are split by intent:
+- `facts` (domain/tool knowledge)
+- `feedback` (user guidance)
+- `state` (session memory)
+
+### 5. MCP Layer
+
+- Smart stack uses `IMcpClient` abstraction.
+- Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
+- Supports multiple MCP servers simultaneously via builder/pipeline config.
+
+## Internal Interfaces and Default Implementations
+
+| Interface | Role | Default implementation |
 |---|---|---|
-| Agent | `BaseAgentConfig` (+ subclass-specific) | `mcpClient` or `mcpConfig`, `llmProvider`, `maxIterations` |
-| LLM Provider | `LLMProviderConfig` / `SapCoreAIConfig` | `apiKey`, `baseURL`, `model`, `destinationName`, `httpClient` |
-| MCP Client | `MCPClientConfig` | `transport`, `url`, `command`, `args`, `headers`, `timeout`, `sessionId` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `SmartAgentBuilder` |
+| `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
+| `IContextAssembler` | Builds final model context window | `ContextAssembler` |
+| `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag` (Ollama/OpenAI embedders) or `InMemoryRag` |
+| `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
+| `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
+| `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
+| `ILogger` | Structured logging sink | `ConsoleLogger` / `SessionLogger` / injected custom logger |
 
-For the CLI test launcher (`src/cli.ts`), configuration comes from environment variables loaded via `dotenv`:
+Builder wiring entrypoint:
+- `src/smart-agent/builder.ts` (`SmartAgentBuilder`)
+- supports default wiring plus per-component overrides through `.with*()` methods
 
-| Variable | Purpose |
-|---|---|
-| `LLM_PROVIDER` | Provider selection (`openai` / `anthropic` / `deepseek`). `ollama` is currently listed in comments but not implemented in `cli.ts`. |
-| `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider API keys |
-| `OPENAI_MODEL`, `ANTHROPIC_MODEL`, `DEEPSEEK_MODEL` | Model override |
-| `MCP_ENDPOINT` | MCP server URL |
-| `MCP_DISABLED` | Skip MCP connection |
-| `MCP_AUTH_HEADER` | Authorization header for MCP |
-| `SAP_CORE_AI_URL` | Used by `SapCoreAIProvider` fallback mode (library-level config), not by the current CLI flow. |
+## Execution Modes
 
----
+Configured via `SmartAgentConfig.mode` and `SmartServerMode`:
 
-## Dependencies
+- `smart`:
+- Full orchestration (classification + RAG + MCP selection + tool loop).
+- Uses external tools when SAP context is not required.
 
-### Runtime (3)
+- `hard`:
+- SAP/MCP-focused behavior with strict internal tool context.
+- External tools are not active in MCP execution loop.
 
-| Package | Version | Purpose |
-|---|---|---|
-| `@modelcontextprotocol/sdk` | ^1.27.0 | MCP protocol: Client, transports, schemas |
-| `axios` | ^1.13.5 | HTTP client for LLM provider APIs |
-| `dotenv` | ^17.3.1 | Environment variable loading from `.env` |
+- `pass`:
+- Pure passthrough to main LLM stream over provided history/tools.
+- Skips orchestration stages.
 
-### Development (4)
+## Protocol Contracts
 
-| Package | Version | Purpose |
-|---|---|---|
-| `@biomejs/biome` | ^2.4.4 | Linter and formatter |
-| `@types/node` | ^25.3.0 | Node.js type definitions |
-| `tsx` | ^4 | TypeScript execution for development |
-| `typescript` | ^5 | TypeScript compiler |
+### Streaming Tool Calls
 
----
+`LlmStreamChunk.toolCalls` supports both finalized calls and deltas:
+- `LlmToolCall`
+- `LlmToolCallDelta`
 
-## Build & Tooling
+Defined in:
+- `src/smart-agent/interfaces/types.ts`
 
-- **TypeScript**: ES2022 target, ES module output, strict mode, declarations + source maps
-- **Linting/Formatting**: Biome (2-space indent, single quotes, semicolons, organized imports)
-- **Package type**: ESM (`"type": "module"`)
-- **Node requirement**: >= 18
+Normalization helpers:
+- `src/smart-agent/utils/tool-call-deltas.ts`
 
-| Command | Description |
-|---|---|
-| `npm run build` | Compile TypeScript to `dist/` |
-| `npm run dev` | Run CLI launcher with tsx (hot reload) |
-| `npm run dev:llm` | Run CLI in LLM-only mode (no MCP) |
-| `npm run lint` | Lint and auto-fix with Biome |
-| `npm run format` | Format with Biome |
-| `npm run clean` | Remove `dist/` |
+This removes unsafe cast chains in critical stream paths and keeps delta assembly explicit.
+
+### External Tool Input Contract
+
+Incoming tool payloads are normalized at boundary:
+- `src/smart-agent/utils/external-tools-normalizer.ts`
+
+Accepted shapes:
+- internal `LlmTool`
+- OpenAI-compatible `{ type: 'function', function: { name, description, parameters } }`-like shape (name/function-derived)
+
+Invalid tool shapes are dropped during normalization instead of flowing into runtime logic as opaque objects.
+Validation mode is configurable at request boundary:
+- `permissive` (default): invalid client tools are dropped and logged.
+- `strict`: request is rejected with `400 invalid_request_error` and a validation code.
+
+### Session Tool Availability Contract
+
+Tools can be protocol-valid but temporarily unavailable in the current environment/session.
+
+- Runtime-unavailable tools are temporarily blocked with TTL in a session-scoped registry.
+- Blocked tools are excluded from subsequent LLM tool contexts within the session window.
+- The agent emits diagnostics for both block events and blocked-tool interceptions.
+
+## Legitimate vs Suspicious Edge Cases
+
+Decision rule:
+- **Legitimate**: allowed by upstream protocol/model behavior, must be handled for compatibility.
+- **Suspicious**: produced by local contract gaps, cast-driven parsing, or unclear ownership.
+
+### Legitimate (document + test)
+
+- Fragmented SSE tool arguments across chunks.
+- Separate usage tail chunk in SSE.
+- Unknown/hallucinated tool names from the model.
+- Transport-level MCP failures requiring reconnect/retry/fallback.
+- Abort, max-iteration, and max-tool-call safety termination.
+
+### Suspicious (refactor/tighten)
+
+- Runtime dependence on `as unknown as ...` in protocol paths.
+- Silent parse degradation without diagnostics.
+- Heuristic acceptance of malformed boundary payloads.
+
+Action policy:
+- Legitimate -> keep behavior, encode as invariant, test it.
+- Suspicious -> tighten contracts/DTOs/validators, add diagnostics, and simplify control flow.
+
+## Key Modules
+
+- `src/smart-agent/agent.ts`: orchestration loop and tool execution control.
+- `src/smart-agent/smart-server.ts`: production OpenAI-compatible server.
+- `src/smart-agent/builder.ts`: dependency wiring and defaults.
+- `src/smart-agent/pipeline.ts`: provider/rag factory helpers.
+- `src/smart-agent/context/context-assembler.ts`: final context construction.
+- `src/smart-agent/classifier/llm-classifier.ts`: subprompt decomposition.
+- `src/smart-agent/policy/*`: policy guard + injection detector.
+- `src/mcp/client.ts`: transport implementation and resilience behavior.
+
+## Repository Structure (High Level)
+
+```text
+src/
+  agents/                  # legacy/provider-specific agent implementations
+  llm-providers/           # provider clients (OpenAI/Anthropic/DeepSeek/SAP Core)
+  mcp/                     # MCP transport client wrapper
+  smart-agent/             # primary orchestrated architecture
+    adapters/
+    classifier/
+    context/
+    interfaces/
+    llm/
+    policy/
+    rag/
+    utils/
+    smart-server.ts
+    agent.ts
+```
+
+## Current Technical Debt (Explicit)
+
+- Legacy provider agents (`src/agents/*`) still rely on permissive provider-payload casts that should be narrowed with stricter DTOs.
+- Deprecated test suite `src/smart-agent/__tests__/agent-phase9.test.ts` is intentionally skipped and should be replaced by modern contract-level coverage.
+- Runtime diagnostics are session-log-oriented; we still need first-class aggregate metrics/export (counters for parse/validation degradation) for long-running operations.

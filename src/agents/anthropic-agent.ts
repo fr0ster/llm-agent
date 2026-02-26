@@ -5,12 +5,13 @@
  * tool use blocks in the response content.
  */
 
-import type {
-  AnthropicConfig,
-  AnthropicProvider,
-} from '../llm-providers/anthropic.js';
-import type { Message } from '../types.js';
-import { BaseAgent, type BaseAgentConfig } from './base.js';
+import type { AnthropicProvider } from '../llm-providers/anthropic.js';
+import type { AgentStreamChunk, Message } from '../types.js';
+import {
+  type AgentCallOptions,
+  BaseAgent,
+  type BaseAgentConfig,
+} from './base.js';
 
 export interface AnthropicAgentConfig extends BaseAgentConfig {
   llmProvider: AnthropicProvider;
@@ -29,7 +30,7 @@ export class AnthropicAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: unknown[],
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to Anthropic tool format
     const anthropicTools = this.convertToolsToAnthropicTools(tools);
@@ -41,13 +42,25 @@ export class AnthropicAgent extends BaseAgent {
       this.formatMessagesForAnthropic(conversationMessages);
 
     // Access Anthropic client and config
-    const anthropicProvider = this.llmProvider as any;
+    const anthropicProvider = this.llmProvider as unknown as {
+      client: {
+        post(
+          path: string,
+          body: Record<string, unknown>,
+        ): Promise<{ data: Record<string, unknown> }>;
+      };
+      model: string;
+      config: {
+        maxTokens?: number;
+        temperature?: number;
+      };
+    };
     const client = anthropicProvider.client;
     const model = anthropicProvider.model;
     const config = anthropicProvider.config;
 
     // Call Anthropic API with tools
-    const requestBody: any = {
+    const requestBody: Record<string, unknown> = {
       model,
       messages: formattedMessages,
       max_tokens: config.maxTokens || 2000,
@@ -64,7 +77,10 @@ export class AnthropicAgent extends BaseAgent {
 
     const response = await client.post('/messages', requestBody);
 
-    const content = response.data.content;
+    const content = response.data.content as Array<{
+      type?: string;
+      text?: string;
+    }>;
     let textContent = '';
 
     for (const block of content) {
@@ -82,26 +98,48 @@ export class AnthropicAgent extends BaseAgent {
   /**
    * Convert MCP tools to Anthropic tool format
    */
-  private convertToolsToAnthropicTools(tools: any[]): any[] {
-    return tools.map((tool) => ({
-      name: tool.name,
-      description: tool.description || '',
-      input_schema: tool.inputSchema || {
-        type: 'object',
-        properties: {},
-      },
-    }));
+  private convertToolsToAnthropicTools(
+    tools: unknown[],
+  ): Array<Record<string, unknown>> {
+    return tools.map((rawTool) => {
+      const tool = rawTool as {
+        name?: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      };
+      return {
+        name: tool.name,
+        description: tool.description || '',
+        input_schema: tool.inputSchema || {
+          type: 'object',
+          properties: {},
+        },
+      };
+    });
   }
 
   /**
    * Format messages for Anthropic API
    */
-  private formatMessagesForAnthropic(messages: Message[]): any[] {
+  private formatMessagesForAnthropic(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     return messages.map((msg) => {
       return {
         role: msg.role === 'assistant' ? 'assistant' : 'user',
         content: msg.content,
       };
     });
+  }
+
+  protected async *streamLLMWithTools(
+    _messages: Message[],
+    _tools: unknown[],
+    _options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    if (_messages.length < 0) {
+      yield { type: 'done', finishReason: 'error' };
+    }
+    throw new Error('Streaming is not implemented for AnthropicAgent');
   }
 }

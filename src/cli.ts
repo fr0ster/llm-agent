@@ -51,10 +51,10 @@
  *     MCP_DISABLED - Set to 'true' to test LLM only without MCP
  */
 
+import { existsSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { config } from 'dotenv';
-import { existsSync, readFileSync } from 'fs';
-import { dirname, join } from 'path';
-import { fileURLToPath } from 'url';
 import {
   AnthropicAgent,
   AnthropicProvider,
@@ -189,7 +189,7 @@ async function main() {
           : '';
         const projectInfo =
           process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ
-            ? ` (project: ${(process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ)!.substring(0, 8)}...)`
+            ? ` (project: ${(process.env.OPENAI_PROJECT || process.env.OPENAI_PRJ)?.substring(0, 8)}...)`
             : '';
         console.log(`✅ Created OpenAI provider${orgInfo}${projectInfo}`);
         break;
@@ -321,11 +321,13 @@ async function main() {
     const tools = await mcpClient.listTools();
     console.log(`📦 Available tools: ${tools.length}`);
     if (tools.length > 0) {
-      tools.slice(0, 5).forEach((tool: any) => {
-        console.log(
-          `   - ${tool.name}: ${tool.description || 'No description'}`,
-        );
-      });
+      tools
+        .slice(0, 5)
+        .forEach((tool: { name?: string; description?: string }) => {
+          console.log(
+            `   - ${tool.name}: ${tool.description || 'No description'}`,
+          );
+        });
       if (tools.length > 5) {
         console.log(`   ... and ${tools.length - 5} more`);
       }
@@ -357,9 +359,10 @@ async function main() {
     console.log('✅ Test completed successfully!\n');
 
     process.exit(0);
-  } catch (error: any) {
-    console.error('\n❌ Error:', error.message);
-    if (error.stack) {
+  } catch (error: unknown) {
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    console.error('\n❌ Error:', errorMessage);
+    if (error instanceof Error && error.stack) {
       console.error('\nStack trace:');
       console.error(error.stack);
     }

@@ -24,10 +24,6 @@ export interface SapCoreAIAgentConfig
 }
 
 export class SapCoreAIAgent extends PromptBasedAgent {
-  constructor(config: SapCoreAIAgentConfig) {
-    super(config);
-  }
-
   // Can override methods here if SAP Core AI has specific requirements
   // For now, uses prompt-based approach from base class
   // Future: If SAP Core AI supports function calling, can override callLLMWithTools

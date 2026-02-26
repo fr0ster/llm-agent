@@ -6,8 +6,12 @@
  */
 
 import type { LLMProvider } from '../llm-providers/base.js';
-import type { Message } from '../types.js';
-import { BaseAgent, type BaseAgentConfig } from './base.js';
+import type { AgentStreamChunk, Message } from '../types.js';
+import {
+  type AgentCallOptions,
+  BaseAgent,
+  type BaseAgentConfig,
+} from './base.js';
 
 export interface PromptBasedAgentConfig extends BaseAgentConfig {
   llmProvider: LLMProvider;
@@ -26,7 +30,8 @@ export class PromptBasedAgent extends BaseAgent {
    */
   protected async callLLMWithTools(
     messages: Message[],
-    tools: any[],
+    tools: unknown[],
+    _options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
     // Build system message with tool descriptions
     const systemMessage = this.buildSystemMessageWithTools(tools);
@@ -46,17 +51,35 @@ export class PromptBasedAgent extends BaseAgent {
     };
   }
 
+  protected async *streamLLMWithTools(
+    _messages: Message[],
+    _tools: unknown[],
+    _options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    if (_messages.length < 0) {
+      yield { type: 'done', finishReason: 'error' };
+    }
+    throw new Error('Streaming is not implemented for PromptBasedAgent');
+  }
+
   /**
    * Build system message with tool descriptions
    */
-  private buildSystemMessageWithTools(tools: any[]): string {
+  private buildSystemMessageWithTools(tools: unknown[]): string {
     const toolDescriptions = tools
-      .map((tool) => {
+      .map((rawTool) => {
+        const tool = rawTool as {
+          name?: string;
+          description?: string;
+          inputSchema?: {
+            properties?: Record<string, unknown>;
+          };
+        };
         const params = tool.inputSchema?.properties
           ? Object.entries(tool.inputSchema.properties)
               .map(
-                ([name, prop]: [string, any]) =>
-                  `  - ${name}: ${prop.description || prop.type || 'any'}`,
+                ([name, prop]) =>
+                  `  - ${name}: ${((prop as { description?: string }).description || (prop as { type?: string }).type || 'any') as string}`,
               )
               .join('\n')
           : '';
