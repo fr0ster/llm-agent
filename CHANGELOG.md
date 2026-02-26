@@ -7,11 +7,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [2.0.0-beta.0] — 2026-02-26
+## [2.0.0] — 2026-02-26
 
 ### Summary
 
-Major beta release that unifies the Smart Agent implementations, strengthens protocol boundaries,
+Major stable release that unifies the Smart Agent implementations, strengthens protocol boundaries,
 and formalizes the embeddable component architecture.
 
 ### Added
