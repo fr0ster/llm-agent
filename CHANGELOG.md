@@ -7,6 +7,39 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.1.1] — 2026-02-26
+
+### Summary
+
+SAP AI Core integration rewritten using the official `@sap-ai-sdk/orchestration` SDK.
+Replaces the raw HTTP stub with a production-ready provider that supports native tool calling
+and streaming.
+
+### Added
+
+- `@sap-ai-sdk/orchestration` dependency for SAP AI Core access.
+- `'sap-ai-sdk'` / `'sap'` provider option in CLI and pipeline config.
+- Native function calling support in `SapCoreAIAgent` (extends `BaseAgent` directly).
+- Streaming support in `SapCoreAIProvider` via `OrchestrationClient.stream()`.
+- `SapCoreAIAgent` export from `src/agents/index.ts`.
+- Environment variables: `AICORE_SERVICE_KEY`, `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP`.
+
+### Changed
+
+- `SapCoreAIProvider` — rewritten from raw axios/httpClient to `OrchestrationClient`.
+  Authentication handled automatically via `AICORE_SERVICE_KEY` env var.
+- `SapCoreAIAgent` — changed from `extends PromptBasedAgent` to `extends BaseAgent`
+  with native tool calling (OpenAI function format).
+- `SapCoreAIConfig` — dropped `destinationName` (was required) and `httpClient`;
+  added `resourceGroup`.
+
+### Fixed
+
+- `SapCoreAIProvider.streamChat()` now works (previously threw "not implemented").
+- Removed `"private": false` from `package.json` (npm treated it as private).
+
+---
+
 ## [2.0.0] — 2026-02-26
 
 ### Summary
