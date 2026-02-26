@@ -290,6 +290,6 @@ src/
 
 ## Current Technical Debt (Explicit)
 
-- Some legacy modules retain permissive typing that should be narrowed.
-
-These are tracked in `docs/ROADMAP.md` (Phase 15).
+- Legacy provider agents (`src/agents/*`) still rely on permissive provider-payload casts that should be narrowed with stricter DTOs.
+- Deprecated test suite `src/smart-agent/__tests__/agent-phase9.test.ts` is intentionally skipped and should be replaced by modern contract-level coverage.
+- Runtime diagnostics are session-log-oriented; we still need first-class aggregate metrics/export (counters for parse/validation degradation) for long-running operations.
