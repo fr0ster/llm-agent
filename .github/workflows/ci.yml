@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches: [main, 'feat/**']
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint:check
+
+      - name: Build
+        run: npm run build
+
+      - name: Test adapters
+        run: npm run test:adapters
+
+      - name: Test agent
+        run: npm run test:agent
+
+      - name: Test server
+        run: npm run test:server
+
+      - name: Test logger
+        run: npm run test:logger
+
+      - name: Test policy
+        run: npm run test:policy
+
+      - name: Test regression
+        run: npm run test:regression
+
+      - name: Test integration
+        run: npm run test:integration
+
+      - name: Test E2E
+        run: npm run test:e2e

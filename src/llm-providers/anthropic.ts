@@ -38,7 +38,7 @@ export class AnthropicProvider extends BaseLLMProvider {
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
-      const requestBody: any = {
+      const requestBody: Record<string, unknown> = {
         model: this.model,
         messages: this.formatMessages(conversationMessages),
         max_tokens: this.config.maxTokens || 2000,
@@ -58,17 +58,28 @@ export class AnthropicProvider extends BaseLLMProvider {
         finishReason: response.data.stop_reason,
         raw: response.data,
       };
-    } catch (error: any) {
-      throw new Error(
-        `Anthropic API error: ${error.response?.data?.error?.message || error.message}`,
-      );
+    } catch (error: unknown) {
+      const message = axios.isAxiosError(error)
+        ? (error.response?.data as { error?: { message?: string } })?.error
+            ?.message || error.message
+        : error instanceof Error
+          ? error.message
+          : String(error);
+      throw new Error(`Anthropic API error: ${message}`);
     }
+  }
+
+  async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
+    if (_messages.length < 0) {
+      yield { content: '', finishReason: 'error' };
+    }
+    throw new Error('Streaming is not implemented for AnthropicProvider');
   }
 
   /**
    * Format messages for Anthropic API
    */
-  private formatMessages(messages: Message[]): any[] {
+  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
     return messages.map((msg) => ({
       role: msg.role === 'assistant' ? 'assistant' : 'user',
       content: msg.content,

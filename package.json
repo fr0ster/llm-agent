@@ -1,10 +1,24 @@
 {
-  "name": "@mcp-abap-adt/llm-proxy",
-  "version": "0.0.1",
-  "description": "Minimal LLM proxy that normalizes provider access and surfaces MCP tools without executing them.",
+  "name": "@mcp-abap-adt/llm-agent",
+  "version": "2.0.0-beta.0",
+  "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./testing": {
+      "import": "./dist/smart-agent/testing/index.js",
+      "types": "./dist/smart-agent/testing/index.d.ts"
+    },
+    "./smart-server": {
+      "import": "./dist/smart-agent/smart-server.js",
+      "types": "./dist/smart-agent/smart-server.d.ts"
+    }
+  },
   "files": [
     "dist",
     "README.md",
@@ -12,28 +26,46 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "dev": "tsx src/cli.ts",
-    "dev:llm": "tsx src/cli.ts --llm-only",
-    "start": "node dist/cli.js",
+    "smoke:adapters": "tsx src/smoke-adapters.ts",
+    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
+    "test:agent": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/agent.test.ts",
+    "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
+    "test:logger": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/logger/__tests__/logger.test.ts",
+    "test:policy": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/policy/__tests__/tool-policy-guard.test.ts src/smart-agent/policy/__tests__/heuristic-injection-detector.test.ts src/smart-agent/policy/__tests__/tool-availability-registry.test.ts src/smart-agent/__tests__/agent-phase9.test.ts",
+    "test:regression": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/regression.test.ts",
+    "test:integration": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/integration.test.ts",
+    "test:e2e": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/e2e.test.ts",
+    "test:all": "npm run test:adapters && npm run test:agent && npm run test:server && npm run test:logger && npm run test:policy && npm run test:regression && npm run test:integration && npm run test:e2e",
+    "release:check": "npm run lint:check && npm run build && npm run test:all",
+    "start": "node dist/smart-agent/cli.js",
+    "start:smart": "npm run start",
     "start:llm": "node dist/cli.js --llm-only",
-    "test": "npm run build && npm start",
+    "dev": "tsx src/smart-agent/cli.ts",
+    "dev:llm": "tsx src/cli.ts --llm-only",
+    "client:test-stream": "node --import tsx/esm scripts/test-stream-client.ts",
+    "test": "npm run build && npm run start",
     "test:llm": "npm run build && npm run start:llm",
     "lint": "npx biome check --write --config-path . src",
     "lint:check": "npx biome check --config-path . src",
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
+    "publish:beta": "npm run release:check && npm publish --tag beta",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
     "axios": "^1.13.5",
-    "dotenv": "^17.3.1"
+    "dotenv": "^17.3.1",
+    "yaml": "^2.8.2"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.4",
     "@types/node": "^25.3.0",
     "tsx": "^4",
     "typescript": "^5"
+  },
+  "bin": {
+    "llm-agent-beta": "./dist/smart-agent/cli.js"
   },
   "license": "MIT",
   "author": "Oleksii Kyslytsia <oleksij.kyslytsja@gmail.com>",

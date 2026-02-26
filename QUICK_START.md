@@ -1,158 +1,254 @@
 # Quick Start Guide
 
-## Setup
+## Overview
 
-1. Copy environment template:
-   ```bash
-   cd submodules/llm-agent
-   cp .env.template .env
-   ```
+`llm-agent` is an OpenAI-compatible HTTP server backed by **SmartAgent** — an orchestrated agent
+with RAG-based tool selection, multi-turn semantic memory, and MCP tool execution. Connect any
+OpenAI-compatible client (Cline, Cursor, Continue) to it and use it as a drop-in AI backend.
 
-2. Edit `.env` with your API keys and settings
+---
 
-3. The agent will automatically load `.env` when running
-
-## Test LLM Only (Without MCP)
-
-### OpenAI
+## Install
 
 ```bash
-cd submodules/llm-agent
-
-# Basic usage - set API key and run
-export OPENAI_API_KEY="sk-proj-your-actual-key-here"
-npm run dev:llm
-
-# With custom message
-npm run dev:llm "Hello! What can you do?"
-
-# With specific model
-export OPENAI_MODEL="gpt-4o"  # or gpt-4-turbo, gpt-4o-mini, etc.
-npm run dev:llm
-
-# With organization ID (for team accounts)
-export OPENAI_API_KEY="sk-proj-your-key"
-export OPENAI_ORG="org-your-org-id"
-npm run dev:llm
-
-# With project ID (for project-specific billing)
-export OPENAI_API_KEY="sk-proj-your-key"
-export OPENAI_PROJECT="proj-your-project-id"  # or OPENAI_PRJ
-npm run dev:llm
-
-# Full configuration
-export OPENAI_API_KEY="sk-proj-your-key"
-export OPENAI_MODEL="gpt-4o"
-export OPENAI_ORG="org-your-org-id"
-export OPENAI_PROJECT="proj-your-project-id"
-npm run dev:llm
+npm install -g @mcp-abap-adt/llm-agent
 ```
 
-### Anthropic (Claude)
+Or run from source:
 
 ```bash
-cd submodules/llm-agent
-
-# Set provider and API key
-export LLM_PROVIDER=anthropic
-export ANTHROPIC_API_KEY="sk-ant-your-actual-key-here"
-
-# Run test
-npm run dev:llm
-
-# With custom message
-npm run dev:llm "Introduce yourself"
-
-# With specific model
-export ANTHROPIC_MODEL="claude-3-opus-20240229"
-npm run dev:llm
+git clone <repo> && cd llm-agent
+npm install && npm run build
+npx llm-agent          # uses ./dist/smart-agent/cli.js
 ```
 
-### DeepSeek
+---
+
+## First Run
+
+Run `llm-agent` in any directory:
 
 ```bash
-cd submodules/llm-agent
-
-# Set provider and API key
-export LLM_PROVIDER=deepseek
-export DEEPSEEK_API_KEY="sk-your-actual-key-here"
-
-# Run test
-npm run dev:llm
-
-# With custom message
-npm run dev:llm "What are your capabilities?"
+llm-agent
 ```
 
-## Test LLM + MCP (With MCP Integration)
+On the very first run (no `smart-server.yaml` in the current directory) it generates a config
+template and exits:
 
-### OpenAI with MCP
+```
+No config file found. Created smart-server.yaml with defaults.
+Put your API keys in .env, adjust settings in smart-server.yaml, then run llm-agent again.
+```
+
+---
+
+## 1. Configure Secrets — `.env`
+
+Create `.env` in the same directory as `smart-server.yaml`:
+
+```dotenv
+# Primary LLM (DeepSeek by default)
+DEEPSEEK_API_KEY=sk-your-deepseek-key
+
+# Optional — needed only if you use pipeline.llm with these providers
+# OPENAI_API_KEY=sk-your-openai-key
+# ANTHROPIC_API_KEY=sk-ant-your-anthropic-key
+
+# Optional — override Ollama URL (default: http://localhost:11434)
+# OLLAMA_URL=http://localhost:11434
+```
+
+**Secrets go in `.env`, settings go in `smart-server.yaml`.** The YAML resolves `${VAR}` references
+from `.env` at startup.
+
+---
+
+## 2. Configure Settings — `smart-server.yaml`
+
+Minimal working config (generated template contains all fields with comments):
+
+```yaml
+port: 3001
+mode: hybrid      # smart | passthrough | hybrid (default)
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+
+rag:
+  type: ollama            # ollama (neural) | in-memory (keyword, no Ollama required)
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+mcp:
+  type: http
+  url: http://localhost:3000/mcp/stream/http
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 10
+
+log: smart-server.log     # omit for stdout
+```
+
+> **No Ollama?** Set `rag.type: in-memory` — tool selection uses keyword matching instead of
+> neural embeddings. Everything else works identically.
+
+---
+
+## 3. Start
 
 ```bash
-cd submodules/llm-agent
-
-# Set API key and MCP endpoint
-export OPENAI_API_KEY="sk-proj-your-actual-key-here"
-export MCP_ENDPOINT="http://localhost:4004/mcp/stream/http"
-
-# Run test
-npm run dev
-
-# With SAP destination
-export SAP_DESTINATION="SAP_DEV_DEST"
-npm run dev "What ABAP programs are available?"
+llm-agent
 ```
 
-## Environment Variables Summary
+```
+llm-agent listening on http://0.0.0.0:3001
+logs → smart-server.log
+```
 
-| Variable | Required For | Description |
-|----------|-------------|-------------|
-| `LLM_PROVIDER` | All | Provider: `openai` (default), `anthropic`, or `deepseek` |
-| `OPENAI_API_KEY` | OpenAI | Your OpenAI API key |
-| `OPENAI_MODEL` | OpenAI | Model name (default: `gpt-4o-mini`) |
-| `OPENAI_ORG` | OpenAI | OpenAI organization ID (optional, for team accounts) |
-| `OPENAI_PROJECT` or `OPENAI_PRJ` | OpenAI | OpenAI project ID (optional, for project billing) |
-| `ANTHROPIC_API_KEY` | Anthropic | Your Anthropic API key |
-| `DEEPSEEK_API_KEY` | DeepSeek | Your DeepSeek API key |
-| `ANTHROPIC_MODEL` | Anthropic | Model name (default: `claude-3-5-sonnet-20241022`) |
-| `DEEPSEEK_MODEL` | DeepSeek | Model name (default: `deepseek-chat`) |
-| `MCP_ENDPOINT` | MCP mode | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
-| `MCP_DISABLED` | LLM-only | Set to `true` to disable MCP |
-| `SAP_DESTINATION` | MCP mode | SAP destination name (optional) |
+---
 
-## Commands
+## 4. Connect Your IDE
 
-| Command | Description |
-|---------|-------------|
-| `npm run dev:llm` | Test LLM only (development) |
-| `npm run start:llm` | Test LLM only (production) |
-| `npm run dev` | Test LLM + MCP (development) |
-| `npm run start` | Test LLM + MCP (production) |
-| `npm run build` | Build TypeScript to JavaScript |
+Add as an OpenAI-compatible provider in Cline / Cursor / Continue:
 
-## Examples
+| Setting  | Value                         |
+|----------|-------------------------------|
+| Base URL | `http://localhost:3001/v1`    |
+| Model    | `smart-agent` (any name)      |
+| API Key  | any non-empty string          |
 
-### Example 1: Quick OpenAI Test
+Endpoints exposed by the server:
+
+| Endpoint                    | Description                           |
+|-----------------------------|---------------------------------------|
+| `POST /v1/chat/completions` | Main endpoint (streaming + non-streaming) |
+| `GET  /v1/models`           | Returns `smart-agent` model entry     |
+| `GET  /v1/usage`            | Accumulated LLM token usage stats     |
+
+---
+
+## Request Routing Modes
+
+| Mode          | Behaviour                                                                 |
+|---------------|---------------------------------------------------------------------------|
+| `smart`       | All requests → SmartAgent (RAG tool selection + MCP orchestration)        |
+| `passthrough` | All requests → LLM directly (no agent; preserves Cline XML tool protocol) |
+| `hybrid`      | Auto-detect: Cline system prompt → passthrough, everything else → smart   |
+
+---
+
+## CLI Reference
+
+All YAML settings can be overridden with flags:
 
 ```bash
-export OPENAI_API_KEY="sk-proj-abc123..."
-npm run dev:llm
+llm-agent --port 3002 --llm-api-key sk-xxx --rag-type in-memory --mode smart
 ```
 
-### Example 2: Test Claude with Custom Message
+| Flag                      | Description                                      |
+|---------------------------|--------------------------------------------------|
+| `--config <path>`         | YAML config file (default: `smart-server.yaml`)  |
+| `--env <path>`            | `.env` file (default: `.env` in cwd)             |
+| `--port <n>`              | HTTP port                                        |
+| `--host <addr>`           | Bind address                                     |
+| `--llm-api-key <key>`     | LLM API key                                      |
+| `--llm-model <model>`     | LLM model name                                   |
+| `--llm-temperature <n>`   | Temperature (0–2)                                |
+| `--rag-type <type>`       | `ollama` or `in-memory`                          |
+| `--rag-url <url>`         | Ollama base URL                                  |
+| `--mcp-url <url>`         | MCP HTTP endpoint                                |
+| `--mcp-command <cmd>`     | MCP stdio command                                |
+| `--mode <mode>`           | `smart`, `passthrough`, or `hybrid`              |
+| `--prompt-system <text>`  | System preamble for the agent                    |
+| `--log-file <path>`       | Log file path                                    |
+| `--log-stdout`            | Log to stdout instead of file                    |
+| `--help`                  | Show full help                                   |
+
+Generate a config template without starting the server:
 
 ```bash
-export LLM_PROVIDER=anthropic
-export ANTHROPIC_API_KEY="sk-ant-xyz789..."
-npm run dev:llm "What can you help me with?"
+llm-agent --config /path/to/my-config.yaml   # creates template if file is absent
 ```
 
-### Example 3: Test with MCP Integration
+---
+
+## Advanced: Pipeline Configuration
+
+For multi-LLM setups, per-store RAG, or multiple MCP servers, add a `pipeline:` section to
+`smart-server.yaml`. It overrides only the components you specify; everything else falls back to the
+flat config above.
+
+```yaml
+pipeline:
+  llm:
+    main:
+      provider: deepseek        # deepseek | openai | anthropic
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.7
+    classifier:                 # cheaper model for intent classification
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o-mini
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: ollama              # neural embeddings for tool knowledge
+    feedback:
+      type: in-memory           # lightweight for user corrections
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://sap-server:3000/mcp/stream/http
+    - type: stdio
+      command: npx
+      args: [github-mcp-server]
+```
+
+When `pipeline.llm.main` is set, the flat `llm:` block is used only as a fallback for
+anything the pipeline does not explicitly configure.
+
+See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full pipeline and programmatic API reference.
+
+---
+
+## Troubleshooting
+
+### "LLM API key is required"
+Set `DEEPSEEK_API_KEY` in `.env`, or `llm.apiKey` in `smart-server.yaml`, or `pipeline.llm.main.apiKey`.
+
+### Ollama embed errors
+Run Ollama locally and pull the model:
+```bash
+ollama pull nomic-embed-text
+```
+Or switch to `rag.type: in-memory` to skip Ollama entirely.
+
+### Cannot connect to MCP server
+Verify the endpoint is reachable and the MCP server is running. The agent continues without tools
+if an MCP connection fails (it logs the error and proceeds).
+
+### Cline not using the agent
+`hybrid` mode auto-detects Cline and routes it to `passthrough`. To force SmartAgent for all
+clients set `mode: smart`.
+
+---
+
+## Legacy: Thin Proxy CLI (dev / testing)
+
+The original single-turn CLI is still available for quick LLM + MCP testing without the full server:
 
 ```bash
-export OPENAI_API_KEY="sk-proj-abc123..."
-export MCP_ENDPOINT="http://localhost:4004/mcp/stream/http"
-export SAP_DESTINATION="SAP_DEV_DEST"
-npm run dev "List all ABAP classes"
-```
+# LLM only
+DEEPSEEK_API_KEY=sk-xxx npm run dev:llm
 
+# LLM + MCP (single-turn, no SmartAgent)
+DEEPSEEK_API_KEY=sk-xxx MCP_ENDPOINT=http://localhost:4004/mcp/stream/http npm run dev
+```
