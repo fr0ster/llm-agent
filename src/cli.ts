@@ -64,6 +64,8 @@ import {
   OpenAIAgent,
   OpenAIProvider,
   PromptBasedAgent,
+  SapCoreAIAgent,
+  SapCoreAIProvider,
 } from './index.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -160,7 +162,8 @@ async function main() {
     let llmProviderInstance:
       | OpenAIProvider
       | AnthropicProvider
-      | DeepSeekProvider;
+      | DeepSeekProvider
+      | SapCoreAIProvider;
 
     switch (llmProvider.toLowerCase()) {
       case 'openai': {
@@ -231,21 +234,43 @@ async function main() {
         break;
       }
 
+      case 'sap-ai-sdk':
+      case 'sap': {
+        const aicoreKey = process.env.AICORE_SERVICE_KEY;
+        if (aicoreKey) {
+          console.log('   AICORE_SERVICE_KEY: ✅ SET');
+        } else {
+          console.log('   AICORE_SERVICE_KEY: ❌ NOT SET');
+        }
+        llmProviderInstance = new SapCoreAIProvider({
+          apiKey: 'sap-ai-sdk-managed',
+          model: process.env.SAP_AI_MODEL || 'gpt-4o',
+          resourceGroup: process.env.SAP_AI_RESOURCE_GROUP,
+        });
+        console.log('✅ Created SAP AI SDK provider');
+        break;
+      }
+
       case 'ollama': {
         // Ollama provider not yet implemented, but mentioned in .env.template
         throw new Error(
-          'Ollama provider is not yet implemented. Use: openai, anthropic, or deepseek',
+          'Ollama provider is not yet implemented. Use: openai, anthropic, deepseek, or sap-ai-sdk',
         );
       }
 
       default:
         throw new Error(
-          `Unsupported LLM provider: ${llmProvider}. Use: openai, anthropic, or deepseek`,
+          `Unsupported LLM provider: ${llmProvider}. Use: openai, anthropic, deepseek, or sap-ai-sdk`,
         );
     }
 
     // Create agent based on provider
-    let agent: OpenAIAgent | AnthropicAgent | DeepSeekAgent | PromptBasedAgent;
+    let agent:
+      | OpenAIAgent
+      | AnthropicAgent
+      | DeepSeekAgent
+      | SapCoreAIAgent
+      | PromptBasedAgent;
 
     if (mcpDisabled) {
       // LLM-only mode - create agent without MCP
@@ -299,6 +324,11 @@ async function main() {
       });
     } else if (llmProviderInstance instanceof DeepSeekProvider) {
       agent = new DeepSeekAgent({
+        llmProvider: llmProviderInstance,
+        mcpClient,
+      });
+    } else if (llmProviderInstance instanceof SapCoreAIProvider) {
+      agent = new SapCoreAIAgent({
         llmProvider: llmProviderInstance,
         mcpClient,
       });

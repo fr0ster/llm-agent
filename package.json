@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "2.0.0",
+  "version": "2.1.0",
   "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
@@ -54,6 +54,7 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.0",
+    "@sap-ai-sdk/orchestration": "^2.7.0",
     "axios": "^1.13.5",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.2"

@@ -5,9 +5,11 @@
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
+import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
 import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { OpenAIProvider } from '../llm-providers/openai.js';
+import { SapCoreAIProvider } from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import type { IRag } from './interfaces/rag.js';
@@ -22,10 +24,12 @@ import { VectorRag } from './rag/vector-rag.js';
 // ---------------------------------------------------------------------------
 
 export interface PipelineLlmProviderConfig {
-  provider: 'deepseek' | 'openai' | 'anthropic';
+  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
   apiKey: string;
   model?: string;
   temperature?: number;
+  /** SAP AI Core resource group (used when provider is 'sap-ai-sdk') */
+  resourceGroup?: string;
 }
 
 export interface PipelineRagStoreConfig {
@@ -116,6 +120,19 @@ export function makeLlmFromProvider(
         temperature,
       });
       const agent = new AnthropicAgent({
+        llmProvider: provider,
+        mcpClient: dummyMcp,
+      });
+      return new TokenCountingLlm(new LlmAdapter(agent));
+    }
+    case 'sap-ai-sdk': {
+      const provider = new SapCoreAIProvider({
+        apiKey: cfg.apiKey || 'sap-ai-sdk-managed',
+        model: cfg.model,
+        temperature,
+        resourceGroup: cfg.resourceGroup,
+      });
+      const agent = new SapCoreAIAgent({
         llmProvider: provider,
         mcpClient: dummyMcp,
       });

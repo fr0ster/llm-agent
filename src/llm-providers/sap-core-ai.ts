@@ -1,59 +1,30 @@
 /**
- * SAP Core AI LLM Provider
+ * SAP AI SDK LLM Provider
  *
- * Implementation of LLMProvider interface for SAP Core AI service.
- * This provider uses SAP Cloud SDK for authentication and destination handling.
- *
- * All LLM providers (OpenAI, Anthropic, DeepSeek, etc.) are accessed through SAP AI Core.
- * SAP AI Core acts as a proxy/gateway to different LLM providers.
+ * Implementation of LLMProvider interface using @sap-ai-sdk/orchestration.
+ * Authentication is handled automatically via AICORE_SERVICE_KEY environment variable.
  *
  * Architecture:
- * - Agent → SAP Core AI Provider → SAP AI Core → External LLM (OpenAI/Anthropic/DeepSeek)
- * - SAP AI Core handles authentication, routing, and provider selection
+ * - Agent → SapCoreAIProvider → OrchestrationClient → SAP AI Core → External LLM
  */
 
+import {
+  type ChatMessage,
+  OrchestrationClient,
+} from '@sap-ai-sdk/orchestration';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
-  /**
-   * SAP Destination name for Core AI service
-   */
-  destinationName: string;
-
-  /**
-   * Model name (optional, defaults to service default)
-   * Model selection determines which underlying LLM provider to use
-   * Examples: 'gpt-4o-mini', 'claude-3-5-sonnet', 'deepseek-chat'
-   */
+  /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Default: 'gpt-4o' */
   model?: string;
-
-  /**
-   * Temperature (optional)
-   */
+  /** Temperature for generation. Default: 0.7 */
   temperature?: number;
-
-  /**
-   * Max tokens (optional)
-   */
+  /** Max tokens for generation. Default: 2000 */
   maxTokens?: number;
-
-  /**
-   * HTTP client function for making requests
-   * If not provided, will use axios (requires direct URL configuration)
-   * If provided, should use SAP Cloud SDK executeHttpRequest
-   */
-  httpClient?: (config: {
-    destinationName: string;
-    method: string;
-    url: string;
-    headers?: Record<string, string>;
-    data?: unknown;
-  }) => Promise<{ data: Record<string, unknown> }>;
-
-  /**
-   * Optional logger instance
-   */
+  /** SAP AI Core resource group */
+  resourceGroup?: string;
+  /** Optional logger */
   log?: {
     debug(message: string, meta?: Record<string, unknown>): void;
     error(message: string, meta?: Record<string, unknown>): void;
@@ -61,133 +32,177 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
 }
 
 /**
- * SAP Core AI Provider implementation
+ * SAP AI SDK Provider implementation
  *
- * Uses SAP Cloud SDK executeHttpRequest for authentication and destination handling.
- * All LLM providers are accessed through SAP AI Core, not directly.
+ * Uses @sap-ai-sdk/orchestration for authentication and LLM access.
+ * A new OrchestrationClient is created per call because tools may change between calls.
  */
 export class SapCoreAIProvider extends BaseLLMProvider {
-  private destinationName: string;
-  private model: string;
-  private httpClient: SapCoreAIConfig['httpClient'];
-  private log?: SapCoreAIConfig['log']; // Optional logger
+  readonly model: string;
+  readonly resourceGroup?: string;
+  private log?: SapCoreAIConfig['log'];
 
   constructor(config: SapCoreAIConfig) {
     super(config);
-    if (!config.destinationName) {
-      throw new Error('SAP destination name is required for SapCoreAIProvider');
-    }
-
-    this.destinationName = config.destinationName;
-    this.model = config.model || 'gpt-4o-mini'; // Default model
-    this.httpClient = config.httpClient;
+    // Skip validateConfig() — SAP SDK handles auth via AICORE_SERVICE_KEY env var
+    this.model = config.model || 'gpt-4o';
+    this.resourceGroup = config.resourceGroup;
     this.log = config.log;
   }
 
-  async chat(messages: Message[]): Promise<LLMResponse> {
+  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
     try {
-      if (this.log) {
-        this.log.debug('Sending chat request to SAP Core AI', {
-          destination: this.destinationName,
-          model: this.model,
-          messageCount: messages.length,
-        });
-      }
-
-      // Format messages for SAP Core AI API
-      const requestBody = {
+      this.log?.debug('Sending chat request via SAP AI SDK', {
         model: this.model,
-        messages: this.formatMessages(messages),
-        temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 2000,
-      };
+        messageCount: messages.length,
+        toolCount: tools?.length || 0,
+      });
 
-      let response: { data: Record<string, unknown> };
+      const client = this.createClient(tools);
+      const response = await client.chatCompletion({
+        messagesHistory: this.formatMessages(messages),
+      });
 
-      if (this.httpClient) {
-        // Use provided HTTP client (typically SAP Cloud SDK)
-        // Ensure URL doesn't have trailing slash (SAP AI Core is strict about this)
-        const url = '/v1/chat/completions'.replace(/\/$/, '');
-        response = await this.httpClient({
-          destinationName: this.destinationName,
-          method: 'POST',
-          url: url,
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          data: requestBody,
-        });
-      } else {
-        // Fallback: use axios (requires direct URL configuration)
-        // This is for standalone testing without SAP SDK
-        const axios = await import('axios');
-        const baseURL =
-          process.env.SAP_CORE_AI_URL || 'https://api.ai.core.sap';
+      const toolCalls = response.getToolCalls();
+      const content = response.getContent() || '';
+      const finishReason = response.getFinishReason();
 
-        response = await axios.default.post(
-          `${baseURL}/v1/chat/completions`,
-          requestBody,
-          {
-            headers: {
-              'Content-Type': 'application/json',
-            },
-          },
-        );
-      }
-
-      const choice = (
-        response.data.choices as Array<Record<string, unknown>>
-      )?.[0];
-
-      if (!choice) {
-        throw new Error('No response from SAP Core AI');
-      }
-
-      if (this.log) {
-        this.log.debug('Received response from SAP Core AI', {
-          finishReason: choice.finish_reason,
-        });
-      }
+      this.log?.debug('Received response from SAP AI SDK', { finishReason });
 
       return {
-        content:
-          ((choice.message as Record<string, unknown> | undefined)
-            ?.content as string) || '',
-        finishReason: choice.finish_reason as string | undefined,
-        raw: response.data,
+        content,
+        finishReason,
+        raw: {
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content,
+                ...(toolCalls ? { tool_calls: toolCalls } : {}),
+              },
+              finish_reason: finishReason,
+            },
+          ],
+          usage: response.getTokenUsage(),
+        },
       };
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
-      const responseData =
-        error instanceof Error && 'response' in error
-          ? (error as { response?: { data?: unknown } }).response?.data
-          : undefined;
-      if (this.log) {
-        this.log.error('SAP Core AI API error', {
-          destination: this.destinationName,
-          error: message,
-          response: responseData as Record<string, unknown> | undefined,
-        });
-      }
-
-      throw new Error(`SAP Core AI API error: ${message}`);
+      this.log?.error('SAP AI SDK API error', { error: message });
+      throw new Error(`SAP AI SDK API error: ${message}`);
     }
   }
 
-  async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
-    if (_messages.length < 0) {
-      yield { content: '', finishReason: 'error' };
+  async *streamChat(
+    messages: Message[],
+    tools?: unknown[],
+  ): AsyncIterable<LLMResponse> {
+    try {
+      const client = this.createClient(tools);
+      const streamResponse = await client.stream({
+        messagesHistory: this.formatMessages(messages),
+      });
+
+      for await (const chunk of streamResponse.stream) {
+        yield {
+          content: chunk.getDeltaContent() || '',
+          finishReason: chunk.getFinishReason(),
+          raw: chunk,
+        };
+      }
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.log?.error('SAP AI SDK streaming error', { error: message });
+      throw new Error(`SAP AI SDK streaming error: ${message}`);
     }
-    throw new Error('Streaming is not implemented for SapCoreAIProvider');
   }
 
   /**
-   * Format messages for SAP Core AI API
+   * Create an OrchestrationClient with the given tools configuration.
    */
-  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content,
-    }));
+  private createClient(tools?: unknown[]): OrchestrationClient {
+    const orchTools = tools?.length
+      ? this.convertToOrchestrationTools(tools)
+      : undefined;
+
+    // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
+    const orchConfig: any = {
+      promptTemplating: {
+        model: {
+          name: this.model,
+          params: {
+            max_tokens: this.config.maxTokens || 2000,
+            temperature: this.config.temperature || 0.7,
+          },
+        },
+        ...(orchTools ? { prompt: { tools: orchTools } } : {}),
+      },
+    };
+
+    return new OrchestrationClient(
+      orchConfig,
+      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+    );
+  }
+
+  /**
+   * Convert MCP tools to OpenAI function calling format expected by the SDK.
+   */
+  private convertToOrchestrationTools(
+    tools: unknown[],
+  ): Array<Record<string, unknown>> {
+    return tools.map((rawTool) => {
+      const tool = rawTool as {
+        name?: string;
+        description?: string;
+        inputSchema?: Record<string, unknown>;
+      };
+      return {
+        type: 'function',
+        function: {
+          name: tool.name ?? '',
+          description: tool.description || '',
+          parameters: tool.inputSchema || {
+            type: 'object',
+            properties: {},
+          },
+        },
+      };
+    });
+  }
+
+  /**
+   * Format messages for the SAP AI SDK (OpenAI-compatible format).
+   */
+  private formatMessages(messages: Message[]): ChatMessage[] {
+    return messages.map((msg): ChatMessage => {
+      if (
+        msg.role === 'assistant' &&
+        msg.tool_calls &&
+        msg.tool_calls.length > 0
+      ) {
+        return {
+          role: 'assistant' as const,
+          content: msg.content || undefined,
+          tool_calls: msg.tool_calls,
+        };
+      }
+
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        return {
+          role: 'tool' as const,
+          content:
+            typeof msg.content === 'string'
+              ? msg.content
+              : JSON.stringify(msg.content ?? ''),
+          tool_call_id: msg.tool_call_id,
+        };
+      }
+
+      return {
+        role: msg.role as 'user' | 'system',
+        content: msg.content ?? '',
+      };
+    });
   }
 }

@@ -48,8 +48,8 @@ BaseAgent (abstract)
 ├── OpenAIAgent        — native function calling (tools param)
 ├── AnthropicAgent     — native tools API (content blocks)
 ├── DeepSeekAgent      — OpenAI-compatible function calling
+├── SapCoreAIAgent     — SAP AI SDK native function calling (@sap-ai-sdk/orchestration)
 └── PromptBasedAgent   — tools described in system prompt
-    └── SapCoreAIAgent — SAP AI Core gateway wrapper
 ```
 
 `PromptBasedAgent` is the fallback for providers that don't support native function calling.
@@ -78,8 +78,10 @@ Copy `.env.template` to `.env`. Key variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` |
+| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider credentials |
+| `AICORE_SERVICE_KEY` | SAP AI Core service key JSON (for `sap-ai-sdk` provider) |
+| `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
 | `MCP_DISABLED` | `true` to skip MCP (LLM-only mode) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |
