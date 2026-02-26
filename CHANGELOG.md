@@ -48,6 +48,8 @@ and formalizes the embeddable component architecture.
 
 - Version bump is **major** due to significant architecture/runtime behavior changes and
   expanded protocol contracts.
+- Legacy pre-unification test suites (`agent`, `integration`, `e2e`, old logger-event checks)
+  were marked as deprecated/skipped and require replacement with contract-aligned scenarios.
 
 ---
 
