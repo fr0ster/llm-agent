@@ -13,3 +13,7 @@ export {
   PromptBasedAgent,
   type PromptBasedAgentConfig,
 } from './prompt-based-agent.js';
+export {
+  SapCoreAIAgent,
+  type SapCoreAIAgentConfig,
+} from './sap-core-ai-agent.js';
