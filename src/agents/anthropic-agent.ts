@@ -132,14 +132,55 @@ export class AnthropicAgent extends BaseAgent {
     });
   }
 
+  /**
+   * Stream by falling back to a non-streaming call and yielding the result
+   * as text + usage + done chunks.  Native SSE streaming can be added later.
+   */
   protected async *streamLLMWithTools(
-    _messages: Message[],
-    _tools: unknown[],
+    messages: Message[],
+    tools: unknown[],
     _options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    if (_messages.length < 0) {
-      yield { type: 'done', finishReason: 'error' };
+    const result = await this.callLLMWithTools(messages, tools);
+
+    if (result.content) {
+      yield { type: 'text', delta: result.content };
     }
-    throw new Error('Streaming is not implemented for AnthropicAgent');
+
+    // Anthropic returns usage as { input_tokens, output_tokens }
+    // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
+    const raw = result.raw as any;
+    if (raw?.usage) {
+      yield {
+        type: 'usage',
+        promptTokens: (raw.usage.input_tokens as number) ?? 0,
+        completionTokens: (raw.usage.output_tokens as number) ?? 0,
+      };
+    }
+
+    // Detect tool_calls finish reason
+    const hasToolUse =
+      Array.isArray(raw?.content) &&
+      raw.content.some((b: { type?: string }) => b.type === 'tool_use');
+    const finishReason = hasToolUse ? 'tool_calls' : 'stop';
+
+    if (hasToolUse) {
+      const toolCalls = raw.content
+        .filter((b: { type?: string }) => b.type === 'tool_use')
+        .map(
+          (b: {
+            id: string;
+            name: string;
+            input: Record<string, unknown>;
+          }) => ({
+            id: b.id,
+            name: b.name,
+            arguments: b.input ?? {},
+          }),
+        );
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
   }
 }

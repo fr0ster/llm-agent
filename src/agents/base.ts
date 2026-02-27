@@ -225,17 +225,21 @@ export abstract class BaseAgent implements BaseAgentLlmBridge {
             continue;
           }
 
+          // Extract usage from any chunk that carries it (OpenAI sends it
+          // in a separate empty-choices chunk, DeepSeek may include it
+          // alongside the last choice).
+          const chunkUsage = chunk.usage as
+            | { prompt_tokens?: number; completion_tokens?: number }
+            | undefined;
+          if (chunkUsage) {
+            yield {
+              type: 'usage',
+              promptTokens: (chunkUsage.prompt_tokens as number) ?? 0,
+              completionTokens: (chunkUsage.completion_tokens as number) ?? 0,
+            };
+          }
+
           if (Array.isArray(chunk.choices) && chunk.choices.length === 0) {
-            const usage = chunk.usage as
-              | { prompt_tokens?: number; completion_tokens?: number }
-              | undefined;
-            if (usage) {
-              yield {
-                type: 'usage',
-                promptTokens: (usage.prompt_tokens as number) ?? 0,
-                completionTokens: (usage.completion_tokens as number) ?? 0,
-              };
-            }
             continue;
           }
 

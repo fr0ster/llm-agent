@@ -75,8 +75,11 @@ export class TokenCountingLlm implements ILlm {
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>> {
     const stream = this.inner.streamChat(messages, tools, options);
     for await (const chunk of stream) {
-      if (chunk.ok) {
-        // Optional: track usage from stream chunks if provider provides it
+      if (chunk.ok && chunk.value.usage) {
+        this.usage.requests++;
+        this.usage.prompt_tokens += chunk.value.usage.promptTokens;
+        this.usage.completion_tokens += chunk.value.usage.completionTokens;
+        this.usage.total_tokens += chunk.value.usage.totalTokens;
       }
       yield chunk;
     }
