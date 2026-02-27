@@ -7,6 +7,26 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.2.0] — 2026-02-27
+
+### Summary
+
+Token usage reporting now works for all LLM providers (DeepSeek, OpenAI, Anthropic, SAP AI Core).
+Previously streaming responses always returned `{prompt_tokens: 0, completion_tokens: 0}`.
+
+### Fixed
+
+- **Streaming token usage** — `streamOpenAICompatible()` now extracts `usage` from any SSE chunk,
+  not only from empty-choices chunks.  Covers DeepSeek (which may include usage alongside the
+  last choice) and OpenAI (separate usage-only chunk).
+- **TokenCountingLlm.streamChat()** — now accumulates `prompt_tokens`, `completion_tokens` and
+  `total_tokens` from streaming chunks (was a no-op TODO).
+- **AnthropicAgent streaming** — `streamLLMWithTools()` no longer throws
+  `"Streaming is not implemented"`.  Falls back to a non-streaming `callLLMWithTools()` call and
+  yields `text → usage → tool_calls → done` chunks so Anthropic works with the SmartAgent pipeline.
+
+---
+
 ## [2.1.1] — 2026-02-26
 
 ### Summary
