@@ -48,6 +48,14 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
+// Tracer
+export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
+export type {
+  ISpan,
+  ITracer,
+  SpanOptions,
+  SpanStatus,
+} from './smart-agent/tracer/types.js';
 export type {
   AgentResponse,
   LLMProviderConfig,

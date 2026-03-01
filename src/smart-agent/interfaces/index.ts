@@ -1,3 +1,9 @@
+export type {
+  ISpan,
+  ITracer,
+  SpanOptions,
+  SpanStatus,
+} from '../tracer/types.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { ILlm } from './llm.js';

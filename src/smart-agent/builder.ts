@@ -47,6 +47,7 @@ import type {
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
+import type { ITracer } from './tracer/types.js';
 
 // ---------------------------------------------------------------------------
 // Config types (builder-owned — no dependency on SmartServerConfig)
@@ -76,6 +77,10 @@ export interface BuilderRagConfig {
   dedupThreshold?: number;
   /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
   timeoutMs?: number;
+  /** Semantic similarity weight 0..1. Default: 0.7 */
+  vectorWeight?: number;
+  /** Lexical matching weight 0..1. Default: 0.3 */
+  keywordWeight?: number;
 }
 
 export interface BuilderMcpConfig {
@@ -158,6 +163,7 @@ export class SmartAgentBuilder {
   private _logger?: ILogger;
   private _toolPolicy?: IToolPolicy;
   private _injectionDetector?: IPromptInjectionDetector;
+  private _tracer?: ITracer;
 
   constructor(cfg: SmartAgentBuilderConfig) {
     this.cfg = cfg;
@@ -233,6 +239,12 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /** Set a tracer for pipeline span instrumentation. */
+  withTracer(tracer: ITracer): this {
+    this._tracer = tracer;
+    return this;
+  }
+
   // -------------------------------------------------------------------------
   // build()
   // -------------------------------------------------------------------------
@@ -282,6 +294,8 @@ export class SmartAgentBuilder {
           model: r?.model,
           timeoutMs: r?.timeoutMs,
           dedupThreshold: r?.dedupThreshold,
+          vectorWeight: r?.vectorWeight,
+          keywordWeight: r?.keywordWeight,
         });
       }
       return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
@@ -395,6 +409,7 @@ export class SmartAgentBuilder {
         ...(this._injectionDetector
           ? { injectionDetector: this._injectionDetector }
           : {}),
+        ...(this._tracer ? { tracer: this._tracer } : {}),
       },
       agentCfg,
     );
