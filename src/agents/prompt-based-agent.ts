@@ -51,14 +51,12 @@ export class PromptBasedAgent extends BaseAgent {
     };
   }
 
+  // biome-ignore lint/correctness/useYield: intentionally unimplemented generator — PromptBasedAgent does not support streaming
   protected async *streamLLMWithTools(
     _messages: Message[],
     _tools: unknown[],
     _options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    if (_messages.length < 0) {
-      yield { type: 'done', finishReason: 'error' };
-    }
     throw new Error('Streaming is not implemented for PromptBasedAgent');
   }
 

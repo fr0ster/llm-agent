@@ -14,9 +14,9 @@ export interface OpenAIConfig extends LLMProviderConfig {
   project?: string;
 }
 
-export class OpenAIProvider extends BaseLLMProvider {
-  private client: AxiosInstance;
-  private model: string;
+export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
+  readonly client: AxiosInstance;
+  readonly model: string;
 
   constructor(config: OpenAIConfig) {
     super(config);

@@ -12,9 +12,9 @@ export interface AnthropicConfig extends LLMProviderConfig {
   maxTokens?: number;
 }
 
-export class AnthropicProvider extends BaseLLMProvider {
-  private client: AxiosInstance;
-  private model: string;
+export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
+  readonly client: AxiosInstance;
+  readonly model: string;
 
   constructor(config: AnthropicConfig) {
     super(config);
@@ -69,11 +69,11 @@ export class AnthropicProvider extends BaseLLMProvider {
     }
   }
 
+  // biome-ignore lint/correctness/useYield: intentionally unimplemented generator — streaming goes through AnthropicAgent
   async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
-    if (_messages.length < 0) {
-      yield { content: '', finishReason: 'error' };
-    }
-    throw new Error('Streaming is not implemented for AnthropicProvider');
+    throw new Error(
+      'AnthropicProvider.streamChat() is not used directly. Use AnthropicAgent.streamLLMWithTools() for streaming.',
+    );
   }
 
   /**

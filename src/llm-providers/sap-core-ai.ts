@@ -37,7 +37,7 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
  * Uses @sap-ai-sdk/orchestration for authentication and LLM access.
  * A new OrchestrationClient is created per call because tools may change between calls.
  */
-export class SapCoreAIProvider extends BaseLLMProvider {
+export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly model: string;
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];

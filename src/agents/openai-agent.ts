@@ -39,23 +39,7 @@ export class OpenAIAgent extends BaseAgent {
     // Format messages for OpenAI
     const formattedMessages = this.formatMessagesForOpenAI(messages);
 
-    // Access OpenAI client and config
-    const openaiProvider = this.llmProvider as unknown as {
-      client: {
-        post(
-          path: string,
-          body: Record<string, unknown>,
-        ): Promise<{ data: Record<string, unknown> }>;
-      };
-      model: string;
-      config: {
-        temperature?: number;
-        maxTokens?: number;
-      };
-    };
-    const client = openaiProvider.client;
-    const model = openaiProvider.model;
-    const config = openaiProvider.config;
+    const { client, model, config } = this.llmProvider;
 
     // Call OpenAI API with tools
     const response = await client.post('/chat/completions', {
@@ -90,36 +74,25 @@ export class OpenAIAgent extends BaseAgent {
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToOpenAIFunctions(tools);
 
-    const provider = this.llmProvider as unknown as {
-      model: string;
-      config: {
-        apiKey: string;
-        baseURL?: string;
-        organization?: string;
-        project?: string;
-        temperature?: number;
-        maxTokens?: number;
-      };
-    };
-    const baseURL: string =
-      provider.config.baseURL || 'https://api.openai.com/v1';
+    const { model, config } = this.llmProvider;
+    const baseURL = config.baseURL || 'https://api.openai.com/v1';
     const headers: Record<string, string> = {
-      Authorization: `Bearer ${provider.config.apiKey as string}`,
+      Authorization: `Bearer ${config.apiKey}`,
     };
-    if (provider.config.organization) {
-      headers['OpenAI-Organization'] = provider.config.organization as string;
+    if (config.organization) {
+      headers['OpenAI-Organization'] = config.organization;
     }
-    if (provider.config.project) {
-      headers['OpenAI-Project'] = provider.config.project as string;
+    if (config.project) {
+      headers['OpenAI-Project'] = config.project;
     }
 
     yield* this.streamOpenAICompatible(`${baseURL}/chat/completions`, headers, {
-      model: provider.model as string,
+      model,
       messages: this.formatMessagesForOpenAI(messages),
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
-      temperature: options?.temperature ?? provider.config.temperature ?? 0.7,
-      max_tokens: options?.maxTokens ?? provider.config.maxTokens ?? 2000,
+      temperature: options?.temperature ?? config.temperature ?? 0.7,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
       top_p: options?.topP,
       stop: options?.stop,
       stream: true,
