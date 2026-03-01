@@ -44,3 +44,6 @@ jobs:
 
       - name: Test tracer
         run: npm run test:tracer
+
+      - name: Test RAG evaluation
+        run: npm run test:rag-eval
