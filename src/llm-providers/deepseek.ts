@@ -12,9 +12,9 @@ export interface DeepSeekConfig extends LLMProviderConfig {
   maxTokens?: number;
 }
 
-export class DeepSeekProvider extends BaseLLMProvider {
-  private client: AxiosInstance;
-  private model: string;
+export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
+  readonly client: AxiosInstance;
+  readonly model: string;
 
   constructor(config: DeepSeekConfig) {
     super(config);

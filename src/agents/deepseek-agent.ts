@@ -37,23 +37,7 @@ export class DeepSeekAgent extends BaseAgent {
     // Format messages for DeepSeek
     const formattedMessages = this.formatMessagesForDeepSeek(messages);
 
-    // Access DeepSeek client and config
-    const deepseekProvider = this.llmProvider as unknown as {
-      client: {
-        post(
-          path: string,
-          body: Record<string, unknown>,
-        ): Promise<{ data: Record<string, unknown> }>;
-      };
-      model: string;
-      config: {
-        temperature?: number;
-        maxTokens?: number;
-      };
-    };
-    const client = deepseekProvider.client;
-    const model = deepseekProvider.model;
-    const config = deepseekProvider.config;
+    const { client, model, config } = this.llmProvider;
 
     // Call DeepSeek API with tools
     const response = await client.post('/chat/completions', {
@@ -131,28 +115,19 @@ export class DeepSeekAgent extends BaseAgent {
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToFunctions(tools);
 
-    const provider = this.llmProvider as unknown as {
-      model: string;
-      config: {
-        apiKey: string;
-        baseURL?: string;
-        temperature?: number;
-        maxTokens?: number;
-      };
-    };
-    const baseURL: string =
-      provider.config.baseURL || 'https://api.deepseek.com/v1';
+    const { model, config } = this.llmProvider;
+    const baseURL = config.baseURL || 'https://api.deepseek.com/v1';
 
     yield* this.streamOpenAICompatible(
       `${baseURL}/chat/completions`,
-      { Authorization: `Bearer ${provider.config.apiKey as string}` },
+      { Authorization: `Bearer ${config.apiKey}` },
       {
-        model: provider.model as string,
+        model,
         messages: this.formatMessagesForDeepSeek(messages),
         tools: functions.length > 0 ? functions : undefined,
         tool_choice: functions.length > 0 ? 'auto' : undefined,
-        temperature: provider.config.temperature || 0.7,
-        max_tokens: provider.config.maxTokens || 2000,
+        temperature: config.temperature || 0.7,
+        max_tokens: config.maxTokens || 2000,
         stream: true,
         stream_options: { include_usage: true },
       },

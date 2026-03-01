@@ -24,10 +24,13 @@ export interface LLMProvider {
   getModels?(): Promise<string[]>;
 }
 
-export abstract class BaseLLMProvider implements LLMProvider {
-  protected config: LLMProviderConfig;
+export abstract class BaseLLMProvider<
+  C extends LLMProviderConfig = LLMProviderConfig,
+> implements LLMProvider
+{
+  readonly config: C;
 
-  constructor(config: LLMProviderConfig) {
+  constructor(config: C) {
     this.config = config;
   }
 

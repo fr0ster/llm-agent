@@ -41,23 +41,7 @@ export class AnthropicAgent extends BaseAgent {
     const formattedMessages =
       this.formatMessagesForAnthropic(conversationMessages);
 
-    // Access Anthropic client and config
-    const anthropicProvider = this.llmProvider as unknown as {
-      client: {
-        post(
-          path: string,
-          body: Record<string, unknown>,
-        ): Promise<{ data: Record<string, unknown> }>;
-      };
-      model: string;
-      config: {
-        maxTokens?: number;
-        temperature?: number;
-      };
-    };
-    const client = anthropicProvider.client;
-    const model = anthropicProvider.model;
-    const config = anthropicProvider.config;
+    const { client, model, config } = this.llmProvider;
 
     // Call Anthropic API with tools
     const requestBody: Record<string, unknown> = {
@@ -147,28 +131,19 @@ export class AnthropicAgent extends BaseAgent {
     const formattedMessages =
       this.formatMessagesForAnthropic(conversationMessages);
 
-    const provider = this.llmProvider as unknown as {
-      model: string;
-      config: {
-        apiKey: string;
-        baseURL?: string;
-        temperature?: number;
-        maxTokens?: number;
-      };
-    };
+    const { model, config } = this.llmProvider;
 
-    const baseURL: string =
-      provider.config.baseURL || 'https://api.anthropic.com/v1';
+    const baseURL = config.baseURL || 'https://api.anthropic.com/v1';
     const headers: Record<string, string> = {
-      'x-api-key': provider.config.apiKey,
+      'x-api-key': config.apiKey,
       'anthropic-version': '2023-06-01',
     };
 
     const requestBody: Record<string, unknown> = {
-      model: provider.model,
+      model,
       messages: formattedMessages,
-      max_tokens: options?.maxTokens ?? provider.config.maxTokens ?? 2000,
-      temperature: options?.temperature ?? provider.config.temperature ?? 0.7,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
+      temperature: options?.temperature ?? config.temperature ?? 0.7,
       stream: true,
     };
 
