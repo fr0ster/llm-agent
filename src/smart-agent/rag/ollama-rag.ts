@@ -7,15 +7,19 @@ export interface OllamaEmbedderConfig {
   ollamaUrl?: string;
   /** Default: 'nomic-embed-text' */
   model?: string;
+  /** Per-request timeout in milliseconds. Default: 30 000 */
+  timeoutMs?: number;
 }
 
 export class OllamaEmbedder implements IEmbedder {
   private readonly ollamaUrl: string;
   private readonly model: string;
+  private readonly timeoutMs: number;
 
   constructor(config: OllamaEmbedderConfig = {}) {
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
     this.model = config.model ?? 'nomic-embed-text';
+    this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
   async embed(text: string, options?: CallOptions): Promise<number[]> {
@@ -26,16 +30,22 @@ export class OllamaEmbedder implements IEmbedder {
 
     for (let attempt = 0; attempt < maxRetries; attempt++) {
       try {
+        const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+        const signal = options?.signal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : timeoutSignal;
+
         const res = await fetch(url, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ model: this.model, prompt: text }),
-          signal: options?.signal,
+          signal,
         });
 
         if (!res.ok) {
+          const errorText = await res.text();
           throw new RagError(
-            `Ollama embed error: HTTP ${res.status}`,
+            `Ollama embed error: HTTP ${res.status} - ${errorText}`,
             'EMBED_ERROR',
           );
         }
