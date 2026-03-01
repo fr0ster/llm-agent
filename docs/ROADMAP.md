@@ -29,13 +29,13 @@
 - [x] **Goal:** Expose more control over RAG behavior.
 - [x] **Implementation:** Make `vectorWeight` and `keywordWeight` fully adjustable via CLI flags and YAML for different domains.
 
-### 2. Multi-Action Dependency Resolver
-- **Goal:** Handle complex tasks that depend on previous results more robustly.
-- **Implementation:** Improve the "coupled" dependency logic in the classifier to guide the agent through multi-step workflows.
+### 2. Multi-Action Dependency Resolver ✅
+- [x] **Goal:** Handle complex tasks that depend on previous results more robustly.
+- [x] **Implementation:** Improve the "coupled" dependency logic in the classifier to guide the agent through multi-step workflows.
 
-### 3. Trace Export (OTEL)
-- **Goal:** Professional observability.
-- **Implementation:** Export structured logs to OpenTelemetry compatible backends (Jaeger, Honeycomb).
+### 3. Trace Export (OTEL) ✅
+- [x] **Goal:** Professional observability.
+- [x] **Implementation:** Custom `ITracer`/`ISpan` abstraction with zero hard OTEL dependency. Pipeline instrumented with span tree (`process → classify, rag_upsert, rag_query, assemble, tool_loop → llm_call, tool_call`). `NoopTracer` default, `OtelTracerAdapter` in separate `./otel` export path. 13 tests.
 
 ### 4. Evaluation Suite
 - **Goal:** Quality assurance.
