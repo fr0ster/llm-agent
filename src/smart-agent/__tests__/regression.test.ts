@@ -356,18 +356,146 @@ describe('Regression — sessionPolicy namespace + maxSessionAgeMs both propagat
   });
 });
 
-describe('Regression — helperLlm provided: no error, mainLlm used', () => {
-  it('agent constructs and runs normally when helperLlm is set', async () => {
+describe('Regression — helperLlm called for history summarization', () => {
+  it('helperLlm called when history exceeds summarizeLimit', async () => {
     const helperLlm = makeLlm([
-      { content: 'helper response', finishReason: 'stop' },
+      { content: 'conversation summary', finishReason: 'stop' },
     ]);
     const { deps } = makeDefaultDeps();
-    const agentDeps = { ...deps, helperLlm };
-    const agent = new SmartAgent(agentDeps, DEFAULT_CONFIG);
-    const r = await agent.process('do something');
+    deps.helperLlm = helperLlm;
+    const messages: Message[] = Array.from({ length: 8 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `message ${i}`,
+    }));
+    const agent = new SmartAgent(deps, {
+      ...DEFAULT_CONFIG,
+      historyAutoSummarizeLimit: 5,
+    });
+    const r = await agent.process(messages);
     assert.ok(r.ok);
-    // helperLlm should not be called (reserved for future use)
-    assert.equal(helperLlm.callCount, 0);
+    assert.ok(
+      helperLlm.callCount >= 1,
+      'helperLlm should be called for summarization',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// helperLlm — summarization
+// ---------------------------------------------------------------------------
+
+describe('helperLlm — summarization', () => {
+  it('helperLlm NOT called when history is within limit', async () => {
+    const helperLlm = makeLlm([
+      { content: 'should not be called', finishReason: 'stop' },
+    ]);
+    const { deps } = makeDefaultDeps();
+    deps.helperLlm = helperLlm;
+    const messages: Message[] = Array.from({ length: 4 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `message ${i}`,
+    }));
+    const agent = new SmartAgent(deps, {
+      ...DEFAULT_CONFIG,
+      historyAutoSummarizeLimit: 5,
+    });
+    const r = await agent.process(messages);
+    assert.ok(r.ok);
+    assert.equal(
+      helperLlm.callCount,
+      0,
+      'helperLlm should not be called for short history',
+    );
+  });
+
+  it('summarization skipped gracefully when no helperLlm provided', async () => {
+    const { deps } = makeDefaultDeps();
+    const messages: Message[] = Array.from({ length: 8 }, (_, i) => ({
+      role: (i % 2 === 0 ? 'user' : 'assistant') as 'user' | 'assistant',
+      content: `message ${i}`,
+    }));
+    const agent = new SmartAgent(deps, {
+      ...DEFAULT_CONFIG,
+      historyAutoSummarizeLimit: 5,
+    });
+    const r = await agent.process(messages);
+    assert.ok(r.ok, 'should succeed without helperLlm');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// helperLlm — RAG translation
+// ---------------------------------------------------------------------------
+
+describe('helperLlm — RAG translation', () => {
+  it('helperLlm called for non-ASCII text translation', async () => {
+    const helperLlm = makeLlm([
+      { content: 'Show me transaction SE38 information', finishReason: 'stop' },
+    ]);
+    const { deps } = makeDefaultDeps({
+      classifier: makeClassifier([
+        {
+          type: 'action',
+          text: 'Покажи мне информацию о транзакции SE38',
+        },
+      ]),
+    });
+    deps.helperLlm = helperLlm;
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
+    const r = await agent.process('Покажи мне информацию о транзакции SE38');
+    assert.ok(r.ok);
+    assert.ok(
+      helperLlm.callCount >= 1,
+      'helperLlm should be called for non-ASCII translation',
+    );
+  });
+
+  it('mainLlm used as fallback when no helperLlm for translation', async () => {
+    const { deps, llm } = makeDefaultDeps({
+      classifier: makeClassifier([
+        {
+          type: 'action',
+          text: 'Покажи мне информацию о транзакции SE38',
+        },
+      ]),
+      llmResponses: [
+        {
+          content: 'Show me transaction SE38 information',
+          finishReason: 'stop',
+        },
+        { content: 'Here is the info', finishReason: 'stop' },
+      ],
+    });
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
+    const r = await agent.process('Покажи мне информацию о транзакции SE38');
+    assert.ok(r.ok);
+    assert.ok(
+      llm.callCount >= 2,
+      'mainLlm should be called for both translation and chat',
+    );
+  });
+
+  it('translation skipped for ASCII text', async () => {
+    const helperLlm = makeLlm([
+      { content: 'should not be called', finishReason: 'stop' },
+    ]);
+    const { deps } = makeDefaultDeps({
+      classifier: makeClassifier([
+        {
+          type: 'action',
+          text: 'Show me transaction SE38 information',
+        },
+      ]),
+    });
+    deps.helperLlm = helperLlm;
+    const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
+    const r = await agent.process('Show me transaction SE38 information');
+    assert.ok(r.ok);
+    assert.equal(
+      helperLlm.callCount,
+      0,
+      'helperLlm should not be called for ASCII text',
+    );
   });
 });
 

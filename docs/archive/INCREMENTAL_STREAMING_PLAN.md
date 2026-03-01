@@ -69,11 +69,16 @@ connection stays open until the pipeline finishes.
 
 ## Other Planned Items
 
-### `helperLlm` — reserved slot in `SmartAgentDeps`
+### `helperLlm` — preprocessing LLM (implemented)
 
-The `helperLlm?: ILlm` field is declared but unused. Intended for a dedicated preprocessing LLM
-(e.g. summarization, translation) separate from both the main LLM and the classifier.
-No design work done yet.
+The `helperLlm?: ILlm` field in `SmartAgentDeps` is fully implemented. It serves as a
+dedicated lightweight LLM for two preprocessing tasks, keeping the main LLM free for
+the primary chat loop:
+
+- **RAG query translation** (`_toEnglishForRag`): translates non-ASCII user text to English
+  before querying RAG stores. Falls back to `mainLlm` when `helperLlm` is not provided.
+- **History summarization** (`_summarizeHistory`): condenses long conversation history when
+  `Message[]` length exceeds `historyAutoSummarizeLimit`. Only runs when `helperLlm` is set.
 
 ### Streaming tool-call events to the client
 
