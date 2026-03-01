@@ -89,6 +89,5 @@ Copy `.env.template` to `.env`. Key variables:
 ## Docs
 
 - `docs/ARCHITECTURE.md` — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
-- `docs/INCREMENTAL_STREAMING_PLAN.md` — plan and open research questions for real incremental streaming
-- `docs/BETA_TESTING_PLAN.md` — manual beta testing scenarios
 - `src/mcp/README.md` — MCP transport configuration details
+- `docs/archive/` — completed roadmaps, streaming plan, beta testing plan
