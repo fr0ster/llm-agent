@@ -23,7 +23,7 @@
 
 ---
 
-## Phase 14 - Advanced Reliability & Tooling [PLANNED] 🚀
+## Phase 14 - Advanced Reliability & Tooling [DONE] ✅
 
 ### 1. Hybrid Search Tuning ✅
 - [x] **Goal:** Expose more control over RAG behavior.
@@ -37,9 +37,9 @@
 - [x] **Goal:** Professional observability.
 - [x] **Implementation:** Custom `ITracer`/`ISpan` abstraction with zero hard OTEL dependency. Pipeline instrumented with span tree (`process → classify, rag_upsert, rag_query, assemble, tool_loop → llm_call, tool_call`). `NoopTracer` default, `OtelTracerAdapter` in separate `./otel` export path. 13 tests.
 
-### 4. Evaluation Suite
-- **Goal:** Quality assurance.
-- **Implementation:** Automated regression tests for RAG retrieval quality using a set of "golden" SAP queries.
+### 4. Evaluation Suite ✅
+- [x] **Goal:** Quality assurance.
+- [x] **Implementation:** Automated regression tests for RAG retrieval quality using a set of "golden" SAP queries. 15-entry corpus, 8 golden queries, precision/MRR/recall assertions for both InMemoryRag and VectorRag. 7 tests.
 
 ---
 
