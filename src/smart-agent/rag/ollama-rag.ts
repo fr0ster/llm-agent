@@ -60,8 +60,7 @@ export class OllamaEmbedder implements IEmbedder {
 }
 
 /**
- * OllamaRag — legacy adapter that combines OllamaEmbedder with VectorRag.
- * Keeps backward compatibility with Phase 3 contracts.
+ * OllamaRag — convenience adapter that combines OllamaEmbedder with VectorRag.
  */
 export class OllamaRag extends VectorRag {
   constructor(config: OllamaEmbedderConfig & VectorRagConfig = {}) {
