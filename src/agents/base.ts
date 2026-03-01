@@ -22,10 +22,6 @@ export interface BaseAgentConfig {
    * Direct MCP configuration (used if mcpClient is not provided)
    */
   mcpConfig?: MCPClientConfig;
-  /**
-   * Reserved for future auto tool execution loops (currently unused).
-   */
-  maxIterations?: number;
 }
 
 export interface AgentCallOptions {
