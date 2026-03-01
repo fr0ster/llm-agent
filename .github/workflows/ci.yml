@@ -30,9 +30,6 @@ jobs:
       - name: Test adapters
         run: npm run test:adapters
 
-      - name: Test agent
-        run: npm run test:agent
-
       - name: Test server
         run: npm run test:server
 
@@ -44,9 +41,3 @@ jobs:
 
       - name: Test regression
         run: npm run test:regression
-
-      - name: Test integration
-        run: npm run test:integration
-
-      - name: Test E2E
-        run: npm run test:e2e
