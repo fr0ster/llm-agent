@@ -27,6 +27,8 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import { NoopTracer } from './tracer/noop-tracer.js';
+import type { ISpan, ITracer } from './tracer/types.js';
 import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
 import {
   getStreamToolCallName,
@@ -55,6 +57,7 @@ export interface SmartAgentDeps {
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
+  tracer?: ITracer;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -110,6 +113,7 @@ function createTimeoutSignal(ms: number): {
 
 export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  private readonly tracer: ITracer;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -118,6 +122,7 @@ export class SmartAgent {
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
     );
+    this.tracer = deps.tracer ?? new NoopTracer();
   }
 
   async healthCheck(options?: CallOptions): Promise<
@@ -205,7 +210,10 @@ export class SmartAgent {
       return;
     }
     const traceId = options?.trace?.traceId ?? randomUUID();
-    const pipelineT0 = Date.now();
+    const rootSpan = this.tracer.startSpan('smart_agent.process', {
+      traceId,
+      attributes: { 'smart_agent.mode': this.config.mode || 'smart' },
+    });
     let timeoutCleanup: (() => void) | undefined;
     let opts: CallOptions | undefined = options;
     if (this.config.timeoutMs) {
@@ -244,6 +252,8 @@ export class SmartAgent {
           opts,
         );
         for await (const chunk of stream) yield chunk;
+        rootSpan.setStatus('ok');
+        rootSpan.end();
         return;
       }
 
@@ -251,10 +261,11 @@ export class SmartAgent {
       const initResult = await this._preparePipeline(
         textOrMessages,
         opts,
-        traceId,
-        pipelineT0,
+        rootSpan,
       );
       if (!initResult.ok) {
+        rootSpan.setStatus('error', initResult.error.message);
+        rootSpan.end();
         yield initResult;
         return;
       }
@@ -278,11 +289,16 @@ export class SmartAgent {
         const combinedActionText = actions.map((a) => a.text).join(' ');
         const ragText = await this._toEnglishForRag(combinedActionText, opts);
         const k = this.config.ragQueryK ?? 10;
+        const ragSpan = this.tracer.startSpan('smart_agent.rag_query', {
+          parent: rootSpan,
+          attributes: { 'rag.k': k },
+        });
         const [fR, fbR, sR] = await Promise.all([
           this.deps.ragStores.facts.query(ragText, k, opts),
           this.deps.ragStores.feedback.query(ragText, k, opts),
           this.deps.ragStores.state.query(ragText, k, opts),
         ]);
+        ragSpan.end();
 
         const { tools: mcpTools } = await this._listAllTools(opts);
         const facts = fR.ok ? fR.value : [];
@@ -346,6 +362,9 @@ export class SmartAgent {
           })),
         });
       }
+      const assembleSpan = this.tracer.startSpan('smart_agent.assemble', {
+        parent: rootSpan,
+      });
       const assembleResult = await this.deps.assembler.assemble(
         mainAction,
         retrieved,
@@ -353,6 +372,10 @@ export class SmartAgent {
         opts,
       );
       if (!assembleResult.ok) {
+        assembleSpan.setStatus('error', assembleResult.error.message);
+        assembleSpan.end();
+        rootSpan.setStatus('error', assembleResult.error.message);
+        rootSpan.end();
         yield {
           ok: false,
           error: new OrchestratorError(
@@ -362,6 +385,8 @@ export class SmartAgent {
         };
         return;
       }
+      assembleSpan.setStatus('ok');
+      assembleSpan.end();
 
       opts?.sessionLogger?.logStep(`final_context_assembled`, {
         messages: assembleResult.value,
@@ -375,13 +400,15 @@ export class SmartAgent {
         assembleResult.value,
         toolClientMap,
         opts,
-        traceId,
+        rootSpan,
         sessionId,
         mode === 'hard' ? [] : externalTools,
         finalTools,
       );
       for await (const chunk of stream) yield chunk;
+      rootSpan.setStatus('ok');
     } finally {
+      rootSpan.end();
       timeoutCleanup?.();
     }
   }
@@ -389,8 +416,7 @@ export class SmartAgent {
   private async _preparePipeline(
     textOrMessages: string | Message[],
     opts: CallOptions | undefined,
-    _traceId: string,
-    _pipelineT0: number,
+    parentSpan: ISpan,
   ): Promise<
     Result<
       {
@@ -415,8 +441,13 @@ export class SmartAgent {
       if (res.ok) processedHistory = res.value;
     }
 
+    const classifySpan = this.tracer.startSpan('smart_agent.classify', {
+      parent: parentSpan,
+    });
     const classifyResult = await this.deps.classifier.classify(text, opts);
-    if (!classifyResult.ok)
+    if (!classifyResult.ok) {
+      classifySpan.setStatus('error', classifyResult.error.message);
+      classifySpan.end();
       return {
         ok: false,
         error: new OrchestratorError(
@@ -424,6 +455,9 @@ export class SmartAgent {
           'CLASSIFIER_ERROR',
         ),
       };
+    }
+    classifySpan.setStatus('ok');
+    classifySpan.end();
     opts?.sessionLogger?.logStep('classifier_response', {
       subprompts: classifyResult.value,
     });
@@ -438,12 +472,19 @@ export class SmartAgent {
       ['feedback', this.deps.ragStores.feedback],
       ['state', this.deps.ragStores.state],
     ]);
-    await Promise.allSettled(
-      others.map(async (sp) => {
-        const s = ragStoreMap.get(sp.type);
-        if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts);
-      }),
-    );
+    if (others.length > 0) {
+      const upsertSpan = this.tracer.startSpan('smart_agent.rag_upsert', {
+        parent: parentSpan,
+        attributes: { 'rag.upsert_count': others.length },
+      });
+      await Promise.allSettled(
+        others.map(async (sp) => {
+          const s = ragStoreMap.get(sp.type);
+          if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts);
+        }),
+      );
+      upsertSpan.end();
+    }
 
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
@@ -460,11 +501,14 @@ export class SmartAgent {
     initialMessages: Message[],
     toolClientMap: Map<string, IMcpClient>,
     opts: CallOptions | undefined,
-    _traceId: string,
+    parentSpan: ISpan,
     sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    const toolLoopSpan = this.tracer.startSpan('smart_agent.tool_loop', {
+      parent: parentSpan,
+    });
     let toolCallCount = 0;
     let messages = initialMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -472,10 +516,14 @@ export class SmartAgent {
     let currentTools = activeTools;
     for (let iteration = 0; ; iteration++) {
       if (opts?.signal?.aborted) {
+        toolLoopSpan.setStatus('error', 'Aborted');
+        toolLoopSpan.end();
         yield { ok: false, error: new OrchestratorError('Aborted', 'ABORTED') };
         return;
       }
       if (iteration >= this.config.maxIterations) {
+        toolLoopSpan.addEvent('iteration_limit_reached');
+        toolLoopSpan.end();
         yield {
           ok: true,
           value: { content: '', finishReason: 'length', usage },
@@ -497,6 +545,10 @@ export class SmartAgent {
         messages,
         tools: currentTools,
       });
+      const llmSpan = this.tracer.startSpan('smart_agent.llm_call', {
+        parent: toolLoopSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
       const stream = this.deps.mainLlm.streamChat(messages, currentTools, opts);
       let content = '';
       let finishReason: LlmFinishReason | undefined;
@@ -506,6 +558,10 @@ export class SmartAgent {
       >();
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
+          llmSpan.setStatus('error', chunkResult.error.message);
+          llmSpan.end();
+          toolLoopSpan.setStatus('error', chunkResult.error.message);
+          toolLoopSpan.end();
           yield {
             ok: false,
             error: new OrchestratorError(
@@ -558,6 +614,8 @@ export class SmartAgent {
           usage.totalTokens += chunk.usage.totalTokens;
         }
       }
+      llmSpan.setStatus('ok');
+      llmSpan.end();
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args = {};
         try {
@@ -574,6 +632,8 @@ export class SmartAgent {
       });
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
         opts?.sessionLogger?.logStep('final_response', { content, usage });
+        toolLoopSpan.setStatus('ok');
+        toolLoopSpan.end();
         yield {
           ok: true,
           value: { content: '', finishReason: finishReason || 'stop', usage },
@@ -657,6 +717,8 @@ export class SmartAgent {
         continue;
       }
       if (validExternalCalls.length > 0) {
+        toolLoopSpan.setStatus('ok');
+        toolLoopSpan.end();
         yield {
           ok: true,
           value: { content: '', finishReason: 'tool_calls', usage },
@@ -684,6 +746,8 @@ export class SmartAgent {
           this.config.maxToolCalls !== undefined &&
           toolCallCount >= this.config.maxToolCalls
         ) {
+          toolLoopSpan.addEvent('tool_call_limit_reached');
+          toolLoopSpan.end();
           yield {
             ok: true,
             value: { content: '', finishReason: 'length', usage },
@@ -699,12 +763,18 @@ export class SmartAgent {
         });
         const client = toolClientMap.get(tc.name);
         if (!client) continue;
+        const toolSpan = this.tracer.startSpan('smart_agent.tool_call', {
+          parent: toolLoopSpan,
+          attributes: { 'tool.name': tc.name },
+        });
         const res = await client.callTool(tc.name, tc.arguments, opts);
         const text = !res.ok
           ? res.error.message
           : typeof res.value.content === 'string'
             ? res.value.content
             : JSON.stringify(res.value.content);
+        toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
+        toolSpan.end();
         if (!res.ok && isToolContextUnavailableError(text)) {
           const entry = this.toolAvailabilityRegistry.block(
             sessionId,

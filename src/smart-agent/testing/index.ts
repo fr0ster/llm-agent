@@ -38,6 +38,7 @@ import {
 } from '../interfaces/types.js';
 import type { ILogger, LogEvent } from '../logger/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
+import type { ISpan, ITracer, SpanStatus } from '../tracer/types.js';
 
 // ---------------------------------------------------------------------------
 // LLM stub
@@ -274,6 +275,69 @@ export function makeCapturingLogger(): ILogger & { events: LogEvent[] } {
 }
 
 // ---------------------------------------------------------------------------
+// Capturing tracer
+// ---------------------------------------------------------------------------
+
+export interface CapturedSpan {
+  name: string;
+  parentName?: string;
+  attributes: Record<string, string | number | boolean>;
+  events: Array<{
+    name: string;
+    attributes?: Record<string, string | number | boolean>;
+  }>;
+  status?: { status: SpanStatus; message?: string };
+  ended: boolean;
+}
+
+export function makeCapturingTracer(): ITracer & { spans: CapturedSpan[] } {
+  const spans: CapturedSpan[] = [];
+  return {
+    spans,
+    startSpan(
+      name: string,
+      options?: {
+        parent?: ISpan;
+        attributes?: Record<string, string | number | boolean>;
+        traceId?: string;
+      },
+    ): ISpan {
+      const captured: CapturedSpan = {
+        name,
+        parentName: options?.parent?.name,
+        attributes: { ...options?.attributes },
+        events: [],
+        ended: false,
+      };
+      if (options?.traceId) {
+        captured.attributes['smart_agent.trace_id'] = options.traceId;
+      }
+      spans.push(captured);
+      return {
+        get name() {
+          return captured.name;
+        },
+        setAttribute(key: string, value: string | number | boolean): void {
+          captured.attributes[key] = value;
+        },
+        addEvent(
+          eventName: string,
+          attributes?: Record<string, string | number | boolean>,
+        ): void {
+          captured.events.push({ name: eventName, attributes });
+        },
+        setStatus(status: SpanStatus, message?: string): void {
+          captured.status = { status, message };
+        },
+        end(): void {
+          captured.ended = true;
+        },
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -293,6 +357,7 @@ export function makeDefaultDeps(overrides?: {
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
+  tracer?: ITracer;
 }): {
   llm: ILlm & { callCount: number };
   deps: ConstructorParameters<typeof SmartAgent>[0];
@@ -317,6 +382,7 @@ export function makeDefaultDeps(overrides?: {
       logger: overrides?.logger,
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,
+      tracer: overrides?.tracer,
     },
   };
 }
