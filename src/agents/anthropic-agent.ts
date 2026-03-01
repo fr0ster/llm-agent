@@ -133,54 +133,61 @@ export class AnthropicAgent extends BaseAgent {
   }
 
   /**
-   * Stream by falling back to a non-streaming call and yielding the result
-   * as text + usage + done chunks.  Native SSE streaming can be added later.
+   * Stream Anthropic response via real SSE streaming.
    */
   protected async *streamLLMWithTools(
     messages: Message[],
     tools: unknown[],
-    _options?: AgentCallOptions,
+    options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    const result = await this.callLLMWithTools(messages, tools);
+    const anthropicTools = this.convertToolsToAnthropicTools(tools);
 
-    if (result.content) {
-      yield { type: 'text', delta: result.content };
-    }
+    const systemMessage = messages.find((m) => m.role === 'system');
+    const conversationMessages = messages.filter((m) => m.role !== 'system');
+    const formattedMessages =
+      this.formatMessagesForAnthropic(conversationMessages);
 
-    // Anthropic returns usage as { input_tokens, output_tokens }
-    // biome-ignore lint/suspicious/noExplicitAny: raw provider payload has no stable type
-    const raw = result.raw as any;
-    if (raw?.usage) {
-      yield {
-        type: 'usage',
-        promptTokens: (raw.usage.input_tokens as number) ?? 0,
-        completionTokens: (raw.usage.output_tokens as number) ?? 0,
+    const provider = this.llmProvider as unknown as {
+      model: string;
+      config: {
+        apiKey: string;
+        baseURL?: string;
+        temperature?: number;
+        maxTokens?: number;
       };
+    };
+
+    const baseURL: string =
+      provider.config.baseURL || 'https://api.anthropic.com/v1';
+    const headers: Record<string, string> = {
+      'x-api-key': provider.config.apiKey,
+      'anthropic-version': '2023-06-01',
+    };
+
+    const requestBody: Record<string, unknown> = {
+      model: provider.model,
+      messages: formattedMessages,
+      max_tokens: options?.maxTokens ?? provider.config.maxTokens ?? 2000,
+      temperature: options?.temperature ?? provider.config.temperature ?? 0.7,
+      stream: true,
+    };
+
+    if (systemMessage) {
+      requestBody.system = systemMessage.content;
     }
 
-    // Detect tool_calls finish reason
-    const hasToolUse =
-      Array.isArray(raw?.content) &&
-      raw.content.some((b: { type?: string }) => b.type === 'tool_use');
-    const finishReason = hasToolUse ? 'tool_calls' : 'stop';
-
-    if (hasToolUse) {
-      const toolCalls = raw.content
-        .filter((b: { type?: string }) => b.type === 'tool_use')
-        .map(
-          (b: {
-            id: string;
-            name: string;
-            input: Record<string, unknown>;
-          }) => ({
-            id: b.id,
-            name: b.name,
-            arguments: b.input ?? {},
-          }),
-        );
-      yield { type: 'tool_calls', toolCalls };
+    if (anthropicTools.length > 0) {
+      requestBody.tools = anthropicTools;
     }
 
-    yield { type: 'done', finishReason };
+    if (options?.topP !== undefined) {
+      requestBody.top_p = options.topP;
+    }
+
+    if (options?.stop) {
+      requestBody.stop_sequences = options.stop;
+    }
+
+    yield* this.streamAnthropicSSE(`${baseURL}/messages`, headers, requestBody);
   }
 }

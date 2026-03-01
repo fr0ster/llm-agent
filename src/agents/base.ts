@@ -318,6 +318,169 @@ export abstract class BaseAgent implements BaseAgentLlmBridge {
   }
 
   /**
+   * SSE parser for Anthropic streaming endpoints.
+   * Handles named events (message_start, content_block_delta, etc.),
+   * text deltas, tool input accumulation, usage, and done.
+   */
+  protected async *streamAnthropicSSE(
+    url: string,
+    headers: Record<string, string>,
+    body: Record<string, unknown>,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new Error(`LLM streaming error: HTTP ${res.status} - ${text}`);
+    }
+
+    if (!res.body) {
+      throw new Error('LLM streaming error: no response body');
+    }
+
+    const toolCallMap = new Map<
+      number,
+      { id: string; name: string; argumentsJson: string }
+    >();
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+    let currentEvent = '';
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() ?? '';
+
+        for (const line of lines) {
+          const trimmed = line.trim();
+
+          if (trimmed.startsWith('event: ')) {
+            currentEvent = trimmed.slice(7);
+            continue;
+          }
+
+          if (!trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          let parsed: Record<string, unknown>;
+          try {
+            parsed = JSON.parse(data);
+          } catch {
+            continue;
+          }
+
+          switch (currentEvent) {
+            case 'message_start': {
+              const message = parsed.message as
+                | { usage?: { input_tokens?: number } }
+                | undefined;
+              promptTokens = message?.usage?.input_tokens ?? 0;
+              break;
+            }
+
+            case 'content_block_start': {
+              const contentBlock = parsed.content_block as
+                | { type?: string; id?: string; name?: string }
+                | undefined;
+              if (contentBlock?.type === 'tool_use') {
+                const index = (parsed.index as number) ?? 0;
+                toolCallMap.set(index, {
+                  id: contentBlock.id ?? '',
+                  name: contentBlock.name ?? '',
+                  argumentsJson: '',
+                });
+              }
+              break;
+            }
+
+            case 'content_block_delta': {
+              const delta = parsed.delta as
+                | { type?: string; text?: string; partial_json?: string }
+                | undefined;
+              if (delta?.type === 'text_delta' && delta.text) {
+                yield { type: 'text', delta: delta.text };
+              } else if (delta?.type === 'input_json_delta') {
+                const index = (parsed.index as number) ?? 0;
+                const accumulated = toolCallMap.get(index);
+                if (accumulated && delta.partial_json) {
+                  accumulated.argumentsJson += delta.partial_json;
+                }
+              }
+              break;
+            }
+
+            case 'message_delta': {
+              const delta = parsed.delta as
+                | { stop_reason?: string }
+                | undefined;
+              const usage = parsed.usage as
+                | { output_tokens?: number }
+                | undefined;
+              completionTokens = usage?.output_tokens ?? 0;
+              if (delta?.stop_reason) {
+                finishReason =
+                  delta.stop_reason === 'tool_use'
+                    ? 'tool_calls'
+                    : delta.stop_reason === 'max_tokens'
+                      ? 'length'
+                      : 'stop';
+              }
+              break;
+            }
+
+            case 'error': {
+              const error = parsed.error as
+                | { type?: string; message?: string }
+                | undefined;
+              throw new Error(
+                `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+              );
+            }
+          }
+
+          currentEvent = '';
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
+
+    yield { type: 'usage', promptTokens, completionTokens };
+
+    if (toolCallMap.size > 0) {
+      const toolCalls = [...toolCallMap.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try {
+              return JSON.parse(tc.argumentsJson) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })(),
+        }));
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
+  }
+
+  /**
    * Clear conversation history
    */
   clearHistory(): void {
