@@ -41,3 +41,6 @@ jobs:
 
       - name: Test regression
         run: npm run test:regression
+
+      - name: Test tracer
+        run: npm run test:tracer
