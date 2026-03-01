@@ -74,6 +74,8 @@ export interface BuilderRagConfig {
   model?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
+  /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
+  timeoutMs?: number;
 }
 
 export interface BuilderMcpConfig {
@@ -278,6 +280,7 @@ export class SmartAgentBuilder {
         return new OllamaRag({
           ollamaUrl: r?.url,
           model: r?.model,
+          timeoutMs: r?.timeoutMs,
           dedupThreshold: r?.dedupThreshold,
         });
       }

@@ -47,6 +47,8 @@ export interface PipelineRagStoreConfig {
   vectorWeight?: number;
   /** Weight for keyword search (0..1). Default: 0.3 */
   keywordWeight?: number;
+  /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
+  timeoutMs?: number;
 }
 
 export interface PipelineConfig {
@@ -158,6 +160,7 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
       apiKey: cfg.apiKey,
       baseURL: cfg.url,
       model: cfg.model,
+      timeoutMs: cfg.timeoutMs,
     });
     return new VectorRag(embedder, {
       dedupThreshold: cfg.dedupThreshold,
@@ -169,6 +172,7 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
   const embedder = new OllamaEmbedder({
     ollamaUrl: cfg.url,
     model: cfg.model,
+    timeoutMs: cfg.timeoutMs,
   });
   return new VectorRag(embedder, {
     dedupThreshold: cfg.dedupThreshold,

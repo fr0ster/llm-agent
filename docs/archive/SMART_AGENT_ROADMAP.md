@@ -200,3 +200,7 @@ Definition of Done
 - [x] YAML config is self-documenting (fully commented template generated on first run)
 - [x] Pipeline section is backwards compatible — existing YAML without `pipeline:` works unchanged
 - [x] Type safety: `PipelineLlmProviderConfig.provider` is a union literal with exhaustive switch
+
+---
+
+> **Phases 12–16** continue in [`ROADMAP_ARCHIVED.md`](./ROADMAP_ARCHIVED.md).

@@ -107,6 +107,6 @@
 - **Goal:** Remove failures caused by outdated expectations from earlier orchestration phases.
 - **Implementation:** Update `regression.test.ts` to assert current behavior (single-shot context assembly model, stream-accumulated response content, client call-count verification for tool execution paths).
 
-- [x] 2. Keep deprecated Phase-9 suite non-blocking ✅
-- **Goal:** Preserve historical coverage context without breaking CI on obsolete contracts.
-- **Implementation:** Keep `agent-phase9.test.ts` explicitly deprecated/skipped until replaced by modern contract tests.
+- [x] 2. Remove deprecated Phase-9 test stubs ✅
+- **Goal:** Clean up obsolete test files that no longer reflect the current contract.
+- **Implementation:** Removed deprecated test stubs (`eca06e8`); modern contract tests in Phase 15.6 provide full coverage.

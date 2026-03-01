@@ -1,5 +1,8 @@
 # Development Roadmap
 
+> **Status:** Real incremental streaming (Phase 12), helperLlm, and OllamaRag production hardening
+> are fully implemented. The open questions below are kept for historical context.
+
 Planned features and open research questions for future iterations.
 Current stable baseline: SmartAgent + SmartServer + pipeline configuration (see `ARCHITECTURE.md`).
 
@@ -80,12 +83,13 @@ the primary chat loop:
 - **History summarization** (`_summarizeHistory`): condenses long conversation history when
   `Message[]` length exceeds `historyAutoSummarizeLimit`. Only runs when `helperLlm` is set.
 
-### Streaming tool-call events to the client
+### Streaming tool-call events to the client [DONE] ✅
 
-Covered under Q4 above. Depends on resolving the OpenAI-compatibility questions first.
+Implemented in Phase 12 — LLM tokens and tool-call deltas are streamed to the client in real-time.
 
-### OllamaRag — production hardening
+### OllamaRag — production hardening [DONE] ✅
 
-- Connection retry and timeout on embed API calls
-- Configurable request timeout (`ollamaTimeoutMs`)
-- Health-check on startup (warn if Ollama is unreachable rather than silently failing at first query)
+- ✅ Connection retry (3 attempts, exponential backoff) — Phase 12
+- ✅ Configurable per-request timeout (`timeoutMs`) with `AbortSignal.any()` merge
+- ✅ Health-check on startup — Phase 13
+- ✅ Same timeout pattern applied to `OpenAiEmbedder` for consistency
