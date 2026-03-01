@@ -25,9 +25,9 @@
 
 ## Phase 14 - Advanced Reliability & Tooling [PLANNED] 🚀
 
-### 1. Hybrid Search Tuning
-- **Goal:** Expose more control over RAG behavior.
-- **Implementation:** Make `vectorWeight` and `keywordWeight` fully adjustable via CLI flags and YAML for different domains.
+### 1. Hybrid Search Tuning ✅
+- [x] **Goal:** Expose more control over RAG behavior.
+- [x] **Implementation:** Make `vectorWeight` and `keywordWeight` fully adjustable via CLI flags and YAML for different domains.
 
 ### 2. Multi-Action Dependency Resolver
 - **Goal:** Handle complex tasks that depend on previous results more robustly.

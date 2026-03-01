@@ -90,4 +90,6 @@ Copy `.env.template` to `.env`. Key variables:
 
 - `docs/ARCHITECTURE.md` — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
 - `src/mcp/README.md` — MCP transport configuration details
+- `docs/SMART_AGENT_ROADMAP.md` — active roadmap (Phases 1–11)
+- `docs/ROADMAP.md` — active roadmap (Phases 12–16, Phase 14 in progress)
 - `docs/archive/` — completed roadmaps, streaming plan, beta testing plan

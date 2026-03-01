@@ -17,6 +17,8 @@ export interface ResolveConfigArgs {
   'rag-type'?: string | boolean;
   'rag-url'?: string | boolean;
   'rag-model'?: string | boolean;
+  'rag-vector-weight'?: string | boolean;
+  'rag-keyword-weight'?: string | boolean;
   'mcp-type'?: string | boolean;
   'mcp-url'?: string | boolean;
   'mcp-command'?: string | boolean;
@@ -235,8 +237,12 @@ export function resolveSmartServerConfig(
         env.OLLAMA_EMBED_MODEL ??
         'nomic-embed-text',
       dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
-      vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
-      keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
+      vectorWeight: Number(
+        args['rag-vector-weight'] ?? get(yaml, 'rag', 'vectorWeight') ?? 0.7,
+      ),
+      keywordWeight: Number(
+        args['rag-keyword-weight'] ?? get(yaml, 'rag', 'keywordWeight') ?? 0.3,
+      ),
     },
     mcp: mcpType
       ? {

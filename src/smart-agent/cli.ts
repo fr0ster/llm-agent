@@ -22,6 +22,8 @@
  *   --rag-type <type>            ollama | in-memory (default: ollama)
  *   --rag-url <url>              Ollama URL (default: http://localhost:11434)
  *   --rag-model <model>          Embed model (default: nomic-embed-text)
+ *   --rag-vector-weight <n>      Semantic similarity weight 0..1 (default: 0.7)
+ *   --rag-keyword-weight <n>     Lexical matching weight 0..1 (default: 0.3)
  *   --mcp-type <type>            http | stdio (default: http if --mcp-url set)
  *   --mcp-url <url>              MCP HTTP endpoint
  *   --mcp-command <cmd>          MCP stdio command
@@ -88,6 +90,8 @@ const { values: args } = parseArgs({
     'rag-type': { type: 'string' },
     'rag-url': { type: 'string' },
     'rag-model': { type: 'string' },
+    'rag-vector-weight': { type: 'string' },
+    'rag-keyword-weight': { type: 'string' },
     'mcp-type': { type: 'string' },
     'mcp-url': { type: 'string' },
     'mcp-command': { type: 'string' },
