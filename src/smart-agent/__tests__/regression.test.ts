@@ -499,6 +499,111 @@ describe('helperLlm — RAG translation', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// Multi-action merge regression
+// ---------------------------------------------------------------------------
+
+describe('Regression — multiple action subprompts merged into one', () => {
+  it('two action subprompts → assembler receives merged text containing both', async () => {
+    let capturedAction: Subprompt | null = null;
+    const capturingAssembler: IContextAssembler = {
+      async assemble(
+        action: Subprompt,
+        _retrieved: {
+          facts: RagResult[];
+          feedback: RagResult[];
+          state: RagResult[];
+          tools: McpTool[];
+        },
+        _history: Message[],
+        _opts?: CallOptions,
+      ): Promise<Result<Message[], AssemblerError>> {
+        capturedAction = action;
+        return {
+          ok: true,
+          value: [{ role: 'user', content: action.text }],
+        };
+      },
+    };
+    const { deps } = makeDefaultDeps({
+      classifier: makeClassifier([
+        {
+          type: 'action',
+          text: 'Read content of table T100',
+          context: 'sap-abap',
+          dependency: 'independent',
+        },
+        {
+          type: 'action',
+          text: 'Check transport history of table T100',
+          context: 'sap-abap',
+          dependency: 'sequential',
+        },
+      ]),
+      assembler: capturingAssembler,
+      llmResponses: [{ content: 'done', finishReason: 'stop' }],
+    });
+    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const r = await agent.process(
+      'Read table T100 and check its transport history',
+    );
+    assert.ok(r.ok);
+    assert.ok(capturedAction, 'assembler should have been called');
+    assert.equal(capturedAction?.type, 'action');
+    assert.ok(
+      capturedAction?.text.includes('Read content of table T100'),
+      'merged text should contain first action',
+    );
+    assert.ok(
+      capturedAction?.text.includes('Check transport history of table T100'),
+      'merged text should contain second action',
+    );
+    assert.equal(capturedAction?.context, 'sap-abap');
+  });
+
+  it('single action subprompt → assembler receives original action unchanged', async () => {
+    let capturedAction: Subprompt | null = null;
+    const capturingAssembler: IContextAssembler = {
+      async assemble(
+        action: Subprompt,
+        _retrieved: {
+          facts: RagResult[];
+          feedback: RagResult[];
+          state: RagResult[];
+          tools: McpTool[];
+        },
+        _history: Message[],
+        _opts?: CallOptions,
+      ): Promise<Result<Message[], AssemblerError>> {
+        capturedAction = action;
+        return {
+          ok: true,
+          value: [{ role: 'user', content: action.text }],
+        };
+      },
+    };
+    const { deps } = makeDefaultDeps({
+      classifier: makeClassifier([
+        {
+          type: 'action',
+          text: 'Read content of table T100',
+          context: 'sap-abap',
+          dependency: 'independent',
+        },
+      ]),
+      assembler: capturingAssembler,
+      llmResponses: [{ content: 'done', finishReason: 'stop' }],
+    });
+    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
+    const r = await agent.process('Read table T100');
+    assert.ok(r.ok);
+    assert.ok(capturedAction, 'assembler should have been called');
+    assert.equal(capturedAction?.text, 'Read content of table T100');
+    assert.equal(capturedAction?.context, 'sap-abap');
+    assert.equal(capturedAction?.dependency, 'independent');
+  });
+});
+
 describe('Regression — smartAgentEnabled=true behaves identically to undefined', () => {
   it('both return ok=true with same content', async () => {
     const { deps: deps1 } = makeDefaultDeps({

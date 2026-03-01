@@ -104,8 +104,8 @@ export interface Subprompt {
   text: string;
   /** Semantic context: 'sap-abap', 'math', 'general', etc. */
   context?: string;
-  /** ID of a subprompt this one depends on, or 'independent'. */
-  dependency?: string | 'independent';
+  /** ID of a subprompt this one depends on, or 'independent' / 'sequential'. */
+  dependency?: string | 'independent' | 'sequential';
 }
 
 // ---------------------------------------------------------------------------

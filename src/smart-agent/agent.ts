@@ -326,9 +326,26 @@ export class SmartAgent {
 
       // 3. Assemble Context once
       const mainAction =
-        actions.length > 0
-          ? actions[0]
-          : subprompts.find((sp) => sp.type === 'chat') || subprompts[0];
+        actions.length > 1
+          ? {
+              type: 'action' as const,
+              text: actions.map((a) => a.text).join('\n'),
+              context: actions.find((a) => a.context)?.context,
+              dependency: 'independent' as const,
+            }
+          : actions.length === 1
+            ? actions[0]
+            : subprompts.find((sp) => sp.type === 'chat') || subprompts[0];
+
+      if (actions.length > 1) {
+        opts?.sessionLogger?.logStep('actions_merged', {
+          count: actions.length,
+          actions: actions.map((a) => ({
+            text: a.text,
+            dependency: a.dependency,
+          })),
+        });
+      }
       const assembleResult = await this.deps.assembler.assemble(
         mainAction,
         retrieved,
