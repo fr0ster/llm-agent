@@ -23,16 +23,18 @@ For each task, identify:
   - "type": chat (greetings/math), action (tasks), fact (knowledge), state (context), feedback.
   - "text": the actual task description.
   - "context": the domain of the task (e.g., "sap-abap", "math", "general").
-  - "dependency": "independent" or "coupled" (if it's part of a conditional chain).
+  - "dependency": "independent", "sequential" (must run after previous action), or an ID of a subprompt this one depends on.
 
 CRITICAL RULES:
-1. If tasks are conditionally linked (e.g., "Do A, and IF it fails then do B"), KEEP THEM TOGETHER in one "action" subprompt.
-2. If tasks are independent (e.g., "Check weather AND add 5+5"), SPLIT them.
-3. Be strictly neutral. Only assign "sap-abap" context if SAP terms are present.
+1. If a message contains multiple sequential steps (e.g., "Do A and then check B"), SPLIT them into separate "action" subprompts with "dependency": "sequential" on the later steps.
+2. If tasks are independent (e.g., "Check weather AND add 5+5"), SPLIT them with "dependency": "independent".
+3. If a task is an atomic operation with a conditional fallback (e.g., "Do A, if it fails do B"), keep it as a SINGLE subprompt — the fallback is part of the same instruction.
+4. Be strictly neutral. Only assign "sap-abap" context if SAP terms are present.
 
-Example: "Read table T100, if fails then read its structure. Also tell me a joke."
+Example: "Read table T100 and check its transport history. Also tell me a joke."
 Result: [
-  {"type": "action", "text": "Read content of table T100, if not possible read its structure", "context": "sap-abap", "dependency": "independent"},
+  {"type": "action", "text": "Read content of table T100", "context": "sap-abap", "dependency": "independent"},
+  {"type": "action", "text": "Check transport history of table T100", "context": "sap-abap", "dependency": "sequential"},
   {"type": "chat", "text": "Tell a joke", "context": "general", "dependency": "independent"}
 ]
 
