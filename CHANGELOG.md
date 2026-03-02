@@ -7,6 +7,55 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.4.0] — 2026-03-02
+
+### Summary
+
+Production hardening, advanced RAG retrieval, extended capabilities, and comprehensive documentation.
+Adds circuit breakers, health endpoints, config hot-reload, hybrid BM25+vector search, reranking,
+query expansion, Qdrant adapter, tool caching, parallel tool execution, output validation,
+multi-turn token budget, and three new developer guides.
+
+### Added
+
+#### Production Hardening
+
+- **Aggregate metrics** — `IMetrics` interface with `InMemoryMetrics` and `NoopMetrics` implementations. Counters: request, tool call, RAG query, classifier intent, LLM call, circuit breaker transition, cache hit. Histograms: request latency, LLM call latency.
+- **Circuit breaker** — `CircuitBreaker` (closed → open → half-open) wrapping LLM and embedder calls. `CircuitBreakerLlm`, `CircuitBreakerEmbedder` decorators. `FallbackRag` auto-degrades to `InMemoryRag` when embedder circuit opens.
+- **Health endpoint** — `GET /health` on SmartServer returning structured component diagnostics (LLM, RAG, MCP status, uptime).
+- **Config hot-reload** — `ConfigWatcher` watches `smart-server.yaml` with `fs.watch` + debounce. Hot-reloadable: RAG weights, query K, summarize limit, query expansion flag.
+
+#### Advanced RAG & Retrieval
+
+- **Reranking** — `IReranker` interface between RAG query and context assembly. `LlmReranker` (LLM-based relevance scoring) and `NoopReranker` (pass-through).
+- **BM25 inverted index** — `InvertedIndex` with O(1) term lookup replacing O(n) corpus scan. BM25 scoring with k1=1.2, b=0.75.
+- **Query expansion** — `IQueryExpander` interface. `LlmQueryExpander` (LLM-generated synonyms) and `NoopQueryExpander`. Controlled by `queryExpansionEnabled` config.
+- **Qdrant adapter** — `QdrantRag` persistent vector store adapter with TTL, namespace filtering, and collection auto-creation.
+
+#### Extended Capabilities
+
+- **Tool result caching** — `IToolCache` interface. `ToolCache` with configurable TTL and SHA-256 key hashing. `NoopToolCache` for opt-out. Keyed by `(toolName, argsHash)`.
+- **Parallel tool execution** — Independent tool calls executed concurrently via `Promise.all`.
+- **Output validation** — `IOutputValidator` interface called after LLM response. `NoopValidator` default. `ValidationResult` supports corrected content.
+- **Multi-turn token budget** — `ISessionManager` interface. `SessionManager` tracks cumulative tokens, triggers auto-summarization when budget exceeded. `NoopSessionManager` for opt-out.
+
+#### Documentation
+
+- **Deployment guide** (`docs/DEPLOYMENT.md`) — Docker multi-stage builds, docker-compose (llm-agent + Qdrant + Ollama), systemd unit files, serverless patterns, horizontal scaling, monitoring, backup, security checklist.
+- **Performance tuning guide** (`docs/PERFORMANCE.md`) — RAG weight tuning, BM25 internals, model selection guidelines, token budget trade-offs, tool cache TTL, query expansion, circuit breaker behavior.
+- **Integration guide** (`docs/INTEGRATION.md`) — Code examples for all pluggable interfaces: `ILlm`, `IRag`, `IMcpClient`, `IReranker`, `IOutputValidator`, `IQueryExpander`, `ISubpromptClassifier`, `IContextAssembler`, `IMetrics`, `ITracer`, `ISessionManager`, `IToolCache`. Builder wiring and test doubles.
+
+#### Testing
+
+- **Intent classification benchmark** — 22-entry golden corpus across 5 intent types (action, fact, chat, state, feedback). Metrics: type accuracy, count accuracy, per-type precision/recall, multi-intent decomposition. CI-integrated via `npm run test:classifier-bench`.
+
+### Changed
+
+- `SmartAgentBuilder` — new fluent methods: `.withMetrics()`, `.withCircuitBreaker()`, `.withReranker()`, `.withQueryExpander()`, `.withToolCache()`, `.withOutputValidator()`, `.withSessionManager()`.
+- `test:all` script now includes classifier benchmark.
+
+---
+
 ## [2.2.0] — 2026-02-27
 
 ### Summary

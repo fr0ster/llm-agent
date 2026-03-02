@@ -90,4 +90,6 @@ Copy `.env.template` to `.env`. Key variables:
 
 - `docs/ARCHITECTURE.md` — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
 - `src/mcp/README.md` — MCP transport configuration details
-- `docs/ROADMAP.md` — upcoming phases (17–20)
+- `docs/DEPLOYMENT.md` — production deployment patterns (Docker, systemd, serverless)
+- `docs/PERFORMANCE.md` — RAG, BM25, model selection, token budget tuning
+- `docs/INTEGRATION.md` — custom interface implementation guide with code examples
