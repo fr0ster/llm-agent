@@ -67,6 +67,7 @@ agent:
   ragQueryK: 10
   showReasoning: false                # Explain strategy at start of response
   historyAutoSummarizeLimit: 10       # History length to trigger compression
+  queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.
@@ -274,6 +275,9 @@ export function resolveSmartServerConfig(
       ),
       historyAutoSummarizeLimit: Number(
         get(yaml, 'agent', 'historyAutoSummarizeLimit') ?? 10,
+      ),
+      queryExpansionEnabled: Boolean(
+        get(yaml, 'agent', 'queryExpansionEnabled') ?? false,
       ),
     },
     prompts:

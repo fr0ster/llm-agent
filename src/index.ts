@@ -77,6 +77,12 @@ export type {
   IHistogram,
   IMetrics,
 } from './smart-agent/metrics/types.js';
+// Query Expander
+export {
+  type IQueryExpander,
+  LlmQueryExpander,
+  NoopQueryExpander,
+} from './smart-agent/rag/query-expander.js';
 // Reranker
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';

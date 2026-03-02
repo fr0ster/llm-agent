@@ -22,6 +22,7 @@ export interface HotReloadableConfig {
   toolUnavailableTtlMs?: number;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
+  queryExpansionEnabled?: boolean;
   vectorWeight?: number;
   keywordWeight?: number;
   prompts?: {
@@ -125,6 +126,8 @@ export class ConfigWatcher extends EventEmitter {
       config.historyAutoSummarizeLimit = Number(
         agent.historyAutoSummarizeLimit,
       );
+    if (agent.queryExpansionEnabled !== undefined)
+      config.queryExpansionEnabled = Boolean(agent.queryExpansionEnabled);
 
     if (rag.vectorWeight !== undefined)
       config.vectorWeight = Number(rag.vectorWeight);

@@ -40,6 +40,10 @@ import type { ILogger, LogEvent } from '../logger/types.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
+import {
+  type IQueryExpander,
+  NoopQueryExpander,
+} from '../rag/query-expander.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
 import type { IReranker } from '../reranker/types.js';
 import {
@@ -375,6 +379,15 @@ export function makeReranker(custom?: IReranker): IReranker {
 }
 
 // ---------------------------------------------------------------------------
+// Query expander stub
+// ---------------------------------------------------------------------------
+
+/** Returns a NoopQueryExpander (pass-through) or a custom IQueryExpander for testing. */
+export function makeQueryExpander(custom?: IQueryExpander): IQueryExpander {
+  return custom ?? new NoopQueryExpander();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -392,6 +405,7 @@ export function makeDefaultDeps(overrides?: {
   mcpClients?: IMcpClient[];
   ragStores?: { facts?: IRag; feedback?: IRag; state?: IRag };
   reranker?: IReranker;
+  queryExpander?: IQueryExpander;
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
@@ -419,6 +433,7 @@ export function makeDefaultDeps(overrides?: {
         makeClassifier([{ type: 'action', text: 'do something' }]),
       assembler: overrides?.assembler ?? makeAssembler(),
       reranker: overrides?.reranker,
+      queryExpander: overrides?.queryExpander,
       logger: overrides?.logger,
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,

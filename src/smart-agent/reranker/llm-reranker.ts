@@ -63,7 +63,7 @@ export class LlmReranker implements IReranker {
   }
 
   private _parseScores(content: string, expectedCount: number): number[] {
-    const match = content.match(/\[[\d\s,.\-]+\]/);
+    const match = content.match(/\[[\d\s,.-]+\]/);
     if (match) {
       const parsed = JSON.parse(match[0]) as number[];
       if (parsed.length === expectedCount) {
