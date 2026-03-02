@@ -98,6 +98,104 @@ const handle = await server.start();
 - lifecycle: `start()` -> `{ port, getUsage, close }`
 - protocol: OpenAI-compatible `/v1/chat/completions` (JSON + SSE)
 
+## Request Processing Flow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant SS as SmartServer
+    participant SA as SmartAgent
+    participant CL as Classifier
+    participant H as HelperLLM
+    participant QE as QueryExpander
+    participant RAG as RAG Stores
+    participant RR as Reranker
+    participant CA as ContextAssembler
+    participant LLM as MainLLM
+    participant OV as OutputValidator
+    participant MCP as MCP Tools
+    participant TC as ToolCache
+
+    C->>SS: POST /v1/chat/completions
+    SS->>SS: Validate & normalize request
+    SS->>SA: streamProcess(messages, options)
+
+    Note over SA: Mode check (pass → direct LLM stream)
+
+    rect rgb(240, 248, 255)
+        Note over SA,CL: 1. Prepare Pipeline
+        SA->>SA: Extract user text, history
+        opt History > summarizeLimit
+            SA->>H: Summarize older messages
+            H-->>SA: Condensed history
+        end
+        SA->>CL: classify(userText)
+        CL-->>SA: Subprompt[] (action/fact/chat/state/feedback)
+        SA->>RAG: upsert fact/state/feedback subprompts
+    end
+
+    Note over SA: Token budget check → auto-summarize if over
+
+    rect rgb(255, 248, 240)
+        Note over SA,RR: 2. RAG Retrieval (if SAP/action context)
+        SA->>H: Translate query to English (if non-ASCII)
+        opt queryExpansionEnabled
+            SA->>QE: expand(query)
+            QE-->>SA: Expanded query with synonyms
+        end
+        SA->>RAG: query facts, feedback, state (parallel)
+        RAG-->>SA: RagResult[] per store
+        SA->>RR: rerank(query, results) per store
+        RR-->>SA: Re-scored results
+        SA->>SA: Select MCP tools via RAG tool matches
+    end
+
+    rect rgb(240, 255, 240)
+        Note over SA,CA: 3. Context Assembly
+        SA->>SA: Merge action subprompts
+        SA->>CA: assemble(action, retrieved, history)
+        CA-->>SA: Message[] (system + context + user)
+    end
+
+    rect rgb(255, 240, 245)
+        Note over SA,MCP: 4. Streaming Tool Loop
+        loop Until stop / limits reached
+            SA->>LLM: streamChat(messages, tools)
+            LLM-->>SA: Stream chunks (text + tool_call deltas)
+            SA-->>SS: Yield text chunks → SSE to client
+            alt finishReason = tool_calls
+                loop For each internal tool call (parallel)
+                    SA->>TC: Check cache(toolName, args)
+                    alt Cache hit
+                        TC-->>SA: Cached result
+                    else Cache miss
+                        SA->>MCP: callTool(name, args)
+                        MCP-->>SA: Tool result
+                        SA->>TC: Store in cache
+                    end
+                end
+                SA->>SA: Append tool results to messages
+            else finishReason = stop
+                SA->>OV: validate(content, context)
+                alt Valid
+                    SA-->>SS: Final chunk with usage
+                else Invalid
+                    SA->>SA: Append correction, continue loop
+                end
+            end
+        end
+    end
+
+    SS-->>C: SSE stream / JSON response
+```
+
+### Key decision points
+
+1. **Mode selection** — `pass` skips the entire pipeline and streams directly from LLM. `smart` runs full orchestration. `hard` forces MCP-only tools (no external tools).
+2. **SAP context detection** — If any action subprompt has `context: "sap-abap"` or mode is `hard`, RAG retrieval and MCP tool selection are triggered. Otherwise, only external tools are used.
+3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
+4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
+
 ## Request Lifecycle
 
 ### 1. Server Boundary
@@ -290,4 +388,4 @@ src/
 
 ## Current Technical Debt (Explicit)
 
-- Runtime diagnostics are session-log-oriented; we still need first-class aggregate metrics/export (counters for parse/validation degradation) for long-running operations.
+- No known outstanding technical debt. Aggregate metrics, circuit breakers, health checks, and config hot-reload have been implemented.
