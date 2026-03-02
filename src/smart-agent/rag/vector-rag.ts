@@ -28,8 +28,8 @@ export class VectorRag implements IRag {
   private records: StoredRecord[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
-  private readonly vectorWeight: number;
-  private readonly keywordWeight: number;
+  private vectorWeight: number;
+  private keywordWeight: number;
 
   constructor(
     private readonly embedder: IEmbedder,
@@ -39,6 +39,17 @@ export class VectorRag implements IRag {
     this.namespace = config.namespace;
     this.vectorWeight = config.vectorWeight ?? 0.7;
     this.keywordWeight = config.keywordWeight ?? 0.3;
+  }
+
+  /** Update hybrid search weights at runtime (hot-reload). */
+  updateWeights(config: {
+    vectorWeight?: number;
+    keywordWeight?: number;
+  }): void {
+    if (config.vectorWeight !== undefined)
+      this.vectorWeight = config.vectorWeight;
+    if (config.keywordWeight !== undefined)
+      this.keywordWeight = config.keywordWeight;
   }
 
   private cosine(a: number[], b: number[]): number {
