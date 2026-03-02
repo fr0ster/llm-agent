@@ -1,3 +1,4 @@
+export type { ICounter, IHistogram, IMetrics } from '../metrics/types.js';
 export type {
   ISpan,
   ITracer,

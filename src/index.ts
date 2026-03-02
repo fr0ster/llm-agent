@@ -48,6 +48,19 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
+// Metrics
+export type {
+  ICounter,
+  IHistogram,
+  IMetrics,
+} from './smart-agent/metrics/types.js';
+export { NoopMetrics } from './smart-agent/metrics/noop-metrics.js';
+export {
+  InMemoryMetrics,
+  type CounterSnapshot,
+  type HistogramSnapshot,
+  type MetricsSnapshot,
+} from './smart-agent/metrics/in-memory-metrics.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {

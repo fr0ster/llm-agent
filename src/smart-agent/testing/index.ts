@@ -37,6 +37,8 @@ import {
   type Subprompt,
 } from '../interfaces/types.js';
 import type { ILogger, LogEvent } from '../logger/types.js';
+import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
+import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import type { ISpan, ITracer, SpanStatus } from '../tracer/types.js';
 
@@ -338,6 +340,15 @@ export function makeCapturingTracer(): ITracer & { spans: CapturedSpan[] } {
 }
 
 // ---------------------------------------------------------------------------
+// Capturing metrics
+// ---------------------------------------------------------------------------
+
+/** Returns an InMemoryMetrics instance for test assertions. */
+export function makeCapturingMetrics(): InMemoryMetrics {
+  return new InMemoryMetrics();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -358,6 +369,7 @@ export function makeDefaultDeps(overrides?: {
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
+  metrics?: IMetrics;
 }): {
   llm: ILlm & { callCount: number };
   deps: ConstructorParameters<typeof SmartAgent>[0];
@@ -383,6 +395,7 @@ export function makeDefaultDeps(overrides?: {
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,
       tracer: overrides?.tracer,
+      metrics: overrides?.metrics,
     },
   };
 }

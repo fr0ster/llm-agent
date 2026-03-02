@@ -18,6 +18,8 @@ import {
   type Subprompt,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
+import type { IMetrics } from './metrics/types.js';
+import { NoopMetrics } from './metrics/noop-metrics.js';
 import {
   isToolContextUnavailableError,
   ToolAvailabilityRegistry,
@@ -58,6 +60,7 @@ export interface SmartAgentDeps {
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
+  metrics?: IMetrics;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -114,15 +117,22 @@ function createTimeoutSignal(ms: number): {
 export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
+  private readonly metrics: IMetrics;
 
   constructor(
     private readonly deps: SmartAgentDeps,
-    private readonly config: SmartAgentConfig,
+    private config: SmartAgentConfig,
   ) {
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
     );
     this.tracer = deps.tracer ?? new NoopTracer();
+    this.metrics = deps.metrics ?? new NoopMetrics();
+  }
+
+  /** Apply a partial config update at runtime (hot-reload). */
+  applyConfigUpdate(update: Partial<SmartAgentConfig>): void {
+    this.config = { ...this.config, ...update };
   }
 
   async healthCheck(options?: CallOptions): Promise<
@@ -209,6 +219,8 @@ export class SmartAgent {
       };
       return;
     }
+    this.metrics.requestCount.add();
+    const requestStart = Date.now();
     const traceId = options?.trace?.traceId ?? randomUUID();
     const rootSpan = this.tracer.startSpan('smart_agent.process', {
       traceId,
@@ -299,6 +311,18 @@ export class SmartAgent {
           this.deps.ragStores.state.query(ragText, k, opts),
         ]);
         ragSpan.end();
+        this.metrics.ragQueryCount.add(1, {
+          store: 'facts',
+          hit: String(fR.ok && fR.value.length > 0),
+        });
+        this.metrics.ragQueryCount.add(1, {
+          store: 'feedback',
+          hit: String(fbR.ok && fbR.value.length > 0),
+        });
+        this.metrics.ragQueryCount.add(1, {
+          store: 'state',
+          hit: String(sR.ok && sR.value.length > 0),
+        });
 
         const { tools: mcpTools } = await this._listAllTools(opts);
         const facts = fR.ok ? fR.value : [];
@@ -410,6 +434,7 @@ export class SmartAgent {
     } finally {
       rootSpan.end();
       timeoutCleanup?.();
+      this.metrics.requestLatency.record(Date.now() - requestStart);
     }
   }
 
@@ -463,6 +488,9 @@ export class SmartAgent {
     });
 
     const subprompts = classifyResult.value;
+    for (const sp of subprompts) {
+      this.metrics.classifierIntentCount.add(1, { intent: sp.type });
+    }
     const others = subprompts.filter(
       (sp) =>
         sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback',
@@ -549,6 +577,8 @@ export class SmartAgent {
         parent: toolLoopSpan,
         attributes: { 'llm.iteration': iteration + 1 },
       });
+      this.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
       const stream = this.deps.mainLlm.streamChat(messages, currentTools, opts);
       let content = '';
       let finishReason: LlmFinishReason | undefined;
@@ -616,6 +646,7 @@ export class SmartAgent {
       }
       llmSpan.setStatus('ok');
       llmSpan.end();
+      this.metrics.llmCallLatency.record(Date.now() - llmCallStart);
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args = {};
         try {
@@ -789,6 +820,7 @@ export class SmartAgent {
         }
         opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
         toolCallCount++;
+        this.metrics.toolCallCount.add();
         messages = [
           ...messages,
           { role: 'tool' as const, content: text, tool_call_id: tc.id },
