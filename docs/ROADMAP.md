@@ -13,10 +13,10 @@ Focus: make the library ready for sustained multi-tenant production use.
 
 Focus: improve retrieval precision for domain-heavy workloads.
 
-- [ ] **18.1 Reranking Stage** — Add `IReranker` interface between RAG query and context assembly. Default: no-op pass-through. Optional cross-encoder reranker (LLM-based or external API).
-- [ ] **18.2 BM25 Term Index** — Replace per-query DF scan in VectorRag with a pre-built inverted index updated on upsert. O(1) term lookup instead of O(n) corpus scan.
-- [ ] **18.3 Query Expansion** — Before RAG query, optionally expand the user query with synonyms/related terms via helper LLM. Controlled by config flag.
-- [ ] **18.4 Persistent Vector Store Adapter** — Add `IRag` implementation backed by an external vector DB (e.g. Qdrant, ChromaDB) via HTTP. InMemoryRag remains default for dev/testing.
+- [x] **18.1 Reranking Stage** — Add `IReranker` interface between RAG query and context assembly. Default: no-op pass-through. Optional cross-encoder reranker (LLM-based or external API).
+- [x] **18.2 BM25 Term Index** — Replace per-query DF scan in VectorRag with a pre-built inverted index updated on upsert. O(1) term lookup instead of O(n) corpus scan.
+- [x] **18.3 Query Expansion** — Before RAG query, optionally expand the user query with synonyms/related terms via helper LLM. Controlled by config flag.
+- [x] **18.4 Persistent Vector Store Adapter** — Add `IRag` implementation backed by an external vector DB (e.g. Qdrant, ChromaDB) via HTTP. InMemoryRag remains default for dev/testing.
 
 ## Phase 19 — Extended Capabilities
 
