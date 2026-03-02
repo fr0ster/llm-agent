@@ -61,6 +61,12 @@ export {
   type HistogramSnapshot,
   type MetricsSnapshot,
 } from './smart-agent/metrics/in-memory-metrics.js';
+// Config
+export {
+  ConfigWatcher,
+  type ConfigWatcherOptions,
+  type HotReloadableConfig,
+} from './smart-agent/config/config-watcher.js';
 // Health
 export type {
   HealthStatus,

@@ -9,10 +9,15 @@ import http from 'node:http';
 import type { Message } from '../types.js';
 import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
+import {
+  ConfigWatcher,
+  type HotReloadableConfig,
+} from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
 import type { HealthStatus } from './health/types.js';
 import type { InMemoryMetrics } from './metrics/in-memory-metrics.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
+import type { VectorRag } from './rag/vector-rag.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import {
@@ -95,6 +100,8 @@ export interface SmartServerConfig {
   logDir?: string;
   circuitBreaker?: SmartServerCircuitBreakerConfig;
   version?: string;
+  /** Path to YAML config file for hot-reload. */
+  configFile?: string;
 }
 
 export interface SmartServerHandle {
@@ -229,7 +236,10 @@ export class SmartServer {
       getUsage,
       close: closeAgent,
       circuitBreakers,
+      ragStores,
     } = agentHandle;
+
+    const closeFns: Array<() => Promise<void> | void> = [closeAgent];
 
     const startTime = Date.now();
     const healthChecker = new HealthChecker({
@@ -265,6 +275,55 @@ export class SmartServer {
         process.stderr.write(`[Health] Unexpected check error: ${e}\n`),
       );
 
+    // ---- Config hot-reload (optional) ------------------------------------
+    if (this.cfg.configFile) {
+      const watcher = new ConfigWatcher(this.cfg.configFile);
+      watcher.on('reload', (update: HotReloadableConfig) => {
+        log({ event: 'config_reload', update });
+        // Apply agent config updates
+        const agentUpdate: Record<string, unknown> = {};
+        if (update.maxIterations !== undefined)
+          agentUpdate.maxIterations = update.maxIterations;
+        if (update.maxToolCalls !== undefined)
+          agentUpdate.maxToolCalls = update.maxToolCalls;
+        if (update.ragQueryK !== undefined)
+          agentUpdate.ragQueryK = update.ragQueryK;
+        if (update.toolUnavailableTtlMs !== undefined)
+          agentUpdate.toolUnavailableTtlMs = update.toolUnavailableTtlMs;
+        if (update.showReasoning !== undefined)
+          agentUpdate.showReasoning = update.showReasoning;
+        if (update.historyAutoSummarizeLimit !== undefined)
+          agentUpdate.historyAutoSummarizeLimit =
+            update.historyAutoSummarizeLimit;
+        if (update.prompts?.ragTranslate !== undefined)
+          agentUpdate.ragTranslatePrompt = update.prompts.ragTranslate;
+        if (update.prompts?.historySummary !== undefined)
+          agentUpdate.historySummaryPrompt = update.prompts.historySummary;
+        if (Object.keys(agentUpdate).length > 0) {
+          smartAgent.applyConfigUpdate(agentUpdate);
+        }
+        // Apply RAG weight updates
+        if (
+          update.vectorWeight !== undefined ||
+          update.keywordWeight !== undefined
+        ) {
+          for (const store of Object.values(ragStores)) {
+            if (store && typeof (store as VectorRag).updateWeights === 'function') {
+              (store as VectorRag).updateWeights({
+                vectorWeight: update.vectorWeight,
+                keywordWeight: update.keywordWeight,
+              });
+            }
+          }
+        }
+      });
+      watcher.on('error', (err: unknown) => {
+        log({ event: 'config_reload_error', error: String(err) });
+      });
+      watcher.start();
+      closeFns.push(() => watcher.stop());
+    }
+
     const server = http.createServer((req, res) =>
       this._handle(req, res, getUsage, smartAgent, chat, streamChat, log, healthChecker).catch(
         (err) => {
@@ -288,7 +347,7 @@ export class SmartServer {
         resolve({
           port: actualPort,
           close: async () => {
-            await closeAgent();
+            for (const fn of closeFns) await fn();
             await new Promise<void>((res, rej) =>
               server.close((e) => (e ? rej(e) : res())),
             );
