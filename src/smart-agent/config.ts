@@ -17,8 +17,10 @@ export interface ResolveConfigArgs {
   'rag-type'?: string | boolean;
   'rag-url'?: string | boolean;
   'rag-model'?: string | boolean;
+  'rag-collection-name'?: string | boolean;
   'rag-vector-weight'?: string | boolean;
   'rag-keyword-weight'?: string | boolean;
+  'qdrant-api-key'?: string | boolean;
   'mcp-type'?: string | boolean;
   'mcp-url'?: string | boolean;
   'mcp-command'?: string | boolean;
@@ -46,9 +48,10 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory
+  type: ollama                        # ollama | in-memory | qdrant
   url: http://localhost:11434
   model: nomic-embed-text
+  # collectionName: llm-agent         # Qdrant collection name (qdrant type only)
   dedupThreshold: 0.92
   vectorWeight: 0.7                   # Semantic similarity weight (0..1)
   keywordWeight: 0.3                  # Lexical matching weight (0..1)
@@ -226,7 +229,7 @@ export function resolveSmartServerConfig(
     rag: {
       type: ((args['rag-type'] as string) ??
         get(yaml, 'rag', 'type') ??
-        'ollama') as 'ollama' | 'in-memory',
+        'ollama') as 'ollama' | 'in-memory' | 'qdrant',
       url:
         (args['rag-url'] as string) ??
         get(yaml, 'rag', 'url') ??
@@ -237,6 +240,10 @@ export function resolveSmartServerConfig(
         get(yaml, 'rag', 'model') ??
         env.OLLAMA_EMBED_MODEL ??
         'nomic-embed-text',
+      collectionName:
+        (args['rag-collection-name'] as string) ??
+        get(yaml, 'rag', 'collectionName') ??
+        undefined,
       dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
       vectorWeight: Number(
         args['rag-vector-weight'] ?? get(yaml, 'rag', 'vectorWeight') ?? 0.7,

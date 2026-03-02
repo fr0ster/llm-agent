@@ -42,9 +42,10 @@ export interface SmartServerLlmConfig {
 }
 
 export interface SmartServerRagConfig {
-  type?: 'ollama' | 'openai' | 'in-memory';
+  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
   url?: string;
   model?: string;
+  collectionName?: string;
   dedupThreshold?: number;
   vectorWeight?: number;
   keywordWeight?: number;

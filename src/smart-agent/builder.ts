@@ -47,7 +47,8 @@ import type {
   SessionPolicy,
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
+import { OllamaEmbedder, OllamaRag } from './rag/ollama-rag.js';
+import { QdrantRag } from './rag/qdrant-rag.js';
 import type { IQueryExpander } from './rag/query-expander.js';
 import type { IReranker } from './reranker/types.js';
 import {
@@ -74,14 +75,16 @@ export interface BuilderLlmConfig {
 }
 
 export interface BuilderRagConfig {
-  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
-  type?: 'ollama' | 'openai' | 'in-memory';
-  /** Base URL for embedding service */
+  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
+  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /** Base URL for embedding service or Qdrant server */
   url?: string;
-  /** API key (for openai type) */
+  /** API key (for openai type or Qdrant auth) */
   apiKey?: string;
   /** Embedding model name */
   model?: string;
+  /** Qdrant collection name (required for qdrant type) */
+  collectionName?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
   /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
@@ -329,17 +332,32 @@ export class SmartAgentBuilder {
     // ---- Default RAG factory ---------------------------------------------
     const makeDefaultRag = (): IRag => {
       const r = this.cfg.rag;
-      if (!r || r.type !== 'in-memory') {
-        return new OllamaRag({
-          ollamaUrl: r?.url,
-          model: r?.model,
-          timeoutMs: r?.timeoutMs,
-          dedupThreshold: r?.dedupThreshold,
-          vectorWeight: r?.vectorWeight,
-          keywordWeight: r?.keywordWeight,
+      if (r?.type === 'in-memory') {
+        return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
+      }
+      if (r?.type === 'qdrant') {
+        if (!r.url) throw new Error('Qdrant URL is required');
+        const embedder = new OllamaEmbedder({
+          ollamaUrl: undefined,
+          model: r.model,
+          timeoutMs: r.timeoutMs,
+        });
+        return new QdrantRag({
+          url: r.url,
+          collectionName: r.collectionName ?? 'llm-agent',
+          embedder,
+          apiKey: r.apiKey,
+          timeoutMs: r.timeoutMs,
         });
       }
-      return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
+      return new OllamaRag({
+        ollamaUrl: r?.url,
+        model: r?.model,
+        timeoutMs: r?.timeoutMs,
+        dedupThreshold: r?.dedupThreshold,
+        vectorWeight: r?.vectorWeight,
+        keywordWeight: r?.keywordWeight,
+      });
     };
 
     let factsRag: IRag = this._ragStores?.facts ?? makeDefaultRag();
