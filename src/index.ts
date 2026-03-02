@@ -105,6 +105,10 @@ export {
 export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
 export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
+export { NoopSessionManager } from './smart-agent/session/noop-session-manager.js';
+export { SessionManager } from './smart-agent/session/session-manager.js';
+// Session Manager
+export type { ISessionManager } from './smart-agent/session/types.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {

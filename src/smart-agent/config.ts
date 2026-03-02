@@ -72,6 +72,7 @@ agent:
   historyAutoSummarizeLimit: 10       # History length to trigger compression
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
+  sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.
