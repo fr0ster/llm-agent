@@ -22,10 +22,10 @@ Focus: improve retrieval precision for domain-heavy workloads.
 
 Focus: smarter tool execution and output quality.
 
-- [ ] **19.1 Tool Result Caching** — Cache tool results per session keyed by `(toolName, argsHash)`. Configurable TTL. Skip MCP call on cache hit.
-- [ ] **19.2 Parallel Tool Execution** — When multiple tool calls have no dependencies, execute them concurrently via `Promise.all` instead of sequentially.
-- [ ] **19.3 LLM Output Validator** — `IOutputValidator` interface called after LLM response. Default: no-op. Allows consumers to plug in hallucination detection, schema validation, or content moderation.
-- [ ] **19.4 Multi-Turn Token Budget** — Track cumulative token usage across turns. When budget exceeded, auto-summarize history and reset counter. Configurable per-session limit.
+- [x] **19.1 Tool Result Caching** — Cache tool results per session keyed by `(toolName, argsHash)`. Configurable TTL. Skip MCP call on cache hit.
+- [x] **19.2 Parallel Tool Execution** — When multiple tool calls have no dependencies, execute them concurrently via `Promise.all` instead of sequentially.
+- [x] **19.3 LLM Output Validator** — `IOutputValidator` interface called after LLM response. Default: no-op. Allows consumers to plug in hallucination detection, schema validation, or content moderation.
+- [x] **19.4 Multi-Turn Token Budget** — Track cumulative token usage across turns. When budget exceeded, auto-summarize history and reset counter. Configurable per-session limit.
 
 ## Phase 20 — Operational Tooling & Documentation
 
