@@ -77,6 +77,10 @@ export type {
   IHistogram,
   IMetrics,
 } from './smart-agent/metrics/types.js';
+// Reranker
+export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
+export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';
+export type { IReranker } from './smart-agent/reranker/types.js';
 // Resilience
 export {
   CircuitBreaker,
