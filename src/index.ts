@@ -77,6 +77,11 @@ export type {
   IHistogram,
   IMetrics,
 } from './smart-agent/metrics/types.js';
+// Qdrant RAG
+export {
+  QdrantRag,
+  type QdrantRagConfig,
+} from './smart-agent/rag/qdrant-rag.js';
 // Query Expander
 export {
   type IQueryExpander,

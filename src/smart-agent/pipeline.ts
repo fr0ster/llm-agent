@@ -17,6 +17,7 @@ import { TokenCountingLlm } from './llm/token-counting-llm.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaEmbedder } from './rag/ollama-rag.js';
 import { OpenAiEmbedder } from './rag/openai-embedder.js';
+import { QdrantRag } from './rag/qdrant-rag.js';
 import { VectorRag } from './rag/vector-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -33,14 +34,16 @@ export interface PipelineLlmProviderConfig {
 }
 
 export interface PipelineRagStoreConfig {
-  /** 'ollama' | 'openai' | 'in-memory'. Default: 'ollama' */
-  type?: 'ollama' | 'openai' | 'in-memory';
-  /** Base URL for embedding service */
+  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
+  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /** Base URL for embedding service or Qdrant server */
   url?: string;
-  /** API key (for openai type) */
+  /** API key (for openai type or Qdrant auth) */
   apiKey?: string;
   /** Embedding model name */
   model?: string;
+  /** Qdrant collection name (required for qdrant type) */
+  collectionName?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
   /** Weight for vector search (0..1). Default: 0.7 */
@@ -150,6 +153,32 @@ export function makeLlmFromProvider(
 export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
   if (cfg.type === 'in-memory') {
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
+  }
+
+  if (cfg.type === 'qdrant') {
+    if (!cfg.url) {
+      throw new Error('Qdrant URL is required for qdrant RAG type');
+    }
+    // Qdrant needs an embedder — default to Ollama
+    const embedder = cfg.apiKey
+      ? new OpenAiEmbedder({
+          apiKey: cfg.apiKey,
+          baseURL: undefined,
+          model: cfg.model,
+          timeoutMs: cfg.timeoutMs,
+        })
+      : new OllamaEmbedder({
+          ollamaUrl: undefined,
+          model: cfg.model,
+          timeoutMs: cfg.timeoutMs,
+        });
+    return new QdrantRag({
+      url: cfg.url,
+      collectionName: cfg.collectionName ?? 'llm-agent',
+      embedder,
+      apiKey: cfg.apiKey,
+      timeoutMs: cfg.timeoutMs,
+    });
   }
 
   if (cfg.type === 'openai') {
