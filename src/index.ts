@@ -61,6 +61,16 @@ export {
   type HistogramSnapshot,
   type MetricsSnapshot,
 } from './smart-agent/metrics/in-memory-metrics.js';
+// Health
+export type {
+  HealthStatus,
+  HealthComponentStatus,
+  CircuitBreakerStatus,
+} from './smart-agent/health/types.js';
+export {
+  HealthChecker,
+  type HealthCheckerDeps,
+} from './smart-agent/health/health-checker.js';
 // Resilience
 export {
   CircuitBreaker,
