@@ -6,6 +6,7 @@ import {
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
+import { InvertedIndex } from './inverted-index.js';
 
 interface StoredRecord {
   text: string;
@@ -26,6 +27,7 @@ export interface VectorRagConfig {
 
 export class VectorRag implements IRag {
   private records: StoredRecord[] = [];
+  private readonly index = new InvertedIndex();
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
   private vectorWeight: number;
@@ -52,6 +54,13 @@ export class VectorRag implements IRag {
       this.keywordWeight = config.keywordWeight;
   }
 
+  private tokenize(s: string): string[] {
+    return s
+      .toLowerCase()
+      .split(/[^a-z0-9]/)
+      .filter((t) => t.length > 1);
+  }
+
   private cosine(a: number[], b: number[]): number {
     let dot = 0;
     let na = 0;
@@ -66,35 +75,24 @@ export class VectorRag implements IRag {
 
   /**
    * BM25 Lexical Scorer.
-   * Proper term weighting based on Inverse Document Frequency.
+   * Uses pre-built InvertedIndex for O(1) DF lookups.
    */
   private bm25Score(query: string, text: string): number {
-    const tokenize = (s: string) =>
-      s
-        .toLowerCase()
-        .split(/[^a-z0-9]/)
-        .filter((t) => t.length > 1);
-    const queryTokens = tokenize(query);
-    const docTokens = tokenize(text);
+    const queryTokens = this.tokenize(query);
+    const docTokens = this.tokenize(text);
 
     if (queryTokens.length === 0 || docTokens.length === 0) return 0;
 
-    // Corpus stats
-    const avgDocLength =
-      this.records.reduce((acc, r) => acc + tokenize(r.text).length, 0) /
-      (this.records.length || 1);
+    const avgDocLength = this.index.avgDocLength || 1;
+    const n = this.index.docCount || 1;
     const k1 = 1.2;
     const b = 0.75;
 
     let score = 0;
     for (const token of new Set(queryTokens)) {
-      // Document frequency
-      const df = this.records.filter((r) =>
-        tokenize(r.text).includes(token),
-      ).length;
-      const idf = Math.log((this.records.length - df + 0.5) / (df + 0.5) + 1);
+      const df = this.index.getDocFrequency(token);
+      const idf = Math.log((n - df + 0.5) / (df + 0.5) + 1);
 
-      // Term frequency in current doc
       const tf = docTokens.filter((t) => t === token).length;
 
       const tfScored =
@@ -112,7 +110,6 @@ export class VectorRag implements IRag {
     metadata: RagMetadata,
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
-    // ... (abort check and namespace check same as before)
     if (options?.signal?.aborted) {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
@@ -127,17 +124,23 @@ export class VectorRag implements IRag {
 
     try {
       const vector = await this.embedder.embed(text, options);
+      const newTokens = this.tokenize(text);
 
-      for (const rec of this.records) {
+      for (let i = 0; i < this.records.length; i++) {
+        const rec = this.records[i];
         if (this.cosine(rec.vector, vector) >= this.dedupThreshold) {
+          const oldTokens = this.tokenize(rec.text);
           rec.text = text;
           rec.vector = vector;
           rec.metadata = { ...rec.metadata, ...metadata };
+          this.index.update(i, oldTokens, newTokens);
           return { ok: true, value: undefined };
         }
       }
 
+      const docIdx = this.records.length;
       this.records.push({ text, vector, metadata });
+      this.index.add(docIdx, newTokens);
       return { ok: true, value: undefined };
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
