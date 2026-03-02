@@ -58,6 +58,7 @@ import {
 } from './resilience/circuit-breaker.js';
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
+import type { ISessionManager } from './session/types.js';
 import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
 
@@ -187,6 +188,7 @@ export class SmartAgentBuilder {
   private _queryExpander?: IQueryExpander;
   private _toolCache?: IToolCache;
   private _outputValidator?: IOutputValidator;
+  private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
 
   constructor(cfg: SmartAgentBuilderConfig) {
@@ -296,6 +298,12 @@ export class SmartAgentBuilder {
   /** Set an output validator for post-LLM response validation. */
   withOutputValidator(validator: IOutputValidator): this {
     this._outputValidator = validator;
+    return this;
+  }
+
+  /** Set a session manager for multi-turn token budget tracking. */
+  withSessionManager(manager: ISessionManager): this {
+    this._sessionManager = manager;
     return this;
   }
 
@@ -524,6 +532,9 @@ export class SmartAgentBuilder {
         ...(this._toolCache ? { toolCache: this._toolCache } : {}),
         ...(this._outputValidator
           ? { outputValidator: this._outputValidator }
+          : {}),
+        ...(this._sessionManager
+          ? { sessionManager: this._sessionManager }
           : {}),
       },
       agentCfg,

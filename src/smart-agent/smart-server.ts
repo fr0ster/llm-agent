@@ -68,6 +68,7 @@ export interface SmartServerAgentConfig {
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
+  sessionTokenBudget?: number;
 }
 
 export interface SmartServerPromptsConfig {

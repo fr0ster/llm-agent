@@ -53,6 +53,9 @@ import {
   CircuitBreaker,
   type CircuitBreakerConfig,
 } from '../resilience/circuit-breaker.js';
+import { NoopSessionManager } from '../session/noop-session-manager.js';
+import { SessionManager } from '../session/session-manager.js';
+import type { ISessionManager } from '../session/types.js';
 import type { ISpan, ITracer, SpanStatus } from '../tracer/types.js';
 import { NoopValidator } from '../validator/noop-validator.js';
 import type { IOutputValidator } from '../validator/types.js';
@@ -416,6 +419,20 @@ export function makeOutputValidator(
 }
 
 // ---------------------------------------------------------------------------
+// Session manager stub
+// ---------------------------------------------------------------------------
+
+/** Returns a SessionManager or NoopSessionManager for testing. */
+export function makeSessionManager(
+  opts?: { tokenBudget?: number } | ISessionManager,
+): ISessionManager {
+  if (opts && 'addTokens' in opts) return opts;
+  return opts?.tokenBudget
+    ? new SessionManager({ tokenBudget: opts.tokenBudget })
+    : new NoopSessionManager();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -439,6 +456,7 @@ export function makeDefaultDeps(overrides?: {
   injectionDetector?: IPromptInjectionDetector;
   toolCache?: IToolCache;
   outputValidator?: IOutputValidator;
+  sessionManager?: ISessionManager;
   tracer?: ITracer;
   metrics?: IMetrics;
 }): {
@@ -469,6 +487,7 @@ export function makeDefaultDeps(overrides?: {
       injectionDetector: overrides?.injectionDetector,
       toolCache: overrides?.toolCache,
       outputValidator: overrides?.outputValidator,
+      sessionManager: overrides?.sessionManager,
       tracer: overrides?.tracer,
       metrics: overrides?.metrics,
     },

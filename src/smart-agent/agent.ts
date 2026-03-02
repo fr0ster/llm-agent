@@ -37,6 +37,8 @@ import {
 } from './rag/query-expander.js';
 import { NoopReranker } from './reranker/noop-reranker.js';
 import type { IReranker } from './reranker/types.js';
+import { NoopSessionManager } from './session/noop-session-manager.js';
+import type { ISessionManager } from './session/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';
 import type { ISpan, ITracer } from './tracer/types.js';
 import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
@@ -75,6 +77,7 @@ export interface SmartAgentDeps {
   metrics?: IMetrics;
   toolCache?: IToolCache;
   outputValidator?: IOutputValidator;
+  sessionManager?: ISessionManager;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -92,6 +95,7 @@ export interface SmartAgentConfig {
   mode?: 'hard' | 'pass' | 'smart';
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
+  sessionTokenBudget?: number;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -138,6 +142,7 @@ export class SmartAgent {
   private readonly queryExpander: IQueryExpander;
   private readonly toolCache: IToolCache;
   private readonly outputValidator: IOutputValidator;
+  private readonly sessionManager: ISessionManager;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -152,6 +157,7 @@ export class SmartAgent {
     this.queryExpander = deps.queryExpander ?? new NoopQueryExpander();
     this.toolCache = deps.toolCache ?? new NoopToolCache();
     this.outputValidator = deps.outputValidator ?? new NoopValidator();
+    this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -305,7 +311,15 @@ export class SmartAgent {
         yield initResult;
         return;
       }
-      const { subprompts, processedHistory, toolClientMap } = initResult.value;
+      let { processedHistory } = initResult.value;
+      const { subprompts, toolClientMap } = initResult.value;
+
+      // Token budget check — summarize if over budget
+      if (this.sessionManager.isOverBudget()) {
+        const sumResult = await this._summarizeHistory(processedHistory, opts);
+        if (sumResult.ok) processedHistory = sumResult.value;
+        this.sessionManager.reset();
+      }
 
       // 2. Decide context and tools for the WHOLE request
       const actions = subprompts.filter((sp) => sp.type === 'action');
@@ -684,6 +698,7 @@ export class SmartAgent {
           usage.promptTokens += chunk.usage.promptTokens;
           usage.completionTokens += chunk.usage.completionTokens;
           usage.totalTokens += chunk.usage.totalTokens;
+          this.sessionManager.addTokens(chunk.usage.totalTokens);
         }
       }
       llmSpan.setStatus('ok');
