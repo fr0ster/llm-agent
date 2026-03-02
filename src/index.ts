@@ -52,7 +52,6 @@ export { NoopToolCache } from './smart-agent/cache/noop-tool-cache.js';
 export { ToolCache } from './smart-agent/cache/tool-cache.js';
 // Tool Cache
 export type { IToolCache } from './smart-agent/cache/types.js';
-
 // Config
 export {
   ConfigWatcher,
@@ -114,6 +113,12 @@ export type {
   SpanOptions,
   SpanStatus,
 } from './smart-agent/tracer/types.js';
+export { NoopValidator } from './smart-agent/validator/noop-validator.js';
+// Output Validator
+export type {
+  IOutputValidator,
+  ValidationResult,
+} from './smart-agent/validator/types.js';
 export type {
   AgentResponse,
   LLMProviderConfig,

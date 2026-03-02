@@ -44,6 +44,8 @@ import {
   getStreamToolCallName,
   toToolCallDelta,
 } from './utils/tool-call-deltas.js';
+import { NoopValidator } from './validator/noop-validator.js';
+import type { IOutputValidator } from './validator/types.js';
 
 export class OrchestratorError extends SmartAgentError {
   constructor(message: string, code = 'ORCHESTRATOR_ERROR') {
@@ -72,6 +74,7 @@ export interface SmartAgentDeps {
   tracer?: ITracer;
   metrics?: IMetrics;
   toolCache?: IToolCache;
+  outputValidator?: IOutputValidator;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -134,6 +137,7 @@ export class SmartAgent {
   private readonly reranker: IReranker;
   private readonly queryExpander: IQueryExpander;
   private readonly toolCache: IToolCache;
+  private readonly outputValidator: IOutputValidator;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -147,6 +151,7 @@ export class SmartAgent {
     this.reranker = deps.reranker ?? new NoopReranker();
     this.queryExpander = deps.queryExpander ?? new NoopQueryExpander();
     this.toolCache = deps.toolCache ?? new NoopToolCache();
+    this.outputValidator = deps.outputValidator ?? new NoopValidator();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -699,6 +704,25 @@ export class SmartAgent {
         finishReason,
       });
       if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+        // Output validation
+        const valResult = await this.outputValidator.validate(
+          content,
+          { messages, tools: currentTools },
+          opts,
+        );
+        if (valResult.ok && !valResult.value.valid) {
+          const correction =
+            valResult.value.correctedContent ?? valResult.value.reason;
+          messages = [
+            ...messages,
+            { role: 'assistant' as const, content },
+            {
+              role: 'user' as const,
+              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
+            },
+          ];
+          continue;
+        }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
