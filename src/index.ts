@@ -48,6 +48,11 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
+export { NoopToolCache } from './smart-agent/cache/noop-tool-cache.js';
+export { ToolCache } from './smart-agent/cache/tool-cache.js';
+// Tool Cache
+export type { IToolCache } from './smart-agent/cache/types.js';
+
 // Config
 export {
   ConfigWatcher,

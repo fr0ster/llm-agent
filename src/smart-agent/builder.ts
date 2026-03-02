@@ -25,6 +25,7 @@ import {
   type SmartAgentConfig,
   type SmartAgentRagStores,
 } from './agent.js';
+import type { IToolCache } from './cache/types.js';
 import {
   LlmClassifier,
   type LlmClassifierConfig,
@@ -183,6 +184,7 @@ export class SmartAgentBuilder {
   private _metrics?: IMetrics;
   private _reranker?: IReranker;
   private _queryExpander?: IQueryExpander;
+  private _toolCache?: IToolCache;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
 
   constructor(cfg: SmartAgentBuilderConfig) {
@@ -280,6 +282,12 @@ export class SmartAgentBuilder {
   /** Set a query expander to broaden RAG queries with synonyms/related terms. */
   withQueryExpander(expander: IQueryExpander): this {
     this._queryExpander = expander;
+    return this;
+  }
+
+  /** Set a tool result cache for MCP call deduplication. */
+  withToolCache(cache: IToolCache): this {
+    this._toolCache = cache;
     return this;
   }
 
@@ -505,6 +513,7 @@ export class SmartAgentBuilder {
         ...(this._queryExpander ? { queryExpander: this._queryExpander } : {}),
         ...(this._tracer ? { tracer: this._tracer } : {}),
         ...(this._metrics ? { metrics: this._metrics } : {}),
+        ...(this._toolCache ? { toolCache: this._toolCache } : {}),
       },
       agentCfg,
     );

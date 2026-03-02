@@ -67,6 +67,7 @@ export interface SmartServerAgentConfig {
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
+  toolResultCacheTtlMs?: number;
 }
 
 export interface SmartServerPromptsConfig {

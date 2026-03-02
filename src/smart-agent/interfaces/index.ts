@@ -1,3 +1,4 @@
+export type { IToolCache } from '../cache/types.js';
 export type { ICounter, IHistogram, IMetrics } from '../metrics/types.js';
 export type { IQueryExpander } from '../rag/query-expander.js';
 export type { IReranker } from '../reranker/types.js';
