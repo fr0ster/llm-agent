@@ -48,6 +48,13 @@ import type {
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
 import type { IMetrics } from './metrics/types.js';
+import {
+  CircuitBreaker,
+  type CircuitBreakerConfig,
+} from './resilience/circuit-breaker.js';
+import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
+import { CircuitBreakerEmbedder } from './resilience/circuit-breaker-embedder.js';
+import { FallbackRag } from './resilience/fallback-rag.js';
 import type { ITracer } from './tracer/types.js';
 
 // ---------------------------------------------------------------------------
@@ -144,6 +151,10 @@ export interface SmartAgentHandle {
   getUsage(): TokenUsage;
   /** Gracefully close MCP connections. Call on shutdown. */
   close(): Promise<void>;
+  /** Circuit breakers (empty when not configured). */
+  circuitBreakers: CircuitBreaker[];
+  /** RAG stores (for config hot-reload weight updates). */
+  ragStores: SmartAgentRagStores;
 }
 
 // ---------------------------------------------------------------------------
@@ -166,6 +177,7 @@ export class SmartAgentBuilder {
   private _injectionDetector?: IPromptInjectionDetector;
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
+  private _circuitBreakerConfig?: CircuitBreakerConfig;
 
   constructor(cfg: SmartAgentBuilderConfig) {
     this.cfg = cfg;
@@ -253,6 +265,12 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /** Enable circuit breakers for LLM and embedder calls. */
+  withCircuitBreaker(config: CircuitBreakerConfig = {}): this {
+    this._circuitBreakerConfig = config;
+    return this;
+  }
+
   // -------------------------------------------------------------------------
   // build()
   // -------------------------------------------------------------------------
@@ -290,7 +308,7 @@ export class SmartAgentBuilder {
     if (!mainLlmCandidate || !classifierLlmCandidate) {
       throw new Error('Failed to initialize default LLM dependencies');
     }
-    const mainLlm: ILlm = mainLlmCandidate;
+    let mainLlm: ILlm = mainLlmCandidate;
     const classifierLlm: ILlm = classifierLlmCandidate;
 
     // ---- Default RAG factory ---------------------------------------------
@@ -309,9 +327,50 @@ export class SmartAgentBuilder {
       return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
     };
 
-    const factsRag: IRag = this._ragStores?.facts ?? makeDefaultRag();
-    const feedbackRag: IRag = this._ragStores?.feedback ?? makeDefaultRag();
-    const stateRag: IRag = this._ragStores?.state ?? makeDefaultRag();
+    let factsRag: IRag = this._ragStores?.facts ?? makeDefaultRag();
+    let feedbackRag: IRag = this._ragStores?.feedback ?? makeDefaultRag();
+    let stateRag: IRag = this._ragStores?.state ?? makeDefaultRag();
+
+    // ---- Circuit breaker wrapping ----------------------------------------
+    const circuitBreakers: CircuitBreaker[] = [];
+    if (this._circuitBreakerConfig) {
+      const cbCfg = this._circuitBreakerConfig;
+      const metricsRef = this._metrics;
+      const makeOnStateChange =
+        (target: string) => (from: string, to: string) => {
+          metricsRef?.circuitBreakerTransition.add(1, { from, to, target });
+        };
+
+      // Wrap mainLlm
+      const llmBreaker = new CircuitBreaker({
+        ...cbCfg,
+        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
+      });
+      mainLlm = new CircuitBreakerLlm(mainLlm, llmBreaker);
+      circuitBreakers.push(llmBreaker);
+
+      // Wrap RAG stores with FallbackRag using InMemoryRag fallback
+      const embedderBreaker = new CircuitBreaker({
+        ...cbCfg,
+        onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
+      });
+      circuitBreakers.push(embedderBreaker);
+      factsRag = new FallbackRag(
+        factsRag,
+        new InMemoryRag(),
+        embedderBreaker,
+      );
+      feedbackRag = new FallbackRag(
+        feedbackRag,
+        new InMemoryRag(),
+        embedderBreaker,
+      );
+      stateRag = new FallbackRag(
+        stateRag,
+        new InMemoryRag(),
+        embedderBreaker,
+      );
+    }
 
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];
@@ -453,6 +512,8 @@ export class SmartAgentBuilder {
       close: async () => {
         for (const fn of closeFns) await fn();
       },
+      circuitBreakers,
+      ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
     };
   }
 }

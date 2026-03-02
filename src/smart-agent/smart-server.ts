@@ -71,6 +71,13 @@ export interface SmartServerPromptsConfig {
 
 export type SmartServerMode = 'hard' | 'pass' | 'smart';
 
+export interface SmartServerCircuitBreakerConfig {
+  /** Number of consecutive failures before opening. Default: 5 */
+  failureThreshold?: number;
+  /** Time (ms) to wait before probing again. Default: 30 000 */
+  recoveryWindowMs?: number;
+}
+
 export interface SmartServerConfig {
   port?: number;
   host?: string;
@@ -83,6 +90,8 @@ export interface SmartServerConfig {
   pipeline?: PipelineConfig;
   log?: (event: Record<string, unknown>) => void;
   logDir?: string;
+  circuitBreaker?: SmartServerCircuitBreakerConfig;
+  version?: string;
 }
 
 export interface SmartServerHandle {
@@ -171,6 +180,10 @@ export class SmartServer {
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
     }).withLogger(fileLogger);
+
+    if (this.cfg.circuitBreaker) {
+      builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
+    }
 
     if (pipeline?.llm?.main) {
       const temp = pipeline.llm.main.temperature ?? 0.7;

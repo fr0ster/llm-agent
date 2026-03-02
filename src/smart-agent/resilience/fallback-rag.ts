@@ -1,0 +1,53 @@
+/**
+ * FallbackRag — IRag decorator wrapping a primary and fallback store.
+ *
+ * - **upsert** — always writes to both stores (best-effort for fallback).
+ * - **query** — uses primary when the embedder breaker is closed/half-open;
+ *   routes to fallback when the breaker is open.
+ * - **healthCheck** — delegates to primary.
+ */
+
+import type { IRag } from '../interfaces/rag.js';
+import type {
+  CallOptions,
+  RagError,
+  RagMetadata,
+  RagResult,
+  Result,
+} from '../interfaces/types.js';
+import type { CircuitBreaker } from './circuit-breaker.js';
+
+export class FallbackRag implements IRag {
+  constructor(
+    private readonly primary: IRag,
+    private readonly fallback: IRag,
+    private readonly embedderBreaker: CircuitBreaker,
+  ) {}
+
+  async upsert(
+    text: string,
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>> {
+    const [primaryResult] = await Promise.all([
+      this.primary.upsert(text, metadata, options),
+      this.fallback.upsert(text, metadata, options).catch(() => {}),
+    ]);
+    return primaryResult;
+  }
+
+  async query(
+    text: string,
+    k: number,
+    options?: CallOptions,
+  ): Promise<Result<RagResult[], RagError>> {
+    if (this.embedderBreaker.state === 'open') {
+      return this.fallback.query(text, k, options);
+    }
+    return this.primary.query(text, k, options);
+  }
+
+  async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
+    return this.primary.healthCheck(options);
+  }
+}

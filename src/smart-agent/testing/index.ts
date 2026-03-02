@@ -39,6 +39,10 @@ import {
 import type { ILogger, LogEvent } from '../logger/types.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
+import {
+  CircuitBreaker,
+  type CircuitBreakerConfig,
+} from '../resilience/circuit-breaker.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import type { ISpan, ITracer, SpanStatus } from '../tracer/types.js';
 
@@ -346,6 +350,17 @@ export function makeCapturingTracer(): ITracer & { spans: CapturedSpan[] } {
 /** Returns an InMemoryMetrics instance for test assertions. */
 export function makeCapturingMetrics(): InMemoryMetrics {
   return new InMemoryMetrics();
+}
+
+// ---------------------------------------------------------------------------
+// Circuit breaker factory
+// ---------------------------------------------------------------------------
+
+/** Returns a CircuitBreaker for testing. */
+export function makeCircuitBreaker(
+  config?: CircuitBreakerConfig,
+): CircuitBreaker {
+  return new CircuitBreaker(config);
 }
 
 // ---------------------------------------------------------------------------
