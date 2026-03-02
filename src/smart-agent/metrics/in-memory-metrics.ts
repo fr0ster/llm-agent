@@ -81,6 +81,7 @@ export interface MetricsSnapshot {
   llmCallCount: CounterSnapshot;
   llmCallLatency: HistogramSnapshot;
   circuitBreakerTransition: CounterSnapshot;
+  toolCacheHitCount: CounterSnapshot;
 }
 
 /**
@@ -96,6 +97,7 @@ export class InMemoryMetrics implements IMetrics {
   readonly llmCallCount = new MemCounter();
   readonly llmCallLatency = new MemHistogram();
   readonly circuitBreakerTransition = new MemCounter();
+  readonly toolCacheHitCount = new MemCounter();
 
   snapshot(): MetricsSnapshot {
     return {
@@ -107,6 +109,7 @@ export class InMemoryMetrics implements IMetrics {
       llmCallCount: this.llmCallCount.snapshot(),
       llmCallLatency: this.llmCallLatency.snapshot(),
       circuitBreakerTransition: this.circuitBreakerTransition.snapshot(),
+      toolCacheHitCount: this.toolCacheHitCount.snapshot(),
     };
   }
 

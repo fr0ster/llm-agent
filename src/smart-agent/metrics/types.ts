@@ -33,4 +33,6 @@ export interface IMetrics {
   llmCallLatency: IHistogram;
   /** Circuit breaker state transitions. Attributes: from, to, target (llm|embedder). */
   circuitBreakerTransition: ICounter;
+  /** Tool result cache hits. */
+  toolCacheHitCount: ICounter;
 }

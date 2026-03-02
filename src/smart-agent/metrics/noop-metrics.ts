@@ -21,4 +21,5 @@ export class NoopMetrics implements IMetrics {
   readonly llmCallCount: ICounter = noopCounter;
   readonly llmCallLatency: IHistogram = noopHistogram;
   readonly circuitBreakerTransition: ICounter = noopCounter;
+  readonly toolCacheHitCount: ICounter = noopCounter;
 }

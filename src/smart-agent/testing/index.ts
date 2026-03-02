@@ -13,6 +13,9 @@
 
 import type { Message } from '../../types.js';
 import type { SmartAgent } from '../agent.js';
+import { NoopToolCache } from '../cache/noop-tool-cache.js';
+import { ToolCache } from '../cache/tool-cache.js';
+import type { IToolCache } from '../cache/types.js';
 import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
@@ -388,6 +391,18 @@ export function makeQueryExpander(custom?: IQueryExpander): IQueryExpander {
 }
 
 // ---------------------------------------------------------------------------
+// Tool cache stub
+// ---------------------------------------------------------------------------
+
+/** Returns a ToolCache or NoopToolCache for testing. */
+export function makeToolCache(
+  opts?: { ttlMs?: number } | IToolCache,
+): IToolCache {
+  if (opts && 'get' in opts) return opts;
+  return opts ? new ToolCache(opts) : new NoopToolCache();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -409,6 +424,7 @@ export function makeDefaultDeps(overrides?: {
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
+  toolCache?: IToolCache;
   tracer?: ITracer;
   metrics?: IMetrics;
 }): {
@@ -437,6 +453,7 @@ export function makeDefaultDeps(overrides?: {
       logger: overrides?.logger,
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,
+      toolCache: overrides?.toolCache,
       tracer: overrides?.tracer,
       metrics: overrides?.metrics,
     },

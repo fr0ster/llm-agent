@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { Message } from '../types.js';
+import { NoopToolCache } from './cache/noop-tool-cache.js';
+import type { IToolCache } from './cache/types.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
@@ -69,6 +71,7 @@ export interface SmartAgentDeps {
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
   metrics?: IMetrics;
+  toolCache?: IToolCache;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -85,6 +88,7 @@ export interface SmartAgentConfig {
   historyAutoSummarizeLimit?: number;
   mode?: 'hard' | 'pass' | 'smart';
   queryExpansionEnabled?: boolean;
+  toolResultCacheTtlMs?: number;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -129,6 +133,7 @@ export class SmartAgent {
   private readonly metrics: IMetrics;
   private readonly reranker: IReranker;
   private readonly queryExpander: IQueryExpander;
+  private readonly toolCache: IToolCache;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -141,6 +146,7 @@ export class SmartAgent {
     this.metrics = deps.metrics ?? new NoopMetrics();
     this.reranker = deps.reranker ?? new NoopReranker();
     this.queryExpander = deps.queryExpander ?? new NoopQueryExpander();
+    this.toolCache = deps.toolCache ?? new NoopToolCache();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -829,7 +835,21 @@ export class SmartAgent {
           parent: toolLoopSpan,
           attributes: { 'tool.name': tc.name },
         });
-        const res = await client.callTool(tc.name, tc.arguments, opts);
+        const cached = this.toolCache.get(tc.name, tc.arguments);
+        const res = cached
+          ? (() => {
+              this.metrics.toolCacheHitCount.add();
+              toolSpan.setAttribute('cache', 'hit');
+              return {
+                ok: true as const,
+                value: cached,
+              };
+            })()
+          : await (async () => {
+              const r = await client.callTool(tc.name, tc.arguments, opts);
+              if (r.ok) this.toolCache.set(tc.name, tc.arguments, r.value);
+              return r;
+            })();
         const text = !res.ok
           ? res.error.message
           : typeof res.value.content === 'string'
