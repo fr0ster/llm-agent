@@ -18,10 +18,7 @@ export class CircuitBreakerEmbedder implements IEmbedder {
 
   async embed(text: string, options?: CallOptions): Promise<number[]> {
     if (!this.breaker.isCallPermitted) {
-      throw new RagError(
-        'Embedder circuit breaker is open',
-        'CIRCUIT_OPEN',
-      );
+      throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
     try {
       const result = await this.inner.embed(text, options);

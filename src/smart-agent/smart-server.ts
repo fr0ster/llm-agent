@@ -14,10 +14,7 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
-import type { HealthStatus } from './health/types.js';
-import type { InMemoryMetrics } from './metrics/in-memory-metrics.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
-import type { VectorRag } from './rag/vector-rag.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import {
@@ -25,6 +22,7 @@ import {
   makeRagFromStoreConfig,
   type PipelineConfig,
 } from './pipeline.js';
+import type { VectorRag } from './rag/vector-rag.js';
 import {
   type ExternalToolValidationCode,
   normalizeAndValidateExternalTools,
@@ -308,7 +306,10 @@ export class SmartServer {
           update.keywordWeight !== undefined
         ) {
           for (const store of Object.values(ragStores)) {
-            if (store && typeof (store as VectorRag).updateWeights === 'function') {
+            if (
+              store &&
+              typeof (store as VectorRag).updateWeights === 'function'
+            ) {
               (store as VectorRag).updateWeights({
                 vectorWeight: update.vectorWeight,
                 keywordWeight: update.keywordWeight,
@@ -325,14 +326,21 @@ export class SmartServer {
     }
 
     const server = http.createServer((req, res) =>
-      this._handle(req, res, getUsage, smartAgent, chat, streamChat, log, healthChecker).catch(
-        (err) => {
-          if (!res.headersSent) {
-            res.writeHead(500, { 'Content-Type': 'application/json' });
-            res.end(jsonError(String(err), 'server_error'));
-          }
-        },
-      ),
+      this._handle(
+        req,
+        res,
+        getUsage,
+        smartAgent,
+        chat,
+        streamChat,
+        log,
+        healthChecker,
+      ).catch((err) => {
+        if (!res.headersSent) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(jsonError(String(err), 'server_error'));
+        }
+      }),
     );
 
     return new Promise((resolve, reject) => {

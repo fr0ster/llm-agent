@@ -40,6 +40,7 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
 import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
+import type { IMetrics } from './metrics/types.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
@@ -47,13 +48,11 @@ import type {
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
-import type { IMetrics } from './metrics/types.js';
 import {
   CircuitBreaker,
   type CircuitBreakerConfig,
 } from './resilience/circuit-breaker.js';
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
-import { CircuitBreakerEmbedder } from './resilience/circuit-breaker-embedder.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
 import type { ITracer } from './tracer/types.js';
 
@@ -355,21 +354,13 @@ export class SmartAgentBuilder {
         onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
       });
       circuitBreakers.push(embedderBreaker);
-      factsRag = new FallbackRag(
-        factsRag,
-        new InMemoryRag(),
-        embedderBreaker,
-      );
+      factsRag = new FallbackRag(factsRag, new InMemoryRag(), embedderBreaker);
       feedbackRag = new FallbackRag(
         feedbackRag,
         new InMemoryRag(),
         embedderBreaker,
       );
-      stateRag = new FallbackRag(
-        stateRag,
-        new InMemoryRag(),
-        embedderBreaker,
-      );
+      stateRag = new FallbackRag(stateRag, new InMemoryRag(), embedderBreaker);
     }
 
     // ---- MCP clients + tool vectorization --------------------------------

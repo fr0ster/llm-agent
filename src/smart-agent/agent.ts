@@ -18,8 +18,8 @@ import {
   type Subprompt,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
-import type { IMetrics } from './metrics/types.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
+import type { IMetrics } from './metrics/types.js';
 import {
   isToolContextUnavailableError,
   ToolAvailabilityRegistry,
