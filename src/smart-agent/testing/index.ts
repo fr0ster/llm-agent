@@ -40,6 +40,8 @@ import type { ILogger, LogEvent } from '../logger/types.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
+import { NoopReranker } from '../reranker/noop-reranker.js';
+import type { IReranker } from '../reranker/types.js';
 import {
   CircuitBreaker,
   type CircuitBreakerConfig,
@@ -364,6 +366,15 @@ export function makeCircuitBreaker(
 }
 
 // ---------------------------------------------------------------------------
+// Reranker stub
+// ---------------------------------------------------------------------------
+
+/** Returns a NoopReranker (pass-through) or a custom IReranker for testing. */
+export function makeReranker(custom?: IReranker): IReranker {
+  return custom ?? new NoopReranker();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -380,6 +391,7 @@ export function makeDefaultDeps(overrides?: {
   assembler?: IContextAssembler;
   mcpClients?: IMcpClient[];
   ragStores?: { facts?: IRag; feedback?: IRag; state?: IRag };
+  reranker?: IReranker;
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
@@ -406,6 +418,7 @@ export function makeDefaultDeps(overrides?: {
         overrides?.classifier ??
         makeClassifier([{ type: 'action', text: 'do something' }]),
       assembler: overrides?.assembler ?? makeAssembler(),
+      reranker: overrides?.reranker,
       logger: overrides?.logger,
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,

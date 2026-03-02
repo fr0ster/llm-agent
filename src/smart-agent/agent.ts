@@ -29,6 +29,8 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import { NoopReranker } from './reranker/noop-reranker.js';
+import type { IReranker } from './reranker/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';
 import type { ISpan, ITracer } from './tracer/types.js';
 import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
@@ -56,6 +58,7 @@ export interface SmartAgentDeps {
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
   assembler: IContextAssembler;
+  reranker?: IReranker;
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
@@ -118,6 +121,7 @@ export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
   private readonly metrics: IMetrics;
+  private readonly reranker: IReranker;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -128,6 +132,7 @@ export class SmartAgent {
     );
     this.tracer = deps.tracer ?? new NoopTracer();
     this.metrics = deps.metrics ?? new NoopMetrics();
+    this.reranker = deps.reranker ?? new NoopReranker();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -324,8 +329,22 @@ export class SmartAgent {
           hit: String(sR.ok && sR.value.length > 0),
         });
 
+        // Rerank results
+        const [rerankedFacts, rerankedFeedback, rerankedState] =
+          await Promise.all([
+            fR.ok
+              ? this.reranker.rerank(ragText, fR.value, opts)
+              : Promise.resolve(fR),
+            fbR.ok
+              ? this.reranker.rerank(ragText, fbR.value, opts)
+              : Promise.resolve(fbR),
+            sR.ok
+              ? this.reranker.rerank(ragText, sR.value, opts)
+              : Promise.resolve(sR),
+          ]);
+
         const { tools: mcpTools } = await this._listAllTools(opts);
-        const facts = fR.ok ? fR.value : [];
+        const facts = rerankedFacts.ok ? rerankedFacts.value : [];
         const ragToolNames = new Set(
           facts
             .map((r) => r.metadata.id as string)
@@ -341,8 +360,8 @@ export class SmartAgent {
 
         retrieved = {
           facts,
-          feedback: fbR.ok ? fbR.value : [],
-          state: sR.ok ? sR.value : [],
+          feedback: rerankedFeedback.ok ? rerankedFeedback.value : [],
+          state: rerankedState.ok ? rerankedState.value : [],
           tools: selectedMcpTools,
         };
         finalTools =
