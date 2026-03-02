@@ -54,6 +54,8 @@ import {
   type CircuitBreakerConfig,
 } from '../resilience/circuit-breaker.js';
 import type { ISpan, ITracer, SpanStatus } from '../tracer/types.js';
+import { NoopValidator } from '../validator/noop-validator.js';
+import type { IOutputValidator } from '../validator/types.js';
 
 // ---------------------------------------------------------------------------
 // LLM stub
@@ -403,6 +405,17 @@ export function makeToolCache(
 }
 
 // ---------------------------------------------------------------------------
+// Output validator stub
+// ---------------------------------------------------------------------------
+
+/** Returns a NoopValidator (pass-through) or a custom IOutputValidator for testing. */
+export function makeOutputValidator(
+  custom?: IOutputValidator,
+): IOutputValidator {
+  return custom ?? new NoopValidator();
+}
+
+// ---------------------------------------------------------------------------
 // Default deps factory
 // ---------------------------------------------------------------------------
 
@@ -425,6 +438,7 @@ export function makeDefaultDeps(overrides?: {
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
   toolCache?: IToolCache;
+  outputValidator?: IOutputValidator;
   tracer?: ITracer;
   metrics?: IMetrics;
 }): {
@@ -454,6 +468,7 @@ export function makeDefaultDeps(overrides?: {
       toolPolicy: overrides?.toolPolicy,
       injectionDetector: overrides?.injectionDetector,
       toolCache: overrides?.toolCache,
+      outputValidator: overrides?.outputValidator,
       tracer: overrides?.tracer,
       metrics: overrides?.metrics,
     },

@@ -8,6 +8,10 @@ export type {
   SpanOptions,
   SpanStatus,
 } from '../tracer/types.js';
+export type {
+  IOutputValidator,
+  ValidationResult,
+} from '../validator/types.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { ILlm } from './llm.js';

@@ -59,6 +59,7 @@ import {
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
 import type { ITracer } from './tracer/types.js';
+import type { IOutputValidator } from './validator/types.js';
 
 // ---------------------------------------------------------------------------
 // Config types (builder-owned — no dependency on SmartServerConfig)
@@ -185,6 +186,7 @@ export class SmartAgentBuilder {
   private _reranker?: IReranker;
   private _queryExpander?: IQueryExpander;
   private _toolCache?: IToolCache;
+  private _outputValidator?: IOutputValidator;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
 
   constructor(cfg: SmartAgentBuilderConfig) {
@@ -288,6 +290,12 @@ export class SmartAgentBuilder {
   /** Set a tool result cache for MCP call deduplication. */
   withToolCache(cache: IToolCache): this {
     this._toolCache = cache;
+    return this;
+  }
+
+  /** Set an output validator for post-LLM response validation. */
+  withOutputValidator(validator: IOutputValidator): this {
+    this._outputValidator = validator;
     return this;
   }
 
@@ -514,6 +522,9 @@ export class SmartAgentBuilder {
         ...(this._tracer ? { tracer: this._tracer } : {}),
         ...(this._metrics ? { metrics: this._metrics } : {}),
         ...(this._toolCache ? { toolCache: this._toolCache } : {}),
+        ...(this._outputValidator
+          ? { outputValidator: this._outputValidator }
+          : {}),
       },
       agentCfg,
     );
