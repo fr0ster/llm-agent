@@ -48,6 +48,7 @@ import type {
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
+import type { IQueryExpander } from './rag/query-expander.js';
 import type { IReranker } from './reranker/types.js';
 import {
   CircuitBreaker,
@@ -178,6 +179,7 @@ export class SmartAgentBuilder {
   private _tracer?: ITracer;
   private _metrics?: IMetrics;
   private _reranker?: IReranker;
+  private _queryExpander?: IQueryExpander;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
 
   constructor(cfg: SmartAgentBuilderConfig) {
@@ -269,6 +271,12 @@ export class SmartAgentBuilder {
   /** Set a reranker to re-score RAG results before context assembly. */
   withReranker(reranker: IReranker): this {
     this._reranker = reranker;
+    return this;
+  }
+
+  /** Set a query expander to broaden RAG queries with synonyms/related terms. */
+  withQueryExpander(expander: IQueryExpander): this {
+    this._queryExpander = expander;
     return this;
   }
 
@@ -476,6 +484,7 @@ export class SmartAgentBuilder {
           ? { injectionDetector: this._injectionDetector }
           : {}),
         ...(this._reranker ? { reranker: this._reranker } : {}),
+        ...(this._queryExpander ? { queryExpander: this._queryExpander } : {}),
         ...(this._tracer ? { tracer: this._tracer } : {}),
         ...(this._metrics ? { metrics: this._metrics } : {}),
       },

@@ -65,6 +65,7 @@ export interface SmartServerAgentConfig {
   ragQueryK?: number;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
+  queryExpansionEnabled?: boolean;
 }
 
 export interface SmartServerPromptsConfig {

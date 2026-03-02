@@ -1,4 +1,5 @@
 export type { ICounter, IHistogram, IMetrics } from '../metrics/types.js';
+export type { IQueryExpander } from '../rag/query-expander.js';
 export type { IReranker } from '../reranker/types.js';
 export type {
   ISpan,

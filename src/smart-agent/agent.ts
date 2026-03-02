@@ -29,6 +29,10 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import {
+  type IQueryExpander,
+  NoopQueryExpander,
+} from './rag/query-expander.js';
 import { NoopReranker } from './reranker/noop-reranker.js';
 import type { IReranker } from './reranker/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';
@@ -59,6 +63,7 @@ export interface SmartAgentDeps {
   classifier: ISubpromptClassifier;
   assembler: IContextAssembler;
   reranker?: IReranker;
+  queryExpander?: IQueryExpander;
   logger?: ILogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
@@ -79,6 +84,7 @@ export interface SmartAgentConfig {
   historySummaryPrompt?: string;
   historyAutoSummarizeLimit?: number;
   mode?: 'hard' | 'pass' | 'smart';
+  queryExpansionEnabled?: boolean;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -122,6 +128,7 @@ export class SmartAgent {
   private readonly tracer: ITracer;
   private readonly metrics: IMetrics;
   private readonly reranker: IReranker;
+  private readonly queryExpander: IQueryExpander;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -133,6 +140,7 @@ export class SmartAgent {
     this.tracer = deps.tracer ?? new NoopTracer();
     this.metrics = deps.metrics ?? new NoopMetrics();
     this.reranker = deps.reranker ?? new NoopReranker();
+    this.queryExpander = deps.queryExpander ?? new NoopQueryExpander();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -304,7 +312,11 @@ export class SmartAgent {
       if (isSapRequired) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        const ragText = await this._toEnglishForRag(combinedActionText, opts);
+        let ragText = await this._toEnglishForRag(combinedActionText, opts);
+        if (this.config.queryExpansionEnabled) {
+          const expandResult = await this.queryExpander.expand(ragText, opts);
+          if (expandResult.ok) ragText = expandResult.value;
+        }
         const k = this.config.ragQueryK ?? 10;
         const ragSpan = this.tracer.startSpan('smart_agent.rag_query', {
           parent: rootSpan,
