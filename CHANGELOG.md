@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.4.1] — 2026-03-02
+
+### Fixed
+
+- **Architecture docs** — Added request processing sequence diagram (Mermaid) showing full pipeline flow. Removed stale technical debt note about metrics (already implemented).
+
+### Removed
+
+- `docs/ROADMAP.md` — All planned phases complete; roadmap file removed.
+
+---
+
 ## [2.4.0] — 2026-03-02
 
 ### Summary
