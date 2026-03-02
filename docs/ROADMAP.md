@@ -31,7 +31,7 @@ Focus: smarter tool execution and output quality.
 
 Focus: developer experience and operational readiness.
 
-- [ ] **20.1 Deployment Guide** — Document production deployment patterns: Docker, systemd, cloud functions. Include scaling, monitoring, and backup strategies.
-- [ ] **20.2 Performance Tuning Guide** — RAG indexing strategies, model selection trade-offs, token budget configuration, BM25 weight tuning.
-- [ ] **20.3 Integration Guide** — How to implement custom `ILlm`, `IRag`, `IMcpClient`, `IReranker`, `IOutputValidator`. Code examples for each.
-- [ ] **20.4 Intent Classification Benchmark** — Expand evaluation suite: golden corpus for classifier (action vs fact vs chat), MRR and accuracy metrics, CI-integrated.
+- [x] **20.1 Deployment Guide** — Document production deployment patterns: Docker, systemd, cloud functions. Include scaling, monitoring, and backup strategies.
+- [x] **20.2 Performance Tuning Guide** — RAG indexing strategies, model selection trade-offs, token budget configuration, BM25 weight tuning.
+- [x] **20.3 Integration Guide** — How to implement custom `ILlm`, `IRag`, `IMcpClient`, `IReranker`, `IOutputValidator`. Code examples for each.
+- [x] **20.4 Intent Classification Benchmark** — Expand evaluation suite: golden corpus for classifier (action vs fact vs chat), MRR and accuracy metrics, CI-integrated.
