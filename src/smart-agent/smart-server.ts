@@ -9,6 +9,9 @@ import http from 'node:http';
 import type { Message } from '../types.js';
 import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
+import { HealthChecker } from './health/health-checker.js';
+import type { HealthStatus } from './health/types.js';
+import type { InMemoryMetrics } from './metrics/in-memory-metrics.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
@@ -225,7 +228,16 @@ export class SmartServer {
       streamChat,
       getUsage,
       close: closeAgent,
+      circuitBreakers,
     } = agentHandle;
+
+    const startTime = Date.now();
+    const healthChecker = new HealthChecker({
+      agent: smartAgent,
+      startTime,
+      version: this.cfg.version ?? '0.0.0',
+      circuitBreakers,
+    });
 
     // Run health check on startup
     smartAgent
@@ -254,7 +266,7 @@ export class SmartServer {
       );
 
     const server = http.createServer((req, res) =>
-      this._handle(req, res, getUsage, smartAgent, chat, streamChat, log).catch(
+      this._handle(req, res, getUsage, smartAgent, chat, streamChat, log, healthChecker).catch(
         (err) => {
           if (!res.headersSent) {
             res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -295,6 +307,7 @@ export class SmartServer {
     chat: SmartAgentHandle['chat'],
     streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
+    healthChecker: HealthChecker,
   ): Promise<void> {
     const rawUrl = req.url ?? '/';
     const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
@@ -334,6 +347,16 @@ export class SmartServer {
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(getUsage()));
+      return;
+    }
+    if (
+      req.method === 'GET' &&
+      (urlPath === '/health' || urlPath === '/v1/health')
+    ) {
+      const status = await healthChecker.check();
+      const httpCode = status.status === 'unhealthy' ? 503 : 200;
+      res.writeHead(httpCode, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
       return;
     }
     if (
