@@ -117,10 +117,7 @@ describe('Pipeline metrics instrumentation', () => {
       snap.classifierIntentCount.byAttributes.get('intent=action'),
       1,
     );
-    assert.equal(
-      snap.classifierIntentCount.byAttributes.get('intent=fact'),
-      1,
-    );
+    assert.equal(snap.classifierIntentCount.byAttributes.get('intent=fact'), 1);
   });
 
   it('increments llmCallCount per LLM invocation', async () => {

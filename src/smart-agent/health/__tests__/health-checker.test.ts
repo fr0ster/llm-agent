@@ -5,9 +5,8 @@ import { InMemoryMetrics } from '../../metrics/in-memory-metrics.js';
 import { CircuitBreaker } from '../../resilience/circuit-breaker.js';
 import {
   makeDefaultDeps,
-  makeLlm,
-  makeRag,
   makeFailingRag,
+  makeRag,
 } from '../../testing/index.js';
 import { HealthChecker } from '../health-checker.js';
 
@@ -52,8 +51,9 @@ describe('HealthChecker', () => {
   });
 
   it('returns unhealthy when LLM is down', async () => {
-    const llm = makeLlm([new Error('LLM unreachable')]);
-    const { deps } = makeDefaultDeps({ llmResponses: [new Error('LLM unreachable')] });
+    const { deps } = makeDefaultDeps({
+      llmResponses: [new Error('LLM unreachable')],
+    });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);
     const checker = new HealthChecker({
       agent,

@@ -48,43 +48,43 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
-// Metrics
-export type {
-  ICounter,
-  IHistogram,
-  IMetrics,
-} from './smart-agent/metrics/types.js';
-export { NoopMetrics } from './smart-agent/metrics/noop-metrics.js';
-export {
-  InMemoryMetrics,
-  type CounterSnapshot,
-  type HistogramSnapshot,
-  type MetricsSnapshot,
-} from './smart-agent/metrics/in-memory-metrics.js';
 // Config
 export {
   ConfigWatcher,
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './smart-agent/config/config-watcher.js';
-// Health
-export type {
-  HealthStatus,
-  HealthComponentStatus,
-  CircuitBreakerStatus,
-} from './smart-agent/health/types.js';
 export {
   HealthChecker,
   type HealthCheckerDeps,
 } from './smart-agent/health/health-checker.js';
+// Health
+export type {
+  CircuitBreakerStatus,
+  HealthComponentStatus,
+  HealthStatus,
+} from './smart-agent/health/types.js';
+export {
+  type CounterSnapshot,
+  type HistogramSnapshot,
+  InMemoryMetrics,
+  type MetricsSnapshot,
+} from './smart-agent/metrics/in-memory-metrics.js';
+export { NoopMetrics } from './smart-agent/metrics/noop-metrics.js';
+// Metrics
+export type {
+  ICounter,
+  IHistogram,
+  IMetrics,
+} from './smart-agent/metrics/types.js';
 // Resilience
 export {
   CircuitBreaker,
   type CircuitBreakerConfig,
   type CircuitState,
 } from './smart-agent/resilience/circuit-breaker.js';
-export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
 export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
+export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
 export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';

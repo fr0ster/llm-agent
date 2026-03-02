@@ -109,18 +109,17 @@ describe('ConfigWatcher', () => {
       await wait(50);
       // Rapid-fire writes
       for (let i = 2; i <= 5; i++) {
-        fs.writeFileSync(
-          filePath,
-          `agent:\n  maxIterations: ${i}\n`,
-          'utf8',
-        );
+        fs.writeFileSync(filePath, `agent:\n  maxIterations: ${i}\n`, 'utf8');
       }
 
       await wait(300);
       watcher.stop();
 
       // Should have debounced into 1-2 events (not 4)
-      assert.ok(reloads.length <= 2, `Expected ≤ 2 reloads, got ${reloads.length}`);
+      assert.ok(
+        reloads.length <= 2,
+        `Expected ≤ 2 reloads, got ${reloads.length}`,
+      );
       // The last reload should have the final value
       if (reloads.length > 0) {
         const last = reloads[reloads.length - 1];
@@ -141,11 +140,7 @@ describe('ConfigWatcher', () => {
       watcher.stop();
 
       await wait(100);
-      fs.writeFileSync(
-        filePath,
-        'agent:\n  maxIterations: 99\n',
-        'utf8',
-      );
+      fs.writeFileSync(filePath, 'agent:\n  maxIterations: 99\n', 'utf8');
       await wait(200);
 
       assert.equal(reloads.length, 0, 'No reloads after stop');

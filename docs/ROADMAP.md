@@ -4,10 +4,10 @@
 
 Focus: make the library ready for sustained multi-tenant production use.
 
-- [ ] **17.1 Aggregate Metrics Export** — Expose OTEL-compatible counters (request count, latency histogram, tool call count, RAG hit/miss, classifier intent distribution) via `IMetrics` interface + optional Prometheus adapter.
-- [ ] **17.2 Circuit Breaker** — Wrap LLM and embedder calls with a circuit breaker (open/half-open/closed states). Configurable failure threshold and recovery window. Graceful degradation: fall back to InMemoryRag when embedder circuit opens.
-- [ ] **17.3 Health Endpoint** — Extend SmartServer with `GET /health` returning structured diagnostics: LLM reachable, RAG store status, MCP connections, uptime, version.
-- [ ] **17.4 Config Hot-Reload** — Watch `smart-server.yaml` for changes; apply non-destructive config updates (weights, thresholds, logging level) without restart. Emit event on reload.
+- [x] **17.1 Aggregate Metrics Export** — Expose OTEL-compatible counters (request count, latency histogram, tool call count, RAG hit/miss, classifier intent distribution) via `IMetrics` interface + optional Prometheus adapter.
+- [x] **17.2 Circuit Breaker** — Wrap LLM and embedder calls with a circuit breaker (open/half-open/closed states). Configurable failure threshold and recovery window. Graceful degradation: fall back to InMemoryRag when embedder circuit opens.
+- [x] **17.3 Health Endpoint** — Extend SmartServer with `GET /health` returning structured diagnostics: LLM reachable, RAG store status, MCP connections, uptime, version.
+- [x] **17.4 Config Hot-Reload** — Watch `smart-server.yaml` for changes; apply non-destructive config updates (weights, thresholds, logging level) without restart. Emit event on reload.
 
 ## Phase 18 — Advanced RAG & Retrieval
 
