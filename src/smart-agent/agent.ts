@@ -809,54 +809,72 @@ export class SmartAgent {
             })),
           },
         ];
-      for (const tc of internalCalls) {
-        if (
-          this.config.maxToolCalls !== undefined &&
-          toolCallCount >= this.config.maxToolCalls
-        ) {
-          toolLoopSpan.addEvent('tool_call_limit_reached');
-          toolLoopSpan.end();
-          yield {
-            ok: true,
-            value: { content: '', finishReason: 'length', usage },
-          };
-          return;
-        }
+      // Truncate batch to remaining budget
+      const remaining =
+        this.config.maxToolCalls !== undefined
+          ? this.config.maxToolCalls - toolCallCount
+          : internalCalls.length;
+      if (remaining <= 0) {
+        toolLoopSpan.addEvent('tool_call_limit_reached');
+        toolLoopSpan.end();
+        yield {
+          ok: true,
+          value: { content: '', finishReason: 'length', usage },
+        };
+        return;
+      }
+      const batch = internalCalls.slice(0, remaining);
+
+      // Yield all progress messages before execution
+      for (const tc of batch) {
         yield {
           ok: true,
           value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` },
         };
-        opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
-          arguments: tc.arguments,
-        });
-        const client = toolClientMap.get(tc.name);
-        if (!client) continue;
-        const toolSpan = this.tracer.startSpan('smart_agent.tool_call', {
-          parent: toolLoopSpan,
-          attributes: { 'tool.name': tc.name },
-        });
-        const cached = this.toolCache.get(tc.name, tc.arguments);
-        const res = cached
-          ? (() => {
-              this.metrics.toolCacheHitCount.add();
-              toolSpan.setAttribute('cache', 'hit');
-              return {
-                ok: true as const,
-                value: cached,
-              };
-            })()
-          : await (async () => {
-              const r = await client.callTool(tc.name, tc.arguments, opts);
-              if (r.ok) this.toolCache.set(tc.name, tc.arguments, r.value);
-              return r;
-            })();
-        const text = !res.ok
-          ? res.error.message
-          : typeof res.value.content === 'string'
-            ? res.value.content
-            : JSON.stringify(res.value.content);
-        toolSpan.setStatus(res.ok ? 'ok' : 'error', res.ok ? undefined : text);
-        toolSpan.end();
+      }
+
+      // Execute all tool calls concurrently
+      const results = await Promise.all(
+        batch.map(async (tc) => {
+          opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
+            arguments: tc.arguments,
+          });
+          const client = toolClientMap.get(tc.name);
+          if (!client) return { tc, text: '', res: null };
+          const toolSpan = this.tracer.startSpan('smart_agent.tool_call', {
+            parent: toolLoopSpan,
+            attributes: { 'tool.name': tc.name },
+          });
+          const cached = this.toolCache.get(tc.name, tc.arguments);
+          const res = cached
+            ? (() => {
+                this.metrics.toolCacheHitCount.add();
+                toolSpan.setAttribute('cache', 'hit');
+                return { ok: true as const, value: cached };
+              })()
+            : await (async () => {
+                const r = await client.callTool(tc.name, tc.arguments, opts);
+                if (r.ok) this.toolCache.set(tc.name, tc.arguments, r.value);
+                return r;
+              })();
+          const text = !res.ok
+            ? res.error.message
+            : typeof res.value.content === 'string'
+              ? res.value.content
+              : JSON.stringify(res.value.content);
+          toolSpan.setStatus(
+            res.ok ? 'ok' : 'error',
+            res.ok ? undefined : text,
+          );
+          toolSpan.end();
+          return { tc, text, res };
+        }),
+      );
+
+      // Process results: update availability, metrics, messages
+      const toolMessages: Message[] = [];
+      for (const { tc, text, res } of results) {
+        if (!res) continue;
         if (!res.ok && isToolContextUnavailableError(text)) {
           const entry = this.toolAvailabilityRegistry.block(
             sessionId,
@@ -869,14 +887,18 @@ export class SmartAgent {
             blockedUntil: entry.blockedUntil,
           });
         }
-        opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, { result: text });
+        opts?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
+          result: text,
+        });
         toolCallCount++;
         this.metrics.toolCallCount.add();
-        messages = [
-          ...messages,
-          { role: 'tool' as const, content: text, tool_call_id: tc.id },
-        ];
+        toolMessages.push({
+          role: 'tool' as const,
+          content: text,
+          tool_call_id: tc.id,
+        });
       }
+      messages = [...messages, ...toolMessages];
     }
   }
 
