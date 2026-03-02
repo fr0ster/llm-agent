@@ -61,6 +61,15 @@ export {
   type HistogramSnapshot,
   type MetricsSnapshot,
 } from './smart-agent/metrics/in-memory-metrics.js';
+// Resilience
+export {
+  CircuitBreaker,
+  type CircuitBreakerConfig,
+  type CircuitState,
+} from './smart-agent/resilience/circuit-breaker.js';
+export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
+export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
+export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {
