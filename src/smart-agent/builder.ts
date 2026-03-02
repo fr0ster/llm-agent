@@ -47,6 +47,7 @@ import type {
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
+import type { IMetrics } from './metrics/types.js';
 import type { ITracer } from './tracer/types.js';
 
 // ---------------------------------------------------------------------------
@@ -164,6 +165,7 @@ export class SmartAgentBuilder {
   private _toolPolicy?: IToolPolicy;
   private _injectionDetector?: IPromptInjectionDetector;
   private _tracer?: ITracer;
+  private _metrics?: IMetrics;
 
   constructor(cfg: SmartAgentBuilderConfig) {
     this.cfg = cfg;
@@ -242,6 +244,12 @@ export class SmartAgentBuilder {
   /** Set a tracer for pipeline span instrumentation. */
   withTracer(tracer: ITracer): this {
     this._tracer = tracer;
+    return this;
+  }
+
+  /** Set a metrics collector for pipeline instrumentation. */
+  withMetrics(metrics: IMetrics): this {
+    this._metrics = metrics;
     return this;
   }
 
@@ -410,6 +418,7 @@ export class SmartAgentBuilder {
           ? { injectionDetector: this._injectionDetector }
           : {}),
         ...(this._tracer ? { tracer: this._tracer } : {}),
+        ...(this._metrics ? { metrics: this._metrics } : {}),
       },
       agentCfg,
     );
