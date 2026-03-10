@@ -150,12 +150,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
   /**
    * Create an OrchestrationClient with the given tools configuration.
+   * Tools are expected in OpenAI function format (already converted by the agent layer).
    */
   private createClient(tools?: unknown[]): OrchestrationClient {
-    const orchTools = tools?.length
-      ? this.convertToOrchestrationTools(tools)
-      : undefined;
-
     // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
     const orchConfig: any = {
       promptTemplating: {
@@ -166,7 +163,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             temperature: this.config.temperature || 0.7,
           },
         },
-        ...(orchTools ? { prompt: { tools: orchTools } } : {}),
+        ...(tools?.length ? { prompt: { tools } } : {}),
       },
     };
 
@@ -175,32 +172,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
       this.destination,
     );
-  }
-
-  /**
-   * Convert MCP tools to OpenAI function calling format expected by the SDK.
-   */
-  private convertToOrchestrationTools(
-    tools: unknown[],
-  ): Array<Record<string, unknown>> {
-    return tools.map((rawTool) => {
-      const tool = rawTool as {
-        name?: string;
-        description?: string;
-        inputSchema?: Record<string, unknown>;
-      };
-      return {
-        type: 'function',
-        function: {
-          name: tool.name ?? '',
-          description: tool.description || '',
-          parameters: tool.inputSchema || {
-            type: 'object',
-            properties: {},
-          },
-        },
-      };
-    });
   }
 
   /**

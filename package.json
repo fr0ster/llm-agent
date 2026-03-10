@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "2.5.0",
+  "version": "2.6.0",
   "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
@@ -50,7 +50,9 @@
     "test:validator": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/validator/__tests__/validator.test.ts",
     "test:session": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/session/__tests__/session-manager.test.ts",
     "test:classifier-bench": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/classifier/__tests__/classifier-benchmark.test.ts",
-    "test:all": "npm run test:adapters && npm run test:server && npm run test:logger && npm run test:policy && npm run test:regression && npm run test:tracer && npm run test:rag-eval && npm run test:metrics && npm run test:resilience && npm run test:health && npm run test:config-watcher && npm run test:reranker && npm run test:inverted-index && npm run test:query-expander && npm run test:qdrant && npm run test:cache && npm run test:validator && npm run test:session && npm run test:classifier-bench",
+    "test:providers": "node --import tsx/esm --test --test-reporter=spec src/llm-providers/__tests__/openai.test.ts src/llm-providers/__tests__/anthropic.test.ts src/llm-providers/__tests__/deepseek.test.ts src/llm-providers/__tests__/sap-core-ai.test.ts",
+    "test:agents": "node --import tsx/esm --test --test-reporter=spec src/agents/__tests__/sap-core-ai-agent.test.ts",
+    "test:all": "npm run test:adapters && npm run test:server && npm run test:logger && npm run test:policy && npm run test:regression && npm run test:tracer && npm run test:rag-eval && npm run test:metrics && npm run test:resilience && npm run test:health && npm run test:config-watcher && npm run test:reranker && npm run test:inverted-index && npm run test:query-expander && npm run test:qdrant && npm run test:cache && npm run test:validator && npm run test:session && npm run test:classifier-bench && npm run test:providers && npm run test:agents",
     "release:check": "npm run lint:check && npm run build && npm run test:all",
     "start": "node dist/smart-agent/cli.js",
     "start:smart": "npm run start",

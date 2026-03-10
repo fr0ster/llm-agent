@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.6.0] — 2026-03-10
+
+### Added
+
+- **Provider unit tests** — 68 tests covering all 4 LLM providers (OpenAI, Anthropic, DeepSeek, SAP AI Core) and SAP Core AI Agent. Tests cover constructor validation, message formatting, tool conversion, credentials handling, and error paths.
+- **SAP AI Core documentation** — `docs/SAP_AI_CORE.md` with architecture diagram, authentication methods (env var vs programmatic credentials), configuration reference, usage examples, tool format conversion, and troubleshooting guide.
+- **Test scripts** — `test:providers`, `test:agents` npm scripts; updated `test:all` to include them.
+
+### Fixed
+
+- **Double tool conversion** — Removed redundant `convertToOrchestrationTools()` from `SapCoreAIProvider`. Tools are now converted once in the agent layer and passed through to `OrchestrationClient` directly.
+
+---
+
 ## [2.5.0] — 2026-03-10
 
 ### Added
