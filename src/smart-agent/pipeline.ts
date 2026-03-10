@@ -9,7 +9,10 @@ import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
 import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { OpenAIProvider } from '../llm-providers/openai.js';
-import { SapCoreAIProvider } from '../llm-providers/sap-core-ai.js';
+import {
+  type SapAICoreCredentials,
+  SapCoreAIProvider,
+} from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import type { IRag } from './interfaces/rag.js';
@@ -26,11 +29,14 @@ import { VectorRag } from './rag/vector-rag.js';
 
 export interface PipelineLlmProviderConfig {
   provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
-  apiKey: string;
+  /** API key. Required for openai/anthropic/deepseek; optional for sap-ai-sdk. */
+  apiKey?: string;
   model?: string;
   temperature?: number;
   /** SAP AI Core resource group (used when provider is 'sap-ai-sdk') */
   resourceGroup?: string;
+  /** Programmatic OAuth2 credentials for SAP AI Core (bypasses AICORE_SERVICE_KEY env var) */
+  credentials?: SapAICoreCredentials;
 }
 
 export interface PipelineRagStoreConfig {
@@ -132,10 +138,11 @@ export function makeLlmFromProvider(
     }
     case 'sap-ai-sdk': {
       const provider = new SapCoreAIProvider({
-        apiKey: cfg.apiKey || 'sap-ai-sdk-managed',
+        apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
         resourceGroup: cfg.resourceGroup,
+        credentials: cfg.credentials,
       });
       const agent = new SapCoreAIAgent({
         llmProvider: provider,

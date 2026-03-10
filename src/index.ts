@@ -38,6 +38,7 @@ export { type OpenAIConfig, OpenAIProvider } from './llm-providers/openai.js';
 // LLM Providers
 // NOTE: All LLM providers are accessed through SAP AI Core
 export {
+  type SapAICoreCredentials,
   type SapCoreAIConfig,
   SapCoreAIProvider,
 } from './llm-providers/sap-core-ai.js';

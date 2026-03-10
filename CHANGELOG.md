@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.5.0] — 2026-03-10
+
+### Added
+
+- **SAP AI Core programmatic credentials** — New `SapAICoreCredentials` interface allows passing `clientId`, `clientSecret`, `tokenServiceUrl`, and `servicUrl` directly to `SapCoreAIProvider`, bypassing the `AICORE_SERVICE_KEY` environment variable. Useful for multi-tenant scenarios and dynamic credential management.
+- **Pipeline credential support** — `PipelineLlmProviderConfig` now accepts optional `credentials` for SAP AI Core provider.
+
+### Changed
+
+- **`apiKey` now optional in `LLMProviderConfig`** — Providers with custom auth flows (e.g. SAP AI Core OAuth2) no longer need a dummy API key. Existing providers (OpenAI, Anthropic, DeepSeek) still validate `apiKey` via `validateConfig()`.
+- **Removed fake `'sap-ai-sdk-managed'` key** — CLI and pipeline no longer pass a placeholder API key when creating `SapCoreAIProvider`.
+
+---
+
 ## [2.4.1] — 2026-03-02
 
 ### Fixed

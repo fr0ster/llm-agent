@@ -48,7 +48,8 @@ export interface LLMResponse {
 }
 
 export interface LLMProviderConfig {
-  apiKey: string;
+  /** API key for authentication. Optional for providers with custom auth (e.g. SAP AI Core). */
+  apiKey?: string;
   baseURL?: string;
   model?: string;
   temperature?: number;

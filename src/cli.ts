@@ -243,7 +243,6 @@ async function main() {
           console.log('   AICORE_SERVICE_KEY: ❌ NOT SET');
         }
         llmProviderInstance = new SapCoreAIProvider({
-          apiKey: 'sap-ai-sdk-managed',
           model: process.env.SAP_AI_MODEL || 'gpt-4o',
           resourceGroup: process.env.SAP_AI_RESOURCE_GROUP,
         });
