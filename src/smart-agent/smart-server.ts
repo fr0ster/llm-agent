@@ -666,6 +666,19 @@ export class SmartServer {
           );
           break;
         }
+        // SSE heartbeat comment — keeps connection alive, ignored by clients
+        if (chunk.value.heartbeat) {
+          const hb = chunk.value.heartbeat;
+          res.write(`: heartbeat tool=${hb.tool} elapsed=${hb.elapsed}ms\n\n`);
+          continue;
+        }
+        // SSE timing breakdown comment — sent with the final chunk
+        if (chunk.value.timing) {
+          const parts = chunk.value.timing.map(
+            (t) => `${t.phase}=${t.duration}ms`,
+          );
+          res.write(`: timing ${parts.join(' ')}\n\n`);
+        }
         if (chunk.value.usage) {
           lastUsage = {
             prompt_tokens: chunk.value.usage.promptTokens,
