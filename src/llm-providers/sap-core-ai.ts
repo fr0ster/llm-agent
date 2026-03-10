@@ -15,6 +15,21 @@ import {
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
+/**
+ * OAuth2 Client Credentials for programmatic SAP AI Core authentication.
+ * When provided, bypasses the AICORE_SERVICE_KEY environment variable.
+ */
+export interface SapAICoreCredentials {
+  /** OAuth2 client ID (e.g. 'sb-xxx...') */
+  clientId: string;
+  /** OAuth2 client secret */
+  clientSecret: string;
+  /** Token endpoint URL (e.g. 'https://xxx.authentication.xxx.hana.ondemand.com/oauth/token') */
+  tokenServiceUrl: string;
+  /** SAP AI Core API base URL (e.g. 'https://api.ai.xxx.aicore.cfapps.xxx.hana.ondemand.com') */
+  servicUrl: string;
+}
+
 export interface SapCoreAIConfig extends LLMProviderConfig {
   /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Default: 'gpt-4o' */
   model?: string;
@@ -24,6 +39,11 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   maxTokens?: number;
   /** SAP AI Core resource group */
   resourceGroup?: string;
+  /**
+   * Programmatic OAuth2 credentials for SAP AI Core.
+   * When set, the SDK uses these instead of the AICORE_SERVICE_KEY env var.
+   */
+  credentials?: SapAICoreCredentials;
   /** Optional logger */
   log?: {
     debug(message: string, meta?: Record<string, unknown>): void;
@@ -41,6 +61,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly model: string;
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
+  private readonly destination?: Record<string, unknown>;
 
   constructor(config: SapCoreAIConfig) {
     super(config);
@@ -48,6 +69,16 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     this.model = config.model || 'gpt-4o';
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
+
+    if (config.credentials) {
+      this.destination = {
+        url: config.credentials.servicUrl,
+        authentication: 'OAuth2ClientCredentials',
+        clientId: config.credentials.clientId,
+        clientSecret: config.credentials.clientSecret,
+        tokenServiceUrl: config.credentials.tokenServiceUrl,
+      };
+    }
   }
 
   async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
@@ -142,6 +173,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     return new OrchestrationClient(
       orchConfig,
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+      this.destination,
     );
   }
 

@@ -135,7 +135,7 @@ export class AnthropicAgent extends BaseAgent {
 
     const baseURL = config.baseURL || 'https://api.anthropic.com/v1';
     const headers: Record<string, string> = {
-      'x-api-key': config.apiKey,
+      'x-api-key': config.apiKey ?? '',
       'anthropic-version': '2023-06-01',
     };
 
