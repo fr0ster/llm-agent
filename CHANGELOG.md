@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.7.0] — 2026-03-11
+
+### Added
+
+- **SSE heartbeat during MCP tool execution** — While slow MCP tools (e.g. ABAP) are running, the streaming endpoint now emits periodic SSE comment lines (`: heartbeat tool=<name> elapsed=<ms>`). This keeps HTTP connections alive and prevents client/proxy timeouts without breaking OpenAI SSE protocol compliance — standard clients (Goose, Cline, etc.) silently ignore SSE comments per spec.
+- **Timing breakdown** — Every streaming response now includes a detailed timing breakdown as an SSE comment (`: timing llm_call_1=1200ms tool_get_order=48500ms llm_call_2=2100ms total=52300ms`). Provides per-phase duration for LLM calls and MCP tool executions.
+- **`heartbeatIntervalMs` config** — New `SmartAgentConfig` option (default: 5000ms) to control heartbeat frequency during tool execution.
+- **`ToolHeartbeat` / `TimingEntry` types** — New fields on `LlmStreamChunk` for heartbeat and timing data, exported from `interfaces/types.ts`.
+- **Heartbeat & timing tests** — 8 new tests covering heartbeat emission for slow/fast/concurrent tools, elapsed monotonicity, timing breakdown structure, and duration correctness.
+
+---
+
 ## [2.6.0] — 2026-03-10
 
 ### Added

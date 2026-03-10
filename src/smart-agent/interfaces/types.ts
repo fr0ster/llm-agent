@@ -37,11 +37,29 @@ export interface CallOptions {
   };
 }
 
+export interface ToolHeartbeat {
+  /** Tool name currently being executed. */
+  tool: string;
+  /** Milliseconds elapsed since tool execution started. */
+  elapsed: number;
+}
+
+export interface TimingEntry {
+  /** Phase label, e.g. 'llm_call_1', 'tool_get_order'. */
+  phase: string;
+  /** Duration in milliseconds. */
+  duration: number;
+}
+
 export interface LlmStreamChunk {
   content: string;
   toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
   usage?: LlmUsage;
+  /** Periodic heartbeat emitted while an MCP tool is executing. */
+  heartbeat?: ToolHeartbeat;
+  /** End-of-request timing breakdown for all phases. */
+  timing?: TimingEntry[];
 }
 
 // ---------------------------------------------------------------------------
