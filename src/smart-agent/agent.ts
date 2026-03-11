@@ -18,6 +18,7 @@ import {
   type Result,
   SmartAgentError,
   type Subprompt,
+  type TimingEntry,
 } from './interfaces/types.js';
 import type { ILogger } from './logger/index.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
@@ -96,6 +97,8 @@ export interface SmartAgentConfig {
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
   sessionTokenBudget?: number;
+  /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
+  heartbeatIntervalMs?: number;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -597,6 +600,8 @@ export class SmartAgent {
     let messages = initialMessages;
     const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     const externalToolNames = new Set(externalTools.map((t) => t.name));
+    const timingLog: TimingEntry[] = [];
+    const loopStart = Date.now();
     let currentTools = activeTools;
     for (let iteration = 0; ; iteration++) {
       if (opts?.signal?.aborted) {
@@ -606,11 +611,17 @@ export class SmartAgent {
         return;
       }
       if (iteration >= this.config.maxIterations) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('iteration_limit_reached');
         toolLoopSpan.end();
         yield {
           ok: true,
-          value: { content: '', finishReason: 'length', usage },
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
         };
         return;
       }
@@ -703,7 +714,12 @@ export class SmartAgent {
       }
       llmSpan.setStatus('ok');
       llmSpan.end();
-      this.metrics.llmCallLatency.record(Date.now() - llmCallStart);
+      const llmCallDuration = Date.now() - llmCallStart;
+      this.metrics.llmCallLatency.record(llmCallDuration);
+      timingLog.push({
+        phase: `llm_call_${iteration + 1}`,
+        duration: llmCallDuration,
+      });
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args = {};
         try {
@@ -739,11 +755,17 @@ export class SmartAgent {
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
         yield {
           ok: true,
-          value: { content: '', finishReason: finishReason || 'stop', usage },
+          value: {
+            content: '',
+            finishReason: finishReason || 'stop',
+            usage,
+            timing: timingLog,
+          },
         };
         return;
       }
@@ -824,11 +846,17 @@ export class SmartAgent {
         continue;
       }
       if (validExternalCalls.length > 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
         yield {
           ok: true,
-          value: { content: '', finishReason: 'tool_calls', usage },
+          value: {
+            content: '',
+            finishReason: 'tool_calls',
+            usage,
+            timing: timingLog,
+          },
         };
         return;
       }
@@ -854,15 +882,22 @@ export class SmartAgent {
           ? this.config.maxToolCalls - toolCallCount
           : internalCalls.length;
       if (remaining <= 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('tool_call_limit_reached');
         toolLoopSpan.end();
         yield {
           ok: true,
-          value: { content: '', finishReason: 'length', usage },
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
         };
         return;
       }
       const batch = internalCalls.slice(0, remaining);
+      const heartbeatMs = this.config.heartbeatIntervalMs ?? 5000;
 
       // Yield all progress messages before execution
       for (const tc of batch) {
@@ -872,14 +907,25 @@ export class SmartAgent {
         };
       }
 
-      // Execute all tool calls concurrently
-      const results = await Promise.all(
-        batch.map(async (tc) => {
+      // Execute all tool calls concurrently with heartbeat
+      type ToolExecResult = {
+        tc: { id: string; name: string; arguments: Record<string, unknown> };
+        text: string;
+        res: Result<
+          { content: string | Record<string, unknown>; isError?: boolean },
+          { message: string }
+        > | null;
+        duration: number;
+      };
+
+      const toolExecPromises = batch.map(
+        async (tc): Promise<ToolExecResult> => {
+          const toolStart = Date.now();
           opts?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
             arguments: tc.arguments,
           });
           const client = toolClientMap.get(tc.name);
-          if (!client) return { tc, text: '', res: null };
+          if (!client) return { tc, text: '', res: null, duration: 0 };
           const toolSpan = this.tracer.startSpan('smart_agent.tool_call', {
             parent: toolLoopSpan,
             attributes: { 'tool.name': tc.name },
@@ -906,9 +952,56 @@ export class SmartAgent {
             res.ok ? undefined : text,
           );
           toolSpan.end();
-          return { tc, text, res };
-        }),
+          return { tc, text, res, duration: Date.now() - toolStart };
+        },
       );
+
+      // Race: tool execution vs periodic heartbeat
+      const allDone = Promise.all(toolExecPromises);
+      const pendingTools = new Set(batch.map((tc) => tc.name));
+      const toolStartTime = Date.now();
+      let results: ToolExecResult[] = [];
+      let settled = false;
+
+      // Mark individual tools as done when they resolve
+      for (const [i, p] of toolExecPromises.entries()) {
+        p.then(() => pendingTools.delete(batch[i].name));
+      }
+
+      while (!settled) {
+        const winner = await Promise.race([
+          allDone.then((r) => ({ tag: 'done' as const, results: r })),
+          new Promise<{ tag: 'tick' }>((resolve) =>
+            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+          ),
+        ]);
+        if (winner.tag === 'done') {
+          results = winner.results;
+          settled = true;
+        } else {
+          // Yield heartbeat for each still-pending tool
+          for (const tool of pendingTools) {
+            yield {
+              ok: true,
+              value: {
+                content: '',
+                heartbeat: {
+                  tool,
+                  elapsed: Date.now() - toolStartTime,
+                },
+              },
+            };
+          }
+        }
+      }
+
+      // Collect per-tool timing into the shared timing log
+      for (const r of results) {
+        timingLog.push({
+          phase: `tool_${r.tc.name}`,
+          duration: r.duration,
+        });
+      }
 
       // Process results: update availability, metrics, messages
       const toolMessages: Message[] = [];
