@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.8.0] — 2026-03-11
+
+### Changed
+
+- **Stream test client** — Updated `scripts/test-stream-client.ts` to display SSE heartbeat (`💓`) and timing (`⏱️`) comments. Accepts custom message as CLI argument.
+
+---
+
 ## [2.7.0] — 2026-03-11
 
 ### Added
