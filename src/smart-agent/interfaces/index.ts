@@ -34,7 +34,9 @@ export type {
   Result,
   Subprompt,
   SubpromptType,
+  TimingEntry,
   ToolCallRecord,
+  ToolHeartbeat,
   TraceContext,
 } from './types.js';
 export {
