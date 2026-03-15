@@ -422,6 +422,19 @@ export class SmartAgent {
 
         const { tools: mcpTools } = await this._listAllTools(opts);
         const facts = rerankedFacts.ok ? rerankedFacts.value : [];
+
+        // Log RAG results with scores for diagnostics
+        opts?.sessionLogger?.logStep('rag_query_facts', {
+          query: ragText.slice(0, 200),
+          k,
+          resultCount: facts.length,
+          results: facts.map((r) => ({
+            id: r.metadata.id,
+            score: r.score,
+            text: r.text.slice(0, 120),
+          })),
+        });
+
         const ragToolNames = new Set(
           facts
             .map((r) => r.metadata.id as string)
@@ -434,6 +447,17 @@ export class SmartAgent {
             : mode === 'hard'
               ? mcpTools
               : [];
+
+        // Log tool selection diagnostics
+        opts?.sessionLogger?.logStep('tools_selected', {
+          totalMcp: mcpTools.length,
+          ragMatchedTools: [...ragToolNames],
+          selectedCount: selectedMcpTools.length + externalTools.length,
+          selectedNames: [
+            ...selectedMcpTools.map((t) => t.name),
+            ...externalTools.map((t) => t.name),
+          ],
+        });
 
         retrieved = {
           facts,
