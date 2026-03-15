@@ -48,7 +48,7 @@ export class OpenAIAgent extends BaseAgent {
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
       temperature: options?.temperature ?? config.temperature ?? 0.7,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
       top_p: options?.topP,
       stop: options?.stop,
     });
@@ -92,7 +92,7 @@ export class OpenAIAgent extends BaseAgent {
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
       temperature: options?.temperature ?? config.temperature ?? 0.7,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
       top_p: options?.topP,
       stop: options?.stop,
       stream: true,

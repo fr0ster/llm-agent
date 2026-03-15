@@ -47,7 +47,7 @@ export class AnthropicAgent extends BaseAgent {
     const requestBody: Record<string, unknown> = {
       model,
       messages: formattedMessages,
-      max_tokens: config.maxTokens || 2000,
+      max_tokens: config.maxTokens || 4096,
       temperature: config.temperature || 0.7,
     };
 
@@ -142,7 +142,7 @@ export class AnthropicAgent extends BaseAgent {
     const requestBody: Record<string, unknown> = {
       model,
       messages: formattedMessages,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 2000,
+      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
       temperature: options?.temperature ?? config.temperature ?? 0.7,
       stream: true,
     };
