@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "2.8.1",
+  "version": "2.9.0",
   "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
@@ -101,7 +101,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/fr0ster/cloud-llm-hub.git"
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
   },
   "keywords": [
     "llm",

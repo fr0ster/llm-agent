@@ -79,7 +79,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 |-------|------|---------|-------------|
 | `model` | `string` | `'gpt-4o'` | Model name deployed on SAP AI Core |
 | `temperature` | `number` | `0.7` | Generation temperature |
-| `maxTokens` | `number` | `2000` | Max tokens for generation |
+| `maxTokens` | `number` | `16384` | Max tokens for generation |
 | `resourceGroup` | `string` | — | SAP AI Core resource group |
 | `credentials` | `SapAICoreCredentials` | — | Programmatic OAuth2 credentials (bypasses env var) |
 | `apiKey` | `string` | — | Not used by SAP provider (auth handled by SDK) |
@@ -217,3 +217,6 @@ If a tool is missing `name`, `description`, or `inputSchema`, safe defaults are 
 | `Model not found` | Model not deployed | Deploy the model in SAP AI Core Launchpad |
 | `Resource group not found` | Wrong resource group | Check `SAP_AI_RESOURCE_GROUP` value |
 | `OAuth2 token error` | Wrong `tokenServiceUrl` | Verify the URL from service key `uaa.url` |
+| `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
+| `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |
+| `Stream finished with token length exceeded` | `maxTokens` too low for tool-calling models | Set `maxTokens: 32768` or higher in config |
