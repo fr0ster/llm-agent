@@ -147,6 +147,7 @@ export class SmartAgentBuilder {
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
   private _getUsage?: () => TokenUsage;
+  private _agentOverrides: Partial<SmartAgentConfig> = {};
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -273,6 +274,94 @@ export class SmartAgentBuilder {
   /** Set a custom token usage provider. */
   withUsageProvider(getUsage: () => TokenUsage): this {
     this._getUsage = getUsage;
+    return this;
+  }
+
+  // -------------------------------------------------------------------------
+  // Pipeline configuration (SmartAgentConfig parameters)
+  // -------------------------------------------------------------------------
+
+  /** Set the execution mode: 'smart' (full pipeline), 'hard' (MCP-only), 'pass' (direct LLM). */
+  withMode(mode: 'hard' | 'pass' | 'smart'): this {
+    this._agentOverrides.mode = mode;
+    return this;
+  }
+
+  /** Set the maximum number of tool-loop iterations. */
+  withMaxIterations(n: number): this {
+    this._agentOverrides.maxIterations = n;
+    return this;
+  }
+
+  /** Set the maximum number of tool calls per request. */
+  withMaxToolCalls(n: number): this {
+    this._agentOverrides.maxToolCalls = n;
+    return this;
+  }
+
+  /** Set the request timeout in milliseconds. */
+  withTimeout(ms: number): this {
+    this._agentOverrides.timeoutMs = ms;
+    return this;
+  }
+
+  /** Set the number of RAG results to retrieve per store. */
+  withRagQueryK(k: number): this {
+    this._agentOverrides.ragQueryK = k;
+    return this;
+  }
+
+  /** Enable or disable query expansion for RAG queries. */
+  withQueryExpansion(enabled: boolean): this {
+    this._agentOverrides.queryExpansionEnabled = enabled;
+    return this;
+  }
+
+  /** Enable or disable reasoning/strategy blocks in the response. */
+  withShowReasoning(enabled: boolean): this {
+    this._agentOverrides.showReasoning = enabled;
+    return this;
+  }
+
+  /** Set the SSE heartbeat interval in milliseconds during tool execution. */
+  withHeartbeatInterval(ms: number): this {
+    this._agentOverrides.heartbeatIntervalMs = ms;
+    return this;
+  }
+
+  /** Enable or disable the classification pipeline stage. When disabled, input is treated as a single action. */
+  withClassification(enabled: boolean): this {
+    this._agentOverrides.classificationEnabled = enabled;
+    return this;
+  }
+
+  /** Set RAG retrieval mode: 'auto' (SAP context), 'always', or 'never'. */
+  withRagRetrieval(mode: 'auto' | 'always' | 'never'): this {
+    this._agentOverrides.ragRetrievalMode = mode;
+    return this;
+  }
+
+  /** Enable or disable translation of non-ASCII RAG queries to English. */
+  withRagTranslation(enabled: boolean): this {
+    this._agentOverrides.ragTranslationEnabled = enabled;
+    return this;
+  }
+
+  /** Enable or disable upserting classified subprompts to RAG stores. */
+  withRagUpsert(enabled: boolean): this {
+    this._agentOverrides.ragUpsertEnabled = enabled;
+    return this;
+  }
+
+  /** Set the history message count threshold for auto-summarization. */
+  withHistorySummarization(limit: number): this {
+    this._agentOverrides.historyAutoSummarizeLimit = limit;
+    return this;
+  }
+
+  /** Set the session token budget for multi-turn conversations. */
+  withSessionTokenBudget(budget: number): this {
+    this._agentOverrides.sessionTokenBudget = budget;
     return this;
   }
 
@@ -405,6 +494,8 @@ export class SmartAgentBuilder {
       ...(this.cfg.sessionPolicy
         ? { sessionPolicy: this.cfg.sessionPolicy }
         : {}),
+      // Fluent overrides take precedence over cfg.agent
+      ...this._agentOverrides,
     };
 
     // ---- Classifier -------------------------------------------------------

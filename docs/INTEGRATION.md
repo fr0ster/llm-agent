@@ -640,6 +640,16 @@ const handle = await new SmartAgentBuilder({
   .withMetrics(metrics)
   .withQueryExpander(new SapTermExpander())
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
+  // Pipeline stage configuration
+  .withMode('smart')
+  .withMaxIterations(15)
+  .withMaxToolCalls(50)
+  .withRagRetrieval('always')        // force RAG even without SAP context
+  .withClassification(true)          // enable/disable classification stage
+  .withRagTranslation(true)          // translate non-ASCII queries to English
+  .withQueryExpansion(true)          // expand queries with synonyms
+  .withShowReasoning(false)
+  .withHeartbeatInterval(3000)
   .build();
 
 // Use the agent
