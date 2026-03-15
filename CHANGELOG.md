@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.9.0] — 2026-03-15
+
+### Fixed
+
+- **SapCoreAIProvider: `prompt.template` missing** — `createClient()` now always includes `prompt: { template: [] }` in orchestration config. Previously the Orchestration Service returned 400 ("Either a prompt template or messages must be defined").
+- **SapCoreAIProvider: `messagesHistory` → `messages`** — `chat()` and `streamChat()` now use `messages` instead of `messagesHistory` in SDK calls. `messages` participates in prompt templating; `messagesHistory` does not, which caused 400 ("Unused parameters") errors.
+- **SapCoreAIProvider: `max_tokens` default raised to 16384** — Previous default of 2000 was insufficient for tool-calling models (e.g. Claude) that generate reasoning before emitting `tool_calls`, causing truncated responses with `finish_reason: "length"`.
+
+### Changed
+
+- **`package.json` repository URL** — Corrected from `cloud-llm-hub` to `llm-agent`.
+
+---
+
 ## [2.8.1] — 2026-03-15
 
 ### Added

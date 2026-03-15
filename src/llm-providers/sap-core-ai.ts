@@ -35,7 +35,7 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
   model?: string;
   /** Temperature for generation. Default: 0.7 */
   temperature?: number;
-  /** Max tokens for generation. Default: 2000 */
+  /** Max tokens for generation. Default: 16384 */
   maxTokens?: number;
   /** SAP AI Core resource group */
   resourceGroup?: string;
@@ -91,7 +91,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       const client = this.createClient(tools);
       const response = await client.chatCompletion({
-        messagesHistory: this.formatMessages(messages),
+        messages: this.formatMessages(messages),
       });
 
       const toolCalls = response.getToolCalls();
@@ -131,7 +131,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     try {
       const client = this.createClient(tools);
       const streamResponse = await client.stream({
-        messagesHistory: this.formatMessages(messages),
+        messages: this.formatMessages(messages),
       });
 
       for await (const chunk of streamResponse.stream) {
@@ -159,11 +159,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         model: {
           name: this.model,
           params: {
-            max_tokens: this.config.maxTokens || 2000,
+            max_tokens: this.config.maxTokens || 16384,
             temperature: this.config.temperature || 0.7,
           },
         },
-        ...(tools?.length ? { prompt: { tools } } : {}),
+        prompt: { template: [], ...(tools?.length ? { tools } : {}) },
       },
     };
 
