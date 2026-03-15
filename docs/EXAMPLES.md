@@ -3,6 +3,44 @@
 This document contains usage examples aligned with the current Smart Agent implementation.
 YAML config examples are in [`docs/examples/`](examples/) as standalone files you can use directly.
 
+## How the Agent Works
+
+Understanding the data flow helps choose the right config. See [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) for a fully commented example.
+
+```
+STARTUP
+  MCP server(s) connected
+  → each tool's name + description + schema vectorized into facts RAG store
+  → metadata: { id: "tool:TOOL_NAME" }
+
+PER REQUEST
+  User message
+    ↓
+  Classify → split into typed subprompts:
+    action:   "read table T100"             → drives the tool loop
+    fact:     "T100 stores error messages"   → saved to facts RAG
+    feedback: "always use SE16N for this"    → saved to feedback RAG
+    state:    "working on package Z01"       → saved to state RAG
+    chat:     "thanks!"                      → just reply
+    ↓
+  RAG Upsert → fact/feedback/state subprompts saved to RAG (agent "memory")
+    ↓
+  RAG Retrieval (parallel, if relevant context needed):
+    ├─ translate query to English (for non-ASCII input)
+    ├─ expand query with synonyms
+    ├─ query facts   → MCP tool descriptions + saved domain knowledge
+    ├─ query feedback → user preferences ("use SE16N for tables")
+    └─ query state   → session context ("working on package Z01")
+    ↓
+  Rerank → re-score RAG results by relevance
+    ↓
+  Tool Select → extract tool:XXX IDs from facts → select matching MCP tools
+    ↓
+  Assemble → build LLM context: actions + facts + feedback + state + tools + history
+    ↓
+  Tool Loop → streaming LLM call → execute MCP tools → loop until done
+```
+
 ## YAML Config Examples
 
 ### Simple (flat) configs — hardcoded orchestration flow
@@ -21,6 +59,7 @@ YAML config examples are in [`docs/examples/`](examples/) as standalone files yo
 | [`05-structured-minimal.yaml`](examples/05-structured-minimal.yaml) | Minimal pipeline — no RAG, just classify + assemble + tool-loop |
 | [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant + higher tool limits |
 | [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
+| [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining how tool vectorization, classification, RAG memory, and tool selection work together |
 
 ### Running a YAML config
 
