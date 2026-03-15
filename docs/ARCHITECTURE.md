@@ -222,7 +222,10 @@ Entry points:
 Main implementation:
 - `src/smart-agent/agent.ts` (`SmartAgent`)
 
-Pipeline stages:
+SmartAgent has two execution paths:
+
+**Path A — Hardcoded flow** (default, when `pipeline.stages` is absent):
+
 1. Pre-flight and timeout/abort merging.
 2. Subprompt classification (`ISubpromptClassifier`).
 3. Optional history summarization (helper LLM).
@@ -230,11 +233,21 @@ Pipeline stages:
 5. MCP tool catalog retrieval and tool selection.
 6. Context assembly (`IContextAssembler`).
 7. Streaming tool loop:
-- stream model output,
-- accumulate tool-call deltas,
-- execute internal MCP tools,
-- return external tool calls to caller,
-- enforce loop/tool limits.
+  - stream model output,
+  - accumulate tool-call deltas,
+  - execute internal MCP tools,
+  - return external tool calls to caller,
+  - enforce loop/tool limits.
+
+**Path B — Structured pipeline** (when `pipeline.stages` is present):
+
+1. Pre-flight and timeout/abort merging.
+2. Build `PipelineContext` with all dependencies and mutable state.
+3. `PipelineExecutor.executeStages()` walks the stage definition tree.
+4. Each stage handler reads/writes `PipelineContext`.
+5. The `tool-loop` handler streams via `ctx.yield()` callback.
+
+See [Structured Pipeline DSL](#structured-pipeline-dsl) for details.
 
 ### 3. LLM Integration
 
