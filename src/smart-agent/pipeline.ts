@@ -15,11 +15,10 @@ import {
 } from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
-import type { IRag } from './interfaces/rag.js';
+import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
 import { TokenCountingLlm } from './llm/token-counting-llm.js';
+import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaEmbedder } from './rag/ollama-rag.js';
-import { OpenAiEmbedder } from './rag/openai-embedder.js';
 import { QdrantRag } from './rag/qdrant-rag.js';
 import { VectorRag } from './rag/vector-rag.js';
 
@@ -44,6 +43,12 @@ export interface PipelineLlmProviderConfig {
 export interface PipelineRagStoreConfig {
   /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
   type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /**
+   * Embedder name — resolved from the embedder factory registry.
+   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
+   * When omitted, defaults to 'ollama'.
+   */
+  embedder?: string;
   /** Base URL for embedding service or Qdrant server */
   url?: string;
   /** API key (for openai type or Qdrant auth) */
@@ -163,7 +168,48 @@ export function makeLlmFromProvider(
   }
 }
 
-export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
+/**
+ * Resolve an IEmbedder from config.
+ *
+ * Priority:
+ *   1. Injected embedder instance (DI — consumer provides ready IEmbedder)
+ *   2. Named factory from the registry (YAML `embedder: <name>`)
+ *   3. Default: 'ollama'
+ */
+function resolveEmbedder(
+  cfg: PipelineRagStoreConfig,
+  injectedEmbedder?: IEmbedder,
+  extraFactories?: Record<string, EmbedderFactory>,
+): IEmbedder {
+  if (injectedEmbedder) return injectedEmbedder;
+
+  const name = cfg.embedder ?? 'ollama';
+  const factories = { ...builtInEmbedderFactories, ...extraFactories };
+  const factory = factories[name];
+  if (!factory) {
+    throw new Error(
+      `Unknown embedder "${name}". Register a factory via embedderFactories or use one of: ${Object.keys(factories).join(', ')}`,
+    );
+  }
+  return factory({
+    url: cfg.url,
+    apiKey: cfg.apiKey,
+    model: cfg.model,
+    timeoutMs: cfg.timeoutMs,
+  });
+}
+
+export interface MakeRagOptions {
+  /** Pre-built embedder injected by the consumer (takes precedence over config). */
+  embedder?: IEmbedder;
+  /** Additional embedder factories (merged with built-ins). */
+  embedderFactories?: Record<string, EmbedderFactory>;
+}
+
+export function makeRagFromStoreConfig(
+  cfg: PipelineRagStoreConfig,
+  options?: MakeRagOptions,
+): IRag {
   if (cfg.type === 'in-memory') {
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
   }
@@ -172,19 +218,11 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
     if (!cfg.url) {
       throw new Error('Qdrant URL is required for qdrant RAG type');
     }
-    // Qdrant needs an embedder — default to Ollama
-    const embedder = cfg.apiKey
-      ? new OpenAiEmbedder({
-          apiKey: cfg.apiKey,
-          baseURL: undefined,
-          model: cfg.model,
-          timeoutMs: cfg.timeoutMs,
-        })
-      : new OllamaEmbedder({
-          ollamaUrl: undefined,
-          model: cfg.model,
-          timeoutMs: cfg.timeoutMs,
-        });
+    const embedder = resolveEmbedder(
+      cfg,
+      options?.embedder,
+      options?.embedderFactories,
+    );
     return new QdrantRag({
       url: cfg.url,
       collectionName: cfg.collectionName ?? 'llm-agent',
@@ -194,28 +232,12 @@ export function makeRagFromStoreConfig(cfg: PipelineRagStoreConfig): IRag {
     });
   }
 
-  if (cfg.type === 'openai') {
-    if (!cfg.apiKey) {
-      throw new Error('OpenAI API key is required for openai RAG type');
-    }
-    const embedder = new OpenAiEmbedder({
-      apiKey: cfg.apiKey,
-      baseURL: cfg.url,
-      model: cfg.model,
-      timeoutMs: cfg.timeoutMs,
-    });
-    return new VectorRag(embedder, {
-      dedupThreshold: cfg.dedupThreshold,
-      vectorWeight: cfg.vectorWeight,
-      keywordWeight: cfg.keywordWeight,
-    });
-  }
-
-  const embedder = new OllamaEmbedder({
-    ollamaUrl: cfg.url,
-    model: cfg.model,
-    timeoutMs: cfg.timeoutMs,
-  });
+  // 'openai' and 'ollama' (default) — VectorRag with resolved embedder
+  const embedder = resolveEmbedder(
+    { ...cfg, embedder: cfg.embedder ?? cfg.type ?? 'ollama' },
+    options?.embedder,
+    options?.embedderFactories,
+  );
   return new VectorRag(embedder, {
     dedupThreshold: cfg.dedupThreshold,
     vectorWeight: cfg.vectorWeight,

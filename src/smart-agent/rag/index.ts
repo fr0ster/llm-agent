@@ -1,4 +1,11 @@
+export { builtInEmbedderFactories } from './embedder-factories.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';
 export type { OllamaEmbedderConfig } from './ollama-rag.js';
 export { OllamaEmbedder, OllamaRag } from './ollama-rag.js';
+export type { OpenAiEmbedderConfig } from './openai-embedder.js';
+export { OpenAiEmbedder } from './openai-embedder.js';
+export type { QdrantRagConfig } from './qdrant-rag.js';
+export { QdrantRag } from './qdrant-rag.js';
+export type { VectorRagConfig } from './vector-rag.js';
+export { VectorRag } from './vector-rag.js';

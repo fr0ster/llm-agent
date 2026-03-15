@@ -14,6 +14,7 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
+import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
@@ -43,6 +44,12 @@ export interface SmartServerLlmConfig {
 
 export interface SmartServerRagConfig {
   type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /**
+   * Embedder name — resolved from the embedder factory registry.
+   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
+   * When omitted, defaults to 'ollama'.
+   */
+  embedder?: string;
   url?: string;
   model?: string;
   collectionName?: string;
@@ -104,6 +111,10 @@ export interface SmartServerConfig {
   version?: string;
   /** Path to YAML config file for hot-reload. */
   configFile?: string;
+  /** Pre-built embedder injected via DI. Takes precedence over config-driven selection. */
+  embedder?: IEmbedder;
+  /** Named embedder factories for YAML-driven selection (merged with built-ins). */
+  embedderFactories?: Record<string, EmbedderFactory>;
 }
 
 export interface SmartServerHandle {
@@ -193,9 +204,26 @@ export class SmartServer {
       prompts: this.cfg.prompts,
     }).withLogger(fileLogger);
 
+    // Inject embedder / embedder factories
+    if (this.cfg.embedder) {
+      builder = builder.withEmbedder(this.cfg.embedder);
+    }
+    if (this.cfg.embedderFactories) {
+      for (const [name, factory] of Object.entries(
+        this.cfg.embedderFactories,
+      )) {
+        builder = builder.withEmbedderFactory(name, factory);
+      }
+    }
+
     if (this.cfg.circuitBreaker) {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
+
+    const ragOptions = {
+      embedder: this.cfg.embedder,
+      embedderFactories: this.cfg.embedderFactories,
+    };
 
     if (pipeline?.llm?.main) {
       const temp = pipeline.llm.main.temperature ?? 0.7;
@@ -222,11 +250,14 @@ export class SmartServer {
     if (pipeline?.rag) {
       const stores: Partial<SmartAgentRagStores> = {};
       if (pipeline.rag.facts)
-        stores.facts = makeRagFromStoreConfig(pipeline.rag.facts);
+        stores.facts = makeRagFromStoreConfig(pipeline.rag.facts, ragOptions);
       if (pipeline.rag.feedback)
-        stores.feedback = makeRagFromStoreConfig(pipeline.rag.feedback);
+        stores.feedback = makeRagFromStoreConfig(
+          pipeline.rag.feedback,
+          ragOptions,
+        );
       if (pipeline.rag.state)
-        stores.state = makeRagFromStoreConfig(pipeline.rag.state);
+        stores.state = makeRagFromStoreConfig(pipeline.rag.state, ragOptions);
       builder = builder.withRag(stores);
     }
 
