@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.9.2] — 2026-03-15
+
+### Fixed
+
+- **`maxTokens` not passed from YAML pipeline config to LLM providers** — `makeLlmFromProvider()` now reads `maxTokens` from `PipelineLlmProviderConfig` and forwards it to all provider constructors (OpenAI, Anthropic, DeepSeek, SAP AI Core). Previously the value was silently ignored, making it impossible to control output token limits via `smart-server.yaml`. (#2)
+
+---
+
 ## [2.9.1] — 2026-03-15
 
 ### Changed
