@@ -1,0 +1,166 @@
+# Real-world scenario: MCP agent with RAG-based tool selection and memory.
+#
+# How it works:
+#
+# AT STARTUP:
+#   The builder connects to MCP server(s) and vectorizes every tool's name,
+#   description, and JSON schema into the `facts` RAG store.
+#   Each tool is stored with metadata `{ id: "tool:TOOL_NAME" }`.
+#   This allows the agent to select only relevant tools per request
+#   instead of flooding the LLM context with the entire tool catalog.
+#
+# PER REQUEST:
+#
+#   1. CLASSIFY — the classifier LLM decomposes the user message into
+#      typed subprompts:
+#        - action:   "read table T100"           → drives the tool loop
+#        - fact:     "T100 stores error messages" → saved to facts RAG
+#        - feedback: "always use SE16N for this"  → saved to feedback RAG
+#        - state:    "I'm working on package Z01" → saved to state RAG
+#        - chat:     "thanks!"                    → no RAG, just reply
+#
+#   2. RAG UPSERT — fact/feedback/state subprompts are upserted to their
+#      respective RAG stores. This is how the agent "remembers" what the
+#      user tells it. Next time the user asks a related question, this
+#      information will be retrieved automatically.
+#
+#   3. RAG RETRIEVAL (parallel) — runs only when relevant context is needed
+#      (SAP request detected, or ragRetrievalMode: always):
+#
+#      a. translate — if the query is non-ASCII (e.g. German, Ukrainian),
+#         translate it to English for better embedding match
+#      b. expand — add synonyms to the query for broader recall
+#
+#      Then in parallel:
+#        - query facts  → returns MCP tool descriptions + saved facts
+#        - query feedback → returns user corrections/guidance
+#        - query state  → returns session context ("I'm in package Z01")
+#
+#      Then sequentially:
+#        - rerank — re-score results by relevance
+#        - tool-select — extract tool:XXX IDs from facts results,
+#          select only matching MCP tools for the LLM context
+#
+#   4. ASSEMBLE — merge action subprompts + RAG results (facts, feedback,
+#      state, selected tools) + conversation history into the LLM context.
+#
+#   5. TOOL LOOP — streaming LLM call. If the LLM requests a tool call,
+#      execute it via MCP, append the result, and continue the loop.
+#      Streams text chunks to the client in real-time.
+#
+# EXAMPLE SESSION:
+#
+#   User: "Пам'ятай: для таблиці T100 використовуй SE16N. Покажи вміст T100."
+#
+#   Classifier output:
+#     [
+#       { type: "feedback", text: "For table T100 use SE16N" },
+#       { type: "action",   text: "Show content of table T100", context: "sap-abap" }
+#     ]
+#
+#   1. feedback "For table T100 use SE16N" → upserted to feedback RAG
+#   2. RAG query finds:
+#      - facts: tool:read_table (MCP tool), tool:se16n_display (MCP tool)
+#      - feedback: "For table T100 use SE16N" (just saved!)
+#   3. tool-select picks: read_table, se16n_display
+#   4. LLM sees the feedback context and prefers se16n_display
+#   5. Tool loop executes se16n_display(table="T100") via MCP
+#
+#   Next request: "А що щодо T001?"
+#   → feedback RAG still has "use SE16N" → agent remembers the preference
+#
+# Usage:
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/08-real-world-scenario.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+  classifierTemperature: 0.1
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+  dedupThreshold: 0.92
+  vectorWeight: 0.7
+  keywordWeight: 0.3
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 10
+  classificationEnabled: true
+  ragRetrievalMode: auto            # auto | always | never
+  ragUpsertEnabled: true            # save facts/feedback/state to RAG
+  ragTranslationEnabled: true       # translate non-ASCII queries for embeddings
+  queryExpansionEnabled: true        # expand queries with synonyms
+  showReasoning: false
+  historyAutoSummarizeLimit: 10
+
+# Structured pipeline — same as default flow, but explicit and customizable.
+# Remove or reorder stages as needed.
+pipeline:
+  version: "1"
+  stages:
+    # Decompose user message into typed subprompts
+    - id: classify
+      type: classify
+
+    # Condense old messages if conversation is long
+    - id: summarize
+      type: summarize
+
+    # Save fact/feedback/state subprompts to RAG (agent "memory")
+    - id: rag-upsert
+      type: rag-upsert
+
+    # Retrieve relevant context — only when SAP/domain context detected
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        # Prepare the query for better RAG matching
+        - id: translate
+          type: translate
+        - id: expand
+          type: expand
+      after:
+        # Query all stores in parallel
+        - id: rag-queries
+          type: parallel
+          stages:
+            # facts: MCP tool descriptions + domain knowledge
+            - id: rag-facts
+              type: rag-query
+              config: { store: facts, k: 10 }
+            # feedback: user corrections and preferences
+            - id: rag-feedback
+              type: rag-query
+              config: { store: feedback, k: 5 }
+            # state: session context ("I'm in package Z01")
+            - id: rag-state
+              type: rag-query
+              config: { store: state, k: 5 }
+        # Re-score results by relevance to the query
+        - id: rerank
+          type: rerank
+        # Pick MCP tools whose descriptions matched the query
+        - id: tool-select
+          type: tool-select
+
+    # Build LLM context: actions + facts + feedback + state + tools + history
+    - id: assemble
+      type: assemble
+
+    # Stream LLM response, execute MCP tools, loop until done
+    - id: tool-loop
+      type: tool-loop
