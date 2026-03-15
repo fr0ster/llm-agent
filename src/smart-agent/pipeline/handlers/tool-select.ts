@@ -5,6 +5,11 @@
  * Writes: `ctx.selectedTools`, `ctx.activeTools`
  *
  * Uses RAG fact IDs with the `tool:` prefix to identify relevant MCP tools.
+ *
+ * If RAG retrieval was skipped (e.g. `shouldRetrieve` was false), the handler
+ * performs its own facts RAG query to discover tools. This ensures tools are
+ * always discoverable regardless of domain context detection.
+ *
  * Falls back to all MCP tools in `hard` mode or external-only in `smart` mode.
  */
 
@@ -16,7 +21,7 @@ import type { IStageHandler } from '../stage-handler.js';
 export class ToolSelectHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
-    _config: Record<string, unknown>,
+    config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
     const mode = ctx.config.mode || 'smart';
@@ -41,9 +46,37 @@ export class ToolSelectHandler implements IStageHandler {
       }
     }
 
+    // If RAG retrieval was skipped, query facts store directly for tool discovery.
+    // Tools should always be discoverable regardless of shouldRetrieve flag.
+    let factsResults = ctx.ragResults.facts;
+    if (factsResults.length === 0 && ctx.mcpTools.length > 0) {
+      const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
+      const queryText = ctx.ragText || ctx.inputText;
+      const result = await ctx.ragStores.facts.query(queryText, k, ctx.options);
+
+      if (result.ok) {
+        factsResults = result.value;
+        // Also populate ctx.ragResults.facts so assemble can use them
+        ctx.ragResults.facts = result.value;
+
+        ctx.options?.sessionLogger?.logStep('tool_select_rag_fallback', {
+          reason:
+            'RAG retrieval was skipped, querying facts for tool discovery',
+          query: queryText.slice(0, 200),
+          k,
+          resultCount: result.value.length,
+          results: result.value.map((r) => ({
+            id: r.metadata.id,
+            score: r.score,
+            text: r.text.slice(0, 120),
+          })),
+        });
+      }
+    }
+
     // Select tools based on RAG results
     const ragToolNames = new Set(
-      ctx.ragResults.facts
+      factsResults
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('tool:'))
         .map((id) => id.slice(5)),
