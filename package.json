@@ -60,6 +60,7 @@
     "dev": "tsx src/smart-agent/cli.ts",
     "dev:llm": "tsx src/cli.ts --llm-only",
     "client:test-stream": "node --import tsx/esm scripts/test-stream-client.ts",
+    "client:text": "node --import tsx/esm scripts/text-client.ts",
     "test": "npm run build && npm run start",
     "test:llm": "npm run build && npm run start:llm",
     "lint": "npx biome check --write --config-path . src",
