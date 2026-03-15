@@ -37,6 +37,12 @@ import type { IRag } from './interfaces/rag.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
+import { PipelineExecutor } from './pipeline/executor.js';
+import type { IStageHandler } from './pipeline/stage-handler.js';
+import type {
+  StageDefinition,
+  StructuredPipelineDefinition,
+} from './pipeline/types.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
@@ -148,6 +154,8 @@ export class SmartAgentBuilder {
   private _circuitBreakerConfig?: CircuitBreakerConfig;
   private _getUsage?: () => TokenUsage;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
+  private _pipelineDefinition?: StructuredPipelineDefinition;
+  private _customStageHandlers = new Map<string, IStageHandler>();
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -366,6 +374,52 @@ export class SmartAgentBuilder {
   }
 
   // -------------------------------------------------------------------------
+  // Structured pipeline
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set a structured pipeline definition.
+   *
+   * When set, SmartAgent uses the {@link PipelineExecutor} to run the
+   * defined stages instead of the default hardcoded flow.
+   *
+   * The pipeline can come from structured YAML or be built programmatically.
+   *
+   * @example
+   * ```ts
+   * builder.withPipeline({
+   *   version: '1',
+   *   stages: [
+   *     { id: 'classify', type: 'classify' },
+   *     { id: 'assemble', type: 'assemble' },
+   *     { id: 'tool-loop', type: 'tool-loop' },
+   *   ],
+   * });
+   * ```
+   */
+  withPipeline(pipeline: StructuredPipelineDefinition): this {
+    this._pipelineDefinition = pipeline;
+    return this;
+  }
+
+  /**
+   * Register a custom stage handler for the structured pipeline.
+   *
+   * Custom handlers extend the pipeline with domain-specific operations.
+   * The handler's `type` name can then be used in YAML stage definitions.
+   *
+   * @example
+   * ```ts
+   * builder.withStageHandler('custom-enrich', new MyEnrichHandler());
+   * // Then in YAML: { id: 'enrich', type: 'custom-enrich' }
+   * ```
+   */
+  withStageHandler(type: string, handler: IStageHandler): this {
+    this._customStageHandlers.set(type, handler);
+    return this;
+  }
+
+  // -------------------------------------------------------------------------
   // build()
   // -------------------------------------------------------------------------
 
@@ -515,6 +569,26 @@ export class SmartAgentBuilder {
     const assembler: IContextAssembler =
       this._assembler ?? new ContextAssembler(assemblerCfg);
 
+    // ---- Structured pipeline (optional) ------------------------------------
+    let pipelineExecutor: PipelineExecutor | undefined;
+    let pipelineStages: StageDefinition[] | undefined;
+
+    if (this._pipelineDefinition) {
+      const { buildDefaultHandlerRegistry } = await import(
+        './pipeline/handlers/index.js'
+      );
+      const handlers = buildDefaultHandlerRegistry();
+      // Merge custom handlers (override built-ins if same name)
+      for (const [type, handler] of this._customStageHandlers) {
+        handlers.set(type, handler);
+      }
+      const tracer =
+        this._tracer ??
+        new (await import('./tracer/noop-tracer.js')).NoopTracer();
+      pipelineExecutor = new PipelineExecutor(handlers, tracer);
+      pipelineStages = this._pipelineDefinition.stages;
+    }
+
     const agent = new SmartAgent(
       {
         mainLlm: wrappedMainLlm,
@@ -541,6 +615,8 @@ export class SmartAgentBuilder {
           : {}),
       },
       agentCfg,
+      pipelineExecutor,
+      pipelineStages,
     );
 
     const zeroUsage: TokenUsage = {

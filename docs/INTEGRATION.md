@@ -678,6 +678,217 @@ const server = new SmartServer({
 });
 ```
 
+## Structured Pipeline (YAML DSL)
+
+The structured pipeline replaces the hardcoded orchestration flow with a YAML-defined stage tree. This enables reordering, skipping, or adding custom stages without modifying agent code.
+
+### Enabling via YAML
+
+Add `pipeline.version` and `pipeline.stages` to your config:
+
+```yaml
+llm:
+  main:
+    provider: openai
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o
+
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: summarize
+      type: summarize
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - { id: translate, type: translate }
+        - { id: expand, type: expand }
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
+            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
+            - { id: state, type: rag-query, config: { store: state, k: 5 } }
+        - { id: rerank, type: rerank }
+        - { id: tool-select, type: tool-select }
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+```
+
+### Enabling via Builder (programmatic)
+
+```ts
+import {
+  SmartAgentBuilder,
+  type StructuredPipelineDefinition,
+  getDefaultStages,
+} from '@mcp-abap-adt/llm-agent';
+
+const pipeline: StructuredPipelineDefinition = {
+  version: '1',
+  stages: getDefaultStages(), // or your custom stage tree
+};
+
+const handle = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
+  .withMainLlm(myLlm)
+  .withPipeline(pipeline)
+  .build();
+```
+
+### Stage Definition Reference
+
+Each stage has the following fields:
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | `string` | yes | Unique identifier for logging/tracing |
+| `type` | `string` | yes | Built-in type or custom handler name |
+| `config` | `object` | no | Arbitrary config passed to the handler |
+| `when` | `string` | no | Condition expression — stage skipped if falsy |
+| `stages` | `StageDefinition[]` | no | Child stages (for `parallel`/`repeat`) |
+| `after` | `StageDefinition[]` | no | Sequential follow-up stages (for `parallel` only) |
+| `maxIterations` | `number` | no | Max loop iterations (for `repeat`, default: 10) |
+| `until` | `string` | no | Stop condition (for `repeat`) |
+
+### Condition Expressions
+
+The `when` and `until` fields use a safe expression evaluator (no `eval()`):
+
+```yaml
+# Simple property check (truthy)
+when: "shouldRetrieve"
+
+# Negation
+when: "!isAscii"
+
+# Dot-path access
+when: "config.classificationEnabled"
+
+# Boolean operators
+when: "shouldRetrieve && !isAscii"
+
+# Comparisons
+until: "state.iterationCount >= 5"
+```
+
+Supported operators: `!`, `&&`, `||`, `>`, `<`, `>=`, `<=`, `==`, `!=`
+
+### Custom Stage Handlers
+
+Register custom handlers for domain-specific pipeline stages:
+
+```ts
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
+
+class ContentFilterHandler implements IStageHandler {
+  async execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    span: ISpan,
+  ): Promise<boolean> {
+    const blockedPatterns = (config.patterns as string[]) ?? [];
+    for (const pattern of blockedPatterns) {
+      if (new RegExp(pattern, 'i').test(ctx.inputText)) {
+        ctx.error = `Input matched blocked pattern: ${pattern}`;
+        return false; // abort pipeline
+      }
+    }
+    return true; // continue
+  }
+}
+
+// Register via builder
+builder.withStageHandler('content-filter', new ContentFilterHandler());
+```
+
+Then use in YAML:
+
+```yaml
+stages:
+  - id: filter
+    type: content-filter
+    config:
+      patterns: ["DROP TABLE", "rm -rf"]
+  - id: classify
+    type: classify
+  # ...
+```
+
+### Parallel Execution with Sequential Follow-up
+
+The `parallel` type runs `stages` concurrently, then runs `after` stages sequentially:
+
+```yaml
+- id: rag-retrieval
+  type: parallel
+  stages:
+    # These run concurrently
+    - { id: translate, type: translate }
+    - { id: expand, type: expand }
+  after:
+    # These run sequentially after all parallel stages complete
+    - id: queries
+      type: parallel
+      stages:
+        - { id: facts, type: rag-query, config: { store: facts } }
+        - { id: state, type: rag-query, config: { store: state } }
+    - { id: rerank, type: rerank }
+```
+
+### Repeat (Loop) Stages
+
+The `repeat` type loops child stages until a condition or max iterations:
+
+```yaml
+- id: retry-loop
+  type: repeat
+  maxIterations: 3
+  until: "state.validationPassed"
+  stages:
+    - { id: tool-loop, type: tool-loop }
+    - { id: validate, type: my-validator }
+```
+
+### Minimal Pipeline (Skip RAG)
+
+For simple LLM-only use cases, define a minimal pipeline:
+
+```yaml
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+```
+
+### Using Default Stages as Base
+
+```ts
+import { getDefaultStages } from '@mcp-abap-adt/llm-agent';
+
+// Get default stages and insert a custom stage before tool-loop
+const stages = getDefaultStages();
+const toolLoopIndex = stages.findIndex(s => s.id === 'tool-loop');
+stages.splice(toolLoopIndex, 0, {
+  id: 'audit',
+  type: 'audit-log',
+  config: { level: 'info' },
+});
+
+builder.withPipeline({ version: '1', stages });
+```
+
 ## Test Doubles
 
 The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent/testing`:

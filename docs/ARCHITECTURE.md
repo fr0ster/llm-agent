@@ -400,6 +400,8 @@ src/
     context/
     interfaces/
     llm/
+    pipeline/              # structured YAML pipeline DSL
+      handlers/            # built-in stage handler implementations
     policy/
     rag/
     utils/
@@ -408,6 +410,148 @@ src/
     builder.ts             # interface-only factory
     providers.ts           # composition root (concrete providers)
     pipeline.ts            # pipeline config types
+```
+
+## Structured Pipeline DSL
+
+The SmartAgent supports an optional structured YAML pipeline that replaces the hardcoded orchestration flow. When `pipeline.stages` is present in config, the `PipelineExecutor` walks a stage definition tree instead of running the default hardcoded sequence.
+
+### Pipeline Architecture
+
+```text
+PipelineConfig (YAML / programmatic)
+  → PipelineExecutor (tree walker)
+    → IStageHandler implementations (one per stage type)
+      → PipelineContext (shared mutable state bag)
+```
+
+Key components:
+- **`PipelineExecutor`** (`src/smart-agent/pipeline/executor.ts`) — walks the stage tree, handles `parallel`/`repeat` control flow, evaluates `when` conditions, creates tracer spans.
+- **`PipelineContext`** (`src/smart-agent/pipeline/context.ts`) — mutable state bag threaded through all stages. Contains immutable input, injected dependencies, mutable state (RAG results, tools, messages), and a `yield()` callback for streaming.
+- **`IStageHandler`** (`src/smart-agent/pipeline/stage-handler.ts`) — single-method interface: `execute(ctx, config, span): Promise<boolean>`.
+- **Condition evaluator** (`src/smart-agent/pipeline/condition-evaluator.ts`) — safe expression evaluator for `when`/`until` fields. Supports dot-path property access, negation, `&&`/`||`, comparisons. No `eval()`.
+
+### Stage Types
+
+**Built-in operations** — each has a handler in `src/smart-agent/pipeline/handlers/`:
+
+| Stage type | Handler | Role |
+|---|---|---|
+| `classify` | `ClassifyHandler` | Decompose input into typed subprompts |
+| `summarize` | `SummarizeHandler` | Condense history using helper LLM |
+| `rag-upsert` | `RagUpsertHandler` | Upsert subprompts to RAG stores |
+| `translate` | `TranslateHandler` | Translate non-ASCII query to English |
+| `expand` | `ExpandHandler` | Expand query with synonyms |
+| `rag-query` | `RagQueryHandler` | Query a single RAG store (`config.store`) |
+| `rerank` | `RerankHandler` | Re-score RAG results |
+| `tool-select` | `ToolSelectHandler` | Select MCP tools from RAG results |
+| `assemble` | `AssembleHandler` | Build final LLM context |
+| `tool-loop` | `ToolLoopHandler` | Streaming LLM + tool execution loop |
+
+**Control flow** — orchestrate child stages:
+
+| Type | Behavior |
+|---|---|
+| `parallel` | Run `stages` concurrently via `Promise.all`, then run `after` stages sequentially |
+| `repeat` | Loop `stages` until `until` condition or `maxIterations` |
+
+### Default Pipeline
+
+`getDefaultStages()` returns a stage tree that matches the current hardcoded flow:
+
+```text
+classify → summarize → rag-upsert
+  → rag-retrieval (parallel, when: shouldRetrieve):
+      stages: [translate, expand]
+      after: [rag-query×3 (parallel), rerank, tool-select]
+  → assemble → tool-loop
+```
+
+### YAML Example
+
+```yaml
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: summarize
+      type: summarize
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - { id: translate, type: translate }
+        - { id: expand, type: expand }
+      after:
+        - id: rag-query
+          type: parallel
+          stages:
+            - { id: rag-facts, type: rag-query, config: { store: facts, k: 10 } }
+            - { id: rag-feedback, type: rag-query, config: { store: feedback, k: 5 } }
+        - { id: rerank, type: rerank }
+        - { id: tool-select, type: tool-select }
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+```
+
+### Custom Stage Handlers
+
+Consumers can register custom stage handlers via the builder:
+
+```ts
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
+
+class AuditLogHandler implements IStageHandler {
+  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
+    console.log(`[audit] Processing: ${ctx.inputText.slice(0, 100)}`);
+    return true; // continue pipeline
+  }
+}
+
+builder.withStageHandler('audit-log', new AuditLogHandler());
+```
+
+Then reference in YAML:
+
+```yaml
+stages:
+  - id: audit
+    type: audit-log
+  - id: classify
+    type: classify
+  # ...
+```
+
+### Backwards Compatibility
+
+When `pipeline.stages` is absent from config, the hardcoded flow in `SmartAgent.streamProcess()` runs unchanged. The structured pipeline is opt-in only.
+
+### Pipeline Files
+
+```text
+src/smart-agent/pipeline/
+  types.ts              # StageDefinition, BuiltInStageType, ControlFlowType
+  context.ts            # PipelineContext interface
+  stage-handler.ts      # IStageHandler interface
+  condition-evaluator.ts # Safe expression evaluator for when/until
+  executor.ts           # PipelineExecutor — tree walker
+  default-pipeline.ts   # getDefaultStages() — matches hardcoded flow
+  handlers/
+    index.ts            # buildDefaultHandlerRegistry() + re-exports
+    classify.ts         # ClassifyHandler
+    summarize.ts        # SummarizeHandler
+    rag-upsert.ts       # RagUpsertHandler
+    translate.ts        # TranslateHandler
+    expand.ts           # ExpandHandler
+    rag-query.ts        # RagQueryHandler
+    rerank.ts           # RerankHandler
+    tool-select.ts      # ToolSelectHandler
+    assemble.ts         # AssembleHandler
+    tool-loop.ts        # ToolLoopHandler
+  index.ts              # Re-exports all pipeline types and classes
 ```
 
 ## Current Technical Debt (Explicit)

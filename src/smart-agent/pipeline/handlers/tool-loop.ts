@@ -1,0 +1,520 @@
+/**
+ * ToolLoopHandler — streaming LLM call + MCP tool execution loop.
+ *
+ * This is the "terminal" pipeline stage. It takes over the streaming yield
+ * mechanism to push SSE chunks back to the consumer.
+ *
+ * Reads: `ctx.assembledMessages`, `ctx.activeTools`, `ctx.toolClientMap`,
+ *        `ctx.externalTools`, `ctx.mainLlm`
+ * Writes: yields chunks via `ctx.yield()`, updates `ctx.timing`
+ *
+ * ## Config
+ *
+ * | Field              | Type   | Default     | Description                     |
+ * |--------------------|--------|-------------|---------------------------------|
+ * | `maxIterations`    | number | from ctx    | Max tool-loop iterations        |
+ * | `maxToolCalls`     | number | from ctx    | Max total tool calls per request|
+ * | `heartbeatIntervalMs` | number | 5000     | SSE heartbeat interval (ms)     |
+ *
+ * ## Includes
+ *
+ * - Output validation (re-prompts on invalid LLM output)
+ * - Tool call classification (internal / external / hallucinated / blocked)
+ * - Concurrent tool execution with heartbeat
+ * - Tool availability tracking (temporary blacklist)
+ */
+
+import type { Message } from '../../../types.js';
+import { OrchestratorError } from '../../agent.js';
+import type {
+  LlmFinishReason,
+  LlmTool,
+  Result,
+  TimingEntry,
+} from '../../interfaces/types.js';
+import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
+import type { ISpan } from '../../tracer/types.js';
+import {
+  getStreamToolCallName,
+  toToolCallDelta,
+} from '../../utils/tool-call-deltas.js';
+import type { PipelineContext } from '../context.js';
+import type { IStageHandler } from '../stage-handler.js';
+
+export class ToolLoopHandler implements IStageHandler {
+  async execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    parentSpan: ISpan,
+  ): Promise<boolean> {
+    const maxIterations =
+      (config.maxIterations as number) ?? ctx.config.maxIterations;
+    const maxToolCalls =
+      (config.maxToolCalls as number) ?? ctx.config.maxToolCalls;
+    const heartbeatMs =
+      (config.heartbeatIntervalMs as number) ??
+      ctx.config.heartbeatIntervalMs ??
+      5000;
+
+    const mode = ctx.config.mode || 'smart';
+    const externalTools = mode === 'hard' ? [] : ctx.externalTools;
+    const externalToolNames = new Set(externalTools.map((t) => t.name));
+
+    let toolCallCount = 0;
+    let messages = ctx.assembledMessages;
+    const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const timingLog: TimingEntry[] = [];
+    const loopStart = Date.now();
+    let currentTools: LlmTool[] = ctx.activeTools;
+
+    for (let iteration = 0; ; iteration++) {
+      if (ctx.options?.signal?.aborted) {
+        ctx.yield({
+          ok: false,
+          error: new OrchestratorError('Aborted', 'ABORTED'),
+        });
+        return false;
+      }
+      if (iteration >= maxIterations) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // Filter tools per iteration
+      const filteredForIteration = ctx.toolAvailabilityRegistry.filterTools(
+        ctx.sessionId,
+        currentTools,
+      );
+      currentTools = filteredForIteration.allowed;
+      if (filteredForIteration.blocked.length > 0) {
+        ctx.options?.sessionLogger?.logStep(
+          'active_tools_filtered_in_iteration',
+          { iteration: iteration + 1, blocked: filteredForIteration.blocked },
+        );
+      }
+
+      ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
+        messages,
+        tools: currentTools,
+      });
+
+      const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
+        parent: parentSpan,
+        attributes: { 'llm.iteration': iteration + 1 },
+      });
+      ctx.metrics.llmCallCount.add();
+      const llmCallStart = Date.now();
+      const stream = ctx.mainLlm.streamChat(
+        messages,
+        currentTools,
+        ctx.options,
+      );
+
+      let content = '';
+      let finishReason: LlmFinishReason | undefined;
+      const toolCallsMap = new Map<
+        number,
+        { id: string; name: string; arguments: string }
+      >();
+
+      for await (const chunkResult of stream) {
+        if (!chunkResult.ok) {
+          llmSpan.setStatus('error', chunkResult.error.message);
+          llmSpan.end();
+          ctx.yield({
+            ok: false,
+            error: new OrchestratorError(
+              chunkResult.error.message,
+              'LLM_ERROR',
+            ),
+          });
+          return false;
+        }
+        const chunk = chunkResult.value;
+        if (chunk.content) {
+          content += chunk.content;
+          ctx.yield({ ok: true, value: { content: chunk.content } });
+        }
+        if (chunk.toolCalls) {
+          const externalDeltas = chunk.toolCalls.filter((tc) =>
+            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
+          );
+          if (externalDeltas.length > 0) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', toolCalls: externalDeltas },
+            });
+          }
+          for (const [
+            fallbackIndex,
+            rawToolCall,
+          ] of chunk.toolCalls.entries()) {
+            const tc = toToolCallDelta(rawToolCall, fallbackIndex);
+            if (!toolCallsMap.has(tc.index)) {
+              toolCallsMap.set(tc.index, {
+                id: tc.id || '',
+                name: tc.name || '',
+                arguments: tc.arguments || '',
+              });
+            } else {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) {
+                if (tc.id) ex.id = tc.id;
+                if (tc.name) ex.name = tc.name;
+                if (tc.arguments) ex.arguments += tc.arguments;
+              }
+            }
+          }
+        }
+        if (chunk.finishReason) finishReason = chunk.finishReason;
+        if (chunk.usage) {
+          usage.promptTokens += chunk.usage.promptTokens;
+          usage.completionTokens += chunk.usage.completionTokens;
+          usage.totalTokens += chunk.usage.totalTokens;
+          ctx.sessionManager.addTokens(chunk.usage.totalTokens);
+        }
+      }
+
+      llmSpan.setStatus('ok');
+      llmSpan.end();
+      const llmCallDuration = Date.now() - llmCallStart;
+      ctx.metrics.llmCallLatency.record(llmCallDuration);
+      timingLog.push({
+        phase: `llm_call_${iteration + 1}`,
+        duration: llmCallDuration,
+      });
+
+      const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
+        let args: Record<string, unknown> = {};
+        try {
+          args = JSON.parse(tc.arguments);
+        } catch {
+          args = {};
+        }
+        return { id: tc.id, name: tc.name, arguments: args };
+      });
+
+      ctx.options?.sessionLogger?.logStep(
+        `llm_response_iter_${iteration + 1}`,
+        { content, toolCalls, finishReason },
+      );
+
+      // -- No tool calls: validate and finish --------------------------------
+      if (finishReason !== 'tool_calls' || toolCalls.length === 0) {
+        const valResult = await ctx.outputValidator.validate(
+          content,
+          { messages, tools: currentTools },
+          ctx.options,
+        );
+        if (valResult.ok && !valResult.value.valid) {
+          const correction =
+            valResult.value.correctedContent ?? valResult.value.reason;
+          messages = [
+            ...messages,
+            { role: 'assistant' as const, content },
+            {
+              role: 'user' as const,
+              content: `Your previous response was rejected by validation: ${correction}. Please try again.`,
+            },
+          ];
+          continue;
+        }
+        ctx.options?.sessionLogger?.logStep('final_response', {
+          content,
+          usage,
+        });
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: finishReason || 'stop',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // -- Classify tool calls -----------------------------------------------
+      const internalCalls = toolCalls.filter((tc) =>
+        ctx.toolClientMap.has(tc.name),
+      );
+      const validExternalCalls = toolCalls.filter((tc) =>
+        externalToolNames.has(tc.name),
+      );
+      const blockedToolNames = ctx.toolAvailabilityRegistry.getBlockedToolNames(
+        ctx.sessionId,
+      );
+      const blockedCalls = toolCalls.filter((tc) =>
+        blockedToolNames.has(tc.name),
+      );
+      const hallucinations = toolCalls.filter(
+        (tc) =>
+          !blockedToolNames.has(tc.name) &&
+          !ctx.toolClientMap.has(tc.name) &&
+          !externalToolNames.has(tc.name),
+      );
+
+      // -- Handle blocked tools ----------------------------------------------
+      if (blockedCalls.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: content || null,
+            tool_calls: blockedCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+        for (const blocked of blockedCalls) {
+          messages = [
+            ...messages,
+            {
+              role: 'tool' as const,
+              content: `Error: Tool "${blocked.name}" is temporarily unavailable in this session.`,
+              tool_call_id: blocked.id,
+            },
+          ];
+        }
+        ctx.options?.sessionLogger?.logStep('blocked_tool_calls_intercepted', {
+          toolNames: blockedCalls.map((tc) => tc.name),
+        });
+        continue;
+      }
+
+      // -- Handle hallucinated tools -----------------------------------------
+      if (hallucinations.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: content || null,
+            tool_calls: toolCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+        for (const h of hallucinations) {
+          messages = [
+            ...messages,
+            {
+              role: 'tool' as const,
+              content: `Error: Tool "${h.name}" not found.`,
+              tool_call_id: h.id,
+            },
+          ];
+        }
+        continue;
+      }
+
+      // -- Handle external tool calls (delegate to consumer) -----------------
+      if (validExternalCalls.length > 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'tool_calls',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      // -- Execute internal MCP tool calls -----------------------------------
+      if (content || internalCalls.length > 0) {
+        messages = [
+          ...messages,
+          {
+            role: 'assistant' as const,
+            content: content || null,
+            tool_calls: internalCalls.map((tc) => ({
+              id: tc.id,
+              type: 'function' as const,
+              function: {
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              },
+            })),
+          },
+        ];
+      }
+
+      // Check tool call budget
+      const remaining =
+        maxToolCalls !== undefined
+          ? maxToolCalls - toolCallCount
+          : internalCalls.length;
+      if (remaining <= 0) {
+        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+        ctx.timing.push(...timingLog);
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'length',
+            usage,
+            timing: timingLog,
+          },
+        });
+        return true;
+      }
+
+      const batch = internalCalls.slice(0, remaining);
+
+      // Yield progress messages
+      for (const tc of batch) {
+        ctx.yield({
+          ok: true,
+          value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` },
+        });
+      }
+
+      // Execute tool calls concurrently with heartbeat
+      type ToolExecResult = {
+        tc: { id: string; name: string; arguments: Record<string, unknown> };
+        text: string;
+        res: Result<
+          { content: string | Record<string, unknown>; isError?: boolean },
+          { message: string }
+        > | null;
+        duration: number;
+      };
+
+      const toolExecPromises = batch.map(
+        async (tc): Promise<ToolExecResult> => {
+          const toolStart = Date.now();
+          ctx.options?.sessionLogger?.logStep(`mcp_call_${tc.name}`, {
+            arguments: tc.arguments,
+          });
+          const client = ctx.toolClientMap.get(tc.name);
+          if (!client) return { tc, text: '', res: null, duration: 0 };
+          const toolSpan = ctx.tracer.startSpan('smart_agent.tool_call', {
+            parent: parentSpan,
+            attributes: { 'tool.name': tc.name },
+          });
+          const cached = ctx.toolCache.get(tc.name, tc.arguments);
+          const res = cached
+            ? (() => {
+                ctx.metrics.toolCacheHitCount.add();
+                toolSpan.setAttribute('cache', 'hit');
+                return { ok: true as const, value: cached };
+              })()
+            : await (async () => {
+                const r = await client.callTool(
+                  tc.name,
+                  tc.arguments,
+                  ctx.options,
+                );
+                if (r.ok) ctx.toolCache.set(tc.name, tc.arguments, r.value);
+                return r;
+              })();
+          const text = !res.ok
+            ? res.error.message
+            : typeof res.value.content === 'string'
+              ? res.value.content
+              : JSON.stringify(res.value.content);
+          toolSpan.setStatus(
+            res.ok ? 'ok' : 'error',
+            res.ok ? undefined : text,
+          );
+          toolSpan.end();
+          return { tc, text, res, duration: Date.now() - toolStart };
+        },
+      );
+
+      // Race: tool execution vs periodic heartbeat
+      const allDone = Promise.all(toolExecPromises);
+      const pendingTools = new Set(batch.map((tc) => tc.name));
+      const toolStartTime = Date.now();
+      let results: ToolExecResult[] = [];
+      let settled = false;
+
+      for (const [i, p] of toolExecPromises.entries()) {
+        p.then(() => pendingTools.delete(batch[i].name));
+      }
+
+      while (!settled) {
+        const winner = await Promise.race([
+          allDone.then((r) => ({ tag: 'done' as const, results: r })),
+          new Promise<{ tag: 'tick' }>((resolve) =>
+            setTimeout(() => resolve({ tag: 'tick' }), heartbeatMs),
+          ),
+        ]);
+        if (winner.tag === 'done') {
+          results = winner.results;
+          settled = true;
+        } else {
+          for (const tool of pendingTools) {
+            ctx.yield({
+              ok: true,
+              value: {
+                content: '',
+                heartbeat: { tool, elapsed: Date.now() - toolStartTime },
+              },
+            });
+          }
+        }
+      }
+
+      // Collect timing
+      for (const r of results) {
+        timingLog.push({ phase: `tool_${r.tc.name}`, duration: r.duration });
+      }
+
+      // Process results
+      const toolMessages: Message[] = [];
+      for (const { tc, text, res } of results) {
+        if (!res) continue;
+        if (!res.ok && isToolContextUnavailableError(text)) {
+          const entry = ctx.toolAvailabilityRegistry.block(
+            ctx.sessionId,
+            tc.name,
+            text,
+          );
+          currentTools = currentTools.filter((t) => t.name !== tc.name);
+          ctx.options?.sessionLogger?.logStep(`tool_blacklisted_${tc.name}`, {
+            reason: text,
+            blockedUntil: entry.blockedUntil,
+          });
+        }
+        ctx.options?.sessionLogger?.logStep(`mcp_result_${tc.name}`, {
+          result: text,
+        });
+        toolCallCount++;
+        ctx.metrics.toolCallCount.add();
+        toolMessages.push({
+          role: 'tool' as const,
+          content: text,
+          tool_call_id: tc.id,
+        });
+      }
+      messages = [...messages, ...toolMessages];
+    }
+  }
+}

@@ -115,6 +115,39 @@ agent:
 #     - type: http
 #       url: http://localhost:3001/mcp/stream/http
 
+# --- Structured Pipeline (optional) -------------------------------------------
+# Replaces the hardcoded orchestration flow with a YAML-defined stage tree.
+# When absent, the default flow runs unchanged (full backwards compatibility).
+#
+# pipeline:
+#   version: "1"
+#   stages:
+#     - id: classify
+#       type: classify
+#     - id: summarize
+#       type: summarize
+#     - id: rag-upsert
+#       type: rag-upsert
+#     - id: rag-retrieval
+#       type: parallel
+#       when: "shouldRetrieve"
+#       stages:
+#         - { id: translate, type: translate }
+#         - { id: expand, type: expand }
+#       after:
+#         - id: rag-queries
+#           type: parallel
+#           stages:
+#             - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
+#             - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
+#             - { id: state, type: rag-query, config: { store: state, k: 5 } }
+#         - { id: rerank, type: rerank }
+#         - { id: tool-select, type: tool-select }
+#     - id: assemble
+#       type: assemble
+#     - id: tool-loop
+#       type: tool-loop
+
 # prompts:
 #   system: "You are a helpful assistant specialized in SAP ABAP development."
 #   classifier: |

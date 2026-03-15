@@ -23,6 +23,9 @@ import {
 import type { ILogger } from './logger/index.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
+import type { PipelineContext } from './pipeline/context.js';
+import type { PipelineExecutor } from './pipeline/executor.js';
+import type { StageDefinition } from './pipeline/types.js';
 import {
   isToolContextUnavailableError,
   ToolAvailabilityRegistry,
@@ -161,6 +164,8 @@ export class SmartAgent {
   constructor(
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
+    private readonly pipelineExecutor?: PipelineExecutor,
+    private readonly pipelineStages?: StageDefinition[],
   ) {
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -313,7 +318,22 @@ export class SmartAgent {
         return;
       }
 
-      // 1. Unified Preparation
+      // Structured pipeline path (when configured via Builder.withPipeline)
+      if (this.pipelineExecutor && this.pipelineStages) {
+        const stream = this._runStructuredPipeline(
+          textOrMessages,
+          externalTools,
+          opts,
+          rootSpan,
+          sessionId,
+        );
+        for await (const chunk of stream) yield chunk;
+        rootSpan.setStatus('ok');
+        rootSpan.end();
+        return;
+      }
+
+      // 1. Unified Preparation (default hardcoded flow)
       const initResult = await this._preparePipeline(
         textOrMessages,
         opts,
@@ -1153,5 +1173,124 @@ export class SmartAgent {
     if (p.maxSessionAgeMs !== undefined)
       m.ttl = Math.floor((Date.now() + p.maxSessionAgeMs) / 1000);
     return m;
+  }
+
+  /**
+   * Execute the structured pipeline — delegates stage execution to
+   * the PipelineExecutor instead of running the hardcoded flow.
+   */
+  private async *_runStructuredPipeline(
+    textOrMessages: string | Message[],
+    externalTools: LlmTool[],
+    opts: CallOptions | undefined,
+    parentSpan: ISpan,
+    sessionId: string,
+  ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
+    if (!this.pipelineExecutor || !this.pipelineStages) return;
+
+    const text =
+      typeof textOrMessages === 'string'
+        ? textOrMessages
+        : (textOrMessages.filter((m) => m.role === 'user').slice(-1)[0]
+            ?.content ?? '');
+    const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
+
+    // Collect yielded chunks via a queue
+    const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
+    let resolveWait: (() => void) | null = null;
+    let done = false;
+
+    const ctx: PipelineContext = {
+      // Immutable input
+      textOrMessages,
+      options: opts,
+      config: this.config,
+      sessionId,
+
+      // Dependencies
+      mainLlm: this.deps.mainLlm,
+      helperLlm: this.deps.helperLlm,
+      classifierLlm: this.deps.mainLlm,
+      classifier: this.deps.classifier,
+      assembler: this.deps.assembler,
+      ragStores: this.deps.ragStores,
+      mcpClients: this.deps.mcpClients,
+      reranker: this.reranker,
+      queryExpander: this.queryExpander,
+      toolCache: this.toolCache,
+      outputValidator: this.outputValidator,
+      sessionManager: this.sessionManager,
+      tracer: this.tracer,
+      metrics: this.metrics,
+      logger: this.deps.logger,
+      toolPolicy: this.deps.toolPolicy,
+      injectionDetector: this.deps.injectionDetector,
+      toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+
+      // Mutable state
+      inputText: text,
+      history: [...history],
+      subprompts: [],
+      toolClientMap: new Map(),
+      ragText: '',
+      ragResults: { facts: [], feedback: [], state: [] },
+      mcpTools: [],
+      selectedTools: [],
+      externalTools,
+      assembledMessages: [],
+      activeTools: [],
+
+      // Control flags
+      shouldRetrieve: false,
+      isAscii: true,
+      isSapRequired: false,
+
+      // Output
+      timing: [],
+
+      // Streaming yield
+      yield: (chunk) => {
+        chunkQueue.push(chunk);
+        if (resolveWait) {
+          resolveWait();
+          resolveWait = null;
+        }
+      },
+    };
+
+    // Run executor in background, yield chunks as they arrive
+    const executorPromise = this.pipelineExecutor
+      .executeStages(this.pipelineStages, ctx, parentSpan)
+      .then(() => {
+        done = true;
+        if (resolveWait) {
+          resolveWait();
+          resolveWait = null;
+        }
+      })
+      .catch((err) => {
+        chunkQueue.push({
+          ok: false,
+          error: new OrchestratorError(String(err), 'PIPELINE_ERROR'),
+        });
+        done = true;
+        if (resolveWait) {
+          resolveWait();
+          resolveWait = null;
+        }
+      });
+
+    while (!done || chunkQueue.length > 0) {
+      if (chunkQueue.length > 0) {
+        const chunk = chunkQueue.shift();
+        if (chunk !== undefined) yield chunk;
+      } else if (!done) {
+        await new Promise<void>((r) => {
+          resolveWait = r;
+        });
+      }
+    }
+
+    await executorPromise;
   }
 }

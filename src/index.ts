@@ -89,6 +89,23 @@ export type {
   IHistogram,
   IMetrics,
 } from './smart-agent/metrics/types.js';
+// Structured Pipeline
+export type {
+  BuiltInStageType,
+  ControlFlowType,
+  IStageHandler,
+  PipelineContext,
+  StageDefinition,
+  StageType,
+  StructuredPipelineDefinition,
+} from './smart-agent/pipeline/index.js';
+export {
+  buildDefaultHandlerRegistry,
+  evaluateCondition,
+  getDefaultPipelineDefinition,
+  getDefaultStages,
+  PipelineExecutor,
+} from './smart-agent/pipeline/index.js';
 export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
 export {
