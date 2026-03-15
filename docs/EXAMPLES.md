@@ -138,7 +138,208 @@ const server = new SmartServer({
 });
 ```
 
-## 5. External tools validation mode
+## 5. Structured pipeline — default stages (YAML)
+
+The structured pipeline replaces the hardcoded agent flow with a YAML-defined stage tree.
+When `pipeline.version` and `pipeline.stages` are present, the `PipelineExecutor` walks the tree instead of running the hardcoded sequence.
+
+This example reproduces the default hardcoded flow as explicit YAML — a good starting point for customization:
+
+```yaml
+port: 4004
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: summarize
+      type: summarize
+    - id: rag-upsert
+      type: rag-upsert
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - { id: translate, type: translate }
+        - { id: expand, type: expand }
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
+            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
+            - { id: state, type: rag-query, config: { store: state, k: 5 } }
+        - { id: rerank, type: rerank }
+        - { id: tool-select, type: tool-select }
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+```
+
+## 6. Structured pipeline — minimal (skip RAG)
+
+For simple LLM + tools setups where RAG is not needed:
+
+```yaml
+port: 4004
+mode: smart
+
+llm:
+  apiKey: ${OPENAI_API_KEY}
+  model: gpt-4o
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+```
+
+## 7. Structured pipeline — multi-model with custom stage
+
+Combine separate LLM models with a custom pipeline stage:
+
+```yaml
+port: 4004
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o
+      temperature: 0.7
+    classifier:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+    helper:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: qdrant
+      url: http://qdrant:6333
+      embedder: openai
+      model: text-embedding-3-small
+      apiKey: ${OPENAI_API_KEY}
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://localhost:3001/mcp/stream/http
+
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: summarize
+      type: summarize
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - { id: translate, type: translate }
+        - { id: expand, type: expand }
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - { id: facts, type: rag-query, config: { store: facts, k: 15 } }
+            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
+        - { id: rerank, type: rerank }
+        - { id: tool-select, type: tool-select }
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+      config: { maxIterations: 15, maxToolCalls: 50 }
+```
+
+### Registering a custom stage handler (programmatic)
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent';
+
+class AuditLogHandler implements IStageHandler {
+  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
+    const level = (config.level as string) ?? 'info';
+    console.log(`[${level}] Processing: ${ctx.inputText.slice(0, 100)}`);
+    return true;
+  }
+}
+
+const server = new SmartServer({
+  configPath: 'smart-server.yaml',
+  stageHandlers: { 'audit-log': new AuditLogHandler() },
+});
+```
+
+Then in YAML, insert the custom stage anywhere in the tree:
+
+```yaml
+pipeline:
+  version: "1"
+  stages:
+    - id: audit
+      type: audit-log
+      config: { level: info }
+    - id: classify
+      type: classify
+    # ... rest of stages
+```
+
+## 8. Simple vs structured pipeline — comparison
+
+| Feature | Simple (flat YAML) | Structured pipeline |
+|---|---|---|
+| Config location | `llm:`, `rag:`, `mcp:`, `agent:` top-level keys | `pipeline:` section with `version` + `stages` |
+| Orchestration flow | Hardcoded in `SmartAgent.streamProcess()` | YAML-defined stage tree |
+| Stage ordering | Fixed | Fully customizable |
+| Parallel stages | Fixed internal parallelism | Explicit `parallel` type with `after` |
+| Custom stages | Not possible | `withStageHandler()` + YAML reference |
+| Conditional stages | `agent.ragRetrievalMode`, `agent.classificationEnabled` | `when` expressions on any stage |
+| Loops | Fixed tool loop | `repeat` type with `until` + `maxIterations` |
+| Best for | Simple setups, quick start | Complex orchestration, custom pipelines |
+
+**Without `pipeline.stages`** — the hardcoded flow runs unchanged. No migration needed.
+
+**With `pipeline.stages`** — the executor replaces the hardcoded flow entirely.
+
+## 9. External tools validation mode
 
 ```yaml
 agent:
@@ -148,7 +349,7 @@ agent:
 `strict`: reject invalid `tools` payload with `400 invalid_request_error`.
 `permissive` (default): drop invalid tools and continue.
 
-## 6. Test doubles for consumer integration tests
+## 10. Test doubles for consumer integration tests
 
 ```ts
 import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent/testing';
@@ -158,7 +359,7 @@ const rag = makeRag();
 const mcp = makeMcpClient([{ name: 'Ping', description: 'health', inputSchema: { type: 'object', properties: {} } }]);
 ```
 
-## 7. Stream test client
+## 11. Stream test client
 
 A lightweight SSE client for testing the SmartServer streaming endpoint. Displays heartbeat pings and timing breakdowns alongside the streamed response.
 
@@ -192,7 +393,7 @@ Set `PORT` env variable to override the default port:
 PORT=5000 npm run client:test-stream
 ```
 
-## 8. Connecting OpenAI-compatible clients
+## 12. Connecting OpenAI-compatible clients
 
 SmartServer exposes an OpenAI-compatible API at `http://localhost:4004/v1/chat/completions`, so any client that supports the OpenAI protocol can connect to it as a custom provider.
 
@@ -269,7 +470,7 @@ curl http://localhost:4004/v1/chat/completions \
   -d '{"model":"smart-agent","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-## 9. Current npm scripts
+## 13. Current npm scripts
 
 ```bash
 npm run build
