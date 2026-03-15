@@ -16,8 +16,9 @@
 
 ```text
 Client (OpenAI-compatible)
-  -> SmartServer (HTTP/SSE)
-     -> SmartAgentBuilder (wiring + defaults/overrides)
+  -> SmartServer (HTTP/SSE) — composition root
+     -> providers.ts (resolves config → concrete ILlm, IRag, IEmbedder)
+     -> SmartAgentBuilder (interface-only wiring, no provider knowledge)
         -> SmartAgent (orchestration loop)
            -> ILlm (main/helper/classifier via adapters)
            -> IRag stores (facts/feedback/state)
@@ -30,18 +31,26 @@ Client (OpenAI-compatible)
 ```mermaid
 flowchart LR
   App("Consumer App") --> SS("SmartServer")
-  SS --> B("SmartAgentBuilder")
+  SS --> P("providers.ts — composition root")
+  P --> LMain("ILlm main")
+  P --> LCls("ILlm classifier")
+  P --> LHelp("ILlm helper")
+  P --> RF("IRag facts")
+  P --> RFB("IRag feedback")
+  P --> RS("IRag state")
+
+  SS --> B("SmartAgentBuilder — interface-only")
   B --> SA("SmartAgent")
 
-  B --> LMain("ILlm main")
-  B --> LCls("ILlm classifier")
-  B --> LHelp("ILlm helper")
+  B -.->|injected| LMain
+  B -.->|injected| LCls
+  B -.->|injected| LHelp
+  B -.->|injected| RF
+  B -.->|injected| RFB
+  B -.->|injected| RS
   B --> CfgC("ISubpromptClassifier")
   B --> Ctx("IContextAssembler")
   B --> MCPS("IMcpClient list")
-  B --> RF("IRag facts")
-  B --> RFB("IRag feedback")
-  B --> RS("IRag state")
   B --> TP("IToolPolicy optional")
   B --> ID("IPromptInjectionDetector optional")
   B --> LG("ILogger optional")
@@ -55,15 +64,12 @@ flowchart LR
   SA --> RF
   SA --> RFB
   SA --> RS
-  SA --> TP
-  SA --> ID
-  SA --> LG
 
-  LMain --> TC("TokenCountingLlm default")
+  P --> TC("TokenCountingLlm")
   TC --> LA("LlmAdapter")
   LA --> BA("BaseAgent bridge")
 
-  MCPS --> MCA("McpClientAdapter default")
+  MCPS --> MCA("McpClientAdapter")
   MCA --> MCPW("MCPClientWrapper")
 ```
 
@@ -237,17 +243,28 @@ Abstractions:
 - `src/smart-agent/adapters/llm-adapter.ts`
 
 `LlmAdapter` bridges legacy `BaseAgent` implementations to smart-agent `ILlm`.
-Providers can be configured through pipeline config (`deepseek`, `openai`, `anthropic`) in:
-- `src/smart-agent/pipeline.ts`
+Concrete provider resolution is centralized in:
+- `src/smart-agent/providers.ts` — the only module that imports concrete LLM providers
+
+Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`) are defined in:
+- `src/smart-agent/pipeline.ts` (types only, no provider logic)
 
 ### 4. RAG Layer
 
-Core contracts and implementations:
-- `src/smart-agent/interfaces/rag.ts`
+Core contracts:
+- `src/smart-agent/interfaces/rag.ts` — `IEmbedder`, `IRag`, `EmbedderFactory`
+
+Implementations:
 - `src/smart-agent/rag/vector-rag.ts`
 - `src/smart-agent/rag/in-memory-rag.ts`
 - `src/smart-agent/rag/ollama-rag.ts`
 - `src/smart-agent/rag/openai-embedder.ts`
+- `src/smart-agent/rag/qdrant-rag.ts`
+- `src/smart-agent/rag/embedder-factories.ts` — built-in embedder factories (`ollama`, `openai`)
+
+Embedders are injectable via DI:
+- Programmatic: `SmartServer({ embedder: myEmbedder })`
+- YAML-driven: register custom factory via `SmartServer({ embedderFactories: { 'my-embedder': fn } })`, then reference in YAML as `embedder: my-embedder`
 
 Stores are split by intent:
 - `facts` (domain/tool knowledge)
@@ -264,18 +281,21 @@ Stores are split by intent:
 
 | Interface | Role | Default implementation |
 |---|---|---|
-| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `SmartAgentBuilder` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `providers.ts` |
+| `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
-| `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag` (Ollama/OpenAI embedders) or `InMemoryRag` |
+| `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
 | `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
 | `ILogger` | Structured logging sink | `ConsoleLogger` / `SessionLogger` / injected custom logger |
 
-Builder wiring entrypoint:
-- `src/smart-agent/builder.ts` (`SmartAgentBuilder`)
-- supports default wiring plus per-component overrides through `.with*()` methods
+### Separation of concerns
+
+- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, etc. Has no knowledge of concrete providers.
+- **`providers.ts`** (`src/smart-agent/providers.ts`) — composition root. The only module that imports concrete LLM providers (`DeepSeek`, `OpenAI`, `Anthropic`, `SapCoreAI`) and RAG implementations (`OllamaRag`, `QdrantRag`, etc.). Resolves config → interface instances.
+- **`SmartServer`** (`src/smart-agent/smart-server.ts`) — uses `providers.ts` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
 ## Execution Modes
 
@@ -359,8 +379,9 @@ Action policy:
 
 - `src/smart-agent/agent.ts`: orchestration loop and tool execution control.
 - `src/smart-agent/smart-server.ts`: production OpenAI-compatible server.
-- `src/smart-agent/builder.ts`: dependency wiring and defaults.
-- `src/smart-agent/pipeline.ts`: provider/rag factory helpers.
+- `src/smart-agent/builder.ts`: interface-only dependency wiring (no provider knowledge).
+- `src/smart-agent/providers.ts`: composition root — concrete provider/embedder/RAG resolution.
+- `src/smart-agent/pipeline.ts`: pipeline config types (types only, no logic).
 - `src/smart-agent/context/context-assembler.ts`: final context construction.
 - `src/smart-agent/classifier/llm-classifier.ts`: subprompt decomposition.
 - `src/smart-agent/policy/*`: policy guard + injection detector.
@@ -384,6 +405,9 @@ src/
     utils/
     smart-server.ts
     agent.ts
+    builder.ts             # interface-only factory
+    providers.ts           # composition root (concrete providers)
+    pipeline.ts            # pipeline config types
 ```
 
 ## Current Technical Debt (Explicit)

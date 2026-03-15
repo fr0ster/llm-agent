@@ -608,19 +608,31 @@ Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (
 
 ## Builder Wiring
 
-Wire all custom components via `SmartAgentBuilder`:
+The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected:
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/smart-server';
-import { ToolCache, SessionManager, InMemoryMetrics } from '@mcp-abap-adt/llm-agent';
+import {
+  ToolCache, SessionManager, InMemoryMetrics,
+  OllamaEmbedder, QdrantRag,
+} from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
 
+// Create concrete implementations (composition root responsibility)
+const myLlm = new GeminiLlm(process.env.GEMINI_KEY!, 'gemini-pro');
+const embedder = new OllamaEmbedder({ model: 'nomic-embed-text' });
+const factsRag = new QdrantRag({
+  url: 'http://qdrant:6333',
+  collectionName: 'facts',
+  embedder,
+});
+
 const handle = await new SmartAgentBuilder({
-  llm: { apiKey: process.env.API_KEY! },
-  rag: { type: 'qdrant', url: 'http://qdrant:6333' },
   mcp: { type: 'http', url: 'http://localhost:3001/mcp/stream/http' },
 })
+  .withMainLlm(myLlm)                  // required — no default
+  .withRag({ facts: factsRag })
   .withReranker(new CrossEncoderReranker('http://reranker:8080/rerank'))
   .withOutputValidator(new JsonSchemaValidator(mySchema))
   .withToolCache(new ToolCache({ ttlMs: 60_000 }))
@@ -636,6 +648,24 @@ console.log(result.content);
 
 // Cleanup
 await handle.close();
+```
+
+### Custom embedder injection via SmartServer
+
+For YAML-driven configs, inject a custom `IEmbedder` or register embedder factories:
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+
+const server = new SmartServer({
+  llm: { apiKey: process.env.API_KEY! },
+  rag: { type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' },
+  mode: 'smart',
+  // Register custom embedder factory — referenced by name in YAML config
+  embedderFactories: {
+    'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
+  },
+});
 ```
 
 ## Test Doubles

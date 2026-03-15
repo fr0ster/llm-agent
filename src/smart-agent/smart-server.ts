@@ -18,11 +18,8 @@ import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
-import {
-  makeLlmFromProvider,
-  makeRagFromStoreConfig,
-  type PipelineConfig,
-} from './pipeline.js';
+import type { PipelineConfig } from './pipeline.js';
+import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
 import type { VectorRag } from './rag/vector-rag.js';
 import {
   type ExternalToolValidationCode,
@@ -196,69 +193,92 @@ export class SmartServer {
     };
     const pipeline = this.cfg.pipeline;
 
+    // ---- Composition root: resolve config → interfaces --------------------
+
+    // LLM resolution
+    const mainTemp =
+      pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7;
+    const mainLlm = pipeline?.llm?.main
+      ? makeLlm(pipeline.llm.main, mainTemp)
+      : makeDefaultLlm(
+          this.cfg.llm.apiKey,
+          this.cfg.llm.model ?? 'deepseek-chat',
+          mainTemp,
+        );
+
+    const classifierTemp =
+      pipeline?.llm?.classifier?.temperature ??
+      this.cfg.llm.classifierTemperature ??
+      0.1;
+    const classifierLlm = pipeline?.llm?.classifier
+      ? makeLlm(pipeline.llm.classifier, classifierTemp)
+      : pipeline?.llm?.main
+        ? makeLlm(pipeline.llm.main, classifierTemp)
+        : makeDefaultLlm(
+            this.cfg.llm.apiKey,
+            this.cfg.llm.model ?? 'deepseek-chat',
+            classifierTemp,
+          );
+
+    const helperLlm = pipeline?.llm?.helper
+      ? makeLlm(pipeline.llm.helper, pipeline.llm.helper.temperature ?? 0.1)
+      : undefined;
+
+    // Usage tracking — aggregate main + classifier
+    const getUsage = (): TokenUsage => {
+      const m = mainLlm.getUsage();
+      const c = classifierLlm.getUsage();
+      return {
+        prompt_tokens: m.prompt_tokens + c.prompt_tokens,
+        completion_tokens: m.completion_tokens + c.completion_tokens,
+        total_tokens: m.total_tokens + c.total_tokens,
+        requests: m.requests + c.requests,
+      };
+    };
+
+    // RAG resolution
+    const ragOptions = {
+      injectedEmbedder: this.cfg.embedder,
+      extraFactories: this.cfg.embedderFactories,
+    };
+
+    const stores: Partial<SmartAgentRagStores> = {};
+    if (pipeline?.rag) {
+      if (pipeline.rag.facts)
+        stores.facts = makeRag(pipeline.rag.facts, ragOptions);
+      if (pipeline.rag.feedback)
+        stores.feedback = makeRag(pipeline.rag.feedback, ragOptions);
+      if (pipeline.rag.state)
+        stores.state = makeRag(pipeline.rag.state, ragOptions);
+    } else if (this.cfg.rag) {
+      const ragCfg = this.cfg.rag;
+      const rag = makeRag(ragCfg, ragOptions);
+      stores.facts = rag;
+      stores.feedback = makeRag({ ...ragCfg }, ragOptions);
+      stores.state = makeRag({ ...ragCfg }, ragOptions);
+    }
+
+    // ---- Build agent via Builder (interface-only) -------------------------
     let builder = new SmartAgentBuilder({
-      llm: this.cfg.llm,
-      rag: this.cfg.rag,
       mcp: pipeline?.mcp ?? this.cfg.mcp,
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
-    }).withLogger(fileLogger);
+    })
+      .withMainLlm(mainLlm)
+      .withClassifierLlm(classifierLlm)
+      .withUsageProvider(getUsage)
+      .withLogger(fileLogger);
 
-    // Inject embedder / embedder factories
-    if (this.cfg.embedder) {
-      builder = builder.withEmbedder(this.cfg.embedder);
+    if (helperLlm) {
+      builder = builder.withHelperLlm(helperLlm);
     }
-    if (this.cfg.embedderFactories) {
-      for (const [name, factory] of Object.entries(
-        this.cfg.embedderFactories,
-      )) {
-        builder = builder.withEmbedderFactory(name, factory);
-      }
+
+    if (Object.keys(stores).length > 0) {
+      builder = builder.withRag(stores);
     }
 
     if (this.cfg.circuitBreaker) {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-    }
-
-    const ragOptions = {
-      embedder: this.cfg.embedder,
-      embedderFactories: this.cfg.embedderFactories,
-    };
-
-    if (pipeline?.llm?.main) {
-      const temp = pipeline.llm.main.temperature ?? 0.7;
-      builder = builder.withMainLlm(
-        makeLlmFromProvider(pipeline.llm.main, temp),
-      );
-      const classifierCfg = pipeline.llm.classifier ?? pipeline.llm.main;
-      const classifierTemp = pipeline.llm.classifier?.temperature ?? 0.1;
-      builder = builder.withClassifierLlm(
-        makeLlmFromProvider(classifierCfg, classifierTemp),
-      );
-      if (pipeline.llm.helper) {
-        const helperTemp = pipeline.llm.helper.temperature ?? 0.1;
-        builder = builder.withHelperLlm(
-          makeLlmFromProvider(pipeline.llm.helper, helperTemp),
-        );
-      }
-    } else if (pipeline?.llm?.classifier) {
-      const temp = pipeline.llm.classifier.temperature ?? 0.1;
-      builder = builder.withClassifierLlm(
-        makeLlmFromProvider(pipeline.llm.classifier, temp),
-      );
-    }
-    if (pipeline?.rag) {
-      const stores: Partial<SmartAgentRagStores> = {};
-      if (pipeline.rag.facts)
-        stores.facts = makeRagFromStoreConfig(pipeline.rag.facts, ragOptions);
-      if (pipeline.rag.feedback)
-        stores.feedback = makeRagFromStoreConfig(
-          pipeline.rag.feedback,
-          ragOptions,
-        );
-      if (pipeline.rag.state)
-        stores.state = makeRagFromStoreConfig(pipeline.rag.state, ragOptions);
-      builder = builder.withRag(stores);
     }
 
     const agentHandle = await builder.build();
@@ -266,7 +286,6 @@ export class SmartServer {
       agent: smartAgent,
       chat,
       streamChat,
-      getUsage,
       close: closeAgent,
       circuitBreakers,
       ragStores,
