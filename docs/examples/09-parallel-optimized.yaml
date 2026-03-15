@@ -93,9 +93,10 @@ pipeline:
         - id: rag-queries
           type: parallel
           stages:
+            # With 100+ MCP tools, k:10 may miss relevant ones — use k:20
             - id: rag-facts
               type: rag-query
-              config: { store: facts, k: 10 }
+              config: { store: facts, k: 20 }
             - id: rag-feedback
               type: rag-query
               config: { store: feedback, k: 5 }
