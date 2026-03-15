@@ -289,6 +289,14 @@ export class SmartServer {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
 
+    // Structured pipeline (when YAML contains `pipeline.stages`)
+    if (pipeline?.stages && Array.isArray(pipeline.stages)) {
+      builder = builder.withPipeline({
+        version: pipeline.version ?? '1',
+        stages: pipeline.stages,
+      });
+    }
+
     const agentHandle = await builder.build();
     const {
       agent: smartAgent,
