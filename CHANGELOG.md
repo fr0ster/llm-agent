@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.8.1] — 2026-03-15
+
+### Added
+
+- **Stream test client docs** — Documented `npm run client:test-stream` usage in `docs/EXAMPLES.md`: default and custom prompts, heartbeat/timing display, port override.
+- **OpenAI-compatible client docs** — Added examples for connecting external clients (Goose, Continue, curl, Python openai SDK) to SmartServer's OpenAI-compatible endpoint. Includes available endpoints table and session management via `X-Session-Id`.
+
+---
+
 ## [2.8.0] — 2026-03-11
 
 ### Changed
