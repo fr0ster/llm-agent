@@ -1,62 +1,56 @@
 # Examples
 
 This document contains usage examples aligned with the current Smart Agent implementation.
+YAML config examples are in [`docs/examples/`](examples/) as standalone files you can use directly.
 
-## 1. Minimal local start (DeepSeek + in-memory RAG)
+## YAML Config Examples
 
-```yaml
-# smart-server.yaml
-port: 4004
-host: 0.0.0.0
-mode: smart
+### Simple (flat) configs — hardcoded orchestration flow
 
-llm:
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: deepseek-chat
-  temperature: 0.7
+| File | Description |
+|---|---|
+| [`01-minimal-inmemory.yaml`](examples/01-minimal-inmemory.yaml) | Minimal start — DeepSeek + in-memory RAG, no MCP |
+| [`02-ollama-mcp.yaml`](examples/02-ollama-mcp.yaml) | Ollama embeddings + MCP tools |
+| [`03-multi-model.yaml`](examples/03-multi-model.yaml) | Separate classifier/helper models + Qdrant RAG |
 
-rag:
-  type: in-memory
-```
+### Structured pipeline configs — YAML-defined stage tree
+
+| File | Description |
+|---|---|
+| [`04-structured-default.yaml`](examples/04-structured-default.yaml) | Default flow as explicit YAML (good starting point) |
+| [`05-structured-minimal.yaml`](examples/05-structured-minimal.yaml) | Minimal pipeline — no RAG, just classify + assemble + tool-loop |
+| [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant + higher tool limits |
+| [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
+
+### Running a YAML config
 
 ```bash
-DEEPSEEK_API_KEY=sk-xxx npm run dev
+# Set required env variables, then:
+npm run dev -- --config docs/examples/04-structured-default.yaml
 ```
 
 OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 
-## 2. Smart mode with Ollama embeddings and MCP
+## Simple vs structured pipeline — comparison
 
-```yaml
-port: 4004
-host: 0.0.0.0
-mode: smart
+| Feature | Simple (flat YAML) | Structured pipeline |
+|---|---|---|
+| Config location | `llm:`, `rag:`, `mcp:`, `agent:` top-level keys | `pipeline:` section with `version` + `stages` |
+| Orchestration flow | Hardcoded in `SmartAgent.streamProcess()` | YAML-defined stage tree |
+| Stage ordering | Fixed | Fully customizable |
+| Parallel stages | Fixed internal parallelism | Explicit `parallel` type with `after` |
+| Custom stages | Not possible | `withStageHandler()` + YAML reference |
+| Conditional stages | `agent.ragRetrievalMode`, `agent.classificationEnabled` | `when` expressions on any stage |
+| Loops | Fixed tool loop | `repeat` type with `until` + `maxIterations` |
+| Best for | Simple setups, quick start | Complex orchestration, custom pipelines |
 
-llm:
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: deepseek-chat
+**Without `pipeline.stages`** — the hardcoded flow runs unchanged. No migration needed.
 
-rag:
-  type: ollama
-  url: http://localhost:11434
-  model: nomic-embed-text
-  dedupThreshold: 0.92
+**With `pipeline.stages`** — the executor replaces the hardcoded flow entirely.
 
-mcp:
-  type: http
-  url: http://localhost:3001/mcp/stream/http
+## Programmatic Examples
 
-agent:
-  maxIterations: 10
-  maxToolCalls: 30
-  ragQueryK: 10
-```
-
-```bash
-npm run dev -- --config smart-server.yaml
-```
-
-## 3. Programmatic embedding (`SmartServer`)
+### Programmatic embedding (`SmartServer`)
 
 ```ts
 import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
@@ -80,49 +74,7 @@ process.on('SIGTERM', async () => {
 });
 ```
 
-## 4. Pipeline with separate classifier/helper models
-
-```yaml
-port: 4004
-host: 0.0.0.0
-mode: smart
-
-pipeline:
-  llm:
-    main:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-
-  rag:
-    facts:
-      type: qdrant
-      url: http://qdrant:6333
-      embedder: openai             # ollama | openai | <custom registered name>
-      model: text-embedding-3-small
-      apiKey: ${OPENAI_API_KEY}
-    feedback:
-      type: in-memory
-    state:
-      type: in-memory
-
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
-```
-
-## 4a. Custom embedder injection (programmatic)
+### Custom embedder injection
 
 ```ts
 import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
@@ -138,157 +90,7 @@ const server = new SmartServer({
 });
 ```
 
-## 5. Structured pipeline — default stages (YAML)
-
-The structured pipeline replaces the hardcoded agent flow with a YAML-defined stage tree.
-When `pipeline.version` and `pipeline.stages` are present, the `PipelineExecutor` walks the tree instead of running the hardcoded sequence.
-
-This example reproduces the default hardcoded flow as explicit YAML — a good starting point for customization:
-
-```yaml
-port: 4004
-mode: smart
-
-llm:
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: deepseek-chat
-
-rag:
-  type: ollama
-  url: http://localhost:11434
-  model: nomic-embed-text
-
-mcp:
-  type: http
-  url: http://localhost:3001/mcp/stream/http
-
-pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: summarize
-      type: summarize
-    - id: rag-upsert
-      type: rag-upsert
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - { id: translate, type: translate }
-        - { id: expand, type: expand }
-      after:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
-            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-            - { id: state, type: rag-query, config: { store: state, k: 5 } }
-        - { id: rerank, type: rerank }
-        - { id: tool-select, type: tool-select }
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-```
-
-## 6. Structured pipeline — minimal (skip RAG)
-
-For simple LLM + tools setups where RAG is not needed:
-
-```yaml
-port: 4004
-mode: smart
-
-llm:
-  apiKey: ${OPENAI_API_KEY}
-  model: gpt-4o
-
-mcp:
-  type: http
-  url: http://localhost:3001/mcp/stream/http
-
-pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-```
-
-## 7. Structured pipeline — multi-model with custom stage
-
-Combine separate LLM models with a custom pipeline stage:
-
-```yaml
-port: 4004
-mode: smart
-
-pipeline:
-  llm:
-    main:
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-
-  rag:
-    facts:
-      type: qdrant
-      url: http://qdrant:6333
-      embedder: openai
-      model: text-embedding-3-small
-      apiKey: ${OPENAI_API_KEY}
-    feedback:
-      type: in-memory
-    state:
-      type: in-memory
-
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
-
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: summarize
-      type: summarize
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - { id: translate, type: translate }
-        - { id: expand, type: expand }
-      after:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - { id: facts, type: rag-query, config: { store: facts, k: 15 } }
-            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-        - { id: rerank, type: rerank }
-        - { id: tool-select, type: tool-select }
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-      config: { maxIterations: 15, maxToolCalls: 50 }
-```
-
-### Registering a custom stage handler (programmatic)
+### Structured pipeline with custom stage handler
 
 ```ts
 import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
@@ -308,7 +110,7 @@ const server = new SmartServer({
 });
 ```
 
-Then in YAML, insert the custom stage anywhere in the tree:
+Then reference in YAML (see [`04-structured-default.yaml`](examples/04-structured-default.yaml) and add):
 
 ```yaml
 pipeline:
@@ -322,24 +124,24 @@ pipeline:
     # ... rest of stages
 ```
 
-## 8. Simple vs structured pipeline — comparison
+### Programmatic pipeline with `getDefaultStages()`
 
-| Feature | Simple (flat YAML) | Structured pipeline |
-|---|---|---|
-| Config location | `llm:`, `rag:`, `mcp:`, `agent:` top-level keys | `pipeline:` section with `version` + `stages` |
-| Orchestration flow | Hardcoded in `SmartAgent.streamProcess()` | YAML-defined stage tree |
-| Stage ordering | Fixed | Fully customizable |
-| Parallel stages | Fixed internal parallelism | Explicit `parallel` type with `after` |
-| Custom stages | Not possible | `withStageHandler()` + YAML reference |
-| Conditional stages | `agent.ragRetrievalMode`, `agent.classificationEnabled` | `when` expressions on any stage |
-| Loops | Fixed tool loop | `repeat` type with `until` + `maxIterations` |
-| Best for | Simple setups, quick start | Complex orchestration, custom pipelines |
+```ts
+import { SmartAgentBuilder, getDefaultStages } from '@mcp-abap-adt/llm-agent';
 
-**Without `pipeline.stages`** — the hardcoded flow runs unchanged. No migration needed.
+// Get default stages and insert a custom stage before tool-loop
+const stages = getDefaultStages();
+const toolLoopIndex = stages.findIndex(s => s.id === 'tool-loop');
+stages.splice(toolLoopIndex, 0, {
+  id: 'audit',
+  type: 'audit-log',
+  config: { level: 'info' },
+});
 
-**With `pipeline.stages`** — the executor replaces the hardcoded flow entirely.
+builder.withPipeline({ version: '1', stages });
+```
 
-## 9. External tools validation mode
+## External tools validation mode
 
 ```yaml
 agent:
@@ -349,7 +151,7 @@ agent:
 `strict`: reject invalid `tools` payload with `400 invalid_request_error`.
 `permissive` (default): drop invalid tools and continue.
 
-## 10. Test doubles for consumer integration tests
+## Test doubles for consumer integration tests
 
 ```ts
 import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent/testing';
@@ -359,7 +161,7 @@ const rag = makeRag();
 const mcp = makeMcpClient([{ name: 'Ping', description: 'health', inputSchema: { type: 'object', properties: {} } }]);
 ```
 
-## 11. Stream test client
+## Stream test client
 
 A lightweight SSE client for testing the SmartServer streaming endpoint. Displays heartbeat pings and timing breakdowns alongside the streamed response.
 
@@ -383,9 +185,9 @@ npm run client:test-stream -- "Which MCP tools are available?"
 
 The client connects to `http://127.0.0.1:4004/v1/chat/completions` and prints:
 - streamed content tokens as they arrive
-- `💓 heartbeat` comments (SSE keep-alive)
-- `⏱️ timing` comments (MCP tool execution breakdown)
-- `✅ Stream finished [DONE]` when the response is complete
+- heartbeat comments (SSE keep-alive)
+- timing comments (MCP tool execution breakdown)
+- stream finished when the response is complete
 
 Set `PORT` env variable to override the default port:
 
@@ -393,7 +195,7 @@ Set `PORT` env variable to override the default port:
 PORT=5000 npm run client:test-stream
 ```
 
-## 12. Connecting OpenAI-compatible clients
+## Connecting OpenAI-compatible clients
 
 SmartServer exposes an OpenAI-compatible API at `http://localhost:4004/v1/chat/completions`, so any client that supports the OpenAI protocol can connect to it as a custom provider.
 
@@ -470,7 +272,7 @@ curl http://localhost:4004/v1/chat/completions \
   -d '{"model":"smart-agent","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
-## 13. Current npm scripts
+## Current npm scripts
 
 ```bash
 npm run build

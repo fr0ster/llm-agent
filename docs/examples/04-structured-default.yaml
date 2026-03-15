@@ -1,0 +1,81 @@
+# Structured pipeline — reproduces the default hardcoded flow as explicit YAML.
+# Good starting point for customization: reorder, skip, or add stages.
+#
+# This is equivalent to the hardcoded SmartAgent.streamProcess() flow.
+# See docs/ARCHITECTURE.md → "Structured Pipeline DSL" for stage type reference.
+#
+# Usage:
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/04-structured-default.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+pipeline:
+  version: "1"
+  stages:
+    # 1. Classify user input into typed subprompts (action/fact/chat/state/feedback)
+    - id: classify
+      type: classify
+
+    # 2. Condense conversation history if too long
+    - id: summarize
+      type: summarize
+
+    # 3. Upsert classified subprompts to RAG stores
+    - id: rag-upsert
+      type: rag-upsert
+
+    # 4. RAG retrieval block — runs only when retrieval is needed
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        # Translate non-ASCII query to English for better embedding match
+        - id: translate
+          type: translate
+        # Expand query with synonyms
+        - id: expand
+          type: expand
+      after:
+        # Query all RAG stores in parallel
+        - id: rag-queries
+          type: parallel
+          stages:
+            - id: rag-facts
+              type: rag-query
+              config: { store: facts, k: 10 }
+            - id: rag-feedback
+              type: rag-query
+              config: { store: feedback, k: 5 }
+            - id: rag-state
+              type: rag-query
+              config: { store: state, k: 5 }
+        # Re-score RAG results
+        - id: rerank
+          type: rerank
+        # Select MCP tools based on RAG matches
+        - id: tool-select
+          type: tool-select
+
+    # 5. Build final LLM context from subprompts + RAG + tools
+    - id: assemble
+      type: assemble
+
+    # 6. Streaming LLM call + tool execution loop
+    - id: tool-loop
+      type: tool-loop

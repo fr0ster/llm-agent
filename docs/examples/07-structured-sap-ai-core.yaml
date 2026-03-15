@@ -1,0 +1,64 @@
+# Structured pipeline — SAP AI Core provider.
+# Uses SAP AI SDK for LLM and structured pipeline for orchestration.
+#
+# Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
+# See docs/SAP_AI_CORE.md for detailed setup instructions.
+#
+# Usage:
+#   npm run dev -- --config docs/examples/07-structured-sap-ai-core.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: gpt-4o
+      resourceGroup: default
+      temperature: 0.7
+    classifier:
+      provider: sap-ai-sdk
+      model: gpt-4o
+      resourceGroup: default
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: in-memory
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://localhost:3001/mcp/stream/http
+
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: rag-upsert
+      type: rag-upsert
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - id: rag-facts
+              type: rag-query
+              config: { store: facts, k: 10 }
+            - id: rag-state
+              type: rag-query
+              config: { store: state, k: 5 }
+        - id: tool-select
+          type: tool-select
+      after: []
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop

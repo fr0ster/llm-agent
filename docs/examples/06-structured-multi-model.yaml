@@ -1,0 +1,84 @@
+# Structured pipeline — multi-model with Qdrant RAG.
+# Combines separate LLM models for different tasks with explicit stage control.
+#
+# - Main LLM: OpenAI GPT-4o (creative, high temperature)
+# - Classifier/Helper: DeepSeek (cheap, low temperature)
+# - Facts RAG: Qdrant + OpenAI embeddings
+# - Custom tool-loop config: higher iteration/tool limits
+#
+# Usage:
+#   OPENAI_API_KEY=sk-xxx DEEPSEEK_API_KEY=sk-xxx \
+#     npm run dev -- --config docs/examples/06-structured-multi-model.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      model: gpt-4o
+      temperature: 0.7
+    classifier:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+    helper:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: qdrant
+      url: http://qdrant:6333
+      collectionName: llm-agent-facts
+      embedder: openai
+      model: text-embedding-3-small
+      apiKey: ${OPENAI_API_KEY}
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://localhost:3001/mcp/stream/http
+
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: summarize
+      type: summarize
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - id: translate
+          type: translate
+        - id: expand
+          type: expand
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - id: rag-facts
+              type: rag-query
+              config: { store: facts, k: 15 }
+            - id: rag-feedback
+              type: rag-query
+              config: { store: feedback, k: 5 }
+        - id: rerank
+          type: rerank
+        - id: tool-select
+          type: tool-select
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+      config: { maxIterations: 15, maxToolCalls: 50 }

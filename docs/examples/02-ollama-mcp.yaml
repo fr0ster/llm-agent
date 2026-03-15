@@ -1,0 +1,31 @@
+# Smart mode with Ollama embeddings and MCP tools.
+# Requires: Ollama running locally, MCP server at the given URL.
+#
+# Usage:
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/02-ollama-mcp.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+  dedupThreshold: 0.92
+  vectorWeight: 0.7
+  keywordWeight: 0.3
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 10

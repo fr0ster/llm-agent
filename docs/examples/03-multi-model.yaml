@@ -1,0 +1,45 @@
+# Multi-model pipeline — separate LLMs for main/classifier/helper.
+# Uses Qdrant for facts RAG with OpenAI embeddings; in-memory for feedback/state.
+#
+# Usage:
+#   DEEPSEEK_API_KEY=sk-xxx OPENAI_API_KEY=sk-xxx \
+#     npm run dev -- --config docs/examples/03-multi-model.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.7
+    classifier:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+    helper:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+
+  rag:
+    facts:
+      type: qdrant
+      url: http://qdrant:6333
+      collectionName: llm-agent-facts
+      embedder: openai
+      model: text-embedding-3-small
+      apiKey: ${OPENAI_API_KEY}
+    feedback:
+      type: in-memory
+    state:
+      type: in-memory
+
+  mcp:
+    - type: http
+      url: http://localhost:3001/mcp/stream/http
