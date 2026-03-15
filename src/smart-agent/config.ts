@@ -74,6 +74,10 @@ agent:
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
   sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
+  # classificationEnabled: true      # Enable/disable intent classification stage
+  # ragRetrievalMode: auto           # auto | always | never — controls RAG retrieval
+  # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
+  # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.

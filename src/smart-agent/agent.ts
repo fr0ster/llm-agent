@@ -99,6 +99,17 @@ export interface SmartAgentConfig {
   sessionTokenBudget?: number;
   /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
   heartbeatIntervalMs?: number;
+
+  // -- Pipeline stage toggles -----------------------------------------------
+
+  /** Whether classification stage runs. Default: true. When false, input is treated as a single action. */
+  classificationEnabled?: boolean;
+  /** RAG retrieval behavior. 'auto': based on SAP context detection (default), 'always': force retrieval, 'never': skip. */
+  ragRetrievalMode?: 'auto' | 'always' | 'never';
+  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
+  ragTranslationEnabled?: boolean;
+  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
+  ragUpsertEnabled?: boolean;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -326,8 +337,11 @@ export class SmartAgent {
 
       // 2. Decide context and tools for the WHOLE request
       const actions = subprompts.filter((sp) => sp.type === 'action');
+      const ragMode = this.config.ragRetrievalMode ?? 'auto';
       const isSapRequired =
         actions.some((a) => a.context === 'sap-abap') || mode === 'hard';
+      const shouldRetrieve =
+        ragMode === 'always' || (ragMode === 'auto' && isSapRequired);
 
       let finalTools: LlmTool[] = [];
       let retrieved = {
@@ -337,10 +351,13 @@ export class SmartAgent {
         tools: [] as McpTool[],
       };
 
-      if (isSapRequired) {
+      if (shouldRetrieve) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        let ragText = await this._toEnglishForRag(combinedActionText, opts);
+        let ragText =
+          this.config.ragTranslationEnabled !== false
+            ? await this._toEnglishForRag(combinedActionText, opts)
+            : combinedActionText;
         if (this.config.queryExpansionEnabled) {
           const expandResult = await this.queryExpander.expand(ragText, opts);
           if (expandResult.ok) ragText = expandResult.value;
@@ -525,35 +542,49 @@ export class SmartAgent {
       if (res.ok) processedHistory = res.value;
     }
 
-    const classifySpan = this.tracer.startSpan('smart_agent.classify', {
-      parent: parentSpan,
-    });
-    const classifyResult = await this.deps.classifier.classify(text, opts);
-    if (!classifyResult.ok) {
-      classifySpan.setStatus('error', classifyResult.error.message);
-      classifySpan.end();
-      return {
-        ok: false,
-        error: new OrchestratorError(
-          classifyResult.error.message,
-          'CLASSIFIER_ERROR',
-        ),
-      };
-    }
-    classifySpan.setStatus('ok');
-    classifySpan.end();
-    opts?.sessionLogger?.logStep('classifier_response', {
-      subprompts: classifyResult.value,
-    });
+    let subprompts: Subprompt[];
 
-    const subprompts = classifyResult.value;
+    if (this.config.classificationEnabled === false) {
+      // Skip classification — treat entire input as a single action
+      subprompts = [
+        { type: 'action', text, dependency: 'independent' as const },
+      ];
+      opts?.sessionLogger?.logStep('classification_skipped', { text });
+    } else {
+      const classifySpan = this.tracer.startSpan('smart_agent.classify', {
+        parent: parentSpan,
+      });
+      const classifyResult = await this.deps.classifier.classify(text, opts);
+      if (!classifyResult.ok) {
+        classifySpan.setStatus('error', classifyResult.error.message);
+        classifySpan.end();
+        return {
+          ok: false,
+          error: new OrchestratorError(
+            classifyResult.error.message,
+            'CLASSIFIER_ERROR',
+          ),
+        };
+      }
+      classifySpan.setStatus('ok');
+      classifySpan.end();
+      opts?.sessionLogger?.logStep('classifier_response', {
+        subprompts: classifyResult.value,
+      });
+      subprompts = classifyResult.value;
+    }
     for (const sp of subprompts) {
       this.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const others = subprompts.filter(
-      (sp) =>
-        sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback',
-    );
+    const others =
+      this.config.ragUpsertEnabled !== false
+        ? subprompts.filter(
+            (sp) =>
+              sp.type === 'fact' ||
+              sp.type === 'state' ||
+              sp.type === 'feedback',
+          )
+        : [];
     const ragStoreMap = new Map<string, IRag>([
       ['fact', this.deps.ragStores.facts],
       ['feedback', this.deps.ragStores.feedback],

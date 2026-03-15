@@ -73,6 +73,14 @@ export interface SmartServerAgentConfig {
   queryExpansionEnabled?: boolean;
   toolResultCacheTtlMs?: number;
   sessionTokenBudget?: number;
+  /** Whether classification stage runs. Default: true. */
+  classificationEnabled?: boolean;
+  /** RAG retrieval behavior. 'auto' | 'always' | 'never'. Default: 'auto'. */
+  ragRetrievalMode?: 'auto' | 'always' | 'never';
+  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
+  ragTranslationEnabled?: boolean;
+  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
+  ragUpsertEnabled?: boolean;
 }
 
 export interface SmartServerPromptsConfig {
@@ -351,6 +359,14 @@ export class SmartServer {
           agentUpdate.ragTranslatePrompt = update.prompts.ragTranslate;
         if (update.prompts?.historySummary !== undefined)
           agentUpdate.historySummaryPrompt = update.prompts.historySummary;
+        if (update.classificationEnabled !== undefined)
+          agentUpdate.classificationEnabled = update.classificationEnabled;
+        if (update.ragRetrievalMode !== undefined)
+          agentUpdate.ragRetrievalMode = update.ragRetrievalMode;
+        if (update.ragTranslationEnabled !== undefined)
+          agentUpdate.ragTranslationEnabled = update.ragTranslationEnabled;
+        if (update.ragUpsertEnabled !== undefined)
+          agentUpdate.ragUpsertEnabled = update.ragUpsertEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
         }
