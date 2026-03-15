@@ -79,10 +79,10 @@ pipeline:
         - id: rag-upsert
           type: rag-upsert
 
-    # ── Step 3: RAG retrieval (only when context is needed)
+    # ── Step 3: RAG retrieval (only when domain context is needed)
     #    translate + expand run in parallel (both transform query text),
     #    then 3 RAG queries run in parallel,
-    #    then rerank + tool-select run sequentially
+    #    then rerank sequentially
     - id: rag-retrieval
       type: parallel
       when: "shouldRetrieve"
@@ -95,7 +95,6 @@ pipeline:
         - id: rag-queries
           type: parallel
           stages:
-            # With 100+ MCP tools, k:10 may miss relevant ones — use k:20
             - id: rag-facts
               type: rag-query
               config: { store: facts, k: 20 }
@@ -107,10 +106,15 @@ pipeline:
               config: { store: state, k: 5 }
         - id: rerank
           type: rerank
-        - id: tool-select
-          type: tool-select
 
-    # ── Step 4: assemble LLM context
+    # ── Step 4: tool discovery (ALWAYS runs, not gated by shouldRetrieve)
+    #    If RAG retrieval was skipped, tool-select queries facts RAG directly
+    #    to discover relevant tools. Tools must always be discoverable.
+    - id: tool-select
+      type: tool-select
+      config: { k: 20 }
+
+    # ── Step 5: assemble LLM context
     - id: assemble
       type: assemble
 

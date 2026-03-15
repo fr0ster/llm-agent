@@ -19,8 +19,9 @@
  *   └─ expand         — expand query with synonyms
  *   after:
  *   ├─ rag-query ×3   — query facts/feedback/state in parallel
- *   ├─ rerank         — re-score RAG results
- *   └─ tool-select    — select MCP tools from RAG results
+ *   └─ rerank         — re-score RAG results
+ *   ↓
+ * tool-select         — ALWAYS runs (queries facts RAG if retrieval was skipped)
  *   ↓
  * assemble           — build final LLM context
  *   ↓
@@ -102,11 +103,11 @@ export function getDefaultStages(): StageDefinition[] {
           id: 'rerank',
           type: 'rerank',
         },
-        {
-          id: 'tool-select',
-          type: 'tool-select',
-        },
       ],
+    },
+    {
+      id: 'tool-select',
+      type: 'tool-select',
     },
     {
       id: 'assemble',
