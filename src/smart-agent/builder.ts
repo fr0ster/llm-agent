@@ -38,7 +38,7 @@ import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { IRag } from './interfaces/rag.js';
+import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
 import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
@@ -47,10 +47,12 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaEmbedder, OllamaRag } from './rag/ollama-rag.js';
+import { OllamaRag } from './rag/ollama-rag.js';
 import { QdrantRag } from './rag/qdrant-rag.js';
 import type { IQueryExpander } from './rag/query-expander.js';
+import { VectorRag } from './rag/vector-rag.js';
 import type { IReranker } from './reranker/types.js';
 import {
   CircuitBreaker,
@@ -80,6 +82,12 @@ export interface BuilderLlmConfig {
 export interface BuilderRagConfig {
   /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
   type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /**
+   * Embedder name — resolved from the embedder factory registry.
+   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
+   * When omitted, defaults to 'ollama'.
+   */
+  embedder?: string;
   /** Base URL for embedding service or Qdrant server */
   url?: string;
   /** API key (for openai type or Qdrant auth) */
@@ -190,6 +198,8 @@ export class SmartAgentBuilder {
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
+  private _embedder?: IEmbedder;
+  private _embedderFactories: Record<string, EmbedderFactory> = {};
 
   constructor(cfg: SmartAgentBuilderConfig) {
     this.cfg = cfg;
@@ -313,6 +323,24 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /**
+   * Inject a ready-made IEmbedder used by default RAG stores.
+   * Takes precedence over config-driven embedder selection.
+   */
+  withEmbedder(embedder: IEmbedder): this {
+    this._embedder = embedder;
+    return this;
+  }
+
+  /**
+   * Register a named embedder factory for config-driven (YAML) selection.
+   * When `rag.embedder` matches `name`, this factory is used to create the embedder.
+   */
+  withEmbedderFactory(name: string, factory: EmbedderFactory): this {
+    this._embedderFactories[name] = factory;
+    return this;
+  }
+
   // -------------------------------------------------------------------------
   // build()
   // -------------------------------------------------------------------------
@@ -353,6 +381,29 @@ export class SmartAgentBuilder {
     let mainLlm: ILlm = mainLlmCandidate;
     const classifierLlm: ILlm = classifierLlmCandidate;
 
+    // ---- Embedder resolution ------------------------------------------------
+    const resolveEmbedder = (): IEmbedder => {
+      if (this._embedder) return this._embedder;
+      const r = this.cfg.rag;
+      const name = r?.embedder ?? 'ollama';
+      const factories = {
+        ...builtInEmbedderFactories,
+        ...this._embedderFactories,
+      };
+      const factory = factories[name];
+      if (!factory) {
+        throw new Error(
+          `Unknown embedder "${name}". Register via withEmbedderFactory() or use: ${Object.keys(factories).join(', ')}`,
+        );
+      }
+      return factory({
+        url: r?.url,
+        apiKey: r?.apiKey,
+        model: r?.model,
+        timeoutMs: r?.timeoutMs,
+      });
+    };
+
     // ---- Default RAG factory ---------------------------------------------
     const makeDefaultRag = (): IRag => {
       const r = this.cfg.rag;
@@ -361,23 +412,35 @@ export class SmartAgentBuilder {
       }
       if (r?.type === 'qdrant') {
         if (!r.url) throw new Error('Qdrant URL is required');
-        const embedder = new OllamaEmbedder({
-          ollamaUrl: undefined,
-          model: r.model,
-          timeoutMs: r.timeoutMs,
-        });
         return new QdrantRag({
           url: r.url,
           collectionName: r.collectionName ?? 'llm-agent',
-          embedder,
+          embedder: resolveEmbedder(),
           apiKey: r.apiKey,
           timeoutMs: r.timeoutMs,
         });
       }
-      return new OllamaRag({
-        ollamaUrl: r?.url,
-        model: r?.model,
-        timeoutMs: r?.timeoutMs,
+      // For 'openai' type, resolve via embedder name or fall back to type
+      if (r?.type === 'openai') {
+        const embedder = resolveEmbedder();
+        return new VectorRag(embedder, {
+          dedupThreshold: r.dedupThreshold,
+          vectorWeight: r.vectorWeight,
+          keywordWeight: r.keywordWeight,
+        });
+      }
+      // Default: ollama — use OllamaRag when no custom embedder is set
+      if (!this._embedder && !this.cfg.rag?.embedder) {
+        return new OllamaRag({
+          ollamaUrl: r?.url,
+          model: r?.model,
+          timeoutMs: r?.timeoutMs,
+          dedupThreshold: r?.dedupThreshold,
+          vectorWeight: r?.vectorWeight,
+          keywordWeight: r?.keywordWeight,
+        });
+      }
+      return new VectorRag(resolveEmbedder(), {
         dedupThreshold: r?.dedupThreshold,
         vectorWeight: r?.vectorWeight,
         keywordWeight: r?.keywordWeight,

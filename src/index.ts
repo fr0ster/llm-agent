@@ -69,6 +69,13 @@ export type {
   HealthComponentStatus,
   HealthStatus,
 } from './smart-agent/health/types.js';
+// Embedder & RAG
+export type {
+  EmbedderFactory,
+  EmbedderFactoryConfig,
+  IEmbedder,
+  IRag,
+} from './smart-agent/interfaces/rag.js';
 export {
   type CounterSnapshot,
   type HistogramSnapshot,
@@ -82,6 +89,17 @@ export type {
   IHistogram,
   IMetrics,
 } from './smart-agent/metrics/types.js';
+export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
+export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
+export {
+  OllamaEmbedder,
+  type OllamaEmbedderConfig,
+  OllamaRag,
+} from './smart-agent/rag/ollama-rag.js';
+export {
+  OpenAiEmbedder,
+  type OpenAiEmbedderConfig,
+} from './smart-agent/rag/openai-embedder.js';
 // Qdrant RAG
 export {
   QdrantRag,
@@ -93,6 +111,10 @@ export {
   LlmQueryExpander,
   NoopQueryExpander,
 } from './smart-agent/rag/query-expander.js';
+export {
+  VectorRag,
+  type VectorRagConfig,
+} from './smart-agent/rag/vector-rag.js';
 // Reranker
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';

@@ -49,6 +49,7 @@ llm:
 
 rag:
   type: ollama                        # ollama | in-memory | qdrant
+  # embedder: ollama                  # Embedder to use: ollama | openai | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
   # collectionName: llm-agent         # Qdrant collection name (qdrant type only)
@@ -96,10 +97,11 @@ agent:
 #
 #   rag:
 #     facts:
-#       type: ollama
-#       url: http://localhost:11434
-#       model: nomic-embed-text
-#       dedupThreshold: 0.92
+#       type: qdrant
+#       url: http://qdrant:6333
+#       embedder: openai              # ollama | openai | <custom registered name>
+#       model: text-embedding-3-small
+#       apiKey: \${OPENAI_API_KEY}
 #     feedback:
 #       type: in-memory
 #     state:
@@ -232,6 +234,7 @@ export function resolveSmartServerConfig(
       type: ((args['rag-type'] as string) ??
         get(yaml, 'rag', 'type') ??
         'ollama') as 'ollama' | 'in-memory' | 'qdrant',
+      embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
       url:
         (args['rag-url'] as string) ??
         get(yaml, 'rag', 'url') ??
