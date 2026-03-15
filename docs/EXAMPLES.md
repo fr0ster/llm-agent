@@ -60,6 +60,7 @@ PER REQUEST
 | [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant + higher tool limits |
 | [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
 | [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining how tool vectorization, classification, RAG memory, and tool selection work together |
+| [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — maximizes concurrency (summarize ‖ rag-upsert, translate ‖ expand, 3× rag-query) |
 
 ### Running a YAML config
 
