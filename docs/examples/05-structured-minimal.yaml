@@ -1,0 +1,29 @@
+# Structured pipeline — minimal (no RAG).
+# For simple LLM + MCP tools setups where RAG retrieval is not needed.
+# Skips: summarize, rag-upsert, translate, expand, rag-query, rerank.
+#
+# Usage:
+#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${OPENAI_API_KEY}
+  model: gpt-4o
+  temperature: 0.7
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+pipeline:
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
