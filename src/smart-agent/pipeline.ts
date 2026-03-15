@@ -33,6 +33,8 @@ export interface PipelineLlmProviderConfig {
   apiKey?: string;
   model?: string;
   temperature?: number;
+  /** Maximum number of tokens in the LLM response. */
+  maxTokens?: number;
   /** SAP AI Core resource group (used when provider is 'sap-ai-sdk') */
   resourceGroup?: string;
   /** Programmatic OAuth2 credentials for SAP AI Core (bypasses AICORE_SERVICE_KEY env var) */
@@ -105,6 +107,7 @@ export function makeLlmFromProvider(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
+        maxTokens: cfg.maxTokens,
       });
       const agent = new DeepSeekAgent({
         llmProvider: provider,
@@ -117,6 +120,7 @@ export function makeLlmFromProvider(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
+        maxTokens: cfg.maxTokens,
       });
       const agent = new OpenAIAgent({
         llmProvider: provider,
@@ -129,6 +133,7 @@ export function makeLlmFromProvider(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
+        maxTokens: cfg.maxTokens,
       });
       const agent = new AnthropicAgent({
         llmProvider: provider,
@@ -141,6 +146,7 @@ export function makeLlmFromProvider(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
+        maxTokens: cfg.maxTokens,
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
       });
