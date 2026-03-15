@@ -140,7 +140,118 @@ const rag = makeRag();
 const mcp = makeMcpClient([{ name: 'Ping', description: 'health', inputSchema: { type: 'object', properties: {} } }]);
 ```
 
-## 7. Current npm scripts
+## 7. Stream test client
+
+A lightweight SSE client for testing the SmartServer streaming endpoint. Displays heartbeat pings and timing breakdowns alongside the streamed response.
+
+**Start the server first** (in a separate terminal):
+
+```bash
+npm run dev
+```
+
+**Run the test client** with the default prompt:
+
+```bash
+npm run client:test-stream
+```
+
+**Or pass a custom message:**
+
+```bash
+npm run client:test-stream -- "Which MCP tools are available?"
+```
+
+The client connects to `http://127.0.0.1:4004/v1/chat/completions` and prints:
+- streamed content tokens as they arrive
+- `💓 heartbeat` comments (SSE keep-alive)
+- `⏱️ timing` comments (MCP tool execution breakdown)
+- `✅ Stream finished [DONE]` when the response is complete
+
+Set `PORT` env variable to override the default port:
+
+```bash
+PORT=5000 npm run client:test-stream
+```
+
+## 8. Connecting OpenAI-compatible clients
+
+SmartServer exposes an OpenAI-compatible API at `http://localhost:4004/v1/chat/completions`, so any client that supports the OpenAI protocol can connect to it as a custom provider.
+
+**Start the server:**
+
+```bash
+npm run dev
+```
+
+### Goose (Block)
+
+In Goose settings, add a custom provider:
+
+- **Provider**: `OpenAI API Compatible`
+- **API Base URL**: `http://localhost:4004/v1`
+- **API Key**: any non-empty string (SmartServer has no auth by default)
+- **Model**: `smart-agent`
+
+### Continue (VS Code / JetBrains)
+
+In `~/.continue/config.yaml`:
+
+```yaml
+models:
+  - name: SmartAgent
+    provider: openai
+    model: smart-agent
+    apiBase: http://localhost:4004/v1
+    apiKey: dummy
+```
+
+### curl
+
+```bash
+curl http://localhost:4004/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "smart-agent",
+    "stream": true,
+    "messages": [{"role": "user", "content": "List available MCP tools"}]
+  }'
+```
+
+### Python (openai SDK)
+
+```python
+from openai import OpenAI
+
+client = OpenAI(base_url="http://localhost:4004/v1", api_key="dummy")
+response = client.chat.completions.create(
+    model="smart-agent",
+    messages=[{"role": "user", "content": "List available MCP tools"}],
+)
+print(response.choices[0].message.content)
+```
+
+### Available endpoints
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/chat/completions` | POST | Chat completion (JSON or SSE streaming) |
+| `/v1/models` | GET | List available models |
+| `/v1/health` | GET | Health check |
+| `/v1/usage` | GET | Token usage statistics |
+
+### Session management
+
+Pass `X-Session-Id` header to maintain conversation context across requests:
+
+```bash
+curl http://localhost:4004/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -H "X-Session-Id: my-session" \
+  -d '{"model":"smart-agent","messages":[{"role":"user","content":"Hello"}]}'
+```
+
+## 9. Current npm scripts
 
 ```bash
 npm run build
