@@ -47,6 +47,8 @@ mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
 
+logDir: sessions                      # session debug logs (RAG scores, tool selection)
+
 agent:
   maxIterations: 10
   maxToolCalls: 30

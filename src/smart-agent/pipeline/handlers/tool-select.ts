@@ -77,6 +77,16 @@ export class ToolSelectHandler implements IStageHandler {
     span.setAttribute('mcp_tools', ctx.mcpTools.length);
     span.setAttribute('selected', ctx.selectedTools.length);
     span.setAttribute('active', ctx.activeTools.length);
+
+    // Log tool selection diagnostics
+    ctx.options?.sessionLogger?.logStep('tools_selected', {
+      totalMcp: ctx.mcpTools.length,
+      ragMatchedTools: [...ragToolNames],
+      selectedCount: ctx.selectedTools.length,
+      selectedNames: ctx.selectedTools.map((t) => t.name),
+      activeCount: ctx.activeTools.length,
+    });
+
     return true;
   }
 }

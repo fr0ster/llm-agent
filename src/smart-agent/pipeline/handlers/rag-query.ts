@@ -49,6 +49,18 @@ export class RagQueryHandler implements IStageHandler {
     if (result.ok) {
       ctx.ragResults[storeName as keyof typeof ctx.ragResults] = result.value;
       span.setAttribute('results', result.value.length);
+
+      // Log RAG results with scores for diagnostics
+      ctx.options?.sessionLogger?.logStep(`rag_query_${storeName}`, {
+        query: ctx.ragText.slice(0, 200),
+        k,
+        resultCount: result.value.length,
+        results: result.value.map((r) => ({
+          id: r.metadata.id,
+          score: r.score,
+          text: r.text.slice(0, 120),
+        })),
+      });
     }
 
     return true;
