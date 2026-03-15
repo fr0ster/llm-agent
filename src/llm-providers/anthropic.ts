@@ -41,7 +41,7 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const requestBody: Record<string, unknown> = {
         model: this.model,
         messages: this.formatMessages(conversationMessages),
-        max_tokens: this.config.maxTokens || 2000,
+        max_tokens: this.config.maxTokens || 4096,
         temperature: this.config.temperature || 0.7,
       };
 

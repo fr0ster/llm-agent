@@ -46,7 +46,7 @@ export class DeepSeekAgent extends BaseAgent {
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
       temperature: config.temperature || 0.7,
-      max_tokens: config.maxTokens || 2000,
+      max_tokens: config.maxTokens || 4096,
     });
 
     const choice = (
@@ -127,7 +127,7 @@ export class DeepSeekAgent extends BaseAgent {
         tools: functions.length > 0 ? functions : undefined,
         tool_choice: functions.length > 0 ? 'auto' : undefined,
         temperature: config.temperature || 0.7,
-        max_tokens: config.maxTokens || 2000,
+        max_tokens: config.maxTokens || 4096,
         stream: true,
         stream_options: { include_usage: true },
       },

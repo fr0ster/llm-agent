@@ -37,7 +37,7 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
         tools: tools && tools.length > 0 ? tools : undefined,
         tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
         temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 2000,
+        max_tokens: this.config.maxTokens || 4096,
       });
       const choice = response.data.choices[0];
       return {
@@ -69,7 +69,7 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
           tools: tools && tools.length > 0 ? tools : undefined,
           tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
           temperature: this.config.temperature || 0.7,
-          max_tokens: this.config.maxTokens || 2000,
+          max_tokens: this.config.maxTokens || 4096,
           stream: true,
         },
         { responseType: 'stream' },

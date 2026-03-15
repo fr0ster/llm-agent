@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.9.1] — 2026-03-15
+
+### Changed
+
+- **Default `maxTokens` raised from 2000 to 4096** for OpenAI, Anthropic, and DeepSeek providers (both agent and LLM provider layers). SAP AI Core already used 16384 and was not changed.
+
+---
+
 ## [2.9.0] — 2026-03-15
 
 ### Fixed
