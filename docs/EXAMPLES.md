@@ -201,37 +201,63 @@ const rag = makeRag();
 const mcp = makeMcpClient([{ name: 'Ping', description: 'health', inputSchema: { type: 'object', properties: {} } }]);
 ```
 
-## Stream test client
+## Interactive text client
 
-A lightweight SSE client for testing the SmartServer streaming endpoint. Displays heartbeat pings and timing breakdowns alongside the streamed response.
+Interactive terminal chat with streaming responses and session persistence.
+Maintains conversation history — the agent remembers what you said earlier in the session.
 
-**Start the server first** (in a separate terminal):
+**Start the server** (in a separate terminal):
 
 ```bash
-npm run dev
+npm run dev -- --config docs/examples/09-parallel-optimized.yaml
 ```
 
-**Run the test client** with the default prompt:
+**Run the text client:**
+
+```bash
+npm run client:text
+```
+
+**Example session:**
+
+```
+SmartAgent text client
+Server:  http://127.0.0.1:4004
+Session: a1b2c3d4-...
+Commands: /clear /session /exit
+
+> Пам'ятай: для таблиці T100 завжди використовуй SE16N
+Зрозумів, запам'ятав — для T100 використовувати SE16N.
+
+> Покажи вміст T100
+[Agent queries RAG → finds "use SE16N for T100" in feedback store]
+[Agent selects se16n_display tool → calls MCP → streams result]
+Ось вміст таблиці T100: ...
+
+> А тепер T001?
+[RAG feedback still has "use SE16N" → agent remembers preference]
+...
+
+> /clear
+History cleared.
+
+> /exit
+Bye.
+```
+
+Set `PORT` or `SESSION_ID` env variables to override defaults:
+
+```bash
+PORT=5000 SESSION_ID=my-session npm run client:text
+```
+
+## Stream test client
+
+A lightweight single-shot SSE client for testing streaming. Sends one message and prints the streamed response.
 
 ```bash
 npm run client:test-stream
-```
-
-**Or pass a custom message:**
-
-```bash
 npm run client:test-stream -- "Which MCP tools are available?"
-```
-
-The client connects to `http://127.0.0.1:4004/v1/chat/completions` and prints:
-- streamed content tokens as they arrive
-- heartbeat comments (SSE keep-alive)
-- timing comments (MCP tool execution breakdown)
-- stream finished when the response is complete
-
-Set `PORT` env variable to override the default port:
-
-```bash
 PORT=5000 npm run client:test-stream
 ```
 
