@@ -36,10 +36,14 @@ Consumer parses raw for tool calls → calls mcpClient.callTool() directly
 |-------|-------|------|
 | **Agents** | `src/agents/` | Template Method pattern; `BaseAgent` handles MCP connection, history, tool loading; subclasses handle provider-specific tool formatting |
 | **LLM Providers** | `src/llm-providers/` | Thin HTTP wrappers per provider; each implements `LLMProvider` interface from `base.ts` |
+| **Smart Agent** | `src/smart-agent/` | Orchestrated pipeline: classification, RAG, MCP, tool loop |
+| **Builder** | `src/smart-agent/builder.ts` | Interface-only factory — assembles SmartAgent from `ILlm`, `IRag`, `IMcpClient`, etc. No provider knowledge |
+| **Providers** | `src/smart-agent/providers.ts` | Composition root — resolves config to concrete implementations (DeepSeek, OpenAI, Ollama, etc.) |
+| **Pipeline** | `src/smart-agent/pipeline.ts` | Pipeline config types only (no logic) |
 | **MCP Client** | `src/mcp/client.ts` | `MCPClientWrapper` — multi-transport abstraction (stdio / SSE / stream-http / embedded / auto) |
 | **Types** | `src/types.ts` | Shared types: `Message`, `ToolCall`, `AgentResponse`, `LLMResponse`, `LLMProviderConfig` |
 | **Public API** | `src/index.ts` | All exports for npm consumers |
-| **CLI** | `src/cli.ts` | Dev test launcher; reads `.env`; not part of public API |
+| **CLI** | `src/smart-agent/cli.ts` | Dev test launcher; reads `.env`; not part of public API |
 
 ### Agent hierarchy
 

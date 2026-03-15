@@ -1,24 +1,19 @@
 /**
  * SmartAgentBuilder — fluent builder for SmartAgent.
  *
- * Wires together default implementations (DeepSeek LLM, Ollama/InMemory RAG,
- * MCP via HTTP or stdio) and allows overriding any component with a custom
- * implementation that satisfies the corresponding interface.
+ * Assembles a SmartAgent from interface-based components.
+ * The builder itself has NO knowledge of concrete providers —
+ * all dependencies must be injected via `withXxx()` methods or
+ * resolved externally by the composition root (SmartServer, CLI).
  *
- * Usage — all defaults:
- *   const { agent, getUsage, close } = await new SmartAgentBuilder({ llm: { apiKey } }).build();
- *
- * Usage — swap RAG and logger:
- *   const handle = await new SmartAgentBuilder({ llm: { apiKey } })
+ * Usage:
+ *   const handle = await new SmartAgentBuilder()
+ *     .withMainLlm(myLlm)
  *     .withRag({ facts: myRag, feedback: myRag, state: myRag })
- *     .withLogger(myLogger)
  *     .build();
  */
 
-import { DeepSeekAgent } from '../agents/deepseek-agent.js';
-import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { MCPClientWrapper } from '../mcp/client.js';
-import { LlmAdapter } from './adapters/llm-adapter.js';
 import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
 import {
   SmartAgent,
@@ -38,8 +33,8 @@ import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
-import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
+import type { IRag } from './interfaces/rag.js';
+import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
 import type {
@@ -47,12 +42,8 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
-import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
-import { QdrantRag } from './rag/qdrant-rag.js';
 import type { IQueryExpander } from './rag/query-expander.js';
-import { VectorRag } from './rag/vector-rag.js';
 import type { IReranker } from './reranker/types.js';
 import {
   CircuitBreaker,
@@ -65,46 +56,8 @@ import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
 
 // ---------------------------------------------------------------------------
-// Config types (builder-owned — no dependency on SmartServerConfig)
+// Config types
 // ---------------------------------------------------------------------------
-
-export interface BuilderLlmConfig {
-  /** DeepSeek API key (required for default LLM) */
-  apiKey: string;
-  /** Default: 'deepseek-chat' */
-  model?: string;
-  /** Main LLM temperature. Default: 0.7 */
-  temperature?: number;
-  /** Classifier LLM temperature. Default: 0.1 */
-  classifierTemperature?: number;
-}
-
-export interface BuilderRagConfig {
-  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
-  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
-  /**
-   * Embedder name — resolved from the embedder factory registry.
-   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
-   * When omitted, defaults to 'ollama'.
-   */
-  embedder?: string;
-  /** Base URL for embedding service or Qdrant server */
-  url?: string;
-  /** API key (for openai type or Qdrant auth) */
-  apiKey?: string;
-  /** Embedding model name */
-  model?: string;
-  /** Qdrant collection name (required for qdrant type) */
-  collectionName?: string;
-  /** Cosine similarity dedup threshold. Default: 0.92 */
-  dedupThreshold?: number;
-  /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
-  timeoutMs?: number;
-  /** Semantic similarity weight 0..1. Default: 0.7 */
-  vectorWeight?: number;
-  /** Lexical matching weight 0..1. Default: 0.3 */
-  keywordWeight?: number;
-}
 
 export interface BuilderMcpConfig {
   type: 'http' | 'stdio';
@@ -130,10 +83,6 @@ export interface BuilderPromptsConfig {
 }
 
 export interface SmartAgentBuilderConfig {
-  /** LLM credentials (required for default LLM factory). */
-  llm: BuilderLlmConfig;
-  /** RAG store config for default Ollama/InMemory stores. */
-  rag?: BuilderRagConfig;
   /** MCP connection(s). Pass an array to connect multiple servers simultaneously. */
   mcp?: BuilderMcpConfig | BuilderMcpConfig[];
   /** SmartAgent orchestration limits. */
@@ -160,8 +109,7 @@ export interface SmartAgentHandle {
   streamChat: ILlm['streamChat'];
   /**
    * Returns accumulated LLM token usage (prompt + completion + total + requests).
-   * Only counts calls made through the default DeepSeek LLM.
-   * Returns zeroes if both mainLlm and classifierLlm were overridden.
+   * Returns zeroes if usage tracking is not available on the injected LLM.
    */
   getUsage(): TokenUsage;
   /** Gracefully close MCP connections. Call on shutdown. */
@@ -179,7 +127,7 @@ export interface SmartAgentHandle {
 export class SmartAgentBuilder {
   private readonly cfg: SmartAgentBuilderConfig;
 
-  // Custom overrides — when set, the corresponding default is not created
+  // All components injected via fluent setters
   private _mainLlm?: ILlm;
   private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
@@ -198,10 +146,9 @@ export class SmartAgentBuilder {
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
-  private _embedder?: IEmbedder;
-  private _embedderFactories: Record<string, EmbedderFactory> = {};
+  private _getUsage?: () => TokenUsage;
 
-  constructor(cfg: SmartAgentBuilderConfig) {
+  constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
   }
 
@@ -209,26 +156,26 @@ export class SmartAgentBuilder {
   // Fluent setters
   // -------------------------------------------------------------------------
 
-  /** Override the main LLM used in the tool loop. */
+  /** Set the main LLM used in the tool loop (required). */
   withMainLlm(llm: ILlm): this {
     this._mainLlm = llm;
     return this;
   }
 
-  /** Override the helper LLM used for summarization and translation. */
+  /** Set the helper LLM used for summarization and translation. */
   withHelperLlm(llm: ILlm): this {
     this._helperLlm = llm;
     return this;
   }
 
-  /** Override the LLM used by the intent classifier. */
+  /** Set the LLM used by the intent classifier. If not set, mainLlm is used. */
   withClassifierLlm(llm: ILlm): this {
     this._classifierLlm = llm;
     return this;
   }
 
   /**
-   * Override individual RAG stores. Unspecified stores use the default.
+   * Set individual RAG stores. Unspecified stores default to InMemoryRag.
    * Pass the same instance for all three to share a single store.
    */
   withRag(stores: Partial<SmartAgentRagStores>): this {
@@ -323,21 +270,9 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /**
-   * Inject a ready-made IEmbedder used by default RAG stores.
-   * Takes precedence over config-driven embedder selection.
-   */
-  withEmbedder(embedder: IEmbedder): this {
-    this._embedder = embedder;
-    return this;
-  }
-
-  /**
-   * Register a named embedder factory for config-driven (YAML) selection.
-   * When `rag.embedder` matches `name`, this factory is used to create the embedder.
-   */
-  withEmbedderFactory(name: string, factory: EmbedderFactory): this {
-    this._embedderFactories[name] = factory;
+  /** Set a custom token usage provider. */
+  withUsageProvider(getUsage: () => TokenUsage): this {
+    this._getUsage = getUsage;
     return this;
   }
 
@@ -348,108 +283,22 @@ export class SmartAgentBuilder {
   async build(): Promise<SmartAgentHandle> {
     const log = this._logger;
 
-    // ---- Default LLM factory ---------------------------------------------
-    const makeDefaultLlm = (temperature: number): TokenCountingLlm => {
-      const provider = new DeepSeekProvider({
-        apiKey: this.cfg.llm.apiKey,
-        model: this.cfg.llm.model ?? 'deepseek-chat',
-        temperature,
-      });
-      const dummyMcp = new MCPClientWrapper({
-        transport: 'embedded',
-        listToolsHandler: async () => [],
-      });
-      const agent = new DeepSeekAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      return new TokenCountingLlm(new LlmAdapter(agent));
-    };
-
-    const defaultMainLlm = this._mainLlm
-      ? null
-      : makeDefaultLlm(this.cfg.llm.temperature ?? 0.7);
-    const defaultClassifierLlm = this._classifierLlm
-      ? null
-      : makeDefaultLlm(this.cfg.llm.classifierTemperature ?? 0.1);
-
-    const mainLlmCandidate = this._mainLlm ?? defaultMainLlm;
-    const classifierLlmCandidate = this._classifierLlm ?? defaultClassifierLlm;
-    if (!mainLlmCandidate || !classifierLlmCandidate) {
-      throw new Error('Failed to initialize default LLM dependencies');
+    // ---- Validate required dependencies -----------------------------------
+    const mainLlm = this._mainLlm;
+    if (!mainLlm) {
+      throw new Error(
+        'Main LLM is required. Call .withMainLlm(llm) before .build().',
+      );
     }
-    let mainLlm: ILlm = mainLlmCandidate;
-    const classifierLlm: ILlm = classifierLlmCandidate;
+    let wrappedMainLlm: ILlm = mainLlm;
 
-    // ---- Embedder resolution ------------------------------------------------
-    const resolveEmbedder = (): IEmbedder => {
-      if (this._embedder) return this._embedder;
-      const r = this.cfg.rag;
-      const name = r?.embedder ?? 'ollama';
-      const factories = {
-        ...builtInEmbedderFactories,
-        ...this._embedderFactories,
-      };
-      const factory = factories[name];
-      if (!factory) {
-        throw new Error(
-          `Unknown embedder "${name}". Register via withEmbedderFactory() or use: ${Object.keys(factories).join(', ')}`,
-        );
-      }
-      return factory({
-        url: r?.url,
-        apiKey: r?.apiKey,
-        model: r?.model,
-        timeoutMs: r?.timeoutMs,
-      });
-    };
+    // Classifier defaults to main LLM if not provided
+    const classifierLlm: ILlm = this._classifierLlm ?? mainLlm;
 
-    // ---- Default RAG factory ---------------------------------------------
-    const makeDefaultRag = (): IRag => {
-      const r = this.cfg.rag;
-      if (r?.type === 'in-memory') {
-        return new InMemoryRag({ dedupThreshold: r.dedupThreshold });
-      }
-      if (r?.type === 'qdrant') {
-        if (!r.url) throw new Error('Qdrant URL is required');
-        return new QdrantRag({
-          url: r.url,
-          collectionName: r.collectionName ?? 'llm-agent',
-          embedder: resolveEmbedder(),
-          apiKey: r.apiKey,
-          timeoutMs: r.timeoutMs,
-        });
-      }
-      // For 'openai' type, resolve via embedder name or fall back to type
-      if (r?.type === 'openai') {
-        const embedder = resolveEmbedder();
-        return new VectorRag(embedder, {
-          dedupThreshold: r.dedupThreshold,
-          vectorWeight: r.vectorWeight,
-          keywordWeight: r.keywordWeight,
-        });
-      }
-      // Default: ollama — use OllamaRag when no custom embedder is set
-      if (!this._embedder && !this.cfg.rag?.embedder) {
-        return new OllamaRag({
-          ollamaUrl: r?.url,
-          model: r?.model,
-          timeoutMs: r?.timeoutMs,
-          dedupThreshold: r?.dedupThreshold,
-          vectorWeight: r?.vectorWeight,
-          keywordWeight: r?.keywordWeight,
-        });
-      }
-      return new VectorRag(resolveEmbedder(), {
-        dedupThreshold: r?.dedupThreshold,
-        vectorWeight: r?.vectorWeight,
-        keywordWeight: r?.keywordWeight,
-      });
-    };
-
-    let factsRag: IRag = this._ragStores?.facts ?? makeDefaultRag();
-    let feedbackRag: IRag = this._ragStores?.feedback ?? makeDefaultRag();
-    let stateRag: IRag = this._ragStores?.state ?? makeDefaultRag();
+    // RAG stores default to InMemoryRag if not provided
+    let factsRag: IRag = this._ragStores?.facts ?? new InMemoryRag();
+    let feedbackRag: IRag = this._ragStores?.feedback ?? new InMemoryRag();
+    let stateRag: IRag = this._ragStores?.state ?? new InMemoryRag();
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
@@ -466,7 +315,7 @@ export class SmartAgentBuilder {
         ...cbCfg,
         onStateChange: cbCfg.onStateChange ?? makeOnStateChange('llm'),
       });
-      mainLlm = new CircuitBreakerLlm(mainLlm, llmBreaker);
+      wrappedMainLlm = new CircuitBreakerLlm(wrappedMainLlm, llmBreaker);
       circuitBreakers.push(llmBreaker);
 
       // Wrap RAG stores with FallbackRag using InMemoryRag fallback
@@ -544,7 +393,7 @@ export class SmartAgentBuilder {
       mcpClients = connected;
     }
 
-    // ---- SmartAgent Config (needed for assembler) ------------------------
+    // ---- SmartAgent Config ------------------------------------------------
     const agentCfg: SmartAgentConfig = {
       maxIterations: 10,
       maxToolCalls: 30,
@@ -577,7 +426,7 @@ export class SmartAgentBuilder {
 
     const agent = new SmartAgent(
       {
-        mainLlm,
+        mainLlm: wrappedMainLlm,
         helperLlm: this._helperLlm,
         mcpClients,
         ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
@@ -603,33 +452,20 @@ export class SmartAgentBuilder {
       agentCfg,
     );
 
+    const zeroUsage: TokenUsage = {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      requests: 0,
+    };
+
     return {
       agent,
       chat: (messages, tools, options) =>
-        mainLlm.chat(messages, tools, options),
+        wrappedMainLlm.chat(messages, tools, options),
       streamChat: (messages, tools, options) =>
-        mainLlm.streamChat(messages, tools, options),
-      getUsage: () => {
-        const main = defaultMainLlm?.getUsage() ?? {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          requests: 0,
-        };
-        const classifier = defaultClassifierLlm?.getUsage() ?? {
-          prompt_tokens: 0,
-          completion_tokens: 0,
-          total_tokens: 0,
-          requests: 0,
-        };
-        return {
-          prompt_tokens: main.prompt_tokens + classifier.prompt_tokens,
-          completion_tokens:
-            main.completion_tokens + classifier.completion_tokens,
-          total_tokens: main.total_tokens + classifier.total_tokens,
-          requests: main.requests + classifier.requests,
-        };
-      },
+        wrappedMainLlm.streamChat(messages, tools, options),
+      getUsage: this._getUsage ?? (() => zeroUsage),
       close: async () => {
         for (const fn of closeFns) await fn();
       },

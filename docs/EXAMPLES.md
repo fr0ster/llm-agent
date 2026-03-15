@@ -107,9 +107,11 @@ pipeline:
 
   rag:
     facts:
-      type: ollama
-      url: http://localhost:11434
-      model: nomic-embed-text
+      type: qdrant
+      url: http://qdrant:6333
+      embedder: openai             # ollama | openai | <custom registered name>
+      model: text-embedding-3-small
+      apiKey: ${OPENAI_API_KEY}
     feedback:
       type: in-memory
     state:
@@ -118,6 +120,22 @@ pipeline:
   mcp:
     - type: http
       url: http://localhost:3001/mcp/stream/http
+```
+
+## 4a. Custom embedder injection (programmatic)
+
+```ts
+import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+
+const server = new SmartServer({
+  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
+  rag: { type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' },
+  mode: 'smart',
+  // Register custom embedder factory — referenced in rag.embedder
+  embedderFactories: {
+    'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
+  },
+});
 ```
 
 ## 5. External tools validation mode
