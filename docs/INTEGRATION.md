@@ -889,9 +889,35 @@ stages.splice(toolLoopIndex, 0, {
 builder.withPipeline({ version: '1', stages });
 ```
 
-### Filesystem Plugins
+### Plugin System
 
-Instead of wiring via the builder, you can drop plugin files into a directory. SmartServer automatically scans and loads them at startup.
+The library provides a plugin system for loading custom implementations from external sources. It uses the same DI pattern as the rest of the library: an interface with a default implementation.
+
+#### IPluginLoader interface
+
+```ts
+interface IPluginLoader {
+  load(): Promise<LoadedPlugins>;
+}
+```
+
+The loader discovers plugins and returns merged registrations. The library ships `FileSystemPluginLoader` as the default — consumers can replace it with their own implementation.
+
+#### PluginExports — what a plugin provides
+
+All fields are optional — a plugin can register any subset:
+
+| Export               | Type                              | Effect                          |
+|----------------------|-----------------------------------|---------------------------------|
+| `stageHandlers`      | `Record<string, IStageHandler>`   | Available in YAML `type:`       |
+| `embedderFactories`  | `Record<string, EmbedderFactory>` | Available in YAML `rag.embedder:` |
+| `reranker`           | `IReranker`                       | Replaces default reranker       |
+| `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
+| `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
+
+#### Option 1: FileSystemPluginLoader (default)
+
+Drop plugin files into a directory. SmartServer scans and loads them at startup.
 
 **Plugin directories** (load order, later wins):
 
@@ -902,11 +928,10 @@ Instead of wiring via the builder, you can drop plugin files into a directory. S
 **Example plugin file** (`~/.config/llm-agent/plugins/audit-log.ts`):
 
 ```ts
-import type { PluginExports } from '@mcp-abap-adt/llm-agent';
-import type { IStageHandler } from '@mcp-abap-adt/llm-agent';
+import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent';
 
 class AuditLogHandler implements IStageHandler {
-  async execute(ctx, config, span) {
+  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan) {
     console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
     return true;
   }
@@ -920,7 +945,7 @@ export const stageHandlers = {
 **YAML config** (`smart-server.yaml`):
 
 ```yaml
-pluginDir: ./my-plugins    # additional directory
+pluginDir: ./my-plugins
 
 pipeline:
   version: "1"
@@ -932,17 +957,118 @@ pipeline:
     # ...
 ```
 
-All fields in `PluginExports` are optional — a plugin can register any subset:
+**Programmatic usage:**
 
-| Export               | Type                              | Effect                          |
-|----------------------|-----------------------------------|---------------------------------|
-| `stageHandlers`      | `Record<string, IStageHandler>`   | Available in YAML `type:`       |
-| `embedderFactories`  | `Record<string, EmbedderFactory>` | Available in YAML `rag.embedder:` |
-| `reranker`           | `IReranker`                       | Replaces default reranker       |
-| `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
-| `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
+```ts
+import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent';
+
+const loader = new FileSystemPluginLoader({
+  dirs: [...getDefaultPluginDirs(), './my-extra-plugins'],
+});
+builder.withPluginLoader(loader);
+```
 
 Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
+
+#### Option 2: Custom plugin loader (npm packages, etc.)
+
+Replace the filesystem scanner with your own discovery mechanism:
+
+```ts
+import {
+  IPluginLoader,
+  LoadedPlugins,
+  emptyLoadedPlugins,
+  mergePluginExports,
+} from '@mcp-abap-adt/llm-agent';
+
+class NpmPluginLoader implements IPluginLoader {
+  constructor(private packages: string[]) {}
+
+  async load(): Promise<LoadedPlugins> {
+    const result = emptyLoadedPlugins();
+    for (const pkg of this.packages) {
+      try {
+        const mod = await import(pkg);
+        mergePluginExports(result, mod, pkg);
+      } catch (err) {
+        result.errors.push({
+          file: pkg,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    return result;
+  }
+}
+
+// Use via builder
+builder.withPluginLoader(new NpmPluginLoader([
+  '@my-org/llm-plugin-audit',
+  '@my-org/llm-plugin-cohere-embedder',
+]));
+
+// Or via SmartServer config
+const server = new SmartServer({
+  ...config,
+  pluginLoader: new NpmPluginLoader(['@my-org/llm-plugin-audit']),
+});
+```
+
+#### Option 3: Composite loader (multiple sources)
+
+Combine multiple loaders into one:
+
+```ts
+class CompositePluginLoader implements IPluginLoader {
+  constructor(private loaders: IPluginLoader[]) {}
+
+  async load(): Promise<LoadedPlugins> {
+    const result = emptyLoadedPlugins();
+    for (const loader of this.loaders) {
+      const plugins = await loader.load();
+      // Merge each loader's results (later wins)
+      for (const [type, handler] of plugins.stageHandlers) {
+        result.stageHandlers.set(type, handler);
+      }
+      Object.assign(result.embedderFactories, plugins.embedderFactories);
+      if (plugins.reranker) result.reranker = plugins.reranker;
+      if (plugins.queryExpander) result.queryExpander = plugins.queryExpander;
+      if (plugins.outputValidator) result.outputValidator = plugins.outputValidator;
+      result.loadedFiles.push(...plugins.loadedFiles);
+      result.errors.push(...plugins.errors);
+    }
+    return result;
+  }
+}
+
+builder.withPluginLoader(new CompositePluginLoader([
+  new FileSystemPluginLoader({ dirs: getDefaultPluginDirs() }),
+  new NpmPluginLoader(['@my-org/llm-plugin-audit']),
+]));
+```
+
+#### Precedence
+
+```
+builder.withXxx()  >  plugin loader  >  built-in defaults
+```
+
+Explicit builder calls (`withReranker()`, `withStageHandler()`, etc.) always take precedence over plugin-loaded registrations. This allows consumers to override individual plugin components without replacing the entire loader.
+
+#### Helper utilities for custom loaders
+
+| Function | Purpose |
+|----------|---------|
+| `emptyLoadedPlugins()` | Creates an empty `LoadedPlugins` — starting point for custom loaders |
+| `mergePluginExports(result, mod, source)` | Merges one module's exports into a `LoadedPlugins` result |
+| `getDefaultPluginDirs()` | Returns default directories (`~/.config/llm-agent/plugins/`, `./plugins/`) |
+
+#### Performance note
+
+Plugin loading happens **once at startup** (during `builder.build()` or `SmartServer.start()`), not per request. Loaded handlers are plain objects in memory — zero runtime overhead compared to direct builder wiring.
+
+See [`docs/examples/plugins/`](examples/plugins/) for 6 complete plugin examples covering all export types.
 
 ## Test Doubles
 
