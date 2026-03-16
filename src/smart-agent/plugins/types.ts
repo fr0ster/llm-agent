@@ -1,9 +1,19 @@
 /**
  * Plugin contract types.
  *
- * A plugin is a JavaScript/TypeScript module that exports named registrations.
- * The plugin loader scans a directory, dynamically imports each file, and
- * merges the registrations into the builder/server registries.
+ * A plugin is a module that exports named registrations matching
+ * {@link PluginExports}. The plugin loader discovers and imports
+ * plugins, returning merged registrations as {@link LoadedPlugins}.
+ *
+ * ## Extension model
+ *
+ * The library provides {@link IPluginLoader} — an interface for plugin
+ * discovery — and a default filesystem-based implementation
+ * ({@link FileSystemPluginLoader}). Consumers can:
+ *
+ * - Use the default loader (filesystem scan) as-is
+ * - Provide a custom loader (npm packages, remote registry, DB, etc.)
+ * - Skip loaders entirely and wire via `SmartAgentBuilder` directly
  *
  * ## Supported exports
  *
@@ -15,7 +25,7 @@
  * | `queryExpander`      | `IQueryExpander`                          | Query expander          |
  * | `outputValidator`    | `IOutputValidator`                        | Output validator        |
  *
- * ## Example plugin file
+ * ## Example plugin file (filesystem loader)
  *
  * ```ts
  * // ~/.config/llm-agent/plugins/my-plugin.js
@@ -33,7 +43,7 @@
  * };
  * ```
  *
- * ## Plugin directories
+ * ## Plugin directories (filesystem loader)
  *
  * Plugins are loaded from (in order, later wins):
  * 1. `~/.config/llm-agent/plugins/` (user-level)
@@ -71,8 +81,8 @@ export interface PluginExports {
 }
 
 /**
- * Result of loading all plugins from one or more directories.
- * Merged registrations from all plugin files.
+ * Result of loading all plugins.
+ * Merged registrations from all discovered plugin sources.
  */
 export interface LoadedPlugins {
   stageHandlers: Map<string, IStageHandler>;
@@ -80,8 +90,118 @@ export interface LoadedPlugins {
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
   outputValidator?: IOutputValidator;
-  /** Source files that were successfully loaded. */
+  /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
-  /** Files that failed to load, with error messages. */
+  /** Plugins that failed to load, with error messages. */
   errors: Array<{ file: string; error: string }>;
+}
+
+/**
+ * Plugin loader interface.
+ *
+ * Abstracts how plugins are discovered and loaded. The library ships
+ * a default filesystem-based implementation ({@link FileSystemPluginLoader}).
+ * Consumers can provide their own implementation to load plugins from
+ * npm packages, remote registries, databases, or any other source.
+ *
+ * @example Default filesystem loader
+ * ```ts
+ * const loader = new FileSystemPluginLoader({
+ *   dirs: ['~/.config/llm-agent/plugins/', './plugins/'],
+ * });
+ * builder.withPluginLoader(loader);
+ * ```
+ *
+ * @example Custom npm-based loader
+ * ```ts
+ * class NpmPluginLoader implements IPluginLoader {
+ *   constructor(private packages: string[]) {}
+ *   async load() {
+ *     const result = emptyLoadedPlugins();
+ *     for (const pkg of this.packages) {
+ *       const mod = await import(pkg);
+ *       mergePluginExports(result, mod, pkg);
+ *     }
+ *     return result;
+ *   }
+ * }
+ * builder.withPluginLoader(new NpmPluginLoader(['my-plugin-a', 'my-plugin-b']));
+ * ```
+ */
+export interface IPluginLoader {
+  /**
+   * Discover and load plugins.
+   *
+   * @returns Merged plugin registrations from all discovered sources.
+   */
+  load(): Promise<LoadedPlugins>;
+}
+
+/**
+ * Creates an empty {@link LoadedPlugins} object.
+ * Useful for custom `IPluginLoader` implementations.
+ */
+export function emptyLoadedPlugins(): LoadedPlugins {
+  return {
+    stageHandlers: new Map(),
+    embedderFactories: {},
+    loadedFiles: [],
+    errors: [],
+  };
+}
+
+/**
+ * Merges a single plugin module's exports into a {@link LoadedPlugins} result.
+ * Useful for custom `IPluginLoader` implementations.
+ *
+ * @param result - Target to merge into (mutated in place).
+ * @param mod    - Plugin module exports to merge.
+ * @param source - Source identifier (file path, package name, etc.).
+ * @returns `true` if any registrations were found.
+ */
+export function mergePluginExports(
+  result: LoadedPlugins,
+  mod: PluginExports,
+  source: string,
+): boolean {
+  let registered = false;
+
+  if (mod.stageHandlers && typeof mod.stageHandlers === 'object') {
+    for (const [type, handler] of Object.entries(mod.stageHandlers)) {
+      if (handler && typeof (handler as IStageHandler).execute === 'function') {
+        result.stageHandlers.set(type, handler as IStageHandler);
+        registered = true;
+      }
+    }
+  }
+
+  if (mod.embedderFactories && typeof mod.embedderFactories === 'object') {
+    for (const [name, factory] of Object.entries(mod.embedderFactories)) {
+      if (typeof factory === 'function') {
+        result.embedderFactories[name] = factory;
+        registered = true;
+      }
+    }
+  }
+
+  if (mod.reranker && typeof mod.reranker === 'object') {
+    result.reranker = mod.reranker;
+    registered = true;
+  }
+
+  if (mod.queryExpander && typeof mod.queryExpander === 'object') {
+    result.queryExpander = mod.queryExpander;
+    registered = true;
+  }
+
+  if (mod.outputValidator && typeof mod.outputValidator === 'object') {
+    result.outputValidator = mod.outputValidator;
+    registered = true;
+  }
+
+  if (registered) {
+    result.loadedFiles.push(source);
+  }
+
+  return registered;
 }

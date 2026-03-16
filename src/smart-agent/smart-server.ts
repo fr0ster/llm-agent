@@ -19,7 +19,11 @@ import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
-import { getDefaultPluginDirs, loadPlugins } from './plugins/index.js';
+import {
+  FileSystemPluginLoader,
+  getDefaultPluginDirs,
+} from './plugins/index.js';
+import type { IPluginLoader } from './plugins/types.js';
 import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
 import type { VectorRag } from './rag/vector-rag.js';
 import {
@@ -117,8 +121,10 @@ export interface SmartServerConfig {
   version?: string;
   /** Path to YAML config file for hot-reload. */
   configFile?: string;
-  /** Additional plugin directory (merged with defaults). */
+  /** Additional plugin directory (merged with defaults). Used by the default FileSystemPluginLoader. */
   pluginDir?: string;
+  /** Custom plugin loader. When set, replaces the default FileSystemPluginLoader. */
+  pluginLoader?: IPluginLoader;
   /** Pre-built embedder injected via DI. Takes precedence over config-driven selection. */
   embedder?: IEmbedder;
   /** Named embedder factories for YAML-driven selection (merged with built-ins). */
@@ -247,14 +253,20 @@ export class SmartServer {
       };
     };
 
-    // ---- Load plugins -------------------------------------------------------
-    const pluginDirs = getDefaultPluginDirs();
-    if (this.cfg.pluginDir) {
-      pluginDirs.push(this.cfg.pluginDir);
-    }
-    const plugins = await loadPlugins(pluginDirs, (msg) =>
-      log({ event: 'plugin_loader', message: msg }),
-    );
+    // ---- Plugin loader -------------------------------------------------------
+    const pluginLoader: IPluginLoader =
+      this.cfg.pluginLoader ??
+      (() => {
+        const dirs = getDefaultPluginDirs();
+        if (this.cfg.pluginDir) dirs.push(this.cfg.pluginDir);
+        return new FileSystemPluginLoader({
+          dirs,
+          log: (msg) => log({ event: 'plugin_loader', message: msg }),
+        });
+      })();
+
+    // Pre-load to extract embedder factories (needed before RAG resolution)
+    const plugins = await pluginLoader.load();
     if (plugins.loadedFiles.length > 0) {
       log({
         event: 'plugins_loaded',
@@ -321,7 +333,8 @@ export class SmartServer {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
 
-    // Apply plugin registrations to builder
+    // Apply pre-loaded plugin registrations to builder
+    // (pre-loaded above to extract embedder factories before RAG resolution)
     for (const [type, handler] of plugins.stageHandlers) {
       builder = builder.withStageHandler(type, handler);
     }

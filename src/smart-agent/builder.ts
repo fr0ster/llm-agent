@@ -43,6 +43,7 @@ import type {
   StageDefinition,
   StructuredPipelineDefinition,
 } from './pipeline/types.js';
+import type { IPluginLoader } from './plugins/types.js';
 import type {
   IPromptInjectionDetector,
   IToolPolicy,
@@ -154,6 +155,7 @@ export class SmartAgentBuilder {
   private _circuitBreakerConfig?: CircuitBreakerConfig;
   private _getUsage?: () => TokenUsage;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
+  private _pluginLoader?: IPluginLoader;
   private _pipelineDefinition?: StructuredPipelineDefinition;
   private _customStageHandlers = new Map<string, IStageHandler>();
 
@@ -374,6 +376,42 @@ export class SmartAgentBuilder {
   }
 
   // -------------------------------------------------------------------------
+  // Plugin loader
+  // -------------------------------------------------------------------------
+
+  /**
+   * Set a plugin loader for automatic plugin discovery.
+   *
+   * During `build()`, the loader's `load()` method is called and all
+   * discovered registrations are applied to the builder (stage handlers,
+   * embedder factories, reranker, query expander, output validator).
+   *
+   * The library ships {@link FileSystemPluginLoader} as the default.
+   * Consumers can provide their own `IPluginLoader` implementation to
+   * load plugins from npm packages, remote registries, or any other source.
+   *
+   * Explicit `withStageHandler()`, `withReranker()`, etc. calls take
+   * precedence over plugin-loaded registrations.
+   *
+   * @example Filesystem (default)
+   * ```ts
+   * import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent';
+   * builder.withPluginLoader(new FileSystemPluginLoader({
+   *   dirs: getDefaultPluginDirs(),
+   * }));
+   * ```
+   *
+   * @example Custom npm loader
+   * ```ts
+   * builder.withPluginLoader(new NpmPluginLoader(['my-plugin-a']));
+   * ```
+   */
+  withPluginLoader(loader: IPluginLoader): this {
+    this._pluginLoader = loader;
+    return this;
+  }
+
+  // -------------------------------------------------------------------------
   // Structured pipeline
   // -------------------------------------------------------------------------
 
@@ -568,6 +606,26 @@ export class SmartAgentBuilder {
       assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
     const assembler: IContextAssembler =
       this._assembler ?? new ContextAssembler(assemblerCfg);
+
+    // ---- Plugin loader (optional) -------------------------------------------
+    if (this._pluginLoader) {
+      const plugins = await this._pluginLoader.load();
+      // Plugin registrations act as defaults — explicit withXxx() wins
+      for (const [type, handler] of plugins.stageHandlers) {
+        if (!this._customStageHandlers.has(type)) {
+          this._customStageHandlers.set(type, handler);
+        }
+      }
+      if (plugins.reranker && !this._reranker) {
+        this._reranker = plugins.reranker;
+      }
+      if (plugins.queryExpander && !this._queryExpander) {
+        this._queryExpander = plugins.queryExpander;
+      }
+      if (plugins.outputValidator && !this._outputValidator) {
+        this._outputValidator = plugins.outputValidator;
+      }
+    }
 
     // ---- Structured pipeline (optional) ------------------------------------
     let pipelineExecutor: PipelineExecutor | undefined;
