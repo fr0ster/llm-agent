@@ -571,15 +571,36 @@ src/smart-agent/pipeline/
 
 ## Plugin System
 
-The plugin system enables filesystem-based extension without modifying source code. Plugins are standard ES modules (`.js`, `.mjs`, `.ts`) that export named registrations matching the `PluginExports` interface.
+The plugin system extends the agent with custom implementations without modifying library source code. It follows the same DI pattern as the rest of the library: an interface (`IPluginLoader`) with a default implementation (`FileSystemPluginLoader`).
 
-### Plugin directories (load order, later wins)
+### Architecture
 
-1. `~/.config/llm-agent/plugins/` — user-level plugins
-2. `./plugins/` — project-level plugins (relative to cwd)
-3. Path from `--plugin-dir` CLI flag or `pluginDir` in YAML config
+```
+IPluginLoader (interface)           ← consumer can replace
+  └── FileSystemPluginLoader        ← default: scans directories
+  └── (custom: NpmPluginLoader)     ← consumer's own loader
+  └── (custom: RemotePluginLoader)  ← etc.
 
-### Supported exports
+PluginExports (interface)           ← what a plugin module exports
+LoadedPlugins (interface)           ← what a loader returns
+```
+
+### IPluginLoader interface
+
+```ts
+interface IPluginLoader {
+  load(): Promise<LoadedPlugins>;
+}
+```
+
+The loader is injected via:
+- `builder.withPluginLoader(loader)` — programmatic API
+- `SmartServerConfig.pluginLoader` — server config
+- Falls back to `FileSystemPluginLoader` with default directories
+
+### Plugin exports (PluginExports)
+
+A plugin module can export any subset of:
 
 | Export name          | Type                              | Registers as            |
 |----------------------|-----------------------------------|-------------------------|
@@ -589,27 +610,47 @@ The plugin system enables filesystem-based extension without modifying source co
 | `queryExpander`      | `IQueryExpander`                  | Query expander          |
 | `outputValidator`    | `IOutputValidator`                | Output validator        |
 
-### Plugin files
+### Default: FileSystemPluginLoader
 
-```text
-src/smart-agent/plugins/
-  types.ts       # PluginExports, LoadedPlugins interfaces
-  loader.ts      # loadPlugins(), getDefaultPluginDirs()
-  index.ts       # Re-exports
+Scans directories for `.js`, `.mjs`, `.ts` files and dynamically imports them.
+
+**Directories** (load order, later wins):
+1. `~/.config/llm-agent/plugins/` — user-level
+2. `./plugins/` — project-level (relative to cwd)
+3. `--plugin-dir` CLI flag or `pluginDir` in YAML config
+
+### Precedence
+
 ```
+builder.withXxx()  >  plugin loader  >  built-in defaults
+```
+
+Explicit builder calls always win over plugin-loaded registrations.
+
+### Helper utilities
+
+For custom loader authors:
+- `emptyLoadedPlugins()` — creates an empty `LoadedPlugins` object
+- `mergePluginExports(result, mod, source)` — merges one module's exports into a result
 
 ### Integration flow
 
 ```
-SmartServer.start()
-  → getDefaultPluginDirs() + cfg.pluginDir
-  → loadPlugins(dirs)        # scan, import, merge
-  → merge embedderFactories  # plugins + config (config wins)
-  → builder.withStageHandler()  # for each plugin handler
-  → builder.withReranker()      # if plugin provides one
-  → builder.withQueryExpander() # if plugin provides one
-  → builder.withOutputValidator() # if plugin provides one
-  → builder.build()
+SmartServer.start() / builder.build()
+  → IPluginLoader.load()           # discover & import plugins
+  → merge embedderFactories        # plugins + config (config wins)
+  → apply stageHandlers to builder # plugin handlers available in YAML
+  → apply reranker, expander, validator
+  → build agent
+```
+
+### Plugin files
+
+```text
+src/smart-agent/plugins/
+  types.ts       # IPluginLoader, PluginExports, LoadedPlugins, helpers
+  loader.ts      # FileSystemPluginLoader, getDefaultPluginDirs(), loadPlugins()
+  index.ts       # Re-exports
 ```
 
 ## Current Technical Debt (Explicit)
