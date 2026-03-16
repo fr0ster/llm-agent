@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.10.1] — 2026-03-16
+
+### Fixed
+
+- **Health check timeout** — added 5s `AbortSignal.timeout()` so health probes no longer hang when endpoints are unresponsive. Each probe (LLM, RAG, MCP) is wrapped in independent try-catch so one failure doesn't block the others.
+- **Pipeline YAML number coercion (#4)** — `${ENV_VAR}` substitution produces strings for numeric fields (`maxTokens`, `temperature`). All values are now coerced with `Number()` in `makeLlm()` and `SmartServer` composition root, preventing provider 400 errors.
+
+---
+
 ## [2.10.0] — 2026-03-16
 
 ### Added
