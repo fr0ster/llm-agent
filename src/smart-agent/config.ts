@@ -29,6 +29,7 @@ export interface ResolveConfigArgs {
   'prompt-classifier'?: string | boolean;
   'agent-show-reasoning'?: boolean;
   'log-dir'?: string;
+  'plugin-dir'?: string;
   mode?: string | boolean;
 }
 
@@ -161,6 +162,7 @@ agent:
 
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
+# pluginDir: ./my-plugins             # Additional plugin directory (loaded after defaults)
 `;
 
 export function resolveEnvVars(
@@ -354,6 +356,8 @@ export function resolveSmartServerConfig(
       env.SMART_AGENT_MODE ??
       'hybrid') as SmartServerMode,
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
+    pluginDir:
+      (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
   };
 }

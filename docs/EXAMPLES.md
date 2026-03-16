@@ -61,6 +61,7 @@ PER REQUEST
 | [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
 | [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining how tool vectorization, classification, RAG memory, and tool selection work together |
 | [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — maximizes concurrency (summarize ‖ rag-upsert, translate ‖ expand, 3× rag-query) |
+| [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
 
 ### Running a YAML config
 

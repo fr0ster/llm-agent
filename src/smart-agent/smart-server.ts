@@ -19,6 +19,7 @@ import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
+import { getDefaultPluginDirs, loadPlugins } from './plugins/index.js';
 import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
 import type { VectorRag } from './rag/vector-rag.js';
 import {
@@ -116,6 +117,8 @@ export interface SmartServerConfig {
   version?: string;
   /** Path to YAML config file for hot-reload. */
   configFile?: string;
+  /** Additional plugin directory (merged with defaults). */
+  pluginDir?: string;
   /** Pre-built embedder injected via DI. Takes precedence over config-driven selection. */
   embedder?: IEmbedder;
   /** Named embedder factories for YAML-driven selection (merged with built-ins). */
@@ -244,10 +247,39 @@ export class SmartServer {
       };
     };
 
+    // ---- Load plugins -------------------------------------------------------
+    const pluginDirs = getDefaultPluginDirs();
+    if (this.cfg.pluginDir) {
+      pluginDirs.push(this.cfg.pluginDir);
+    }
+    const plugins = await loadPlugins(pluginDirs, (msg) =>
+      log({ event: 'plugin_loader', message: msg }),
+    );
+    if (plugins.loadedFiles.length > 0) {
+      log({
+        event: 'plugins_loaded',
+        files: plugins.loadedFiles,
+        stageHandlers: [...plugins.stageHandlers.keys()],
+        embedderFactories: Object.keys(plugins.embedderFactories),
+        hasReranker: !!plugins.reranker,
+        hasQueryExpander: !!plugins.queryExpander,
+        hasOutputValidator: !!plugins.outputValidator,
+      });
+    }
+    if (plugins.errors.length > 0) {
+      log({ event: 'plugin_errors', errors: plugins.errors });
+    }
+
+    // Merge plugin embedder factories with config-provided ones
+    const mergedEmbedderFactories = {
+      ...plugins.embedderFactories,
+      ...this.cfg.embedderFactories, // config takes precedence over plugins
+    };
+
     // RAG resolution
     const ragOptions = {
       injectedEmbedder: this.cfg.embedder,
-      extraFactories: this.cfg.embedderFactories,
+      extraFactories: mergedEmbedderFactories,
     };
 
     const stores: Partial<SmartAgentRagStores> = {};
@@ -287,6 +319,20 @@ export class SmartServer {
 
     if (this.cfg.circuitBreaker) {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
+    }
+
+    // Apply plugin registrations to builder
+    for (const [type, handler] of plugins.stageHandlers) {
+      builder = builder.withStageHandler(type, handler);
+    }
+    if (plugins.reranker) {
+      builder = builder.withReranker(plugins.reranker);
+    }
+    if (plugins.queryExpander) {
+      builder = builder.withQueryExpander(plugins.queryExpander);
+    }
+    if (plugins.outputValidator) {
+      builder = builder.withOutputValidator(plugins.outputValidator);
     }
 
     // Structured pipeline (when YAML contains `pipeline.stages`)

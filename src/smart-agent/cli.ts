@@ -35,6 +35,7 @@
  *   --prompt-system <text>       System preamble for ContextAssembler
  *   --prompt-classifier <text>   Override classifier system prompt
  *   --agent-show-reasoning       Instruct the agent to explain its strategy
+ *   --plugin-dir <path>          Additional plugin directory (loaded after defaults)
  *   --log-file <path>            Log file path (default: smart-server.log)
  *   --log-stdout                 Log to stdout instead of file
  *   --help                       Show this help
@@ -100,6 +101,7 @@ const { values: args } = parseArgs({
     'prompt-system': { type: 'string' },
     'prompt-classifier': { type: 'string' },
     'agent-show-reasoning': { type: 'boolean' },
+    'plugin-dir': { type: 'string' },
     'log-file': { type: 'string' },
     'log-stdout': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },

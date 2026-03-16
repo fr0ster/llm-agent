@@ -1,0 +1,81 @@
+# 10-plugins.yaml — Plugin-extended pipeline
+#
+# Demonstrates loading custom implementations from a plugin directory.
+# Plugin files are standard ES modules exporting named registrations.
+#
+# Plugin directories (load order, later wins):
+#   1. ~/.config/llm-agent/plugins/     (user-level)
+#   2. ./plugins/                       (project-level)
+#   3. pluginDir below                  (config-level)
+#
+# Example plugin file (./my-plugins/audit-log.js):
+#
+#   class AuditLogHandler {
+#     async execute(ctx, config, span) {
+#       console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
+#       return true;
+#     }
+#   }
+#   export const stageHandlers = { 'audit-log': new AuditLogHandler() };
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+pluginDir: ./my-plugins
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+pipeline:
+  version: "1"
+  stages:
+    # Custom plugin stage — loaded from pluginDir
+    - id: audit
+      type: audit-log
+      config:
+        level: info
+
+    - id: classify
+      type: classify
+
+    - id: summarize-and-upsert
+      type: parallel
+      stages:
+        - { id: summarize, type: summarize }
+        - { id: rag-upsert, type: rag-upsert }
+
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - { id: translate, type: translate }
+        - { id: expand, type: expand }
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - { id: facts, type: rag-query, config: { store: facts, k: 20 } }
+            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
+            - { id: state, type: rag-query, config: { store: state, k: 5 } }
+        - { id: rerank, type: rerank }
+
+    - id: tool-select
+      type: tool-select
+
+    - id: assemble
+      type: assemble
+
+    - id: tool-loop
+      type: tool-loop
