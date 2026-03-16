@@ -17,9 +17,9 @@
  */
 
 import type {
-  IEmbedder,
   EmbedderFactory,
   EmbedderFactoryConfig,
+  IEmbedder,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
