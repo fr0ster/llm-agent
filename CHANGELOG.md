@@ -7,6 +7,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.10.0] — 2026-03-16
+
+### Added
+
+#### Plugin System
+
+- **`IPluginLoader` interface** — abstracts plugin discovery. Consumers can replace the default filesystem scanner with custom loaders (npm packages, remote registries, databases, etc.).
+- **`FileSystemPluginLoader`** — default implementation. Scans directories for `.js`, `.mjs`, `.ts` files and dynamically imports them. Default directories: `~/.config/llm-agent/plugins/` (user-level), `./plugins/` (project-level).
+- **`builder.withPluginLoader(loader)`** — injects a plugin loader into the builder. During `build()`, the loader's `load()` is called and all discovered registrations are applied. Explicit `withXxx()` calls take precedence over plugin-loaded registrations.
+- **`SmartServerConfig.pluginLoader`** — accepts a custom `IPluginLoader` for server-level plugin injection.
+- **`pluginDir` in YAML config** and **`--plugin-dir` CLI flag** — additional directory for the default filesystem loader.
+- **`emptyLoadedPlugins()`** and **`mergePluginExports()`** — helper utilities for custom loader authors. A custom loader can be written in ~10 lines.
+- **`PluginExports` interface** — defines what a plugin module can export: `stageHandlers`, `embedderFactories`, `reranker`, `queryExpander`, `outputValidator`.
+
+#### Shared Type Exports
+
+- **`CallOptions`, `LlmTool`, `RagError`, `RagResult`, `Result`** — exported from the package for plugin authors who need these types in handler signatures.
+
+#### Plugin Examples
+
+- 6 reference plugin implementations in `docs/examples/plugins/`:
+  - `01-audit-log.ts` — request logging stage handler
+  - `02-content-filter.ts` — output validator blocking sensitive content
+  - `03-score-reranker.ts` — reranker with prefix boost and recency decay
+  - `04-rate-limiter.ts` — sliding-window rate limiter per session
+  - `05-custom-embedder.ts` — Cohere embedder factory for YAML selection
+  - `06-multi-export.ts` — multiple export types in one plugin file
+
+### Fixed
+
+- **Tool discovery independent of classifier** — `tool-select` stage now always runs regardless of `shouldRetrieve` flag. When RAG retrieval was skipped (e.g. classifier detected non-SAP context), `ToolSelectHandler` performs its own facts RAG query to ensure tools are always discoverable.
+
+---
+
 ## [2.9.2] — 2026-03-15
 
 ### Fixed
