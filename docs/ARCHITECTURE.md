@@ -567,6 +567,51 @@ src/smart-agent/pipeline/
   index.ts              # Re-exports all pipeline types and classes
 ```
 
+---
+
+## Plugin System
+
+The plugin system enables filesystem-based extension without modifying source code. Plugins are standard ES modules (`.js`, `.mjs`, `.ts`) that export named registrations matching the `PluginExports` interface.
+
+### Plugin directories (load order, later wins)
+
+1. `~/.config/llm-agent/plugins/` — user-level plugins
+2. `./plugins/` — project-level plugins (relative to cwd)
+3. Path from `--plugin-dir` CLI flag or `pluginDir` in YAML config
+
+### Supported exports
+
+| Export name          | Type                              | Registers as            |
+|----------------------|-----------------------------------|-------------------------|
+| `stageHandlers`      | `Record<string, IStageHandler>`   | Pipeline stage handlers |
+| `embedderFactories`  | `Record<string, EmbedderFactory>` | Embedder factories      |
+| `reranker`           | `IReranker`                       | RAG reranker            |
+| `queryExpander`      | `IQueryExpander`                  | Query expander          |
+| `outputValidator`    | `IOutputValidator`                | Output validator        |
+
+### Plugin files
+
+```text
+src/smart-agent/plugins/
+  types.ts       # PluginExports, LoadedPlugins interfaces
+  loader.ts      # loadPlugins(), getDefaultPluginDirs()
+  index.ts       # Re-exports
+```
+
+### Integration flow
+
+```
+SmartServer.start()
+  → getDefaultPluginDirs() + cfg.pluginDir
+  → loadPlugins(dirs)        # scan, import, merge
+  → merge embedderFactories  # plugins + config (config wins)
+  → builder.withStageHandler()  # for each plugin handler
+  → builder.withReranker()      # if plugin provides one
+  → builder.withQueryExpander() # if plugin provides one
+  → builder.withOutputValidator() # if plugin provides one
+  → builder.build()
+```
+
 ## Current Technical Debt (Explicit)
 
 - No known outstanding technical debt. Aggregate metrics, circuit breakers, health checks, and config hot-reload have been implemented.

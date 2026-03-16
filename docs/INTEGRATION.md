@@ -889,6 +889,61 @@ stages.splice(toolLoopIndex, 0, {
 builder.withPipeline({ version: '1', stages });
 ```
 
+### Filesystem Plugins
+
+Instead of wiring via the builder, you can drop plugin files into a directory. SmartServer automatically scans and loads them at startup.
+
+**Plugin directories** (load order, later wins):
+
+1. `~/.config/llm-agent/plugins/` — user-level
+2. `./plugins/` — project-level (relative to cwd)
+3. `--plugin-dir <path>` CLI flag or `pluginDir` in YAML config
+
+**Example plugin file** (`~/.config/llm-agent/plugins/audit-log.ts`):
+
+```ts
+import type { PluginExports } from '@mcp-abap-adt/llm-agent';
+import type { IStageHandler } from '@mcp-abap-adt/llm-agent';
+
+class AuditLogHandler implements IStageHandler {
+  async execute(ctx, config, span) {
+    console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
+    return true;
+  }
+}
+
+export const stageHandlers = {
+  'audit-log': new AuditLogHandler(),
+};
+```
+
+**YAML config** (`smart-server.yaml`):
+
+```yaml
+pluginDir: ./my-plugins    # additional directory
+
+pipeline:
+  version: "1"
+  stages:
+    - id: audit
+      type: audit-log      # resolved from plugin
+    - id: classify
+      type: classify
+    # ...
+```
+
+All fields in `PluginExports` are optional — a plugin can register any subset:
+
+| Export               | Type                              | Effect                          |
+|----------------------|-----------------------------------|---------------------------------|
+| `stageHandlers`      | `Record<string, IStageHandler>`   | Available in YAML `type:`       |
+| `embedderFactories`  | `Record<string, EmbedderFactory>` | Available in YAML `rag.embedder:` |
+| `reranker`           | `IReranker`                       | Replaces default reranker       |
+| `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
+| `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
+
+Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
+
 ## Test Doubles
 
 The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent/testing`:
