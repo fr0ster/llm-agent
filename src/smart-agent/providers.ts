@@ -54,13 +54,16 @@ export function makeLlm(
     listToolsHandler: async () => [],
   });
 
+  // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
+  const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
+
   switch (cfg.provider) {
     case 'deepseek': {
       const provider = new DeepSeekProvider({
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
-        maxTokens: cfg.maxTokens,
+        maxTokens,
       });
       const agent = new DeepSeekAgent({
         llmProvider: provider,
@@ -73,7 +76,7 @@ export function makeLlm(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
-        maxTokens: cfg.maxTokens,
+        maxTokens,
       });
       const agent = new OpenAIAgent({
         llmProvider: provider,
@@ -86,7 +89,7 @@ export function makeLlm(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
-        maxTokens: cfg.maxTokens,
+        maxTokens,
       });
       const agent = new AnthropicAgent({
         llmProvider: provider,
@@ -99,7 +102,7 @@ export function makeLlm(
         apiKey: cfg.apiKey,
         model: cfg.model,
         temperature,
-        maxTokens: cfg.maxTokens,
+        maxTokens,
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
       });

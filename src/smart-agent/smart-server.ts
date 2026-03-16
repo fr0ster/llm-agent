@@ -213,8 +213,9 @@ export class SmartServer {
     // ---- Composition root: resolve config → interfaces --------------------
 
     // LLM resolution
-    const mainTemp =
-      pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7;
+    const mainTemp = Number(
+      pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7,
+    );
     const mainLlm = pipeline?.llm?.main
       ? makeLlm(pipeline.llm.main, mainTemp)
       : makeDefaultLlm(
@@ -223,10 +224,11 @@ export class SmartServer {
           mainTemp,
         );
 
-    const classifierTemp =
+    const classifierTemp = Number(
       pipeline?.llm?.classifier?.temperature ??
-      this.cfg.llm.classifierTemperature ??
-      0.1;
+        this.cfg.llm.classifierTemperature ??
+        0.1,
+    );
     const classifierLlm = pipeline?.llm?.classifier
       ? makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
@@ -238,7 +240,10 @@ export class SmartServer {
           );
 
     const helperLlm = pipeline?.llm?.helper
-      ? makeLlm(pipeline.llm.helper, pipeline.llm.helper.temperature ?? 0.1)
+      ? makeLlm(
+          pipeline.llm.helper,
+          Number(pipeline.llm.helper.temperature ?? 0.1),
+        )
       : undefined;
 
     // Usage tracking — aggregate main + classifier
