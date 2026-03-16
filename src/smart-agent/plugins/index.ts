@@ -1,2 +1,12 @@
-export { getDefaultPluginDirs, loadPlugins } from './loader.js';
-export type { LoadedPlugins, PluginExports } from './types.js';
+export {
+  FileSystemPluginLoader,
+  type FileSystemPluginLoaderConfig,
+  getDefaultPluginDirs,
+  loadPlugins,
+} from './loader.js';
+export type {
+  IPluginLoader,
+  LoadedPlugins,
+  PluginExports,
+} from './types.js';
+export { emptyLoadedPlugins, mergePluginExports } from './types.js';

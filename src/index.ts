@@ -116,12 +116,17 @@ export {
 } from './smart-agent/pipeline/index.js';
 // Plugins
 export type {
+  IPluginLoader,
   LoadedPlugins,
   PluginExports,
 } from './smart-agent/plugins/index.js';
 export {
+  emptyLoadedPlugins,
+  FileSystemPluginLoader,
+  type FileSystemPluginLoaderConfig,
   getDefaultPluginDirs,
   loadPlugins,
+  mergePluginExports,
 } from './smart-agent/plugins/index.js';
 export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
