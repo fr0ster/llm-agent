@@ -194,6 +194,14 @@ export class SmartAgent {
       OrchestratorError
     >
   > {
+    const HEALTH_TIMEOUT_MS = 5_000;
+    const healthSignal = AbortSignal.timeout(HEALTH_TIMEOUT_MS);
+    const healthOptions: CallOptions = {
+      ...options,
+      signal: healthSignal,
+      maxTokens: 1,
+    };
+
     const results = {
       llm: false,
       rag: false,
@@ -203,30 +211,46 @@ export class SmartAgent {
       const llmRes = await this.deps.mainLlm.chat(
         [{ role: 'user' as const, content: 'ping' }],
         [],
-        { ...options, maxTokens: 1 },
+        healthOptions,
       );
       results.llm = llmRes.ok;
     } catch {
       results.llm = false;
     }
-    const ragRes = await this.deps.ragStores.facts.healthCheck(options);
-    results.rag = ragRes.ok;
-    const mcpChecks = await Promise.all(
-      this.deps.mcpClients.map(async (client) => {
-        const tools = await client.listTools(options);
-        return {
-          name: 'mcp-client',
-          ok: tools.ok,
-          error:
-            tools.ok || !tools.error
-              ? undefined
-              : tools.error instanceof Error
-                ? tools.error.message
-                : String(tools.error),
-        };
-      }),
-    );
-    results.mcp = mcpChecks;
+    try {
+      const ragRes = await this.deps.ragStores.facts.healthCheck(healthOptions);
+      results.rag = ragRes.ok;
+    } catch {
+      results.rag = false;
+    }
+    try {
+      const mcpChecks = await Promise.all(
+        this.deps.mcpClients.map(async (client) => {
+          try {
+            const tools = await client.listTools(healthOptions);
+            return {
+              name: 'mcp-client',
+              ok: tools.ok,
+              error:
+                tools.ok || !tools.error
+                  ? undefined
+                  : tools.error instanceof Error
+                    ? tools.error.message
+                    : String(tools.error),
+            };
+          } catch (err) {
+            return {
+              name: 'mcp-client',
+              ok: false,
+              error: err instanceof Error ? err.message : String(err),
+            };
+          }
+        }),
+      );
+      results.mcp = mcpChecks;
+    } catch {
+      // AbortSignal timeout — leave mcp as empty
+    }
     return { ok: true, value: results };
   }
 
