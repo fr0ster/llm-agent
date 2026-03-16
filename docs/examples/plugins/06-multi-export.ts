@@ -22,12 +22,14 @@
  */
 
 import type {
+  CallOptions,
+  IQueryExpander,
+  ISpan,
   IStageHandler,
   PipelineContext,
-  IQueryExpander,
+  RagError,
+  Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
-import type { CallOptions, RagError, Result } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Stage handler 1: request-timer-start — records pipeline start time
@@ -40,7 +42,7 @@ class RequestTimerStartHandler implements IStageHandler {
     span: ISpan,
   ): Promise<boolean> {
     // Store start time on the context for the end handler to read
-    (ctx as Record<string, unknown>)._timerStartMs = Date.now();
+    (ctx as unknown as Record<string, unknown>)._timerStartMs = Date.now();
     span.setAttribute('timer.started', true);
     return true;
   }
@@ -56,7 +58,7 @@ class RequestTimerEndHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
-    const startMs = (ctx as Record<string, unknown>)._timerStartMs as
+    const startMs = (ctx as unknown as Record<string, unknown>)._timerStartMs as
       | number
       | undefined;
     if (startMs) {

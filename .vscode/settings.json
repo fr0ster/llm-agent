@@ -2,6 +2,7 @@
   "cSpell.language": "en",
   "cSpell.words": [
     "agentic",
+    "bapi",
     "embedder",
     "Embedders",
     "exfiltration",
@@ -15,6 +16,7 @@
     "Streamable",
     "subprompt",
     "subprompts",
+    "syns",
     "upserted",
     "upserts"
   ]

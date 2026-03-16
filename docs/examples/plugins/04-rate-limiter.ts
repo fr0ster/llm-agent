@@ -19,10 +19,10 @@
  */
 
 import type {
+  ISpan,
   IStageHandler,
   PipelineContext,
 } from '@mcp-abap-adt/llm-agent';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 /** Sliding window entry: timestamp of each request */
 const sessionWindows = new Map<string, number[]>();

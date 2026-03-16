@@ -12,11 +12,14 @@
  * Drop this file into your plugin directory.
  */
 
-import type { IOutputValidator } from '@mcp-abap-adt/llm-agent';
 import type {
+  CallOptions,
+  IOutputValidator,
+  LlmTool,
+  Message,
+  Result,
   ValidationResult,
 } from '@mcp-abap-adt/llm-agent';
-import type { Message, LlmTool, CallOptions, Result } from '@mcp-abap-adt/llm-agent';
 
 // Error class for validator failures
 class ValidatorError extends Error {

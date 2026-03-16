@@ -11,8 +11,13 @@
  * Drop this file into your plugin directory.
  */
 
-import type { IReranker } from '@mcp-abap-adt/llm-agent';
-import type { RagResult, CallOptions, RagError, Result } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  IReranker,
+  RagError,
+  RagResult,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * Boost factors for different metadata ID prefixes.

@@ -76,6 +76,14 @@ export type {
   IEmbedder,
   IRag,
 } from './smart-agent/interfaces/rag.js';
+// Smart Agent shared types (needed by plugin authors)
+export type {
+  CallOptions,
+  LlmTool,
+  RagError,
+  RagResult,
+  Result,
+} from './smart-agent/interfaces/types.js';
 export {
   type CounterSnapshot,
   type HistogramSnapshot,
