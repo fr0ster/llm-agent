@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.10.2] — 2026-03-17
+
+### Fixed
+
+- **MCP tool list refresh per iteration (#5)** — tool list is now re-fetched from all MCP servers on each tool-loop iteration (after the first). This ensures multi-step tasks have access to all available tools at every stage, not just the initial RAG-selected subset. Controlled via `refreshToolsPerIteration` config option (default: `true`). Both the default hardcoded flow and the structured pipeline `tool-loop` handler are updated.
+
+---
+
 ## [2.10.1] — 2026-03-16
 
 ### Fixed

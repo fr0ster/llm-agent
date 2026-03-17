@@ -113,6 +113,8 @@ export interface SmartAgentConfig {
   ragTranslationEnabled?: boolean;
   /** Whether to upsert classified subprompts to RAG stores. Default: true. */
   ragUpsertEnabled?: boolean;
+  /** Whether to re-fetch MCP tool list on each tool-loop iteration. Default: true. */
+  refreshToolsPerIteration?: boolean;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -724,6 +726,27 @@ export class SmartAgent {
         };
         return;
       }
+      // Refresh MCP tools on each iteration (when enabled)
+      if (iteration > 0 && this.config.refreshToolsPerIteration !== false) {
+        const refreshSpan = this.tracer.startSpan('smart_agent.refresh_tools', {
+          parent: toolLoopSpan,
+          attributes: { 'llm.iteration': iteration + 1 },
+        });
+        const refreshed = await this._listAllTools(opts);
+        const prevNames = [...toolClientMap.keys()];
+        toolClientMap.clear();
+        for (const [name, client] of refreshed.toolClientMap) {
+          toolClientMap.set(name, client);
+        }
+        currentTools = [...(refreshed.tools as LlmTool[]), ...externalTools];
+        opts?.sessionLogger?.logStep('tools_refreshed', {
+          iteration: iteration + 1,
+          previous: prevNames,
+          current: currentTools.map((t) => t.name),
+        });
+        refreshSpan.end();
+      }
+
       const filteredForIteration = this.toolAvailabilityRegistry.filterTools(
         sessionId,
         currentTools,
