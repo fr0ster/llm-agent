@@ -87,7 +87,7 @@
 #   SKILL
 #
 #   # 2. Start the server
-#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/11-skills.yaml
+#   npm run dev -- --config docs/examples/11-skills.yaml
 
 port: 4004
 host: 0.0.0.0
