@@ -1,0 +1,185 @@
+# 11-skills.yaml — Pipeline with Agent Skills support
+#
+# Demonstrates using ISkillManager to discover and inject skills
+# into the LLM system prompt alongside MCP tools.
+#
+# Skills are reusable instruction packages (SKILL.md files) that teach
+# the agent HOW to do something. Unlike MCP tools (which provide actions),
+# skills provide context, guidelines, and domain knowledge.
+#
+# ── Skill discovery ──
+#
+# Skills are loaded from directories on disk. Each skill is a subdirectory
+# containing a SKILL.md file with optional YAML frontmatter:
+#
+#   .claude/skills/
+#   ├── code-review/
+#   │   └── SKILL.md          ← skill content + frontmatter metadata
+#   ├── sap-abap/
+#   │   ├── SKILL.md
+#   │   └── examples/         ← supporting resources (available via ISkill.readResource)
+#   │       └── patterns.md
+#   └── commit-style/
+#       └── SKILL.md
+#
+# ── SKILL.md format ──
+#
+#   ---
+#   name: code-review
+#   description: Guidelines for reviewing pull requests
+#   user-invocable: true
+#   argument-hint: "<PR number or diff>"
+#   allowed-tools:
+#     - gh_pr_view
+#     - gh_pr_diff
+#   ---
+#
+#   Review the code change with focus on:
+#   1. Security vulnerabilities
+#   2. Performance regressions
+#   3. Test coverage gaps
+#
+#   Use $ARGUMENTS as the target to review.
+#   Reference files are in $CLAUDE_SKILL_DIR/examples/.
+#
+# ── Three built-in managers ──
+#
+#   ClaudeSkillManager   — ~/.claude/skills/ + <project>/.claude/skills/
+#   CodexSkillManager    — ~/.agents/skills/ + <project>/.agents/skills/
+#   FileSystemSkillManager — any custom dirs[]
+#
+# ── How skills flow through the pipeline ──
+#
+#   1. STARTUP: SmartAgentBuilder.build() vectorizes each skill into facts RAG:
+#        "Skill: code-review\nGuidelines for reviewing pull requests"
+#        metadata: { id: "skill:code-review" }
+#
+#   2. PER REQUEST:
+#        rag-query   → retrieves skill:* and tool:* entries from facts store
+#        skill-select → filters skills by RAG matches (skill: prefix)
+#                     → loads content via ISkill.getContent()
+#                     → writes to ctx.skillContent
+#        assemble    → appends ctx.skillContent to system message
+#        tool-loop   → LLM sees skill instructions in its context
+#
+#   Skills are selected the same way as tools — via RAG similarity.
+#   If the user asks "review this PR", the RAG query matches
+#   "skill:code-review" and that skill's content is injected.
+#
+# ── Note on skill installation ──
+#
+#   ISkillManager is read-only discovery. It scans directories that
+#   already exist on disk. There is no install/uninstall mechanism —
+#   skills are managed externally (git clone, manual copy, etc.).
+#
+# Usage:
+#   # 1. Create a skill directory
+#   mkdir -p .claude/skills/code-review
+#   cat > .claude/skills/code-review/SKILL.md << 'SKILL'
+#   ---
+#   name: code-review
+#   description: Guidelines for reviewing pull requests
+#   ---
+#   When reviewing code, check for:
+#   1. Security issues (injection, XSS, auth bypass)
+#   2. Performance (N+1 queries, missing indexes)
+#   3. Error handling (uncaught exceptions, missing retries)
+#   SKILL
+#
+#   # 2. Start the server
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/11-skills.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
+  temperature: 0.7
+
+rag:
+  type: ollama
+  url: http://localhost:11434
+  model: nomic-embed-text
+
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+
+# Skill directories — ClaudeSkillManager convention
+# (auto-scanned: ~/.claude/skills/ + ./.claude/skills/)
+# For custom dirs, use FileSystemSkillManager programmatically.
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 15
+  classificationEnabled: true
+  ragRetrievalMode: auto
+  ragUpsertEnabled: true
+  queryExpansionEnabled: true
+
+pipeline:
+  version: "1"
+  stages:
+    # ── Step 1: classify user input into typed subprompts
+    - id: classify
+      type: classify
+
+    # ── Step 2: summarize + rag-upsert in parallel
+    - id: post-classify
+      type: parallel
+      stages:
+        - id: summarize
+          type: summarize
+        - id: rag-upsert
+          type: rag-upsert
+
+    # ── Step 3: RAG retrieval (when domain context needed)
+    - id: rag-retrieval
+      type: parallel
+      when: "shouldRetrieve"
+      stages:
+        - id: translate
+          type: translate
+        - id: expand
+          type: expand
+      after:
+        - id: rag-queries
+          type: parallel
+          stages:
+            - { id: rag-facts, type: rag-query, config: { store: facts, k: 15 } }
+            - { id: rag-feedback, type: rag-query, config: { store: feedback, k: 5 } }
+            - { id: rag-state, type: rag-query, config: { store: state, k: 5 } }
+        - id: rerank
+          type: rerank
+
+    # ── Step 4: tool + skill discovery (ALWAYS runs)
+    #
+    #    tool-select: finds matching MCP tools via RAG (tool:* IDs)
+    #    skill-select: finds matching skills via RAG (skill:* IDs)
+    #                  → loads skill content → writes to ctx.skillContent
+    #
+    #    Both use the same RAG facts store. At startup, tools are vectorized
+    #    as "tool:NAME" and skills as "skill:NAME". The RAG query returns
+    #    both types, and each handler filters by its own prefix.
+    - id: discovery
+      type: parallel
+      stages:
+        - id: tool-select
+          type: tool-select
+          config: { k: 15 }
+        - id: skill-select
+          type: skill-select
+
+    # ── Step 5: assemble LLM context
+    #    AssembleHandler builds messages from subprompts + RAG + history,
+    #    then appends ctx.skillContent as "## Active Skills" section
+    #    in the system message. No interface change required.
+    - id: assemble
+      type: assemble
+
+    # ── Step 6: streaming LLM + tool execution loop
+    - id: tool-loop
+      type: tool-loop
