@@ -90,6 +90,40 @@ export class ToolLoopHandler implements IStageHandler {
         return true;
       }
 
+      // Refresh MCP tools on each iteration (when enabled)
+      if (iteration > 0 && ctx.config.refreshToolsPerIteration !== false) {
+        const refreshSpan = ctx.tracer.startSpan('smart_agent.refresh_tools', {
+          parent: parentSpan,
+          attributes: { 'llm.iteration': iteration + 1 },
+        });
+        const prevNames = [...ctx.toolClientMap.keys()];
+        ctx.toolClientMap.clear();
+        ctx.mcpTools.length = 0;
+        const settled = await Promise.allSettled(
+          ctx.mcpClients.map(async (client) => ({
+            client,
+            result: await client.listTools(ctx.options),
+          })),
+        );
+        for (const entry of settled) {
+          if (entry.status === 'fulfilled' && entry.value.result.ok) {
+            for (const t of entry.value.result.value) {
+              if (!ctx.toolClientMap.has(t.name)) {
+                ctx.toolClientMap.set(t.name, entry.value.client);
+                ctx.mcpTools.push(t);
+              }
+            }
+          }
+        }
+        currentTools = [...(ctx.mcpTools as LlmTool[]), ...externalTools];
+        ctx.options?.sessionLogger?.logStep('tools_refreshed', {
+          iteration: iteration + 1,
+          previous: prevNames,
+          current: currentTools.map((t) => t.name),
+        });
+        refreshSpan.end();
+      }
+
       // Filter tools per iteration
       const filteredForIteration = ctx.toolAvailabilityRegistry.filterTools(
         ctx.sessionId,
