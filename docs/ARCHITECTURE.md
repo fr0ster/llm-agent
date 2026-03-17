@@ -290,6 +290,58 @@ Stores are split by intent:
 - Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.
 
+### 6. Skills Layer
+
+Skills are reusable instruction packages (SKILL.md files) that inject context into the LLM system prompt. Unlike MCP tools (which provide actions), skills provide guidelines, domain knowledge, and behavioral instructions.
+
+**Startup flow:**
+- `SmartAgentBuilder.build()` calls `skillManager.listSkills()`
+- Each skill is vectorized into facts RAG: `"Skill: <name>\n<description>"` with metadata `{ id: "skill:<name>" }`
+- Skills coexist with tools in the same facts store
+
+**Per-request flow:**
+- `skill-select` handler extracts `skill:*` IDs from RAG results
+- If none found (skills drowned out by tools), does a dedicated fallback RAG query
+- Loads content via `ISkill.getContent()` with `$ARGUMENTS` / `$CLAUDE_SKILL_DIR` substitution
+- `assemble` handler appends skill content as `## Active Skills` section in system message
+
+**Three built-in managers:**
+
+| Manager | Discovery paths | Vendor logic |
+|---------|----------------|--------------|
+| `ClaudeSkillManager` | `~/.claude/skills/` + `<project>/.claude/skills/` | Maps kebab-case frontmatter (`disable-model-invocation` → `disableModelInvocation`) |
+| `CodexSkillManager` | `~/.agents/skills/` + `<project>/.agents/skills/` | Parses optional `agents/openai.yaml` into meta extensions |
+| `FileSystemSkillManager` | Configurable `dirs[]` | None — simplest variant |
+
+**SKILL.md format:**
+```markdown
+---
+name: skill-name
+description: One-line description (used for RAG matching)
+user-invocable: true
+argument-hint: "<argument description>"
+allowed-tools:
+  - tool_name
+---
+
+Skill instructions here. Use $ARGUMENTS for invocation args
+and $CLAUDE_SKILL_DIR for the skill directory path.
+```
+
+**Configuration (YAML):**
+```yaml
+skills:
+  type: claude          # claude | codex | filesystem
+  dirs:                 # filesystem type only
+    - ./my-skills
+  projectRoot: .        # claude/codex type, defaults to cwd
+```
+
+**Configuration (programmatic):**
+```ts
+builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
+```
+
 ## Internal Interfaces and Default Implementations
 
 | Interface | Role | Default implementation |
@@ -302,6 +354,7 @@ Stores are split by intent:
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
 | `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
+| `ISkillManager` | Skill discovery and content loading | `ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager` (optional) |
 | `ILogger` | Structured logging sink | `ConsoleLogger` / `SessionLogger` / injected custom logger |
 
 ### Separation of concerns
@@ -458,7 +511,8 @@ Key components:
 | `rag-query` | `RagQueryHandler` | Query a single RAG store (`config.store`) |
 | `rerank` | `RerankHandler` | Re-score RAG results |
 | `tool-select` | `ToolSelectHandler` | Select MCP tools from RAG results |
-| `assemble` | `AssembleHandler` | Build final LLM context |
+| `skill-select` | `SkillSelectHandler` | Select skills from RAG results, load content into `ctx.skillContent` |
+| `assemble` | `AssembleHandler` | Build final LLM context; appends skill content as `## Active Skills` section |
 | `tool-loop` | `ToolLoopHandler` | Streaming LLM + tool execution loop |
 
 **Control flow** — orchestrate child stages:
@@ -476,7 +530,7 @@ Key components:
 classify → summarize → rag-upsert
   → rag-retrieval (parallel, when: shouldRetrieve):
       stages: [translate, expand]
-      after: [rag-query×3 (parallel), rerank, tool-select]
+      after: [rag-query×3 (parallel), rerank, tool-select, skill-select]
   → assemble → tool-loop
 ```
 

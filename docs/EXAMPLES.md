@@ -198,6 +198,115 @@ const builder2 = new SmartAgentBuilder()
 const handle = await builder.build();
 ```
 
+### SKILL.md format
+
+Each skill is a subdirectory containing a `SKILL.md` file with optional YAML frontmatter:
+
+```
+.claude/skills/
+├── code-review/
+│   └── SKILL.md          ← skill content + frontmatter metadata
+├── sap-abap/
+│   ├── SKILL.md
+│   └── examples/         ← supporting resources (available via ISkill.readResource)
+│       └── patterns.md
+└── commit-style/
+    └── SKILL.md
+```
+
+**SKILL.md example:**
+
+```markdown
+---
+name: code-review
+description: Guidelines for reviewing pull requests
+user-invocable: true
+argument-hint: "<PR number or diff>"
+allowed-tools:
+  - gh_pr_view
+  - gh_pr_diff
+---
+
+Review the code change with focus on:
+1. Security vulnerabilities
+2. Performance regressions
+3. Test coverage gaps
+
+Use $ARGUMENTS as the target to review.
+Reference files are in $CLAUDE_SKILL_DIR/examples/.
+```
+
+**Frontmatter fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `string` | Skill identifier (defaults to directory name) |
+| `description` | `string` | Used for RAG matching — be descriptive |
+| `user-invocable` | `boolean` | Whether the user can invoke directly |
+| `argument-hint` | `string` | Hint for user invocation arguments |
+| `allowed-tools` | `string[]` | MCP tools this skill is allowed to use |
+| `disable-model-invocation` | `boolean` | Prevent model from auto-selecting this skill |
+| `model` | `string` | Preferred model for this skill |
+| `context` | `'inline' \| 'fork'` | How content is injected |
+
+**Placeholders** (substituted at runtime):
+- `$ARGUMENTS` — replaced with user-provided arguments
+- `$CLAUDE_SKILL_DIR` — replaced with skill directory path
+
+### Skill manager types
+
+| Manager | Discovery directories | Use case |
+|---------|----------------------|----------|
+| `ClaudeSkillManager` | `~/.claude/skills/` + `<project>/.claude/skills/` | Claude Code convention |
+| `CodexSkillManager` | `~/.agents/skills/` + `<project>/.agents/skills/` | Codex/OpenAI convention |
+| `FileSystemSkillManager` | Custom `dirs[]` | Any directory layout |
+
+**YAML config:**
+
+```yaml
+# Claude convention (default)
+skills:
+  type: claude
+
+# Codex convention
+skills:
+  type: codex
+
+# Custom directories
+skills:
+  type: filesystem
+  dirs:
+    - /opt/shared-skills
+    - ./my-project-skills
+```
+
+### Testing skills
+
+**1. Start the server with a skills-enabled config:**
+
+```bash
+npm run dev -- --config docs/examples/11-skills.yaml
+```
+
+This example uses `FileSystemSkillManager` pointing to `docs/examples/skills/` which contains a bundled test skill (`pirate-greeting`).
+
+**2. Send a request that should match the skill:**
+
+```bash
+curl http://localhost:4004/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{"model":"smart-agent","messages":[{"role":"user","content":"Hello, greet me like a pirate!"}]}'
+```
+
+**3. Verify skill injection in session logs:**
+
+Look for these log entries:
+- `skill_select_rag_fallback` — dedicated RAG query found skill matches
+- `skills_selected` — lists selected skills and their names
+- The LLM response should reflect the skill's instructions (e.g., pirate-style greeting)
+
+**Note:** Skill discovery requires an embedder (e.g., Ollama) for semantic matching. BM25 keyword matching (in-memory without embedder) may not match skills if the user query doesn't contain the skill's exact keywords.
+
 ### Programmatic pipeline with `getDefaultStages()`
 
 ```ts

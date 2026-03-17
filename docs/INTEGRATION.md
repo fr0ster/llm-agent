@@ -31,6 +31,9 @@ ILlm                  ──►  Generates response / tool calls
 IOutputValidator      ──►  Validates LLM output (optional)
   │
   ▼
+ISkillManager         ──►  Discovers and injects skill context (optional)
+  │
+  ▼
 IMcpClient            ──►  Executes tool calls
 ```
 
@@ -543,6 +546,117 @@ class CompactAssembler implements IContextAssembler {
 }
 ```
 
+## ISkillManager
+
+**File:** `src/smart-agent/interfaces/skill.ts`
+
+Discovers and provides access to agent skills (SKILL.md files):
+
+```ts
+interface ISkillManager {
+  listSkills(options?: CallOptions): Promise<Result<ISkill[], SkillError>>;
+  getSkill(name: string, options?: CallOptions): Promise<Result<ISkill | undefined, SkillError>>;
+  matchSkills(text: string, options?: CallOptions): Promise<Result<ISkill[], SkillError>>;
+}
+
+interface ISkill {
+  readonly name: string;
+  readonly description: string;
+  readonly meta: ISkillMeta;
+  getContent(args?: string, options?: CallOptions): Promise<Result<string, SkillError>>;
+  listResources(options?: CallOptions): Promise<Result<ISkillResource[], SkillError>>;
+  readResource(path: string, options?: CallOptions): Promise<Result<string, SkillError>>;
+}
+```
+
+### Built-in managers
+
+| Manager | Discovery | Notes |
+|---------|-----------|-------|
+| `ClaudeSkillManager` | `~/.claude/skills/` + `<project>/.claude/skills/` | Maps kebab-case frontmatter to camelCase |
+| `CodexSkillManager` | `~/.agents/skills/` + `<project>/.agents/skills/` | Parses optional `agents/openai.yaml` |
+| `FileSystemSkillManager` | Custom `dirs[]` | No vendor-specific logic |
+
+### Example: Custom skill manager (database-backed)
+
+```ts
+import type { ISkillManager, ISkill } from '@mcp-abap-adt/llm-agent';
+import type { SkillError, Result, CallOptions } from '@mcp-abap-adt/llm-agent';
+
+class DatabaseSkillManager implements ISkillManager {
+  constructor(private readonly db: Database) {}
+
+  async listSkills(options?: CallOptions): Promise<Result<ISkill[], SkillError>> {
+    try {
+      const rows = await this.db.query('SELECT * FROM skills WHERE active = true');
+      const skills: ISkill[] = rows.map((row) => new DatabaseSkill(row, this.db));
+      return { ok: true, value: skills };
+    } catch (err) {
+      return { ok: false, error: new SkillError(String(err)) };
+    }
+  }
+
+  async getSkill(
+    name: string,
+    options?: CallOptions,
+  ): Promise<Result<ISkill | undefined, SkillError>> {
+    try {
+      const row = await this.db.query('SELECT * FROM skills WHERE name = ?', [name]);
+      return { ok: true, value: row ? new DatabaseSkill(row, this.db) : undefined };
+    } catch (err) {
+      return { ok: false, error: new SkillError(String(err)) };
+    }
+  }
+
+  async matchSkills(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<ISkill[], SkillError>> {
+    try {
+      const rows = await this.db.query(
+        'SELECT * FROM skills WHERE name ILIKE ? OR description ILIKE ?',
+        [`%${text}%`, `%${text}%`],
+      );
+      return { ok: true, value: rows.map((r) => new DatabaseSkill(r, this.db)) };
+    } catch (err) {
+      return { ok: false, error: new SkillError(String(err)) };
+    }
+  }
+}
+```
+
+### Wiring via builder
+
+```ts
+import { SmartAgentBuilder, ClaudeSkillManager } from '@mcp-abap-adt/llm-agent';
+
+const handle = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
+  .withMainLlm(myLlm)
+  .withSkillManager(new ClaudeSkillManager(process.cwd()))
+  // or: .withSkillManager(new DatabaseSkillManager(db))
+  .build();
+```
+
+Skills are vectorized into the facts RAG store at `build()` time as `skill:<name>` entries. The `skill-select` pipeline stage matches them via RAG and injects their content into the system message.
+
+### Wiring via YAML config
+
+```yaml
+skills:
+  type: claude     # or 'codex' | 'filesystem'
+  dirs:            # only for 'filesystem' type
+    - ./my-skills
+```
+
+### Wiring via plugin
+
+```ts
+// In a plugin file:
+import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent';
+
+export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
+```
+
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
 ### IMetrics
@@ -639,6 +753,7 @@ const handle = await new SmartAgentBuilder({
   .withSessionManager(new SessionManager({ tokenBudget: 100_000 }))
   .withMetrics(metrics)
   .withQueryExpander(new SapTermExpander())
+  .withSkillManager(new ClaudeSkillManager(process.cwd()))
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Pipeline stage configuration
   .withMode('smart')
@@ -914,6 +1029,7 @@ All fields are optional — a plugin can register any subset:
 | `reranker`           | `IReranker`                       | Replaces default reranker       |
 | `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
 | `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
+| `skillManager`       | `ISkillManager`                   | Replaces default skill manager  |
 
 #### Option 1: FileSystemPluginLoader (default)
 
