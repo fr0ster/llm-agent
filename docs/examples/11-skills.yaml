@@ -116,9 +116,13 @@ rag:
 #   claude:     ~/.claude/skills/ + <projectRoot>/.claude/skills/
 #   codex:      ~/.agents/skills/ + <projectRoot>/.agents/skills/
 #   filesystem: custom dirs[] only
+#
+# This example uses 'filesystem' pointing to the bundled test skill.
+# For real projects, use 'claude' or 'codex' type instead.
 skills:
-  type: claude
-  # projectRoot: .    # defaults to cwd
+  type: filesystem
+  dirs:
+    - docs/examples/skills
 
 agent:
   maxIterations: 10
