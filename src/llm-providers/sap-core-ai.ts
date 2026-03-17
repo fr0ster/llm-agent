@@ -163,7 +163,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             temperature: this.config.temperature || 0.7,
           },
         },
-        prompt: { template: [], ...(tools?.length ? { tools } : {}) },
+        prompt: {
+          template: [],
+          ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+        },
       },
     };
 
