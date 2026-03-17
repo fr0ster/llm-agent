@@ -21,6 +21,10 @@ dist/
 .DS_Store
 Thumbs.db
 
+# Skills (user-local, not part of the repo)
+.claude/skills/
+.agents/skills/
+
 # Logs
 *.log
 *.log.bak*
