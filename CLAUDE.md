@@ -39,6 +39,7 @@ Consumer parses raw for tool calls → calls mcpClient.callTool() directly
 | **Smart Agent** | `src/smart-agent/` | Orchestrated pipeline: classification, RAG, MCP, tool loop |
 | **Builder** | `src/smart-agent/builder.ts` | Interface-only factory — assembles SmartAgent from `ILlm`, `IRag`, `IMcpClient`, etc. No provider knowledge |
 | **Providers** | `src/smart-agent/providers.ts` | Composition root — resolves config to concrete implementations (DeepSeek, OpenAI, Ollama, etc.) |
+| **Skills** | `src/smart-agent/skills/` | `ISkillManager` interface; Claude, Codex, FileSystem managers; SKILL.md discovery + content injection |
 | **Pipeline** | `src/smart-agent/pipeline.ts` | Pipeline config types only (no logic) |
 | **MCP Client** | `src/mcp/client.ts` | `MCPClientWrapper` — multi-transport abstraction (stdio / SSE / stream-http / embedded / auto) |
 | **Types** | `src/types.ts` | Shared types: `Message`, `ToolCall`, `AgentResponse`, `LLMResponse`, `LLMProviderConfig` |

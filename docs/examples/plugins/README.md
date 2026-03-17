@@ -28,6 +28,7 @@ export interface PluginExports {
   reranker?: IReranker;                              // replaces default
   queryExpander?: IQueryExpander;                     // replaces default
   outputValidator?: IOutputValidator;                 // replaces default
+  skillManager?: ISkillManager;                      // replaces default
 }
 ```
 
