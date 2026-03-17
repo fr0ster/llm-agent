@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.11.1] — 2026-03-18
+
+### Added
+
+- **Stand With Ukraine badge** in README.
+
+---
+
 ## [2.10.4] — 2026-03-17
 
 ### Fixed

@@ -1,5 +1,7 @@
 # Smart Agent & Server
 
+[![Stand With Ukraine](https://raw.githubusercontent.com/vshymanskyy/StandWithUkraine/main/badges/StandWithUkraine.svg)](https://stand-with-ukraine.pp.ua)
+
 A high-performance, RAG-orchestrated LLM agent and OpenAI-compatible server with deep MCP integration.
 
 ## Overview
