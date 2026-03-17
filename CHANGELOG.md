@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.10.3] — 2026-03-17
+
+### Fixed
+
+- **SapCoreAIProvider: missing `tool_choice` (#7)** — added `tool_choice: 'auto'` to the orchestration config when tools are present. Without it, Claude models via SAP AI Core would see tool definitions but never generate `tool_calls`, outputting text reasoning instead.
+
+---
+
 ## [2.10.2] — 2026-03-17
 
 ### Fixed
