@@ -12,6 +12,9 @@ STARTUP
   MCP server(s) connected
   → each tool's name + description + schema vectorized into facts RAG store
   → metadata: { id: "tool:TOOL_NAME" }
+  Skills discovered (if ISkillManager configured)
+  → each skill's name + description vectorized into facts RAG store
+  → metadata: { id: "skill:SKILL_NAME" }
 
 PER REQUEST
   User message
@@ -28,15 +31,17 @@ PER REQUEST
   RAG Retrieval (parallel, if relevant context needed):
     ├─ translate query to English (for non-ASCII input)
     ├─ expand query with synonyms
-    ├─ query facts   → MCP tool descriptions + saved domain knowledge
+    ├─ query facts   → MCP tool descriptions + skill descriptions + domain knowledge
     ├─ query feedback → user preferences ("use SE16N for tables")
     └─ query state   → session context ("working on package Z01")
     ↓
   Rerank → re-score RAG results by relevance
     ↓
-  Tool Select → extract tool:XXX IDs from facts → select matching MCP tools
+  Tool Select  → extract tool:XXX IDs from facts → select matching MCP tools
+  Skill Select → extract skill:XXX IDs from facts → load matching skill content
     ↓
   Assemble → build LLM context: actions + facts + feedback + state + tools + history
+           → append skill content as "## Active Skills" section in system message
     ↓
   Tool Loop → streaming LLM call → execute MCP tools → loop until done
 ```
@@ -62,6 +67,7 @@ PER REQUEST
 | [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining how tool vectorization, classification, RAG memory, and tool selection work together |
 | [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — maximizes concurrency (summarize ‖ rag-upsert, translate ‖ expand, 3× rag-query) |
 | [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
+| [`11-skills.yaml`](examples/11-skills.yaml) | **Agent Skills** — discovers SKILL.md files and injects skill context into LLM prompt via RAG selection |
 
 ### Running a YAML config
 
@@ -163,6 +169,33 @@ pipeline:
     - id: classify
       type: classify
     # ... rest of stages
+```
+
+### Skills — programmatic setup
+
+```ts
+import {
+  SmartAgentBuilder,
+  ClaudeSkillManager,
+  FileSystemSkillManager,
+} from '@mcp-abap-adt/llm-agent';
+
+// Option 1: Claude-convention directories (~/.claude/skills/ + <project>/.claude/skills/)
+const builder = new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withSkillManager(new ClaudeSkillManager(process.cwd()));
+
+// Option 2: Custom directories
+const builder2 = new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withSkillManager(new FileSystemSkillManager([
+    '/opt/shared-skills',
+    './my-project-skills',
+  ]));
+
+// Skills are automatically vectorized into facts RAG at build() time.
+// The skill-select pipeline stage handles RAG-based selection and content loading.
+const handle = await builder.build();
 ```
 
 ### Programmatic pipeline with `getDefaultStages()`
