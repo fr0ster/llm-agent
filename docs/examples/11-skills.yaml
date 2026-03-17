@@ -107,9 +107,15 @@ mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
 
-# Skill directories — ClaudeSkillManager convention
-# (auto-scanned: ~/.claude/skills/ + ./.claude/skills/)
-# For custom dirs, use FileSystemSkillManager programmatically.
+# Skill discovery — scans directories for SKILL.md files.
+# Type: 'claude' (default) | 'codex' | 'filesystem'
+#
+#   claude:     ~/.claude/skills/ + <projectRoot>/.claude/skills/
+#   codex:      ~/.agents/skills/ + <projectRoot>/.agents/skills/
+#   filesystem: custom dirs[] only
+skills:
+  type: claude
+  # projectRoot: .    # defaults to cwd
 
 agent:
   maxIterations: 10
