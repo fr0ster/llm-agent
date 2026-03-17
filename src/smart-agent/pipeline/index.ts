@@ -28,6 +28,7 @@ export {
   RagQueryHandler,
   RagUpsertHandler,
   RerankHandler,
+  SkillSelectHandler,
   type StageHandlerRegistry,
   SummarizeHandler,
   ToolLoopHandler,

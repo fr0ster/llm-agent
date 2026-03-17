@@ -68,6 +68,7 @@ export type BuiltInStageType =
   | 'rag-query'
   | 'rerank'
   | 'tool-select'
+  | 'skill-select'
   | 'assemble'
   | 'tool-loop';
 

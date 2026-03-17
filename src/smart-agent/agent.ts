@@ -7,6 +7,7 @@ import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
+import type { ISkillManager } from './interfaces/skill.js';
 import {
   type CallOptions,
   type LlmFinishReason,
@@ -82,6 +83,7 @@ export interface SmartAgentDeps {
   toolCache?: IToolCache;
   outputValidator?: IOutputValidator;
   sessionManager?: ISessionManager;
+  skillManager?: ISkillManager;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -1297,6 +1299,7 @@ export class SmartAgent {
       toolPolicy: this.deps.toolPolicy,
       injectionDetector: this.deps.injectionDetector,
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+      skillManager: this.deps.skillManager,
 
       // Mutable state
       inputText: text,
@@ -1310,6 +1313,9 @@ export class SmartAgent {
       externalTools,
       assembledMessages: [],
       activeTools: [],
+      selectedSkills: [],
+      skillContent: '',
+      skillArgs: '',
 
       // Control flags
       shouldRetrieve: false,

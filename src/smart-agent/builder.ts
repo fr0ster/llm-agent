@@ -34,6 +34,7 @@ import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
+import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
@@ -156,6 +157,7 @@ export class SmartAgentBuilder {
   private _getUsage?: () => TokenUsage;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
+  private _skillManager?: ISkillManager;
   private _pipelineDefinition?: StructuredPipelineDefinition;
   private _customStageHandlers = new Map<string, IStageHandler>();
 
@@ -272,6 +274,12 @@ export class SmartAgentBuilder {
   /** Set a session manager for multi-turn token budget tracking. */
   withSessionManager(manager: ISessionManager): this {
     this._sessionManager = manager;
+    return this;
+  }
+
+  /** Set a skill manager for discovering and loading agent skills. */
+  withSkillManager(manager: ISkillManager): this {
+    this._skillManager = manager;
     return this;
   }
 
@@ -625,6 +633,21 @@ export class SmartAgentBuilder {
       if (plugins.outputValidator && !this._outputValidator) {
         this._outputValidator = plugins.outputValidator;
       }
+      if (plugins.skillManager && !this._skillManager) {
+        this._skillManager = plugins.skillManager;
+      }
+    }
+
+    // ---- Skill vectorization (optional) ------------------------------------
+    if (this._skillManager) {
+      const skillsResult = await this._skillManager.listSkills();
+      if (skillsResult.ok) {
+        for (const s of skillsResult.value) {
+          await factsRag.upsert(`Skill: ${s.name}\n${s.description}`, {
+            id: `skill:${s.name}`,
+          });
+        }
+      }
     }
 
     // ---- Structured pipeline (optional) ------------------------------------
@@ -671,6 +694,7 @@ export class SmartAgentBuilder {
         ...(this._sessionManager
           ? { sessionManager: this._sessionManager }
           : {}),
+        ...(this._skillManager ? { skillManager: this._skillManager } : {}),
       },
       agentCfg,
       pipelineExecutor,

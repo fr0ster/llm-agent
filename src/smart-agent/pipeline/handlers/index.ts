@@ -12,6 +12,7 @@ import { ExpandHandler } from './expand.js';
 import { RagQueryHandler } from './rag-query.js';
 import { RagUpsertHandler } from './rag-upsert.js';
 import { RerankHandler } from './rerank.js';
+import { SkillSelectHandler } from './skill-select.js';
 import { SummarizeHandler } from './summarize.js';
 import { ToolLoopHandler } from './tool-loop.js';
 import { ToolSelectHandler } from './tool-select.js';
@@ -36,6 +37,7 @@ export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
     ['rag-query', new RagQueryHandler()],
     ['rerank', new RerankHandler()],
     ['tool-select', new ToolSelectHandler()],
+    ['skill-select', new SkillSelectHandler()],
     ['assemble', new AssembleHandler()],
     ['tool-loop', new ToolLoopHandler()],
   ]);
@@ -48,6 +50,7 @@ export {
   RagQueryHandler,
   RagUpsertHandler,
   RerankHandler,
+  SkillSelectHandler,
   SummarizeHandler,
   ToolLoopHandler,
   ToolSelectHandler,

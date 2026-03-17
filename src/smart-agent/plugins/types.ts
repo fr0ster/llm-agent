@@ -54,6 +54,7 @@
  */
 
 import type { EmbedderFactory } from '../interfaces/rag.js';
+import type { ISkillManager } from '../interfaces/skill.js';
 import type { IStageHandler } from '../pipeline/stage-handler.js';
 import type { IQueryExpander } from '../rag/query-expander.js';
 import type { IReranker } from '../reranker/types.js';
@@ -78,6 +79,9 @@ export interface PluginExports {
 
   /** Custom output validator (replaces the default). */
   outputValidator?: IOutputValidator;
+
+  /** Custom skill manager (replaces the default). */
+  skillManager?: ISkillManager;
 }
 
 /**
@@ -90,6 +94,7 @@ export interface LoadedPlugins {
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
   outputValidator?: IOutputValidator;
+  skillManager?: ISkillManager;
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
   /** Plugins that failed to load, with error messages. */
@@ -196,6 +201,11 @@ export function mergePluginExports(
 
   if (mod.outputValidator && typeof mod.outputValidator === 'object') {
     result.outputValidator = mod.outputValidator;
+    registered = true;
+  }
+
+  if (mod.skillManager && typeof mod.skillManager === 'object') {
+    result.skillManager = mod.skillManager;
     registered = true;
   }
 

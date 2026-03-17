@@ -111,6 +111,13 @@ export class AssemblerError extends SmartAgentError {
   }
 }
 
+export class SkillError extends SmartAgentError {
+  constructor(message: string, code = 'SKILL_ERROR') {
+    super(message, code);
+    this.name = 'SkillError';
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Subprompt
 // ---------------------------------------------------------------------------

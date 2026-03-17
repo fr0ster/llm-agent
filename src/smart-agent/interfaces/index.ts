@@ -24,6 +24,12 @@ export type {
   IRag,
 } from './rag.js';
 export type {
+  ISkill,
+  ISkillManager,
+  ISkillMeta,
+  ISkillResource,
+} from './skill.js';
+export type {
   AgentConfig,
   CallOptions,
   ContextFrame,
@@ -50,5 +56,6 @@ export {
   LlmError,
   McpError,
   RagError,
+  SkillError,
   SmartAgentError,
 } from './types.js';

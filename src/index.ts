@@ -76,6 +76,13 @@ export type {
   IEmbedder,
   IRag,
 } from './smart-agent/interfaces/rag.js';
+// Skills
+export type {
+  ISkill,
+  ISkillManager,
+  ISkillMeta,
+  ISkillResource,
+} from './smart-agent/interfaces/skill.js';
 // Smart Agent shared types (needed by plugin authors)
 export type {
   CallOptions,
@@ -84,6 +91,7 @@ export type {
   RagResult,
   Result,
 } from './smart-agent/interfaces/types.js';
+export { SkillError } from './smart-agent/interfaces/types.js';
 export {
   type CounterSnapshot,
   type HistogramSnapshot,
@@ -171,6 +179,11 @@ export { NoopSessionManager } from './smart-agent/session/noop-session-manager.j
 export { SessionManager } from './smart-agent/session/session-manager.js';
 // Session Manager
 export type { ISessionManager } from './smart-agent/session/types.js';
+export {
+  ClaudeSkillManager,
+  CodexSkillManager,
+  FileSystemSkillManager,
+} from './smart-agent/skills/index.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {
@@ -185,6 +198,7 @@ export type {
   IOutputValidator,
   ValidationResult,
 } from './smart-agent/validator/types.js';
+
 export type {
   AgentResponse,
   LLMProviderConfig,
