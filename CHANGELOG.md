@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.10.4] — 2026-03-17
+
+### Fixed
+
+- **SapCoreAIProvider: move `tool_choice` to `model.params` (#7)** — `tool_choice: 'auto'` was incorrectly placed inside `prompt` object, causing SAP AI Core to return 400. Moved to `model.params` where it's forwarded to the underlying LLM as a model parameter.
+
+---
+
 ## [2.10.3] — 2026-03-17
 
 ### Fixed

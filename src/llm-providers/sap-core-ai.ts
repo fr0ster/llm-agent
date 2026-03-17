@@ -161,11 +161,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           params: {
             max_tokens: this.config.maxTokens || 16384,
             temperature: this.config.temperature || 0.7,
+            ...(tools?.length ? { tool_choice: 'auto' } : {}),
           },
         },
         prompt: {
           template: [],
-          ...(tools?.length ? { tools, tool_choice: 'auto' } : {}),
+          ...(tools?.length ? { tools } : {}),
         },
       },
     };
