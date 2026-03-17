@@ -98,14 +98,17 @@ llm:
   model: deepseek-chat
   temperature: 0.7
 
+# Ollama embeddings for semantic skill/tool matching.
+# For quick testing without Ollama, use `type: in-memory` (BM25 keyword matching).
 rag:
   type: ollama
   url: http://localhost:11434
   model: nomic-embed-text
 
-mcp:
-  type: http
-  url: http://localhost:3001/mcp/stream/http
+# MCP is optional — uncomment to enable tool discovery alongside skills.
+# mcp:
+#   type: http
+#   url: http://localhost:3001/mcp/stream/http
 
 # Skill discovery — scans directories for SKILL.md files.
 # Type: 'claude' (default) | 'codex' | 'filesystem'
@@ -122,9 +125,8 @@ agent:
   maxToolCalls: 30
   ragQueryK: 15
   classificationEnabled: true
-  ragRetrievalMode: auto
+  ragRetrievalMode: always              # 'always' ensures RAG runs (needed for skill discovery)
   ragUpsertEnabled: true
-  queryExpansionEnabled: true
 
 pipeline:
   version: "1"
@@ -133,33 +135,20 @@ pipeline:
     - id: classify
       type: classify
 
-    # ── Step 2: summarize + rag-upsert in parallel
-    - id: post-classify
-      type: parallel
-      stages:
-        - id: summarize
-          type: summarize
-        - id: rag-upsert
-          type: rag-upsert
+    # ── Step 2: upsert classified subprompts to RAG stores
+    - id: rag-upsert
+      type: rag-upsert
 
-    # ── Step 3: RAG retrieval (when domain context needed)
-    - id: rag-retrieval
+    # ── Step 3: RAG retrieval
+    #    Queries facts store which contains both skill:* and tool:* entries.
+    #    In-memory RAG uses BM25 keyword matching (no embedder needed).
+    - id: rag-queries
       type: parallel
       when: "shouldRetrieve"
       stages:
-        - id: translate
-          type: translate
-        - id: expand
-          type: expand
-      after:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - { id: rag-facts, type: rag-query, config: { store: facts, k: 15 } }
-            - { id: rag-feedback, type: rag-query, config: { store: feedback, k: 5 } }
-            - { id: rag-state, type: rag-query, config: { store: state, k: 5 } }
-        - id: rerank
-          type: rerank
+        - { id: rag-facts, type: rag-query, config: { store: facts, k: 15 } }
+        - { id: rag-feedback, type: rag-query, config: { store: feedback, k: 5 } }
+        - { id: rag-state, type: rag-query, config: { store: state, k: 5 } }
 
     # ── Step 4: tool + skill discovery (ALWAYS runs)
     #
