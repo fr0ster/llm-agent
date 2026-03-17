@@ -15,6 +15,7 @@ import {
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
+import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
@@ -26,6 +27,9 @@ import {
 import type { IPluginLoader } from './plugins/types.js';
 import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
 import type { VectorRag } from './rag/vector-rag.js';
+import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
+import { CodexSkillManager } from './skills/codex-skill-manager.js';
+import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';
 import {
   type ExternalToolValidationCode,
   normalizeAndValidateExternalTools,
@@ -96,6 +100,15 @@ export interface SmartServerPromptsConfig {
   historySummary?: string;
 }
 
+export interface SmartServerSkillsConfig {
+  /** Manager type: 'claude' | 'codex' | 'filesystem'. Default: 'claude'. */
+  type?: 'claude' | 'codex' | 'filesystem';
+  /** Custom directories (filesystem type only). */
+  dirs?: string[];
+  /** Project root for relative skill dirs (claude/codex types). Defaults to cwd. */
+  projectRoot?: string;
+}
+
 export type SmartServerMode = 'hard' | 'pass' | 'smart';
 
 export interface SmartServerCircuitBreakerConfig {
@@ -129,6 +142,18 @@ export interface SmartServerConfig {
   embedder?: IEmbedder;
   /** Named embedder factories for YAML-driven selection (merged with built-ins). */
   embedderFactories?: Record<string, EmbedderFactory>;
+  /**
+   * Skill discovery configuration from YAML.
+   *
+   * `type`: Manager variant — `'claude'` | `'codex'` | `'filesystem'`.
+   * `dirs`: Custom directories (filesystem type only).
+   * `projectRoot`: Project root for relative skill dirs (claude/codex types).
+   *
+   * When omitted and no `skillManager` is injected, skills are disabled.
+   */
+  skills?: SmartServerSkillsConfig;
+  /** Pre-built skill manager injected via DI. Takes precedence over `skills` config. */
+  skillManager?: ISkillManager;
 }
 
 export interface SmartServerHandle {
@@ -173,6 +198,24 @@ function readBody(req: IncomingMessage): Promise<string> {
     req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
     req.on('error', reject);
   });
+}
+
+function resolveSkillManager(
+  cfg?: SmartServerSkillsConfig,
+): ISkillManager | undefined {
+  if (!cfg) return undefined;
+  const type = cfg.type ?? 'claude';
+  const root = cfg.projectRoot ?? process.cwd();
+  switch (type) {
+    case 'claude':
+      return new ClaudeSkillManager(root);
+    case 'codex':
+      return new CodexSkillManager(root);
+    case 'filesystem':
+      return new FileSystemSkillManager(cfg.dirs ?? []);
+    default:
+      return undefined;
+  }
 }
 
 const CORS_HEADERS = {
@@ -351,6 +394,15 @@ export class SmartServer {
     }
     if (plugins.outputValidator) {
       builder = builder.withOutputValidator(plugins.outputValidator);
+    }
+
+    // Skill manager (DI > YAML config > plugin)
+    const skillManager =
+      this.cfg.skillManager ??
+      plugins.skillManager ??
+      resolveSkillManager(this.cfg.skills);
+    if (skillManager) {
+      builder = builder.withSkillManager(skillManager);
     }
 
     // Structured pipeline (when YAML contains `pipeline.stages`)

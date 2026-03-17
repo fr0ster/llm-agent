@@ -359,5 +359,19 @@ export function resolveSmartServerConfig(
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
+    ...(yaml.skills
+      ? {
+          skills: {
+            type: (get(yaml, 'skills', 'type') ?? 'claude') as
+              | 'claude'
+              | 'codex'
+              | 'filesystem',
+            dirs: get(yaml, 'skills', 'dirs') as string[] | undefined,
+            projectRoot: get(yaml, 'skills', 'projectRoot') as
+              | string
+              | undefined,
+          },
+        }
+      : {}),
   };
 }
