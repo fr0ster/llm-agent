@@ -28,12 +28,33 @@ export class SkillSelectHandler implements IStageHandler {
     const mode = ctx.config.mode || 'smart';
 
     // Discover skills from RAG results
-    const ragSkillNames = new Set(
+    let ragSkillNames = new Set(
       ctx.ragResults.facts
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('skill:'))
         .map((id) => id.slice(6)),
     );
+
+    // If no skill:* entries in shared RAG results, do a dedicated query.
+    // Skills get drowned out when there are many tools in the facts store.
+    if (ragSkillNames.size === 0) {
+      const k = (_config.k as number) ?? ctx.config.ragQueryK ?? 15;
+      const queryText = ctx.ragText || ctx.inputText;
+      const result = await ctx.ragStores.facts.query(queryText, k, ctx.options);
+      if (result.ok) {
+        ragSkillNames = new Set(
+          result.value
+            .map((r) => r.metadata.id as string)
+            .filter((id) => id?.startsWith('skill:'))
+            .map((id) => id.slice(6)),
+        );
+        ctx.options?.sessionLogger?.logStep('skill_select_rag_fallback', {
+          query: queryText.slice(0, 200),
+          k,
+          matchedSkills: [...ragSkillNames],
+        });
+      }
+    }
 
     const allSkillsResult = await ctx.skillManager.listSkills(ctx.options);
     if (!allSkillsResult.ok) {
