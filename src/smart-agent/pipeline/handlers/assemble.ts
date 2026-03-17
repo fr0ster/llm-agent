@@ -75,6 +75,19 @@ export class AssembleHandler implements IStageHandler {
 
     ctx.assembledMessages = result.value;
 
+    // Inject skill content into system message (post-assembly)
+    if (ctx.skillContent) {
+      const sysMsg = ctx.assembledMessages.find((m) => m.role === 'system');
+      if (sysMsg) {
+        sysMsg.content += `\n\n## Active Skills\n${ctx.skillContent}`;
+      } else {
+        ctx.assembledMessages.unshift({
+          role: 'system',
+          content: `## Active Skills\n${ctx.skillContent}`,
+        });
+      }
+    }
+
     ctx.options?.sessionLogger?.logStep('final_context_assembled', {
       messages: result.value,
       tools: ctx.activeTools.map((t) => t.name),

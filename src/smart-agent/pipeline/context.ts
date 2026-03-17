@@ -27,6 +27,7 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { ISkill, ISkillManager } from '../interfaces/skill.js';
 import type {
   CallOptions,
   LlmStreamChunk,
@@ -83,6 +84,7 @@ export interface PipelineContext {
   readonly toolPolicy: IToolPolicy | undefined;
   readonly injectionDetector: IPromptInjectionDetector | undefined;
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  readonly skillManager: ISkillManager | undefined;
 
   // -- Mutable state (populated by stages) ----------------------------------
 
@@ -112,6 +114,12 @@ export interface PipelineContext {
   assembledMessages: Message[];
   /** Currently active tools (after availability filtering). */
   activeTools: LlmTool[];
+  /** Skills selected for the current request. */
+  selectedSkills: ISkill[];
+  /** Rendered skill content to inject into the system prompt. */
+  skillContent: string;
+  /** Arguments passed to skills (e.g. from slash-command invocation). */
+  skillArgs: string;
 
   // -- Control flags (computed by stages, read by conditions) ---------------
 
