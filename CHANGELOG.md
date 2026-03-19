@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.11.3] — 2026-03-19
+
+### Added
+
+- **Re-exported external tool utilities from main entry point (#9)** — `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `toToolCallDelta`, `getStreamToolCallName` and related types (`ExternalToolValidationCode`, `ExternalToolValidationError`) are now available directly from `@mcp-abap-adt/llm-agent`.
+
+---
+
 ## [2.11.2] — 2026-03-19
 
 ### Fixed
