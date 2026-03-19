@@ -217,6 +217,17 @@ export type {
   SpanOptions,
   SpanStatus,
 } from './smart-agent/tracer/types.js';
+// Utils
+export {
+  type ExternalToolValidationCode,
+  type ExternalToolValidationError,
+  normalizeAndValidateExternalTools,
+  normalizeExternalTools,
+} from './smart-agent/utils/external-tools-normalizer.js';
+export {
+  getStreamToolCallName,
+  toToolCallDelta,
+} from './smart-agent/utils/tool-call-deltas.js';
 export { NoopValidator } from './smart-agent/validator/noop-validator.js';
 // Output Validator
 export type {
