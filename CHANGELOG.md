@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.14.1] — 2026-03-20
+
+### Changed
+
+- **Cache `tools/list` in `McpClientAdapter` (#12)** — `listTools()` now returns a cached result after the first call instead of hitting the MCP server on every `process()` request. Cache is automatically invalidated on reconnect detection (unhealthy → healthy health-check transition).
+
+### Deprecated
+
+- **`refreshToolsPerIteration`** — this config option is now a no-op since tool lists are cached in the adapter.
+
+---
+
 ## [2.14.0] — 2026-03-20
 
 ### Changed

@@ -39,9 +39,15 @@ function withAbort<T>(
 // ---------------------------------------------------------------------------
 
 export class McpClientAdapter implements IMcpClient {
+  private toolsCache: McpTool[] | undefined;
+  private lastHealthy = true;
+
   constructor(private readonly client: MCPClientWrapper) {}
 
   async listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>> {
+    if (this.toolsCache) {
+      return { ok: true, value: this.toolsCache };
+    }
     try {
       const raw = await withAbort(
         this.client.listTools(),
@@ -55,6 +61,7 @@ export class McpClientAdapter implements IMcpClient {
         inputSchema: t.inputSchema ?? {},
       }));
 
+      this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
       if (err instanceof McpError) return { ok: false, error: err };
@@ -69,8 +76,15 @@ export class McpClientAdapter implements IMcpClient {
         options?.signal,
         () => new McpError('Aborted', 'ABORTED'),
       );
+      // Reconnect detection: unhealthy → healthy means the server restarted
+      // and may expose a different tool catalog.
+      if (!this.lastHealthy) {
+        this.toolsCache = undefined;
+      }
+      this.lastHealthy = true;
       return { ok: true, value: true };
     } catch (err) {
+      this.lastHealthy = false;
       if (err instanceof McpError) return { ok: false, error: err };
       return { ok: false, error: new McpError(String(err)) };
     }

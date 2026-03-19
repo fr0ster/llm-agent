@@ -115,7 +115,10 @@ export interface SmartAgentConfig {
   ragTranslationEnabled?: boolean;
   /** Whether to upsert classified subprompts to RAG stores. Default: true. */
   ragUpsertEnabled?: boolean;
-  /** Whether to re-fetch MCP tool list on each tool-loop iteration. Default: true. */
+  /**
+   * Whether to re-fetch MCP tool list on each tool-loop iteration. Default: true.
+   * @deprecated No-op since 2.15.0 — tool lists are cached in McpClientAdapter.
+   */
   refreshToolsPerIteration?: boolean;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
