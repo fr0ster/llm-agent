@@ -24,6 +24,8 @@
  * | `reranker`           | `IReranker`                               | RAG reranker            |
  * | `queryExpander`      | `IQueryExpander`                          | Query expander          |
  * | `outputValidator`    | `IOutputValidator`                        | Output validator        |
+ * | `skillManager`       | `ISkillManager`                           | Skill manager           |
+ * | `mcpClients`         | `IMcpClient[]`                            | MCP clients             |
  *
  * ## Example plugin file (filesystem loader)
  *
@@ -53,6 +55,7 @@
  * Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
  */
 
+import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { EmbedderFactory } from '../interfaces/rag.js';
 import type { ISkillManager } from '../interfaces/skill.js';
 import type { IStageHandler } from '../pipeline/stage-handler.js';
@@ -82,6 +85,9 @@ export interface PluginExports {
 
   /** Custom skill manager (replaces the default). */
   skillManager?: ISkillManager;
+
+  /** Pre-built MCP clients (accumulated from all plugins). */
+  mcpClients?: IMcpClient[];
 }
 
 /**
@@ -95,6 +101,7 @@ export interface LoadedPlugins {
   queryExpander?: IQueryExpander;
   outputValidator?: IOutputValidator;
   skillManager?: ISkillManager;
+  mcpClients: IMcpClient[];
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
   /** Plugins that failed to load, with error messages. */
@@ -150,6 +157,7 @@ export function emptyLoadedPlugins(): LoadedPlugins {
   return {
     stageHandlers: new Map(),
     embedderFactories: {},
+    mcpClients: [],
     loadedFiles: [],
     errors: [],
   };
@@ -206,6 +214,11 @@ export function mergePluginExports(
 
   if (mod.skillManager && typeof mod.skillManager === 'object') {
     result.skillManager = mod.skillManager;
+    registered = true;
+  }
+
+  if (mod.mcpClients && Array.isArray(mod.mcpClients)) {
+    result.mcpClients.push(...mod.mcpClients);
     registered = true;
   }
 

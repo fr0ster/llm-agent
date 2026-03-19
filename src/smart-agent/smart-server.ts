@@ -14,6 +14,7 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
+import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
@@ -154,6 +155,8 @@ export interface SmartServerConfig {
   skills?: SmartServerSkillsConfig;
   /** Pre-built skill manager injected via DI. Takes precedence over `skills` config. */
   skillManager?: ISkillManager;
+  /** Pre-built MCP clients injected via DI. Takes precedence over `mcp` config. */
+  mcpClients?: IMcpClient[];
 }
 
 export interface SmartServerHandle {
@@ -324,6 +327,7 @@ export class SmartServer {
         hasReranker: !!plugins.reranker,
         hasQueryExpander: !!plugins.queryExpander,
         hasOutputValidator: !!plugins.outputValidator,
+        mcpClients: plugins.mcpClients.length,
       });
     }
     if (plugins.errors.length > 0) {
@@ -403,6 +407,14 @@ export class SmartServer {
       resolveSkillManager(this.cfg.skills);
     if (skillManager) {
       builder = builder.withSkillManager(skillManager);
+    }
+
+    // MCP clients (DI > plugin; YAML fallback handled by builder)
+    const mcpClients =
+      this.cfg.mcpClients ??
+      (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
+    if (mcpClients) {
+      builder = builder.withMcpClients(mcpClients);
     }
 
     // Structured pipeline (when YAML contains `pipeline.stages`)

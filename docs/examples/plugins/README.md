@@ -29,6 +29,7 @@ export interface PluginExports {
   queryExpander?: IQueryExpander;                     // replaces default
   outputValidator?: IOutputValidator;                 // replaces default
   skillManager?: ISkillManager;                      // replaces default
+  mcpClients?: IMcpClient[];                         // accumulated from all plugins
 }
 ```
 

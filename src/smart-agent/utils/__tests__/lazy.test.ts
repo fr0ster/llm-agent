@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
-import { lazy, LazyInitError } from '../lazy.js';
+import { LazyInitError, lazy } from '../lazy.js';
 
 // ---------------------------------------------------------------------------
 // Test interface

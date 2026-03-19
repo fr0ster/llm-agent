@@ -7,6 +7,34 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.13.0] — 2026-03-19
+
+### Added
+
+- **DI support for `mcpClients` in SmartServer (#11)** — `SmartServer` and the plugin system now support injecting pre-built `IMcpClient[]` instances, matching the existing `skillManager` DI pattern. Three injection points:
+  - **`SmartServerConfig.mcpClients`** — programmatic DI via config (highest priority).
+  - **`PluginExports.mcpClients`** — plugin-based injection (accumulated from all plugins).
+  - **YAML `mcp:` config** — existing fallback via builder auto-connect (unchanged).
+
+  Resolution precedence: `config > plugin > YAML fallback`.
+
+  This enables lazy MCP clients (via `lazy()` from v2.12.0) that connect on first use — the agent starts immediately and picks up MCP tools when the server becomes available.
+
+  ```ts
+  // Plugin example: lazy MCP client
+  import { lazy, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent';
+
+  export const mcpClients = [lazy(() => {
+    const w = new MCPClientWrapper({ transport: 'auto', url: process.env.MCP_URL });
+    return w.connect().then(() => new McpClientAdapter(w));
+  }, { retryIntervalMs: 15_000 })];
+  ```
+
+- **Plugin types updated** — `PluginExports`, `LoadedPlugins`, `emptyLoadedPlugins()`, and `mergePluginExports()` now support `mcpClients: IMcpClient[]`.
+- **Plugin + builder tests** — 13 new tests covering `mergePluginExports` accumulation, `SmartAgentBuilder.withMcpClients()` integration, and SmartServer config precedence logic.
+
+---
+
 ## [2.12.0] — 2026-03-19
 
 ### Added
