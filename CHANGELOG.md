@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.14.0] — 2026-03-20
+
+### Changed
+
+- **`healthCheck()` no longer calls `listTools()` on MCP clients (#12)** — `SmartAgent.healthCheck()` now uses a lightweight MCP ping instead of a full `tools/list` JSON-RPC request. This eliminates unnecessary MCP server load when health is polled frequently (e.g. from a UI every few seconds).
+
+  - **`IMcpClient`** gains an optional `healthCheck?(options?: CallOptions): Promise<Result<boolean, McpError>>` method. Existing plugin implementations are not affected (the method is optional).
+  - **`MCPClientWrapper`** gains a `ping()` method that uses the MCP SDK's native ping for HTTP/stdio transports and is a no-op for embedded mode.
+  - **`McpClientAdapter`** implements `healthCheck()` via `wrapper.ping()`.
+  - **`SmartAgent.healthCheck()`** prefers `client.healthCheck()` when available, falling back to `client.listTools()` for `IMcpClient` implementations without the new method.
+
+---
+
 ## [2.13.0] — 2026-03-19
 
 ### Added

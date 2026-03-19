@@ -445,6 +445,21 @@ export class MCPClientWrapper {
   }
 
   /**
+   * Lightweight ping — verifies the MCP server is reachable
+   * without triggering a full tools/list request.
+   */
+  async ping(): Promise<void> {
+    if (this.detectedTransport === 'embedded') {
+      // Embedded mode: server is in-process, always reachable
+      return;
+    }
+    if (!this.client) {
+      await this.connect();
+    }
+    await this.client?.ping();
+  }
+
+  /**
    * Disconnect from MCP server
    */
   async disconnect(): Promise<void> {

@@ -289,6 +289,7 @@ Stores are split by intent:
 - Smart stack uses `IMcpClient` abstraction.
 - Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.
+- Health checks use lightweight MCP ping (`MCPClientWrapper.ping()`) instead of `listTools()`, avoiding unnecessary tool catalog requests when health is polled frequently.
 
 ### 6. Skills Layer
 

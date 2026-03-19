@@ -224,6 +224,7 @@ Wraps tool discovery and execution:
 interface IMcpClient {
   listTools(options?: CallOptions): Promise<Result<McpTool[], McpError>>;
   callTool(name: string, args: Record<string, unknown>, options?: CallOptions): Promise<Result<McpToolResult, McpError>>;
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, McpError>>;
 }
 ```
 
@@ -268,6 +269,15 @@ class RestApiToolClient implements IMcpClient {
       });
       const data = await res.json();
       return { ok: true, value: { content: data.result } };
+    } catch (err) {
+      return { ok: false, error: new McpError(String(err)) };
+    }
+  }
+
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, McpError>> {
+    try {
+      const res = await fetch(`${this.baseUrl}/health`, { signal: options?.signal });
+      return { ok: true, value: res.ok };
     } catch (err) {
       return { ok: false, error: new McpError(String(err)) };
     }
