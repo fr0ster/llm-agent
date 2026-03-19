@@ -657,6 +657,53 @@ import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent';
 export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
 ```
 
+## IMcpClient — DI injection
+
+MCP clients can be injected via three paths (precedence: config > plugin > YAML):
+
+### Via SmartServer config
+
+```ts
+import { SmartServer, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent';
+
+const wrapper = new MCPClientWrapper({ transport: 'auto', url: 'http://localhost:3001/mcp' });
+await wrapper.connect();
+const client = new McpClientAdapter(wrapper);
+
+const server = new SmartServer({
+  llm: { apiKey: process.env.API_KEY! },
+  mcpClients: [client],  // DI — takes precedence over mcp: YAML config
+});
+```
+
+### Via plugin (lazy initialization)
+
+```ts
+// plugins/lazy-mcp.mjs
+import { lazy, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent';
+
+const url = process.env.MCP_SERVER_URL;
+
+export const mcpClients = url ? [lazy(() => {
+  const w = new MCPClientWrapper({ transport: 'auto', url });
+  return w.connect().then(() => new McpClientAdapter(w));
+}, {
+  retryIntervalMs: 15_000,
+  onError: (err) => console.warn('[lazy-mcp] MCP not ready:', err.message),
+})] : [];
+```
+
+### Via builder
+
+```ts
+const handle = await new SmartAgentBuilder({})
+  .withMainLlm(myLlm)
+  .withMcpClients([clientA, clientB])  // skips auto-connect and tool vectorization
+  .build();
+```
+
+**Note:** When using `withMcpClients()`, the builder skips auto-connect and tool vectorization — the caller is responsible for providing already-connected clients.
+
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
 ### IMetrics
@@ -1030,6 +1077,7 @@ All fields are optional — a plugin can register any subset:
 | `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
 | `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
 | `skillManager`       | `ISkillManager`                   | Replaces default skill manager  |
+| `mcpClients`         | `IMcpClient[]`                    | Accumulated MCP clients         |
 
 #### Option 1: FileSystemPluginLoader (default)
 
@@ -1151,6 +1199,7 @@ class CompositePluginLoader implements IPluginLoader {
       if (plugins.reranker) result.reranker = plugins.reranker;
       if (plugins.queryExpander) result.queryExpander = plugins.queryExpander;
       if (plugins.outputValidator) result.outputValidator = plugins.outputValidator;
+      result.mcpClients.push(...plugins.mcpClients);
       result.loadedFiles.push(...plugins.loadedFiles);
       result.errors.push(...plugins.errors);
     }

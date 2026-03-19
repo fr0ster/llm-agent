@@ -663,6 +663,8 @@ A plugin module can export any subset of:
 | `reranker`           | `IReranker`                       | RAG reranker            |
 | `queryExpander`      | `IQueryExpander`                  | Query expander          |
 | `outputValidator`    | `IOutputValidator`                | Output validator        |
+| `skillManager`       | `ISkillManager`                   | Skill manager           |
+| `mcpClients`         | `IMcpClient[]`                    | MCP clients             |
 
 ### Default: FileSystemPluginLoader
 
@@ -695,6 +697,7 @@ SmartServer.start() / builder.build()
   → merge embedderFactories        # plugins + config (config wins)
   → apply stageHandlers to builder # plugin handlers available in YAML
   → apply reranker, expander, validator
+  → resolve mcpClients             # config > plugin > YAML fallback
   → build agent
 ```
 
