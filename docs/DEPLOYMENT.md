@@ -160,7 +160,7 @@ For file-based logging (when `log:` is set in `smart-server.yaml`), use `logrota
 For serverless environments, use `SmartAgent` programmatically without the HTTP layer:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
 
 // Build once per cold start (or pool across invocations)
 const handle = await new SmartAgentBuilder({

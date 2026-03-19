@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.11.2] — 2026-03-19
+
+### Fixed
+
+- **CJS compatibility (#8)** — added `"default"` condition to all `package.json` exports so CJS consumers (e.g. SAP CAP projects with `"module": "commonjs"`) can resolve the package via `require()`.
+
+### Added
+
+- **Re-exported builder & adapter APIs from main entry point (#8)** — `SmartAgentBuilder`, `McpClientAdapter`, `LlmAdapter`, `makeLlm`, `makeDefaultLlm`, `makeRag`, `resolveEmbedder`, `ILlm`, `IMcpClient` are now available directly from `@mcp-abap-adt/llm-agent` without deep imports.
+
+---
+
 ## [2.11.1] — 2026-03-18
 
 ### Added
