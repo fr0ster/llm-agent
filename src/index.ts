@@ -224,6 +224,12 @@ export {
   normalizeAndValidateExternalTools,
   normalizeExternalTools,
 } from './smart-agent/utils/external-tools-normalizer.js';
+// Lazy initialization
+export {
+  LazyInitError,
+  type LazyOptions,
+  lazy,
+} from './smart-agent/utils/lazy.js';
 export {
   getStreamToolCallName,
   toToolCallDelta,

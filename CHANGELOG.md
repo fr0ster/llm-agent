@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [2.12.0] — 2026-03-19
+
+### Added
+
+- **Generic `lazy<T>` initialization utility (#10)** — opt-in proxy wrapper that defers construction of any async-method interface (`IMcpClient`, `IRag`, `IEmbedder`, `ISkillManager`, `ILlm`, etc.) to the first method call. Supports sync/async factories, mutex for concurrent callers, retry gating (`retryIntervalMs`), `onError` callback, and optional `fallback` delegation. Exported from main entry point: `lazy`, `LazyInitError`, `LazyOptions`.
+
+---
+
 ## [2.11.3] — 2026-03-19
 
 ### Added
