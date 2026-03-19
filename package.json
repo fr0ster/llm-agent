@@ -1,26 +1,30 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "2.11.1",
+  "version": "2.11.2",
   "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "default": "./dist/index.js"
     },
     "./testing": {
+      "types": "./dist/smart-agent/testing/index.d.ts",
       "import": "./dist/smart-agent/testing/index.js",
-      "types": "./dist/smart-agent/testing/index.d.ts"
+      "default": "./dist/smart-agent/testing/index.js"
     },
     "./smart-server": {
+      "types": "./dist/smart-agent/smart-server.d.ts",
       "import": "./dist/smart-agent/smart-server.js",
-      "types": "./dist/smart-agent/smart-server.d.ts"
+      "default": "./dist/smart-agent/smart-server.js"
     },
     "./otel": {
+      "types": "./dist/smart-agent/otel/index.d.ts",
       "import": "./dist/smart-agent/otel/index.js",
-      "types": "./dist/smart-agent/otel/index.d.ts"
+      "default": "./dist/smart-agent/otel/index.js"
     }
   },
   "files": [

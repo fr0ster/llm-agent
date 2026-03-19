@@ -62,7 +62,7 @@ interface ILlm {
 ### Example: Wrapping a custom provider (Gemini)
 
 ```ts
-import type { ILlm } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import type { Message, Result, LlmResponse, LlmError, LlmTool, CallOptions, LlmStreamChunk }
   from '@mcp-abap-adt/llm-agent';
 
@@ -144,7 +144,7 @@ interface IRag {
 ### Example: Wrapping Pinecone
 
 ```ts
-import type { IRag } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
 import type { RagMetadata, RagResult, RagError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -230,7 +230,7 @@ interface IMcpClient {
 ### Example: Wrapping a non-MCP REST API catalog
 
 ```ts
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type { McpTool, McpToolResult, McpError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -725,7 +725,7 @@ Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (
 The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
 import {
   ToolCache, SessionManager, InMemoryMetrics,
   OllamaEmbedder, QdrantRag,

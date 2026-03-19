@@ -49,6 +49,17 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
+// Adapters
+export { LlmAdapter } from './smart-agent/adapters/llm-adapter.js';
+export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
+// Builder & Providers
+export {
+  type BuilderMcpConfig,
+  type BuilderPromptsConfig,
+  SmartAgentBuilder,
+  type SmartAgentBuilderConfig,
+  type SmartAgentHandle,
+} from './smart-agent/builder.js';
 export { NoopToolCache } from './smart-agent/cache/noop-tool-cache.js';
 export { ToolCache } from './smart-agent/cache/tool-cache.js';
 // Tool Cache
@@ -69,6 +80,9 @@ export type {
   HealthComponentStatus,
   HealthStatus,
 } from './smart-agent/health/types.js';
+// Smart Agent interfaces
+export type { ILlm } from './smart-agent/interfaces/llm.js';
+export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
 // Embedder & RAG
 export type {
   EmbedderFactory,
@@ -136,6 +150,17 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
+export {
+  type EmbedderResolutionConfig,
+  type EmbedderResolutionOptions,
+  type LlmProviderConfig,
+  makeDefaultLlm,
+  makeLlm,
+  makeRag,
+  type RagResolutionConfig,
+  type RagResolutionOptions,
+  resolveEmbedder,
+} from './smart-agent/providers.js';
 export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
 export {
