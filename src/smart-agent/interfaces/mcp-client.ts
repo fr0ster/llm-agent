@@ -14,4 +14,13 @@ export interface IMcpClient {
     args: Record<string, unknown>,
     options?: CallOptions,
   ): Promise<Result<McpToolResult, McpError>>;
+
+  /**
+   * Lightweight health check — verifies the MCP server is reachable
+   * without triggering a full tools/list request.
+   *
+   * Optional: when not implemented, the caller should fall back
+   * to a simple connectivity assumption or listTools().
+   */
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, McpError>>;
 }

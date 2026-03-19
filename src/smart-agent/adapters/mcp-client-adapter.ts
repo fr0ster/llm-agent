@@ -62,6 +62,20 @@ export class McpClientAdapter implements IMcpClient {
     }
   }
 
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, McpError>> {
+    try {
+      await withAbort(
+        this.client.ping(),
+        options?.signal,
+        () => new McpError('Aborted', 'ABORTED'),
+      );
+      return { ok: true, value: true };
+    } catch (err) {
+      if (err instanceof McpError) return { ok: false, error: err };
+      return { ok: false, error: new McpError(String(err)) };
+    }
+  }
+
   async callTool(
     name: string,
     args: Record<string, unknown>,

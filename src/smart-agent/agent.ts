@@ -231,6 +231,20 @@ export class SmartAgent {
       const mcpChecks = await Promise.all(
         this.deps.mcpClients.map(async (client) => {
           try {
+            if (client.healthCheck) {
+              const hc = await client.healthCheck(healthOptions);
+              return {
+                name: 'mcp-client',
+                ok: hc.ok,
+                error:
+                  hc.ok || !hc.error
+                    ? undefined
+                    : hc.error instanceof Error
+                      ? hc.error.message
+                      : String(hc.error),
+              };
+            }
+            // Fallback for IMcpClient implementations without healthCheck
             const tools = await client.listTools(healthOptions);
             return {
               name: 'mcp-client',
