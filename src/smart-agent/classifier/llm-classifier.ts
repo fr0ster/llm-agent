@@ -145,7 +145,10 @@ export class LlmClassifier implements ISubpromptClassifier {
       if (!llmResult.ok)
         return {
           ok: false,
-          error: new ClassifierError(llmResult.error.message, 'LLM_ERROR'),
+          error: new ClassifierError(
+            llmResult.error.message,
+            llmResult.error.code,
+          ),
         };
 
       const subprompts = parseSubprompts(llmResult.value.content);
