@@ -46,37 +46,42 @@ export class ToolSelectHandler implements IStageHandler {
       }
     }
 
-    // If RAG retrieval was skipped, query facts store directly for tool discovery.
+    // If RAG retrieval was skipped, query all stores for tool discovery.
     // Tools should always be discoverable regardless of shouldRetrieve flag.
-    let factsResults = ctx.ragResults.facts;
-    if (factsResults.length === 0 && ctx.mcpTools.length > 0) {
+    let allRagResults = Object.values(ctx.ragResults).flat();
+    if (allRagResults.length === 0 && ctx.mcpTools.length > 0) {
       const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
       const queryText = ctx.ragText || ctx.inputText;
-      const result = await ctx.ragStores.facts.query(queryText, k, ctx.options);
-
-      if (result.ok) {
-        factsResults = result.value;
-        // Also populate ctx.ragResults.facts so assemble can use them
-        ctx.ragResults.facts = result.value;
-
-        ctx.options?.sessionLogger?.logStep('tool_select_rag_fallback', {
-          reason:
-            'RAG retrieval was skipped, querying facts for tool discovery',
-          query: queryText.slice(0, 200),
-          k,
-          resultCount: result.value.length,
-          results: result.value.map((r) => ({
-            id: r.metadata.id,
-            score: r.score,
-            text: r.text.slice(0, 120),
-          })),
-        });
+      const storeEntries = Object.entries(ctx.ragStores);
+      const queryResults = await Promise.all(
+        storeEntries.map(async ([name, store]) => ({
+          name,
+          result: await store.query(queryText, k, ctx.options),
+        })),
+      );
+      for (const { name, result } of queryResults) {
+        if (result.ok) {
+          ctx.ragResults[name] = result.value;
+        }
       }
+      allRagResults = Object.values(ctx.ragResults).flat();
+
+      ctx.options?.sessionLogger?.logStep('tool_select_rag_fallback', {
+        reason: 'RAG retrieval was skipped, querying stores for tool discovery',
+        query: queryText.slice(0, 200),
+        k,
+        resultCount: allRagResults.length,
+        results: allRagResults.map((r) => ({
+          id: r.metadata.id,
+          score: r.score,
+          text: r.text.slice(0, 120),
+        })),
+      });
     }
 
     // Select tools based on RAG results
     const ragToolNames = new Set(
-      factsResults
+      allRagResults
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('tool:'))
         .map((id) => id.slice(5)),

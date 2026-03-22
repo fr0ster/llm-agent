@@ -61,11 +61,8 @@ export class OrchestratorError extends SmartAgentError {
   }
 }
 
-export interface SmartAgentRagStores {
-  facts: IRag;
-  feedback: IRag;
-  state: IRag;
-}
+export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
+
 export interface SmartAgentDeps {
   mainLlm: ILlm;
   helperLlm?: ILlm;
@@ -231,7 +228,10 @@ export class SmartAgent {
       results.llm = false;
     }
     try {
-      const ragRes = await this.deps.ragStores.facts.healthCheck(healthOptions);
+      const firstStore = Object.values(this.deps.ragStores)[0];
+      const ragRes = firstStore
+        ? await firstStore.healthCheck(healthOptions)
+        : { ok: true as const, value: undefined };
       results.rag = ragRes.ok;
     } catch {
       results.rag = false;
@@ -415,11 +415,12 @@ export class SmartAgent {
         ragMode === 'always' || (ragMode === 'auto' && isSapRequired);
 
       let finalTools: LlmTool[] = [];
-      let retrieved = {
-        facts: [] as RagResult[],
-        feedback: [] as RagResult[],
-        state: [] as RagResult[],
-        tools: [] as McpTool[],
+      let retrieved: {
+        ragResults: Record<string, RagResult[]>;
+        tools: McpTool[];
+      } = {
+        ragResults: {},
+        tools: [],
       };
 
       if (shouldRetrieve) {
@@ -438,56 +439,59 @@ export class SmartAgent {
           parent: rootSpan,
           attributes: { 'rag.k': k },
         });
-        const [fR, fbR, sR] = await Promise.all([
-          this.deps.ragStores.facts.query(ragText, k, opts),
-          this.deps.ragStores.feedback.query(ragText, k, opts),
-          this.deps.ragStores.state.query(ragText, k, opts),
-        ]);
+        const storeEntries = Object.entries(this.deps.ragStores);
+        const ragQueryResults = await Promise.all(
+          storeEntries.map(([name, store]) =>
+            store.query(ragText, k, opts).then((r) => ({ name, result: r })),
+          ),
+        );
         ragSpan.end();
-        this.metrics.ragQueryCount.add(1, {
-          store: 'facts',
-          hit: String(fR.ok && fR.value.length > 0),
-        });
-        this.metrics.ragQueryCount.add(1, {
-          store: 'feedback',
-          hit: String(fbR.ok && fbR.value.length > 0),
-        });
-        this.metrics.ragQueryCount.add(1, {
-          store: 'state',
-          hit: String(sR.ok && sR.value.length > 0),
-        });
+        const ragResultsMap: Record<string, RagResult[]> = {};
+        for (const { name, result: r } of ragQueryResults) {
+          ragResultsMap[name] = r.ok ? r.value : [];
+          this.metrics.ragQueryCount.add(1, {
+            store: name,
+            hit: String(r.ok && r.value.length > 0),
+          });
+        }
 
         // Rerank results
-        const [rerankedFacts, rerankedFeedback, rerankedState] =
-          await Promise.all([
-            fR.ok
-              ? this.reranker.rerank(ragText, fR.value, opts)
-              : Promise.resolve(fR),
-            fbR.ok
-              ? this.reranker.rerank(ragText, fbR.value, opts)
-              : Promise.resolve(fbR),
-            sR.ok
-              ? this.reranker.rerank(ragText, sR.value, opts)
-              : Promise.resolve(sR),
-          ]);
+        // Rerank all stores in parallel
+        const rerankedEntries = await Promise.all(
+          Object.entries(ragResultsMap).map(async ([name, results]) => {
+            if (results.length > 0) {
+              const rr = await this.reranker.rerank(ragText, results, opts);
+              return { name, results: rr.ok ? rr.value : results };
+            }
+            return { name, results };
+          }),
+        );
+        const rerankedMap: Record<string, RagResult[]> = {};
+        for (const { name, results } of rerankedEntries) {
+          rerankedMap[name] = results;
+        }
 
         const { tools: mcpTools } = await this._listAllTools(opts);
-        const facts = rerankedFacts.ok ? rerankedFacts.value : [];
+
+        // Collect all RAG results for tool discovery
+        const allRagResults = Object.values(rerankedMap).flat();
 
         // Log RAG results with scores for diagnostics
-        opts?.sessionLogger?.logStep('rag_query_facts', {
-          query: ragText.slice(0, 200),
-          k,
-          resultCount: facts.length,
-          results: facts.map((r) => ({
-            id: r.metadata.id,
-            score: r.score,
-            text: r.text.slice(0, 120),
-          })),
-        });
+        for (const [storeName, results] of Object.entries(rerankedMap)) {
+          opts?.sessionLogger?.logStep(`rag_query_${storeName}`, {
+            query: ragText.slice(0, 200),
+            k,
+            resultCount: results.length,
+            results: results.map((r) => ({
+              id: r.metadata.id,
+              score: r.score,
+              text: r.text.slice(0, 120),
+            })),
+          });
+        }
 
         const ragToolNames = new Set(
-          facts
+          allRagResults
             .map((r) => r.metadata.id as string)
             .filter((id) => id?.startsWith('tool:'))
             .map((id) => id.slice(5)),
@@ -511,9 +515,7 @@ export class SmartAgent {
         });
 
         retrieved = {
-          facts,
-          feedback: rerankedFeedback.ok ? rerankedFeedback.value : [],
-          state: rerankedState.ok ? rerankedState.value : [],
+          ragResults: rerankedMap,
           tools: selectedMcpTools,
         };
         finalTools =
@@ -671,20 +673,17 @@ export class SmartAgent {
     for (const sp of subprompts) {
       this.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
+    const resolveStore = (type: string): IRag | undefined =>
+      this.deps.ragStores[type] ?? this.deps.ragStores[`${type}s`];
     const others =
       this.config.ragUpsertEnabled !== false
         ? subprompts.filter(
             (sp) =>
-              sp.type === 'fact' ||
-              sp.type === 'state' ||
-              sp.type === 'feedback',
+              sp.type !== 'action' &&
+              sp.type !== 'chat' &&
+              resolveStore(sp.type),
           )
         : [];
-    const ragStoreMap = new Map<string, IRag>([
-      ['fact', this.deps.ragStores.facts],
-      ['feedback', this.deps.ragStores.feedback],
-      ['state', this.deps.ragStores.state],
-    ]);
     if (others.length > 0) {
       const upsertSpan = this.tracer.startSpan('smart_agent.rag_upsert', {
         parent: parentSpan,
@@ -692,7 +691,7 @@ export class SmartAgent {
       });
       await Promise.allSettled(
         others.map(async (sp) => {
-          const s = ragStoreMap.get(sp.type);
+          const s = resolveStore(sp.type);
           if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts);
         }),
       );
@@ -706,9 +705,7 @@ export class SmartAgent {
   private async *_runStreamingToolLoop(
     _action: Subprompt,
     _retrieved: {
-      facts: RagResult[];
-      feedback: RagResult[];
-      state: RagResult[];
+      ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
     },
     initialMessages: Message[],
@@ -1330,7 +1327,9 @@ export class SmartAgent {
       subprompts: [],
       toolClientMap: new Map(),
       ragText: '',
-      ragResults: { facts: [], feedback: [], state: [] },
+      ragResults: Object.fromEntries(
+        Object.keys(this.deps.ragStores).map((k) => [k, []]),
+      ),
       mcpTools: [],
       selectedTools: [],
       externalTools,

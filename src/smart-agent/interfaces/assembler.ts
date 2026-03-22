@@ -12,9 +12,7 @@ export interface IContextAssembler {
   assemble(
     action: Subprompt,
     retrieved: {
-      facts: RagResult[];
-      feedback: RagResult[];
-      state: RagResult[];
+      ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
     },
     history: Message[],

@@ -6,6 +6,7 @@ import {
   makeClassifier,
   makeDefaultDeps,
   makeMcpClient,
+  makeRag,
 } from '../../testing/index.js';
 import { NoopTracer } from '../noop-tracer.js';
 
@@ -201,6 +202,7 @@ describe('Pipeline spans — RAG upsert', () => {
         { type: 'fact', text: 'some fact' },
         { type: 'action', text: 'do something' },
       ]),
+      ragStores: { facts: makeRag() },
       tracer,
     });
     const agent = new SmartAgent(deps, DEFAULT_CONFIG);

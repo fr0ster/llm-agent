@@ -27,27 +27,34 @@ export class SkillSelectHandler implements IStageHandler {
 
     const mode = ctx.config.mode || 'smart';
 
-    // Discover skills from RAG results
-    let ragSkillNames = new Set(
-      ctx.ragResults.facts
+    // Discover skills from all RAG results
+    const allRagResults = Object.values(ctx.ragResults).flat();
+    const ragSkillNames = new Set(
+      allRagResults
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('skill:'))
         .map((id) => id.slice(6)),
     );
 
-    // If no skill:* entries in shared RAG results, do a dedicated query.
-    // Skills get drowned out when there are many tools in the facts store.
+    // If no skill:* entries in RAG results, do a dedicated query on all stores.
     if (ragSkillNames.size === 0) {
       const k = (_config.k as number) ?? ctx.config.ragQueryK ?? 15;
       const queryText = ctx.ragText || ctx.inputText;
-      const result = await ctx.ragStores.facts.query(queryText, k, ctx.options);
-      if (result.ok) {
-        ragSkillNames = new Set(
-          result.value
-            .map((r) => r.metadata.id as string)
-            .filter((id) => id?.startsWith('skill:'))
-            .map((id) => id.slice(6)),
-        );
+      const storeEntries = Object.entries(ctx.ragStores);
+      const queryResults = await Promise.all(
+        storeEntries.map(([, store]) => store.query(queryText, k, ctx.options)),
+      );
+      for (const result of queryResults) {
+        if (result.ok) {
+          for (const r of result.value) {
+            const id = r.metadata.id as string;
+            if (id?.startsWith('skill:')) {
+              ragSkillNames.add(id.slice(6));
+            }
+          }
+        }
+      }
+      if (ragSkillNames.size > 0) {
         ctx.options?.sessionLogger?.logStep('skill_select_rag_fallback', {
           query: queryText.slice(0, 200),
           k,

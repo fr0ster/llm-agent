@@ -269,9 +269,7 @@ export function makeAssembler(result?: Message[] | Error): IContextAssembler {
     async assemble(
       _action: Subprompt,
       _retrieved: {
-        facts: RagResult[];
-        feedback: RagResult[];
-        state: RagResult[];
+        ragResults: Record<string, RagResult[]>;
         tools: McpTool[];
       },
       _history: Message[],
@@ -455,7 +453,7 @@ export function makeDefaultDeps(overrides?: {
   classifier?: ISubpromptClassifier;
   assembler?: IContextAssembler;
   mcpClients?: IMcpClient[];
-  ragStores?: { facts?: IRag; feedback?: IRag; state?: IRag };
+  ragStores?: Record<string, IRag>;
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
   logger?: ILogger;
@@ -478,11 +476,7 @@ export function makeDefaultDeps(overrides?: {
     deps: {
       mainLlm: llm,
       mcpClients: overrides?.mcpClients ?? [],
-      ragStores: {
-        facts: overrides?.ragStores?.facts ?? makeRag(),
-        feedback: overrides?.ragStores?.feedback ?? makeRag(),
-        state: overrides?.ragStores?.state ?? makeRag(),
-      },
+      ragStores: overrides?.ragStores ?? {},
       classifier:
         overrides?.classifier ??
         makeClassifier([{ type: 'action', text: 'do something' }]),

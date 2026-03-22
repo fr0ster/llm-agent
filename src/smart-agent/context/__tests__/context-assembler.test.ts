@@ -30,7 +30,7 @@ function makeToolRecord(
 }
 
 const ACTION = { type: 'action' as const, text: 'What should I do next?' };
-const EMPTY_RETRIEVED = { facts: [], feedback: [], state: [], tools: [] };
+const EMPTY = { ragResults: {}, tools: [] as McpTool[] };
 
 // ---------------------------------------------------------------------------
 // Empty retrieved
@@ -39,7 +39,7 @@ const EMPTY_RETRIEVED = { facts: [], feedback: [], state: [], tools: [] };
 describe('ContextAssembler — empty retrieved', () => {
   it('produces only a user message when all sections empty', async () => {
     const assembler = new ContextAssembler();
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, []);
+    const r = await assembler.assemble(ACTION, EMPTY, []);
     assert.ok(r.ok);
     assert.equal(r.value.length, 1);
     assert.equal(r.value[0].role, 'user');
@@ -48,7 +48,7 @@ describe('ContextAssembler — empty retrieved', () => {
 
   it('no system message when retrieved is empty and no preamble', async () => {
     const assembler = new ContextAssembler();
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, []);
+    const r = await assembler.assemble(ACTION, EMPTY, []);
     assert.ok(r.ok);
     const systemMsgs = r.value.filter((m) => m.role === 'system');
     assert.equal(systemMsgs.length, 0);
@@ -64,7 +64,10 @@ describe('ContextAssembler — facts only', () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, facts: [makeFact('Water boils at 100°C', 0.9)] },
+      {
+        ragResults: { facts: [makeFact('Water boils at 100°C', 0.9)] },
+        tools: [],
+      },
       [],
     );
     assert.ok(r.ok);
@@ -81,8 +84,8 @@ describe('ContextAssembler — feedback only', () => {
     const r = await assembler.assemble(
       ACTION,
       {
-        ...EMPTY_RETRIEVED,
-        feedback: [makeFact('Your last answer was wrong', 0.8)],
+        ragResults: { feedback: [makeFact('Your last answer was wrong', 0.8)] },
+        tools: [],
       },
       [],
     );
@@ -99,7 +102,10 @@ describe('ContextAssembler — state only', () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, state: [makeFact('User prefers dark mode', 0.85)] },
+      {
+        ragResults: { state: [makeFact('User prefers dark mode', 0.85)] },
+        tools: [],
+      },
       [],
     );
     assert.ok(r.ok);
@@ -115,7 +121,7 @@ describe('ContextAssembler — tools only', () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, tools: [makeTool('search', 'Search the web')] },
+      { ragResults: {}, tools: [makeTool('search', 'Search the web')] },
       [],
     );
     assert.ok(r.ok);
@@ -137,9 +143,11 @@ describe('ContextAssembler — all sections', () => {
     const r = await assembler.assemble(
       ACTION,
       {
-        facts: [makeFact('Fact A', 0.9)],
-        feedback: [makeFact('Feedback B', 0.8)],
-        state: [makeFact('State C', 0.7)],
+        ragResults: {
+          facts: [makeFact('Fact A', 0.9)],
+          feedback: [makeFact('Feedback B', 0.8)],
+          state: [makeFact('State C', 0.7)],
+        },
         tools: [makeTool('calculator', 'Perform calculations')],
       },
       [],
@@ -165,7 +173,7 @@ describe('ContextAssembler — all sections', () => {
 describe('ContextAssembler — tool results', () => {
   it('one ToolCallRecord → one role:tool message', async () => {
     const assembler = new ContextAssembler();
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, [
+    const r = await assembler.assemble(ACTION, EMPTY, [
       makeToolRecord('search', 'found 10 results'),
     ]);
     assert.ok(r.ok);
@@ -176,7 +184,7 @@ describe('ContextAssembler — tool results', () => {
 
   it('two ToolCallRecords → two tool messages in order', async () => {
     const assembler = new ContextAssembler();
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, [
+    const r = await assembler.assemble(ACTION, EMPTY, [
       makeToolRecord('search', 'result A'),
       makeToolRecord('calculate', 'result B'),
     ]);
@@ -198,12 +206,14 @@ describe('ContextAssembler — sort by score', () => {
     const r = await assembler.assemble(
       ACTION,
       {
-        ...EMPTY_RETRIEVED,
-        facts: [
-          makeFact('Low score fact', 0.3),
-          makeFact('High score fact', 0.9),
-          makeFact('Mid score fact', 0.6),
-        ],
+        ragResults: {
+          facts: [
+            makeFact('Low score fact', 0.3),
+            makeFact('High score fact', 0.9),
+            makeFact('Mid score fact', 0.6),
+          ],
+        },
+        tools: [],
       },
       [],
     );
@@ -227,7 +237,7 @@ describe('ContextAssembler — provenance', () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, facts: [makeFact('Some fact', 0.92)] },
+      { ragResults: { facts: [makeFact('Some fact', 0.92)] }, tools: [] },
       [],
     );
     assert.ok(r.ok);
@@ -243,7 +253,7 @@ describe('ContextAssembler — provenance', () => {
     const assembler = new ContextAssembler({ includeProvenance: true });
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, facts: [makeFact('Some fact', 0.92)] },
+      { ragResults: { facts: [makeFact('Some fact', 0.92)] }, tools: [] },
       [],
     );
     assert.ok(r.ok);
@@ -269,9 +279,7 @@ describe('ContextAssembler — snapshot', () => {
     const r = await assembler.assemble(
       { type: 'action', text: 'Calculate 2+2.' },
       {
-        facts: [makeFact('Math is universal', 0.95)],
-        feedback: [],
-        state: [],
+        ragResults: { facts: [makeFact('Math is universal', 0.95)] },
         tools: [makeTool('calc', 'Basic arithmetic')],
       },
       [makeToolRecord('calc', '4')],
@@ -304,9 +312,11 @@ describe('ContextAssembler — token budget', () => {
     const r = await assembler.assemble(
       ACTION,
       {
-        facts: [makeFact('Fact A', 0.9)],
-        feedback: [makeFact('Feedback B', 0.8)],
-        state: [makeFact('State C', 0.7)],
+        ragResults: {
+          facts: [makeFact('Fact A', 0.9)],
+          feedback: [makeFact('Feedback B', 0.8)],
+          state: [makeFact('State C', 0.7)],
+        },
         tools: [makeTool('tool1', 'Does something useful')],
       },
       [],
@@ -326,9 +336,7 @@ describe('ContextAssembler — token budget', () => {
     const r = await assembler.assemble(
       { type: 'action', text: 'Hi' },
       {
-        facts: [],
-        feedback: [],
-        state: [],
+        ragResults: {},
         tools: [
           makeTool(
             'first-tool',
@@ -372,12 +380,12 @@ describe('ContextAssembler — token budget', () => {
     const r = await assembler.assemble(
       { type: 'action', text: 'Hi' },
       {
-        facts: [
-          makeFact('High importance fact score 0.99', 0.99),
-          makeFact('Low importance fact score 0.01', 0.01),
-        ],
-        feedback: [],
-        state: [],
+        ragResults: {
+          facts: [
+            makeFact('High importance fact score 0.99', 0.99),
+            makeFact('Low importance fact score 0.01', 0.01),
+          ],
+        },
         tools: [],
       },
       [],
@@ -401,18 +409,20 @@ describe('ContextAssembler — token budget', () => {
     const r = await assembler.assemble(
       { type: 'action', text: 'Critical action text' },
       {
-        facts: [
-          makeFact('Some fact that is long and will not fit in budget', 0.5),
-        ],
-        feedback: [
-          makeFact(
-            'Some feedback that is long and will not fit in budget',
-            0.5,
-          ),
-        ],
-        state: [
-          makeFact('Some state that is long and will not fit in budget', 0.5),
-        ],
+        ragResults: {
+          facts: [
+            makeFact('Some fact that is long and will not fit in budget', 0.5),
+          ],
+          feedback: [
+            makeFact(
+              'Some feedback that is long and will not fit in budget',
+              0.5,
+            ),
+          ],
+          state: [
+            makeFact('Some state that is long and will not fit in budget', 0.5),
+          ],
+        },
         tools: [
           makeTool('some-tool', 'Some tool description that is very long'),
         ],
@@ -435,7 +445,7 @@ describe('ContextAssembler — AbortSignal', () => {
     const assembler = new ContextAssembler();
     const ctrl = new AbortController();
     ctrl.abort();
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, [], {
+    const r = await assembler.assemble(ACTION, EMPTY, [], {
       signal: ctrl.signal,
     });
     assert.ok(!r.ok);
@@ -452,7 +462,7 @@ describe('ContextAssembler — systemPromptPreamble', () => {
     const assembler = new ContextAssembler({
       systemPromptPreamble: 'You are a precise assistant.',
     });
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, []);
+    const r = await assembler.assemble(ACTION, EMPTY, []);
     assert.ok(r.ok);
     const sys = r.value.find((m) => m.role === 'system');
     assert.ok(sys, 'system message should exist when preamble is set');
@@ -465,7 +475,7 @@ describe('ContextAssembler — systemPromptPreamble', () => {
     });
     const r = await assembler.assemble(
       ACTION,
-      { ...EMPTY_RETRIEVED, facts: [makeFact('Fact here', 0.9)] },
+      { ragResults: { facts: [makeFact('Fact here', 0.9)] }, tools: [] },
       [],
     );
     assert.ok(r.ok);
@@ -483,7 +493,7 @@ describe('ContextAssembler — McpToolResult object content', () => {
   it('object result is JSON.stringify-ed in tool message', async () => {
     const assembler = new ContextAssembler();
     const objectResult = { status: 'ok', value: 42 };
-    const r = await assembler.assemble(ACTION, EMPTY_RETRIEVED, [
+    const r = await assembler.assemble(ACTION, EMPTY, [
       {
         call: { id: 'tool-1', name: 'get-data', arguments: {} },
         result: { content: objectResult },

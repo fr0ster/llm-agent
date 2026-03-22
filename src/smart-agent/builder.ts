@@ -9,7 +9,7 @@
  * Usage:
  *   const handle = await new SmartAgentBuilder()
  *     .withMainLlm(myLlm)
- *     .withRag({ facts: myRag, feedback: myRag, state: myRag })
+ *     .withRag({ facts: myRag, feedback: myRag })
  *     .build();
  */
 
@@ -33,7 +33,6 @@ import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { IRag } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
@@ -139,7 +138,7 @@ export class SmartAgentBuilder {
   private _mainLlm?: ILlm;
   private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
-  private _ragStores?: Partial<SmartAgentRagStores>;
+  private _ragStores: SmartAgentRagStores = {};
   private _mcpClients?: IMcpClient[];
   private _classifier?: ISubpromptClassifier;
   private _assembler?: IContextAssembler;
@@ -188,10 +187,10 @@ export class SmartAgentBuilder {
   }
 
   /**
-   * Set individual RAG stores. Unspecified stores default to InMemoryRag.
-   * Pass the same instance for all three to share a single store.
+   * Set RAG stores. The consumer defines the store keys and instances.
+   * Stores are merged with previously set stores.
    */
-  withRag(stores: Partial<SmartAgentRagStores>): this {
+  withRag(stores: SmartAgentRagStores): this {
     this._ragStores = { ...this._ragStores, ...stores };
     return this;
   }
@@ -484,10 +483,8 @@ export class SmartAgentBuilder {
     // Classifier defaults to main LLM if not provided
     const classifierLlm: ILlm = this._classifierLlm ?? mainLlm;
 
-    // RAG stores default to InMemoryRag if not provided
-    let factsRag: IRag = this._ragStores?.facts ?? new InMemoryRag();
-    let feedbackRag: IRag = this._ragStores?.feedback ?? new InMemoryRag();
-    let stateRag: IRag = this._ragStores?.state ?? new InMemoryRag();
+    // RAG stores — consumer defines which stores to use
+    const ragStores: SmartAgentRagStores = { ...this._ragStores };
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
@@ -513,13 +510,13 @@ export class SmartAgentBuilder {
         onStateChange: cbCfg.onStateChange ?? makeOnStateChange('embedder'),
       });
       circuitBreakers.push(embedderBreaker);
-      factsRag = new FallbackRag(factsRag, new InMemoryRag(), embedderBreaker);
-      feedbackRag = new FallbackRag(
-        feedbackRag,
-        new InMemoryRag(),
-        embedderBreaker,
-      );
-      stateRag = new FallbackRag(stateRag, new InMemoryRag(), embedderBreaker);
+      for (const [key, store] of Object.entries(ragStores)) {
+        ragStores[key] = new FallbackRag(
+          store,
+          new InMemoryRag(),
+          embedderBreaker,
+        );
+      }
     }
 
     // ---- MCP clients + tool vectorization --------------------------------
@@ -562,14 +559,17 @@ export class SmartAgentBuilder {
             durationMs: 0,
           });
 
-          // Vectorize tools into factsRag for RAG-based tool selection
-          const toolsResult = await adapter.listTools();
-          if (toolsResult.ok) {
-            for (const t of toolsResult.value) {
-              await factsRag.upsert(
-                `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
-                { id: `tool:${t.name}` },
-              );
+          // Vectorize tools into the first available RAG store
+          const toolStore = Object.values(ragStores)[0];
+          if (toolStore) {
+            const toolsResult = await adapter.listTools();
+            if (toolsResult.ok) {
+              for (const t of toolsResult.value) {
+                await toolStore.upsert(
+                  `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
+                  { id: `tool:${t.name}` },
+                );
+              }
             }
           }
 
@@ -639,11 +639,12 @@ export class SmartAgentBuilder {
     }
 
     // ---- Skill vectorization (optional) ------------------------------------
-    if (this._skillManager) {
+    const skillStore = Object.values(ragStores)[0];
+    if (this._skillManager && skillStore) {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
-          await factsRag.upsert(`Skill: ${s.name}\n${s.description}`, {
+          await skillStore.upsert(`Skill: ${s.name}\n${s.description}`, {
             id: `skill:${s.name}`,
           });
         }
@@ -675,7 +676,7 @@ export class SmartAgentBuilder {
         mainLlm: wrappedMainLlm,
         helperLlm: this._helperLlm,
         mcpClients,
-        ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
+        ragStores,
         classifier,
         assembler,
         ...(log ? { logger: log } : {}),
@@ -719,7 +720,7 @@ export class SmartAgentBuilder {
         for (const fn of closeFns) await fn();
       },
       circuitBreakers,
-      ragStores: { facts: factsRag, feedback: feedbackRag, state: stateRag },
+      ragStores,
     };
   }
 }

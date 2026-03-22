@@ -52,9 +52,7 @@ export class AssembleHandler implements IStageHandler {
     );
 
     const retrieved = {
-      facts: ctx.ragResults.facts,
-      feedback: ctx.ragResults.feedback,
-      state: ctx.ragResults.state,
+      ragResults: ctx.ragResults,
       tools: selectedMcpTools as McpTool[],
     };
 

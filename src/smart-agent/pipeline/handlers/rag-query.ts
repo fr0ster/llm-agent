@@ -8,7 +8,7 @@
  *
  * | Field   | Type   | Default  | Description                          |
  * |---------|--------|----------|--------------------------------------|
- * | `store` | string | required | Which store: `'facts'`, `'feedback'`, `'state'` |
+ * | `store` | string | required | Store key (must exist in `ctx.ragStores`) |
  * | `k`     | number | from ctx | Number of results to retrieve        |
  *
  * ## Parallel safety
@@ -28,13 +28,13 @@ export class RagQueryHandler implements IStageHandler {
     span: ISpan,
   ): Promise<boolean> {
     const storeName = config.store as string;
-    if (!storeName || !['facts', 'feedback', 'state'].includes(storeName)) {
+    if (!storeName || !ctx.ragStores[storeName]) {
       span.setAttribute('error', `Invalid store: ${storeName}`);
       return true; // non-fatal, skip
     }
 
     const k = (config.k as number) ?? ctx.config.ragQueryK ?? 10;
-    const store = ctx.ragStores[storeName as keyof typeof ctx.ragStores];
+    const store = ctx.ragStores[storeName];
 
     span.setAttribute('store', storeName);
     span.setAttribute('k', k);
@@ -47,7 +47,7 @@ export class RagQueryHandler implements IStageHandler {
     });
 
     if (result.ok) {
-      ctx.ragResults[storeName as keyof typeof ctx.ragResults] = result.value;
+      ctx.ragResults[storeName] = result.value;
       span.setAttribute('results', result.value.length);
 
       // Log RAG results with scores for diagnostics
