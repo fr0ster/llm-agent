@@ -7,6 +7,58 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [3.0.0] — 2026-03-22
+
+### Breaking Changes
+
+- **`SmartAgentRagStores` is now a generic type alias** — replaced the fixed `{ facts: IRag; feedback: IRag; state: IRag }` interface with `Record<K, IRag>`. The library no longer dictates store names — consumers define their own key union type for type safety (e.g. `SmartAgentRagStores<'facts' | 'tools' | 'feedback'>`). Existing code that passes `{ facts, feedback, state }` continues to compile.
+
+- **`IContextAssembler.assemble()` signature changed** — the `retrieved` parameter changed from `{ facts: RagResult[]; feedback: RagResult[]; state: RagResult[]; tools: McpTool[] }` to `{ ragResults: Record<string, RagResult[]>; tools: McpTool[] }`. Custom `IContextAssembler` implementations must be updated.
+
+- **`IContextAssembler.assemble()` history parameter widened** — `history` now accepts `HistoryEntry[]` (union of `Message | ToolCallRecord`) instead of `Message[]`. The built-in `ContextAssembler` automatically converts `ToolCallRecord` items to `role: 'tool'` messages.
+
+- **`PipelineContext.ragResults` type changed** — from fixed `{ facts; feedback; state }` to `Record<string, RagResult[]>`. Pipeline handlers that destructure specific store names should use bracket access with fallback (e.g. `ctx.ragResults['facts'] ?? []`).
+
+- **`PipelineConfig.rag` type changed** — from `{ facts?; feedback?; state? }` to `Record<string, PipelineRagStoreConfig>`. Existing YAML configs with `facts`/`feedback`/`state` keys still work.
+
+- **`SmartAgentBuilder` no longer creates default RAG stores** — if no stores are passed via `withRag()`, no RAG stores are created. Previously, three `InMemoryRag` instances were created automatically.
+
+### Added
+
+- **`HistoryEntry` type** — exported from `interfaces/assembler.ts`, union of `Message | ToolCallRecord`.
+- **`SmartAgentRagStores` type export** — now exported from the public API (`src/index.ts`).
+- **`ContextAssemblerConfig.sectionHeaders`** — optional `Record<string, string>` mapping store keys to display headers (defaults: `facts` → "Known Facts", `feedback` → "Feedback", `state` → "Current State"). Unknown keys are title-cased automatically.
+- **`ToolCallRecord` handling in `ContextAssembler`** — tool call records in history are converted to `{ role: 'tool', content: '<name>: <result>' }` messages, with object results JSON-stringified.
+
+### Fixed
+
+- **`LlmClassifier` now propagates LLM error codes** — previously hardcoded `'LLM_ERROR'` for all LLM failures, now preserves the original error code (e.g. `'ABORTED'`).
+- **RAG upsert store resolution** — subprompt type `'fact'` now resolves to store key `'facts'` via fallback (`type` → `type + 's'`), maintaining backward compatibility with the classifier's subprompt types.
+
+### Migration guide
+
+```typescript
+// Before (2.x)
+const assembler: IContextAssembler = {
+  assemble(action, retrieved, history) {
+    const { facts, feedback, state, tools } = retrieved;
+    // ...
+  }
+};
+
+// After (3.x)
+const assembler: IContextAssembler = {
+  assemble(action, retrieved, history) {
+    const { ragResults, tools } = retrieved;
+    const facts = ragResults['facts'] ?? [];
+    const feedback = ragResults['feedback'] ?? [];
+    // ...
+  }
+};
+```
+
+---
+
 ## [2.14.1] — 2026-03-20
 
 ### Changed
