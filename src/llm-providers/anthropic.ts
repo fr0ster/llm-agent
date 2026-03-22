@@ -76,6 +76,11 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     );
   }
 
+  async getModels(): Promise<string[]> {
+    const response = await this.client.get('/models');
+    return (response.data.data as Array<{ id: string }>).map((m) => m.id);
+  }
+
   /**
    * Format messages for Anthropic API
    */

@@ -50,7 +50,10 @@ export {
   type TransportType,
 } from './mcp/client.js';
 // Adapters
-export { LlmAdapter } from './smart-agent/adapters/llm-adapter.js';
+export {
+  LlmAdapter,
+  type LlmAdapterProviderInfo,
+} from './smart-agent/adapters/llm-adapter.js';
 export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 // Builder & Providers
 export {

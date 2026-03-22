@@ -148,6 +148,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
   }
 
+  async getModels(): Promise<string[]> {
+    // SAP AI Core orchestration service does not expose a list-models endpoint.
+    // Return the configured model so the health check can verify config validity.
+    return [this.model];
+  }
+
   /**
    * Create an OrchestrationClient with the given tools configuration.
    * Tools are expected in OpenAI function format (already converted by the agent layer).

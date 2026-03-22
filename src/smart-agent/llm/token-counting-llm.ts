@@ -85,6 +85,13 @@ export class TokenCountingLlm implements ILlm {
     }
   }
 
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, LlmError>> {
+    if (!this.inner.healthCheck) {
+      return { ok: true, value: true };
+    }
+    return this.inner.healthCheck(options);
+  }
+
   /** Returns a snapshot of accumulated usage. */
   getUsage(): TokenUsage {
     return { ...this.usage };

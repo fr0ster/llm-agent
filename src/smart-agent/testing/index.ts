@@ -124,6 +124,13 @@ export function makeLlm(
         },
       };
     },
+    async healthCheck(): Promise<Result<boolean, LlmError>> {
+      const next = queue[0];
+      if (next instanceof Error) {
+        return { ok: false, error: new LlmError(next.message) };
+      }
+      return { ok: true, value: true };
+    },
   };
 }
 
