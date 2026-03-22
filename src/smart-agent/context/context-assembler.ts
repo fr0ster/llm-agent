@@ -1,5 +1,8 @@
 import type { Message } from '../../types.js';
-import type { IContextAssembler } from '../interfaces/assembler.js';
+import type {
+  HistoryEntry,
+  IContextAssembler,
+} from '../interfaces/assembler.js';
 import {
   AssemblerError,
   type CallOptions,
@@ -7,6 +10,7 @@ import {
   type RagResult,
   type Result,
   type Subprompt,
+  type ToolCallRecord,
 } from '../interfaces/types.js';
 
 // ---------------------------------------------------------------------------
@@ -53,6 +57,16 @@ const DEFAULT_SECTION_HEADERS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 // Module-private helpers
 // ---------------------------------------------------------------------------
+
+/** Type guard: ToolCallRecord has `call` and `result`, Message has `role`. */
+function isToolCallRecord(item: unknown): item is ToolCallRecord {
+  return (
+    typeof item === 'object' &&
+    item !== null &&
+    'call' in item &&
+    'result' in item
+  );
+}
 
 /** Approximate token count: ceil(text.length / 4) */
 function estimateTokens(text: string): number {
@@ -194,7 +208,7 @@ export class ContextAssembler implements IContextAssembler {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
     },
-    history: Message[],
+    history: HistoryEntry[],
     options?: CallOptions,
   ): Promise<Result<Message[], AssemblerError>> {
     try {
@@ -245,11 +259,29 @@ export class ContextAssembler implements IContextAssembler {
         messages.push({ role: 'system', content: parts.join('\n\n') });
       }
 
-      if (history.length > 0) {
-        messages.push(...history.filter((m) => m.role !== 'system'));
+      // Separate regular messages from tool call records
+      const regularMessages: Message[] = [];
+      const toolMessages: Message[] = [];
+
+      for (const item of history) {
+        if (isToolCallRecord(item)) {
+          const raw = item.result.content;
+          const text = typeof raw === 'string' ? raw : JSON.stringify(raw);
+          toolMessages.push({
+            role: 'tool',
+            content: `${item.call.name}: ${text}`,
+          });
+        } else if (item.role !== 'system') {
+          regularMessages.push(item);
+        }
+      }
+
+      if (regularMessages.length > 0) {
+        messages.push(...regularMessages);
       } else {
         messages.push({ role: 'user', content: action.text });
       }
+      messages.push(...toolMessages);
 
       return { ok: true, value: messages };
     } catch (err) {

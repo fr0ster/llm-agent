@@ -6,7 +6,10 @@ import type {
   RagResult,
   Result,
   Subprompt,
+  ToolCallRecord,
 } from './types.js';
+
+export type HistoryEntry = Message | ToolCallRecord;
 
 export interface IContextAssembler {
   assemble(
@@ -15,7 +18,7 @@ export interface IContextAssembler {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
     },
-    history: Message[],
+    history: HistoryEntry[],
     options?: CallOptions,
   ): Promise<Result<Message[], AssemblerError>>;
 }
