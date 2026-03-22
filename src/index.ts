@@ -56,6 +56,7 @@ export {
 } from './smart-agent/adapters/llm-adapter.js';
 export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 // Builder & Providers
+export type { SmartAgentRagStores } from './smart-agent/agent.js';
 export {
   type BuilderMcpConfig,
   type BuilderPromptsConfig,

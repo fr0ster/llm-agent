@@ -4,11 +4,11 @@
  * Reads: `ctx.subprompts`, `ctx.ragStores`
  * Writes: (side effect — data stored in RAG)
  *
- * Upserts subprompts of type `fact`, `state`, and `feedback` to their
- * respective RAG stores. Skipped when `ragUpsertEnabled` is false.
+ * Upserts subprompts to their matching RAG store. A subprompt's `type`
+ * is matched to a store key directly (e.g. type `feedback` → store `feedback`).
+ * Skipped when `ragUpsertEnabled` is false.
  */
 
-import type { IRag } from '../../interfaces/rag.js';
 import type { RagMetadata } from '../../interfaces/types.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
@@ -25,9 +25,12 @@ export class RagUpsertHandler implements IStageHandler {
       return true;
     }
 
+    // Match subprompt types to store keys (try exact match, then type + 's')
+    const resolveStore = (type: string) =>
+      ctx.ragStores[type] ?? ctx.ragStores[`${type}s`];
     const others = ctx.subprompts.filter(
       (sp) =>
-        sp.type === 'fact' || sp.type === 'state' || sp.type === 'feedback',
+        sp.type !== 'action' && sp.type !== 'chat' && resolveStore(sp.type),
     );
 
     if (others.length === 0) {
@@ -35,17 +38,11 @@ export class RagUpsertHandler implements IStageHandler {
       return true;
     }
 
-    const storeMap = new Map<string, IRag>([
-      ['fact', ctx.ragStores.facts],
-      ['feedback', ctx.ragStores.feedback],
-      ['state', ctx.ragStores.state],
-    ]);
-
     const metadata = this._buildMetadata(ctx);
 
     await Promise.allSettled(
       others.map(async (sp) => {
-        const store = storeMap.get(sp.type);
+        const store = resolveStore(sp.type);
         if (store) await store.upsert(sp.text, metadata, ctx.options);
       }),
     );

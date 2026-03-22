@@ -8,7 +8,7 @@
  *
  * Stages must write to non-overlapping fields. For parallel execution, this
  * means each `rag-query` handler writes to its own store slot
- * (`ragResults.facts`, `.feedback`, `.state`), avoiding data races.
+ * in `ragResults`, avoiding data races.
  *
  * ## Streaming
  *
@@ -99,11 +99,7 @@ export interface PipelineContext {
   /** Text used for RAG queries (may be translated/expanded). */
   ragText: string;
   /** RAG query results per store. */
-  ragResults: {
-    facts: RagResult[];
-    feedback: RagResult[];
-    state: RagResult[];
-  };
+  ragResults: Record<string, RagResult[]>;
   /** All MCP tools from all connected servers. */
   mcpTools: McpTool[];
   /** Tools selected for the current request (MCP + external). */

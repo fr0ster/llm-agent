@@ -29,14 +29,26 @@ export interface ContextAssemblerConfig {
    * Optional custom reasoning instruction.
    */
   reasoningInstruction?: string;
+  /**
+   * Display name mapping for RAG store keys → section headers.
+   * Default: `{ facts: 'Known Facts', feedback: 'Feedback', state: 'Current State' }`.
+   * Unknown keys are title-cased automatically.
+   */
+  sectionHeaders?: Record<string, string>;
 }
 
 export const DEFAULT_REASONING_INSTRUCTION = `IMPORTANT: Always start your response with a brief <reasoning> block.
-Explain: 
+Explain:
 1. Which tools you selected and why.
 2. How you interpreted the retrieved context.
 3. Your step-by-step strategy for the current turn.
 The reasoning block must be visible to the user and placed at the very beginning.`;
+
+const DEFAULT_SECTION_HEADERS: Record<string, string> = {
+  facts: 'Known Facts',
+  feedback: 'Feedback',
+  state: 'Current State',
+};
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -61,33 +73,28 @@ function buildSection(header: string, entries: string[]): string {
   return `## ${header}\n${entries.join('\n')}`;
 }
 
+/** Derive a display header from a store key (e.g. 'my_store' → 'My Store') */
+function titleCase(key: string): string {
+  return key.replace(/[_-]/g, ' ').replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 /** Combine all sections into system message content */
 function buildSystemContent(
-  facts: RagResult[],
-  feedback: RagResult[],
-  state: RagResult[],
+  ragResults: Record<string, RagResult[]>,
   tools: McpTool[],
   provenance: boolean,
+  sectionHeaders: Record<string, string>,
 ): string {
   const sections: string[] = [];
 
-  const factsSection = buildSection(
-    'Known Facts',
-    facts.map((r) => formatRagEntry(r, provenance)),
-  );
-  if (factsSection) sections.push(factsSection);
-
-  const feedbackSection = buildSection(
-    'Feedback',
-    feedback.map((r) => formatRagEntry(r, provenance)),
-  );
-  if (feedbackSection) sections.push(feedbackSection);
-
-  const stateSection = buildSection(
-    'Current State',
-    state.map((r) => formatRagEntry(r, provenance)),
-  );
-  if (stateSection) sections.push(stateSection);
+  for (const [key, results] of Object.entries(ragResults)) {
+    const header = sectionHeaders[key] ?? titleCase(key);
+    const section = buildSection(
+      header,
+      results.map((r) => formatRagEntry(r, provenance)),
+    );
+    if (section) sections.push(section);
+  }
 
   const toolsSection = buildSection(
     'Available Tools',
@@ -104,63 +111,57 @@ function buildSystemContent(
 
 /**
  * Drop entries until total token count fits within budget.
+ * Trims stores in reverse insertion order, then tools last.
  */
 function applyTokenBudget(
-  facts: RagResult[],
-  feedback: RagResult[],
-  state: RagResult[],
+  ragResults: Record<string, RagResult[]>,
   tools: McpTool[],
   actionTokens: number,
   maxTokens: number,
   provenance: boolean,
+  sectionHeaders: Record<string, string>,
 ): {
-  facts: RagResult[];
-  feedback: RagResult[];
-  state: RagResult[];
+  ragResults: Record<string, RagResult[]>;
   tools: McpTool[];
 } {
-  let mutableFacts = [...facts];
-  let mutableFeedback = [...feedback];
-  let mutableState = [...state];
+  const mutableResults: Record<string, RagResult[]> = {};
+  for (const [key, arr] of Object.entries(ragResults)) {
+    mutableResults[key] = [...arr];
+  }
   let mutableTools = [...tools];
+
+  const storeKeys = Object.keys(mutableResults);
 
   const totalTokens = (): number => {
     const content = buildSystemContent(
-      mutableFacts,
-      mutableFeedback,
-      mutableState,
+      mutableResults,
       mutableTools,
       provenance,
+      sectionHeaders,
     );
     return actionTokens + estimateTokens(content);
   };
 
   while (totalTokens() > maxTokens) {
+    // First trim tools
     if (mutableTools.length > 0) {
       mutableTools = mutableTools.slice(0, -1);
       continue;
     }
-    if (mutableState.length > 0) {
-      mutableState = mutableState.slice(0, -1);
-      continue;
+    // Then trim stores in reverse order
+    let trimmed = false;
+    for (let i = storeKeys.length - 1; i >= 0; i--) {
+      const key = storeKeys[i];
+      if (mutableResults[key].length > 0) {
+        mutableResults[key] = mutableResults[key].slice(0, -1);
+        trimmed = true;
+        break;
+      }
     }
-    if (mutableFeedback.length > 0) {
-      mutableFeedback = mutableFeedback.slice(0, -1);
-      continue;
-    }
-    if (mutableFacts.length > 0) {
-      mutableFacts = mutableFacts.slice(0, -1);
-      continue;
-    }
-    break;
+    if (!trimmed) break;
   }
 
-  return {
-    facts: mutableFacts,
-    feedback: mutableFeedback,
-    state: mutableState,
-    tools: mutableTools,
-  };
+  return { ragResults: mutableResults, tools: mutableTools };
 }
 
 // ---------------------------------------------------------------------------
@@ -173,6 +174,7 @@ export class ContextAssembler implements IContextAssembler {
   private readonly includeProvenance: boolean;
   private readonly showReasoning: boolean;
   private readonly reasoningInstruction: string | undefined;
+  private readonly sectionHeaders: Record<string, string>;
 
   constructor(config?: ContextAssemblerConfig) {
     this.maxTokens = config?.maxTokens;
@@ -180,14 +182,16 @@ export class ContextAssembler implements IContextAssembler {
     this.includeProvenance = config?.includeProvenance ?? false;
     this.showReasoning = config?.showReasoning ?? false;
     this.reasoningInstruction = config?.reasoningInstruction;
+    this.sectionHeaders = {
+      ...DEFAULT_SECTION_HEADERS,
+      ...config?.sectionHeaders,
+    };
   }
 
   async assemble(
     action: Subprompt,
     retrieved: {
-      facts: RagResult[];
-      feedback: RagResult[];
-      state: RagResult[];
+      ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
     },
     history: Message[],
@@ -198,44 +202,34 @@ export class ContextAssembler implements IContextAssembler {
         return { ok: false, error: new AssemblerError('Aborted', 'ABORTED') };
       }
 
-      const sortedFacts = [...retrieved.facts].sort(
-        (a, b) => b.score - a.score,
-      );
-      const sortedFeedback = [...retrieved.feedback].sort(
-        (a, b) => b.score - a.score,
-      );
-      const sortedState = [...retrieved.state].sort(
-        (a, b) => b.score - a.score,
-      );
+      // Sort all RAG results by score descending
+      const sortedResults: Record<string, RagResult[]> = {};
+      for (const [key, results] of Object.entries(retrieved.ragResults)) {
+        sortedResults[key] = [...results].sort((a, b) => b.score - a.score);
+      }
       const tools = [...retrieved.tools];
 
-      let finalFacts = sortedFacts;
-      let finalFeedback = sortedFeedback;
-      let finalState = sortedState;
+      let finalResults = sortedResults;
       let finalTools = tools;
 
       if (this.maxTokens !== undefined) {
         const budgeted = applyTokenBudget(
-          sortedFacts,
-          sortedFeedback,
-          sortedState,
+          sortedResults,
           tools,
           estimateTokens(action.text),
           this.maxTokens,
           this.includeProvenance,
+          this.sectionHeaders,
         );
-        finalFacts = budgeted.facts;
-        finalFeedback = budgeted.feedback;
-        finalState = budgeted.state;
+        finalResults = budgeted.ragResults;
         finalTools = budgeted.tools;
       }
 
       const systemContent = buildSystemContent(
-        finalFacts,
-        finalFeedback,
-        finalState,
+        finalResults,
         finalTools,
         this.includeProvenance,
+        this.sectionHeaders,
       );
       const messages: Message[] = [];
 

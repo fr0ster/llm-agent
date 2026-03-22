@@ -346,14 +346,11 @@ export class SmartServer {
       extraFactories: mergedEmbedderFactories,
     };
 
-    const stores: Partial<SmartAgentRagStores> = {};
+    const stores: SmartAgentRagStores = {};
     if (pipeline?.rag) {
-      if (pipeline.rag.facts)
-        stores.facts = makeRag(pipeline.rag.facts, ragOptions);
-      if (pipeline.rag.feedback)
-        stores.feedback = makeRag(pipeline.rag.feedback, ragOptions);
-      if (pipeline.rag.state)
-        stores.state = makeRag(pipeline.rag.state, ragOptions);
+      for (const [key, ragCfg] of Object.entries(pipeline.rag)) {
+        if (ragCfg) stores[key] = makeRag(ragCfg, ragOptions);
+      }
     } else if (this.cfg.rag) {
       const ragCfg = this.cfg.rag;
       const rag = makeRag(ragCfg, ragOptions);

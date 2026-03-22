@@ -61,14 +61,8 @@ export interface PipelineConfig {
     /** LLM used by the intent classifier. If absent, main config is reused at 0.1 temp. */
     classifier?: PipelineLlmProviderConfig;
   };
-  rag?: {
-    /** RAG store for tool descriptions and domain facts. */
-    facts?: PipelineRagStoreConfig;
-    /** RAG store for conversation / user feedback. */
-    feedback?: PipelineRagStoreConfig;
-    /** RAG store for session state. */
-    state?: PipelineRagStoreConfig;
-  };
+  /** RAG stores keyed by consumer-defined names. */
+  rag?: Record<string, PipelineRagStoreConfig>;
   /** One or more MCP servers to connect to simultaneously. */
   mcp?: Array<{
     type: 'http' | 'stdio';
