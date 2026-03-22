@@ -69,7 +69,12 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(new LlmAdapter(agent));
+      return new TokenCountingLlm(
+        new LlmAdapter(agent, {
+          model: provider.model,
+          getModels: () => provider.getModels(),
+        }),
+      );
     }
     case 'openai': {
       const provider = new OpenAIProvider({
@@ -82,7 +87,12 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(new LlmAdapter(agent));
+      return new TokenCountingLlm(
+        new LlmAdapter(agent, {
+          model: provider.model,
+          getModels: () => provider.getModels(),
+        }),
+      );
     }
     case 'anthropic': {
       const provider = new AnthropicProvider({
@@ -95,7 +105,12 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(new LlmAdapter(agent));
+      return new TokenCountingLlm(
+        new LlmAdapter(agent, {
+          model: provider.model,
+          getModels: () => provider.getModels(),
+        }),
+      );
     }
     case 'sap-ai-sdk': {
       const provider = new SapCoreAIProvider({
@@ -110,7 +125,12 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(new LlmAdapter(agent));
+      return new TokenCountingLlm(
+        new LlmAdapter(agent, {
+          model: provider.model,
+          getModels: () => provider.getModels(),
+        }),
+      );
     }
     default: {
       const _exhaustive: never = cfg.provider;

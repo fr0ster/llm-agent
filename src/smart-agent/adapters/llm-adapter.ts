@@ -238,8 +238,16 @@ function parseStreamChunk(
 // LlmAdapter
 // ---------------------------------------------------------------------------
 
+export interface LlmAdapterProviderInfo {
+  model: string;
+  getModels?(): Promise<string[]>;
+}
+
 export class LlmAdapter implements ILlm {
-  constructor(private readonly agent: BaseAgentLlmBridge) {}
+  constructor(
+    private readonly agent: BaseAgentLlmBridge,
+    private readonly provider?: LlmAdapterProviderInfo,
+  ) {}
 
   async chat(
     messages: Message[],
@@ -314,6 +322,31 @@ export class LlmAdapter implements ILlm {
     } catch (err) {
       if (err instanceof LlmError) yield { ok: false, error: err };
       else yield { ok: false, error: new LlmError(String(err)) };
+    }
+  }
+
+  async healthCheck(options?: CallOptions): Promise<Result<boolean, LlmError>> {
+    if (!this.provider?.getModels) {
+      return { ok: true, value: true };
+    }
+    try {
+      const modelsPromise = this.provider.getModels();
+      const models = options?.signal
+        ? await withAbort(
+            modelsPromise,
+            options.signal,
+            () => new LlmError('Aborted', 'ABORTED'),
+          )
+        : await modelsPromise;
+      const model = this.provider.model;
+      const found = models.some((m) => m === model || m.includes(model));
+      return { ok: true, value: found };
+    } catch (err) {
+      if (err instanceof LlmError) return { ok: false, error: err };
+      return {
+        ok: false,
+        error: new LlmError(String(err), 'HEALTH_CHECK_FAILED'),
+      };
     }
   }
 }

@@ -215,12 +215,18 @@ export class SmartAgent {
       mcp: [] as { name: string; ok: boolean; error?: string }[],
     };
     try {
-      const llmRes = await this.deps.mainLlm.chat(
-        [{ role: 'user' as const, content: 'ping' }],
-        [],
-        healthOptions,
-      );
-      results.llm = llmRes.ok;
+      if (this.deps.mainLlm.healthCheck) {
+        const hc = await this.deps.mainLlm.healthCheck(healthOptions);
+        results.llm = hc.ok && hc.value;
+      } else {
+        // Fallback for ILlm implementations without healthCheck
+        const llmRes = await this.deps.mainLlm.chat(
+          [{ role: 'user' as const, content: 'ping' }],
+          [],
+          healthOptions,
+        );
+        results.llm = llmRes.ok;
+      }
     } catch {
       results.llm = false;
     }

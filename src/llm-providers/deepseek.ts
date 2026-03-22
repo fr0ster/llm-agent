@@ -110,6 +110,11 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
     }
   }
 
+  async getModels(): Promise<string[]> {
+    const response = await this.client.get('/models');
+    return (response.data.data as Array<{ id: string }>).map((m) => m.id);
+  }
+
   /**
    * Format messages with strict protocol enforcement.
    * Drops orphaned tool messages and ensures correct content types.
