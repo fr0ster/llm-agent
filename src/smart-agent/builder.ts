@@ -31,6 +31,7 @@ import {
 } from './context/context-assembler.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
+import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { ISkillManager } from './interfaces/skill.js';
@@ -158,6 +159,7 @@ export class SmartAgentBuilder {
   private _pluginLoader?: IPluginLoader;
   private _skillManager?: ISkillManager;
   private _pipelineDefinition?: StructuredPipelineDefinition;
+  private _clientAdapters: IClientAdapter[] = [];
   private _customStageHandlers = new Map<string, IStageHandler>();
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
@@ -279,6 +281,12 @@ export class SmartAgentBuilder {
   /** Set a skill manager for discovering and loading agent skills. */
   withSkillManager(manager: ISkillManager): this {
     this._skillManager = manager;
+    return this;
+  }
+
+  /** Register a client adapter for auto-detecting prompt-based clients. */
+  withClientAdapter(adapter: IClientAdapter): this {
+    this._clientAdapters.push(adapter);
     return this;
   }
 
@@ -636,6 +644,9 @@ export class SmartAgentBuilder {
       if (plugins.skillManager && !this._skillManager) {
         this._skillManager = plugins.skillManager;
       }
+      if (plugins.clientAdapters.length > 0) {
+        this._clientAdapters.push(...plugins.clientAdapters);
+      }
     }
 
     // ---- Skill vectorization (optional) ------------------------------------
@@ -696,6 +707,9 @@ export class SmartAgentBuilder {
           ? { sessionManager: this._sessionManager }
           : {}),
         ...(this._skillManager ? { skillManager: this._skillManager } : {}),
+        ...(this._clientAdapters.length > 0
+          ? { clientAdapters: this._clientAdapters }
+          : {}),
       },
       agentCfg,
       pipelineExecutor,

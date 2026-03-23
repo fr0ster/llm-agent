@@ -14,6 +14,7 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
+import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
@@ -157,6 +158,8 @@ export interface SmartServerConfig {
   skillManager?: ISkillManager;
   /** Pre-built MCP clients injected via DI. Takes precedence over `mcp` config. */
   mcpClients?: IMcpClient[];
+  /** Client adapters for auto-detecting prompt-based clients (e.g. Cline). */
+  clientAdapters?: IClientAdapter[];
 }
 
 export interface SmartServerHandle {
@@ -368,7 +371,8 @@ export class SmartServer {
       .withMainLlm(mainLlm)
       .withClassifierLlm(classifierLlm)
       .withUsageProvider(getUsage)
-      .withLogger(fileLogger);
+      .withLogger(fileLogger)
+      .withMode(this.cfg.mode ?? 'smart');
 
     if (helperLlm) {
       builder = builder.withHelperLlm(helperLlm);
@@ -412,6 +416,19 @@ export class SmartServer {
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
     if (mcpClients) {
       builder = builder.withMcpClients(mcpClients);
+    }
+
+    // Client adapters (DI > plugin; ClineClientAdapter is always registered as default)
+    const { ClineClientAdapter } = await import(
+      './adapters/cline-client-adapter.js'
+    );
+    const adapterSources = [
+      ...(this.cfg.clientAdapters ?? []),
+      ...plugins.clientAdapters,
+      new ClineClientAdapter(),
+    ];
+    for (const adapter of adapterSources) {
+      builder = builder.withClientAdapter(adapter);
     }
 
     // Structured pipeline (when YAML contains `pipeline.stages`)

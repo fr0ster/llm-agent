@@ -2,9 +2,10 @@ port: 4004
 host: 0.0.0.0
 
 # Request routing mode:
-#   hard        — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
-#   pass        — Transparent proxy. Logs everything but modifies nothing.
-#   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+#   hard   — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
+#   pass   — Transparent proxy. Logs everything but modifies nothing.
+#   smart  — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+# Note: Cline (and other prompt-based clients) are auto-detected via IClientAdapter — no special mode needed.
 mode: smart
 
 # --- Unified Multi-Model Pipeline (Advanced) --------------------------------
