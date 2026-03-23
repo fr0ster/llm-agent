@@ -7,6 +7,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [3.1.0] — 2026-03-23
+
+### Added
+
+- **`IClientAdapter` interface** — pluggable per-request client detection and response wrapping. Registered adapters inspect the system prompt to auto-detect prompt-based clients (e.g. Cline) and wrap the final response in the format the client expects. No manual mode configuration needed.
+- **`ClineClientAdapter`** — built-in adapter that detects Cline by `"You are Cline"` in the system prompt and wraps responses in `<attempt_completion><result>...</result></attempt_completion>` XML.
+- **Plugin support for client adapters** — `PluginExports.clientAdapters` allows plugins to register custom adapters. Accumulated from all plugin sources.
+- **`SmartServerConfig.clientAdapters`** — DI entry point for injecting client adapters programmatically.
+- **`SmartAgentBuilder.withClientAdapter()`** — fluent setter for registering adapters via the builder.
+- **Public API exports** — `IClientAdapter` (type) and `ClineClientAdapter` (class) exported from `@mcp-abap-adt/llm-agent`.
+
+### Removed
+
+- **`mode: 'cline'`** — removed from `SmartServerMode`, `SmartAgentConfig.mode`, and `SmartAgentBuilder.withMode()`. Cline support is now handled automatically via `IClientAdapter`.
+
+### Fixed
+
+- **`shouldRetrieve` gate** — RAG retrieval now triggers for any action with MCP clients or RAG stores, not only SAP-specific contexts.
+- **Pass mode logging** — added `client_request` and `llm_response_pass` log steps in pass-through mode for diagnostics.
+
+---
+
 ## [3.0.0] — 2026-03-22
 
 ### Breaking Changes
