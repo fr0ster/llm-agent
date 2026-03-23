@@ -4,6 +4,7 @@ import { NoopToolCache } from './cache/noop-tool-cache.js';
 import type { IToolCache } from './cache/types.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
+import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IRag } from './interfaces/rag.js';
@@ -81,6 +82,7 @@ export interface SmartAgentDeps {
   outputValidator?: IOutputValidator;
   sessionManager?: ISessionManager;
   skillManager?: ISkillManager;
+  clientAdapters?: IClientAdapter[];
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -336,10 +338,26 @@ export class SmartAgent {
     }
 
     const mode = this.config.mode || 'smart';
+
+    // Per-request client adapter detection from system prompt
+    let detectedAdapter: IClientAdapter | undefined;
+    const messages =
+      typeof textOrMessages === 'string' ? undefined : textOrMessages;
+    if (messages && this.deps.clientAdapters?.length) {
+      const systemMsg = messages.find((m) => m.role === 'system');
+      if (systemMsg?.content) {
+        detectedAdapter = this.deps.clientAdapters.find((a) =>
+          a.detect(
+            typeof systemMsg.content === 'string' ? systemMsg.content : '',
+          ),
+        );
+      }
+    }
     const sessionId = options?.sessionId ?? 'default';
     const normalizedExternalTools = normalizeExternalTools(
       options?.externalTools,
     );
+
     const { allowed: externalTools, blocked: blockedExternalTools } =
       this.toolAvailabilityRegistry.filterTools(
         sessionId,
@@ -358,12 +376,26 @@ export class SmartAgent {
           typeof textOrMessages === 'string'
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
+        opts?.sessionLogger?.logStep('client_request', { textOrMessages });
         const stream = this.deps.mainLlm.streamChat(
           messages,
           externalTools,
           opts,
         );
-        for await (const chunk of stream) yield chunk;
+        let passContent = '';
+        const passToolCalls: unknown[] = [];
+        for await (const chunk of stream) {
+          if (chunk.ok) {
+            if (chunk.value.content) passContent += chunk.value.content;
+            if (chunk.value.toolCalls)
+              passToolCalls.push(...chunk.value.toolCalls);
+          }
+          yield chunk;
+        }
+        opts?.sessionLogger?.logStep('llm_response_pass', {
+          content: passContent,
+          toolCalls: passToolCalls.length > 0 ? passToolCalls : undefined,
+        });
         rootSpan.setStatus('ok');
         rootSpan.end();
         return;
@@ -409,10 +441,13 @@ export class SmartAgent {
       // 2. Decide context and tools for the WHOLE request
       const actions = subprompts.filter((sp) => sp.type === 'action');
       const ragMode = this.config.ragRetrievalMode ?? 'auto';
-      const isSapRequired =
-        actions.some((a) => a.context === 'sap-abap') || mode === 'hard';
+      const hasActions = actions.length > 0;
+      const hasMcpClients = this.deps.mcpClients.length > 0;
+      const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
       const shouldRetrieve =
-        ragMode === 'always' || (ragMode === 'auto' && isSapRequired);
+        ragMode === 'always' ||
+        mode === 'hard' ||
+        (ragMode === 'auto' && hasActions && (hasMcpClients || hasRagStores));
 
       let finalTools: LlmTool[] = [];
       let retrieved: {
@@ -601,6 +636,7 @@ export class SmartAgent {
         sessionId,
         mode === 'hard' ? [] : externalTools,
         finalTools,
+        detectedAdapter,
       );
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
@@ -715,6 +751,7 @@ export class SmartAgent {
     sessionId: string,
     externalTools: LlmTool[],
     activeTools: LlmTool[],
+    clientAdapter?: IClientAdapter,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
     const toolLoopSpan = this.tracer.startSpan('smart_agent.tool_loop', {
       parent: parentSpan,
@@ -815,7 +852,10 @@ export class SmartAgent {
         const chunk = chunkResult.value;
         if (chunk.content) {
           content += chunk.content;
-          yield { ok: true, value: { content: chunk.content } };
+          // When a client adapter is detected, buffer content — it will be wrapped after the stream completes
+          if (!clientAdapter) {
+            yield { ok: true, value: { content: chunk.content } };
+          }
         }
         if (chunk.toolCalls) {
           const externalDeltas = chunk.toolCalls.filter((tc) =>
@@ -899,6 +939,15 @@ export class SmartAgent {
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
+        // When a client adapter matched, yield buffered content wrapped via adapter
+        if (clientAdapter && content) {
+          yield {
+            ok: true,
+            value: {
+              content: clientAdapter.wrapResponse(content),
+            },
+          };
+        }
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();

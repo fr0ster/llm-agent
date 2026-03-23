@@ -50,6 +50,7 @@ export {
   type TransportType,
 } from './mcp/client.js';
 // Adapters
+export { ClineClientAdapter } from './smart-agent/adapters/cline-client-adapter.js';
 export {
   LlmAdapter,
   type LlmAdapterProviderInfo,
@@ -85,6 +86,7 @@ export type {
   HealthStatus,
 } from './smart-agent/health/types.js';
 // Smart Agent interfaces
+export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
 export type { ILlm } from './smart-agent/interfaces/llm.js';
 export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
 // Embedder & RAG

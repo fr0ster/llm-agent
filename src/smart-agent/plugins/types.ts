@@ -55,6 +55,7 @@
  * Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
  */
 
+import type { IClientAdapter } from '../interfaces/client-adapter.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { EmbedderFactory } from '../interfaces/rag.js';
 import type { ISkillManager } from '../interfaces/skill.js';
@@ -88,6 +89,9 @@ export interface PluginExports {
 
   /** Pre-built MCP clients (accumulated from all plugins). */
   mcpClients?: IMcpClient[];
+
+  /** Client adapters for auto-detecting prompt-based clients (accumulated). */
+  clientAdapters?: IClientAdapter[];
 }
 
 /**
@@ -102,6 +106,7 @@ export interface LoadedPlugins {
   outputValidator?: IOutputValidator;
   skillManager?: ISkillManager;
   mcpClients: IMcpClient[];
+  clientAdapters: IClientAdapter[];
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
   /** Plugins that failed to load, with error messages. */
@@ -158,6 +163,7 @@ export function emptyLoadedPlugins(): LoadedPlugins {
     stageHandlers: new Map(),
     embedderFactories: {},
     mcpClients: [],
+    clientAdapters: [],
     loadedFiles: [],
     errors: [],
   };
@@ -219,6 +225,11 @@ export function mergePluginExports(
 
   if (mod.mcpClients && Array.isArray(mod.mcpClients)) {
     result.mcpClients.push(...mod.mcpClients);
+    registered = true;
+  }
+
+  if (mod.clientAdapters && Array.isArray(mod.clientAdapters)) {
+    result.clientAdapters.push(...mod.clientAdapters);
     registered = true;
   }
 

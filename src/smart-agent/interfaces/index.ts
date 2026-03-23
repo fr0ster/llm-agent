@@ -15,6 +15,7 @@ export type {
 } from '../validator/types.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
+export type { IClientAdapter } from './client-adapter.js';
 export type { ILlm } from './llm.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
