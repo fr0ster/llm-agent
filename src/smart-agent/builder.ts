@@ -33,9 +33,13 @@ import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
+import type { IModelProvider } from './interfaces/model-provider.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import type { TokenUsage } from './llm/token-counting-llm.js';
+import {
+  type TokenUsage,
+  TokenCountingLlm,
+} from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
 import { PipelineExecutor } from './pipeline/executor.js';
@@ -126,11 +130,22 @@ export interface SmartAgentHandle {
   circuitBreakers: CircuitBreaker[];
   /** RAG stores (for config hot-reload weight updates). */
   ragStores: SmartAgentRagStores;
+  /** Model provider for discovery. Undefined when not available. */
+  modelProvider?: IModelProvider;
 }
 
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
 // ---------------------------------------------------------------------------
+
+function isModelProvider(obj: unknown): obj is IModelProvider {
+  return (
+    obj !== null &&
+    typeof obj === 'object' &&
+    typeof (obj as IModelProvider).getModels === 'function' &&
+    typeof (obj as IModelProvider).getModel === 'function'
+  );
+}
 
 export class SmartAgentBuilder {
   private readonly cfg: SmartAgentBuilderConfig;
@@ -161,6 +176,7 @@ export class SmartAgentBuilder {
   private _pipelineDefinition?: StructuredPipelineDefinition;
   private _clientAdapters: IClientAdapter[] = [];
   private _customStageHandlers = new Map<string, IStageHandler>();
+  private _modelProvider?: IModelProvider;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -173,6 +189,12 @@ export class SmartAgentBuilder {
   /** Set the main LLM used in the tool loop (required). */
   withMainLlm(llm: ILlm): this {
     this._mainLlm = llm;
+    return this;
+  }
+
+  /** Set a model provider for model discovery and metadata. */
+  withModelProvider(provider: IModelProvider): this {
+    this._modelProvider = provider;
     return this;
   }
 
@@ -723,6 +745,16 @@ export class SmartAgentBuilder {
       requests: 0,
     };
 
+    // ---- Model provider auto-detection ------------------------------------
+    let modelProvider: IModelProvider | undefined = this._modelProvider;
+    if (!modelProvider) {
+      const candidate =
+        mainLlm instanceof TokenCountingLlm ? mainLlm.wrappedLlm : mainLlm;
+      if (isModelProvider(candidate)) {
+        modelProvider = candidate;
+      }
+    }
+
     return {
       agent,
       chat: (messages, tools, options) =>
@@ -735,6 +767,7 @@ export class SmartAgentBuilder {
       },
       circuitBreakers,
       ragStores,
+      modelProvider,
     };
   }
 }
