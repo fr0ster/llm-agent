@@ -29,6 +29,7 @@ export interface AgentCallOptions {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
+  model?: string;
 }
 
 export interface BaseAgentLlmBridge {

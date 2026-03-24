@@ -8,6 +8,7 @@ import type {
   Message,
 } from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
+import type { IModelInfo } from '../interfaces/model-provider.js';
 import {
   type CallOptions,
   LlmError,
@@ -240,7 +241,7 @@ function parseStreamChunk(
 
 export interface LlmAdapterProviderInfo {
   model: string;
-  getModels?(): Promise<string[]>;
+  getModels?(): Promise<string[] | IModelInfo[]>;
 }
 
 export class LlmAdapter implements ILlm {
@@ -339,7 +340,12 @@ export class LlmAdapter implements ILlm {
           )
         : await modelsPromise;
       const model = this.provider.model;
-      const found = models.some((m) => m === model || m.includes(model));
+      const found = models.some((m) => {
+        if (typeof m === 'string') {
+          return m === model || m.includes(model);
+        }
+        return m.id === model || m.id.includes(model);
+      });
       return { ok: true, value: found };
     } catch (err) {
       if (err instanceof LlmError) return { ok: false, error: err };
