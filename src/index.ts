@@ -89,6 +89,10 @@ export type {
 export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
 export type { ILlm } from './smart-agent/interfaces/llm.js';
 export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
+export type {
+  IModelInfo,
+  IModelProvider,
+} from './smart-agent/interfaces/model-provider.js';
 // Embedder & RAG
 export type {
   EmbedderFactory,

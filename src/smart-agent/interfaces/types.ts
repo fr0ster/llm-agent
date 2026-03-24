@@ -27,6 +27,8 @@ export interface CallOptions {
   topP?: number;
   stop?: string[];
   stream?: boolean;
+  /** Per-request model override. Affects only the main LLM. */
+  model?: string;
   /** Filter RAG results by namespace or other metadata. */
   ragFilter?: {
     namespace?: string;
