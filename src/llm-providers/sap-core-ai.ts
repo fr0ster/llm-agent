@@ -110,7 +110,6 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       this.log?.debug('Received response from SAP AI SDK', { finishReason });
 
-      this.modelOverride = undefined;
       return {
         content,
         finishReason,
@@ -131,8 +130,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.log?.error('SAP AI SDK API error', { error: message });
-      this.modelOverride = undefined;
       throw new Error(`SAP AI SDK API error: ${message}`);
+    } finally {
+      this.modelOverride = undefined;
     }
   }
 
@@ -153,12 +153,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           raw: chunk,
         };
       }
-      this.modelOverride = undefined;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.log?.error('SAP AI SDK streaming error', { error: message });
-      this.modelOverride = undefined;
       throw new Error(`SAP AI SDK streaming error: ${message}`);
+    } finally {
+      this.modelOverride = undefined;
     }
   }
 
