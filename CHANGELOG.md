@@ -7,6 +7,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [3.2.0] — 2026-03-24
+
+### Added
+
+- **`IModelProvider` interface** — new DI interface for model discovery and metadata. Exposes `getModel()` (current default model name) and `getModels()` (fetch available models from the provider). Companion type `IModelInfo` carries `id` and optional `owned_by`.
+- **Per-request model override** — `CallOptions.model` optional field allows consumers to select a different model per request. Affects only the main LLM; classifier and helper models stay fixed.
+- **`LlmAdapter` implements `IModelProvider`** — the default `ILlm` adapter now also provides model discovery. Options subset extraction makes the `CallOptions` → `AgentCallOptions` type boundary explicit.
+- **`SmartAgentBuilder.withModelProvider()`** — fluent setter for injecting a custom `IModelProvider`. Auto-detection: if not explicitly set, the builder checks whether `mainLlm` (unwrapping `TokenCountingLlm`) implements `IModelProvider` and uses it automatically.
+- **`SmartAgentHandle.modelProvider`** — optional field on the build result, available to consumers and `SmartServer`.
+- **`TokenCountingLlm.wrappedLlm`** — accessor to unwrap the inner `ILlm` for auto-detection.
+- **Dynamic `/v1/models` endpoint** — `SmartServer` now delegates to `IModelProvider.getModels()` instead of returning a hardcoded `"smart-agent"` entry. Falls back to `[{ id: 'smart-agent' }]` when no provider is available.
+- **Model passthrough in responses** — `POST /v1/chat/completions` extracts `body.model`, passes it through `options.model` to the agent pipeline, and uses the real model name in all streaming chunks and non-streaming responses.
+- **SAP AI Core model listing** — `SapCoreAIProvider.getModels()` fetches models via `ScenarioApi.scenarioQueryModels('foundation-models')` from `@sap-ai-sdk/ai-api` with a 60-second TTL cache. Falls back to `[{ id: this.model }]` if the API is unavailable.
+- **`SapCoreAIProvider.setModelOverride()`** — per-request model override for SAP AI Core, cleared automatically via `try/finally` after each `chat()` / `streamChat()` call.
+- **Agent subclass model propagation** — all four agent subclasses (`OpenAIAgent`, `DeepSeekAgent`, `AnthropicAgent`, `SapCoreAIAgent`) now propagate `options.model` to the provider HTTP request body.
+- **Public API exports** — `IModelInfo`, `IModelProvider` exported from `@mcp-abap-adt/llm-agent`.
+- **`@sap-ai-sdk/ai-api`** — added as optional peer dependency (`^2.0.0`) for SAP AI Core model listing.
+
+### Changed
+
+- **`LLMProvider.getModels()` return type widened** — from `Promise<string[]>` to `Promise<string[] | IModelInfo[]>`. Existing implementations returning `string[]` remain compatible.
+- **`AgentCallOptions`** — added `model?: string` field for per-request model override propagation through the agent layer.
+- **`/v1/models` response shape** — `context_window` field removed (was a synthetic value `2000000`). The `id` field now reflects the real provider model name.
+
+---
+
 ## [3.1.0] — 2026-03-23
 
 ### Added

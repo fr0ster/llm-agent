@@ -127,6 +127,77 @@ type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
 
 Always check `result.ok` before accessing `result.value`. Error types extend `SmartAgentError` with a `code` field for programmatic handling.
 
+## IModelProvider
+
+**File:** `src/smart-agent/interfaces/model-provider.ts`
+
+Model discovery and per-request model selection:
+
+```ts
+interface IModelInfo {
+  id: string;
+  owned_by?: string;
+}
+
+interface IModelProvider {
+  /** Currently configured (default) model name. */
+  getModel(): string;
+
+  /** Fetch available models from the provider. */
+  getModels(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
+}
+```
+
+### Auto-detection
+
+`SmartAgentBuilder` auto-detects `IModelProvider` on `mainLlm`. If `mainLlm` is a `TokenCountingLlm` wrapping an `LlmAdapter`, the builder unwraps and uses it automatically. No explicit `withModelProvider()` call needed for default setups.
+
+### Example: Custom model provider (filtering models)
+
+```ts
+import type { IModelProvider, IModelInfo } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, Result, LlmError } from '@mcp-abap-adt/llm-agent';
+
+class FilteredModelProvider implements IModelProvider {
+  constructor(
+    private readonly inner: IModelProvider,
+    private readonly allowedModels: Set<string>,
+  ) {}
+
+  getModel(): string {
+    return this.inner.getModel();
+  }
+
+  async getModels(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>> {
+    const result = await this.inner.getModels(options);
+    if (!result.ok) return result;
+    return {
+      ok: true,
+      value: result.value.filter((m) => this.allowedModels.has(m.id)),
+    };
+  }
+}
+
+// Usage: restrict which models are visible via /v1/models
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withModelProvider(new FilteredModelProvider(
+    myLlmAdapter,
+    new Set(['gpt-4o', 'gpt-4o-mini']),
+  ))
+  .build();
+```
+
+### Per-request model override
+
+Pass `model` in `CallOptions` to select a different model per request:
+
+```ts
+const result = await handle.chat(messages, tools, { model: 'gpt-4o-mini' });
+```
+
+Via `SmartServer`: the `model` field in `POST /v1/chat/completions` request body is forwarded automatically to the main LLM. Classifier and helper models are unaffected.
+
 ## IRag
 
 **File:** `src/smart-agent/interfaces/rag.ts`
@@ -811,6 +882,7 @@ const handle = await new SmartAgentBuilder({
   .withMetrics(metrics)
   .withQueryExpander(new SapTermExpander())
   .withSkillManager(new ClaudeSkillManager(process.cwd()))
+  .withModelProvider(myModelProvider)     // optional — auto-detected from mainLlm
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Pipeline stage configuration
   .withMode('smart')

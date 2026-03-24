@@ -348,6 +348,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 | Interface | Role | Default implementation |
 |---|---|---|
 | `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `providers.ts` |
+| `IModelProvider` | Model discovery and per-request model selection | `LlmAdapter` (auto-detected from `mainLlm`) |
 | `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
