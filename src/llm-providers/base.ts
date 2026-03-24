@@ -2,8 +2,8 @@
  * Base interface for LLM providers
  */
 
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 
 export interface LLMProvider {
   /**

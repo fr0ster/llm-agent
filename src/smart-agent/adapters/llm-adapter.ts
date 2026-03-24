@@ -8,7 +8,10 @@ import type {
   Message,
 } from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
-import type { IModelInfo, IModelProvider } from '../interfaces/model-provider.js';
+import type {
+  IModelInfo,
+  IModelProvider,
+} from '../interfaces/model-provider.js';
 import {
   type CallOptions,
   LlmError,

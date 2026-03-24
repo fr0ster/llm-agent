@@ -12,8 +12,8 @@ import {
   type ChatMessage,
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 /**
@@ -182,7 +182,8 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         owned_by: m.executableId,
       }));
       this.modelsCache = models;
-      this.modelsCacheExpiry = Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
+      this.modelsCacheExpiry =
+        Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
       return models;
     } catch {
       // Fallback to configured model if AI API is not available

@@ -16,8 +16,8 @@ import {
 import { HealthChecker } from './health/health-checker.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
+import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
