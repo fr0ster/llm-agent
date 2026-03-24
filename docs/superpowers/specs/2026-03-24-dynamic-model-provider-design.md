@@ -64,7 +64,11 @@ Each provider uses `options.model ?? this.model` when constructing the HTTP requ
 
 Affected providers: `OpenAIProvider`, `DeepSeekProvider`, `AnthropicProvider`, `SapCoreAIProvider`.
 
-The `options` parameter (type `CallOptions`) is propagated through: `SmartServer → SmartAgent.process() → mainLlm.chat(messages, tools, options) → LlmAdapter → BaseAgent → Provider`.
+The `options` parameter is propagated through: `SmartServer → SmartAgent.process() → mainLlm.chat(messages, tools, options) → LlmAdapter → BaseAgent → Provider`.
+
+**Legacy agent layer bridge**: `LlmAdapter` calls `agent.callWithTools(messages, tools, options)` where `options` is typed as `AgentCallOptions` (defined in `src/agents/base.ts`). `CallOptions` (smart-agent layer) and `AgentCallOptions` (legacy agent layer) are structurally different types — `CallOptions` has `trace`, `signal`, `sessionId`, etc. that `AgentCallOptions` does not. Currently `LlmAdapter` passes `CallOptions` through an unsafe structural cast.
+
+To propagate `model` properly: add `model?: string` to `AgentCallOptions`. `LlmAdapter` extracts the relevant subset (`{ temperature, maxTokens, topP, stop, model }`) from `CallOptions` before passing to `agent.callWithTools()`, making the type boundary explicit instead of relying on structural compatibility.
 
 #### `getModels()` return type update
 
@@ -99,7 +103,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
 }
 ```
 
-`LlmAdapterProviderInfo.getModels` return type changes from `Promise<string[]>` to `Promise<IModelInfo[]>`.
+`LlmAdapterProviderInfo.getModels` return type changes from `Promise<string[]>` to `Promise<string[] | IModelInfo[]>` (union). `LlmAdapter` normalizes internally — if an element is a `string`, it wraps it as `{ id: string }`. This preserves backward compatibility for consumers who implemented `LlmAdapterProviderInfo` with the old `string[]` return type.
+
+The existing `healthCheck()` method is updated to handle the new union type: it normalizes each element (if object, extract `.id`; if string, use as-is) before comparing against the configured model name.
 
 ### 5. TokenCountingLlm
 
@@ -124,6 +130,8 @@ withModelProvider(provider: IModelProvider): this
 ```
 
 Auto-detection in `build()`: if `withModelProvider()` was not called, check if `mainLlm` (unwrapping `TokenCountingLlm` via `.inner`) implements `IModelProvider` (duck-typing check for `getModel` and `getModels` methods). If so, use it automatically.
+
+Auto-detection only unwraps `TokenCountingLlm` specifically. Other custom wrappers require explicit `withModelProvider()`.
 
 ```typescript
 function isModelProvider(obj: unknown): obj is IModelProvider {
@@ -152,11 +160,13 @@ export interface SmartAgentHandle {
 
 File: `src/smart-agent/smart-server.ts`
 
-**`GET /v1/models`**: delegate to `handle.modelProvider.getModels()`. On error or when provider is unavailable, fall back to `[{ id: 'smart-agent' }]`.
+The `_handle()` method signature is extended to accept `modelProvider?: IModelProvider` as an additional parameter (passed from the `agentHandle` returned by `builder.build()`).
+
+**`GET /v1/models`**: delegate to `modelProvider.getModels()`. On error or when provider is unavailable, fall back to `[{ id: 'smart-agent' }]`.
 
 **`POST /v1/chat/completions`**: extract `body.model` and pass it via `options.model` to `smartAgent.process()` / `smartAgent.streamProcess()`.
 
-**Response `model` field**: use `body.model ?? handle.modelProvider?.getModel() ?? 'smart-agent'` instead of hardcoded `'smart-agent'` in both streaming and non-streaming responses.
+**Response `model` field**: use `body.model ?? modelProvider?.getModel() ?? 'smart-agent'` instead of hardcoded `'smart-agent'` in all streaming chunks (4 occurrences) and non-streaming response.
 
 ### 9. Agent Hierarchy — model propagation
 
@@ -189,7 +199,7 @@ All changes are additive:
 - `IModelProvider` — new interface, not required by any existing API.
 - `SmartAgentHandle.modelProvider` — new optional field.
 - `SmartAgentBuilder.withModelProvider()` — new optional method.
-- `/v1/models` response — same shape, different `id` values (real models instead of `"smart-agent"`).
+- `/v1/models` response — same OpenAI-compatible shape (`object`, `data[]` with `id`, `object`, `owned_by`). The previous hardcoded `context_window: 2000000` is removed as it was a synthetic value. Consumers that relied on this field will see it absent — this is a behavioral change documented in the changelog.
 - When `IModelProvider` is not available — falls back to current `"smart-agent"` behavior.
 
 **Semver**: minor version bump → `3.2.0`.
@@ -208,6 +218,8 @@ All changes are additive:
 | 8 | `src/smart-agent/llm/token-counting-llm.ts` | `get inner(): ILlm` accessor |
 | 9 | `src/smart-agent/builder.ts` | `.withModelProvider()`, auto-detect, expose in `SmartAgentHandle` |
 | 10 | `src/smart-agent/smart-server.ts` | `/v1/models` delegates to provider, `/v1/chat/completions` propagates `body.model`, response uses real model name |
-| 11 | `src/agents/*.ts` | Propagate `options.model` to provider in HTTP requests |
-| 12 | `src/index.ts` | Export `IModelProvider`, `IModelInfo` |
-| 13 | `package.json` | `@sap-ai-sdk/ai-api` dependency, version `3.2.0` |
+| 11 | `src/llm-providers/base.ts` | `LLMProvider.getModels()` return type → `Promise<string[] \| IModelInfo[]>` |
+| 12 | `src/agents/base.ts` | `AgentCallOptions` + `model?: string` |
+| 13 | `src/agents/*.ts` (subclasses) | Propagate `options.model` to provider in HTTP requests |
+| 14 | `src/index.ts` | Export `IModelProvider`, `IModelInfo` |
+| 15 | `package.json` | `@sap-ai-sdk/ai-api` dependency (optional peer or dynamic import), version `3.2.0` |
