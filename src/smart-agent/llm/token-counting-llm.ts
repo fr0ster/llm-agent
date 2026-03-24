@@ -39,6 +39,11 @@ export class TokenCountingLlm implements ILlm {
 
   constructor(private readonly inner: ILlm) {}
 
+  /** Expose wrapped ILlm for auto-detection of IModelProvider. */
+  get wrappedLlm(): ILlm {
+    return this.inner;
+  }
+
   async chat(
     messages: Message[],
     tools?: LlmTool[],
