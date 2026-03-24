@@ -43,7 +43,7 @@ export class OpenAIAgent extends BaseAgent {
 
     // Call OpenAI API with tools
     const response = await client.post('/chat/completions', {
-      model,
+      model: options?.model ?? model,
       messages: formattedMessages,
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
@@ -87,7 +87,7 @@ export class OpenAIAgent extends BaseAgent {
     }
 
     yield* this.streamOpenAICompatible(`${baseURL}/chat/completions`, headers, {
-      model,
+      model: options?.model ?? model,
       messages: this.formatMessagesForOpenAI(messages),
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,

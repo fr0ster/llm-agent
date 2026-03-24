@@ -31,6 +31,7 @@ export class AnthropicAgent extends BaseAgent {
   protected async callLLMWithTools(
     messages: Message[],
     tools: unknown[],
+    options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to Anthropic tool format
     const anthropicTools = this.convertToolsToAnthropicTools(tools);
@@ -45,7 +46,7 @@ export class AnthropicAgent extends BaseAgent {
 
     // Call Anthropic API with tools
     const requestBody: Record<string, unknown> = {
-      model,
+      model: options?.model ?? model,
       messages: formattedMessages,
       max_tokens: config.maxTokens || 4096,
       temperature: config.temperature || 0.7,
@@ -140,7 +141,7 @@ export class AnthropicAgent extends BaseAgent {
     };
 
     const requestBody: Record<string, unknown> = {
-      model,
+      model: options?.model ?? model,
       messages: formattedMessages,
       max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
       temperature: options?.temperature ?? config.temperature ?? 0.7,

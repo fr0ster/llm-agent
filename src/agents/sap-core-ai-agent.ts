@@ -36,10 +36,14 @@ export class SapCoreAIAgent extends BaseAgent {
   protected async callLLMWithTools(
     messages: Message[],
     tools: unknown[],
-    _options?: AgentCallOptions,
+    options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
     const functions = this.convertToolsToFunctions(tools);
     const formattedMessages = this.formatMessages(messages);
+
+    if (options?.model) {
+      this.llmProvider.setModelOverride(options.model);
+    }
 
     const response = await this.llmProvider.chat(
       formattedMessages,
@@ -58,10 +62,14 @@ export class SapCoreAIAgent extends BaseAgent {
   protected async *streamLLMWithTools(
     messages: Message[],
     tools: unknown[],
-    _options?: AgentCallOptions,
+    options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToFunctions(tools);
     const formattedMessages = this.formatMessages(messages);
+
+    if (options?.model) {
+      this.llmProvider.setModelOverride(options.model);
+    }
 
     const toolCallMap = new Map<
       number,

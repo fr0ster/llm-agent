@@ -66,6 +66,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   private modelsCache: IModelInfo[] | null = null;
   private modelsCacheExpiry = 0;
   private static readonly MODELS_CACHE_TTL_MS = 60_000;
+  private modelOverride?: string;
+
+  /** Set a per-request model override. Cleared after each chat/streamChat call. */
+  setModelOverride(model?: string): void {
+    this.modelOverride = model;
+  }
 
   constructor(config: SapCoreAIConfig) {
     super(config);
@@ -104,6 +110,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       this.log?.debug('Received response from SAP AI SDK', { finishReason });
 
+      this.modelOverride = undefined;
       return {
         content,
         finishReason,
@@ -124,6 +131,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.log?.error('SAP AI SDK API error', { error: message });
+      this.modelOverride = undefined;
       throw new Error(`SAP AI SDK API error: ${message}`);
     }
   }
@@ -145,9 +153,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           raw: chunk,
         };
       }
+      this.modelOverride = undefined;
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       this.log?.error('SAP AI SDK streaming error', { error: message });
+      this.modelOverride = undefined;
       throw new Error(`SAP AI SDK streaming error: ${message}`);
     }
   }
@@ -189,7 +199,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     const orchConfig: any = {
       promptTemplating: {
         model: {
-          name: this.model,
+          name: this.modelOverride ?? this.model,
           params: {
             max_tokens: this.config.maxTokens || 16384,
             temperature: this.config.temperature || 0.7,
