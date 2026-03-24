@@ -3,8 +3,8 @@
  */
 
 import axios, { type AxiosInstance } from 'axios';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
+import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
