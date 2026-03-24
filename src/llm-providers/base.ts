@@ -3,6 +3,7 @@
  */
 
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
 
 export interface LLMProvider {
   /**
@@ -21,7 +22,7 @@ export interface LLMProvider {
   /**
    * Get available models
    */
-  getModels?(): Promise<string[]>;
+  getModels?(): Promise<string[] | IModelInfo[]>;
 }
 
 export abstract class BaseLLMProvider<
