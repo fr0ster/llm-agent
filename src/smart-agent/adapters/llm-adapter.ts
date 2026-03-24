@@ -8,7 +8,7 @@ import type {
   Message,
 } from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
-import type { IModelInfo } from '../interfaces/model-provider.js';
+import type { IModelInfo, IModelProvider } from '../interfaces/model-provider.js';
 import {
   type CallOptions,
   LlmError,
@@ -244,11 +244,47 @@ export interface LlmAdapterProviderInfo {
   getModels?(): Promise<string[] | IModelInfo[]>;
 }
 
-export class LlmAdapter implements ILlm {
+function normalizeModelEntry(entry: string | IModelInfo): IModelInfo {
+  return typeof entry === 'string' ? { id: entry } : entry;
+}
+
+export class LlmAdapter implements ILlm, IModelProvider {
   constructor(
     private readonly agent: BaseAgentLlmBridge,
     private readonly provider?: LlmAdapterProviderInfo,
   ) {}
+
+  getModel(): string {
+    return this.provider?.model ?? 'unknown';
+  }
+
+  async getModels(
+    options?: CallOptions,
+  ): Promise<Result<IModelInfo[], LlmError>> {
+    if (!this.provider?.getModels) {
+      return {
+        ok: true,
+        value: [{ id: this.provider?.model ?? 'unknown' }],
+      };
+    }
+    try {
+      const modelsPromise = this.provider.getModels();
+      const raw = options?.signal
+        ? await withAbort(
+            modelsPromise,
+            options.signal,
+            () => new LlmError('Aborted', 'ABORTED'),
+          )
+        : await modelsPromise;
+      return { ok: true, value: raw.map(normalizeModelEntry) };
+    } catch (err) {
+      if (err instanceof LlmError) return { ok: false, error: err };
+      return {
+        ok: false,
+        error: new LlmError(String(err), 'MODEL_LIST_FAILED'),
+      };
+    }
+  }
 
   async chat(
     messages: Message[],
@@ -268,8 +304,18 @@ export class LlmAdapter implements ILlm {
           inputSchema: t.inputSchema,
         })) ?? [];
 
+      const agentOptions = options
+        ? {
+            temperature: options.temperature,
+            maxTokens: options.maxTokens,
+            topP: options.topP,
+            stop: options.stop,
+            model: options.model,
+          }
+        : undefined;
+
       const raw = await withAbort(
-        this.agent.callWithTools(messages, mcpTools, options) as Promise<{
+        this.agent.callWithTools(messages, mcpTools, agentOptions) as Promise<{
           content: string;
           raw?: unknown;
         }>,
@@ -302,10 +348,20 @@ export class LlmAdapter implements ILlm {
           inputSchema: t.inputSchema,
         })) ?? [];
 
+      const agentOptions = options
+        ? {
+            temperature: options.temperature,
+            maxTokens: options.maxTokens,
+            topP: options.topP,
+            stop: options.stop,
+            model: options.model,
+          }
+        : undefined;
+
       const stream = this.agent.streamWithTools(
         messages,
         mcpTools,
-        options,
+        agentOptions,
       ) as AsyncIterable<
         | {
             content: string;
