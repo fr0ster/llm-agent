@@ -4,6 +4,7 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
@@ -110,9 +111,11 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
     }
   }
 
-  async getModels(): Promise<string[]> {
+  async getModels(): Promise<IModelInfo[]> {
     const response = await this.client.get('/models');
-    return (response.data.data as Array<{ id: string }>).map((m) => m.id);
+    return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
+      (m) => ({ id: m.id, owned_by: m.owned_by }),
+    );
   }
 
   /**
