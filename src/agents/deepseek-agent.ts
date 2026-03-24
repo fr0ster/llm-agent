@@ -30,6 +30,7 @@ export class DeepSeekAgent extends BaseAgent {
   protected async callLLMWithTools(
     messages: Message[],
     tools: unknown[],
+    options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
     // Convert MCP tools to DeepSeek function format (same as OpenAI)
     const functions = this.convertToolsToFunctions(tools);
@@ -41,7 +42,7 @@ export class DeepSeekAgent extends BaseAgent {
 
     // Call DeepSeek API with tools
     const response = await client.post('/chat/completions', {
-      model,
+      model: options?.model ?? model,
       messages: formattedMessages,
       tools: functions.length > 0 ? functions : undefined,
       tool_choice: functions.length > 0 ? 'auto' : undefined,
@@ -111,7 +112,7 @@ export class DeepSeekAgent extends BaseAgent {
   protected async *streamLLMWithTools(
     messages: Message[],
     tools: unknown[],
-    _options?: AgentCallOptions,
+    options?: AgentCallOptions,
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToFunctions(tools);
 
@@ -122,7 +123,7 @@ export class DeepSeekAgent extends BaseAgent {
       `${baseURL}/chat/completions`,
       { Authorization: `Bearer ${config.apiKey}` },
       {
-        model,
+        model: options?.model ?? model,
         messages: this.formatMessagesForDeepSeek(messages),
         tools: functions.length > 0 ? functions : undefined,
         tool_choice: functions.length > 0 ? 'auto' : undefined,
