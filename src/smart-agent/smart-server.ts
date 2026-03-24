@@ -17,6 +17,7 @@ import { HealthChecker } from './health/health-checker.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
+import type { IModelProvider } from './interfaces/model-provider.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
@@ -447,6 +448,7 @@ export class SmartServer {
       close: closeAgent,
       circuitBreakers,
       ragStores,
+      modelProvider,
     } = agentHandle;
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
@@ -555,6 +557,7 @@ export class SmartServer {
         streamChat,
         log,
         healthChecker,
+        modelProvider,
       ).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -595,6 +598,7 @@ export class SmartServer {
     streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
     healthChecker: HealthChecker,
+    modelProvider?: IModelProvider,
   ): Promise<void> {
     const rawUrl = req.url ?? '/';
     const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
@@ -615,20 +619,21 @@ export class SmartServer {
       req.method === 'GET' &&
       (urlPath === '/v1/models' || urlPath === '/models')
     ) {
+      let data: Array<Record<string, unknown>> = [
+        { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
+      ];
+      if (modelProvider) {
+        const result = await modelProvider.getModels();
+        if (result.ok) {
+          data = result.value.map((m) => ({
+            id: m.id,
+            object: 'model',
+            owned_by: m.owned_by ?? 'unknown',
+          }));
+        }
+      }
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(
-        JSON.stringify({
-          object: 'list',
-          data: [
-            {
-              id: 'smart-agent',
-              object: 'model',
-              owned_by: 'smart-agent',
-              context_window: 2000000,
-            },
-          ],
-        }),
-      );
+      res.end(JSON.stringify({ object: 'list', data }));
       return;
     }
     if (req.method === 'GET' && urlPath === '/v1/usage') {
@@ -658,6 +663,7 @@ export class SmartServer {
         chat,
         streamChat,
         log,
+        modelProvider,
       );
       return;
     }
@@ -675,6 +681,7 @@ export class SmartServer {
     _chat: SmartAgentHandle['chat'],
     _streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
+    modelProvider?: IModelProvider,
   ): Promise<void> {
     const rawBody = await readBody(req);
     let parsed: unknown;
@@ -707,6 +714,7 @@ export class SmartServer {
         tool_call_id?: unknown;
         tool_calls?: unknown;
       }>;
+      model?: string;
       tools?: unknown[];
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
@@ -790,7 +798,11 @@ export class SmartServer {
       sessionId,
       trace: { traceId },
       sessionLogger,
+      model: body.model,
     };
+
+    const responseModel =
+      body.model ?? modelProvider?.getModel() ?? 'smart-agent';
 
     const normalizedMessages = body.messages
       .map((m) => {
@@ -906,7 +918,7 @@ export class SmartServer {
           id,
           object: 'chat.completion.chunk',
           created,
-          model: 'smart-agent',
+          model: responseModel,
           usage: null,
         };
 
@@ -949,7 +961,7 @@ export class SmartServer {
 
       if (body.stream_options?.include_usage && lastUsage) {
         res.write(
-          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: 'smart-agent', choices: [], usage: lastUsage })}\n\n`,
+          `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
         );
       }
       res.write('data: [DONE]\n\n');
@@ -983,7 +995,7 @@ export class SmartServer {
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
         created: Math.floor(Date.now() / 1000),
-        model: 'smart-agent',
+        model: responseModel,
         choices: [
           {
             index: 0,
