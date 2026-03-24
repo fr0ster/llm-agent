@@ -13,6 +13,7 @@ import {
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
 import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
 import { BaseLLMProvider } from './base.js';
 
 /**
@@ -62,6 +63,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
   private readonly destination?: Record<string, unknown>;
+  private modelsCache: IModelInfo[] | null = null;
+  private modelsCacheExpiry = 0;
+  private static readonly MODELS_CACHE_TTL_MS = 60_000;
 
   constructor(config: SapCoreAIConfig) {
     super(config);
@@ -148,10 +152,32 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
   }
 
-  async getModels(): Promise<string[]> {
-    // SAP AI Core orchestration service does not expose a list-models endpoint.
-    // Return the configured model so the health check can verify config validity.
-    return [this.model];
+  async getModels(): Promise<IModelInfo[]> {
+    if (this.modelsCache && Date.now() < this.modelsCacheExpiry) {
+      return this.modelsCache;
+    }
+    try {
+      const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
+      const result = await ScenarioApi.scenarioQueryModels(
+        'foundation-models',
+        { 'AI-Resource-Group': this.resourceGroup ?? 'default' },
+      ).execute();
+      const models: IModelInfo[] = (
+        result.resources as Array<{
+          model: string;
+          executableId?: string;
+        }>
+      ).map((m) => ({
+        id: m.model,
+        owned_by: m.executableId,
+      }));
+      this.modelsCache = models;
+      this.modelsCacheExpiry = Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
+      return models;
+    } catch {
+      // Fallback to configured model if AI API is not available
+      return [{ id: this.model }];
+    }
   }
 
   /**
