@@ -26,6 +26,9 @@ Separate the final response generation into a dedicated `present` pipeline stage
 | Streaming | Presentation LLM streams like mainLlm | No behavior change for consumers |
 | Architecture | Separate `present` pipeline stage after `tool-loop` | Maximum transparency for consumers who override pipelines |
 | Hardcoded flow | Supported (duplication accepted) | Legacy path must also benefit |
+| Token usage | Presentation LLM usage merged into request totals | Single usage object per request, consistent with current behavior |
+| Presentation LLM failure | Fall back to yielding `toolLoopContent` as-is | Data already exists; don't lose it on presentation error |
+| `clientAdapter` interaction | Presentation LLM output wrapped by adapter if detected | Adapter applies to final consumer-facing content regardless of source |
 
 ## Changes
 
@@ -42,7 +45,9 @@ toolLoopContent: string;
 toolLoopMessages: Message[];
 ```
 
-`toolLoopMessages` carries the full message array from tool-loop (assembled messages + tool call/result pairs) so that the present stage has complete context without rebuilding.
+`toolLoopMessages` carries the **complete** message array from tool-loop — original assembled messages plus all assistant/tool message pairs from every iteration. This gives the present stage full conversational context without rebuilding.
+
+Update `context.ts` doc header: the `present` stage also streams via `ctx.yield()`, not only `tool-loop`.
 
 ### 2. ToolLoopHandler — conditional yield
 
@@ -57,6 +62,8 @@ When `finishReason !== 'tool_calls'`:
   - Yield as before (backward-compatible)
 
 Same logic applies to the hardcoded `_runStreamingToolLoop` in `agent.ts`.
+
+**`clientAdapter` interaction:** When both `presentationLlm` and `clientAdapter` are active in the hardcoded flow, the presentation LLM's streamed output is buffered and wrapped via `clientAdapter.wrapResponse()` — same as mainLlm content is handled today. The adapter applies to whichever LLM produces the final consumer-facing content.
 
 ### 3. PresentHandler — new stage handler
 
@@ -73,7 +80,9 @@ Logic:
    - Yield chunks via `ctx.yield()`
 3. If no `presentationLlm`:
    - Yield `ctx.toolLoopContent` as-is (single chunk)
+   - This is a benign no-op path — when `presentationLlm` is absent, tool-loop streams directly and `toolLoopContent` may be empty
 4. Yield final chunk with `finishReason`, `usage`, `timing`
+5. On presentation LLM error: fall back to yielding `toolLoopContent` as-is and log the error
 
 Config (from pipeline YAML):
 ```yaml
@@ -85,7 +94,7 @@ Config (from pipeline YAML):
 
 `config.systemPrompt` takes precedence over `ctx.config.presentationSystemPrompt`.
 
-### 4. SmartAgentBuilder — new setter
+### 4. SmartAgentBuilder — new setter and wiring
 
 ```typescript
 private _presentationLlm?: ILlm;
@@ -95,6 +104,15 @@ withPresentationLlm(llm: ILlm): this {
   this._presentationLlm = llm;
   return this;
 }
+```
+
+In `build()`, wire `prompts.presentation` into `agentCfg.presentationSystemPrompt` (same pattern as `ragTranslatePrompt` / `historySummaryPrompt`):
+
+```typescript
+const agentCfg: SmartAgentConfig = {
+  // ...existing fields
+  presentationSystemPrompt: this.cfg.prompts?.presentation,
+};
 ```
 
 ### 5. SmartAgentConfig — new field
@@ -179,6 +197,8 @@ const handle = await new SmartAgentBuilder({
 | `src/smart-agent/pipeline/handlers/tool-loop.ts` | Conditional yield when presentationLlm is set |
 | `src/smart-agent/pipeline/handlers/present.ts` | New PresentHandler |
 | `src/smart-agent/pipeline/handlers/index.ts` | Register PresentHandler |
-| `src/smart-agent/builder.ts` | Add `withPresentationLlm()`, wire to deps |
+| `src/smart-agent/pipeline/types.ts` | Add `'present'` to `BuiltInStageType` union |
+| `src/smart-agent/builder.ts` | Add `withPresentationLlm()`, wire prompt, pass to deps |
 | `src/smart-agent/agent.ts` | Add presentationLlm to deps, hardcoded flow support |
+| `src/smart-agent/pipeline/index.ts` | Re-export `PresentHandler` |
 | `src/index.ts` | Export PresentHandler |
