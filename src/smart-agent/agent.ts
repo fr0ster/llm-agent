@@ -67,6 +67,7 @@ export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
 export interface SmartAgentDeps {
   mainLlm: ILlm;
   helperLlm?: ILlm;
+  presentationLlm?: ILlm;
   mcpClients: IMcpClient[];
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
@@ -119,6 +120,8 @@ export interface SmartAgentConfig {
    * @deprecated No-op since 2.15.0 — tool lists are cached in McpClientAdapter.
    */
   refreshToolsPerIteration?: boolean;
+  /** System prompt for the presentation LLM. Used by the present pipeline stage. */
+  presentationSystemPrompt?: string;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
