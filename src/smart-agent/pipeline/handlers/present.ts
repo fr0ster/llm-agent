@@ -63,7 +63,7 @@ export class PresentHandler implements IStageHandler {
     try {
       const stream = presentationLlm.streamChat(messages, [], ctx.options);
 
-      let content = '';
+      let _content = '';
       let finishReason: LlmFinishReason | undefined;
       const usage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
@@ -96,7 +96,7 @@ export class PresentHandler implements IStageHandler {
 
         const chunk = chunkResult.value;
         if (chunk.content) {
-          content += chunk.content;
+          _content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
