@@ -600,7 +600,9 @@ export class SmartAgentBuilder {
           const toolStore = ragStores['tools'] ?? Object.values(ragStores)[0];
           if (toolStore) {
             if (!ragStores['tools'] && Object.keys(ragStores).length > 1) {
-              console.warn('No "tools" RAG store found, falling back to first available store');
+              console.warn(
+                'No "tools" RAG store found, falling back to first available store',
+              );
             }
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
@@ -610,7 +612,9 @@ export class SmartAgentBuilder {
                   { id: `tool:${t.name}` },
                 );
                 if (!result.ok) {
-                  console.warn(`Tool vectorization failed for "${t.name}": ${result.error.message}`);
+                  console.warn(
+                    `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                  );
                 }
               }
             }
@@ -696,11 +700,16 @@ export class SmartAgentBuilder {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
-          const result = await skillStore.upsert(`Skill: ${s.name}\n${s.description}`, {
-            id: `skill:${s.name}`,
-          });
+          const result = await skillStore.upsert(
+            `Skill: ${s.name}\n${s.description}`,
+            {
+              id: `skill:${s.name}`,
+            },
+          );
           if (!result.ok) {
-            console.warn(`Skill vectorization failed for "${s.name}": ${result.error.message}`);
+            console.warn(
+              `Skill vectorization failed for "${s.name}": ${result.error.message}`,
+            );
           }
         }
       }

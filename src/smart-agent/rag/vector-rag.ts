@@ -133,7 +133,10 @@ export class VectorRag implements IRag {
             const oldTokens = this.tokenize(this.records[i].text);
             this.records[i].text = text;
             this.records[i].vector = vector;
-            this.records[i].metadata = { ...this.records[i].metadata, ...metadata };
+            this.records[i].metadata = {
+              ...this.records[i].metadata,
+              ...metadata,
+            };
             this.index.update(i, oldTokens, newTokens);
             return { ok: true, value: undefined };
           }

@@ -100,7 +100,10 @@ export class InMemoryRag implements IRag {
       if (idx !== -1) {
         this.records[idx].text = text;
         this.records[idx].embedding = embedding;
-        this.records[idx].metadata = { ...this.records[idx].metadata, ...resolvedMetadata };
+        this.records[idx].metadata = {
+          ...this.records[idx].metadata,
+          ...resolvedMetadata,
+        };
         return { ok: true, value: undefined };
       }
     }

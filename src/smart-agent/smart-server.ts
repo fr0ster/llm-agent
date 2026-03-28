@@ -897,11 +897,13 @@ export class SmartServer {
             object: 'chat.completion.chunk',
             created,
             model: responseModel,
-            choices: [{
-              index: 0,
-              delta: { content: `[Error] ${chunk.error.message}` },
-              finish_reason: 'stop',
-            }],
+            choices: [
+              {
+                index: 0,
+                delta: { content: `[Error] ${chunk.error.message}` },
+                finish_reason: 'stop',
+              },
+            ],
           };
           res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
           finishReasonSent = true;
@@ -974,13 +976,23 @@ export class SmartServer {
       }
 
       if (!finishReasonSent) {
-        const baseResponse = { id, object: 'chat.completion.chunk', created, model: responseModel, usage: null };
+        const baseResponse = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: responseModel,
+          usage: null,
+        };
         res.write(
           `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
         );
       }
 
-      if (this.cfg.reportUsage !== false && body.stream_options?.include_usage && lastUsage) {
+      if (
+        this.cfg.reportUsage !== false &&
+        body.stream_options?.include_usage &&
+        lastUsage
+      ) {
         res.write(
           `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
         );
