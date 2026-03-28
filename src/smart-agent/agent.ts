@@ -128,6 +128,13 @@ export interface SmartAgentConfig {
     backoffMs?: number;
     retryOn?: number[];
   };
+  /**
+   * Streaming behavior for multi-iteration tool loops.
+   * - `'full'` (default): stream all chunks immediately, including intermediate iterations.
+   * - `'final'`: buffer intermediate iterations; only stream the final response.
+   * External tool calls and heartbeats are always streamed regardless of mode.
+   */
+  streamMode?: 'full' | 'final';
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -773,6 +780,7 @@ export class SmartAgent {
     const loopStart = Date.now();
     let currentTools = activeTools;
     for (let iteration = 0; ; iteration++) {
+      let iterationBuffer = '';
       if (opts?.signal?.aborted) {
         toolLoopSpan.setStatus('error', 'Aborted');
         toolLoopSpan.end();
@@ -863,7 +871,11 @@ export class SmartAgent {
           content += chunk.content;
           // When a client adapter is detected, buffer content — it will be wrapped after the stream completes
           if (!clientAdapter) {
-            yield { ok: true, value: { content: chunk.content } };
+            if (this.config.streamMode === 'final') {
+              iterationBuffer += chunk.content;
+            } else {
+              yield { ok: true, value: { content: chunk.content } };
+            }
           }
         }
         if (chunk.toolCalls) {
@@ -913,6 +925,14 @@ export class SmartAgent {
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
       });
+      // In 'final' mode: yield buffered content only if this is the last iteration
+      if (this.config.streamMode === 'final' && iterationBuffer) {
+        if (finishReason !== 'tool_calls') {
+          // Final iteration — stream the buffered content
+          yield { ok: true, value: { content: iterationBuffer } };
+        }
+        iterationBuffer = '';
+      }
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
         let args = {};
         try {
