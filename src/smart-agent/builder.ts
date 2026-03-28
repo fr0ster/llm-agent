@@ -597,9 +597,9 @@ export class SmartAgentBuilder {
           });
 
           // Vectorize tools into the first available RAG store
-          const toolStore = ragStores['tools'] ?? Object.values(ragStores)[0];
+          const toolStore = ragStores.tools ?? Object.values(ragStores)[0];
           if (toolStore) {
-            if (!ragStores['tools'] && Object.keys(ragStores).length > 1) {
+            if (!ragStores.tools && Object.keys(ragStores).length > 1) {
               log?.log({
                 type: 'warning',
                 traceId: 'builder',
@@ -700,7 +700,7 @@ export class SmartAgentBuilder {
     }
 
     // ---- Skill vectorization (optional) ------------------------------------
-    const skillStore = ragStores['tools'] ?? Object.values(ragStores)[0];
+    const skillStore = ragStores.tools ?? Object.values(ragStores)[0];
     if (this._skillManager && skillStore) {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
