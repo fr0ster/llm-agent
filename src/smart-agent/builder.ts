@@ -60,6 +60,7 @@ import {
 } from './resilience/circuit-breaker.js';
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
+import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';
 import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
@@ -596,15 +597,30 @@ export class SmartAgentBuilder {
           });
 
           // Vectorize tools into the first available RAG store
-          const toolStore = Object.values(ragStores)[0];
+          const toolStore = ragStores.tools ?? Object.values(ragStores)[0];
           if (toolStore) {
+            if (!ragStores.tools && Object.keys(ragStores).length > 1) {
+              log?.log({
+                type: 'warning',
+                traceId: 'builder',
+                message:
+                  'No "tools" RAG store found, falling back to first available store',
+              });
+            }
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
               for (const t of toolsResult.value) {
-                await toolStore.upsert(
+                const result = await toolStore.upsert(
                   `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
                   { id: `tool:${t.name}` },
                 );
+                if (!result.ok) {
+                  log?.log({
+                    type: 'warning',
+                    traceId: 'builder',
+                    message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                  });
+                }
               }
             }
           }
@@ -634,6 +650,11 @@ export class SmartAgentBuilder {
       // Fluent overrides take precedence over cfg.agent
       ...this._agentOverrides,
     };
+
+    // ---- Retry wrapping (outside circuit breaker) ----------------------------
+    if (agentCfg.retry) {
+      wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
+    }
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
@@ -679,14 +700,24 @@ export class SmartAgentBuilder {
     }
 
     // ---- Skill vectorization (optional) ------------------------------------
-    const skillStore = Object.values(ragStores)[0];
+    const skillStore = ragStores.tools ?? Object.values(ragStores)[0];
     if (this._skillManager && skillStore) {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
-          await skillStore.upsert(`Skill: ${s.name}\n${s.description}`, {
-            id: `skill:${s.name}`,
-          });
+          const result = await skillStore.upsert(
+            `Skill: ${s.name}\n${s.description}`,
+            {
+              id: `skill:${s.name}`,
+            },
+          );
+          if (!result.ok) {
+            log?.log({
+              type: 'warning',
+              traceId: 'builder',
+              message: `Skill vectorization failed for "${s.name}": ${result.error.message}`,
+            });
+          }
         }
       }
     }
