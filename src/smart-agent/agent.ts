@@ -967,10 +967,12 @@ export class SmartAgent {
               opts,
             );
             let presentContent = '';
+            let presentOk = true;
             for await (const chunkResult of presentStream) {
               if (!chunkResult.ok) {
                 // Fall back to original content
                 presentSpan.setStatus('error', chunkResult.error.message);
+                presentOk = false;
                 break;
               }
               const pChunk = chunkResult.value;
@@ -984,9 +986,12 @@ export class SmartAgent {
                 usage.promptTokens += pChunk.usage.promptTokens;
                 usage.completionTokens += pChunk.usage.completionTokens;
                 usage.totalTokens += pChunk.usage.totalTokens;
+                this.sessionManager.addTokens(pChunk.usage.totalTokens);
               }
             }
-            presentSpan.setStatus('ok');
+            if (presentOk) {
+              presentSpan.setStatus('ok');
+            }
             presentSpan.end();
             timingLog.push({
               phase: 'present',
