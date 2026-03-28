@@ -122,6 +122,12 @@ export interface SmartAgentConfig {
   refreshToolsPerIteration?: boolean;
   /** System prompt for the presentation LLM. Used by the present pipeline stage. */
   presentationSystemPrompt?: string;
+  /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
+  retry?: {
+    maxAttempts?: number;
+    backoffMs?: number;
+    retryOn?: number[];
+  };
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
