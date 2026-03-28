@@ -850,7 +850,21 @@ Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (
 
 ## Builder Wiring
 
-The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected:
+The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected.
+
+### Dual-LLM setup (optional)
+
+Use a separate, faster model for the `present` stage to format final responses without spending reasoning-model tokens:
+
+```ts
+builder
+  .withMainLlm(claudeSonnet)        // reasoning: tool selection
+  .withPresentationLlm(geminiFlash) // fast: format final responses
+```
+
+`withPresentationLlm()` is optional — the pipeline falls back to `mainLlm` when it is not set. The presentation system prompt is configurable via `prompts.presentation` in the builder config.
+
+### Full example
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
@@ -883,6 +897,7 @@ const handle = await new SmartAgentBuilder({
   .withQueryExpander(new SapTermExpander())
   .withSkillManager(new ClaudeSkillManager(process.cwd()))
   .withModelProvider(myModelProvider)     // optional — auto-detected from mainLlm
+  .withPresentationLlm(myFastLlm)        // optional — format final responses; falls back to mainLlm if not set
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Pipeline stage configuration
   .withMode('smart')
@@ -1114,6 +1129,8 @@ pipeline:
       type: assemble
     - id: tool-loop
       type: tool-loop
+    - id: present
+      type: present
 ```
 
 ### Using Default Stages as Base
