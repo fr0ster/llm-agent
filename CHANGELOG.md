@@ -7,6 +7,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [3.4.0] — 2026-03-28
+
+### Added
+
+- **`RetryLlm` decorator** — `ILlm` decorator with exponential backoff for transient failures (HTTP 429, 500, 502, 503). Configurable via `SmartAgentConfig.retry`. For streaming, retries only when zero chunks have been yielded. Composition: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. (#20)
+- **`streamMode: 'final'`** — new `SmartAgentConfig.streamMode` option. Buffers intermediate tool loop iterations and streams only the final response. External tool calls and heartbeats always stream. Reduces context inflation for clients like Cline and Goose. (#21)
+- **`reportUsage` config** — `SmartServerConfig.reportUsage` option (default `true`). When `false`, suppresses usage stats in SSE stream to prevent clients from misinterpreting internal token counts. (#23)
+- **`warning` log event** — new `LogEvent` variant `{ type: 'warning', traceId, message }` for structured warnings from the builder.
+
+### Fixed
+
+- **Builder key-based RAG store lookup** — tool/skill vectorization now targets `ragStores.tools` explicitly instead of relying on `Object.values(ragStores)[0]` insertion order. Falls back to first store with a warning log when `tools` key is missing. (#17)
+- **Idempotent RAG upsert** — `IRag.upsert()` contract now requires implementations to treat `metadata.id` as an idempotent key. `QdrantRag` uses deterministic UUID (SHA-256), `InMemoryRag` and `VectorRag` match by `metadata.id` before cosine dedup. Prevents duplicate vectors on server restart. (#18)
+- **Per-item error handling in vectorization** — individual tool/skill embedding failures are now logged and skipped instead of aborting the entire MCP connection setup. (#19)
+- **SSE error format** — errors during SSE streaming are now emitted as valid `chat.completion.chunk` objects instead of raw `{"error":{...}}`, making them parseable by OpenAI-compatible clients (Cline, Goose, Continue). Added `finishReason` safety net to guarantee every stream ends with a `finish_reason` chunk. (#22)
+
+### Changed
+
+- **TypeScript config** — `module` updated to `Node16`, `moduleResolution` to `node16` (required by TypeScript 6.x, replaces deprecated `ES2022`/`node`).
+
+---
+
 ## [3.3.0] — 2026-03-28
 
 ### Added
