@@ -94,6 +94,20 @@ export class InMemoryRag implements IRag {
       namespace: effectiveNamespace,
     };
 
+    // Idempotent upsert: if metadata.id matches, replace in-place
+    if (metadata.id) {
+      const idx = this.records.findIndex((r) => r.metadata.id === metadata.id);
+      if (idx !== -1) {
+        this.records[idx].text = text;
+        this.records[idx].embedding = embedding;
+        this.records[idx].metadata = {
+          ...this.records[idx].metadata,
+          ...resolvedMetadata,
+        };
+        return { ok: true, value: undefined };
+      }
+    }
+
     // Filter existing records by same namespace
     const candidates =
       this.namespace !== undefined

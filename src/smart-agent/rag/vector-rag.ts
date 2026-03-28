@@ -126,6 +126,23 @@ export class VectorRag implements IRag {
       const vector = await this.embedder.embed(text, options);
       const newTokens = this.tokenize(text);
 
+      // Idempotent upsert: if metadata.id matches, replace in-place
+      if (metadata.id) {
+        for (let i = 0; i < this.records.length; i++) {
+          if (this.records[i].metadata.id === metadata.id) {
+            const oldTokens = this.tokenize(this.records[i].text);
+            this.records[i].text = text;
+            this.records[i].vector = vector;
+            this.records[i].metadata = {
+              ...this.records[i].metadata,
+              ...metadata,
+            };
+            this.index.update(i, oldTokens, newTokens);
+            return { ok: true, value: undefined };
+          }
+        }
+      }
+
       for (let i = 0; i < this.records.length; i++) {
         const rec = this.records[i];
         if (this.cosine(rec.vector, vector) >= this.dedupThreshold) {

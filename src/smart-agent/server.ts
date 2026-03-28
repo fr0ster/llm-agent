@@ -191,6 +191,7 @@ export class SmartAgentServer {
         const created = Math.floor(Date.now() / 1000);
 
         let firstChunk = true;
+        let finishReasonSent = false;
         let lastUsage: {
           prompt_tokens: number;
           completion_tokens: number;
@@ -202,9 +203,21 @@ export class SmartAgentServer {
           opts,
         )) {
           if (!chunk.ok) {
-            res.write(
-              `data: ${jsonError(chunk.error.message, 'server_error')}\n\n`,
-            );
+            const errorChunk = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model: 'smart-agent',
+              choices: [
+                {
+                  index: 0,
+                  delta: { content: `[Error] ${chunk.error.message}` },
+                  finish_reason: 'stop',
+                },
+              ],
+            };
+            res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+            finishReasonSent = true;
             break;
           }
 
@@ -278,7 +291,21 @@ export class SmartAgentServer {
                 ],
               })}\n\n`,
             );
+            finishReasonSent = true;
           }
+        }
+
+        if (!finishReasonSent) {
+          res.write(
+            `data: ${JSON.stringify({
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model: 'smart-agent',
+              usage: null,
+              choices: [{ index: 0, delta: {}, finish_reason: 'stop' }],
+            })}\n\n`,
+          );
         }
 
         // Usage chunk if we have it

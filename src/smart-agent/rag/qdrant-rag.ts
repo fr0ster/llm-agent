@@ -7,6 +7,18 @@ import {
   type Result,
 } from '../interfaces/types.js';
 
+/**
+ * Derive a deterministic UUID from a stable string key using SHA-256.
+ * The first 16 bytes of the hash are formatted as a UUID v5-style string.
+ */
+async function deterministicUUID(key: string): Promise<string> {
+  const data = new TextEncoder().encode(key);
+  const hashBuffer = await globalThis.crypto.subtle.digest('SHA-256', data);
+  const bytes = new Uint8Array(hashBuffer, 0, 16);
+  const hex = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
 export interface QdrantRagConfig {
   url: string;
   collectionName: string;
@@ -108,7 +120,9 @@ export class QdrantRag implements IRag {
       const vector = await this.embedder.embed(text, options);
       await this._ensureCollection(vector.length, options?.signal);
 
-      const pointId = crypto.randomUUID();
+      const pointId = metadata?.id
+        ? await deterministicUUID(metadata.id)
+        : crypto.randomUUID();
       const payload: Record<string, unknown> = {
         text,
         ...metadata,

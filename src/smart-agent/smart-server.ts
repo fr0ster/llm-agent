@@ -161,6 +161,8 @@ export interface SmartServerConfig {
   mcpClients?: IMcpClient[];
   /** Client adapters for auto-detecting prompt-based clients (e.g. Cline). */
   clientAdapters?: IClientAdapter[];
+  /** Whether to include usage stats in SSE stream. Default: true. */
+  reportUsage?: boolean;
 }
 
 export interface SmartServerHandle {
@@ -881,6 +883,7 @@ export class SmartServer {
 
       const stream = smartAgent.streamProcess(normalizedMessages, opts);
       let firstChunk = true;
+      let finishReasonSent = false;
       let lastUsage: {
         prompt_tokens: number;
         completion_tokens: number;
@@ -889,9 +892,21 @@ export class SmartServer {
 
       for await (const chunk of stream) {
         if (!chunk.ok) {
-          res.write(
-            `data: ${jsonError(chunk.error.message, 'server_error')}\n\n`,
-          );
+          const errorChunk = {
+            id,
+            object: 'chat.completion.chunk',
+            created,
+            model: responseModel,
+            choices: [
+              {
+                index: 0,
+                delta: { content: `[Error] ${chunk.error.message}` },
+                finish_reason: 'stop',
+              },
+            ],
+          };
+          res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
+          finishReasonSent = true;
           break;
         }
         // SSE heartbeat comment — keeps connection alive, ignored by clients
@@ -956,10 +971,28 @@ export class SmartServer {
           res.write(
             `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: mapStopReason(chunk.value.finishReason as StopReason) }] })}\n\n`,
           );
+          finishReasonSent = true;
         }
       }
 
-      if (body.stream_options?.include_usage && lastUsage) {
+      if (!finishReasonSent) {
+        const baseResponse = {
+          id,
+          object: 'chat.completion.chunk',
+          created,
+          model: responseModel,
+          usage: null,
+        };
+        res.write(
+          `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta: {}, finish_reason: 'stop' }] })}\n\n`,
+        );
+      }
+
+      if (
+        this.cfg.reportUsage !== false &&
+        body.stream_options?.include_usage &&
+        lastUsage
+      ) {
         res.write(
           `data: ${JSON.stringify({ id, object: 'chat.completion.chunk', created, model: responseModel, choices: [], usage: lastUsage })}\n\n`,
         );
