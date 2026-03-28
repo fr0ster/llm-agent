@@ -175,6 +175,7 @@ describe('Pipeline spans — RAG query', () => {
       classifier: makeClassifier([
         { type: 'action', text: 'Show SAP data', context: 'sap-abap' },
       ]),
+      ragStores: { facts: makeRag() },
       llmResponses: [{ content: 'done', finishReason: 'stop' }],
       tracer,
     });
