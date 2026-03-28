@@ -67,6 +67,7 @@ export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
 export interface SmartAgentDeps {
   mainLlm: ILlm;
   helperLlm?: ILlm;
+  presentationLlm?: ILlm;
   mcpClients: IMcpClient[];
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
@@ -119,6 +120,8 @@ export interface SmartAgentConfig {
    * @deprecated No-op since 2.15.0 — tool lists are cached in McpClientAdapter.
    */
   refreshToolsPerIteration?: boolean;
+  /** System prompt for the presentation LLM. Used by the present pipeline stage. */
+  presentationSystemPrompt?: string;
 }
 export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
 export interface SmartAgentResponse {
@@ -939,15 +942,94 @@ export class SmartAgent {
           continue;
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
-        // When a client adapter matched, yield buffered content wrapped via adapter
-        if (clientAdapter && content) {
-          yield {
-            ok: true,
-            value: {
-              content: clientAdapter.wrapResponse(content),
-            },
-          };
+
+        // Presentation LLM re-generation
+        if (this.deps.presentationLlm) {
+          const presentPrompt =
+            this.config.presentationSystemPrompt ??
+            'Present the information clearly and concisely.';
+          const presentMessages = [
+            ...messages,
+            { role: 'assistant' as const, content },
+            { role: 'user' as const, content: presentPrompt },
+          ];
+
+          const presentSpan = this.tracer.startSpan('smart_agent.present', {
+            parent: parentSpan,
+            attributes: { 'llm.presentation': true },
+          });
+          const presentStart = Date.now();
+
+          try {
+            const presentStream = this.deps.presentationLlm.streamChat(
+              presentMessages,
+              [],
+              opts,
+            );
+            let presentContent = '';
+            let presentOk = true;
+            for await (const chunkResult of presentStream) {
+              if (!chunkResult.ok) {
+                // Fall back to original content
+                presentSpan.setStatus('error', chunkResult.error.message);
+                presentOk = false;
+                break;
+              }
+              const pChunk = chunkResult.value;
+              if (pChunk.content) {
+                presentContent += pChunk.content;
+                if (!clientAdapter) {
+                  yield { ok: true, value: { content: pChunk.content } };
+                }
+              }
+              if (pChunk.usage) {
+                usage.promptTokens += pChunk.usage.promptTokens;
+                usage.completionTokens += pChunk.usage.completionTokens;
+                usage.totalTokens += pChunk.usage.totalTokens;
+                this.sessionManager.addTokens(pChunk.usage.totalTokens);
+              }
+            }
+            if (presentOk) {
+              presentSpan.setStatus('ok');
+            }
+            presentSpan.end();
+            timingLog.push({
+              phase: 'present',
+              duration: Date.now() - presentStart,
+            });
+
+            // Use presentation content for adapter wrapping if available
+            if (clientAdapter && presentContent) {
+              yield {
+                ok: true,
+                value: {
+                  content: clientAdapter.wrapResponse(presentContent),
+                },
+              };
+            }
+          } catch {
+            // Fall back to original content on error
+            presentSpan.setStatus('error', 'unexpected');
+            presentSpan.end();
+            if (clientAdapter && content) {
+              yield {
+                ok: true,
+                value: { content: clientAdapter.wrapResponse(content) },
+              };
+            } else if (!clientAdapter && content) {
+              yield { ok: true, value: { content } };
+            }
+          }
+        } else {
+          // No presentation LLM — original behavior
+          if (clientAdapter && content) {
+            yield {
+              ok: true,
+              value: { content: clientAdapter.wrapResponse(content) },
+            };
+          }
         }
+
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
@@ -1369,6 +1451,7 @@ export class SmartAgent {
       injectionDetector: this.deps.injectionDetector,
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
       skillManager: this.deps.skillManager,
+      presentationLlm: this.deps.presentationLlm,
 
       // Mutable state
       inputText: text,
@@ -1387,6 +1470,8 @@ export class SmartAgent {
       selectedSkills: [],
       skillContent: '',
       skillArgs: '',
+      toolLoopContent: '',
+      toolLoopMessages: [],
 
       // Control flags
       shouldRetrieve: false,

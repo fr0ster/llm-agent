@@ -145,6 +145,7 @@ export {
   getDefaultPipelineDefinition,
   getDefaultStages,
   PipelineExecutor,
+  PresentHandler,
 } from './smart-agent/pipeline/index.js';
 // Plugins
 export type {
