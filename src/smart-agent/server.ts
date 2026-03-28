@@ -202,9 +202,18 @@ export class SmartAgentServer {
           opts,
         )) {
           if (!chunk.ok) {
-            res.write(
-              `data: ${jsonError(chunk.error.message, 'server_error')}\n\n`,
-            );
+            const errorChunk = {
+              id,
+              object: 'chat.completion.chunk',
+              created,
+              model: 'smart-agent',
+              choices: [{
+                index: 0,
+                delta: { content: `[Error] ${chunk.error.message}` },
+                finish_reason: 'stop',
+              }],
+            };
+            res.write(`data: ${JSON.stringify(errorChunk)}\n\n`);
             break;
           }
 
