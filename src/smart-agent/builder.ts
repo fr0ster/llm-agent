@@ -600,9 +600,12 @@ export class SmartAgentBuilder {
           const toolStore = ragStores['tools'] ?? Object.values(ragStores)[0];
           if (toolStore) {
             if (!ragStores['tools'] && Object.keys(ragStores).length > 1) {
-              console.warn(
-                'No "tools" RAG store found, falling back to first available store',
-              );
+              log?.log({
+                type: 'warning',
+                traceId: 'builder',
+                message:
+                  'No "tools" RAG store found, falling back to first available store',
+              });
             }
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
@@ -612,9 +615,11 @@ export class SmartAgentBuilder {
                   { id: `tool:${t.name}` },
                 );
                 if (!result.ok) {
-                  console.warn(
-                    `Tool vectorization failed for "${t.name}": ${result.error.message}`,
-                  );
+                  log?.log({
+                    type: 'warning',
+                    traceId: 'builder',
+                    message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                  });
                 }
               }
             }
@@ -707,9 +712,11 @@ export class SmartAgentBuilder {
             },
           );
           if (!result.ok) {
-            console.warn(
-              `Skill vectorization failed for "${s.name}": ${result.error.message}`,
-            );
+            log?.log({
+              type: 'warning',
+              traceId: 'builder',
+              message: `Skill vectorization failed for "${s.name}": ${result.error.message}`,
+            });
           }
         }
       }
