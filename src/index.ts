@@ -211,7 +211,10 @@ export {
 export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
 export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
-export { RetryLlm, type RetryOptions } from './smart-agent/resilience/retry-llm.js';
+export {
+  RetryLlm,
+  type RetryOptions,
+} from './smart-agent/resilience/retry-llm.js';
 export { NoopSessionManager } from './smart-agent/session/noop-session-manager.js';
 export { SessionManager } from './smart-agent/session/session-manager.js';
 // Session Manager

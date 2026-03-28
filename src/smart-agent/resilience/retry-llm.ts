@@ -54,7 +54,11 @@ export class RetryLlm implements ILlm {
 
       const result = await this.inner.chat(messages, tools, options);
 
-      if (result.ok || attempt >= this.opts.maxAttempts || !this.isRetryable(result.error)) {
+      if (
+        result.ok ||
+        attempt >= this.opts.maxAttempts ||
+        !this.isRetryable(result.error)
+      ) {
         return result;
       }
 
@@ -76,7 +80,11 @@ export class RetryLlm implements ILlm {
       let chunksYielded = 0;
       let shouldRetry = false;
 
-      for await (const chunk of this.inner.streamChat(messages, tools, options)) {
+      for await (const chunk of this.inner.streamChat(
+        messages,
+        tools,
+        options,
+      )) {
         if (chunk.ok) {
           chunksYielded++;
           yield chunk;
