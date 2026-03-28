@@ -281,9 +281,14 @@ Embedders are injectable via DI:
 - YAML-driven: register custom factory via `SmartServer({ embedderFactories: { 'my-embedder': fn } })`, then reference in YAML as `embedder: my-embedder`
 
 Stores are split by intent:
+- `tools` (tool/skill schemas for RAG-based tool selection)
 - `facts` (domain/tool knowledge)
 - `feedback` (user guidance)
 - `state` (session memory)
+
+The builder selects the `tools` store by key for tool/skill vectorization. If no `tools` key exists, it falls back to the first available store with a warning log.
+
+**Idempotent upsert contract:** when `metadata.id` is provided, implementations MUST treat it as an idempotent key — repeated upserts with the same id replace the previous record instead of creating duplicates. All built-in implementations (`QdrantRag`, `InMemoryRag`, `VectorRag`) enforce this.
 
 ### 5. MCP Layer
 
@@ -348,7 +353,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 | Interface | Role | Default implementation |
 |---|---|---|
-| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `TokenCountingLlm(LlmAdapter(BaseAgent))` via `providers.ts` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `RetryLlm(CircuitBreakerLlm(TokenCountingLlm(LlmAdapter(BaseAgent))))` via `providers.ts` + `builder.ts` |
 | `IModelProvider` | Model discovery and per-request model selection | `LlmAdapter` (auto-detected from `mainLlm`) |
 | `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
@@ -381,6 +386,22 @@ Configured via `SmartAgentConfig.mode` and `SmartServerMode`:
 - `pass`:
 - Pure passthrough to main LLM stream over provided history/tools.
 - Skips orchestration stages.
+
+### Streaming modes
+
+Configured via `SmartAgentConfig.streamMode`:
+
+- `full` (default): all chunks streamed immediately, including intermediate tool loop iterations.
+- `final`: intermediate iterations are buffered and discarded; only the final response is streamed. External tool calls and heartbeats are always streamed regardless of mode. Useful for clients (Cline, Goose) that accumulate chunks in their context window.
+
+### Resilience decorators
+
+The `ILlm` chain supports two optional decorators, composed by the builder:
+
+- **`RetryLlm`** — retries transient failures (429, 5xx) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries only when zero chunks have been yielded.
+- **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
+
+Composition order: `RetryLlm → CircuitBreakerLlm → TokenCountingLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures.
 
 ## Protocol Contracts
 

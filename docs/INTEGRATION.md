@@ -206,6 +206,11 @@ RAG store for document upsert, query, and health checks:
 
 ```ts
 interface IRag {
+  /**
+   * If metadata.id is provided, implementations MUST treat it as an
+   * idempotent key — repeated upserts with the same id replace the
+   * previous record instead of creating duplicates.
+   */
   upsert(text: string, metadata: RagMetadata, options?: CallOptions): Promise<Result<void, RagError>>;
   query(text: string, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>>;
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
@@ -899,6 +904,9 @@ const handle = await new SmartAgentBuilder({
   .withModelProvider(myModelProvider)     // optional — auto-detected from mainLlm
   .withPresentationLlm(myFastLlm)        // optional — format final responses; falls back to mainLlm if not set
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
+  // Resilience
+  // retry is configured via agentConfig, not builder fluent API:
+  //   agentConfig: { retry: { maxAttempts: 3, backoffMs: 2000, retryOn: [429, 500, 502, 503] } }
   // Pipeline stage configuration
   .withMode('smart')
   .withMaxIterations(15)
