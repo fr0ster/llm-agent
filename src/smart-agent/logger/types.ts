@@ -60,4 +60,5 @@ export type LogEvent =
       traceId: string;
       original: string;
       translated: string;
-    };
+    }
+  | { type: 'warning'; traceId: string; message: string };
