@@ -60,6 +60,7 @@ import {
 } from './resilience/circuit-breaker.js';
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
+import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';
 import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
@@ -640,6 +641,11 @@ export class SmartAgentBuilder {
       // Fluent overrides take precedence over cfg.agent
       ...this._agentOverrides,
     };
+
+    // ---- Retry wrapping (outside circuit breaker) ----------------------------
+    if (agentCfg.retry) {
+      wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
+    }
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
