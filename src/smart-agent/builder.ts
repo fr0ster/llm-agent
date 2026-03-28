@@ -89,6 +89,8 @@ export interface BuilderPromptsConfig {
   ragTranslate?: string;
   /** Prompt for history summarization. */
   historySummary?: string;
+  /** System prompt for the presentation LLM. */
+  presentation?: string;
 }
 
 export interface SmartAgentBuilderConfig {
@@ -151,6 +153,7 @@ export class SmartAgentBuilder {
   private _mainLlm?: ILlm;
   private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
+  private _presentationLlm?: ILlm;
   private _ragStores: SmartAgentRagStores = {};
   private _mcpClients?: IMcpClient[];
   private _classifier?: ISubpromptClassifier;
@@ -204,6 +207,12 @@ export class SmartAgentBuilder {
   /** Set the LLM used by the intent classifier. If not set, mainLlm is used. */
   withClassifierLlm(llm: ILlm): this {
     this._classifierLlm = llm;
+    return this;
+  }
+
+  /** Set the presentation LLM for formatting final responses. Falls back to mainLlm if not set. */
+  withPresentationLlm(llm: ILlm): this {
+    this._presentationLlm = llm;
     return this;
   }
 
@@ -616,6 +625,7 @@ export class SmartAgentBuilder {
       ragQueryK: 10,
       ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
       historySummaryPrompt: this.cfg.prompts?.historySummary,
+      presentationSystemPrompt: this.cfg.prompts?.presentation,
       historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy
@@ -726,6 +736,9 @@ export class SmartAgentBuilder {
           ? { sessionManager: this._sessionManager }
           : {}),
         ...(this._skillManager ? { skillManager: this._skillManager } : {}),
+        ...(this._presentationLlm
+          ? { presentationLlm: this._presentationLlm }
+          : {}),
         ...(this._clientAdapters.length > 0
           ? { clientAdapters: this._clientAdapters }
           : {}),
