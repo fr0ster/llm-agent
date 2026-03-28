@@ -25,6 +25,7 @@ export {
   buildDefaultHandlerRegistry,
   ClassifyHandler,
   ExpandHandler,
+  PresentHandler,
   RagQueryHandler,
   RagUpsertHandler,
   RerankHandler,
