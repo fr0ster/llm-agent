@@ -1446,6 +1446,7 @@ export class SmartAgent {
       injectionDetector: this.deps.injectionDetector,
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
       skillManager: this.deps.skillManager,
+      presentationLlm: this.deps.presentationLlm,
 
       // Mutable state
       inputText: text,
@@ -1464,6 +1465,8 @@ export class SmartAgent {
       selectedSkills: [],
       skillContent: '',
       skillArgs: '',
+      toolLoopContent: '',
+      toolLoopMessages: [],
 
       // Control flags
       shouldRetrieve: false,
