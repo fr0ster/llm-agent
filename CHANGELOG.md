@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [3.3.0] — 2026-03-28
+
+### Added
+
+- **Presentation LLM** — optional secondary LLM for final response generation via new `present` pipeline stage. Configure with `.withPresentationLlm(llm)` on the builder. Falls back to mainLlm when not set. Reduces latency by 15-20s on generation-heavy responses by using a faster model (e.g., Gemini Flash) for presentation.
+- **`PresentHandler`** stage handler — built-in pipeline stage registered as `present` type. Streams final response through the presentation LLM with configurable system prompt.
+- **`SmartAgentBuilder.withPresentationLlm(llm)`** — fluent setter for injecting a presentation LLM.
+- **`BuilderPromptsConfig.presentation`** — system prompt override for the presentation LLM.
+- Hardcoded flow support — presentation LLM works in both structured pipeline and legacy hardcoded flow paths.
+
+---
+
 ## [3.2.0] — 2026-03-24
 
 ### Added
