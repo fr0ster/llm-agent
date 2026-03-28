@@ -29,6 +29,13 @@ export interface EmbedderFactoryConfig {
 export type EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder;
 
 export interface IRag {
+  /**
+   * Store a text chunk with its metadata.
+   *
+   * If `metadata.id` is provided, implementations MUST treat it as an
+   * idempotent key — repeated upserts with the same id replace the
+   * previous record instead of creating duplicates.
+   */
   upsert(
     text: string,
     metadata: RagMetadata,
