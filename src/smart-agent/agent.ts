@@ -1484,6 +1484,7 @@ export class SmartAgent {
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
       skillManager: this.deps.skillManager,
       presentationLlm: this.deps.presentationLlm,
+      embedder: this.deps.embedder,
 
       // Mutable state
       inputText: text,
@@ -1502,6 +1503,7 @@ export class SmartAgent {
       selectedSkills: [],
       skillContent: '',
       skillArgs: '',
+      queryEmbedding: undefined,
       toolLoopContent: '',
       toolLoopMessages: [],
 
