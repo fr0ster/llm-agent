@@ -27,6 +27,8 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
+import type { IEmbedder } from '../interfaces/rag.js';
 import type { ISkill, ISkillManager } from '../interfaces/skill.js';
 import type {
   CallOptions,
@@ -86,6 +88,7 @@ export interface PipelineContext {
   readonly injectionDetector: IPromptInjectionDetector | undefined;
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   readonly skillManager: ISkillManager | undefined;
+  readonly embedder: IEmbedder | undefined;
 
   // -- Mutable state (populated by stages) ----------------------------------
 
@@ -99,6 +102,8 @@ export interface PipelineContext {
   toolClientMap: Map<string, IMcpClient>;
   /** Text used for RAG queries (may be translated/expanded). */
   ragText: string;
+  /** Memoized query embedding, shared across all rag-query stages. */
+  queryEmbedding: IQueryEmbedding | undefined;
   /** RAG query results per store. */
   ragResults: Record<string, RagResult[]>;
   /** All MCP tools from all connected servers. */
