@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.1] — 2026-03-29
+
+### Added
+- **Husky pre-commit hook** — runs `biome check` before every commit to prevent lint failures from being committed.
+
+### Fixed
+- **`package-lock.json` now tracked in commits** — previously omitted during version bumps.
+
+---
+
 ## [4.0.0] — 2026-03-29
 
 ### Breaking Changes

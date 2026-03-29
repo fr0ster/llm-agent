@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "4.0.0",
+  "version": "4.0.1",
   "description": "Core components for building Smart LLM agents, plus a default MCP-orchestrated OpenAI-compatible server implementation.",
   "type": "module",
   "main": "dist/index.js",
