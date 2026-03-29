@@ -35,6 +35,7 @@ import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
+import type { IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
 import type { ILogger } from './logger/types.js';
@@ -178,6 +179,7 @@ export class SmartAgentBuilder {
   private _clientAdapters: IClientAdapter[] = [];
   private _customStageHandlers = new Map<string, IStageHandler>();
   private _modelProvider?: IModelProvider;
+  private _embedder?: IEmbedder;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -322,6 +324,12 @@ export class SmartAgentBuilder {
   /** Enable circuit breakers for LLM and embedder calls. */
   withCircuitBreaker(config: CircuitBreakerConfig = {}): this {
     this._circuitBreakerConfig = config;
+    return this;
+  }
+
+  /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
+  withEmbedder(embedder: IEmbedder): this {
+    this._embedder = embedder;
     return this;
   }
 
@@ -773,6 +781,7 @@ export class SmartAgentBuilder {
         ...(this._clientAdapters.length > 0
           ? { clientAdapters: this._clientAdapters }
           : {}),
+        ...(this._embedder ? { embedder: this._embedder } : {}),
       },
       agentCfg,
       pipelineExecutor,
