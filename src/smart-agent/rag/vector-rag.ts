@@ -8,6 +8,7 @@ import {
   type Result,
 } from '../interfaces/types.js';
 import { InvertedIndex } from './inverted-index.js';
+import { FallbackQueryEmbedding } from './query-embedding.js';
 
 interface StoredRecord {
   text: string;
@@ -178,7 +179,8 @@ export class VectorRag implements IRag {
     try {
       const text = embedding.text;
       const nowSecs = Date.now() / 1000;
-      const queryVector = await embedding.toVector();
+      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const queryVector = await safe.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
 
       const scored = this.records
