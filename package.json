@@ -73,7 +73,8 @@
     "format": "npx biome format --write --config-path . src",
     "clean": "rimraf dist || rm -rf dist",
     "publish:beta": "npm run release:check && npm publish --tag beta",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "npm run build",
+    "prepare": "husky"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.28.0",
@@ -99,6 +100,7 @@
     "@opentelemetry/api": "^1.9.0",
     "@sap-ai-sdk/ai-api": "^2.7.0",
     "@types/node": "^25.5.0",
+    "husky": "^9.1.7",
     "tsx": "^4.21.0",
     "typescript": "^6.0.2"
   },
