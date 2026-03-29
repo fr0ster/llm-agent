@@ -45,3 +45,28 @@ export class TextOnlyEmbedding implements IQueryEmbedding {
     );
   }
 }
+
+/**
+ * Decorator: tries the inner embedding first; on failure falls back
+ * to the supplied embedder.  Result is memoized so concurrent callers
+ * share one promise — same contract as {@link QueryEmbedding}.
+ */
+export class FallbackQueryEmbedding implements IQueryEmbedding {
+  private _vector: Promise<number[]> | null = null;
+
+  constructor(
+    private readonly inner: IQueryEmbedding,
+    private readonly fallback: IEmbedder,
+  ) {}
+
+  get text(): string {
+    return this.inner.text;
+  }
+
+  toVector(): Promise<number[]> {
+    this._vector ??= this.inner
+      .toVector()
+      .catch(() => this.fallback.embed(this.text));
+    return this._vector;
+  }
+}
