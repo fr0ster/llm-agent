@@ -93,6 +93,8 @@ export type {
   IModelInfo,
   IModelProvider,
 } from './smart-agent/interfaces/model-provider.js';
+// Query Embedding
+export type { IQueryEmbedding } from './smart-agent/interfaces/query-embedding.js';
 // Embedder & RAG
 export type {
   EmbedderFactory,
@@ -188,6 +190,10 @@ export {
   QdrantRag,
   type QdrantRagConfig,
 } from './smart-agent/rag/qdrant-rag.js';
+export {
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from './smart-agent/rag/query-embedding.js';
 // Query Expander
 export {
   type IQueryExpander,

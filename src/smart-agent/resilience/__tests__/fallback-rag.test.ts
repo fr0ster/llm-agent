@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { TextOnlyEmbedding } from '../../rag/query-embedding.js';
 import { makeRag } from '../../testing/index.js';
 import { CircuitBreaker } from '../circuit-breaker.js';
 import { FallbackRag } from '../fallback-rag.js';
@@ -28,7 +29,7 @@ describe('FallbackRag', () => {
     const breaker = new CircuitBreaker();
     const rag = new FallbackRag(primary, fallback, breaker);
 
-    const result = await rag.query('search', 5);
+    const result = await rag.query(new TextOnlyEmbedding('search'), 5);
     assert.ok(result.ok);
     assert.equal(result.value[0].text, 'primary result');
   });
@@ -46,7 +47,7 @@ describe('FallbackRag', () => {
     breaker.recordFailure(); // open the breaker
     const rag = new FallbackRag(primary, fallback, breaker);
 
-    const result = await rag.query('search', 5);
+    const result = await rag.query(new TextOnlyEmbedding('search'), 5);
     assert.ok(result.ok);
     assert.equal(result.value[0].text, 'fallback result');
   });

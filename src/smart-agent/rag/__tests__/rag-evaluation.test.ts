@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
 import type { CallOptions, RagResult } from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
+import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
 import { VectorRag } from '../vector-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -223,8 +224,12 @@ async function runQuery(
   rag: InMemoryRag | VectorRag,
   query: string,
   k: number,
+  embedder?: IEmbedder,
 ): Promise<RagResult[]> {
-  const result = await rag.query(query, k);
+  const embedding = embedder
+    ? new QueryEmbedding(query, embedder)
+    : new TextOnlyEmbedding(query);
+  const result = await rag.query(embedding, k);
   assert.ok(result.ok, `Query failed for: ${query}`);
   return result.value;
 }
@@ -312,11 +317,11 @@ describe('RAG Evaluation — VectorRag (hybrid)', () => {
   }
 
   it('all golden queries return expected tool in top-k', async () => {
-    const { rag } = createVectorRag();
+    const { rag, embedder } = createVectorRag();
     await seedRag(rag, GOLDEN_CORPUS);
 
     for (const gq of GOLDEN_QUERIES) {
-      const results = await runQuery(rag, gq.query, gq.k);
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
       const topIds = results.map((r) => r.metadata.id);
       for (const expectedId of gq.expectedTopIds) {
         assert.ok(
@@ -328,12 +333,12 @@ describe('RAG Evaluation — VectorRag (hybrid)', () => {
   });
 
   it('MRR >= 0.7 across all golden queries', async () => {
-    const { rag } = createVectorRag();
+    const { rag, embedder } = createVectorRag();
     await seedRag(rag, GOLDEN_CORPUS);
 
     let totalRR = 0;
     for (const gq of GOLDEN_QUERIES) {
-      const results = await runQuery(rag, gq.query, gq.k);
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
       totalRR += reciprocalRank(results, gq.expectedTopIds);
     }
     const mrr = totalRR / GOLDEN_QUERIES.length;
@@ -341,12 +346,22 @@ describe('RAG Evaluation — VectorRag (hybrid)', () => {
   });
 
   it('BM25 component boosts exact-term matches', async () => {
-    const { rag } = createVectorRag();
+    const { rag, embedder } = createVectorRag();
     await seedRag(rag, GOLDEN_CORPUS);
 
     // Query with exact tool-related term should rank the matching tool higher
-    const exactResult = await runQuery(rag, 'abap_get_object_source', 3);
-    const synonymResult = await runQuery(rag, 'retrieve program listing', 3);
+    const exactResult = await runQuery(
+      rag,
+      'abap_get_object_source',
+      3,
+      embedder,
+    );
+    const synonymResult = await runQuery(
+      rag,
+      'retrieve program listing',
+      3,
+      embedder,
+    );
 
     const exactTopId = exactResult[0]?.metadata.id;
 

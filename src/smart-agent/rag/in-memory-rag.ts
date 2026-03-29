@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag } from '../interfaces/rag.js';
 import type {
   CallOptions,
@@ -142,7 +143,7 @@ export class InMemoryRag implements IRag {
   }
 
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
@@ -150,6 +151,7 @@ export class InMemoryRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
 
+    const text = embedding.text;
     const queryEmbedding = embed(text);
     const nowSecs = Date.now() / 1000;
 

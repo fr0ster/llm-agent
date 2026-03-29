@@ -7,7 +7,7 @@ import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { IRag } from './interfaces/rag.js';
+import type { IEmbedder, IRag } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import {
   type CallOptions,
@@ -37,6 +37,7 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
+import { QueryEmbedding, TextOnlyEmbedding } from './rag/query-embedding.js';
 import {
   type IQueryExpander,
   NoopQueryExpander,
@@ -84,6 +85,8 @@ export interface SmartAgentDeps {
   sessionManager?: ISessionManager;
   skillManager?: ISkillManager;
   clientAdapters?: IClientAdapter[];
+  /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
+  embedder?: IEmbedder;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -491,9 +494,12 @@ export class SmartAgent {
           attributes: { 'rag.k': k },
         });
         const storeEntries = Object.entries(this.deps.ragStores);
+        const embedding = this.deps.embedder
+          ? new QueryEmbedding(ragText, this.deps.embedder, opts)
+          : new TextOnlyEmbedding(ragText);
         const ragQueryResults = await Promise.all(
           storeEntries.map(([name, store]) =>
-            store.query(ragText, k, opts).then((r) => ({ name, result: r })),
+            store.query(embedding, k, opts).then((r) => ({ name, result: r })),
           ),
         );
         ragSpan.end();
@@ -1478,6 +1484,7 @@ export class SmartAgent {
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
       skillManager: this.deps.skillManager,
       presentationLlm: this.deps.presentationLlm,
+      embedder: this.deps.embedder,
 
       // Mutable state
       inputText: text,
@@ -1496,6 +1503,7 @@ export class SmartAgent {
       selectedSkills: [],
       skillContent: '',
       skillArgs: '',
+      queryEmbedding: undefined,
       toolLoopContent: '',
       toolLoopMessages: [],
 

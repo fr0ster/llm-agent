@@ -3,6 +3,7 @@ import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
 import type { IEmbedder } from '../../interfaces/rag.js';
 import { QdrantRag } from '../qdrant-rag.js';
+import { QueryEmbedding } from '../query-embedding.js';
 
 // ---------------------------------------------------------------------------
 // Stub embedder
@@ -162,7 +163,11 @@ describe('QdrantRag', () => {
     await rag.upsert('ABAP SELECT statement', { namespace: 'docs' });
     await rag.upsert('JavaScript forEach loop', { namespace: 'docs' });
 
-    const result = await rag.query('ABAP SELECT', 5);
+    const embedder = makeEmbedder();
+    const result = await rag.query(
+      new QueryEmbedding('ABAP SELECT', embedder),
+      5,
+    );
     assert.ok(result.ok);
     assert.ok(result.value.length > 0);
     assert.ok(result.value[0].text.length > 0);
