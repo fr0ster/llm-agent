@@ -17,6 +17,10 @@
  * multiple rag-query stages can safely run in parallel.
  */
 
+import {
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '../../rag/query-embedding.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -39,7 +43,14 @@ export class RagQueryHandler implements IStageHandler {
     span.setAttribute('store', storeName);
     span.setAttribute('k', k);
 
-    const result = await store.query(ctx.ragText, k, ctx.options);
+    // Lazily create and cache a shared query embedding for all rag-query stages
+    if (!ctx.queryEmbedding) {
+      ctx.queryEmbedding = ctx.embedder
+        ? new QueryEmbedding(ctx.ragText, ctx.embedder, ctx.options)
+        : new TextOnlyEmbedding(ctx.ragText);
+    }
+
+    const result = await store.query(ctx.queryEmbedding, k, ctx.options);
 
     ctx.metrics.ragQueryCount.add(1, {
       store: storeName,
