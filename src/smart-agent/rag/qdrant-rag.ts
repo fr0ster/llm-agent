@@ -7,6 +7,7 @@ import {
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
+import { FallbackQueryEmbedding } from './query-embedding.js';
 
 /**
  * Derive a deterministic UUID from a stable string key using SHA-256.
@@ -163,7 +164,8 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const vector = await embedding.toVector();
+      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
+      const vector = await safe.toVector();
 
       const must: unknown[] = [];
       const targetNamespace = options?.ragFilter?.namespace;
