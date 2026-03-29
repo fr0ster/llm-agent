@@ -20,6 +20,7 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag } from '../interfaces/rag.js';
 import {
   AssemblerError,
@@ -148,7 +149,9 @@ export function makeRag(
       upsertCalls.push(text);
       return { ok: true, value: undefined };
     },
-    async query(): Promise<Result<RagResult[], RagError>> {
+    async query(
+      _embedding: IQueryEmbedding,
+    ): Promise<Result<RagResult[], RagError>> {
       return { ok: true, value: queryResults };
     },
     async healthCheck(): Promise<Result<void, RagError>> {
@@ -165,7 +168,9 @@ export function makeFailingRag(): IRag & { upsertCalls: string[] } {
       upsertCalls.push(text);
       return { ok: false, error: new RagError('Upsert failed') };
     },
-    async query(): Promise<Result<RagResult[], RagError>> {
+    async query(
+      _embedding: IQueryEmbedding,
+    ): Promise<Result<RagResult[], RagError>> {
       return { ok: false, error: new RagError('Query failed') };
     },
     async healthCheck(): Promise<Result<void, RagError>> {
@@ -196,10 +201,10 @@ export function makeMetadataRag(queryResults: RagResult[] = []): IRag & {
       return { ok: true, value: undefined };
     },
     async query(
-      text: string,
+      embedding: IQueryEmbedding,
       k: number,
     ): Promise<Result<RagResult[], RagError>> {
-      queryCalls.push({ text, k });
+      queryCalls.push({ text: embedding.text, k });
       return { ok: true, value: queryResults };
     },
     async healthCheck(): Promise<Result<void, RagError>> {

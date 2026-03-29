@@ -1,13 +1,17 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { InMemoryRag } from '../in-memory-rag.js';
+import { TextOnlyEmbedding } from '../query-embedding.js';
 
 describe('InMemoryRag', () => {
   describe('upsert + query basic', () => {
     it('stores text and retrieves it', async () => {
       const rag = new InMemoryRag();
       await rag.upsert('the quick brown fox', {});
-      const result = await rag.query('quick brown fox', 5);
+      const result = await rag.query(
+        new TextOnlyEmbedding('quick brown fox'),
+        5,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
       assert.equal(result.value[0].text, 'the quick brown fox');
@@ -22,7 +26,7 @@ describe('InMemoryRag', () => {
       await rag.upsert('the quick brown fox jumped', {});
       await rag.upsert('cat mat', {});
 
-      const result = await rag.query('cat mat', 3);
+      const result = await rag.query(new TextOnlyEmbedding('cat mat'), 3);
       assert.ok(result.ok);
       assert.equal(result.value.length, 3);
 
@@ -45,7 +49,7 @@ describe('InMemoryRag', () => {
       await rag.upsert('hello world', {});
       await rag.upsert('hello world', {});
 
-      const result = await rag.query('hello world', 10);
+      const result = await rag.query(new TextOnlyEmbedding('hello world'), 10);
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
     });
@@ -59,7 +63,10 @@ describe('InMemoryRag', () => {
         source: 'v2',
       });
 
-      const result = await rag.query('machine learning algorithms', 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('machine learning algorithms'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
       // metadata should be merged (newer wins)
@@ -73,7 +80,7 @@ describe('InMemoryRag', () => {
       await rag.upsert('apple banana cherry', {});
       await rag.upsert('dog cat fish bird', {});
 
-      const result = await rag.query('apple', 10);
+      const result = await rag.query(new TextOnlyEmbedding('apple'), 10);
       assert.ok(result.ok);
       assert.equal(result.value.length, 2);
     });
@@ -85,7 +92,10 @@ describe('InMemoryRag', () => {
       const pastTtl = Math.floor(Date.now() / 1000) - 60; // 1 minute ago
       await rag.upsert('expired record', { ttl: pastTtl });
 
-      const result = await rag.query('expired record', 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('expired record'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 0);
     });
@@ -97,7 +107,7 @@ describe('InMemoryRag', () => {
       const futureTtl = Math.floor(Date.now() / 1000) + 3600; // 1 hour from now
       await rag.upsert('fresh record', { ttl: futureTtl });
 
-      const result = await rag.query('fresh record', 10);
+      const result = await rag.query(new TextOnlyEmbedding('fresh record'), 10);
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
     });
@@ -111,12 +121,18 @@ describe('InMemoryRag', () => {
       await ragA.upsert('shared topic alpha', {});
       await ragB.upsert('shared topic beta', {});
 
-      const resultA = await ragA.query('shared topic', 10);
+      const resultA = await ragA.query(
+        new TextOnlyEmbedding('shared topic'),
+        10,
+      );
       assert.ok(resultA.ok);
       assert.equal(resultA.value.length, 1);
       assert.equal(resultA.value[0].text, 'shared topic alpha');
 
-      const resultB = await ragB.query('shared topic', 10);
+      const resultB = await ragB.query(
+        new TextOnlyEmbedding('shared topic'),
+        10,
+      );
       assert.ok(resultB.ok);
       assert.equal(resultB.value.length, 1);
       assert.equal(resultB.value[0].text, 'shared topic beta');
@@ -130,7 +146,10 @@ describe('InMemoryRag', () => {
         await rag.upsert('repeated text content', {});
       }
 
-      const result = await rag.query('repeated text content', 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('repeated text content'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
     });
@@ -139,7 +158,7 @@ describe('InMemoryRag', () => {
   describe('empty store query', () => {
     it('returns empty array when store has no records', async () => {
       const rag = new InMemoryRag();
-      const result = await rag.query('anything', 5);
+      const result = await rag.query(new TextOnlyEmbedding('anything'), 5);
       assert.ok(result.ok);
       assert.deepEqual(result.value, []);
     });

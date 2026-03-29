@@ -10,6 +10,10 @@
  * If no `ctx.skillManager` is configured, this handler is a no-op.
  */
 
+import {
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '../../rag/query-embedding.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -41,8 +45,11 @@ export class SkillSelectHandler implements IStageHandler {
       const k = (_config.k as number) ?? ctx.config.ragQueryK ?? 15;
       const queryText = ctx.ragText || ctx.inputText;
       const storeEntries = Object.entries(ctx.ragStores);
+      const embedding = ctx.embedder
+        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
+        : new TextOnlyEmbedding(queryText);
       const queryResults = await Promise.all(
-        storeEntries.map(([, store]) => store.query(queryText, k, ctx.options)),
+        storeEntries.map(([, store]) => store.query(embedding, k, ctx.options)),
       );
       for (const result of queryResults) {
         if (result.ok) {

@@ -14,6 +14,10 @@
  */
 
 import type { LlmTool } from '../../interfaces/types.js';
+import {
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from '../../rag/query-embedding.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -53,10 +57,13 @@ export class ToolSelectHandler implements IStageHandler {
       const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
       const queryText = ctx.ragText || ctx.inputText;
       const storeEntries = Object.entries(ctx.ragStores);
+      const embedding = ctx.embedder
+        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
+        : new TextOnlyEmbedding(queryText);
       const queryResults = await Promise.all(
         storeEntries.map(async ([name, store]) => ({
           name,
-          result: await store.query(queryText, k, ctx.options),
+          result: await store.query(embedding, k, ctx.options),
         })),
       );
       for (const { name, result } of queryResults) {
