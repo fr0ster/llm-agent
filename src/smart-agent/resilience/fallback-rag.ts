@@ -7,6 +7,7 @@
  * - **healthCheck** — delegates to primary.
  */
 
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag } from '../interfaces/rag.js';
 import type {
   CallOptions,
@@ -37,14 +38,14 @@ export class FallbackRag implements IRag {
   }
 
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     if (this.embedderBreaker.state === 'open') {
-      return this.fallback.query(text, k, options);
+      return this.fallback.query(embedding, k, options);
     }
-    return this.primary.query(text, k, options);
+    return this.primary.query(embedding, k, options);
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {

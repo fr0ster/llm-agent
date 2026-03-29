@@ -1,3 +1,4 @@
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import {
   type CallOptions,
@@ -154,7 +155,7 @@ export class QdrantRag implements IRag {
   }
 
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
@@ -162,7 +163,7 @@ export class QdrantRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const vector = await this.embedder.embed(text, options);
+      const vector = await embedding.toVector();
 
       const must: unknown[] = [];
       const targetNamespace = options?.ragFilter?.namespace;
