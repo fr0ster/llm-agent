@@ -191,6 +191,7 @@ export {
   type QdrantRagConfig,
 } from './smart-agent/rag/qdrant-rag.js';
 export {
+  FallbackQueryEmbedding,
   QueryEmbedding,
   TextOnlyEmbedding,
 } from './smart-agent/rag/query-embedding.js';
