@@ -330,6 +330,37 @@ export function resolveSmartServerConfig(
       queryExpansionEnabled: Boolean(
         get(yaml, 'agent', 'queryExpansionEnabled') ?? false,
       ),
+      toolResultCacheTtlMs: Number(
+        get(yaml, 'agent', 'toolResultCacheTtlMs') ?? 300000,
+      ),
+      sessionTokenBudget: Number(get(yaml, 'agent', 'sessionTokenBudget') ?? 0),
+      ...(get(yaml, 'agent', 'classificationEnabled') !== undefined
+        ? {
+            classificationEnabled: Boolean(
+              get(yaml, 'agent', 'classificationEnabled'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'ragRetrievalMode') !== undefined
+        ? {
+            ragRetrievalMode: String(get(yaml, 'agent', 'ragRetrievalMode')) as
+              | 'auto'
+              | 'always'
+              | 'never',
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'ragTranslationEnabled') !== undefined
+        ? {
+            ragTranslationEnabled: Boolean(
+              get(yaml, 'agent', 'ragTranslationEnabled'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'ragUpsertEnabled') !== undefined
+        ? {
+            ragUpsertEnabled: Boolean(get(yaml, 'agent', 'ragUpsertEnabled')),
+          }
+        : {}),
     },
     prompts:
       promptSystem ||
