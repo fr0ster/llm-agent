@@ -8,7 +8,10 @@ describe('InMemoryRag', () => {
     it('stores text and retrieves it', async () => {
       const rag = new InMemoryRag();
       await rag.upsert('the quick brown fox', {});
-      const result = await rag.query(new TextOnlyEmbedding('quick brown fox'), 5);
+      const result = await rag.query(
+        new TextOnlyEmbedding('quick brown fox'),
+        5,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
       assert.equal(result.value[0].text, 'the quick brown fox');
@@ -60,7 +63,10 @@ describe('InMemoryRag', () => {
         source: 'v2',
       });
 
-      const result = await rag.query(new TextOnlyEmbedding('machine learning algorithms'), 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('machine learning algorithms'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
       // metadata should be merged (newer wins)
@@ -86,7 +92,10 @@ describe('InMemoryRag', () => {
       const pastTtl = Math.floor(Date.now() / 1000) - 60; // 1 minute ago
       await rag.upsert('expired record', { ttl: pastTtl });
 
-      const result = await rag.query(new TextOnlyEmbedding('expired record'), 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('expired record'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 0);
     });
@@ -112,12 +121,18 @@ describe('InMemoryRag', () => {
       await ragA.upsert('shared topic alpha', {});
       await ragB.upsert('shared topic beta', {});
 
-      const resultA = await ragA.query(new TextOnlyEmbedding('shared topic'), 10);
+      const resultA = await ragA.query(
+        new TextOnlyEmbedding('shared topic'),
+        10,
+      );
       assert.ok(resultA.ok);
       assert.equal(resultA.value.length, 1);
       assert.equal(resultA.value[0].text, 'shared topic alpha');
 
-      const resultB = await ragB.query(new TextOnlyEmbedding('shared topic'), 10);
+      const resultB = await ragB.query(
+        new TextOnlyEmbedding('shared topic'),
+        10,
+      );
       assert.ok(resultB.ok);
       assert.equal(resultB.value.length, 1);
       assert.equal(resultB.value[0].text, 'shared topic beta');
@@ -131,7 +146,10 @@ describe('InMemoryRag', () => {
         await rag.upsert('repeated text content', {});
       }
 
-      const result = await rag.query(new TextOnlyEmbedding('repeated text content'), 10);
+      const result = await rag.query(
+        new TextOnlyEmbedding('repeated text content'),
+        10,
+      );
       assert.ok(result.ok);
       assert.equal(result.value.length, 1);
     });
