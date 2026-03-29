@@ -84,7 +84,7 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
         buffer = lines.pop() || '';
         for (const line of lines) {
           const trimmed = line.trim();
-          if (!trimmed || !trimmed.startsWith('data: ')) continue;
+          if (!trimmed?.startsWith('data: ')) continue;
           const data = trimmed.slice(6);
           if (data === '[DONE]') break;
           try {

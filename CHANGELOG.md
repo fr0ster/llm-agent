@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.2] — 2026-03-30
+
+### Fixed
+- **YAML agent config fields not applied at startup** — `ragTranslationEnabled`, `ragRetrievalMode`, `ragUpsertEnabled`, `classificationEnabled`, `toolResultCacheTtlMs`, and `sessionTokenBudget` were only wired in the hot-reload path (`ConfigWatcher`) but missing from `resolveSmartServerConfig()`. Non-English RAG queries could be corrupted by the translation stage even when explicitly disabled in YAML. (#26)
+- **Biome lint warnings** — replaced manual nullish checks with optional chaining in `deepseek.ts` and `openai.ts` SSE stream parsers.
+
+---
+
 ## [4.0.1] — 2026-03-29
 
 ### Added
