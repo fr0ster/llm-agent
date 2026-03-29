@@ -1,3 +1,4 @@
+import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedder, IRag } from '../interfaces/rag.js';
 import {
   type CallOptions,
@@ -166,7 +167,7 @@ export class VectorRag implements IRag {
   }
 
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
@@ -175,8 +176,9 @@ export class VectorRag implements IRag {
     }
 
     try {
+      const text = embedding.text;
       const nowSecs = Date.now() / 1000;
-      const queryVector = await this.embedder.embed(text, options);
+      const queryVector = await embedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
 
       const scored = this.records
