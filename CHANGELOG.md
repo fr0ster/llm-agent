@@ -7,6 +7,45 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.0] — 2026-03-29
+
+### Breaking Changes
+
+- **`IRag.query()` signature changed** — first parameter changed from `text: string` to `embedding: IQueryEmbedding`. All `IRag` implementations must accept `IQueryEmbedding` instead of a raw string. Callers must wrap query text in `QueryEmbedding` (with an `IEmbedder`) or `TextOnlyEmbedding` (for keyword-only stores). (#25)
+
+### Added
+
+- **`IQueryEmbedding` interface** — lazy, memoized query embedding that computes the vector on first `toVector()` call. Concurrent callers receive the same promise — only one actual API call regardless of store count.
+- **`QueryEmbedding` class** — wraps `IEmbedder` + query text; memoizes the vector promise via `??=` operator.
+- **`TextOnlyEmbedding` class** — fallback for stores that don't need vectors (e.g. `InMemoryRag`). Exposes `.text` for BM25/keyword search; rejects on `toVector()`.
+- **`SmartAgentDeps.embedder`** — optional shared embedder field. When set, `SmartAgent` creates a single `QueryEmbedding` per request and passes it to all RAG stores.
+- **`SmartAgentBuilder.withEmbedder()`** — fluent setter for injecting a shared embedder.
+- **`PipelineContext.embedder`** and **`PipelineContext.queryEmbedding`** — pipeline support for shared embedding. `RagQueryHandler` lazily creates and caches the embedding; all parallel rag-query stages share the same memoized vector.
+- **Public API exports** — `IQueryEmbedding` (type), `QueryEmbedding`, `TextOnlyEmbedding` exported from `@mcp-abap-adt/llm-agent`.
+
+### Performance
+
+- **N→1 embedding API calls** — with 7 Qdrant collections and SAP AI Core embeddings, RAG query stage drops from ~194s (7 redundant embed calls) to ~7s (single memoized call). (#25)
+
+### Migration guide
+
+```typescript
+// Before (3.x)
+const result = await ragStore.query('search text', 10, options);
+
+// After (4.x) — with embedder (vector stores)
+import { QueryEmbedding } from '@mcp-abap-adt/llm-agent';
+const embedding = new QueryEmbedding('search text', embedder, options);
+const result = await ragStore.query(embedding, 10, options);
+
+// After (4.x) — without embedder (keyword-only stores)
+import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
+const embedding = new TextOnlyEmbedding('search text');
+const result = await ragStore.query(embedding, 10, options);
+```
+
+---
+
 ## [3.4.0] — 2026-03-28
 
 ### Added
