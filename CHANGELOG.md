@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.3] — 2026-03-30
+
+### Fixed
+- **Qdrant/Vector RAG queries return 0 results** — `SmartServer` created per-store embedders for upsert but never wired a shared embedder for query time. Vector-based stores (`QdrantRag`, `VectorRag`) received `TextOnlyEmbedding` which rejects on `toVector()`, silently returning empty results. Added `FallbackQueryEmbedding` decorator — each vector store now falls back to its own embedder when the shared query embedder is absent. (#27)
+
+### Added
+- **`FallbackQueryEmbedding` class** — decorator that wraps any `IQueryEmbedding` with a store-level `IEmbedder` fallback. Memoized, same contract as `QueryEmbedding`. Exported in public API.
+
+---
+
 ## [4.0.2] — 2026-03-30
 
 ### Fixed
