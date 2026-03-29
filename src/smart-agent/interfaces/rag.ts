@@ -1,3 +1,4 @@
+import type { IQueryEmbedding } from './query-embedding.js';
 import type {
   CallOptions,
   RagError,
@@ -43,7 +44,7 @@ export interface IRag {
   ): Promise<Result<void, RagError>>;
 
   query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>>;
