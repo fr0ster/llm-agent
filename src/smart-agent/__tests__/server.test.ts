@@ -169,6 +169,80 @@ describe('SmartAgentServer — finish_reason: tool_call_limit → length', () =>
   });
 });
 
+describe('SmartAgentServer — finish_reason: tool_calls', () => {
+  it('stopReason=tool_calls maps to finish_reason=tool_calls with tool_calls in message', async () => {
+    const agent = makeAgent({
+      content: '',
+      iterations: 1,
+      toolCallCount: 1,
+      stopReason: 'tool_calls',
+      toolCalls: [
+        {
+          id: 'call_abc123',
+          type: 'function',
+          function: {
+            name: 'get_weather',
+            arguments: '{"city":"Berlin"}',
+          },
+        },
+      ],
+    });
+    const server = new SmartAgentServer(agent);
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(
+        handle.port,
+        'POST',
+        '/v1/chat/completions',
+        {
+          messages: [{ role: 'user', content: 'weather?' }],
+        },
+      );
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const choices = body.choices as Array<Record<string, unknown>>;
+      assert.equal(choices[0].finish_reason, 'tool_calls');
+      const message = choices[0].message as Record<string, unknown>;
+      const toolCalls = message.tool_calls as Array<Record<string, unknown>>;
+      assert.equal(toolCalls.length, 1);
+      assert.equal(
+        (toolCalls[0].function as Record<string, unknown>).name,
+        'get_weather',
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('stopReason=tool_calls with no toolCalls omits tool_calls from message', async () => {
+    const agent = makeAgent({
+      content: 'response',
+      iterations: 1,
+      toolCallCount: 0,
+      stopReason: 'tool_calls',
+    });
+    const server = new SmartAgentServer(agent);
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(
+        handle.port,
+        'POST',
+        '/v1/chat/completions',
+        {
+          messages: [{ role: 'user', content: 'test' }],
+        },
+      );
+      const body = res.body as Record<string, unknown>;
+      const choices = body.choices as Array<Record<string, unknown>>;
+      assert.equal(choices[0].finish_reason, 'tool_calls');
+      const message = choices[0].message as Record<string, unknown>;
+      assert.equal(message.tool_calls, undefined);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Text extraction
 // ---------------------------------------------------------------------------

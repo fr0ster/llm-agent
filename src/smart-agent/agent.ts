@@ -139,12 +139,22 @@ export interface SmartAgentConfig {
    */
   streamMode?: 'full' | 'final';
 }
-export type StopReason = 'stop' | 'iteration_limit' | 'tool_call_limit';
+export type StopReason =
+  | 'stop'
+  | 'tool_calls'
+  | 'iteration_limit'
+  | 'tool_call_limit';
 export interface SmartAgentResponse {
   content: string;
   iterations: number;
   toolCallCount: number;
   stopReason: StopReason;
+  /** External tool calls requested by the LLM (OpenAI wire format). */
+  toolCalls?: Array<{
+    id: string;
+    type: 'function';
+    function: { name: string; arguments: string };
+  }>;
   usage?: {
     promptTokens: number;
     completionTokens: number;
@@ -308,9 +318,37 @@ export class SmartAgent {
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     let content = '';
     const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    let stopReason: StopReason = 'stop';
+    const collectedToolCalls: Array<{
+      id: string;
+      type: 'function';
+      function: { name: string; arguments: string };
+    }> = [];
     for await (const chunk of this.streamProcess(textOrMessages, options)) {
       if (!chunk.ok) return chunk;
       if (chunk.value.content) content += chunk.value.content;
+      if (chunk.value.toolCalls) {
+        for (const tc of chunk.value.toolCalls) {
+          const delta = toToolCallDelta(tc, collectedToolCalls.length);
+          if (!delta.id) continue;
+          const existing = collectedToolCalls.find((c) => c.id === delta.id);
+          if (existing) {
+            if (delta.arguments) existing.function.arguments += delta.arguments;
+          } else if (delta.name) {
+            collectedToolCalls.push({
+              id: delta.id,
+              type: 'function',
+              function: {
+                name: delta.name,
+                arguments: delta.arguments || '',
+              },
+            });
+          }
+        }
+      }
+      if (chunk.value.finishReason === 'tool_calls') {
+        stopReason = 'tool_calls';
+      }
       if (chunk.value.usage) {
         totalUsage.promptTokens += chunk.value.usage.promptTokens;
         totalUsage.completionTokens += chunk.value.usage.completionTokens;
@@ -322,8 +360,11 @@ export class SmartAgent {
       value: {
         content,
         iterations: 1,
-        toolCallCount: 0,
-        stopReason: 'stop',
+        toolCallCount: collectedToolCalls.length,
+        stopReason,
+        ...(collectedToolCalls.length > 0
+          ? { toolCalls: collectedToolCalls }
+          : {}),
         usage: totalUsage,
       },
     };
