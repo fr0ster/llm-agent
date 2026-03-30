@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.6] — 2026-03-30
+
+### Fixed
+- **PresentHandler overwrites external tool call responses** — when the tool-loop ended with `finishReason: 'tool_calls'` for external tools, PresentHandler still executed with empty context, producing garbage output after the tool call SSE chunks. Now detects the external-call path and returns immediately. (#29)
+
+---
+
 ## [4.0.5] — 2026-03-30
 
 ### Fixed
