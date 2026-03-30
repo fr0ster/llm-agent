@@ -28,6 +28,8 @@ import type { IMetrics } from './metrics/types.js';
 import type { PipelineContext } from './pipeline/context.js';
 import type { PipelineExecutor } from './pipeline/executor.js';
 import type { StageDefinition } from './pipeline/types.js';
+import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
+import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
 import {
   isToolContextUnavailableError,
   ToolAvailabilityRegistry,
@@ -195,6 +197,7 @@ export class SmartAgent {
   private readonly toolCache: IToolCache;
   private readonly outputValidator: IOutputValidator;
   private readonly sessionManager: ISessionManager;
+  private readonly pendingToolResults: PendingToolResultsRegistry;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -212,6 +215,7 @@ export class SmartAgent {
     this.toolCache = deps.toolCache ?? new NoopToolCache();
     this.outputValidator = deps.outputValidator ?? new NoopValidator();
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
+    this.pendingToolResults = new PendingToolResultsRegistry();
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -826,6 +830,26 @@ export class SmartAgent {
     const timingLog: TimingEntry[] = [];
     const loopStart = Date.now();
     let currentTools = activeTools;
+
+    // Inject pending internal tool results from previous mixed-call request
+    if (this.pendingToolResults.has(sessionId)) {
+      const pending = await this.pendingToolResults.consume(sessionId);
+      if (pending) {
+        messages = [
+          ...messages,
+          pending.assistantMessage,
+          ...pending.results.map((r) => ({
+            role: 'tool' as const,
+            content: r.text,
+            tool_call_id: r.toolCallId,
+          })),
+        ];
+        opts?.sessionLogger?.logStep('pending_tool_results_injected', {
+          toolNames: pending.results.map((r) => r.toolName),
+        });
+      }
+    }
+
     for (let iteration = 0; ; iteration++) {
       let iterationBuffer = '';
       if (opts?.signal?.aborted) {
@@ -1194,6 +1218,26 @@ export class SmartAgent {
         continue;
       }
       if (validExternalCalls.length > 0) {
+        // Mixed calls: fire internal tools async, store pending results
+        if (internalCalls.length > 0) {
+          fireInternalToolsAsync(
+            content,
+            internalCalls,
+            this.pendingToolResults,
+            sessionId,
+            {
+              toolClientMap,
+              toolCache: this.toolCache,
+              metrics: this.metrics,
+              options: opts,
+            },
+          );
+          opts?.sessionLogger?.logStep('mixed_tool_calls', {
+            internal: internalCalls.map((tc) => tc.name),
+            external: validExternalCalls.map((tc) => tc.name),
+          });
+        }
+
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
@@ -1523,6 +1567,7 @@ export class SmartAgent {
       toolPolicy: this.deps.toolPolicy,
       injectionDetector: this.deps.injectionDetector,
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
+      pendingToolResults: this.pendingToolResults,
       skillManager: this.deps.skillManager,
       presentationLlm: this.deps.presentationLlm,
       embedder: this.deps.embedder,

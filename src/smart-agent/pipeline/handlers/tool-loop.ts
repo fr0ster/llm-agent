@@ -32,6 +32,7 @@ import type {
   Result,
   TimingEntry,
 } from '../../interfaces/types.js';
+import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../tracer/types.js';
 import {
@@ -66,6 +67,25 @@ export class ToolLoopHandler implements IStageHandler {
     const timingLog: TimingEntry[] = [];
     const loopStart = Date.now();
     let currentTools: LlmTool[] = ctx.activeTools;
+
+    // Inject pending internal tool results from previous mixed-call request
+    if (ctx.pendingToolResults.has(ctx.sessionId)) {
+      const pending = await ctx.pendingToolResults.consume(ctx.sessionId);
+      if (pending) {
+        messages = [
+          ...messages,
+          pending.assistantMessage,
+          ...pending.results.map((r) => ({
+            role: 'tool' as const,
+            content: r.text,
+            tool_call_id: r.toolCallId,
+          })),
+        ];
+        ctx.options?.sessionLogger?.logStep('pending_tool_results_injected', {
+          toolNames: pending.results.map((r) => r.toolName),
+        });
+      }
+    }
 
     for (let iteration = 0; ; iteration++) {
       if (ctx.options?.signal?.aborted) {
@@ -374,6 +394,25 @@ export class ToolLoopHandler implements IStageHandler {
 
       // -- Handle external tool calls (delegate to consumer) -----------------
       if (validExternalCalls.length > 0) {
+        if (internalCalls.length > 0) {
+          fireInternalToolsAsync(
+            content,
+            internalCalls,
+            ctx.pendingToolResults,
+            ctx.sessionId,
+            {
+              toolClientMap: ctx.toolClientMap,
+              toolCache: ctx.toolCache,
+              metrics: ctx.metrics,
+              options: ctx.options,
+            },
+          );
+          ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
+            internal: internalCalls.map((tc) => tc.name),
+            external: validExternalCalls.map((tc) => tc.name),
+          });
+        }
+
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
         ctx.yield({
