@@ -42,6 +42,7 @@ import type {
 } from '../interfaces/types.js';
 import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
+import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import type { IQueryExpander } from '../rag/query-expander.js';
@@ -87,6 +88,7 @@ export interface PipelineContext {
   readonly toolPolicy: IToolPolicy | undefined;
   readonly injectionDetector: IPromptInjectionDetector | undefined;
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
+  readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
   readonly embedder: IEmbedder | undefined;
 
