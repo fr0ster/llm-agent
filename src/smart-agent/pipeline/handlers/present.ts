@@ -30,6 +30,12 @@ export class PresentHandler implements IStageHandler {
   ): Promise<boolean> {
     const presentationLlm = ctx.presentationLlm;
 
+    // External tool call path — tool-loop already yielded finishReason: 'tool_calls'.
+    // Nothing to present; running the presentation LLM would produce garbage.
+    if (!ctx.toolLoopContent && ctx.toolLoopMessages.length === 0) {
+      return true;
+    }
+
     // No presentation LLM — yield toolLoopContent as-is (no-op fallback)
     if (!presentationLlm) {
       if (ctx.toolLoopContent) {
