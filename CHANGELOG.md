@@ -7,6 +7,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.5] — 2026-03-30
+
+### Fixed
+- **Mixed internal+external tool calls loop until maxIterations** — when LLM returned both internal MCP tool calls and external tool calls in one response, core ignored internal calls and only returned external to the client. The LLM kept re-requesting the unexecuted internal tools, causing a loop. Core now fires internal tools asynchronously while immediately returning external calls to the client. On the next request, pending internal results are awaited and injected into context. (#28)
+
+### Added
+- **`PendingToolResultsRegistry`** — per-session storage for in-flight internal tool call promises. TTL-based cleanup, consume-once semantics.
+- **`fireInternalToolsAsync`** — shared helper for mixed-call handling, used by both default and pipeline tool loops.
+
+---
+
 ## [4.0.4] — 2026-03-30
 
 ### Fixed
