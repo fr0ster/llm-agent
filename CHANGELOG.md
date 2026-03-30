@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.4] — 2026-03-30
+
+### Fixed
+- **External MCP tool calls not propagated to client** — `mapStopReason()` in both `SmartAgentServer` and `SmartServer` mapped `tool_calls` to `length`/`stop`, so clients never received `finish_reason: "tool_calls"`. Non-streaming responses omitted `tool_calls` from the assistant message. `process()` ignored tool call deltas from the stream. All three paths now correctly propagate tool calls and finish reason.
+- **`SmartAgentServer` did not forward `body.tools` to SmartAgent** — external tools from the HTTP request were silently dropped. The server now passes them as `externalTools`.
+- **`SmartAgentServer` streaming SSE dropped tool_calls from first chunk** — the first SSE delta only included `role` and `content`, ignoring any tool call deltas. Fixed to include `tool_calls` in the first chunk delta.
+
+### Changed
+- **`StopReason` type** now includes `'tool_calls'` alongside `'stop'`, `'iteration_limit'`, and `'tool_call_limit'`.
+- **`SmartAgentResponse`** gained optional `toolCalls` field (OpenAI wire format) for external tool call details.
+
+---
+
 ## [4.0.3] — 2026-03-30
 
 ### Fixed
