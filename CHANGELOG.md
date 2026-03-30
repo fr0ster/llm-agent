@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.7] — 2026-03-30
+
+### Changed
+- **`docs/superpowers/` removed from repo** — generated plans and specs are session-local, now gitignored.
+
+---
+
 ## [4.0.6] — 2026-03-30
 
 ### Fixed
