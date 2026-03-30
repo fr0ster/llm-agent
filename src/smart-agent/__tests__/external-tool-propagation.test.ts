@@ -4,7 +4,7 @@ import { describe, it } from 'node:test';
 import { SmartAgent } from '../agent.js';
 import type { LlmError, LlmStreamChunk, Result } from '../interfaces/types.js';
 import { SmartAgentServer } from '../server.js';
-import { makeClassifier, makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 
@@ -156,10 +156,10 @@ describe('External tool propagation — SmartAgent.process()', () => {
     assert.ok(r.ok, 'process() should succeed');
     assert.equal(r.value.stopReason, 'tool_calls');
     assert.ok(r.value.toolCalls, 'toolCalls should be present');
-    assert.equal(r.value.toolCalls!.length, 1);
-    assert.equal(r.value.toolCalls![0].function.name, 'get_weather');
+    assert.equal(r.value.toolCalls?.length, 1);
+    assert.equal(r.value.toolCalls?.[0].function.name, 'get_weather');
     assert.ok(
-      r.value.toolCalls![0].function.arguments.includes('Berlin'),
+      r.value.toolCalls?.[0].function.arguments.includes('Berlin'),
       'arguments should contain Berlin',
     );
   });
