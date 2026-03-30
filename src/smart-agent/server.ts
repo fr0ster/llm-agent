@@ -140,6 +140,7 @@ export class SmartAgentServer {
 
     const body = parsed as {
       messages: Array<Message>;
+      tools?: unknown[];
       temperature?: number;
       max_tokens?: number;
       top_p?: number;
@@ -169,10 +170,11 @@ export class SmartAgentServer {
       return;
     }
 
-    const opts: CallOptions = {
+    const opts: CallOptions & { externalTools?: unknown[] } = {
       temperature: body.temperature,
       maxTokens: body.max_tokens,
       topP: body.top_p,
+      externalTools: body.tools,
     };
 
     let timeoutId: ReturnType<typeof setTimeout> | undefined;
@@ -242,23 +244,39 @@ export class SmartAgentServer {
 
           // First chunk should include the role
           if (firstChunk) {
+            const firstDelta: Record<string, unknown> = {
+              role: 'assistant',
+              content: chunk.value.content || '',
+            };
+            if (chunk.value.toolCalls) {
+              firstDelta.tool_calls = chunk.value.toolCalls.map(
+                (call, index) => {
+                  const tc = toToolCallDelta(call, index);
+                  return {
+                    index: tc.index,
+                    id: tc.id,
+                    type: 'function',
+                    function: {
+                      name: tc.name,
+                      arguments: tc.arguments || '',
+                    },
+                  };
+                },
+              );
+            }
             res.write(
               `data: ${JSON.stringify({
                 ...baseResponse,
                 choices: [
                   {
                     index: 0,
-                    delta: {
-                      role: 'assistant',
-                      content: chunk.value.content || '',
-                    },
+                    delta: firstDelta,
                     finish_reason: null,
                   },
                 ],
               })}\n\n`,
             );
             firstChunk = false;
-            // If the first chunk also had a finish reason, handle it in the next loop iteration or next step
             if (!chunk.value.finishReason) continue;
           }
 
