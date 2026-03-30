@@ -80,7 +80,7 @@ function normalizeExternalTool(
     return {
       tool: {
         name,
-        description: asString(raw.description) ?? '',
+        description: `[client-provided] ${asString(raw.description) ?? ''}`,
         inputSchema: asSchema(raw.inputSchema),
       },
       error: null,
@@ -147,7 +147,7 @@ function normalizeExternalTool(
   return {
     tool: {
       name: functionName,
-      description: asString(fn?.description) ?? '',
+      description: `[client-provided] ${asString(fn?.description) ?? ''}`,
       inputSchema: asSchema(fn?.parameters),
     },
     error: null,

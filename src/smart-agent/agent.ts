@@ -831,6 +831,19 @@ export class SmartAgent {
     const loopStart = Date.now();
     let currentTools = activeTools;
 
+    // Inject tool priority instruction when external tools are present
+    if (externalTools.length > 0) {
+      const systemIdx = messages.findIndex((m) => m.role === 'system');
+      if (systemIdx >= 0) {
+        const sys = messages[systemIdx];
+        messages = [...messages];
+        messages[systemIdx] = {
+          ...sys,
+          content: `${sys.content}\n\nIMPORTANT: You have internal tools and client-provided tools (marked [client-provided] in their description). Always prefer internal tools when they can accomplish the task. Use client-provided tools only when no internal tool can do the job.`,
+        };
+      }
+    }
+
     // Inject pending internal tool results from previous mixed-call request
     if (this.pendingToolResults.has(sessionId)) {
       const pending = await this.pendingToolResults.consume(sessionId);

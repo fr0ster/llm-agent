@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.8] — 2026-03-30
+
+### Fixed
+- **LLM chooses external tools over internal MCP tools** — external tool descriptions now prefixed with `[client-provided]` during normalization. Both tool loops inject a system prompt instruction: "Always prefer internal tools; use client-provided tools only when no internal tool can do the job." (#30)
+
+---
+
 ## [4.0.7] — 2026-03-30
 
 ### Changed
