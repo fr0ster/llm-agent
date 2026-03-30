@@ -4,6 +4,7 @@ import { createServer } from 'node:http';
 import type { Message } from '../types.js';
 import type { SmartAgent, StopReason } from './agent.js';
 import type { CallOptions } from './interfaces/types.js';
+import { toToolCallDelta } from './utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
 // Public types
@@ -24,10 +25,12 @@ export interface SmartAgentServerHandle {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mapStopReason(r: StopReason): 'stop' | 'length' {
+function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
   switch (r) {
     case 'stop':
       return 'stop';
+    case 'tool_calls':
+      return 'tool_calls';
     case 'iteration_limit':
       return 'length';
     case 'tool_call_limit':
@@ -259,15 +262,31 @@ export class SmartAgentServer {
             if (!chunk.value.finishReason) continue;
           }
 
-          // Regular content chunk
-          if (chunk.value.content && !firstChunk) {
+          // Regular content / tool call chunk
+          if ((chunk.value.content || chunk.value.toolCalls) && !firstChunk) {
+            const delta: Record<string, unknown> = {};
+            if (chunk.value.content) delta.content = chunk.value.content;
+            if (chunk.value.toolCalls) {
+              delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
+                const tc = toToolCallDelta(call, index);
+                return {
+                  index: tc.index,
+                  id: tc.id,
+                  type: 'function',
+                  function: {
+                    name: tc.name,
+                    arguments: tc.arguments || '',
+                  },
+                };
+              });
+            }
             res.write(
               `data: ${JSON.stringify({
                 ...baseResponse,
                 choices: [
                   {
                     index: 0,
-                    delta: { content: chunk.value.content },
+                    delta,
                     finish_reason: null,
                   },
                 ],
@@ -337,6 +356,15 @@ export class SmartAgentServer {
         return;
       }
 
+      const message: Record<string, unknown> = {
+        role: 'assistant',
+        content: result.value.content,
+      };
+      if (result.value.toolCalls) {
+        message.tool_calls = result.value.toolCalls;
+        if (!message.content) message.content = null;
+      }
+
       const response = {
         id: `chatcmpl-${randomUUID()}`,
         object: 'chat.completion',
@@ -345,7 +373,7 @@ export class SmartAgentServer {
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: result.value.content },
+            message,
             finish_reason: mapStopReason(result.value.stopReason),
           },
         ],

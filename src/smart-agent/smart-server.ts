@@ -175,8 +175,10 @@ export interface SmartServerHandle {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function mapStopReason(r: StopReason): 'stop' | 'length' {
-  return r === 'stop' ? 'stop' : 'length';
+function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
+  if (r === 'stop') return 'stop';
+  if (r === 'tool_calls') return 'tool_calls';
+  return 'length';
 }
 
 function jsonError(message: string, type: string, code?: string): string {
@@ -1005,7 +1007,8 @@ export class SmartServer {
     const result = await smartAgent.process(normalizedMessages, opts);
     log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
     const finalContent = result.ok
-      ? result.value.content || '(no response)'
+      ? result.value.content ||
+        (result.value.toolCalls ? null : '(no response)')
       : `Error: ${result.error.message}`;
     const finalFinishReason = result.ok
       ? mapStopReason(result.value.stopReason)
@@ -1017,6 +1020,14 @@ export class SmartServer {
         completion_tokens: result.value.usage.completionTokens,
         total_tokens: result.value.usage.totalTokens,
       };
+    }
+
+    const message: Record<string, unknown> = {
+      role: 'assistant',
+      content: finalContent,
+    };
+    if (result.ok && result.value.toolCalls) {
+      message.tool_calls = result.value.toolCalls;
     }
 
     res.writeHead(200, {
@@ -1032,7 +1043,7 @@ export class SmartServer {
         choices: [
           {
             index: 0,
-            message: { role: 'assistant', content: finalContent },
+            message,
             finish_reason: finalFinishReason,
           },
         ],
