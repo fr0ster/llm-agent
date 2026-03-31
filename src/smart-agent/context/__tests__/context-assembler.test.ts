@@ -481,7 +481,20 @@ describe('ContextAssembler — systemPromptPreamble', () => {
     assert.ok(r.ok);
     const sys = r.value.find((m) => m.role === 'system');
     assert.ok(sys);
-    assert.ok(sys.content.includes('Preamble text.\n\n## Known Facts'));
+    assert.ok(
+      sys.content.includes('Preamble text.'),
+      'should contain preamble',
+    );
+    assert.ok(
+      sys.content.includes('## Known Facts'),
+      'should contain context section',
+    );
+    // Preamble should come before context sections
+    assert.ok(
+      sys.content.indexOf('Preamble text.') <
+        sys.content.indexOf('## Known Facts'),
+      'preamble should precede context',
+    );
   });
 });
 
