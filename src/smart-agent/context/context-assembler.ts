@@ -248,9 +248,12 @@ export class ContextAssembler implements IContextAssembler {
       const messages: Message[] = [];
 
       const preamble = this.systemPromptPreamble ?? '';
+      const toolGuidance =
+        'Use available tools when they can accomplish the task. When an action is impossible with available tools — say so clearly and do not attempt it.';
       if (preamble || systemContent || this.showReasoning) {
         const parts = [
           preamble,
+          toolGuidance,
           this.showReasoning
             ? this.reasoningInstruction || DEFAULT_REASONING_INSTRUCTION
             : '',

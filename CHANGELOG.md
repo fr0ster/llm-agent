@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [4.0.9] — 2026-03-31
+
+### Fixed
+- **LLM hallucinates tool calls when no suitable tool exists** — default system prompt now includes guidance: "When an action is impossible with available tools — say so clearly and do not attempt it." This gives the LLM explicit permission to refuse, preventing hallucinated tool calls. (#31)
+
+---
+
 ## [4.0.8] — 2026-03-30
 
 ### Fixed
