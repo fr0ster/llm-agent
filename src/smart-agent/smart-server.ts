@@ -1001,6 +1001,13 @@ export class SmartServer {
       }
       res.write('data: [DONE]\n\n');
       res.end();
+      log({
+        event: 'request_done',
+        ok: true,
+        stream: true,
+        finishReason: finishReasonSent ? 'sent' : 'fallback_stop',
+        durationMs: Date.now() - t0,
+      });
       return;
     }
 
