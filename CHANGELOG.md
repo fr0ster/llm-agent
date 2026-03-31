@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.0.0] — 2026-03-31 ⭐ Stable baseline
+
+Verified end-to-end with Cline and Goose via SAP AI Core (Claude Sonnet) + MCP ABAP tools. External tool propagation, mixed tool call handling, and streaming all work correctly.
+
+### Fixed
+- **Streaming `request_done` not logged** — SmartServer now logs `request_done` with `stream: true` and `durationMs` when SSE stream completes, matching the non-streaming path.
+
+---
+
 ## [4.0.9] — 2026-03-31
 
 ### Fixed
