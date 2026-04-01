@@ -86,8 +86,8 @@ echo ""
 
 # Claude CLI auth: if logged into claude.ai, do not set ANTHROPIC_API_KEY (conflicts).
 # If no login, set a placeholder key so Claude CLI accepts the connection.
-CLAUDE_AUTH_FILE="${HOME}/.claude/credentials.json"
-if [[ -f "$CLAUDE_AUTH_FILE" ]] && grep -q "sessionKey" "$CLAUDE_AUTH_FILE" 2>/dev/null; then
+CLAUDE_AUTH_FILE="${HOME}/.claude/.credentials.json"
+if [[ -f "$CLAUDE_AUTH_FILE" ]] && grep -q "accessToken" "$CLAUDE_AUTH_FILE" 2>/dev/null; then
   unset ANTHROPIC_API_KEY 2>/dev/null || true
 else
   export ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-placeholder}"
