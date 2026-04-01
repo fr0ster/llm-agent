@@ -10,8 +10,16 @@
 #
 # Required environment (set in .env or export before running):
 #   LLM_PROVIDER  — openai | anthropic | deepseek | sap-ai-sdk
-#   LLM_API_KEY   — provider API key (or AICORE_SERVICE_KEY for sap-ai-sdk)
 #   LLM_MODEL     — model name as the provider expects
+#
+# For API key providers (openai, anthropic, deepseek):
+#   LLM_API_KEY   — provider API key
+#
+# For SAP AI Core (sap-ai-sdk):
+#   AICORE_CLIENT_ID      — OAuth2 client ID
+#   AICORE_CLIENT_SECRET  — OAuth2 client secret
+#   AICORE_AUTH_URL       — OAuth2 token endpoint base URL
+#   AICORE_BASE_URL       — SAP AI Core API base URL
 #
 # Optional:
 #   MCP_ENDPOINT  — MCP server URL (default: none)
@@ -41,6 +49,14 @@ fi
 PORT="${PORT:-4004}"
 AGENT_PID=""
 AGENT_STARTED_BY_US=false
+
+# For sap-ai-sdk: build AICORE_SERVICE_KEY JSON from separate env vars
+# (SAP AI SDK reads this single JSON env var for auth)
+if [[ "${LLM_PROVIDER:-}" == "sap-ai-sdk" && -z "${AICORE_SERVICE_KEY:-}" ]]; then
+  if [[ -n "${AICORE_CLIENT_ID:-}" && -n "${AICORE_CLIENT_SECRET:-}" && -n "${AICORE_AUTH_URL:-}" && -n "${AICORE_BASE_URL:-}" ]]; then
+    export AICORE_SERVICE_KEY="{\"clientid\":\"${AICORE_CLIENT_ID}\",\"clientsecret\":\"${AICORE_CLIENT_SECRET}\",\"url\":\"${AICORE_AUTH_URL}\",\"serviceurls\":{\"AI_API_URL\":\"${AICORE_BASE_URL}\"}}"
+  fi
+fi
 
 cleanup() {
   if [[ "$AGENT_STARTED_BY_US" == true && -n "$AGENT_PID" ]]; then
