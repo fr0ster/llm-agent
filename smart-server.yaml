@@ -1,72 +1,46 @@
 port: 4004
 host: 0.0.0.0
-
-# Request routing mode:
-#   hard   — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
-#   pass   — Transparent proxy. Logs everything but modifies nothing.
-#   smart  — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
-# Note: Cline (and other prompt-based clients) are auto-detected via IClientAdapter — no special mode needed.
 mode: smart
 
-# --- Unified Multi-Model Pipeline (Advanced) --------------------------------
-# Use this section to assign different models for different internal tasks.
-# When pipeline is present, it can extend or override the flat llm/rag/mcp settings.
 pipeline:
   llm:
-    main:                             # Primary LLM for tool loops and final answers
-      provider: deepseek              # deepseek | openai | anthropic
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat            # e.g., deepseek-chat or gpt-4o
+    main:
+      provider: ${LLM_PROVIDER}
+      apiKey: ${LLM_API_KEY}
+      model: ${LLM_MODEL}
       temperature: 0.7
-    
-    classifier:                       # Rapid intent classification
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
+      maxTokens: 32768
+    classifier:
+      provider: ${LLM_PROVIDER}
+      apiKey: ${LLM_API_KEY}
+      model: ${LLM_MODEL}
       temperature: 0.1
-    
-    helper:                           # RAG translation and history summarization
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
+    helper:
+      provider: ${LLM_PROVIDER}
+      apiKey: ${LLM_API_KEY}
+      model: ${LLM_MODEL}
       temperature: 0.1
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT}
 
   rag:
     facts:
-      type: ollama
-      url: http://localhost:11434
-      model: nomic-embed-text
-      dedupThreshold: 0.92
+      type: in-memory
     feedback:
       type: in-memory
     state:
       type: in-memory
 
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
-
-# --- Legacy Flat Config (Optional Fallbacks) --------------------------------
-llm:
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: deepseek-chat
-  temperature: 0.7
-  classifierTemperature: 0.1
-
-rag:
-  type: ollama
-  url: http://localhost:11434
-  model: nomic-embed-text
-  dedupThreshold: 0.92
-  vectorWeight: 0.7
-  keywordWeight: 0.3
-
 agent:
+  externalToolsValidationMode: permissive
   maxIterations: 10
   maxToolCalls: 30
   ragQueryK: 10
   showReasoning: false
   historyAutoSummarizeLimit: 10
+  streamMode: final
 
 log: smart-server.log
 logDir: sessions
