@@ -45,7 +45,16 @@ load_env_file() {
 }
 
 load_env_file "$PROJECT_DIR/.env"
-load_env_file "$PROJECT_DIR/.env.aicore"
+
+# Load provider-specific env file if present
+PROVIDER="${LLM_PROVIDER:-}"
+[[ -z "$PROVIDER" ]] && PROVIDER=$(grep "^LLM_PROVIDER=" "$PROJECT_DIR/.env" 2>/dev/null | cut -d= -f2)
+case "$PROVIDER" in
+  sap-ai-sdk) load_env_file "$PROJECT_DIR/.env.aicore" ;;
+  deepseek)   load_env_file "$PROJECT_DIR/.env.deepseek" ;;
+  openai)     load_env_file "$PROJECT_DIR/.env.openai" ;;
+  anthropic)  load_env_file "$PROJECT_DIR/.env.anthropic" ;;
+esac
 
 PORT="${PORT:-4004}"
 AGENT_PID=""
