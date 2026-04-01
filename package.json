@@ -105,7 +105,7 @@
     "typescript": "^6.0.2"
   },
   "bin": {
-    "llm-agent-beta": "./dist/smart-agent/cli.js"
+    "llm-agent": "./dist/smart-agent/cli.js"
   },
   "license": "MIT",
   "author": "Oleksii Kyslytsia <oleksij.kyslytsja@gmail.com>",
