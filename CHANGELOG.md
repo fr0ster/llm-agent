@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.1.2] — 2026-04-02
+
+### Added
+- **`claude-via-agent` global binary** — installed alongside `llm-agent` via `npm install -g`, launches Claude CLI through the SmartAgent server.
+
+---
+
 ## [5.1.1] — 2026-04-02
 
 ### Fixed
