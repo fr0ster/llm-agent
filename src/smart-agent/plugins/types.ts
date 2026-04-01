@@ -55,6 +55,7 @@
  * Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
  */
 
+import type { ILlmApiAdapter } from '../interfaces/api-adapter.js';
 import type { IClientAdapter } from '../interfaces/client-adapter.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { EmbedderFactory } from '../interfaces/rag.js';
@@ -92,6 +93,9 @@ export interface PluginExports {
 
   /** Client adapters for auto-detecting prompt-based clients (accumulated). */
   clientAdapters?: IClientAdapter[];
+
+  /** API protocol adapters, keyed by adapter name. */
+  apiAdapters?: Record<string, ILlmApiAdapter>;
 }
 
 /**
@@ -107,6 +111,7 @@ export interface LoadedPlugins {
   skillManager?: ISkillManager;
   mcpClients: IMcpClient[];
   clientAdapters: IClientAdapter[];
+  apiAdapters: Map<string, ILlmApiAdapter>;
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
   /** Plugins that failed to load, with error messages. */
@@ -164,6 +169,7 @@ export function emptyLoadedPlugins(): LoadedPlugins {
     embedderFactories: {},
     mcpClients: [],
     clientAdapters: [],
+    apiAdapters: new Map(),
     loadedFiles: [],
     errors: [],
   };
@@ -231,6 +237,15 @@ export function mergePluginExports(
   if (mod.clientAdapters && Array.isArray(mod.clientAdapters)) {
     result.clientAdapters.push(...mod.clientAdapters);
     registered = true;
+  }
+
+  if (mod.apiAdapters && typeof mod.apiAdapters === 'object') {
+    for (const [name, adapter] of Object.entries(mod.apiAdapters)) {
+      if (adapter && typeof adapter === 'object' && 'name' in adapter) {
+        result.apiAdapters.set(name, adapter as ILlmApiAdapter);
+        registered = true;
+      }
+    }
   }
 
   if (registered) {
