@@ -19,6 +19,13 @@ export {
   type SmartAgentResponse,
   type StopReason,
 } from './agent-contracts.js';
+export {
+  AdapterValidationError,
+  type ApiRequestContext,
+  type ApiSseEvent,
+  type ILlmApiAdapter,
+  type NormalizedRequest,
+} from './api-adapter.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { IClientAdapter } from './client-adapter.js';
