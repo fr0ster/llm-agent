@@ -41,9 +41,10 @@ cleanup() {
   if [[ "$AGENT_STARTED_BY_US" == true && -n "$AGENT_PID" ]]; then
     kill "$AGENT_PID" 2>/dev/null || true
     wait "$AGENT_PID" 2>/dev/null || true
+    echo "llm-agent stopped."
   fi
 }
-trap cleanup EXIT
+trap cleanup EXIT INT TERM
 
 # Check if llm-agent is already running on this port
 if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1 || \
