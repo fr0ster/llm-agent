@@ -10,16 +10,31 @@ pipeline:
       model: ${LLM_MODEL}
       temperature: 0.7
       maxTokens: 32768
+      credentials:
+        clientId: ${AICORE_CLIENT_ID}
+        clientSecret: ${AICORE_CLIENT_SECRET}
+        tokenServiceUrl: ${AICORE_AUTH_URL}/oauth/token
+        servicUrl: ${AICORE_BASE_URL}
     classifier:
       provider: ${LLM_PROVIDER}
       apiKey: ${LLM_API_KEY}
       model: ${LLM_MODEL}
       temperature: 0.1
+      credentials:
+        clientId: ${AICORE_CLIENT_ID}
+        clientSecret: ${AICORE_CLIENT_SECRET}
+        tokenServiceUrl: ${AICORE_AUTH_URL}/oauth/token
+        servicUrl: ${AICORE_BASE_URL}
     helper:
       provider: ${LLM_PROVIDER}
       apiKey: ${LLM_API_KEY}
       model: ${LLM_MODEL}
       temperature: 0.1
+      credentials:
+        clientId: ${AICORE_CLIENT_ID}
+        clientSecret: ${AICORE_CLIENT_SECRET}
+        tokenServiceUrl: ${AICORE_AUTH_URL}/oauth/token
+        servicUrl: ${AICORE_BASE_URL}
 
   mcp:
     - type: http
