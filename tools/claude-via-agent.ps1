@@ -69,10 +69,9 @@ try {
     Write-Host ""
 
     # Launch Claude CLI pointing to llm-agent
+    # Note: do NOT set ANTHROPIC_API_KEY — it conflicts with claude.ai login.
+    # llm-agent does not validate the auth header; Claude CLI uses its own token.
     $env:ANTHROPIC_BASE_URL = "http://localhost:$Port"
-    if (-not $env:ANTHROPIC_API_KEY) {
-        $env:ANTHROPIC_API_KEY = "placeholder"
-    }
     & claude @args
 }
 finally {
