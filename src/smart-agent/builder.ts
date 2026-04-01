@@ -29,6 +29,7 @@ import {
   ContextAssembler,
   type ContextAssemblerConfig,
 } from './context/context-assembler.js';
+import type { ILlmApiAdapter } from './interfaces/api-adapter.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
@@ -133,6 +134,10 @@ export interface SmartAgentHandle {
   ragStores: SmartAgentRagStores;
   /** Model provider for discovery. Undefined when not available. */
   modelProvider?: IModelProvider;
+  /** Look up a registered API adapter by name. */
+  getApiAdapter(name: string): ILlmApiAdapter | undefined;
+  /** List all registered API adapter names. */
+  listApiAdapters(): string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +182,7 @@ export class SmartAgentBuilder {
   private _skillManager?: ISkillManager;
   private _pipelineDefinition?: StructuredPipelineDefinition;
   private _clientAdapters: IClientAdapter[] = [];
+  private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _customStageHandlers = new Map<string, IStageHandler>();
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
@@ -318,6 +324,12 @@ export class SmartAgentBuilder {
   /** Register a client adapter for auto-detecting prompt-based clients. */
   withClientAdapter(adapter: IClientAdapter): this {
     this._clientAdapters.push(adapter);
+    return this;
+  }
+
+  /** Register an API adapter. When called multiple times with the same name, the last one wins. */
+  withApiAdapter(adapter: ILlmApiAdapter): this {
+    this._apiAdapters.set(adapter.name, adapter);
     return this;
   }
 
@@ -682,8 +694,10 @@ export class SmartAgentBuilder {
       this._assembler ?? new ContextAssembler(assemblerCfg);
 
     // ---- Plugin loader (optional) -------------------------------------------
+    let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
     if (this._pluginLoader) {
       const plugins = await this._pluginLoader.load();
+      loadedPlugins = plugins;
       // Plugin registrations act as defaults — explicit withXxx() wins
       for (const [type, handler] of plugins.stageHandlers) {
         if (!this._customStageHandlers.has(type)) {
@@ -805,6 +819,21 @@ export class SmartAgentBuilder {
       }
     }
 
+    // ---- API adapters: merge plugin adapters → builder adapters (builder wins) ---
+    // plugins.apiAdapters does not exist yet (added in Task 4); safe future-compat check.
+    const apiAdapters = new Map<string, ILlmApiAdapter>();
+    const pluginApiAdapters = (
+      loadedPlugins as { apiAdapters?: Map<string, ILlmApiAdapter> } | undefined
+    )?.apiAdapters;
+    if (pluginApiAdapters) {
+      for (const [name, adapter] of pluginApiAdapters) {
+        apiAdapters.set(name, adapter);
+      }
+    }
+    for (const [name, adapter] of this._apiAdapters) {
+      apiAdapters.set(name, adapter);
+    }
+
     return {
       agent,
       chat: (messages, tools, options) =>
@@ -818,6 +847,8 @@ export class SmartAgentBuilder {
       circuitBreakers,
       ragStores,
       modelProvider,
+      getApiAdapter: (name: string) => apiAdapters.get(name),
+      listApiAdapters: () => [...apiAdapters.keys()],
     };
   }
 }

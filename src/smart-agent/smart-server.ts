@@ -14,6 +14,11 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
+import type {
+  ILlmApiAdapter,
+  NormalizedRequest,
+} from './interfaces/api-adapter.js';
+import { AdapterValidationError } from './interfaces/api-adapter.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
@@ -163,6 +168,10 @@ export interface SmartServerConfig {
   clientAdapters?: IClientAdapter[];
   /** Whether to include usage stats in SSE stream. Default: true. */
   reportUsage?: boolean;
+  /** API protocol adapters injected via DI. Merged with built-in adapters (openai, anthropic). */
+  apiAdapters?: ILlmApiAdapter[];
+  /** Disable built-in adapter auto-registration. Default: false. */
+  disableBuiltInAdapters?: boolean;
 }
 
 export interface SmartServerHandle {
@@ -455,6 +464,26 @@ export class SmartServer {
       modelProvider,
     } = agentHandle;
 
+    // ---- API adapter map (built-in → config DI; DI wins) --------------------
+    const { OpenAiApiAdapter } = await import(
+      './api-adapters/openai-adapter.js'
+    );
+    const { AnthropicApiAdapter } = await import(
+      './api-adapters/anthropic-adapter.js'
+    );
+    const adapterMap = new Map<string, ILlmApiAdapter>();
+    if (!this.cfg.disableBuiltInAdapters) {
+      const openai = new OpenAiApiAdapter();
+      const anthropic = new AnthropicApiAdapter();
+      adapterMap.set(openai.name, openai);
+      adapterMap.set(anthropic.name, anthropic);
+    }
+    if (this.cfg.apiAdapters) {
+      for (const adapter of this.cfg.apiAdapters) {
+        adapterMap.set(adapter.name, adapter);
+      }
+    }
+
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
 
     const startTime = Date.now();
@@ -562,6 +591,7 @@ export class SmartServer {
         log,
         healthChecker,
         modelProvider,
+        adapterMap,
       ).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -603,6 +633,7 @@ export class SmartServer {
     log: (e: Record<string, unknown>) => void,
     healthChecker: HealthChecker,
     modelProvider?: IModelProvider,
+    adapterMap?: Map<string, ILlmApiAdapter>,
   ): Promise<void> {
     const rawUrl = req.url ?? '/';
     const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
@@ -655,6 +686,20 @@ export class SmartServer {
       res.end(JSON.stringify(status));
       return;
     }
+    // POST /v1/messages or /messages → Anthropic adapter
+    if (
+      req.method === 'POST' &&
+      (urlPath === '/v1/messages' || urlPath === '/messages')
+    ) {
+      const anthropicAdapter = adapterMap?.get('anthropic');
+      if (!anthropicAdapter) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(jsonError('Anthropic adapter not registered', 'not_found'));
+        return;
+      }
+      await this._handleAdapterRequest(req, res, smartAgent, anthropicAdapter);
+      return;
+    }
     if (
       req.method === 'POST' &&
       (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
@@ -674,6 +719,75 @@ export class SmartServer {
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(
       jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'),
+    );
+  }
+
+  private async _handleAdapterRequest(
+    req: IncomingMessage,
+    res: ServerResponse,
+    agent: SmartAgent,
+    adapter: ILlmApiAdapter,
+  ): Promise<void> {
+    const raw = await readBody(req);
+    let body: unknown;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(jsonError('Invalid JSON', 'invalid_request_error'));
+      return;
+    }
+
+    let normalized: NormalizedRequest;
+    try {
+      normalized = adapter.normalizeRequest(body);
+    } catch (err) {
+      if (err instanceof AdapterValidationError) {
+        res.writeHead(err.statusCode, { 'Content-Type': 'application/json' });
+        res.end(jsonError(err.message, 'invalid_request_error'));
+        return;
+      }
+      throw err;
+    }
+
+    if (normalized.stream) {
+      res.writeHead(200, {
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        Connection: 'keep-alive',
+      });
+
+      for await (const event of adapter.transformStream(
+        agent.streamProcess(normalized.messages, normalized.options),
+        normalized.context,
+      )) {
+        const eventLine = event.event ? `event: ${event.event}\n` : '';
+        res.write(`${eventLine}data: ${event.data}\n\n`);
+      }
+      res.end();
+      return;
+    }
+
+    // Non-streaming
+    const result = await agent.process(normalized.messages, normalized.options);
+    res.setHeader('Content-Type', 'application/json');
+    if (!result.ok) {
+      res.writeHead(500);
+      res.end(
+        JSON.stringify(
+          adapter.formatError?.(result.error, normalized.context) ?? {
+            error: {
+              message: result.error.message,
+              type: result.error.code,
+            },
+          },
+        ),
+      );
+      return;
+    }
+    res.writeHead(200);
+    res.end(
+      JSON.stringify(adapter.formatResult(result.value, normalized.context)),
     );
   }
 

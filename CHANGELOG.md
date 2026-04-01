@@ -7,6 +7,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.1.0] — 2026-04-01
+
+### Added
+- **`ILlmApiAdapter` interface** — stateless singleton contract for protocol translation. Methods: `normalizeRequest()`, `transformStream()`, `formatResult()`, `formatError()` (optional). Throw `AdapterValidationError` for malformed requests.
+- **`AnthropicApiAdapter`** — built-in adapter implementing the full Anthropic Messages API (`POST /v1/messages`). Implements the correct SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` → `content_block_stop` → `message_delta` → `message_stop`.
+- **`OpenAiApiAdapter`** — built-in adapter for OpenAI Chat Completions (`POST /v1/chat/completions`), extracted from the previous inline implementation.
+- **`AgentCallOptions`** — unified options type for `process()` and `streamProcess()`, replacing the previous ad-hoc options shape.
+- **Plugin system: `apiAdapters`** — plugins can now export `apiAdapters: ILlmApiAdapter[]` to register additional inbound protocol adapters.
+- **`SmartServer` config: `apiAdapters` / `disableBuiltInAdapters`** — `apiAdapters` registers custom adapters alongside built-ins; `disableBuiltInAdapters: true` suppresses the built-in OpenAI and Anthropic adapters entirely.
+- **Builder: `.withApiAdapter(adapter)`** — registers a custom `ILlmApiAdapter` instance.
+- **`docs/CLIENT_SETUP.md`** — connection guide for Claude CLI, Cline, and Goose.
+- **Provider-agnostic env vars in `smart-server.yaml`** — `LLM_PROVIDER`, `LLM_API_KEY`, `LLM_MODEL` replace provider-specific variable names.
+
+### Changed
+- **Binary renamed** from `llm-agent-beta` to `llm-agent`.
+
+---
+
 ## [5.0.0] — 2026-03-31 ⭐ Stable baseline
 
 Verified end-to-end with Cline and Goose via SAP AI Core (Claude Sonnet) + MCP ABAP tools. External tool propagation, mixed tool call handling, and streaming all work correctly.

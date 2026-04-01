@@ -13,6 +13,17 @@ This project provides a robust orchestration layer that transforms standard LLMs
 - **SmartServer:** A production-ready HTTP server that makes the agent accessible to any OpenAI-compatible client (Cline, Goose, etc.).
 - **Hybrid RAG:** A multi-vector search engine combining semantic embeddings with BM25 lexical scoring.
 
+## Supported API Protocols
+
+SmartServer exposes two inbound API endpoints, both routing through the same SmartAgent pipeline:
+
+- **OpenAI Chat Completions** — `POST /v1/chat/completions` — compatible with Cline, Goose, and any OpenAI SDK
+- **Anthropic Messages API** — `POST /v1/messages` — compatible with Claude CLI (Claude Code) and the Anthropic SDK
+
+Protocol translation is handled by `ILlmApiAdapter` — a stateless singleton that normalizes inbound requests and formats outbound responses/streams per-protocol. Custom adapters can be registered via the builder or plugin system.
+
+See [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md) for connection instructions for Claude CLI, Cline, and Goose.
+
 ## Features
 
 - ✅ **Real Incremental Streaming:** True per-token streaming for both text and tool-call deltas.
@@ -35,7 +46,7 @@ npm install @mcp-abap-adt/llm-agent
 1. **Initialize Configuration:**
    Run the agent once to generate the default `smart-server.yaml` template:
    ```bash
-   npx llm-agent-beta
+   npx llm-agent
    ```
 
 2. **Configure:**
