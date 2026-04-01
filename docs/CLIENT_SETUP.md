@@ -34,12 +34,17 @@ Claude CLI connects via `ANTHROPIC_BASE_URL`, sending requests to the Anthropic 
 # Point Claude CLI to llm-agent
 export ANTHROPIC_BASE_URL=http://localhost:4004
 
-# Claude CLI still needs an API key header — use any non-empty string
-# (llm-agent uses its own configured LLM provider, not this key)
-export ANTHROPIC_API_KEY=placeholder
+# Do NOT set ANTHROPIC_API_KEY — it conflicts with claude.ai login.
+# Claude CLI authenticates with its own token; llm-agent does not validate it.
 
 # Launch Claude CLI
 claude
+```
+
+Or use the launcher script:
+
+```bash
+./tools/claude-via-agent.sh
 ```
 
 ### How it works

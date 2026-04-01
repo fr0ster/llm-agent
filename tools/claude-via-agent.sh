@@ -77,6 +77,7 @@ echo "llm-agent ready. Launching Claude CLI..."
 echo ""
 
 # Launch Claude CLI pointing to llm-agent
+# Note: do NOT set ANTHROPIC_API_KEY — it conflicts with claude.ai login.
+# llm-agent does not validate the auth header; Claude CLI uses its own token.
 ANTHROPIC_BASE_URL="http://localhost:$PORT" \
-ANTHROPIC_API_KEY="${ANTHROPIC_API_KEY:-placeholder}" \
   claude "$@"
