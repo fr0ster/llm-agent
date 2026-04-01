@@ -73,6 +73,34 @@ flowchart LR
   MCA --> MCPW("MCPClientWrapper")
 ```
 
+## Inbound API Adapter Layer
+
+SmartServer supports multiple inbound API protocols via `ILlmApiAdapter`. Each adapter is a stateless singleton registered by name; the server selects the adapter based on the HTTP route.
+
+```text
+[Client]
+  → POST /v1/chat/completions   → OpenAiApiAdapter   ──┐
+  → POST /v1/messages           → AnthropicApiAdapter ──┤
+                                                         ▼
+                                                    SmartAgent
+                                                         │
+                                                         ▼
+                                                       ILlm  → Provider
+```
+
+Adapter responsibilities:
+- `normalizeRequest()` — parse the protocol-specific body into internal `NormalizedRequest` (messages + options)
+- `transformStream()` — convert the agent's `AsyncIterable<LlmStreamChunk>` into `AsyncIterable<ApiSseEvent>` with protocol-specific SSE event names and data shapes
+- `formatResult()` — format a completed response for the wire
+- `formatError()` — optional; format errors into the protocol's error envelope
+
+Custom adapters are registered via `builder.withApiAdapter()`, the `apiAdapters` SmartServer config field, or the `apiAdapters` plugin export. Set `disableBuiltInAdapters: true` in SmartServer config to suppress the built-in OpenAI and Anthropic adapters.
+
+Files:
+- `src/smart-agent/interfaces/api-adapter.ts` — `ILlmApiAdapter`, `ApiRequestContext`, `ApiSseEvent`, `AdapterValidationError`
+- `src/smart-agent/api-adapters/openai-adapter.ts` — `OpenAiApiAdapter`
+- `src/smart-agent/api-adapters/anthropic-adapter.ts` — `AnthropicApiAdapter`
+
 ## Embeddable Component Contract (No YAML)
 
 For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.

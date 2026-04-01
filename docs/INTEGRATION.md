@@ -743,6 +743,143 @@ import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent';
 export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
 ```
 
+## ILlmApiAdapter
+
+**File:** `src/smart-agent/interfaces/api-adapter.ts`
+
+A stateless singleton that translates between an inbound API protocol and the internal SmartAgent format. One adapter instance handles all requests for its protocol.
+
+```ts
+interface ILlmApiAdapter {
+  /** Unique protocol name, used as the HTTP route discriminator. */
+  readonly name: string;
+
+  /**
+   * Parse and validate the raw inbound request body.
+   * Throw AdapterValidationError on malformed input.
+   */
+  normalizeRequest(request: unknown): NormalizedRequest;
+
+  /**
+   * Transform the agent's internal stream into protocol-specific SSE events.
+   * Each ApiSseEvent is written verbatim as `event: <event>\ndata: <data>\n\n`.
+   */
+  transformStream(
+    source: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
+    context: ApiRequestContext,
+  ): AsyncIterable<ApiSseEvent>;
+
+  /**
+   * Format a completed (non-streaming) agent response for the wire.
+   */
+  formatResult(response: SmartAgentResponse, context: ApiRequestContext): unknown;
+
+  /**
+   * Optional: format an error into the protocol's error shape.
+   * Falls back to a generic JSON error when not implemented.
+   */
+  formatError?(error: OrchestratorError, context: ApiRequestContext): unknown;
+}
+```
+
+Supporting types:
+
+```ts
+interface ApiRequestContext {
+  readonly adapterName: string;
+  readonly protocol: Record<string, unknown>; // protocol-specific per-request state
+}
+
+interface ApiSseEvent {
+  event?: string;  // SSE event name; omit for OpenAI (which has no event: field)
+  data: string;    // pre-serialized JSON payload written after "data: "
+}
+
+/** Thrown from normalizeRequest() to produce a 400 response. */
+class AdapterValidationError extends Error {
+  constructor(message: string, statusCode?: number) {}
+}
+```
+
+### Built-in adapters
+
+| Adapter | Name | Route |
+|---|---|---|
+| `OpenAiApiAdapter` | `openai` | `POST /v1/chat/completions` |
+| `AnthropicApiAdapter` | `anthropic` | `POST /v1/messages` |
+
+`AnthropicApiAdapter` implements the full Anthropic SSE event sequence: `message_start` → `content_block_start` → `content_block_delta` (per token) → `content_block_stop` → `message_delta` → `message_stop`.
+
+### Example: custom adapter skeleton
+
+```ts
+import type { ILlmApiAdapter, ApiRequestContext, ApiSseEvent, NormalizedRequest } from '@mcp-abap-adt/llm-agent';
+import type { SmartAgentResponse, OrchestratorError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
+import { AdapterValidationError } from '@mcp-abap-adt/llm-agent';
+
+class MyProtocolAdapter implements ILlmApiAdapter {
+  readonly name = 'my-protocol';
+
+  normalizeRequest(request: unknown): NormalizedRequest {
+    const req = request as Record<string, unknown>;
+    if (!req.prompt) throw new AdapterValidationError('Missing prompt field');
+    return {
+      messages: [{ role: 'user', content: String(req.prompt) }],
+      stream: Boolean(req.stream),
+      context: { adapterName: this.name, protocol: {} },
+    };
+  }
+
+  async *transformStream(
+    source: AsyncIterable<Result<LlmStreamChunk, OrchestratorError>>,
+    _context: ApiRequestContext,
+  ): AsyncIterable<ApiSseEvent> {
+    for await (const chunk of source) {
+      if (!chunk.ok) continue;
+      const text = chunk.value.content ?? '';
+      if (text) {
+        yield { data: JSON.stringify({ text }) };
+      }
+    }
+    yield { data: '[DONE]' };
+  }
+
+  formatResult(response: SmartAgentResponse, _context: ApiRequestContext): unknown {
+    return { result: response.content };
+  }
+}
+```
+
+### Registration via builder
+
+```ts
+const handle = await new SmartAgentBuilder({})
+  .withMainLlm(myLlm)
+  .withApiAdapter(new MyProtocolAdapter())
+  .build();
+```
+
+### Registration via plugin
+
+```ts
+// plugins/my-adapter.mjs
+import { MyProtocolAdapter } from './my-protocol-adapter.js';
+
+export const apiAdapters = [new MyProtocolAdapter()];
+```
+
+### SmartServer config options
+
+```ts
+new SmartServer({
+  llm: { apiKey: process.env.API_KEY! },
+  // Register additional adapters alongside built-ins:
+  apiAdapters: [new MyProtocolAdapter()],
+  // Disable built-in adapters and supply only your own:
+  disableBuiltInAdapters: true,
+});
+```
+
 ## IMcpClient — DI injection
 
 MCP clients can be injected via three paths (precedence: config > plugin > YAML):
