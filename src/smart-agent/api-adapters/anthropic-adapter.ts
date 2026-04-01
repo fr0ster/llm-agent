@@ -162,7 +162,8 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
       options.maxTokens = body.max_tokens as number;
     if (body.top_p !== undefined) options.topP = body.top_p as number;
     if (Array.isArray(body.tools)) options.externalTools = body.tools;
-    if (typeof body.model === 'string') options.model = body.model;
+    // Do NOT pass body.model to options — it would override the pipeline LLM model.
+    // The request model name is stored in context.protocol for response formatting only.
 
     const id = `msg_${randomUUID()}`;
 
