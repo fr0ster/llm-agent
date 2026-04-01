@@ -99,10 +99,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         toolCount: tools?.length || 0,
       });
 
-      const client = this.createClient(tools);
-      const response = await client.chatCompletion({
-        messages: this.formatMessages(messages),
-      });
+      const formatted = this.formatMessages(messages);
+      const client = this.createClient(formatted, tools);
+      const response = await client.chatCompletion();
 
       const toolCalls = response.getToolCalls();
       const content = response.getContent() || '';
@@ -141,10 +140,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     tools?: unknown[],
   ): AsyncIterable<LLMResponse> {
     try {
-      const client = this.createClient(tools);
-      const streamResponse = await client.stream({
-        messages: this.formatMessages(messages),
-      });
+      const formatted = this.formatMessages(messages);
+      const client = this.createClient(formatted, tools);
+      const streamResponse = await client.stream();
 
       for await (const chunk of streamResponse.stream) {
         yield {
@@ -195,7 +193,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
    * Create an OrchestrationClient with the given tools configuration.
    * Tools are expected in OpenAI function format (already converted by the agent layer).
    */
-  private createClient(tools?: unknown[]): OrchestrationClient {
+  private createClient(
+    messages: ChatMessage[],
+    tools?: unknown[],
+  ): OrchestrationClient {
     // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
     const orchConfig: any = {
       promptTemplating: {
@@ -208,7 +209,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           },
         },
         prompt: {
-          template: [],
+          template: messages,
           ...(tools?.length ? { tools } : {}),
         },
       },

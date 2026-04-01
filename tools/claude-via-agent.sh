@@ -6,23 +6,19 @@
 #
 # Usage:
 #   ./tools/claude-via-agent.sh                  # uses defaults from .env
-#   LLM_MODEL=gpt-4o ./tools/claude-via-agent.sh # override model
+#   ./tools/claude-via-agent.sh --config pipelines/deepseek.yaml
 #
-# Required environment (set in .env or export before running):
-#   LLM_PROVIDER  — openai | anthropic | deepseek | sap-ai-sdk
-#   LLM_MODEL     — model name as the provider expects
+# Environment (set in .env or .env.aicore or export before running):
+#   LLM_PROVIDER  — selects pipeline: pipelines/<provider>.yaml
 #
-# For API key providers (openai, anthropic, deepseek):
-#   LLM_API_KEY   — provider API key
+# For deepseek/openai:
+#   DEEPSEEK_API_KEY or OPENAI_API_KEY
 #
-# For SAP AI Core (sap-ai-sdk):
-#   AICORE_CLIENT_ID      — OAuth2 client ID
-#   AICORE_CLIENT_SECRET  — OAuth2 client secret
-#   AICORE_AUTH_URL       — OAuth2 token endpoint base URL
-#   AICORE_BASE_URL       — SAP AI Core API base URL
+# For SAP AI Core:
+#   AICORE_CLIENT_ID, AICORE_CLIENT_SECRET, AICORE_AUTH_URL, AICORE_BASE_URL
 #
 # Optional:
-#   MCP_ENDPOINT  — MCP server URL (default: none)
+#   MCP_ENDPOINT  — MCP server URL
 #   PORT          — llm-agent port (default: 4004)
 
 set -euo pipefail
@@ -30,39 +26,47 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Load .env if present (safe parsing — handles special chars and trailing = in values)
-if [[ -f "$PROJECT_DIR/.env" ]]; then
+# Load env files (safe parsing — handles special chars and trailing = in values)
+load_env_file() {
+  local file="$1"
+  [[ -f "$file" ]] || return
   while IFS= read -r line; do
-    # Skip comments and blank lines
     [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
-    # Split on first = only
-    key="${line%%=*}"
-    value="${line#*=}"
-    # Trim whitespace from key
+    local key="${line%%=*}"
+    local value="${line#*=}"
     key="$(echo "$key" | xargs)"
     [[ -z "$key" ]] && continue
-    # Strip surrounding quotes from value
     value="${value#\"}"
     value="${value%\"}"
     value="${value#\'}"
     value="${value%\'}"
     export "$key=$value"
-  done < "$PROJECT_DIR/.env"
-fi
+  done < "$file"
+}
+
+load_env_file "$PROJECT_DIR/.env"
+load_env_file "$PROJECT_DIR/.env.aicore"
 
 PORT="${PORT:-4004}"
 AGENT_PID=""
 AGENT_STARTED_BY_US=false
 
 # For sap-ai-sdk: build AICORE_SERVICE_KEY JSON from separate env vars
-# (SAP AI SDK reads this single JSON env var for auth)
-# Uses printf to avoid bash interpreting $ and ! in credentials
 if [[ "${LLM_PROVIDER:-}" == "sap-ai-sdk" && -z "${AICORE_SERVICE_KEY:-}" ]]; then
   if [[ -n "${AICORE_CLIENT_ID:-}" && -n "${AICORE_CLIENT_SECRET:-}" && -n "${AICORE_AUTH_URL:-}" && -n "${AICORE_BASE_URL:-}" ]]; then
     AICORE_SERVICE_KEY=$(printf '{"clientid":"%s","clientsecret":"%s","url":"%s","serviceurls":{"AI_API_URL":"%s"}}' \
       "$AICORE_CLIENT_ID" "$AICORE_CLIENT_SECRET" "$AICORE_AUTH_URL" "$AICORE_BASE_URL")
     export AICORE_SERVICE_KEY
   fi
+fi
+
+# Select pipeline config: explicit --config, or by LLM_PROVIDER, or default smart-server.yaml
+CONFIG=""
+if [[ "${1:-}" == "--config" && -n "${2:-}" ]]; then
+  CONFIG="$2"
+  shift 2
+elif [[ -f "$PROJECT_DIR/pipelines/${LLM_PROVIDER:-}.yaml" ]]; then
+  CONFIG="pipelines/${LLM_PROVIDER}.yaml"
 fi
 
 cleanup() {
@@ -78,10 +82,15 @@ if curl -sf "http://localhost:$PORT/health" >/dev/null 2>&1 || \
    curl -sf "http://localhost:$PORT/v1/models" >/dev/null 2>&1; then
   echo "llm-agent already running on port $PORT, reusing..."
 else
-  # Start llm-agent in background
   echo "Starting llm-agent on port $PORT..."
+  [[ -n "$CONFIG" ]] && echo "Pipeline: $CONFIG"
   cd "$PROJECT_DIR"
-  npx llm-agent &
+
+  if [[ -n "$CONFIG" ]]; then
+    npx llm-agent --config "$CONFIG" &
+  else
+    npx llm-agent &
+  fi
   AGENT_PID=$!
   AGENT_STARTED_BY_US=true
 
@@ -108,7 +117,6 @@ echo "llm-agent ready. Launching Claude CLI..."
 echo ""
 
 # Claude CLI auth: if logged into claude.ai, do not set ANTHROPIC_API_KEY (conflicts).
-# If no login, set a placeholder key so Claude CLI accepts the connection.
 CLAUDE_AUTH_FILE="${HOME}/.claude/.credentials.json"
 if [[ -f "$CLAUDE_AUTH_FILE" ]] && grep -q "accessToken" "$CLAUDE_AUTH_FILE" 2>/dev/null; then
   unset ANTHROPIC_API_KEY 2>/dev/null || true
