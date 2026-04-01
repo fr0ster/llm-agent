@@ -18,7 +18,12 @@ export DEEPSEEK_API_KEY="sk-..."
 npx llm-agent
 ```
 
-The server listens on `http://0.0.0.0:4004` by default with an OpenAI-compatible `/v1/chat/completions` endpoint.
+The server listens on `http://0.0.0.0:4004` by default and exposes two inbound API endpoints:
+
+- **OpenAI Chat Completions** — `POST /v1/chat/completions` — for Cline, Goose, and OpenAI-compatible clients
+- **Anthropic Messages API** — `POST /v1/messages` — for Claude CLI (Claude Code) and the Anthropic SDK
+
+Both endpoints route through the same SmartAgent pipeline. See [CLIENT_SETUP.md](CLIENT_SETUP.md) for client-specific connection instructions.
 
 ## Docker
 
