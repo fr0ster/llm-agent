@@ -9,13 +9,13 @@ This guide covers production deployment patterns for `@mcp-abap-adt/llm-agent`, 
 npm install @mcp-abap-adt/llm-agent
 
 # 2. Generate config
-npx llm-agent-beta --init   # creates smart-server.yaml
+npx llm-agent --init   # creates smart-server.yaml
 
 # 3. Set environment variables
 export DEEPSEEK_API_KEY="sk-..."
 
 # 4. Start
-npx llm-agent-beta
+npx llm-agent
 ```
 
 The server listens on `http://0.0.0.0:4004` by default with an OpenAI-compatible `/v1/chat/completions` endpoint.

@@ -35,7 +35,7 @@ npm install @mcp-abap-adt/llm-agent
 1. **Initialize Configuration:**
    Run the agent once to generate the default `smart-server.yaml` template:
    ```bash
-   npx llm-agent-beta
+   npx llm-agent
    ```
 
 2. **Configure:**
