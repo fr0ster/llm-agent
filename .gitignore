@@ -9,6 +9,7 @@ dist/
 .env.smoke
 .env.abap
 .env.smart-server
+*.env
 
 # IDE
 # .vscode/
@@ -36,3 +37,4 @@ yarn-debug.log*
 yarn-error.log*
 sessions/
 logs_debug/
+.codex

@@ -58,6 +58,11 @@ export {
 export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 // Builder & Providers
 export type { SmartAgentRagStores } from './smart-agent/agent.js';
+// API adapters
+export {
+  AnthropicApiAdapter,
+  OpenAiApiAdapter,
+} from './smart-agent/api-adapters/index.js';
 export {
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
@@ -86,6 +91,14 @@ export type {
   HealthStatus,
 } from './smart-agent/health/types.js';
 // Smart Agent interfaces
+export type { AgentCallOptions } from './smart-agent/interfaces/agent-contracts.js';
+export {
+  AdapterValidationError,
+  type ApiRequestContext,
+  type ApiSseEvent,
+  type ILlmApiAdapter,
+  type NormalizedRequest,
+} from './smart-agent/interfaces/api-adapter.js';
 export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
 export type { ILlm } from './smart-agent/interfaces/llm.js';
 export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';

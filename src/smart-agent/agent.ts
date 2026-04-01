@@ -9,19 +9,32 @@ import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IEmbedder, IRag } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import {
-  type CallOptions,
-  type LlmFinishReason,
-  type LlmStreamChunk,
-  type LlmTool,
-  type McpTool,
-  type RagMetadata,
-  type RagResult,
-  type Result,
-  SmartAgentError,
-  type Subprompt,
-  type TimingEntry,
+import type {
+  CallOptions,
+  LlmFinishReason,
+  LlmStreamChunk,
+  LlmTool,
+  McpTool,
+  RagMetadata,
+  RagResult,
+  Result,
+  Subprompt,
+  TimingEntry,
 } from './interfaces/types.js';
+
+export {
+  type AgentCallOptions,
+  OrchestratorError,
+  type SmartAgentResponse,
+  type StopReason,
+} from './interfaces/agent-contracts.js';
+
+import {
+  type AgentCallOptions,
+  OrchestratorError,
+  type SmartAgentResponse,
+  type StopReason,
+} from './interfaces/agent-contracts.js';
 import type { ILogger } from './logger/index.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
@@ -57,13 +70,6 @@ import {
 } from './utils/tool-call-deltas.js';
 import { NoopValidator } from './validator/noop-validator.js';
 import type { IOutputValidator } from './validator/types.js';
-
-export class OrchestratorError extends SmartAgentError {
-  constructor(message: string, code = 'ORCHESTRATOR_ERROR') {
-    super(message, code);
-    this.name = 'OrchestratorError';
-  }
-}
 
 export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
 
@@ -141,29 +147,6 @@ export interface SmartAgentConfig {
    */
   streamMode?: 'full' | 'final';
 }
-export type StopReason =
-  | 'stop'
-  | 'tool_calls'
-  | 'iteration_limit'
-  | 'tool_call_limit';
-export interface SmartAgentResponse {
-  content: string;
-  iterations: number;
-  toolCallCount: number;
-  stopReason: StopReason;
-  /** External tool calls requested by the LLM (OpenAI wire format). */
-  toolCalls?: Array<{
-    id: string;
-    type: 'function';
-    function: { name: string; arguments: string };
-  }>;
-  usage?: {
-    promptTokens: number;
-    completionTokens: number;
-    totalTokens: number;
-  };
-}
-
 function mergeSignals(
   ...signals: (AbortSignal | undefined)[]
 ): AbortController {
@@ -318,7 +301,7 @@ export class SmartAgent {
 
   async process(
     textOrMessages: string | Message[],
-    options?: CallOptions,
+    options?: AgentCallOptions,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     let content = '';
     const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -376,7 +359,7 @@ export class SmartAgent {
 
   async *streamProcess(
     textOrMessages: string | Message[],
-    options?: CallOptions & { externalTools?: unknown[] },
+    options?: AgentCallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
     if (this.config.smartAgentEnabled === false) {
       yield {
