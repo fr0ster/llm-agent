@@ -12,14 +12,19 @@ Both endpoints route through the SmartAgent pipeline with semantic tool filterin
 Start the llm-agent server:
 
 ```bash
-# Configure environment
+# Option 1: set environment variables directly
 export LLM_PROVIDER=openai          # or: anthropic, deepseek, sap-ai-sdk
 export LLM_API_KEY=sk-...           # API key for the provider
 export LLM_MODEL=gpt-4o             # model name as the provider expects
 export MCP_ENDPOINT=http://localhost:3001/mcp/stream/http  # optional MCP server
-
-# Start the server
 npx llm-agent
+
+# Option 2: use a .env file (recommended)
+# Place all credentials in .env at the project root.
+# The launcher scripts read .env automatically and pick the matching
+# pipeline config (pipelines/deepseek.yaml or pipelines/sap-ai-core.yaml)
+# based on LLM_PROVIDER. Use --config to override.
+npx llm-agent --config pipelines/deepseek.yaml
 ```
 
 The server starts on `http://localhost:4004` by default.
@@ -44,7 +49,37 @@ claude
 Or use the launcher script:
 
 ```bash
+# Linux / macOS
 ./tools/claude-via-agent.sh
+
+# Windows (PowerShell)
+./tools/claude-via-agent.ps1
+```
+
+The launcher reads `.env` from the project root and auto-selects the pipeline config based on `LLM_PROVIDER`:
+
+| `LLM_PROVIDER` | Pipeline loaded |
+|---|---|
+| `deepseek` | `pipelines/deepseek.yaml` |
+| `sap-ai-sdk` | `pipelines/sap-ai-core.yaml` |
+| other | default `smart-server.yaml` |
+
+To override the auto-selected pipeline, pass `--config`:
+
+```bash
+./tools/claude-via-agent.sh --config pipelines/sap-ai-core.yaml
+```
+
+To verify the agent is running with the correct model, check the startup log line:
+
+```
+[SmartServer] LLM provider: sap-ai-sdk  model: anthropic--claude-sonnet-4-5
+```
+
+Or tail the session log for live request details:
+
+```bash
+tail -f sessions/latest.log
 ```
 
 ### How it works

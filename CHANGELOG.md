@@ -7,6 +7,23 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.1.1] — 2026-04-02
+
+### Fixed
+- **Request model no longer overrides pipeline LLM model** — adapters no longer pass the client-supplied `model` field into agent options, preventing unintended LLM model substitution.
+- **`SapCoreAIProvider` SDK 2.9.0 compatibility** — messages are now passed in `prompt.template` as required by SAP AI Core SDK 2.9.0.
+- **DeepSeek pipeline `maxTokens` capped at 8192** — aligns with the DeepSeek API limit; previously uncapped values caused API errors.
+- **Launcher script cleanup on INT/TERM signals** — the agent process is now properly terminated on SIGINT/SIGTERM, preventing orphaned processes.
+
+### Added
+- **Separate pipeline configs per provider** — `pipelines/deepseek.yaml` and `pipelines/sap-ai-core.yaml` replace the single shared config, allowing per-provider tuning without mutual interference.
+- **`claude-via-agent.ps1` PowerShell launcher** — Windows equivalent of `claude-via-agent.sh` for running Claude CLI through the agent on Windows.
+
+### Changed
+- **Single `.env` for all credentials** — all provider credentials are consolidated into one `.env` file; the launcher script auto-selects the pipeline based on `LLM_PROVIDER`.
+
+---
+
 ## [5.1.0] — 2026-04-01
 
 ### Added

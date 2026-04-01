@@ -12,9 +12,15 @@ npm install @mcp-abap-adt/llm-agent
 npx llm-agent --init   # creates smart-server.yaml
 
 # 3. Set environment variables
-export DEEPSEEK_API_KEY="sk-..."
+#    Place all credentials in a single .env file at the project root.
+#    The launcher scripts auto-select the pipeline based on LLM_PROVIDER.
+#    Separate pipeline configs are available per provider:
+#      pipelines/deepseek.yaml      — DeepSeek
+#      pipelines/sap-ai-core.yaml   — SAP AI Core
+#    Use --config to select a pipeline explicitly:
+npx llm-agent --config pipelines/deepseek.yaml
 
-# 4. Start
+# 4. Or start with the default config
 npx llm-agent
 ```
 
