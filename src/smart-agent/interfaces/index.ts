@@ -13,6 +13,12 @@ export type {
   IOutputValidator,
   ValidationResult,
 } from '../validator/types.js';
+export {
+  type AgentCallOptions,
+  OrchestratorError,
+  type SmartAgentResponse,
+  type StopReason,
+} from './agent-contracts.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { IClientAdapter } from './client-adapter.js';
