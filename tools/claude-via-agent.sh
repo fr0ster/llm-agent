@@ -30,13 +30,17 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 
-# Load .env if present (safe parsing — handles special chars in values)
+# Load .env if present (safe parsing — handles special chars and trailing = in values)
 if [[ -f "$PROJECT_DIR/.env" ]]; then
-  while IFS='=' read -r key value; do
+  while IFS= read -r line; do
     # Skip comments and blank lines
-    [[ -z "$key" || "$key" =~ ^[[:space:]]*# ]] && continue
-    # Trim whitespace
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    # Split on first = only
+    key="${line%%=*}"
+    value="${line#*=}"
+    # Trim whitespace from key
     key="$(echo "$key" | xargs)"
+    [[ -z "$key" ]] && continue
     # Strip surrounding quotes from value
     value="${value#\"}"
     value="${value%\"}"
@@ -52,9 +56,12 @@ AGENT_STARTED_BY_US=false
 
 # For sap-ai-sdk: build AICORE_SERVICE_KEY JSON from separate env vars
 # (SAP AI SDK reads this single JSON env var for auth)
+# Uses printf to avoid bash interpreting $ and ! in credentials
 if [[ "${LLM_PROVIDER:-}" == "sap-ai-sdk" && -z "${AICORE_SERVICE_KEY:-}" ]]; then
   if [[ -n "${AICORE_CLIENT_ID:-}" && -n "${AICORE_CLIENT_SECRET:-}" && -n "${AICORE_AUTH_URL:-}" && -n "${AICORE_BASE_URL:-}" ]]; then
-    export AICORE_SERVICE_KEY="{\"clientid\":\"${AICORE_CLIENT_ID}\",\"clientsecret\":\"${AICORE_CLIENT_SECRET}\",\"url\":\"${AICORE_AUTH_URL}\",\"serviceurls\":{\"AI_API_URL\":\"${AICORE_BASE_URL}\"}}"
+    AICORE_SERVICE_KEY=$(printf '{"clientid":"%s","clientsecret":"%s","url":"%s","serviceurls":{"AI_API_URL":"%s"}}' \
+      "$AICORE_CLIENT_ID" "$AICORE_CLIENT_SECRET" "$AICORE_AUTH_URL" "$AICORE_BASE_URL")
+    export AICORE_SERVICE_KEY
   fi
 fi
 
