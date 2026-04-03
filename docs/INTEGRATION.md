@@ -1034,6 +1034,7 @@ const handle = await new SmartAgentBuilder({
   .withReranker(new CrossEncoderReranker('http://reranker:8080/rerank'))
   .withOutputValidator(new JsonSchemaValidator(mySchema))
   .withToolCache(new ToolCache({ ttlMs: 60_000 }))
+  .withToolReselection(true)             // re-select tools via RAG per tool-loop iteration
   .withSessionManager(new SessionManager({ tokenBudget: 100_000 }))
   .withMetrics(metrics)
   .withQueryExpander(new SapTermExpander())
