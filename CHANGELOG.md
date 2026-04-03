@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.2.1] — 2026-04-03
+
+### Changed
+- Documentation: added `withToolReselection(true)` to INTEGRATION.md builder example
+
+---
+
 ## [5.2.0] — 2026-04-03
 
 ### Added
