@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.2.0] — 2026-04-03
+
+### Added
+- **Per-iteration RAG tool re-selection** — when `toolReselectPerIteration: true`, tool loop re-queries tools RAG store on each iteration > 0 using context-aware queries (error messages, Create→Update hints). Skip re-selection for read-only tools (Search/Read/Get/List). Builder: `.withToolReselection(true)`. Closes #32.
+
+---
+
 ## [5.1.2] — 2026-04-02
 
 ### Added
