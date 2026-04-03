@@ -427,6 +427,12 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /** Enable per-iteration RAG-based tool re-selection in the tool loop. */
+  withToolReselection(enabled: boolean): this {
+    this._agentOverrides.toolReselectPerIteration = enabled;
+    return this;
+  }
+
   /** Set the history message count threshold for auto-summarization. */
   withHistorySummarization(limit: number): this {
     this._agentOverrides.historyAutoSummarizeLimit = limit;

@@ -131,6 +131,8 @@ export interface SmartAgentConfig {
    * @deprecated No-op since 2.15.0 — tool lists are cached in McpClientAdapter.
    */
   refreshToolsPerIteration?: boolean;
+  /** Re-select tools via RAG on each tool-loop iteration. Default: false. */
+  toolReselectPerIteration?: boolean;
   /** System prompt for the presentation LLM. Used by the present pipeline stage. */
   presentationSystemPrompt?: string;
   /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
@@ -888,6 +890,148 @@ export class SmartAgent {
           current: currentTools.map((t) => t.name),
         });
         refreshSpan.end();
+      }
+
+      // Per-iteration RAG tool re-selection (when enabled)
+      if (
+        iteration > 0 &&
+        this.config.toolReselectPerIteration &&
+        this.deps.ragStores?.tools
+      ) {
+        const reselectSpan = this.tracer.startSpan(
+          'smart_agent.tool_reselect',
+          {
+            parent: toolLoopSpan,
+            attributes: { 'llm.iteration': iteration + 1 },
+          },
+        );
+
+        try {
+          // Extract last tool calls
+          const lastAssistant = [...messages]
+            .reverse()
+            .find((m) => m.role === 'assistant');
+          const toolCallNames: string[] = [];
+          if (lastAssistant && 'tool_calls' in lastAssistant) {
+            const tcs = (lastAssistant as any).tool_calls;
+            if (Array.isArray(tcs)) {
+              for (const tc of tcs) {
+                const name = tc?.function?.name || tc?.name || '';
+                if (name) toolCallNames.push(name);
+              }
+            }
+          }
+
+          // Skip for read-only tools — they rarely need different tools on retry
+          const readOnlyPrefixes = [
+            'Search',
+            'Read',
+            'Get',
+            'List',
+            'Describe',
+          ];
+          const allReadOnly =
+            toolCallNames.length > 0 &&
+            toolCallNames.every((n) =>
+              readOnlyPrefixes.some((p) => n.startsWith(p)),
+            );
+
+          if (!allReadOnly) {
+            // Build context-aware query from error/result context
+            const lastToolMsg = [...messages]
+              .reverse()
+              .find((m) => m.role === 'tool');
+            const toolResult =
+              typeof lastToolMsg?.content === 'string'
+                ? lastToolMsg.content.slice(0, 200)
+                : '';
+            const isError =
+              toolResult.toLowerCase().includes('error') ||
+              toolResult.toLowerCase().includes('already exist') ||
+              toolResult.toLowerCase().includes('failed');
+
+            const inputText = _action.text;
+            let reSelectQuery: string;
+            if (toolCallNames.length > 0 && isError) {
+              const updateHints = toolCallNames
+                .filter((n) => n.startsWith('Create'))
+                .map((n) => n.replace(/^Create/, 'Update'))
+                .join(', ');
+              const hints = updateHints ? ` Need ${updateHints}.` : '';
+              reSelectQuery = `${toolCallNames.join(', ')} failed: ${toolResult.slice(0, 150)}.${hints} ${inputText.slice(0, 200)}`;
+            } else if (toolCallNames.length > 0) {
+              reSelectQuery = `After ${toolCallNames.join(', ')}: ${toolResult}\n${inputText.slice(0, 200)}`;
+            } else {
+              reSelectQuery = inputText;
+            }
+
+            // Query tools RAG
+            const embedding = this.deps.embedder
+              ? new QueryEmbedding(reSelectQuery, this.deps.embedder, opts)
+              : new TextOnlyEmbedding(reSelectQuery);
+
+            const ragK = this.config.ragQueryK ?? 20;
+            const ragResult = await this.deps.ragStores.tools.query(
+              embedding,
+              ragK,
+              opts,
+            );
+
+            if (ragResult.ok && ragResult.value.length > 0) {
+              const newToolNames = new Set(
+                ragResult.value
+                  .map((r) => (r.metadata?.id as string) || '')
+                  .filter((id) => id.startsWith('tool:'))
+                  .map((id) => id.slice(5)),
+              );
+
+              if (newToolNames.size > 0) {
+                const refreshed = await this._listAllTools(opts);
+                const newMcpTools = refreshed.tools.filter((t) =>
+                  newToolNames.has(t.name),
+                );
+                currentTools = [
+                  ...(newMcpTools as LlmTool[]),
+                  ...externalTools,
+                ];
+
+                // Update system message "Available Tools" section
+                const sysIdx = messages.findIndex((m) => m.role === 'system');
+                if (
+                  sysIdx >= 0 &&
+                  typeof messages[sysIdx].content === 'string'
+                ) {
+                  const toolsSection = currentTools
+                    .filter((t) => !externalToolNames.has(t.name))
+                    .map((t) => `- ${t.name}: ${t.description || ''}`)
+                    .join('\n');
+                  messages[sysIdx] = {
+                    ...messages[sysIdx],
+                    content: (messages[sysIdx].content as string).replace(
+                      /## Available Tools\n[\s\S]*?(?=\n##|$)/,
+                      `## Available Tools\n${toolsSection}`,
+                    ),
+                  };
+                }
+
+                opts?.sessionLogger?.logStep('tools_reselected', {
+                  iteration: iteration + 1,
+                  query: reSelectQuery.slice(0, 100),
+                  previousTools: toolCallNames,
+                  newTools: [...newToolNames],
+                });
+              }
+            }
+          } else {
+            opts?.sessionLogger?.logStep('tools_reselect_skipped', {
+              iteration: iteration + 1,
+              reason: 'read-only tools only',
+              tools: toolCallNames,
+            });
+          }
+        } finally {
+          reselectSpan.end();
+        }
       }
 
       const filteredForIteration = this.toolAvailabilityRegistry.filterTools(
