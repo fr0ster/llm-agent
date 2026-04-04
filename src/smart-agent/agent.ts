@@ -1630,7 +1630,6 @@ export class SmartAgent {
       // Dependencies
       mainLlm: this.deps.mainLlm,
       helperLlm: this.deps.helperLlm,
-      presentationLlm: undefined,
       classifierLlm: this.deps.mainLlm,
       classifier: this.deps.classifier,
       assembler: this.deps.assembler,
@@ -1669,8 +1668,6 @@ export class SmartAgent {
       skillContent: '',
       skillArgs: '',
       queryEmbedding: undefined,
-      toolLoopContent: '',
-      toolLoopMessages: [],
 
       // Control flags
       shouldRetrieve: false,

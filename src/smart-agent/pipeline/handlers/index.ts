@@ -9,7 +9,6 @@ import type { IStageHandler } from '../stage-handler.js';
 import { AssembleHandler } from './assemble.js';
 import { ClassifyHandler } from './classify.js';
 import { ExpandHandler } from './expand.js';
-import { PresentHandler } from './present.js';
 import { RagQueryHandler } from './rag-query.js';
 import { RagUpsertHandler } from './rag-upsert.js';
 import { RerankHandler } from './rerank.js';
@@ -41,7 +40,6 @@ export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
     ['skill-select', new SkillSelectHandler()],
     ['assemble', new AssembleHandler()],
     ['tool-loop', new ToolLoopHandler()],
-    ['present', new PresentHandler()],
   ]);
 }
 
@@ -49,7 +47,6 @@ export {
   AssembleHandler,
   ClassifyHandler,
   ExpandHandler,
-  PresentHandler,
   RagQueryHandler,
   RagUpsertHandler,
   RerankHandler,
