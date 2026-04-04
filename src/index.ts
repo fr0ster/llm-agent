@@ -253,6 +253,8 @@ export {
   CodexSkillManager,
   FileSystemSkillManager,
 } from './smart-agent/skills/index.js';
+// Connection strategies
+export { NoopConnectionStrategy } from './smart-agent/strategies/index.js';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {
