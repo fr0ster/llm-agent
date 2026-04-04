@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.3.0] — 2026-04-04
+
+### Added
+- **`onBeforeStream` consumer hook** — optional `SmartAgentConfig.onBeforeStream` callback lets consumers transform or re-format the final response before streaming. Replaces the built-in presentation LLM stage with a flexible, consumer-controlled hook. Builder: `.withOnBeforeStream(hook)`. Closes #34.
+- **`StreamHookContext` type** — exported context passed to the hook, containing the full `messages` array.
+
+### Removed
+- **`PresentHandler` pipeline stage** — the built-in presentation LLM re-generation stage has been removed. Consumers who need response re-formatting should use the `onBeforeStream` hook instead.
+- **`withPresentationLlm()` builder method** — replaced by `withOnBeforeStream()`.
+- **`presentationSystemPrompt` config field** — no longer needed; the hook gives full control to the consumer.
+
+---
+
 ## [5.2.2] — 2026-04-04
 
 ### Added
