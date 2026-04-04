@@ -7,6 +7,7 @@ import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
+import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IEmbedder, IRag } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type {
@@ -95,6 +96,7 @@ export interface SmartAgentDeps {
   clientAdapters?: IClientAdapter[];
   /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
   embedder?: IEmbedder;
+  connectionStrategy?: IMcpConnectionStrategy;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -186,6 +188,7 @@ export class SmartAgent {
   private readonly outputValidator: IOutputValidator;
   private readonly sessionManager: ISessionManager;
   private readonly pendingToolResults: PendingToolResultsRegistry;
+  private _activeClients: IMcpClient[];
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -204,6 +207,36 @@ export class SmartAgent {
     this.outputValidator = deps.outputValidator ?? new NoopValidator();
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
+    this._activeClients = [...deps.mcpClients];
+  }
+
+  private async _resolveActiveClients(opts?: CallOptions): Promise<void> {
+    if (!this.deps.connectionStrategy) return;
+    const result = await this.deps.connectionStrategy.resolve(
+      this._activeClients,
+      opts,
+    );
+    this._activeClients = result.clients;
+    if (result.toolsChanged) {
+      await this._revectorizeTools(result.clients, opts);
+    }
+  }
+
+  private async _revectorizeTools(
+    clients: IMcpClient[],
+    opts?: CallOptions,
+  ): Promise<void> {
+    const toolsRag =
+      this.deps.ragStores.tools ?? Object.values(this.deps.ragStores)[0];
+    if (!toolsRag) return;
+    for (const client of clients) {
+      const result = await client.listTools(opts);
+      if (!result.ok) continue;
+      for (const tool of result.value) {
+        const text = `Tool: ${tool.name}\nDescription: ${tool.description}\nSchema: ${JSON.stringify(tool.inputSchema)}`;
+        await toolsRag.upsert(text, { id: `tool:${tool.name}` });
+      }
+    }
   }
 
   /** Apply a partial config update at runtime (hot-reload). */
@@ -261,7 +294,7 @@ export class SmartAgent {
     }
     try {
       const mcpChecks = await Promise.all(
-        this.deps.mcpClients.map(async (client) => {
+        this._activeClients.map(async (client) => {
           try {
             if (client.healthCheck) {
               const hc = await client.healthCheck(healthOptions);
@@ -491,10 +524,11 @@ export class SmartAgent {
       }
 
       // 2. Decide context and tools for the WHOLE request
+      await this._resolveActiveClients(opts);
       const actions = subprompts.filter((sp) => sp.type === 'action');
       const ragMode = this.config.ragRetrievalMode ?? 'auto';
       const hasActions = actions.length > 0;
-      const hasMcpClients = this.deps.mcpClients.length > 0;
+      const hasMcpClients = this._activeClients.length > 0;
       const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
       const shouldRetrieve =
         ragMode === 'always' ||
@@ -1508,10 +1542,11 @@ export class SmartAgent {
   private async _listAllTools(
     opts: CallOptions | undefined,
   ): Promise<{ tools: McpTool[]; toolClientMap: Map<string, IMcpClient> }> {
+    await this._resolveActiveClients(opts);
     const tools: McpTool[] = [];
     const toolClientMap = new Map<string, IMcpClient>();
     const settled = await Promise.allSettled(
-      this.deps.mcpClients.map(async (client) => ({
+      this._activeClients.map(async (client) => ({
         client,
         result: await client.listTools(opts),
       })),
@@ -1620,6 +1655,7 @@ export class SmartAgent {
     let resolveWait: (() => void) | null = null;
     let done = false;
 
+    await this._resolveActiveClients(opts);
     const ctx: PipelineContext = {
       // Immutable input
       textOrMessages,
@@ -1634,7 +1670,7 @@ export class SmartAgent {
       classifier: this.deps.classifier,
       assembler: this.deps.assembler,
       ragStores: this.deps.ragStores,
-      mcpClients: this.deps.mcpClients,
+      mcpClients: this._activeClients,
       reranker: this.reranker,
       queryExpander: this.queryExpander,
       toolCache: this.toolCache,
