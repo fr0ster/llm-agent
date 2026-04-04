@@ -513,16 +513,32 @@ src/
   llm-providers/           # provider clients (OpenAI/Anthropic/DeepSeek/SAP Core)
   mcp/                     # MCP transport client wrapper
   smart-agent/             # primary orchestrated architecture
-    adapters/
-    classifier/
-    context/
-    interfaces/
-    llm/
+    adapters/              # request/response adapter layer
+    api-adapters/          # ILlmApiAdapter implementations (OpenAI, Anthropic)
+    cache/                 # tool result caching
+    classifier/            # subprompt decomposition (LLM-based)
+    config/                # configuration parsing and validation
+    context/               # final LLM context assembly
+    health/                # health check endpoint
+    interfaces/            # all public interfaces (ILlm, IRag, IMcpClient, etc.)
+    llm/                   # LLM client wrappers
+    logger/                # structured logging (ConsoleLogger, SessionLogger)
+    metrics/               # Prometheus / metrics collection
+    otel/                  # OpenTelemetry integration
     pipeline/              # structured YAML pipeline DSL
       handlers/            # built-in stage handler implementations
-    policy/
-    rag/
-    utils/
+    plugins/               # plugin system (dynamic stage handler loading)
+    policy/                # policy guard + injection detector
+    rag/                   # RAG stores, embedders, query expansion
+    reranker/              # result re-scoring
+    resilience/            # circuit breaker and resilience decorators
+    session/               # session management
+    skills/                # ISkillManager implementations (Claude, Codex, FileSystem)
+    testing/               # test doubles (makeLlm, makeRag, makeMcpClient)
+    tracer/                # ITracer implementations
+    utils/                 # shared utilities
+    validator/             # IOutputValidator implementations
+    __tests__/             # integration tests
     smart-server.ts
     agent.ts
     builder.ts             # interface-only factory

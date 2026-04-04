@@ -55,6 +55,7 @@ PER REQUEST
 | [`01-minimal-inmemory.yaml`](examples/01-minimal-inmemory.yaml) | Minimal start — DeepSeek + in-memory RAG, no MCP |
 | [`02-ollama-mcp.yaml`](examples/02-ollama-mcp.yaml) | Ollama embeddings + MCP tools |
 | [`03-multi-model.yaml`](examples/03-multi-model.yaml) | Separate classifier/helper models + Qdrant RAG |
+| [`12-deepseek-mcp.yaml`](examples/12-deepseek-mcp.yaml) | **Full options reference** — DeepSeek + Ollama RAG + MCP with all agent knobs and commented advanced sections (multi-model pipeline, structured stages, custom prompts) |
 
 ### Structured pipeline configs — YAML-defined stage tree
 

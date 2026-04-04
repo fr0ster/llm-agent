@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.2.2] — 2026-04-04
+
+### Added
+- **`12-deepseek-mcp.yaml` example** — full agent options reference with commented advanced sections (multi-model pipeline, structured stages, custom prompts)
+- Root-level `/*.yaml` in `.gitignore` for local test configs
+
+### Changed
+- **ARCHITECTURE.md** — expanded repository structure from 9 to 24 directories with descriptions
+- **EXAMPLES.md** — added example 12 to the config table
+
+---
+
 ## [5.2.1] — 2026-04-03
 
 ### Changed
