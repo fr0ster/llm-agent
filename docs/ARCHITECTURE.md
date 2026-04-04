@@ -229,7 +229,7 @@ sequenceDiagram
 2. **SAP context detection** — If any action subprompt has `context: "sap-abap"` or mode is `hard`, RAG retrieval and MCP tool selection are triggered. Otherwise, only external tools are used.
 3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
 4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
-5. **Presentation LLM** — If a `presentationLlm` is configured, the final response is re-generated through it for reduced latency.
+5. **onBeforeStream hook** — If an `onBeforeStream` hook is configured, the final response content is passed through it before streaming to the caller (e.g., for reformatting or post-processing).
 
 ## Request Lifecycle
 
@@ -395,7 +395,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 ### Separation of concerns
 
-- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, etc. Has no knowledge of concrete providers. Key deps include `presentationLlm?: ILlm` (optional); set via `.withPresentationLlm(llm)` to enable the `present` pipeline stage.
+- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, etc. Has no knowledge of concrete providers. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
 - **`providers.ts`** (`src/smart-agent/providers.ts`) — composition root. The only module that imports concrete LLM providers (`DeepSeek`, `OpenAI`, `Anthropic`, `SapCoreAI`) and RAG implementations (`OllamaRag`, `QdrantRag`, etc.). Resolves config → interface instances.
 - **`SmartServer`** (`src/smart-agent/smart-server.ts`) — uses `providers.ts` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
@@ -582,7 +582,6 @@ Key components:
 | `skill-select` | `SkillSelectHandler` | Select skills from RAG results, load content into `ctx.skillContent` |
 | `assemble` | `AssembleHandler` | Build final LLM context; appends skill content as `## Active Skills` section |
 | `tool-loop` | `ToolLoopHandler` | Streaming LLM + tool execution loop |
-| `present` | `PresentHandler` | Stream final response via presentation LLM (optional) |
 
 **Control flow** — orchestrate child stages:
 
@@ -600,7 +599,7 @@ classify → summarize → rag-upsert
   → rag-retrieval (parallel, when: shouldRetrieve):
       stages: [translate, expand]
       after: [rag-query×3 (parallel), rerank, tool-select, skill-select]
-  → assemble → tool-loop → present (optional, only when presentationLlm is configured)
+  → assemble → tool-loop
 ```
 
 ### YAML Example

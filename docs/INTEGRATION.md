@@ -994,17 +994,27 @@ Implementations: `ToolCache` (with TTL + SHA-256 key hashing), `NoopToolCache` (
 
 The `SmartAgentBuilder` is interface-only — it has no knowledge of concrete providers. All dependencies must be injected.
 
-### Dual-LLM setup (optional)
+### onBeforeStream hook (optional)
 
-Use a separate, faster model for the `present` stage to format final responses without spending reasoning-model tokens:
+Use `withOnBeforeStream()` to post-process the final response before it is streamed to the caller — for example, to reformat it with a faster model:
 
 ```ts
-builder
-  .withMainLlm(claudeSonnet)        // reasoning: tool selection
-  .withPresentationLlm(geminiFlash) // fast: format final responses
+const agent = new SmartAgentBuilder()
+  .withOnBeforeStream(async function* (content, ctx) {
+    const stream = await fastLlm.streamChat([
+      { role: 'system', content: 'Reformat concisely.' },
+      ...ctx.messages,
+      { role: 'assistant', content },
+    ]);
+    for await (const chunk of stream) {
+      yield chunk.content;
+    }
+  })
+  .build();
 ```
 
-`withPresentationLlm()` is optional — the pipeline falls back to `mainLlm` when it is not set. The presentation system prompt is configurable via `prompts.presentation` in the builder config.
+The hook signature is: `onBeforeStream?: (content: string, ctx: StreamHookContext) => AsyncIterable<string>`
+`StreamHookContext` provides `{ messages: Message[] }`. The hook is optional — when omitted, the accumulated content is streamed as-is.
 
 ### Full example
 
@@ -1040,7 +1050,14 @@ const handle = await new SmartAgentBuilder({
   .withQueryExpander(new SapTermExpander())
   .withSkillManager(new ClaudeSkillManager(process.cwd()))
   .withModelProvider(myModelProvider)     // optional — auto-detected from mainLlm
-  .withPresentationLlm(myFastLlm)        // optional — format final responses; falls back to mainLlm if not set
+  .withOnBeforeStream(async function* (content, ctx) { // optional — post-process response before streaming
+    const stream = await myFastLlm.streamChat([
+      { role: 'system', content: 'Reformat concisely.' },
+      ...ctx.messages,
+      { role: 'assistant', content },
+    ]);
+    for await (const chunk of stream) yield chunk.content;
+  })
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Resilience
   // retry is configured via agentConfig, not builder fluent API:
@@ -1275,8 +1292,6 @@ pipeline:
       type: assemble
     - id: tool-loop
       type: tool-loop
-    - id: present
-      type: present
 ```
 
 ### Using Default Stages as Base
