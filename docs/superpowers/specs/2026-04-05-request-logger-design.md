@@ -87,6 +87,10 @@ interface IRequestLogger {
   logLlmCall(entry: LlmCallEntry): void;
   logRagQuery(entry: RagQueryEntry): void;
   logToolCall(entry: ToolCallEntry): void;
+  /** Mark the start of a request for wall-clock duration tracking. */
+  startRequest(): void;
+  /** Mark the end of a request for wall-clock duration tracking. */
+  endRequest(): void;
   getSummary(): RequestSummary;
   reset(): void;
 }
