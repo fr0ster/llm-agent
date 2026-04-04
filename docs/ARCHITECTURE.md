@@ -324,6 +324,7 @@ The builder selects the `tools` store by key for tool/skill vectorization. If no
 - Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.
 - Health checks use lightweight MCP ping (`MCPClientWrapper.ping()`) instead of `listTools()`, avoiding unnecessary tool catalog requests when health is polled frequently.
+- **Reconnection** — `IMcpConnectionStrategy` is an optional dependency injected via `builder.withMcpConnectionStrategy()`. It is called at the start of each request to resolve the current set of live MCP clients. Built-in strategies: `NoopConnectionStrategy` (pass-through, default behaviour), `LazyConnectionStrategy` (reconnects on demand with cooldown), `PeriodicConnectionStrategy` (reconnects on a background timer).
 
 ### 6. Skills Layer
 
@@ -388,6 +389,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
 | `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
+| `IMcpConnectionStrategy` | Per-request MCP reconnection / health recovery | `NoopConnectionStrategy` (no-op, default); `LazyConnectionStrategy` / `PeriodicConnectionStrategy` for auto-reconnect |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
 | `IPromptInjectionDetector` | Injection heuristics | `HeuristicInjectionDetector` (optional) |
 | `ISkillManager` | Skill discovery and content loading | `ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager` (optional) |

@@ -927,6 +927,55 @@ const handle = await new SmartAgentBuilder({})
 
 **Note:** When using `withMcpClients()`, the builder skips auto-connect and tool vectorization — the caller is responsible for providing already-connected clients.
 
+## IMcpConnectionStrategy — MCP reconnection
+
+By default the agent starts with an empty tool catalog if the MCP server is unavailable at startup. `IMcpConnectionStrategy` solves this by letting the agent re-resolve its MCP clients on every request.
+
+**Interface** (`src/smart-agent/interfaces/mcp-connection-strategy.ts`):
+
+```ts
+interface IMcpConnectionStrategy {
+  resolve(
+    currentClients: IMcpClient[],
+    options?: CallOptions,
+  ): Promise<McpConnectionResult>;   // { clients, toolsChanged }
+
+  dispose?(): Promise<void> | void;
+}
+```
+
+### Built-in strategies
+
+| Strategy | Behaviour |
+|---|---|
+| `NoopConnectionStrategy` | Returns `currentClients` unchanged — same as not setting a strategy. |
+| `LazyConnectionStrategy` | Checks health of each slot on every `resolve()` call; reconnects unhealthy slots when the per-slot cooldown has expired. |
+| `PeriodicConnectionStrategy` | Probes MCP servers on a background timer; `resolve()` returns the last cached result without blocking the request path. |
+
+### Builder usage
+
+```ts
+import {
+  LazyConnectionStrategy,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent';
+
+const mcpConfigs = [
+  { type: 'http' as const, url: 'http://localhost:3001/mcp/stream/http' },
+];
+
+const { agent, close } = await new SmartAgentBuilder({ mcp: mcpConfigs })
+  .withMcpConnectionStrategy(
+    new LazyConnectionStrategy(mcpConfigs, { cooldownMs: 15_000 }),
+  )
+  .build();
+
+// Agent will auto-reconnect MCP on each request if needed
+// Remember to call close() for cleanup (disposes strategy too)
+```
+
+`close()` calls `strategy.dispose()`, which clears timers and closes underlying transport connections.
+
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
 ### IMetrics
