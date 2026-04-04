@@ -92,8 +92,6 @@ export interface BuilderPromptsConfig {
   ragTranslate?: string;
   /** Prompt for history summarization. */
   historySummary?: string;
-  /** System prompt for the presentation LLM. */
-  presentation?: string;
 }
 
 export interface SmartAgentBuilderConfig {
@@ -160,7 +158,7 @@ export class SmartAgentBuilder {
   private _mainLlm?: ILlm;
   private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
-  private _presentationLlm?: ILlm;
+  private _onBeforeStream?: SmartAgentConfig['onBeforeStream'];
   private _ragStores: SmartAgentRagStores = {};
   private _mcpClients?: IMcpClient[];
   private _classifier?: ISubpromptClassifier;
@@ -219,9 +217,9 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set the presentation LLM for formatting final responses. Falls back to mainLlm if not set. */
-  withPresentationLlm(llm: ILlm): this {
-    this._presentationLlm = llm;
+  /** Register a hook called before streaming the final response to the client. */
+  withOnBeforeStream(hook: SmartAgentConfig['onBeforeStream']): this {
+    this._onBeforeStream = hook;
     return this;
   }
 
@@ -674,6 +672,7 @@ export class SmartAgentBuilder {
         : {}),
       // Fluent overrides take precedence over cfg.agent
       ...this._agentOverrides,
+      onBeforeStream: this._onBeforeStream,
     };
 
     // ---- Retry wrapping (outside circuit breaker) ----------------------------
@@ -794,9 +793,6 @@ export class SmartAgentBuilder {
           ? { sessionManager: this._sessionManager }
           : {}),
         ...(this._skillManager ? { skillManager: this._skillManager } : {}),
-        ...(this._presentationLlm
-          ? { presentationLlm: this._presentationLlm }
-          : {}),
         ...(this._clientAdapters.length > 0
           ? { clientAdapters: this._clientAdapters }
           : {}),
