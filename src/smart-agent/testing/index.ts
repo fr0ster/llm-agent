@@ -20,6 +20,7 @@ import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag } from '../interfaces/rag.js';
 import {
@@ -469,6 +470,7 @@ export function makeDefaultDeps(overrides?: {
   sessionManager?: ISessionManager;
   tracer?: ITracer;
   metrics?: IMetrics;
+  connectionStrategy?: IMcpConnectionStrategy;
 }): {
   llm: ILlm & { callCount: number };
   deps: ConstructorParameters<typeof SmartAgent>[0];
@@ -496,6 +498,7 @@ export function makeDefaultDeps(overrides?: {
       sessionManager: overrides?.sessionManager,
       tracer: overrides?.tracer,
       metrics: overrides?.metrics,
+      connectionStrategy: overrides?.connectionStrategy,
     },
   };
 }

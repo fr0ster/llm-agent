@@ -35,6 +35,7 @@ import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
+import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
 import type { IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
@@ -184,6 +185,7 @@ export class SmartAgentBuilder {
   private _customStageHandlers = new Map<string, IStageHandler>();
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
+  private _connectionStrategy?: IMcpConnectionStrategy;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -346,6 +348,12 @@ export class SmartAgentBuilder {
   /** Set a custom token usage provider. */
   withUsageProvider(getUsage: () => TokenUsage): this {
     this._getUsage = getUsage;
+    return this;
+  }
+
+  /** Set an MCP connection strategy for dynamic client management. */
+  withMcpConnectionStrategy(strategy: IMcpConnectionStrategy): this {
+    this._connectionStrategy = strategy;
     return this;
   }
 
@@ -583,6 +591,7 @@ export class SmartAgentBuilder {
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];
     const closeFns: Array<() => Promise<void>> = [];
+    const connectionStrategy = this._connectionStrategy;
 
     if (this._mcpClients) {
       // Caller-provided clients: skip auto-connect and vectorization
@@ -797,6 +806,7 @@ export class SmartAgentBuilder {
           ? { clientAdapters: this._clientAdapters }
           : {}),
         ...(this._embedder ? { embedder: this._embedder } : {}),
+        ...(connectionStrategy ? { connectionStrategy } : {}),
       },
       agentCfg,
       pipelineExecutor,
@@ -843,6 +853,7 @@ export class SmartAgentBuilder {
         wrappedMainLlm.streamChat(messages, tools, options),
       getUsage: this._getUsage ?? (() => zeroUsage),
       close: async () => {
+        await connectionStrategy?.dispose?.();
         for (const fn of closeFns) await fn();
       },
       circuitBreakers,
