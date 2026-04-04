@@ -443,13 +443,6 @@ export class ToolLoopHandler implements IStageHandler {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
 
-        if (ctx.presentationLlm) {
-          // Save for present stage — do not yield metadata (present stage owns it)
-          ctx.toolLoopContent = content;
-          ctx.toolLoopMessages = messages;
-          return true;
-        }
-
         ctx.yield({
           ok: true,
           value: {

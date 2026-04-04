@@ -18,7 +18,6 @@
  * - `tool-select` — select MCP tools based on RAG results
  * - `assemble`    — build final LLM context
  * - `tool-loop`   — streaming LLM call + tool execution loop
- * - `present`     — stream final response via presentation LLM (optional)
  *
  * **Control flow** — orchestrate child stages:
  * - `parallel` — run child stages concurrently, wait for all
@@ -71,8 +70,7 @@ export type BuiltInStageType =
   | 'tool-select'
   | 'skill-select'
   | 'assemble'
-  | 'tool-loop'
-  | 'present';
+  | 'tool-loop';
 
 /**
  * Control flow stage types — orchestrate child stages without
