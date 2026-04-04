@@ -107,7 +107,7 @@ pipeline:
       temperature: 0.1
 ```
 
-The presentation LLM is an optional fourth role, configured via `.withPresentationLlm(llm)` on the builder. When set, it takes the raw tool results collected by the main LLM and renders the final user-facing response, freeing the main model from the generation step entirely.
+An optional `onBeforeStream` hook can be configured via `.withOnBeforeStream(hook)` on the builder. When set, it receives the fully accumulated response content before it is streamed to the caller, allowing reformatting, summarization, or any other post-processing via an async generator. See the Integration guide for usage examples.
 
 ### Role selection guidelines
 
@@ -116,18 +116,16 @@ The presentation LLM is an optional fourth role, configured via `.withPresentati
 | **Main LLM** | Tool-calling capability, high quality, coherent multi-turn | Premium model (GPT-4o, Claude) for quality-critical use |
 | **Classifier LLM** | Fast + cheap, low temperature (0.1), structured JSON output | Lightweight model (DeepSeek, GPT-4o-mini) — intent classification is a simple task |
 | **Helper LLM** | Summarization, RAG query translation, moderate quality | Mid-tier model — quality matters less than for main |
-| **Presentation LLM** | Fast generation, good formatting, no tool-calling needed | Use a flash/mini model (Gemini Flash, GPT-4o-mini) — saves 15–20 s on generation-heavy responses; flash models generate 3–5× faster than premium models. Trade-off: adds one extra LLM call per turn. |
 
 ### Temperature guidelines
 
 - **Classifier:** 0.1 — deterministic intent classification.
 - **Main LLM:** 0.7 — balanced creativity for tool use and response generation.
 - **Helper LLM:** 0.1–0.3 — factual summarization and translation.
-- **Presentation LLM:** 0.3–0.7 — readable, well-formatted output without hallucinating tool data.
 
-### Presentation LLM latency impact
+### onBeforeStream latency impact
 
-When a pipeline turn involves presenting large tool results (e.g., full source listings, multi-record queries), the final generation step is the dominant cost. Delegating it to a fast flash/mini model via `.withPresentationLlm(llm)` can reduce time-to-completion by 15–20 s compared to having the main premium model generate the same output. The improvement is most visible for long, structured responses; for short answers the overhead of the extra call (~0.5–1 s) may outweigh the gain.
+When a pipeline turn involves presenting large tool results (e.g., full source listings, multi-record queries), the final generation step is the dominant cost. Delegating reformatting to a fast flash/mini model inside the `onBeforeStream` hook can reduce time-to-completion significantly. The improvement is most visible for long, structured responses; for short answers the overhead of the extra call (~0.5–1 s) may outweigh the gain.
 
 ## Token Budget
 
