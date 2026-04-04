@@ -140,6 +140,7 @@ export type {
   StreamHookContext,
 } from './smart-agent/interfaces/types.js';
 export { SkillError } from './smart-agent/interfaces/types.js';
+export { createDefaultMcpClient } from './smart-agent/mcp-client-factory.js';
 export {
   type CounterSnapshot,
   type HistogramSnapshot,
