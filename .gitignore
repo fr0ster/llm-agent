@@ -18,6 +18,9 @@ dist/
 *.swo
 *~
 
+# Root-level YAML configs (local test configs, not part of the package)
+/*.yaml
+
 # OS
 .DS_Store
 Thumbs.db
