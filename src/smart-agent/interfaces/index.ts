@@ -32,6 +32,14 @@ export type { IClientAdapter } from './client-adapter.js';
 export type { ILlm } from './llm.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
+  ConnectionStrategyOptions,
+  IMcpConnectionStrategy,
+  McpClientFactory,
+  McpClientFactoryResult,
+  McpConnectionConfig,
+  McpConnectionResult,
+} from './mcp-connection-strategy.js';
+export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
   IEmbedder,
