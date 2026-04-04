@@ -57,6 +57,7 @@ export type {
   RagMetadata,
   RagResult,
   Result,
+  StreamHookContext,
   Subprompt,
   SubpromptType,
   TimingEntry,

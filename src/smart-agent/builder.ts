@@ -667,7 +667,6 @@ export class SmartAgentBuilder {
       ragQueryK: 10,
       ragTranslatePrompt: this.cfg.prompts?.ragTranslate,
       historySummaryPrompt: this.cfg.prompts?.historySummary,
-      presentationSystemPrompt: this.cfg.prompts?.presentation,
       historyAutoSummarizeLimit: this.cfg.agent?.historyAutoSummarizeLimit,
       ...this.cfg.agent,
       ...(this.cfg.sessionPolicy
