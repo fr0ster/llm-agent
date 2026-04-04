@@ -77,7 +77,6 @@ export type SmartAgentRagStores<K extends string = string> = Record<K, IRag>;
 export interface SmartAgentDeps {
   mainLlm: ILlm;
   helperLlm?: ILlm;
-  presentationLlm?: ILlm;
   mcpClients: IMcpClient[];
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
@@ -1184,90 +1183,27 @@ export class SmartAgent {
         }
         opts?.sessionLogger?.logStep('final_response', { content, usage });
 
-        // Presentation LLM re-generation
-        if (this.deps.presentationLlm) {
-          const presentPrompt =
-            'Present the information clearly and concisely.';
-          const presentMessages = [
-            ...messages,
-            { role: 'assistant' as const, content },
-            { role: 'user' as const, content: presentPrompt },
-          ];
-
-          const presentSpan = this.tracer.startSpan('smart_agent.present', {
-            parent: parentSpan,
-            attributes: { 'llm.presentation': true },
-          });
-          const presentStart = Date.now();
-
-          try {
-            const presentStream = this.deps.presentationLlm.streamChat(
-              presentMessages,
-              [],
-              opts,
-            );
-            let presentContent = '';
-            let presentOk = true;
-            for await (const chunkResult of presentStream) {
-              if (!chunkResult.ok) {
-                // Fall back to original content
-                presentSpan.setStatus('error', chunkResult.error.message);
-                presentOk = false;
-                break;
-              }
-              const pChunk = chunkResult.value;
-              if (pChunk.content) {
-                presentContent += pChunk.content;
-                if (!clientAdapter) {
-                  yield { ok: true, value: { content: pChunk.content } };
-                }
-              }
-              if (pChunk.usage) {
-                usage.promptTokens += pChunk.usage.promptTokens;
-                usage.completionTokens += pChunk.usage.completionTokens;
-                usage.totalTokens += pChunk.usage.totalTokens;
-                this.sessionManager.addTokens(pChunk.usage.totalTokens);
-              }
-            }
-            if (presentOk) {
-              presentSpan.setStatus('ok');
-            }
-            presentSpan.end();
-            timingLog.push({
-              phase: 'present',
-              duration: Date.now() - presentStart,
-            });
-
-            // Use presentation content for adapter wrapping if available
-            if (clientAdapter && presentContent) {
+        // onBeforeStream hook — consumer transforms content before streaming
+        if (this.config.onBeforeStream) {
+          const hookCtx: StreamHookContext = { messages };
+          for await (const chunk of this.config.onBeforeStream(
+            content,
+            hookCtx,
+          )) {
+            if (clientAdapter) {
               yield {
                 ok: true,
-                value: {
-                  content: clientAdapter.wrapResponse(presentContent),
-                },
+                value: { content: clientAdapter.wrapResponse(chunk) },
               };
-            }
-          } catch {
-            // Fall back to original content on error
-            presentSpan.setStatus('error', 'unexpected');
-            presentSpan.end();
-            if (clientAdapter && content) {
-              yield {
-                ok: true,
-                value: { content: clientAdapter.wrapResponse(content) },
-              };
-            } else if (!clientAdapter && content) {
-              yield { ok: true, value: { content } };
+            } else {
+              yield { ok: true, value: { content: chunk } };
             }
           }
-        } else {
-          // No presentation LLM — original behavior
-          if (clientAdapter && content) {
-            yield {
-              ok: true,
-              value: { content: clientAdapter.wrapResponse(content) },
-            };
-          }
+        } else if (clientAdapter && content) {
+          yield {
+            ok: true,
+            value: { content: clientAdapter.wrapResponse(content) },
+          };
         }
 
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
@@ -1694,6 +1630,7 @@ export class SmartAgent {
       // Dependencies
       mainLlm: this.deps.mainLlm,
       helperLlm: this.deps.helperLlm,
+      presentationLlm: undefined,
       classifierLlm: this.deps.mainLlm,
       classifier: this.deps.classifier,
       assembler: this.deps.assembler,
@@ -1712,7 +1649,6 @@ export class SmartAgent {
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
       pendingToolResults: this.pendingToolResults,
       skillManager: this.deps.skillManager,
-      presentationLlm: this.deps.presentationLlm,
       embedder: this.deps.embedder,
 
       // Mutable state
