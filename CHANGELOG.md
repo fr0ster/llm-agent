@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.4.0] — 2026-04-05
+
+### Added
+- **`IMcpConnectionStrategy` interface** — injectable strategy for MCP client reconnection. Agent calls `strategy.resolve()` before listing tools, allowing recovery from MCP servers that were unavailable at startup. Closes #35.
+- **Three built-in strategies:**
+  - `NoopConnectionStrategy` — pass-through (default, backwards compatible)
+  - `LazyConnectionStrategy` — on-demand slot-based reconnection with cooldown and concurrent-call dedup
+  - `PeriodicConnectionStrategy` — background interval health probe with cached results
+- **`createDefaultMcpClient` factory** — encapsulates `MCPClientWrapper` + `McpClientAdapter` creation for strategy implementations.
+- **`McpConnectionConfig`, `McpClientFactory`, `ConnectionStrategyOptions`** — supporting types for custom strategy implementations.
+- **Builder: `.withMcpConnectionStrategy(strategy)`** — fluent setter for injecting a connection strategy.
+
+---
+
 ## [5.3.0] — 2026-04-04
 
 ### Added
