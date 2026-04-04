@@ -2,6 +2,8 @@
  * Shared types for Smart Orchestrated Agent contracts.
  */
 
+import type { Message } from '../../types.js';
+
 // ---------------------------------------------------------------------------
 // Result envelope
 // ---------------------------------------------------------------------------
@@ -234,6 +236,14 @@ export interface ContextFrame {
     tokenLimit?: number;
     timeoutMs?: number;
   };
+}
+
+// ---------------------------------------------------------------------------
+// Stream hook
+// ---------------------------------------------------------------------------
+
+export interface StreamHookContext {
+  messages: Message[];
 }
 
 // ---------------------------------------------------------------------------

@@ -47,7 +47,6 @@ export class PresentHandler implements IStageHandler {
     // Build presentation prompt
     const systemPrompt =
       (config.systemPrompt as string) ??
-      ctx.config.presentationSystemPrompt ??
       'Present the information clearly and concisely.';
 
     // Build messages: tool-loop conversation + mainLlm's draft + presentation instruction

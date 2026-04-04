@@ -129,6 +129,7 @@ export type {
   RagError,
   RagResult,
   Result,
+  StreamHookContext,
 } from './smart-agent/interfaces/types.js';
 export { SkillError } from './smart-agent/interfaces/types.js';
 export {

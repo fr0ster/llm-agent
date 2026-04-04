@@ -18,6 +18,7 @@ import type {
   RagMetadata,
   RagResult,
   Result,
+  StreamHookContext,
   Subprompt,
   TimingEntry,
 } from './interfaces/types.js';
@@ -133,8 +134,6 @@ export interface SmartAgentConfig {
   refreshToolsPerIteration?: boolean;
   /** Re-select tools via RAG on each tool-loop iteration. Default: false. */
   toolReselectPerIteration?: boolean;
-  /** System prompt for the presentation LLM. Used by the present pipeline stage. */
-  presentationSystemPrompt?: string;
   /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
   retry?: {
     maxAttempts?: number;
@@ -148,6 +147,11 @@ export interface SmartAgentConfig {
    * External tool calls and heartbeats are always streamed regardless of mode.
    */
   streamMode?: 'full' | 'final';
+  /** Called before streaming the final response. Consumer can transform or pass through. */
+  onBeforeStream?: (
+    content: string,
+    ctx: StreamHookContext,
+  ) => AsyncIterable<string>;
 }
 function mergeSignals(
   ...signals: (AbortSignal | undefined)[]
@@ -1183,7 +1187,6 @@ export class SmartAgent {
         // Presentation LLM re-generation
         if (this.deps.presentationLlm) {
           const presentPrompt =
-            this.config.presentationSystemPrompt ??
             'Present the information clearly and concisely.';
           const presentMessages = [
             ...messages,
