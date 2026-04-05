@@ -79,6 +79,13 @@ agent:
   # ragRetrievalMode: auto           # auto | always | never — controls RAG retrieval
   # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
   # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
+  # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
+  # streamMode: full                 # full | final — streaming behavior for tool loops
+  # heartbeatIntervalMs: 5000       # SSE heartbeat interval during tool execution (ms)
+  # retry:                           # LLM retry config for 429/5xx errors
+  #   maxAttempts: 3
+  #   backoffMs: 1000
+  #   retryOn: [429, 500, 502, 503]
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.
@@ -359,6 +366,43 @@ export function resolveSmartServerConfig(
       ...(get(yaml, 'agent', 'ragUpsertEnabled') !== undefined
         ? {
             ragUpsertEnabled: Boolean(get(yaml, 'agent', 'ragUpsertEnabled')),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'toolReselectPerIteration') !== undefined
+        ? {
+            toolReselectPerIteration: Boolean(
+              get(yaml, 'agent', 'toolReselectPerIteration'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'refreshToolsPerIteration') !== undefined
+        ? {
+            refreshToolsPerIteration: Boolean(
+              get(yaml, 'agent', 'refreshToolsPerIteration'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'streamMode') !== undefined
+        ? {
+            streamMode: String(get(yaml, 'agent', 'streamMode')) as
+              | 'full'
+              | 'final',
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'heartbeatIntervalMs') !== undefined
+        ? {
+            heartbeatIntervalMs: Number(
+              get(yaml, 'agent', 'heartbeatIntervalMs'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'retry') !== undefined
+        ? {
+            retry: get(yaml, 'agent', 'retry') as {
+              maxAttempts?: number;
+              backoffMs?: number;
+              retryOn?: number[];
+            },
           }
         : {}),
     },
