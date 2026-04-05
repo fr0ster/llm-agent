@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.8.1] — 2026-04-06
+
+### Fixed
+- **Health endpoint version** — `/v1/health` now returns the actual package version instead of hardcoded `0.0.0`. A prebuild script generates `src/generated/version.ts` from `package.json`, which `SmartServer` uses as the default when `config.version` is not provided. Closes #44.
+
+---
+
 ## [5.8.0] — 2026-04-06
 
 ### Changed
