@@ -19,8 +19,8 @@ import {
 } from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
+import type { ILlm } from './interfaces/llm.js';
 import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
-import { TokenCountingLlm } from './llm/token-counting-llm.js';
 import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
@@ -45,10 +45,7 @@ export interface LlmProviderConfig {
  * Create an ILlm from a declarative provider config.
  * This is the only function that knows about concrete LLM implementations.
  */
-export function makeLlm(
-  cfg: LlmProviderConfig,
-  temperature: number,
-): TokenCountingLlm {
+export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
   const dummyMcp = new MCPClientWrapper({
     transport: 'embedded',
     listToolsHandler: async () => [],
@@ -69,12 +66,10 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(
-        new LlmAdapter(agent, {
-          model: provider.model,
-          getModels: () => provider.getModels(),
-        }),
-      );
+      return new LlmAdapter(agent, {
+        model: provider.model,
+        getModels: () => provider.getModels(),
+      });
     }
     case 'openai': {
       const provider = new OpenAIProvider({
@@ -87,12 +82,10 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(
-        new LlmAdapter(agent, {
-          model: provider.model,
-          getModels: () => provider.getModels(),
-        }),
-      );
+      return new LlmAdapter(agent, {
+        model: provider.model,
+        getModels: () => provider.getModels(),
+      });
     }
     case 'anthropic': {
       const provider = new AnthropicProvider({
@@ -105,12 +98,10 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(
-        new LlmAdapter(agent, {
-          model: provider.model,
-          getModels: () => provider.getModels(),
-        }),
-      );
+      return new LlmAdapter(agent, {
+        model: provider.model,
+        getModels: () => provider.getModels(),
+      });
     }
     case 'sap-ai-sdk': {
       const provider = new SapCoreAIProvider({
@@ -125,12 +116,10 @@ export function makeLlm(
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new TokenCountingLlm(
-        new LlmAdapter(agent, {
-          model: provider.model,
-          getModels: () => provider.getModels(),
-        }),
-      );
+      return new LlmAdapter(agent, {
+        model: provider.model,
+        getModels: () => provider.getModels(),
+      });
     }
     default: {
       const _exhaustive: never = cfg.provider;
@@ -147,7 +136,7 @@ export function makeDefaultLlm(
   apiKey: string,
   model: string,
   temperature: number,
-): TokenCountingLlm {
+): ILlm {
   return makeLlm({ provider: 'deepseek', apiKey, model }, temperature);
 }
 

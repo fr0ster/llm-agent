@@ -24,7 +24,15 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import type { TokenUsage } from './llm/token-counting-llm.js';
+
+/** Token usage snapshot (previously from TokenCountingLlm). */
+interface TokenUsage {
+  prompt_tokens: number;
+  completion_tokens: number;
+  total_tokens: number;
+  requests: number;
+}
+
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
@@ -309,17 +317,13 @@ export class SmartServer {
         )
       : undefined;
 
-    // Usage tracking — aggregate main + classifier
-    const getUsage = (): TokenUsage => {
-      const m = mainLlm.getUsage();
-      const c = classifierLlm.getUsage();
-      return {
-        prompt_tokens: m.prompt_tokens + c.prompt_tokens,
-        completion_tokens: m.completion_tokens + c.completion_tokens,
-        total_tokens: m.total_tokens + c.total_tokens,
-        requests: m.requests + c.requests,
-      };
-    };
+    // Usage tracking — TODO(Task 10): migrate to IRequestLogger
+    const getUsage = (): TokenUsage => ({
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      total_tokens: 0,
+      requests: 0,
+    });
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
