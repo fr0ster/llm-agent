@@ -50,7 +50,14 @@ export class RagQueryHandler implements IStageHandler {
         : new TextOnlyEmbedding(ctx.ragText);
     }
 
+    const ragStart = Date.now();
     const result = await store.query(ctx.queryEmbedding, k, ctx.options);
+    ctx.requestLogger.logRagQuery({
+      store: storeName,
+      query: ctx.ragText.slice(0, 200),
+      resultCount: result.ok ? result.value.length : 0,
+      durationMs: Date.now() - ragStart,
+    });
 
     ctx.metrics.ragQueryCount.add(1, {
       store: storeName,

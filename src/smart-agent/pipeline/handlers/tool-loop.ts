@@ -235,11 +235,18 @@ export class ToolLoopHandler implements IStageHandler {
               : new TextOnlyEmbedding(reSelectQuery);
 
             const ragK = ctx.config.ragQueryK ?? 20;
+            const ragStart = Date.now();
             const ragResult = await ctx.ragStores.tools.query(
               embedding,
               ragK,
               ctx.options,
             );
+            ctx.requestLogger.logRagQuery({
+              store: 'tools',
+              query: reSelectQuery.slice(0, 200),
+              resultCount: ragResult.ok ? ragResult.value.length : 0,
+              durationMs: Date.now() - ragStart,
+            });
 
             if (ragResult.ok && ragResult.value.length > 0) {
               const newToolNames = new Set(
