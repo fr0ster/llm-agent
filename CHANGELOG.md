@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.8.0] — 2026-04-06
+
+### Changed
+- **Dynamic SAP AI Core model catalog** — `getModels()` now queries the `ScenarioApi.scenarioQueryModels()` endpoint at runtime instead of returning a hardcoded list. Returns only `text-generation` capable models with rich metadata: `displayName`, `provider`, `capabilities`, `contextLength`, `streamingSupported`, `deprecated`. Cached for 5 minutes with fallback to configured model on API failure.
+- **Extended `IModelInfo` interface** — added optional fields: `displayName`, `provider`, `capabilities`, `contextLength`, `streamingSupported`, `deprecated`.
+- **`/v1/models` endpoint** — now exposes the new model metadata fields (`display_name`, `provider`, `capabilities`, `context_length`, `streaming_supported`, `deprecated`).
+
+---
+
 ## [5.7.1] — 2026-04-05
 
 ### Fixed

@@ -7,6 +7,12 @@ import type { CallOptions, LlmError, Result } from './types.js';
 export interface IModelInfo {
   id: string;
   owned_by?: string;
+  displayName?: string;
+  provider?: string;
+  capabilities?: string[];
+  contextLength?: number;
+  streamingSupported?: boolean;
+  deprecated?: boolean;
 }
 
 export interface IModelProvider {
