@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.7.1] — 2026-04-05
+
+### Fixed
+- **SAP AI Core model listing** — `getModels()` now returns the full catalog of chat models available through SAP AI Core orchestration service (~35 models across Azure OpenAI, GCP Vertex AI, AWS Bedrock, Perplexity, and AI Core Open Source) instead of only actively deployed models (typically 3). Aligns with what clients like Cline see when querying the provider directly.
+
+---
+
 ## [5.7.0] — 2026-04-05
 
 ### Added
