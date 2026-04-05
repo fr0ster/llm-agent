@@ -105,10 +105,19 @@ const { values: args } = parseArgs({
     'log-file': { type: 'string' },
     'log-stdout': { type: 'boolean' },
     help: { type: 'boolean', short: 'h' },
+    version: { type: 'boolean', short: 'v' },
   },
   allowPositionals: false,
   strict: false,
 });
+
+if (args.version) {
+  const pkg = JSON.parse(
+    fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+  );
+  process.stdout.write(`${pkg.name}@${pkg.version}\n`);
+  process.exit(0);
+}
 
 if (args.help) {
   // Print the JSDoc comment at the top of this file as help text
