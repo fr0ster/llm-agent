@@ -65,8 +65,7 @@ flowchart LR
   SA --> RFB
   SA --> RS
 
-  P --> TC("TokenCountingLlm")
-  TC --> LA("LlmAdapter")
+  P --> LA("LlmAdapter")
   LA --> BA("BaseAgent bridge")
 
   MCPS --> MCA("McpClientAdapter")
@@ -123,13 +122,13 @@ const server = new SmartServer({
 });
 
 const handle = await server.start();
-// handle.port, handle.getUsage(), handle.close()
+// handle.port, handle.requestLogger.getSummary(), handle.close()
 ```
 
 `SmartServer` public contract:
 - input: `SmartServerConfig`
 - output: `Promise<SmartServerHandle>`
-- lifecycle: `start()` -> `{ port, getUsage, close }`
+- lifecycle: `start()` -> `{ port, requestLogger, close }`
 - protocol: OpenAI-compatible `/v1/chat/completions` (JSON + SSE)
 
 ## Request Processing Flow
@@ -382,7 +381,8 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 | Interface | Role | Default implementation |
 |---|---|---|
-| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `RetryLlm(CircuitBreakerLlm(TokenCountingLlm(LlmAdapter(BaseAgent))))` via `providers.ts` + `builder.ts` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `RetryLlm(CircuitBreakerLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts` |
+| `IRequestLogger` | Per-model, per-component usage tracking | `DefaultRequestLogger` (auto-created by builder) |
 | `IModelProvider` | Model discovery and per-request model selection | `LlmAdapter` (auto-detected from `mainLlm`) |
 | `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
@@ -431,7 +431,7 @@ The `ILlm` chain supports two optional decorators, composed by the builder:
 - **`RetryLlm`** — retries transient failures (429, 5xx) with exponential backoff. Configured via `SmartAgentConfig.retry`. For streaming, retries only when zero chunks have been yielded.
 - **`CircuitBreakerLlm`** — fail-fast on sustained failures. Configured via `.withCircuitBreaker()`.
 
-Composition order: `RetryLlm → CircuitBreakerLlm → TokenCountingLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures.
+Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits outside the circuit breaker so retry attempts are not counted as separate failures. Token usage is tracked by `IRequestLogger` (injected via builder) rather than a decorator wrapper.
 
 ## Protocol Contracts
 

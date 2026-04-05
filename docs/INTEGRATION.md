@@ -150,7 +150,7 @@ interface IModelProvider {
 
 ### Auto-detection
 
-`SmartAgentBuilder` auto-detects `IModelProvider` on `mainLlm`. If `mainLlm` is a `TokenCountingLlm` wrapping an `LlmAdapter`, the builder unwraps and uses it automatically. No explicit `withModelProvider()` call needed for default setups.
+`SmartAgentBuilder` auto-detects `IModelProvider` on `mainLlm`. If `mainLlm` is an `LlmAdapter`, the builder detects and uses it automatically. No explicit `withModelProvider()` call needed for default setups.
 
 ### Example: Custom model provider (filtering models)
 
