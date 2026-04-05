@@ -39,6 +39,7 @@ export class TranslateHandler implements IStageHandler {
       'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the expanded English terms, no explanation.';
 
     const llm = ctx.helperLlm || ctx.mainLlm;
+    const chatStart = Date.now();
     const res = await llm.chat(
       [
         { role: 'system' as const, content: prompt },
@@ -47,6 +48,14 @@ export class TranslateHandler implements IStageHandler {
       [],
       ctx.options,
     );
+    ctx.requestLogger.logLlmCall({
+      component: 'translate',
+      model: llm.model ?? 'unknown',
+      promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+      completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
+      totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+      durationMs: Date.now() - chatStart,
+    });
 
     if (res.ok && res.value.content.trim()) {
       ctx.ragText = res.value.content.trim();

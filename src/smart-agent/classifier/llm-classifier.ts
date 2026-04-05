@@ -1,6 +1,7 @@
 import type { Message } from '../../types.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { ILlm } from '../interfaces/llm.js';
+import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
   type CallOptions,
   ClassifierError,
@@ -114,6 +115,7 @@ export class LlmClassifier implements ISubpromptClassifier {
   constructor(
     private readonly llm: ILlm,
     config?: LlmClassifierConfig,
+    private readonly requestLogger?: IRequestLogger,
   ) {
     this.systemPrompt = config?.systemPrompt ?? DEFAULT_CLASSIFIER_PROMPT;
     this.cache = (config?.enableCache ?? true) ? new Map() : null;
@@ -137,11 +139,28 @@ export class LlmClassifier implements ISubpromptClassifier {
         { role: 'system', content: this.systemPrompt },
         { role: 'user', content: text },
       ];
+      const chatStart = Date.now();
       const llmResult = await withAbort(
         this.llm.chat(messages, [], options),
         options?.signal,
         () => new ClassifierError('Aborted', 'ABORTED'),
       );
+      if (this.requestLogger) {
+        this.requestLogger.logLlmCall({
+          component: 'classifier',
+          model: this.llm.model ?? 'unknown',
+          promptTokens: llmResult.ok
+            ? (llmResult.value.usage?.promptTokens ?? 0)
+            : 0,
+          completionTokens: llmResult.ok
+            ? (llmResult.value.usage?.completionTokens ?? 0)
+            : 0,
+          totalTokens: llmResult.ok
+            ? (llmResult.value.usage?.totalTokens ?? 0)
+            : 0,
+          durationMs: Date.now() - chatStart,
+        });
+      }
       if (!llmResult.ok)
         return {
           ok: false,
