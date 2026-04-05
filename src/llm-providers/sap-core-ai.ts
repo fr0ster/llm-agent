@@ -182,20 +182,33 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       return this.modelsCache;
     }
     try {
-      const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
-      const result = await ScenarioApi.scenarioQueryModels(
-        'foundation-models',
+      const { DeploymentApi } = await import('@sap-ai-sdk/ai-api');
+      const result = await DeploymentApi.deploymentQuery(
+        { scenarioId: 'foundation-models', status: 'RUNNING' },
         { 'AI-Resource-Group': this.resourceGroup ?? 'default' },
       ).execute();
-      const models: IModelInfo[] = (
-        result.resources as Array<{
-          model: string;
-          executableId?: string;
-        }>
-      ).map((m) => ({
-        id: m.model,
-        owned_by: m.executableId,
-      }));
+
+      type AiDeployment = {
+        id: string;
+        details?: {
+          resources?: {
+            backendDetails?: {
+              model?: { name?: string; version?: string };
+            };
+          };
+        };
+      };
+
+      const seen = new Set<string>();
+      const models: IModelInfo[] = [];
+      for (const d of result.resources as AiDeployment[]) {
+        const name = d.details?.resources?.backendDetails?.model?.name;
+        if (name && !seen.has(name)) {
+          seen.add(name);
+          models.push({ id: name });
+        }
+      }
+
       this.modelsCache = models;
       this.modelsCacheExpiry =
         Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
