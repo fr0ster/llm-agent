@@ -1,5 +1,5 @@
 // src/smart-agent/interfaces/agent-contracts.ts
-import type { CallOptions } from './types.js';
+import type { CallOptions, ModelUsageEntry } from './types.js';
 import { SmartAgentError } from './types.js';
 
 export class OrchestratorError extends SmartAgentError {
@@ -30,6 +30,7 @@ export interface SmartAgentResponse {
     promptTokens: number;
     completionTokens: number;
     totalTokens: number;
+    models?: Record<string, ModelUsageEntry>;
   };
 }
 
