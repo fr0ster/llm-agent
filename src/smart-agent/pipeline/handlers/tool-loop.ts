@@ -310,6 +310,10 @@ export class ToolLoopHandler implements IStageHandler {
         );
       }
 
+      let iterPromptTokens = 0;
+      let iterCompletionTokens = 0;
+      let iterTotalTokens = 0;
+
       ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
         messages,
         tools: currentTools,
@@ -388,6 +392,9 @@ export class ToolLoopHandler implements IStageHandler {
           usage.promptTokens += chunk.usage.promptTokens;
           usage.completionTokens += chunk.usage.completionTokens;
           usage.totalTokens += chunk.usage.totalTokens;
+          iterPromptTokens += chunk.usage.promptTokens;
+          iterCompletionTokens += chunk.usage.completionTokens;
+          iterTotalTokens += chunk.usage.totalTokens;
           ctx.sessionManager.addTokens(chunk.usage.totalTokens);
         }
       }
@@ -399,6 +406,15 @@ export class ToolLoopHandler implements IStageHandler {
       timingLog.push({
         phase: `llm_call_${iteration + 1}`,
         duration: llmCallDuration,
+      });
+
+      ctx.requestLogger.logLlmCall({
+        component: 'tool-loop',
+        model: ctx.mainLlm.model ?? 'unknown',
+        promptTokens: iterPromptTokens,
+        completionTokens: iterCompletionTokens,
+        totalTokens: iterTotalTokens,
+        durationMs: llmCallDuration,
       });
 
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
@@ -631,6 +647,7 @@ export class ToolLoopHandler implements IStageHandler {
           { message: string }
         > | null;
         duration: number;
+        cached: boolean;
       };
 
       const toolExecPromises = batch.map(
@@ -640,17 +657,19 @@ export class ToolLoopHandler implements IStageHandler {
             arguments: tc.arguments,
           });
           const client = ctx.toolClientMap.get(tc.name);
-          if (!client) return { tc, text: '', res: null, duration: 0 };
+          if (!client)
+            return { tc, text: '', res: null, duration: 0, cached: false };
           const toolSpan = ctx.tracer.startSpan('smart_agent.tool_call', {
             parent: parentSpan,
             attributes: { 'tool.name': tc.name },
           });
-          const cached = ctx.toolCache.get(tc.name, tc.arguments);
-          const res = cached
+          const cachedValue = ctx.toolCache.get(tc.name, tc.arguments);
+          const wasCached = !!cachedValue;
+          const res = cachedValue
             ? (() => {
                 ctx.metrics.toolCacheHitCount.add();
                 toolSpan.setAttribute('cache', 'hit');
-                return { ok: true as const, value: cached };
+                return { ok: true as const, value: cachedValue };
               })()
             : await (async () => {
                 const r = await client.callTool(
@@ -671,7 +690,13 @@ export class ToolLoopHandler implements IStageHandler {
             res.ok ? undefined : text,
           );
           toolSpan.end();
-          return { tc, text, res, duration: Date.now() - toolStart };
+          return {
+            tc,
+            text,
+            res,
+            duration: Date.now() - toolStart,
+            cached: wasCached,
+          };
         },
       );
 
@@ -716,7 +741,8 @@ export class ToolLoopHandler implements IStageHandler {
 
       // Process results
       const toolMessages: Message[] = [];
-      for (const { tc, text, res } of results) {
+      for (const r of results) {
+        const { tc, text, res } = r;
         if (!res) continue;
         if (!res.ok && isToolContextUnavailableError(text)) {
           const entry = ctx.toolAvailabilityRegistry.block(
@@ -739,6 +765,12 @@ export class ToolLoopHandler implements IStageHandler {
           role: 'tool' as const,
           content: text,
           tool_call_id: tc.id,
+        });
+        ctx.requestLogger.logToolCall({
+          toolName: tc.name,
+          success: !!res?.ok,
+          durationMs: r.duration,
+          cached: r.cached,
         });
       }
       messages = [...messages, ...toolMessages];
