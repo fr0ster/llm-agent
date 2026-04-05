@@ -132,6 +132,8 @@ export interface SmartAgentConfig {
   ragTranslationEnabled?: boolean;
   /** Whether to upsert classified subprompts to RAG stores. Default: true. */
   ragUpsertEnabled?: boolean;
+  /** Whether to inject matched skills into the system prompt. Default: true (when skillManager is configured). */
+  skillInjectionEnabled?: boolean;
   /**
    * Whether to re-fetch MCP tool list on each tool-loop iteration. Default: true.
    * @deprecated No-op since 2.15.0 — tool lists are cached in McpClientAdapter.
@@ -558,6 +560,7 @@ export class SmartAgent {
         ragResults: {},
         tools: [],
       };
+      let skillContent = '';
 
       if (shouldRetrieve) {
         // Collect all action texts for RAG
@@ -661,6 +664,43 @@ export class SmartAgent {
           mode === 'hard'
             ? (selectedMcpTools as LlmTool[])
             : [...(selectedMcpTools as LlmTool[]), ...externalTools];
+
+        // Skill injection (when enabled and skillManager configured)
+        if (
+          this.config.skillInjectionEnabled !== false &&
+          this.deps.skillManager
+        ) {
+          const ragSkillNames = new Set(
+            allRagResults
+              .map((r) => r.metadata.id as string)
+              .filter((id) => id?.startsWith('skill:'))
+              .map((id) => id.slice(6)),
+          );
+          if (ragSkillNames.size > 0) {
+            const allSkillsResult =
+              await this.deps.skillManager.listSkills(opts);
+            if (allSkillsResult.ok) {
+              const matched = allSkillsResult.value.filter((s) =>
+                ragSkillNames.has(s.name),
+              );
+              const contentParts: string[] = [];
+              for (const skill of matched) {
+                const contentResult = await skill.getContent(undefined, opts);
+                if (contentResult.ok && contentResult.value) {
+                  contentParts.push(
+                    `### Skill: ${skill.name}\n${contentResult.value}`,
+                  );
+                }
+              }
+              skillContent = contentParts.join('\n\n');
+              opts?.sessionLogger?.logStep('skills_selected', {
+                ragMatchedSkills: [...ragSkillNames],
+                selectedCount: matched.length,
+                selectedNames: matched.map((s) => s.name),
+              });
+            }
+          }
+        }
       } else {
         // If we're here, mode is definitely 'smart' (not 'hard' or 'pass')
         finalTools = externalTools;
@@ -723,6 +763,19 @@ export class SmartAgent {
       }
       assembleSpan.setStatus('ok');
       assembleSpan.end();
+
+      // Inject skill content into system message (post-assembly)
+      if (skillContent) {
+        const sysMsg = assembleResult.value.find((m) => m.role === 'system');
+        if (sysMsg) {
+          sysMsg.content += `\n\n## Active Skills\n${skillContent}`;
+        } else {
+          assembleResult.value.unshift({
+            role: 'system' as const,
+            content: `## Active Skills\n${skillContent}`,
+          });
+        }
+      }
 
       opts?.sessionLogger?.logStep(`final_context_assembled`, {
         messages: assembleResult.value,
