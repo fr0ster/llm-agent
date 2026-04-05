@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.6.4] — 2026-04-05
+
+### Fixed
+- **SSE streaming usage** — streaming `/v1/chat/completions` now includes `usage` in the final SSE chunk when `reportUsage: true` (server config, default) **or** when the client sends `stream_options: { include_usage: true }`. Previously both conditions were required simultaneously, so clients like Goose and Cline always showed 0 tokens. Closes #39.
+
+---
+
 ## [5.6.3] — 2026-04-05
 
 ### Fixed
