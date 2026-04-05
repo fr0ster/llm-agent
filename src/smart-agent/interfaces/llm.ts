@@ -9,6 +9,9 @@ import type {
 } from './types.js';
 
 export interface ILlm {
+  /** Model identifier used for usage tracking. */
+  readonly model?: string;
+
   chat(
     messages: Message[],
     tools?: LlmTool[],

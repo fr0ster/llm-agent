@@ -42,6 +42,10 @@ export class RetryLlm implements ILlm {
     this.opts = { ...DEFAULT_OPTIONS, ...options };
   }
 
+  get model(): string | undefined {
+    return this.inner.model;
+  }
+
   async chat(
     messages: Message[],
     tools?: LlmTool[],
