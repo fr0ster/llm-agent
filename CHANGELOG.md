@@ -7,6 +7,45 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.5.0] — 2026-04-05
+
+### Added
+- **`IRequestLogger` interface** — per-model, per-component token usage tracking. Replaces the mixed-token `TokenCountingLlm` approach with detailed analytics: `logLlmCall()`, `logRagQuery()`, `logToolCall()`, `getSummary()` with `byModel` and `byComponent` aggregations. Closes #37.
+- **`DefaultRequestLogger`** — stores raw entries, aggregates on demand. Auto-resets state on `startRequest()` to prevent unbounded accumulation.
+- **`NoopRequestLogger`** — empty implementation for consumers who don't need usage tracking.
+- **`ILlm.model` property** — optional `readonly model?: string` on the LLM interface. All adapters (`LlmAdapter`, `RetryLlm`, `CircuitBreakerLlm`) expose the model name.
+- **Builder: `.withRequestLogger(logger)`** — inject a custom `IRequestLogger`. Defaults to `DefaultRequestLogger` when not set.
+- **`SmartAgentHandle.requestLogger`** — direct access to the request logger for per-model usage breakdown.
+- **Pipeline integration** — `logLlmCall` in tool-loop, classifier, translate, summarize, query-expander; `logToolCall` in tool-loop (with cache hit tracking); `logRagQuery` in rag-query handler and tool reselect.
+- **Exported types:** `IRequestLogger`, `LlmCallEntry`, `RagQueryEntry`, `ToolCallEntry`, `RequestSummary`, `LlmComponent`, `DefaultRequestLogger`, `NoopRequestLogger`.
+
+### Fixed
+- **YAML agent config fields silently dropped** — `toolReselectPerIteration`, `refreshToolsPerIteration`, `streamMode`, `heartbeatIntervalMs`, and `retry` were missing from the `resolveSmartServerConfig()` whitelist. These fields are now parsed and passed to the builder. Closes #36.
+
+### Removed
+- **`TokenCountingLlm`** — replaced by `IRequestLogger`. No longer exported.
+- **`SmartAgentHandle.getUsage()`** — replaced by `handle.requestLogger.getSummary()`.
+- **`SmartServerHandle.getUsage()`** — replaced by `handle.requestLogger.getSummary()`.
+- **Builder: `.withUsageProvider()`** — replaced by `.withRequestLogger()`.
+
+### Changed
+- **`/v1/usage` endpoint** — now returns `RequestSummary` (`{ byModel, byComponent, ragQueries, toolCalls, totalDurationMs }`) instead of the old `TokenUsage` shape.
+- **`makeLlm()` / `makeDefaultLlm()`** — return `ILlm` instead of `TokenCountingLlm`.
+
+### Migration
+```ts
+// Before (5.4.0)
+const usage = handle.getUsage();
+// usage: { prompt_tokens, completion_tokens, total_tokens, requests }
+
+// After (5.5.0)
+const summary = handle.requestLogger.getSummary();
+// summary.byModel['gpt-4o'] → { promptTokens, completionTokens, totalTokens, requests }
+// summary.byComponent['tool-loop'] → { promptTokens, completionTokens, totalTokens, requests }
+```
+
+---
+
 ## [5.4.0] — 2026-04-05
 
 ### Added
