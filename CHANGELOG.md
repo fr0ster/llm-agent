@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.5.2] — 2026-04-05
+
+### Fixed
+- **SAP AI SDK error details** — error responses from SAP AI Core now include the response body (`error.response.data`) instead of just the HTTP status code. Makes 400/500 errors actionable.
+
+### Added
+- **Pipeline switching guide** — `docs/CLIENT_SETUP.md` documents that clients (Goose, Cline, Claude CLI) may need reconfiguration (`context_limit`, `max_tokens`) when switching llm-agent pipeline configs.
+
+---
+
 ## [5.5.1] — 2026-04-05
 
 ### Fixed
