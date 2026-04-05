@@ -145,10 +145,27 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       const streamResponse = await client.stream();
 
       for await (const chunk of streamResponse.stream) {
+        // TokenUsage is only available in the final chunk (final_result.usage)
+        const tokenUsage = chunk.getTokenUsage() as
+          | {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+            }
+          | undefined;
         yield {
           content: chunk.getDeltaContent() || '',
           finishReason: chunk.getFinishReason(),
           raw: chunk,
+          ...(tokenUsage
+            ? {
+                usage: {
+                  promptTokens: tokenUsage.prompt_tokens || 0,
+                  completionTokens: tokenUsage.completion_tokens || 0,
+                  totalTokens: tokenUsage.total_tokens || 0,
+                },
+              }
+            : {}),
         };
       }
     } catch (error: unknown) {
