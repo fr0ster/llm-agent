@@ -59,7 +59,9 @@ export interface LlmStreamChunk {
   content: string;
   toolCalls?: StreamToolCall[];
   finishReason?: LlmFinishReason;
-  usage?: LlmUsage;
+  usage?: LlmUsage & {
+    models?: Record<string, ModelUsageEntry>;
+  };
   /** Periodic heartbeat emitted while an MCP tool is executing. */
   heartbeat?: ToolHeartbeat;
   /** End-of-request timing breakdown for all phases. */
@@ -169,6 +171,13 @@ export interface LlmUsage {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
+}
+
+export interface ModelUsageEntry {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  requests: number;
 }
 
 export interface LlmResponse {
