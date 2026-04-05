@@ -23,6 +23,10 @@ export class CircuitBreakerLlm implements ILlm {
     readonly breaker: CircuitBreaker,
   ) {}
 
+  get model(): string | undefined {
+    return this.inner.model;
+  }
+
   async chat(
     messages: Message[],
     tools?: LlmTool[],
