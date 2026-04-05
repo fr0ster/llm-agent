@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.5.1] — 2026-04-05
+
+### Fixed
+- **Pipeline configs: disable full tool refresh, enable RAG re-selection** — iterations 2+ were sending the entire MCP tool catalog (155 tools / 115KB) instead of the RAG-filtered subset (~26 tools). Set `refreshToolsPerIteration: false` and `toolReselectPerIteration: true` in both `deepseek.yaml` and `sap-ai-core.yaml`. Reduces per-iteration LLM input from ~45K tokens to ~8K tokens.
+
+---
+
 ## [5.5.0] — 2026-04-05
 
 ### Added
