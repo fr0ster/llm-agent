@@ -17,6 +17,7 @@ import type {
   LlmStreamChunk,
   LlmTool,
   McpTool,
+  ModelUsageEntry,
   RagMetadata,
   RagResult,
   Result,
@@ -351,7 +352,7 @@ export class SmartAgent {
       promptTokens: number;
       completionTokens: number;
       totalTokens: number;
-      models?: Record<string, import('./interfaces/types.js').ModelUsageEntry>;
+      models?: Record<string, ModelUsageEntry>;
     } = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let stopReason: StopReason = 'stop';
     const collectedToolCalls: Array<{
@@ -917,7 +918,10 @@ export class SmartAgent {
           value: {
             content: '',
             finishReason: 'length',
-            usage,
+            usage: {
+              ...usage,
+              models: this.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         };
@@ -1378,7 +1382,10 @@ export class SmartAgent {
           value: {
             content: '',
             finishReason: 'tool_calls',
-            usage,
+            usage: {
+              ...usage,
+              models: this.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         };
@@ -1414,7 +1421,10 @@ export class SmartAgent {
           value: {
             content: '',
             finishReason: 'length',
-            usage,
+            usage: {
+              ...usage,
+              models: this.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         };
