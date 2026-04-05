@@ -676,29 +676,64 @@ export class SmartAgent {
               .filter((id) => id?.startsWith('skill:'))
               .map((id) => id.slice(6)),
           );
-          if (ragSkillNames.size > 0) {
-            const allSkillsResult =
-              await this.deps.skillManager.listSkills(opts);
-            if (allSkillsResult.ok) {
-              const matched = allSkillsResult.value.filter((s) =>
-                ragSkillNames.has(s.name),
-              );
-              const contentParts: string[] = [];
-              for (const skill of matched) {
-                const contentResult = await skill.getContent(undefined, opts);
-                if (contentResult.ok && contentResult.value) {
-                  contentParts.push(
-                    `### Skill: ${skill.name}\n${contentResult.value}`,
-                  );
+
+          // Fallback: dedicated RAG query when no skill:* in existing results
+          if (ragSkillNames.size === 0) {
+            const k = this.config.ragQueryK ?? 15;
+            const queryText = ragText;
+            const storeEntries = Object.entries(this.deps.ragStores);
+            const fallbackEmbedding = this.deps.embedder
+              ? new QueryEmbedding(queryText, this.deps.embedder, opts)
+              : new TextOnlyEmbedding(queryText);
+            const fallbackResults = await Promise.all(
+              storeEntries.map(([, store]) =>
+                store.query(fallbackEmbedding, k, opts),
+              ),
+            );
+            for (const result of fallbackResults) {
+              if (result.ok) {
+                for (const r of result.value) {
+                  const id = r.metadata.id as string;
+                  if (id?.startsWith('skill:')) {
+                    ragSkillNames.add(id.slice(6));
+                  }
                 }
               }
-              skillContent = contentParts.join('\n\n');
-              opts?.sessionLogger?.logStep('skills_selected', {
-                ragMatchedSkills: [...ragSkillNames],
-                selectedCount: matched.length,
-                selectedNames: matched.map((s) => s.name),
+            }
+            if (ragSkillNames.size > 0) {
+              opts?.sessionLogger?.logStep('skill_select_rag_fallback', {
+                query: queryText.slice(0, 200),
+                k,
+                matchedSkills: [...ragSkillNames],
               });
             }
+          }
+
+          const allSkillsResult = await this.deps.skillManager.listSkills(opts);
+          if (allSkillsResult.ok) {
+            const allSkills = allSkillsResult.value;
+            const matched =
+              ragSkillNames.size > 0
+                ? allSkills.filter((s) => ragSkillNames.has(s.name))
+                : mode === 'hard'
+                  ? allSkills
+                  : [];
+            const contentParts: string[] = [];
+            for (const skill of matched) {
+              const contentResult = await skill.getContent(undefined, opts);
+              if (contentResult.ok && contentResult.value) {
+                contentParts.push(
+                  `### Skill: ${skill.name}\n${contentResult.value}`,
+                );
+              }
+            }
+            skillContent = contentParts.join('\n\n');
+            opts?.sessionLogger?.logStep('skills_selected', {
+              totalSkills: allSkills.length,
+              ragMatchedSkills: [...ragSkillNames],
+              selectedCount: matched.length,
+              selectedNames: matched.map((s) => s.name),
+            });
           }
         }
       } else {
