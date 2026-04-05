@@ -23,8 +23,8 @@ import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
+import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import type { TokenUsage } from './llm/token-counting-llm.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
@@ -177,7 +177,7 @@ export interface SmartServerConfig {
 export interface SmartServerHandle {
   port: number;
   close(): Promise<void>;
-  getUsage(): TokenUsage;
+  requestLogger: IRequestLogger;
 }
 
 // ---------------------------------------------------------------------------
@@ -309,18 +309,6 @@ export class SmartServer {
         )
       : undefined;
 
-    // Usage tracking — aggregate main + classifier
-    const getUsage = (): TokenUsage => {
-      const m = mainLlm.getUsage();
-      const c = classifierLlm.getUsage();
-      return {
-        prompt_tokens: m.prompt_tokens + c.prompt_tokens,
-        completion_tokens: m.completion_tokens + c.completion_tokens,
-        total_tokens: m.total_tokens + c.total_tokens,
-        requests: m.requests + c.requests,
-      };
-    };
-
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
       this.cfg.pluginLoader ??
@@ -384,7 +372,6 @@ export class SmartServer {
     })
       .withMainLlm(mainLlm)
       .withClassifierLlm(classifierLlm)
-      .withUsageProvider(getUsage)
       .withLogger(fileLogger)
       .withMode(this.cfg.mode ?? 'smart');
 
@@ -580,11 +567,13 @@ export class SmartServer {
       closeFns.push(() => watcher.stop());
     }
 
+    const { requestLogger } = agentHandle;
+
     const server = http.createServer((req, res) =>
       this._handle(
         req,
         res,
-        getUsage,
+        requestLogger,
         smartAgent,
         chat,
         streamChat,
@@ -617,7 +606,7 @@ export class SmartServer {
               server.close((e) => (e ? rej(e) : res())),
             );
           },
-          getUsage,
+          requestLogger,
         });
       });
     });
@@ -626,7 +615,7 @@ export class SmartServer {
   private async _handle(
     req: IncomingMessage,
     res: ServerResponse,
-    getUsage: () => TokenUsage,
+    requestLogger: IRequestLogger,
     smartAgent: SmartAgent,
     chat: SmartAgentHandle['chat'],
     streamChat: SmartAgentHandle['streamChat'],
@@ -673,7 +662,7 @@ export class SmartServer {
     }
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(getUsage()));
+      res.end(JSON.stringify(requestLogger.getSummary()));
       return;
     }
     if (
@@ -707,7 +696,7 @@ export class SmartServer {
       await this._handleChat(
         req,
         res,
-        getUsage,
+        requestLogger,
         smartAgent,
         chat,
         streamChat,
@@ -794,7 +783,7 @@ export class SmartServer {
   private async _handleChat(
     req: IncomingMessage,
     res: ServerResponse,
-    _getUsage: () => TokenUsage,
+    _requestLogger: IRequestLogger,
     smartAgent: SmartAgent,
     _chat: SmartAgentHandle['chat'],
     _streamChat: SmartAgentHandle['streamChat'],

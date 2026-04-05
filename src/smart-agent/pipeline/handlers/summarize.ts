@@ -42,11 +42,20 @@ export class SummarizeHandler implements IStageHandler {
       ctx.config.historySummaryPrompt ??
       'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
 
+    const chatStart = Date.now();
     const res = await ctx.helperLlm.chat(
       [...toSummarize, { role: 'system' as const, content: prompt }],
       [],
       ctx.options,
     );
+    ctx.requestLogger.logLlmCall({
+      component: 'helper',
+      model: ctx.helperLlm.model ?? 'unknown',
+      promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+      completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
+      totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+      durationMs: Date.now() - chatStart,
+    });
 
     if (!res.ok) {
       // Non-fatal — keep original history

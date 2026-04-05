@@ -261,6 +261,10 @@ export class LlmAdapter implements ILlm, IModelProvider {
     return this.provider?.model ?? 'unknown';
   }
 
+  get model(): string {
+    return this.getModel();
+  }
+
   async getModels(
     options?: CallOptions,
   ): Promise<Result<IModelInfo[], LlmError>> {

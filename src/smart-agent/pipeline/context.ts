@@ -29,6 +29,7 @@ import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedder } from '../interfaces/rag.js';
+import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { ISkill, ISkillManager } from '../interfaces/skill.js';
 import type {
   CallOptions,
@@ -84,6 +85,7 @@ export interface PipelineContext {
   readonly tracer: ITracer;
   readonly metrics: IMetrics;
   readonly logger: ILogger | undefined;
+  readonly requestLogger: IRequestLogger;
   readonly toolPolicy: IToolPolicy | undefined;
   readonly injectionDetector: IPromptInjectionDetector | undefined;
   readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;

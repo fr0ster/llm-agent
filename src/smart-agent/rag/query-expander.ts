@@ -1,4 +1,5 @@
 import type { ILlm } from '../interfaces/llm.js';
+import type { IRequestLogger } from '../interfaces/request-logger.js';
 import {
   type CallOptions,
   RagError,
@@ -25,13 +26,17 @@ const EXPAND_SYSTEM_PROMPT =
   'Given the user query, produce an expanded search query with synonyms and related terms. Return ONLY the expanded query text, no explanation.';
 
 export class LlmQueryExpander implements IQueryExpander {
-  constructor(private readonly llm: ILlm) {}
+  constructor(
+    private readonly llm: ILlm,
+    private readonly requestLogger?: IRequestLogger,
+  ) {}
 
   async expand(
     query: string,
     options?: CallOptions,
   ): Promise<Result<string, RagError>> {
     try {
+      const chatStart = Date.now();
       const res = await this.llm.chat(
         [
           { role: 'system' as const, content: EXPAND_SYSTEM_PROMPT },
@@ -40,6 +45,18 @@ export class LlmQueryExpander implements IQueryExpander {
         [],
         options,
       );
+      if (this.requestLogger) {
+        this.requestLogger.logLlmCall({
+          component: 'query-expander',
+          model: this.llm.model ?? 'unknown',
+          promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+          completionTokens: res.ok
+            ? (res.value.usage?.completionTokens ?? 0)
+            : 0,
+          totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+          durationMs: Date.now() - chatStart,
+        });
+      }
 
       if (!res.ok) {
         return {
