@@ -38,8 +38,9 @@ import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
 import type { IEmbedder } from './interfaces/rag.js';
+import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import { TokenCountingLlm, type TokenUsage } from './llm/token-counting-llm.js';
+import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
 import { PipelineExecutor } from './pipeline/executor.js';
@@ -120,11 +121,8 @@ export interface SmartAgentHandle {
   chat: ILlm['chat'];
   /** Direct LLM streaming chat. */
   streamChat: ILlm['streamChat'];
-  /**
-   * Returns accumulated LLM token usage (prompt + completion + total + requests).
-   * Returns zeroes if usage tracking is not available on the injected LLM.
-   */
-  getUsage(): TokenUsage;
+  /** Request logger for per-model usage tracking. */
+  requestLogger: IRequestLogger;
   /** Gracefully close MCP connections. Call on shutdown. */
   close(): Promise<void>;
   /** Circuit breakers (empty when not configured). */
@@ -175,7 +173,7 @@ export class SmartAgentBuilder {
   private _outputValidator?: IOutputValidator;
   private _sessionManager?: ISessionManager;
   private _circuitBreakerConfig?: CircuitBreakerConfig;
-  private _getUsage?: () => TokenUsage;
+  private _requestLogger?: IRequestLogger;
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
   private _skillManager?: ISkillManager;
@@ -345,9 +343,9 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set a custom token usage provider. */
-  withUsageProvider(getUsage: () => TokenUsage): this {
-    this._getUsage = getUsage;
+  /** Set a request logger for per-model usage tracking. */
+  withRequestLogger(logger: IRequestLogger): this {
+    this._requestLogger = logger;
     return this;
   }
 
@@ -689,12 +687,16 @@ export class SmartAgentBuilder {
       wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
     }
 
+    // ---- Request logger ---------------------------------------------------
+    const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
+
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
     if (this.cfg.prompts?.classifier)
       classifierCfg.systemPrompt = this.cfg.prompts.classifier;
     const classifier: ISubpromptClassifier =
-      this._classifier ?? new LlmClassifier(classifierLlm, classifierCfg);
+      this._classifier ??
+      new LlmClassifier(classifierLlm, classifierCfg, requestLogger);
 
     // ---- Assembler --------------------------------------------------------
     const assemblerCfg: ContextAssemblerConfig = {
@@ -807,24 +809,17 @@ export class SmartAgentBuilder {
           : {}),
         ...(this._embedder ? { embedder: this._embedder } : {}),
         ...(connectionStrategy ? { connectionStrategy } : {}),
+        requestLogger,
       },
       agentCfg,
       pipelineExecutor,
       pipelineStages,
     );
 
-    const zeroUsage: TokenUsage = {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      total_tokens: 0,
-      requests: 0,
-    };
-
     // ---- Model provider auto-detection ------------------------------------
     let modelProvider: IModelProvider | undefined = this._modelProvider;
     if (!modelProvider) {
-      const candidate =
-        mainLlm instanceof TokenCountingLlm ? mainLlm.wrappedLlm : mainLlm;
+      const candidate = mainLlm;
       if (isModelProvider(candidate)) {
         modelProvider = candidate;
       }
@@ -851,7 +846,7 @@ export class SmartAgentBuilder {
         wrappedMainLlm.chat(messages, tools, options),
       streamChat: (messages, tools, options) =>
         wrappedMainLlm.streamChat(messages, tools, options),
-      getUsage: this._getUsage ?? (() => zeroUsage),
+      requestLogger,
       close: async () => {
         await connectionStrategy?.dispose?.();
         for (const fn of closeFns) await fn();
