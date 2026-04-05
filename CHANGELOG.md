@@ -7,6 +7,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.6.0] — 2026-04-05
+
+### Added
+- **`SapAiCoreEmbedder`** — `IEmbedder` implementation using `@sap-ai-sdk/orchestration` `OrchestrationEmbeddingClient`. Registered as `sap-ai-core` embedder factory. Enables semantic tool selection via SAP AI Core embedding models (e.g. `text-embedding-3-small`). Closes #38.
+- **`in-memory` RAG type with embedder** — when `embedder` is specified in YAML for `type: in-memory`, automatically upgrades to `VectorRag` with hybrid scoring (vector 0.7 + BM25 0.3) instead of plain `InMemoryRag`.
+- **CLI: `--version` / `-v` flag** — prints package name and version.
+
+### Fixed
+- **SAP AI SDK error details** — error responses from SAP AI Core now include the response body (`error.response.data`) instead of just the HTTP status code. Makes 400/500 errors actionable.
+
+### Changed
+- **`sap-ai-core.yaml`** — all RAG stores now use `sap-ai-core` embedder with `text-embedding-3-small`, replacing plain `in-memory` (which had no semantic matching). Tool selection scores improve from 0.11–0.16 (random) to proper semantic ranking.
+
+---
+
 ## [5.5.2] — 2026-04-05
 
 ### Fixed
