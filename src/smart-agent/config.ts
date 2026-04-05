@@ -50,7 +50,7 @@ llm:
 
 rag:
   type: ollama                        # ollama | in-memory | qdrant
-  # embedder: ollama                  # Embedder to use: ollama | openai | <custom>
+  # embedder: ollama                  # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
   # collectionName: llm-agent         # Qdrant collection name (qdrant type only)

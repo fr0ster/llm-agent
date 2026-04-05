@@ -235,6 +235,10 @@ export {
   NoopQueryExpander,
 } from './smart-agent/rag/query-expander.js';
 export {
+  SapAiCoreEmbedder,
+  type SapAiCoreEmbedderConfig,
+} from './smart-agent/rag/sap-ai-core-embedder.js';
+export {
   VectorRag,
   type VectorRagConfig,
 } from './smart-agent/rag/vector-rag.js';

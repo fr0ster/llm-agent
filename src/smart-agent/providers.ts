@@ -223,6 +223,15 @@ export function makeRag(
   options?: RagResolutionOptions,
 ): IRag {
   if (cfg.type === 'in-memory') {
+    // When an embedder is specified, upgrade to VectorRag for hybrid scoring
+    if (cfg.embedder || options?.injectedEmbedder) {
+      const embedder = resolveEmbedder(cfg, options);
+      return new VectorRag(embedder, {
+        dedupThreshold: cfg.dedupThreshold,
+        vectorWeight: cfg.vectorWeight,
+        keywordWeight: cfg.keywordWeight,
+      });
+    }
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
   }
 

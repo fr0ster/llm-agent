@@ -25,10 +25,16 @@ pipeline:
   rag:
     facts:
       type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
     feedback:
       type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
     state:
       type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
 
 agent:
   externalToolsValidationMode: permissive

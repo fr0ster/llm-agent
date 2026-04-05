@@ -8,6 +8,7 @@
 import type { EmbedderFactory } from '../interfaces/rag.js';
 import { OllamaEmbedder } from './ollama-rag.js';
 import { OpenAiEmbedder } from './openai-embedder.js';
+import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
 export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
   ollama: (cfg) =>
@@ -27,4 +28,8 @@ export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
       timeoutMs: cfg.timeoutMs,
     });
   },
+  'sap-ai-core': (cfg) =>
+    new SapAiCoreEmbedder({
+      model: cfg.model ?? 'text-embedding-3-small',
+    }),
 };
