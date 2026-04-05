@@ -5,7 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
-
+import { PACKAGE_VERSION } from '../generated/version.js';
 import type { Message } from '../types.js';
 import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
@@ -477,7 +477,7 @@ export class SmartServer {
     const healthChecker = new HealthChecker({
       agent: smartAgent,
       startTime,
-      version: this.cfg.version ?? '0.0.0',
+      version: this.cfg.version ?? PACKAGE_VERSION,
       circuitBreakers,
     });
 
