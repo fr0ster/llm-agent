@@ -21,6 +21,8 @@
  *   ├─ rag-query ×3   — query facts/feedback/state in parallel
  *   └─ rerank         — re-score RAG results
  *   ↓
+ * skill-select        — select and load matched skills (conditional on skillManager)
+ *   ↓
  * tool-select         — ALWAYS runs (queries facts RAG if retrieval was skipped)
  *   ↓
  * assemble           — build final LLM context
@@ -104,6 +106,10 @@ export function getDefaultStages(): StageDefinition[] {
           type: 'rerank',
         },
       ],
+    },
+    {
+      id: 'skill-select',
+      type: 'skill-select',
     },
     {
       id: 'tool-select',
