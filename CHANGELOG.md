@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.6.3] — 2026-04-05
+
+### Fixed
+- **SAP AI Core model listing** — `getModels()` now uses `DeploymentApi.deploymentQuery(status=RUNNING)` instead of `ScenarioApi.scenarioQueryModels()`. Returns only actively deployed models (deduplicated) instead of all registered models — eliminates non-working entries from the model list.
+
+---
+
 ## [5.6.2] — 2026-04-05
 
 ### Fixed
