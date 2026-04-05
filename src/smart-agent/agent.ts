@@ -347,7 +347,12 @@ export class SmartAgent {
     options?: AgentCallOptions,
   ): Promise<Result<SmartAgentResponse, OrchestratorError>> {
     let content = '';
-    const totalUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+    const totalUsage: {
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+      models?: Record<string, import('./interfaces/types.js').ModelUsageEntry>;
+    } = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
     let stopReason: StopReason = 'stop';
     const collectedToolCalls: Array<{
       id: string;
@@ -383,6 +388,9 @@ export class SmartAgent {
         totalUsage.promptTokens += chunk.value.usage.promptTokens;
         totalUsage.completionTokens += chunk.value.usage.completionTokens;
         totalUsage.totalTokens += chunk.value.usage.totalTokens;
+        if (chunk.value.usage.models) {
+          totalUsage.models = chunk.value.usage.models;
+        }
       }
     }
     return {
@@ -1250,12 +1258,16 @@ export class SmartAgent {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
+        const summary = this.requestLogger.getSummary();
         yield {
           ok: true,
           value: {
             content: '',
             finishReason: finishReason || 'stop',
-            usage,
+            usage: {
+              ...usage,
+              models: summary.byModel,
+            },
             timing: timingLog,
           },
         };
