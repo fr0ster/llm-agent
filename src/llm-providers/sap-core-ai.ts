@@ -127,9 +127,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         },
       };
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log?.error('SAP AI SDK API error', { error: message });
-      throw new Error(`SAP AI SDK API error: ${message}`);
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
+      this.log?.error('SAP AI SDK API error', { error: detail });
+      throw new Error(`SAP AI SDK API error: ${detail}`);
     } finally {
       this.modelOverride = undefined;
     }
@@ -152,9 +152,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         };
       }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.log?.error('SAP AI SDK streaming error', { error: message });
-      throw new Error(`SAP AI SDK streaming error: ${message}`);
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
+      this.log?.error('SAP AI SDK streaming error', { error: detail });
+      throw new Error(`SAP AI SDK streaming error: ${detail}`);
     } finally {
       this.modelOverride = undefined;
     }
@@ -187,6 +187,23 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // Fallback to configured model if AI API is not available
       return [{ id: this.model }];
     }
+  }
+
+  /**
+   * Extract detailed error information from SAP AI SDK / axios errors.
+   */
+  private static extractErrorDetail(error: unknown): string {
+    if (error !== null && typeof error === 'object') {
+      // biome-ignore lint/suspicious/noExplicitAny: axios error shape is untyped
+      const axiosError = error as any;
+      if (axiosError.response?.data) {
+        const data = axiosError.response.data;
+        const detail =
+          typeof data === 'string' ? data : JSON.stringify(data).slice(0, 500);
+        return `${axiosError.message} — ${detail}`;
+      }
+    }
+    return error instanceof Error ? error.message : String(error);
   }
 
   /**
