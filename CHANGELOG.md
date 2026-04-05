@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.7.0] — 2026-04-05
+
+### Added
+- **Per-model token usage breakdown** — `usage` in `SmartAgentResponse` and OpenAI-compatible HTTP responses now includes an optional `models` field with per-model `prompt_tokens`, `completion_tokens`, `total_tokens`, and `requests` counts. Enables cost attribution when the pipeline uses multiple models (classifier, helper, main). Closes #40.
+- **Skill injection in default flow** — skills (SKILL.md files) matched via RAG are now injected into the system prompt in the default hardcoded flow, not only in the structured pipeline. Controlled by `skillInjectionEnabled` config flag (default `true` when `skillManager` is configured). Includes dedicated RAG fallback and `hard`-mode fallback for full parity with `SkillSelectHandler`. Closes #41.
+- **`skill-select` in default pipeline** — the default pipeline definition now includes the `skill-select` stage between `rag-retrieval` and `tool-select`.
+
+---
+
 ## [5.6.4] — 2026-04-05
 
 ### Fixed
