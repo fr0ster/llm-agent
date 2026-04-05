@@ -123,6 +123,15 @@ export type {
   IEmbedder,
   IRag,
 } from './smart-agent/interfaces/rag.js';
+// Request Logger
+export type {
+  IRequestLogger,
+  LlmCallEntry,
+  LlmComponent,
+  RagQueryEntry,
+  RequestSummary,
+  ToolCallEntry,
+} from './smart-agent/interfaces/request-logger.js';
 // Skills
 export type {
   ISkill,
@@ -140,6 +149,8 @@ export type {
   StreamHookContext,
 } from './smart-agent/interfaces/types.js';
 export { SkillError } from './smart-agent/interfaces/types.js';
+export { DefaultRequestLogger } from './smart-agent/logger/default-request-logger.js';
+export { NoopRequestLogger } from './smart-agent/logger/noop-request-logger.js';
 export { createDefaultMcpClient } from './smart-agent/mcp-client-factory.js';
 export {
   type CounterSnapshot,
