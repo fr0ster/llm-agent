@@ -1094,8 +1094,8 @@ export class SmartServer {
       }
 
       if (
-        this.cfg.reportUsage !== false &&
-        body.stream_options?.include_usage &&
+        (this.cfg.reportUsage !== false ||
+          body.stream_options?.include_usage) &&
         lastUsage
       ) {
         res.write(
