@@ -9,6 +9,7 @@ import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IEmbedder, IRag } from './interfaces/rag.js';
+import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type {
   CallOptions,
@@ -38,6 +39,7 @@ import {
   type StopReason,
 } from './interfaces/agent-contracts.js';
 import type { ILogger } from './logger/index.js';
+import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import type { PipelineContext } from './pipeline/context.js';
@@ -85,6 +87,7 @@ export interface SmartAgentDeps {
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
   logger?: ILogger;
+  requestLogger?: IRequestLogger;
   toolPolicy?: IToolPolicy;
   injectionDetector?: IPromptInjectionDetector;
   tracer?: ITracer;
@@ -188,6 +191,7 @@ export class SmartAgent {
   private readonly outputValidator: IOutputValidator;
   private readonly sessionManager: ISessionManager;
   private readonly pendingToolResults: PendingToolResultsRegistry;
+  private readonly requestLogger: IRequestLogger;
   private _activeClients: IMcpClient[];
 
   constructor(
@@ -207,6 +211,7 @@ export class SmartAgent {
     this.outputValidator = deps.outputValidator ?? new NoopValidator();
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
+    this.requestLogger = deps.requestLogger ?? new NoopRequestLogger();
     this._activeClients = [...deps.mcpClients];
   }
 
@@ -454,6 +459,7 @@ export class SmartAgent {
       });
     }
     opts?.sessionLogger?.logStep('pipeline_start', { mode, textOrMessages });
+    this.requestLogger.startRequest();
 
     try {
       if (mode === 'pass') {
@@ -730,6 +736,7 @@ export class SmartAgent {
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
     } finally {
+      this.requestLogger.endRequest();
       rootSpan.end();
       timeoutCleanup?.();
       this.metrics.requestLatency.record(Date.now() - requestStart);
@@ -1596,6 +1603,7 @@ export class SmartAgent {
     if (toS.length === 0) return { ok: true, value: h };
     const dp =
       'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
+    const summarizeStart = Date.now();
     const res = await this.deps.helperLlm.chat(
       [
         ...toS,
@@ -1607,6 +1615,14 @@ export class SmartAgent {
       [],
       opts,
     );
+    this.requestLogger.logLlmCall({
+      component: 'helper',
+      model: this.deps.helperLlm.model ?? 'unknown',
+      promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+      completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
+      totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+      durationMs: Date.now() - summarizeStart,
+    });
     if (!res.ok) return { ok: true, value: h };
     return {
       ok: true,
@@ -1679,6 +1695,7 @@ export class SmartAgent {
       tracer: this.tracer,
       metrics: this.metrics,
       logger: this.deps.logger,
+      requestLogger: this.requestLogger,
       toolPolicy: this.deps.toolPolicy,
       injectionDetector: this.deps.injectionDetector,
       toolAvailabilityRegistry: this.toolAvailabilityRegistry,
