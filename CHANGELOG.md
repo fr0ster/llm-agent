@@ -130,6 +130,13 @@ const summary = handle.requestLogger.getSummary();
 
 ---
 
+## [5.2.2] — 2026-04-05
+
+### Fixed
+- **Token usage in streaming** — `SapCoreAIProvider.streamChat()` now extracts `chunk.getTokenUsage()` from SAP AI SDK streaming chunks. Previously usage was always 0 in streaming mode.
+
+---
+
 ## [5.2.1] — 2026-04-03
 
 ### Changed
