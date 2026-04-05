@@ -384,7 +384,6 @@ export class SmartServer {
     })
       .withMainLlm(mainLlm)
       .withClassifierLlm(classifierLlm)
-      .withUsageProvider(getUsage)
       .withLogger(fileLogger)
       .withMode(this.cfg.mode ?? 'smart');
 
