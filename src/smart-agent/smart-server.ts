@@ -653,6 +653,14 @@ export class SmartServer {
             id: m.id,
             object: 'model',
             owned_by: m.owned_by ?? 'unknown',
+            ...(m.displayName ? { display_name: m.displayName } : {}),
+            ...(m.provider ? { provider: m.provider } : {}),
+            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+            ...(m.contextLength ? { context_length: m.contextLength } : {}),
+            ...(m.streamingSupported !== undefined
+              ? { streaming_supported: m.streamingSupported }
+              : {}),
+            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
           }));
         }
       }

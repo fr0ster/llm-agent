@@ -58,58 +58,14 @@ export interface SapCoreAIConfig extends LLMProviderConfig {
  * Uses @sap-ai-sdk/orchestration for authentication and LLM access.
  * A new OrchestrationClient is created per call because tools may change between calls.
  */
-/**
- * Chat models available through SAP AI Core orchestration service.
- * Derived from @sap-ai-sdk/core ChatModel union types.
- * Update this list when upgrading @sap-ai-sdk.
- */
-const SAP_AI_CORE_CHAT_MODELS: string[] = [
-  // Azure OpenAI
-  'gpt-4.1',
-  'gpt-4.1-mini',
-  'gpt-4.1-nano',
-  'o1',
-  'o3',
-  'o3-mini',
-  'o4-mini',
-  'gpt-5',
-  'gpt-5-mini',
-  'gpt-5-nano',
-  'gpt-5.2',
-  // GCP Vertex AI
-  'gemini-2.5-flash',
-  'gemini-2.5-flash-lite',
-  'gemini-2.5-pro',
-  // AWS Bedrock — Anthropic
-  'anthropic--claude-3-haiku',
-  'anthropic--claude-4.5-haiku',
-  'anthropic--claude-4-opus',
-  'anthropic--claude-4.5-opus',
-  'anthropic--claude-4.6-opus',
-  'anthropic--claude-4-sonnet',
-  'anthropic--claude-4.5-sonnet',
-  'anthropic--claude-4.6-sonnet',
-  // AWS Bedrock — Amazon Nova
-  'amazon--nova-pro',
-  'amazon--nova-lite',
-  'amazon--nova-micro',
-  'amazon--nova-premier',
-  // Perplexity
-  'sonar',
-  'sonar-pro',
-  // AI Core Open Source
-  'cohere--command-a-reasoning',
-  'mistralai--mistral-large-instruct',
-  'mistralai--mistral-medium-instruct',
-  'mistralai--mistral-small-instruct',
-  'sap-abap-1',
-];
-
 export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly model: string;
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
   private readonly destination?: Record<string, unknown>;
+  private modelsCache: IModelInfo[] | null = null;
+  private modelsCacheExpiry = 0;
+  private static readonly MODELS_CACHE_TTL_MS = 300_000; // 5 min
   private modelOverride?: string;
 
   /** Set a per-request model override. Cleared after each chat/streamChat call. */
@@ -222,7 +178,53 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   }
 
   async getModels(): Promise<IModelInfo[]> {
-    return SAP_AI_CORE_CHAT_MODELS.map((id) => ({ id }));
+    if (this.modelsCache && Date.now() < this.modelsCacheExpiry) {
+      return this.modelsCache;
+    }
+    try {
+      const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
+      const result = await ScenarioApi.scenarioQueryModels(
+        'foundation-models',
+        { 'AI-Resource-Group': this.resourceGroup ?? 'default' },
+      ).execute();
+
+      type AiModel = {
+        model: string;
+        displayName?: string;
+        provider?: string;
+        versions?: {
+          isLatest?: boolean;
+          deprecated?: boolean;
+          capabilities?: string[];
+          contextLength?: number;
+          streamingSupported?: boolean;
+        }[];
+      };
+
+      const models: IModelInfo[] = [];
+      for (const r of result.resources as AiModel[]) {
+        const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
+        if (!latest?.capabilities?.includes('text-generation')) continue;
+        models.push({
+          id: r.model,
+          displayName: r.displayName,
+          owned_by: r.provider,
+          provider: r.provider,
+          capabilities: latest.capabilities,
+          contextLength: latest.contextLength,
+          streamingSupported: latest.streamingSupported,
+          deprecated: latest.deprecated,
+        });
+      }
+
+      this.modelsCache = models;
+      this.modelsCacheExpiry =
+        Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
+      return models;
+    } catch {
+      // Fallback to configured model if AI API is not available
+      return [{ id: this.model }];
+    }
   }
 
   /**
