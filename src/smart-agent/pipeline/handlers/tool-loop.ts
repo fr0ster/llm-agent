@@ -116,7 +116,10 @@ export class ToolLoopHandler implements IStageHandler {
           value: {
             content: '',
             finishReason: 'length',
-            usage,
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         });
@@ -471,7 +474,10 @@ export class ToolLoopHandler implements IStageHandler {
           value: {
             content: '',
             finishReason: finishReason || 'stop',
-            usage,
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         });
@@ -589,7 +595,10 @@ export class ToolLoopHandler implements IStageHandler {
           value: {
             content: '',
             finishReason: 'tool_calls',
-            usage,
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         });
@@ -628,7 +637,10 @@ export class ToolLoopHandler implements IStageHandler {
           value: {
             content: '',
             finishReason: 'length',
-            usage,
+            usage: {
+              ...usage,
+              models: ctx.requestLogger.getSummary().byModel,
+            },
             timing: timingLog,
           },
         });
