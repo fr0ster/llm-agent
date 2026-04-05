@@ -14,6 +14,7 @@ export class DefaultRequestLogger implements IRequestLogger {
   private requestDurationMs = 0;
 
   startRequest(): void {
+    this.reset();
     this.requestStartMs = Date.now();
   }
 
