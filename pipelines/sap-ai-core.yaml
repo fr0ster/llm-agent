@@ -38,6 +38,8 @@ agent:
   showReasoning: false
   historyAutoSummarizeLimit: 10
   streamMode: final
+  refreshToolsPerIteration: false
+  toolReselectPerIteration: true
 
 log: smart-server.log
 logDir: sessions
