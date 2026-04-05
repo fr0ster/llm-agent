@@ -201,6 +201,15 @@ export class SmartAgentServer {
           prompt_tokens: number;
           completion_tokens: number;
           total_tokens: number;
+          models?: Record<
+            string,
+            {
+              prompt_tokens: number;
+              completion_tokens: number;
+              total_tokens: number;
+              requests: number;
+            }
+          >;
         } | null = null;
 
         for await (const chunk of this.agent.streamProcess(
@@ -227,10 +236,24 @@ export class SmartAgentServer {
           }
 
           if (chunk.value.usage) {
+            const models = chunk.value.usage.models
+              ? Object.fromEntries(
+                  Object.entries(chunk.value.usage.models).map(([k, v]) => [
+                    k,
+                    {
+                      prompt_tokens: v.promptTokens,
+                      completion_tokens: v.completionTokens,
+                      total_tokens: v.totalTokens,
+                      requests: v.requests,
+                    },
+                  ]),
+                )
+              : undefined;
             lastUsage = {
               prompt_tokens: chunk.value.usage.promptTokens,
               completion_tokens: chunk.value.usage.completionTokens,
               total_tokens: chunk.value.usage.totalTokens,
+              ...(models ? { models } : {}),
             };
           }
 
@@ -399,6 +422,21 @@ export class SmartAgentServer {
           prompt_tokens: result.value.usage?.promptTokens ?? 0,
           completion_tokens: result.value.usage?.completionTokens ?? 0,
           total_tokens: result.value.usage?.totalTokens ?? 0,
+          ...(result.value.usage?.models
+            ? {
+                models: Object.fromEntries(
+                  Object.entries(result.value.usage.models).map(([k, v]) => [
+                    k,
+                    {
+                      prompt_tokens: v.promptTokens,
+                      completion_tokens: v.completionTokens,
+                      total_tokens: v.totalTokens,
+                      requests: v.requests,
+                    },
+                  ]),
+                ),
+              }
+            : {}),
         },
       };
 
