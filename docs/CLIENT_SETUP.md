@@ -148,6 +148,21 @@ Then run:
 goose session
 ```
 
+## Switching Pipeline Configs
+
+When you change the llm-agent pipeline config (e.g. switching from `deepseek.yaml` to `sap-ai-core.yaml`), you may need to reconfigure the client as well. The server-side model change is transparent to most clients, but parameters like `context_limit` and `max_tokens` are often set on the client side.
+
+**What to check after switching pipelines:**
+
+| Parameter | Why it matters | Where to update |
+|-----------|---------------|-----------------|
+| `context_limit` / `max_tokens` | Different models have different limits (DeepSeek: 8K output, Claude: 32K, GPT-4o: 16K). Client may send a value the new model rejects with HTTP 400. | Client config (Goose `profiles.yaml`, Cline settings, Claude CLI env) |
+| `model` name | Some clients send the model name in requests. llm-agent ignores it (uses pipeline config), but clients may validate it locally. | Client config |
+
+**Goose example** — update `~/.config/goose/profiles.yaml` context limit when switching to a model with different limits.
+
+**Symptom of misconfiguration:** HTTP 400 errors from the LLM provider, often with no visible details in the client. Check llm-agent session logs (`sessions/`) for the full error.
+
 ## Architecture
 
 All clients connect to the same llm-agent server and benefit from:
