@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.6.2] — 2026-04-05
+
+### Fixed
+- **Token usage in streaming** — `SapCoreAIProvider.streamChat()` now extracts `chunk.getTokenUsage()` from SAP AI SDK streaming chunks. Previously usage was always 0 in streaming mode, causing clients to show undercounted tokens.
+
+---
+
 ## [5.6.1] — 2026-04-05
 
 ### Added
