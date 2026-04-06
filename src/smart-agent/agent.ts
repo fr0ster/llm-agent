@@ -13,6 +13,7 @@ import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strateg
 import type { IEmbedder, IRag } from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
+import type { IToolResultCompactor } from './interfaces/tool-result-compactor.js';
 import type {
   CallOptions,
   LlmFinishReason,
@@ -105,6 +106,7 @@ export interface SmartAgentDeps {
   connectionStrategy?: IMcpConnectionStrategy;
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
+  toolResultCompactor?: IToolResultCompactor;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -1817,6 +1819,7 @@ export class SmartAgent {
       embedder: this.deps.embedder,
       historyMemory: this.deps.historyMemory,
       historySummarizer: this.deps.historySummarizer,
+      toolResultCompactor: this.deps.toolResultCompactor,
 
       // Mutable state
       inputText: text,
