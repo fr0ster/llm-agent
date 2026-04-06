@@ -1,0 +1,53 @@
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      temperature: 0.7
+      maxTokens: 32768
+    classifier:
+      provider: sap-ai-sdk
+      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      temperature: 0.1
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://localhost:8080/mcp/stream/http}
+      headers:
+        x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
+
+  rag:
+    facts:
+      type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
+    feedback:
+      type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
+    state:
+      type: in-memory
+      embedder: sap-ai-core
+      model: text-embedding-3-small
+
+agent:
+  externalToolsValidationMode: permissive
+  maxIterations: 10
+  maxToolCalls: 30
+  ragQueryK: 10
+  showReasoning: false
+  historyAutoSummarizeLimit: 10
+  streamMode: final
+  refreshToolsPerIteration: false
+  toolReselectPerIteration: true
+  retry:
+    maxAttempts: 3
+    retryOnMidStream:
+      - 'SSE stream'
+
+log: smart-server.log
+logDir: sessions
