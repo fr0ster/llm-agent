@@ -255,7 +255,10 @@ export class MCPClientWrapper {
         {
           sessionId: this.config.sessionId,
           requestInit: {
-            headers: this.config.headers || {},
+            headers: {
+              Accept: 'application/json, text/event-stream',
+              ...this.config.headers,
+            },
             signal: AbortSignal.timeout(this.config.timeout || 30000),
           },
         },
