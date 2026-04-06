@@ -123,5 +123,9 @@ export function getDefaultStages(): StageDefinition[] {
       id: 'tool-loop',
       type: 'tool-loop',
     },
+    {
+      id: 'history-upsert',
+      type: 'history-upsert',
+    },
   ];
 }

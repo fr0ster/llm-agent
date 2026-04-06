@@ -9,6 +9,7 @@ import type { IStageHandler } from '../stage-handler.js';
 import { AssembleHandler } from './assemble.js';
 import { ClassifyHandler } from './classify.js';
 import { ExpandHandler } from './expand.js';
+import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
 import { RagUpsertHandler } from './rag-upsert.js';
 import { RerankHandler } from './rerank.js';
@@ -40,13 +41,16 @@ export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
     ['skill-select', new SkillSelectHandler()],
     ['assemble', new AssembleHandler()],
     ['tool-loop', new ToolLoopHandler()],
+    ['history-upsert', new HistoryUpsertHandler()],
   ]);
 }
 
+export { summarizeAndStore } from './history-upsert.js';
 export {
   AssembleHandler,
   ClassifyHandler,
   ExpandHandler,
+  HistoryUpsertHandler,
   RagQueryHandler,
   RagUpsertHandler,
   RerankHandler,
