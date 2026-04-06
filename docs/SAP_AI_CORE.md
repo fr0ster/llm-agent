@@ -90,9 +90,42 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 | Variable | Purpose |
 |----------|---------|
 | `AICORE_SERVICE_KEY` | Full SAP AI Core service key JSON (primary auth method) |
-| `LLM_PROVIDER` | Set to `sap-ai-sdk` to use SAP AI Core |
+| `LLM_PROVIDER` | Set to `sap-ai-sdk` (Orchestration) or `sap-ai-core-direct` (Direct) |
 | `SAP_AI_MODEL` | Model name (used by CLI, maps to `model` config) |
 | `SAP_AI_RESOURCE_GROUP` | Resource group (used by CLI, maps to `resourceGroup` config) |
+
+## Direct Provider (sap-ai-core-direct)
+
+Since v5.14.0, an alternative provider bypasses the Orchestration Service and sends OpenAI-compatible HTTP requests directly to SAP AI Core deployment endpoints. This eliminates ~14K phantom tokens per request added by the Orchestration layer.
+
+| Aspect | `sap-ai-sdk` (Orchestration) | `sap-ai-core-direct` (Direct) |
+|--------|-------------------------------|-------------------------------|
+| SDK | `@sap-ai-sdk/orchestration` | `@sap-ai-sdk/ai-api` + raw HTTP |
+| Token overhead | ~14K phantom tokens | Accurate counts |
+| Tool calling | Via promptTemplating module | Native OpenAI function calling |
+| Content filtering | Built-in | None (consumer responsibility) |
+
+### YAML configuration
+
+```yaml
+llm:
+  provider: sap-ai-core-direct
+  model: gpt-4o
+  resourceGroup: default
+```
+
+### Programmatic usage
+
+```typescript
+import { SapAiCoreDirectProvider } from '@mcp-abap-adt/llm-agent';
+
+const provider = new SapAiCoreDirectProvider({
+  model: 'gpt-4o',
+  resourceGroup: 'default',
+});
+```
+
+Authentication uses the same `AICORE_SERVICE_KEY` environment variable. The provider resolves the deployment URL via `@sap-ai-sdk/ai-api` and caches it for the provider lifetime.
 
 ## Usage Examples
 
