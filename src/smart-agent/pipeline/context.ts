@@ -33,6 +33,7 @@ import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedder } from '../interfaces/rag.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { ISkill, ISkillManager } from '../interfaces/skill.js';
+import type { IToolResultCompactor } from '../interfaces/tool-result-compactor.js';
 import type {
   CallOptions,
   LlmStreamChunk,
@@ -96,6 +97,7 @@ export interface PipelineContext {
   readonly embedder: IEmbedder | undefined;
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;
+  readonly toolResultCompactor: IToolResultCompactor | undefined;
 
   // -- Mutable state (populated by stages) ----------------------------------
 
