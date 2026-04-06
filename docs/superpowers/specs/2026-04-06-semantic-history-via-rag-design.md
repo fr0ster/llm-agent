@@ -126,3 +126,153 @@ Request N+1 arrives:
 - MCP client layer
 - RAG store interface (IRag) — reuses existing upsert/query
 - Classifier, reranker, validator
+
+## Proposed refinements
+
+### 1. Use a dedicated memory interface instead of extending SessionManager
+
+Avoid turning `SessionManager` into a general conversation-memory holder. Today it is a token-budget tracker only. A cleaner design is:
+
+```typescript
+export interface IHistoryMemory {
+  pushRecent(sessionId: string, summary: string): void;
+  getRecent(sessionId: string, limit: number): string[];
+  clear(sessionId: string): void;
+}
+```
+
+Default implementation can be an in-memory ring buffer. This keeps `ISessionManager` backward-compatible and avoids mixing token accounting with semantic memory.
+
+### 2. Separate history compression from semantic turn memory
+
+The current system already uses `historySummaryPrompt` for message-array compression when history gets too long. Semantic turn memory is a different mechanism and should use separate config keys:
+
+```yaml
+agent:
+  historyAutoSummarizeLimit: 10
+  historyCompressionPrompt: "Summarize the conversation so far in 2-3 sentences."
+  historyTurnSummaryPrompt: "Summarize in one sentence: what the user requested and what was done."
+  historyRecencyWindow: 3
+```
+
+This avoids prompt ambiguity and lets both mechanisms coexist during migration.
+
+### 3. Strengthen the summarizer contract
+
+Instead of passing only `userIntent` and `assistantResult`, pass a richer turn payload:
+
+```typescript
+export interface HistoryTurn {
+  sessionId: string;
+  turnIndex: number;
+  userText: string;
+  assistantText: string;
+  toolCalls: Array<{ name: string; arguments: unknown }>;
+  toolResults: Array<{ tool: string; content: string }>;
+  timestamp: number;
+}
+
+export interface IHistorySummarizer {
+  summarize(
+    turn: HistoryTurn,
+    options?: CallOptions,
+  ): Promise<Result<string, LlmError>>;
+}
+```
+
+This gives the summarizer access to actual side effects, not just the final answer text.
+
+### 4. Require namespace-safe retrieval
+
+History retrieval must be session-safe by design, not by convention. Every history query should include the session namespace filter derived from `sessionPolicy` or request context:
+
+```typescript
+const historyOptions: CallOptions = {
+  ...options,
+  ragFilter: {
+    ...options?.ragFilter,
+    namespace: sessionPolicy.namespace,
+  },
+};
+```
+
+If no namespace is configured, either:
+
+- treat history memory as session-local only, or
+- derive an internal namespace from `sessionId`.
+
+Do not allow shared `history` retrieval across sessions by default.
+
+### 5. Keep recent raw dialogue, not only summaries
+
+For the recency window, storing only compact summaries may lose essential deixis such as "here", "this field", "rename the previous method". Prefer one of these approaches:
+
+- Keep the last N raw user/assistant turns in normal history.
+- Keep the last N raw user messages plus compact assistant outcome summaries.
+- Keep both raw turn text and summary in the memory object, using summary for RAG and raw text for recency injection.
+
+Recommended default: raw last 2 turns + summarized older memory.
+
+### 6. Limit what gets injected into ContextAssembler
+
+Do not remove all regular history at once. The safer migration path is:
+
+1. Keep the last 1-2 raw turns in `history`.
+2. Add `## Recent Actions` from memory.
+3. Add `## Relevant History` from the history RAG store.
+4. Measure quality before fully removing longer raw history injection.
+
+This reduces regression risk for follow-up instructions that rely on exact phrasing.
+
+### 7. Define write timing and failure policy explicitly
+
+The spec should state what happens if summarization or upsert fails after a successful response:
+
+- User response must still succeed.
+- Failure to summarize or upsert is non-fatal.
+- Recency buffer write may fall back to raw assistant summary text.
+- Errors should be logged with request/session correlation.
+
+Suggested flow:
+
+```text
+final response produced
+  -> best-effort summarize turn
+  -> best-effort upsert to history store
+  -> best-effort update recency memory
+```
+
+### 8. Add rollout and compatibility mode
+
+Introduce a feature flag so the design can be enabled gradually:
+
+```yaml
+agent:
+  semanticHistoryEnabled: false
+```
+
+Recommended rollout stages:
+
+1. Write-only: summarize and upsert turns, but do not read them yet.
+2. Read-shadow: retrieve history and log it, but do not inject it.
+3. Partial injection: inject history while still keeping short raw dialogue.
+4. Full mode: reduce raw history to the minimal recency window.
+
+### 9. Document token economics conservatively
+
+The current token estimates are directionally useful, but they should be framed as approximate and workload-dependent. Add caveats:
+
+- semantic retrieval may return irrelevant items without reranking thresholds;
+- turn summarization adds fixed cost every request;
+- recency still consumes tokens;
+- low-quality summaries can create hidden error accumulation.
+
+### 10. Add acceptance criteria
+
+The spec would be more actionable with explicit acceptance criteria:
+
+- A 10-turn session does not inject all prior raw messages into the final LLM call.
+- Retrieved history never crosses namespace/session boundaries.
+- If history summarization fails, the request still completes successfully.
+- If history store is unavailable, the agent falls back to recency-only behavior.
+- Follow-up prompts like "rename that method" still work across at least the last 2 turns.
