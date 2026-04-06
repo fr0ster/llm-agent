@@ -243,7 +243,7 @@ export class SmartAgent {
       const result = await client.listTools(opts);
       if (!result.ok) continue;
       for (const tool of result.value) {
-        const text = `Tool: ${tool.name}\nDescription: ${tool.description}\nSchema: ${JSON.stringify(tool.inputSchema)}`;
+        const text = `Tool: ${tool.name} — ${tool.description}`;
         await toolsRag.upsert(text, { id: `tool:${tool.name}` });
       }
     }
