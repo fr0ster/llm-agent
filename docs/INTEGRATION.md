@@ -1110,7 +1110,7 @@ const handle = await new SmartAgentBuilder({
   .withCircuitBreaker({ failureThreshold: 5, recoveryWindowMs: 30_000 })
   // Resilience
   // retry is configured via agentConfig, not builder fluent API:
-  //   agentConfig: { retry: { maxAttempts: 3, backoffMs: 2000, retryOn: [429, 500, 502, 503] } }
+  //   agentConfig: { retry: { maxAttempts: 3, backoffMs: 2000, retryOn: [429, 500, 502, 503], retryOnMidStream: ['SSE stream'] } }
   // Pipeline stage configuration
   .withMode('smart')
   .withMaxIterations(15)
