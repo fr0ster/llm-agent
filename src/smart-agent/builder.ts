@@ -746,6 +746,14 @@ export class SmartAgentBuilder {
             ? { prompt: agentCfg.historyTurnSummaryPrompt }
             : undefined,
         );
+
+      // Ensure history RAG store exists — share the same backend as the first available store
+      if (!ragStores.history) {
+        const firstStore = Object.values(ragStores)[0];
+        if (firstStore) {
+          ragStores.history = firstStore;
+        }
+      }
     }
 
     // ---- Plugin loader (optional) -------------------------------------------

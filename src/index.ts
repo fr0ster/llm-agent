@@ -90,6 +90,9 @@ export type {
   HealthComponentStatus,
   HealthStatus,
 } from './smart-agent/health/types.js';
+// History
+export { HistoryMemory } from './smart-agent/history/history-memory.js';
+export { HistorySummarizer } from './smart-agent/history/history-summarizer.js';
 // Smart Agent interfaces
 export type { AgentCallOptions } from './smart-agent/interfaces/agent-contracts.js';
 export {
@@ -100,6 +103,11 @@ export {
   type NormalizedRequest,
 } from './smart-agent/interfaces/api-adapter.js';
 export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
+export type { IHistoryMemory } from './smart-agent/interfaces/history-memory.js';
+export type {
+  HistoryTurn,
+  IHistorySummarizer,
+} from './smart-agent/interfaces/history-summarizer.js';
 export type { ILlm } from './smart-agent/interfaces/llm.js';
 export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
 export type {
