@@ -66,6 +66,8 @@ export interface LlmStreamChunk {
   heartbeat?: ToolHeartbeat;
   /** End-of-request timing breakdown for all phases. */
   timing?: TimingEntry[];
+  /** When true, consumer must discard previously accumulated chunks — stream is being retried from scratch. */
+  reset?: boolean;
 }
 
 // ---------------------------------------------------------------------------
