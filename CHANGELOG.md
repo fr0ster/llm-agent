@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.15.0] — 2026-04-07
+
+### Added
+- **Non-streaming tool-loop mode** — `toolLoopStreaming: false` in `SmartAgentConfig` makes the tool-loop use `chat()` instead of `streamChat()`. Reliable fallback when SAP AI Core streaming fails. Closes #62.
+
+### Fixed
+- **MCP Accept header** — `MCPClientWrapper` now sends `Accept: application/json, text/event-stream` per MCP spec. Strict servers no longer return 406. Closes #63.
+
+---
+
 ## [5.14.3] — 2026-04-07
 
 ### Fixed
