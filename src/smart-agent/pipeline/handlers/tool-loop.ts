@@ -362,6 +362,13 @@ export class ToolLoopHandler implements IStageHandler {
           return false;
         }
         const chunk = chunkResult.value;
+        // Mid-stream retry: discard accumulated state and restart accumulation
+        if (chunk.reset) {
+          content = '';
+          toolCallsMap.clear();
+          finishReason = undefined;
+          continue;
+        }
         if (chunk.content) {
           content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
