@@ -499,6 +499,73 @@ describe('ContextAssembler — systemPromptPreamble', () => {
 });
 
 // ---------------------------------------------------------------------------
+// Recent Actions
+// ---------------------------------------------------------------------------
+
+describe('ContextAssembler — recent actions', () => {
+  it('injects ## Recent Actions when recentActions provided', async () => {
+    const assembler = new ContextAssembler();
+    const r = await assembler.assemble(
+      ACTION,
+      {
+        ragResults: {},
+        tools: [],
+        recentActions: [
+          'Created class ZCL_TEST in package ZDEV',
+          'Added method GET_DATA to ZCL_TEST',
+        ],
+      },
+      [],
+    );
+    assert.ok(r.ok);
+    const sys = r.value.find((m) => m.role === 'system');
+    assert.ok(sys);
+    assert.ok(sys.content.includes('## Recent Actions'));
+    assert.ok(sys.content.includes('Created class ZCL_TEST'));
+    assert.ok(sys.content.includes('Added method GET_DATA'));
+  });
+
+  it('no ## Recent Actions when recentActions empty', async () => {
+    const assembler = new ContextAssembler();
+    const r = await assembler.assemble(
+      ACTION,
+      { ragResults: {}, tools: [], recentActions: [] },
+      [],
+    );
+    assert.ok(r.ok);
+    const sys = r.value.find((m) => m.role === 'system');
+    if (sys) {
+      assert.ok(!sys.content.includes('## Recent Actions'));
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Relevant History from RAG
+// ---------------------------------------------------------------------------
+
+describe('ContextAssembler — relevant history from RAG', () => {
+  it('injects ## Relevant History from history RAG store', async () => {
+    const assembler = new ContextAssembler();
+    const r = await assembler.assemble(
+      ACTION,
+      {
+        ragResults: {
+          history: [makeFact('Created class ZCL_OLD last week', 0.85)],
+        },
+        tools: [],
+      },
+      [],
+    );
+    assert.ok(r.ok);
+    const sys = r.value.find((m) => m.role === 'system');
+    assert.ok(sys);
+    assert.ok(sys.content.includes('## Relevant History'));
+    assert.ok(sys.content.includes('ZCL_OLD'));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // McpToolResult object content
 // ---------------------------------------------------------------------------
 
