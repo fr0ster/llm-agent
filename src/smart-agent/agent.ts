@@ -131,6 +131,8 @@ export interface SmartAgentConfig {
   sessionTokenBudget?: number;
   /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
   heartbeatIntervalMs?: number;
+  /** Use chat() instead of streamChat() in tool-loop. Default: true (streaming). */
+  toolLoopStreaming?: boolean;
 
   // -- Pipeline stage toggles -----------------------------------------------
 
