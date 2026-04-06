@@ -159,6 +159,7 @@ export type {
   ISkillMeta,
   ISkillResource,
 } from './smart-agent/interfaces/skill.js';
+export type { IToolResultCompactor } from './smart-agent/interfaces/tool-result-compactor.js';
 // Smart Agent shared types (needed by plugin authors)
 export type {
   CallOptions,
@@ -216,6 +217,7 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
+export { TruncatingToolResultCompactor } from './smart-agent/policy/truncating-tool-result-compactor.js';
 export {
   type EmbedderResolutionConfig,
   type EmbedderResolutionOptions,
