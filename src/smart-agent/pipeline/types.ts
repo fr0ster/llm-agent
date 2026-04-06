@@ -16,8 +16,9 @@
  * - `rag-query`   — query a RAG store (config: { store: 'facts' | 'feedback' | 'state' })
  * - `rerank`      — re-score RAG results
  * - `tool-select` — select MCP tools based on RAG results
- * - `assemble`    — build final LLM context
- * - `tool-loop`   — streaming LLM call + tool execution loop
+ * - `assemble`      — build final LLM context
+ * - `tool-loop`     — streaming LLM call + tool execution loop
+ * - `history-upsert` — summarize turn and upsert to history RAG + recency memory
  *
  * **Control flow** — orchestrate child stages:
  * - `parallel` — run child stages concurrently, wait for all
@@ -70,7 +71,8 @@ export type BuiltInStageType =
   | 'tool-select'
   | 'skill-select'
   | 'assemble'
-  | 'tool-loop';
+  | 'tool-loop'
+  | 'history-upsert';
 
 /**
  * Control flow stage types — orchestrate child stages without
