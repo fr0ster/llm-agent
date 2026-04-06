@@ -204,7 +204,13 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       }
     } catch (error: unknown) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
-      this.log?.error('SAP AI SDK streaming error', { error: detail });
+      // biome-ignore lint/suspicious/noExplicitAny: ErrorWithCause shape from @sap-ai-sdk/core
+      const cause = (error as any)?.cause;
+      this.log?.error('SAP AI SDK streaming error', {
+        error: detail,
+        cause: cause?.message || cause,
+        causeCode: cause?.code,
+      });
       throw new Error(`SAP AI SDK streaming error: ${detail}`);
     } finally {
       this.modelOverride = undefined;
