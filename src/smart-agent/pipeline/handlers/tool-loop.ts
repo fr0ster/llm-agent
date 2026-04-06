@@ -456,6 +456,7 @@ export class ToolLoopHandler implements IStageHandler {
           usage,
           byComponent: summary.byComponent,
           byModel: summary.byModel,
+          byCategory: summary.byCategory,
         });
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
@@ -469,6 +470,7 @@ export class ToolLoopHandler implements IStageHandler {
               ...usage,
               models: ctx.requestLogger.getSummary().byModel,
               components: ctx.requestLogger.getSummary().byComponent,
+              categories: ctx.requestLogger.getSummary().byCategory,
             },
             timing: timingLog,
           },
