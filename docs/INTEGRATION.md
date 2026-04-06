@@ -976,6 +976,29 @@ const { agent, close } = await new SmartAgentBuilder({ mcp: mcpConfigs })
 
 `close()` calls `strategy.dispose()`, which clears timers and closes underlying transport connections.
 
+## Non-streaming Tool Loop
+
+When SAP AI Core Orchestration streaming is unreliable (e.g. HTTP 500 on 2nd iteration), disable streaming in the tool-loop:
+
+```yaml
+agent:
+  toolLoopStreaming: false
+```
+
+Or programmatically:
+
+```ts
+const handle = await new SmartAgentBuilder({
+  agent: { toolLoopStreaming: false },
+})
+  .withMainLlm(myLlm)
+  .build();
+```
+
+When `toolLoopStreaming: false`, the tool-loop calls `chat()` instead of `streamChat()`. The full response is yielded as a single chunk. SSE streaming to the client still works — the OpenAI adapter emulates incremental events from the complete response.
+
+Default: `true` (streaming).
+
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
 ### IMetrics
