@@ -11,14 +11,17 @@
  * Sends a minimal chat request to each model and reports OK/FAIL.
  */
 
+import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import { configDotenv } from 'dotenv';
+import { parse as parseYaml } from 'yaml';
 
 configDotenv({ path: path.resolve('.env') });
 
 const { values: args, positionals } = parseArgs({
   options: {
+    config: { type: 'string', short: 'c' },
     delay: { type: 'string', short: 'd' },
     help: { type: 'boolean', short: 'h' },
   },
@@ -28,16 +31,85 @@ const { values: args, positionals } = parseArgs({
 
 if (args.help) {
   process.stdout.write(
-    'Usage: llm-agent-check [model1 model2 ...] [--delay <ms>]\n\n' +
-      '  No arguments    Check ALL models from SAP AI Core catalog\n' +
-      '  model1 model2   Check only specified models\n' +
-      '  --delay <ms>    Delay between checks (default: 2000)\n',
+    'Usage: llm-agent-check [model1 ...] [--config <yaml>] [--delay <ms>]\n\n' +
+      '  No arguments             Check ALL models from SAP AI Core catalog\n' +
+      '  model1 model2            Check only specified models\n' +
+      '  --config <yaml>  -c      Check models from pipeline YAML config\n' +
+      '  --delay <ms>     -d      Delay between checks (default: 2000)\n',
   );
   process.exit(0);
 }
 
 const delayMs = Number(args.delay ?? 2000);
 const requestedModels = positionals as string[];
+const configPath = args.config as string | undefined;
+
+// ---------------------------------------------------------------------------
+// Extract models from YAML pipeline config
+// ---------------------------------------------------------------------------
+
+interface YamlModelEntry {
+  role: string;
+  model: string;
+}
+
+function resolveEnv(value: string): string {
+  return value.replace(
+    /\$\{([^:}]+)(?::-(.*?))?\}/g,
+    (_, name, fallback) => process.env[name] ?? fallback ?? '',
+  );
+}
+
+function extractModelsFromYaml(yamlPath: string): YamlModelEntry[] {
+  if (!fs.existsSync(yamlPath)) {
+    process.stderr.write(`Config file not found: ${yamlPath}\n`);
+    process.exit(1);
+  }
+  // biome-ignore lint/suspicious/noExplicitAny: yaml structure
+  const yaml = parseYaml(fs.readFileSync(yamlPath, 'utf8')) as any;
+  const entries: YamlModelEntry[] = [];
+
+  // Pipeline LLM models (pipeline.llm.main/classifier/helper)
+  if (yaml.pipeline?.llm) {
+    for (const [role, cfg] of Object.entries(yaml.pipeline.llm) as [
+      string,
+      // biome-ignore lint/suspicious/noExplicitAny: yaml
+      any,
+    ][]) {
+      if (cfg?.model) {
+        entries.push({ role, model: resolveEnv(String(cfg.model)) });
+      }
+    }
+  }
+
+  // Simple LLM config (llm.model)
+  if (yaml.llm?.model && entries.length === 0) {
+    entries.push({ role: 'main', model: resolveEnv(String(yaml.llm.model)) });
+  }
+
+  // RAG embedder models
+  if (yaml.pipeline?.rag) {
+    for (const [store, cfg] of Object.entries(yaml.pipeline.rag) as [
+      string,
+      // biome-ignore lint/suspicious/noExplicitAny: yaml
+      any,
+    ][]) {
+      if (cfg?.model) {
+        entries.push({
+          role: `embedder:${store}`,
+          model: resolveEnv(String(cfg.model)),
+        });
+      }
+    }
+  } else if (yaml.rag?.model) {
+    entries.push({
+      role: 'embedder',
+      model: resolveEnv(String(yaml.rag.model)),
+    });
+  }
+
+  return entries;
+}
 
 // ---------------------------------------------------------------------------
 // Fetch model catalog from SAP AI Core
@@ -103,17 +175,29 @@ async function checkModel(
 // Main
 // ---------------------------------------------------------------------------
 
-const models =
-  requestedModels.length > 0 ? requestedModels : await fetchAllModels();
+let models: string[];
+let yamlEntries: YamlModelEntry[] | undefined;
+
+if (configPath) {
+  yamlEntries = extractModelsFromYaml(configPath);
+  models = [...new Set(yamlEntries.map((e) => e.model))];
+} else if (requestedModels.length > 0) {
+  models = requestedModels;
+} else {
+  models = await fetchAllModels();
+}
 
 process.stdout.write(`\n  Checking ${models.length} model(s)...\n`);
 process.stdout.write('  ─────────────────────────────────────────────────\n');
 
 let passed = 0;
 let failed = 0;
+const results: Array<{ model: string; ok: boolean }> = [];
 
-for (const model of models) {
+for (let i = 0; i < models.length; i++) {
+  const model = models[i];
   const result = await checkModel(model);
+  results.push({ model, ok: result.ok });
 
   if (result.ok) passed++;
   else failed++;
@@ -125,13 +209,25 @@ for (const model of models) {
     `  ${model.padEnd(42)} ${status} ${ms.padStart(7)}  ${result.detail}\n`,
   );
 
-  // Rate limit delay between requests
-  if (models.indexOf(model) < models.length - 1) {
+  if (i < models.length - 1) {
     await new Promise((r) => setTimeout(r, delayMs));
   }
 }
 
 process.stdout.write('  ─────────────────────────────────────────────────\n');
+
+if (yamlEntries) {
+  process.stdout.write(`  Config: ${configPath}\n`);
+  for (const entry of yamlEntries) {
+    const res = results.find((r) => r.model === entry.model);
+    const icon = res?.ok ? '\x1b[32m✓\x1b[0m' : '\x1b[31m✗\x1b[0m';
+    process.stdout.write(
+      `  ${entry.role.padEnd(18)} ${entry.model.padEnd(40)} ${icon}\n`,
+    );
+  }
+  process.stdout.write('  ─────────────────────────────────────────────────\n');
+}
+
 process.stdout.write(
   `  Total: ${models.length}  \x1b[32mOK: ${passed}\x1b[0m  \x1b[31mFAIL: ${failed}\x1b[0m\n\n`,
 );
