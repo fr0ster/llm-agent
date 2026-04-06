@@ -450,9 +450,12 @@ export class ToolLoopHandler implements IStageHandler {
           ];
           continue;
         }
+        const summary = ctx.requestLogger.getSummary();
         ctx.options?.sessionLogger?.logStep('final_response', {
           content,
           usage,
+          byComponent: summary.byComponent,
+          byModel: summary.byModel,
         });
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         ctx.timing.push(...timingLog);
