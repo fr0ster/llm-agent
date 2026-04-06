@@ -135,12 +135,12 @@ async function fetchAllModels(): Promise<string[]> {
 }
 
 // ---------------------------------------------------------------------------
-// Check a single model
+// Check a single model (LLM or embedder)
 // ---------------------------------------------------------------------------
 
-async function checkModel(
-  model: string,
-): Promise<{ ok: boolean; detail: string; ms: number }> {
+type CheckResult = { ok: boolean; detail: string; ms: number };
+
+async function checkLlm(model: string): Promise<CheckResult> {
   const start = Date.now();
   try {
     const { OrchestrationClient } = await import('@sap-ai-sdk/orchestration');
@@ -164,39 +164,97 @@ async function checkModel(
       ms: Date.now() - start,
     };
   } catch (err: unknown) {
-    const msg = err instanceof Error ? err.message : String(err);
-    const statusMatch = msg.match(/status code (\d+)/);
-    const status = statusMatch ? `HTTP ${statusMatch[1]}` : msg.slice(0, 80);
-    return { ok: false, detail: status, ms: Date.now() - start };
+    return { ok: false, detail: extractError(err), ms: Date.now() - start };
   }
+}
+
+async function checkEmbedder(model: string): Promise<CheckResult> {
+  const start = Date.now();
+  try {
+    const { OrchestrationEmbeddingClient } = await import(
+      '@sap-ai-sdk/orchestration'
+    );
+    const client = new OrchestrationEmbeddingClient({
+      embeddings: {
+        model: {
+          name: model as never,
+        },
+      },
+    });
+
+    const response = await client.embed({ input: 'ping' });
+    const embeddings = response.getEmbeddings();
+    const dims = embeddings?.[0]?.embedding?.length ?? 0;
+    return {
+      ok: true,
+      detail: `${dims} dimensions`,
+      ms: Date.now() - start,
+    };
+  } catch (err: unknown) {
+    return { ok: false, detail: extractError(err), ms: Date.now() - start };
+  }
+}
+
+function extractError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  const statusMatch = msg.match(/status code (\d+)/);
+  if (statusMatch) return `HTTP ${statusMatch[1]}`;
+  // Capture nested cause
+  // biome-ignore lint/suspicious/noExplicitAny: error inspection
+  const cause = (err as any)?.cause?.message;
+  if (cause) return `${msg.slice(0, 40)} — ${cause.slice(0, 40)}`;
+  return msg.slice(0, 80);
+}
+
+async function checkModel(
+  model: string,
+  isEmbedder: boolean,
+): Promise<CheckResult> {
+  return isEmbedder ? checkEmbedder(model) : checkLlm(model);
 }
 
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
-let models: string[];
+interface ModelToCheck {
+  model: string;
+  isEmbedder: boolean;
+}
+
+let modelsToCheck: ModelToCheck[];
 let yamlEntries: YamlModelEntry[] | undefined;
 
 if (configPath) {
   yamlEntries = extractModelsFromYaml(configPath);
-  models = [...new Set(yamlEntries.map((e) => e.model))];
+  // Deduplicate by model+type
+  const seen = new Set<string>();
+  modelsToCheck = [];
+  for (const e of yamlEntries) {
+    const isEmbedder = e.role.startsWith('embedder');
+    const key = `${e.model}:${isEmbedder}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      modelsToCheck.push({ model: e.model, isEmbedder });
+    }
+  }
 } else if (requestedModels.length > 0) {
-  models = requestedModels;
+  modelsToCheck = requestedModels.map((m) => ({ model: m, isEmbedder: false }));
 } else {
-  models = await fetchAllModels();
+  const catalogModels = await fetchAllModels();
+  modelsToCheck = catalogModels.map((m) => ({ model: m, isEmbedder: false }));
 }
 
-process.stdout.write(`\n  Checking ${models.length} model(s)...\n`);
+process.stdout.write(`\n  Checking ${modelsToCheck.length} model(s)...\n`);
 process.stdout.write('  ─────────────────────────────────────────────────\n');
 
 let passed = 0;
 let failed = 0;
 const results: Array<{ model: string; ok: boolean }> = [];
 
-for (let i = 0; i < models.length; i++) {
-  const model = models[i];
-  const result = await checkModel(model);
+for (let i = 0; i < modelsToCheck.length; i++) {
+  const { model, isEmbedder } = modelsToCheck[i];
+  const result = await checkModel(model, isEmbedder);
   results.push({ model, ok: result.ok });
 
   if (result.ok) passed++;
@@ -204,12 +262,13 @@ for (let i = 0; i < models.length; i++) {
 
   const status = result.ok ? '\x1b[32m  OK  \x1b[0m' : '\x1b[31m FAIL \x1b[0m';
   const ms = `${result.ms}ms`;
+  const typeLabel = isEmbedder ? '[embed]' : '[llm]  ';
 
   process.stdout.write(
-    `  ${model.padEnd(42)} ${status} ${ms.padStart(7)}  ${result.detail}\n`,
+    `  ${typeLabel} ${model.padEnd(38)} ${status} ${ms.padStart(7)}  ${result.detail}\n`,
   );
 
-  if (i < models.length - 1) {
+  if (i < modelsToCheck.length - 1) {
     await new Promise((r) => setTimeout(r, delayMs));
   }
 }
@@ -229,7 +288,7 @@ if (yamlEntries) {
 }
 
 process.stdout.write(
-  `  Total: ${models.length}  \x1b[32mOK: ${passed}\x1b[0m  \x1b[31mFAIL: ${failed}\x1b[0m\n\n`,
+  `  Total: ${modelsToCheck.length}  \x1b[32mOK: ${passed}\x1b[0m  \x1b[31mFAIL: ${failed}\x1b[0m\n\n`,
 );
 
 if (failed > 0) process.exit(1);

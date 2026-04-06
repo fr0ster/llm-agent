@@ -111,6 +111,16 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         maxTokens,
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
+        log: {
+          debug: (msg, meta) =>
+            process.stderr.write(
+              `[sap-ai-sdk:debug] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
+            ),
+          error: (msg, meta) =>
+            process.stderr.write(
+              `[sap-ai-sdk:error] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
+            ),
+        },
       });
       const agent = new SapCoreAIAgent({
         llmProvider: provider,

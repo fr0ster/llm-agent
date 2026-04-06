@@ -101,9 +101,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
     try {
       this.log?.debug('Sending chat request via SAP AI SDK', {
-        model: this.model,
+        model: this.modelOverride ?? this.model,
         messageCount: messages.length,
         toolCount: tools?.length || 0,
+        maxTokens: this.config.maxTokens,
+        temperature: this.config.temperature,
       });
 
       const formatted = this.formatMessages(messages);
@@ -138,6 +140,17 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     } catch (error: unknown) {
       const detail = SapCoreAIProvider.extractErrorDetail(error);
       this.log?.error('SAP AI SDK API error', { error: detail });
+      // biome-ignore lint/suspicious/noExplicitAny: diagnostic error details
+      const axiosErr = error as any;
+      if (axiosErr?.response?.data) {
+        this.log?.error('SAP AI SDK response body', {
+          status: axiosErr.response.status,
+          data:
+            typeof axiosErr.response.data === 'string'
+              ? axiosErr.response.data
+              : JSON.stringify(axiosErr.response.data),
+        });
+      }
       throw new Error(`SAP AI SDK API error: ${detail}`);
     } finally {
       this.modelOverride = undefined;

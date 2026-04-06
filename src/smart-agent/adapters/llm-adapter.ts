@@ -317,7 +317,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,
-            model: options.model,
+            // model intentionally NOT forwarded — the adapter's configured model
+            // takes precedence. Client-facing model names (e.g. "smart-agent")
+            // must not override the actual LLM provider model.
           }
         : undefined;
 
@@ -361,7 +363,9 @@ export class LlmAdapter implements ILlm, IModelProvider {
             maxTokens: options.maxTokens,
             topP: options.topP,
             stop: options.stop,
-            model: options.model,
+            // model intentionally NOT forwarded — the adapter's configured model
+            // takes precedence. Client-facing model names (e.g. "smart-agent")
+            // must not override the actual LLM provider model.
           }
         : undefined;
 
