@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IRag } from '../interfaces/rag.js';
+import type { IEmbedder, IPrecomputedVectorRag } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -27,7 +27,7 @@ export interface VectorRagConfig {
   keywordWeight?: number;
 }
 
-export class VectorRag implements IRag {
+export class VectorRag implements IPrecomputedVectorRag {
   private records: StoredRecord[] = [];
   private readonly index = new InvertedIndex();
   private readonly dedupThreshold: number;
@@ -107,6 +107,48 @@ export class VectorRag implements IRag {
     return Math.min(score / 5, 1.0);
   }
 
+  private upsertKnownVector(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+  ): Result<void, RagError> {
+    const newTokens = this.tokenize(text);
+
+    // Idempotent upsert: if metadata.id matches, replace in-place
+    if (metadata.id) {
+      for (let i = 0; i < this.records.length; i++) {
+        if (this.records[i].metadata.id === metadata.id) {
+          const oldTokens = this.tokenize(this.records[i].text);
+          this.records[i].text = text;
+          this.records[i].vector = vector;
+          this.records[i].metadata = {
+            ...this.records[i].metadata,
+            ...metadata,
+          };
+          this.index.update(i, oldTokens, newTokens);
+          return { ok: true, value: undefined };
+        }
+      }
+    }
+
+    for (let i = 0; i < this.records.length; i++) {
+      const rec = this.records[i];
+      if (this.cosine(rec.vector, vector) >= this.dedupThreshold) {
+        const oldTokens = this.tokenize(rec.text);
+        rec.text = text;
+        rec.vector = vector;
+        rec.metadata = { ...rec.metadata, ...metadata };
+        this.index.update(i, oldTokens, newTokens);
+        return { ok: true, value: undefined };
+      }
+    }
+
+    const docIdx = this.records.length;
+    this.records.push({ text, vector, metadata });
+    this.index.add(docIdx, newTokens);
+    return { ok: true, value: undefined };
+  }
+
   async upsert(
     text: string,
     metadata: RagMetadata,
@@ -126,41 +168,21 @@ export class VectorRag implements IRag {
 
     try {
       const vector = await this.embedder.embed(text, options);
-      const newTokens = this.tokenize(text);
+      return this.upsertKnownVector(text, vector, metadata);
+    } catch (err) {
+      if (err instanceof RagError) return { ok: false, error: err };
+      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+    }
+  }
 
-      // Idempotent upsert: if metadata.id matches, replace in-place
-      if (metadata.id) {
-        for (let i = 0; i < this.records.length; i++) {
-          if (this.records[i].metadata.id === metadata.id) {
-            const oldTokens = this.tokenize(this.records[i].text);
-            this.records[i].text = text;
-            this.records[i].vector = vector;
-            this.records[i].metadata = {
-              ...this.records[i].metadata,
-              ...metadata,
-            };
-            this.index.update(i, oldTokens, newTokens);
-            return { ok: true, value: undefined };
-          }
-        }
-      }
-
-      for (let i = 0; i < this.records.length; i++) {
-        const rec = this.records[i];
-        if (this.cosine(rec.vector, vector) >= this.dedupThreshold) {
-          const oldTokens = this.tokenize(rec.text);
-          rec.text = text;
-          rec.vector = vector;
-          rec.metadata = { ...rec.metadata, ...metadata };
-          this.index.update(i, oldTokens, newTokens);
-          return { ok: true, value: undefined };
-        }
-      }
-
-      const docIdx = this.records.length;
-      this.records.push({ text, vector, metadata });
-      this.index.add(docIdx, newTokens);
-      return { ok: true, value: undefined };
+  async upsertPrecomputed(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    _options?: CallOptions,
+  ): Promise<Result<void, RagError>> {
+    try {
+      return this.upsertKnownVector(text, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };

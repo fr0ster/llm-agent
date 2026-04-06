@@ -95,6 +95,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
     const server = new SmartServer({
       port: 0,
       llm: { apiKey: 'test-key' },
+      skipModelValidation: true,
       disableBuiltInAdapters: true,
       apiAdapters: [],
     });
@@ -117,6 +118,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
     const server = new SmartServer({
       port: 0,
       llm: { apiKey: 'test-key' },
+      skipModelValidation: true,
       apiAdapters: [makeFakeAdapter()],
     });
 
@@ -169,6 +171,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
     const server = new SmartServer({
       port: 0,
       llm: { apiKey: 'test-key' },
+      skipModelValidation: true,
       disableBuiltInAdapters: true,
       apiAdapters: [],
     });

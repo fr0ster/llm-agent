@@ -51,3 +51,27 @@ export interface IRag {
 
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
 }
+
+export interface IEmbedderBatch extends IEmbedder {
+  embedBatch(texts: string[], options?: CallOptions): Promise<number[][]>;
+}
+
+export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {
+  return (
+    'embedBatch' in e &&
+    typeof (e as { embedBatch?: unknown }).embedBatch === 'function'
+  );
+}
+
+export interface IPrecomputedVectorRag extends IRag {
+  upsertPrecomputed(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>>;
+}
+
+export function supportsPrecomputed(rag: IRag): rag is IPrecomputedVectorRag {
+  return 'upsertPrecomputed' in rag;
+}

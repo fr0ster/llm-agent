@@ -1,20 +1,47 @@
 import type {
   IRequestLogger,
   LlmCallEntry,
+  LlmComponent,
   RagQueryEntry,
   RequestSummary,
+  TokenBucket,
+  TokenCategory,
   ToolCallEntry,
 } from '../interfaces/request-logger.js';
 
+const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
+  'tool-loop': 'request',
+  classifier: 'auxiliary',
+  translate: 'auxiliary',
+  'query-expander': 'auxiliary',
+  helper: 'auxiliary',
+  embedding: 'initialization',
+};
+
+function emptyBucket(): TokenBucket {
+  return { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 };
+}
+
+function addToBucket(bucket: TokenBucket, entry: LlmCallEntry): void {
+  bucket.promptTokens += entry.promptTokens;
+  bucket.completionTokens += entry.completionTokens;
+  bucket.totalTokens += entry.totalTokens;
+  bucket.requests++;
+}
+
 export class DefaultRequestLogger implements IRequestLogger {
-  private llmCalls: LlmCallEntry[] = [];
+  private initLlmCalls: LlmCallEntry[] = [];
+  private requestLlmCalls: LlmCallEntry[] = [];
   private ragQueryEntries: RagQueryEntry[] = [];
   private toolCallEntries: ToolCallEntry[] = [];
   private requestStartMs = 0;
   private requestDurationMs = 0;
 
   startRequest(): void {
-    this.reset();
+    this.requestLlmCalls = [];
+    this.ragQueryEntries = [];
+    this.toolCallEntries = [];
+    this.requestDurationMs = 0;
     this.requestStartMs = Date.now();
   }
 
@@ -25,7 +52,11 @@ export class DefaultRequestLogger implements IRequestLogger {
   }
 
   logLlmCall(entry: LlmCallEntry): void {
-    this.llmCalls.push(entry);
+    if (entry.scope === 'initialization') {
+      this.initLlmCalls.push(entry);
+    } else {
+      this.requestLlmCalls.push(entry);
+    }
   }
 
   logRagQuery(entry: RagQueryEntry): void {
@@ -37,42 +68,29 @@ export class DefaultRequestLogger implements IRequestLogger {
   }
 
   getSummary(): RequestSummary {
-    const byModel: RequestSummary['byModel'] = {};
-    const byComponent: RequestSummary['byComponent'] = {};
+    const byModel: Record<string, TokenBucket> = {};
+    const byComponent: Record<string, TokenBucket> = {};
+    const byCategory: Record<string, TokenBucket> = {};
 
-    for (const call of this.llmCalls) {
-      if (!byModel[call.model]) {
-        byModel[call.model] = {
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-          requests: 0,
-        };
-      }
-      const m = byModel[call.model];
-      m.promptTokens += call.promptTokens;
-      m.completionTokens += call.completionTokens;
-      m.totalTokens += call.totalTokens;
-      m.requests++;
+    const allCalls = [...this.initLlmCalls, ...this.requestLlmCalls];
 
-      if (!byComponent[call.component]) {
-        byComponent[call.component] = {
-          promptTokens: 0,
-          completionTokens: 0,
-          totalTokens: 0,
-          requests: 0,
-        };
-      }
-      const c = byComponent[call.component];
-      c.promptTokens += call.promptTokens;
-      c.completionTokens += call.completionTokens;
-      c.totalTokens += call.totalTokens;
-      c.requests++;
+    for (const call of allCalls) {
+      if (!byModel[call.model]) byModel[call.model] = emptyBucket();
+      addToBucket(byModel[call.model], call);
+
+      if (!byComponent[call.component])
+        byComponent[call.component] = emptyBucket();
+      addToBucket(byComponent[call.component], call);
+
+      const cat = CATEGORY_MAP[call.component] ?? 'request';
+      if (!byCategory[cat]) byCategory[cat] = emptyBucket();
+      addToBucket(byCategory[cat], call);
     }
 
     return {
       byModel,
       byComponent,
+      byCategory,
       ragQueries: this.ragQueryEntries.length,
       toolCalls: this.toolCallEntries.length,
       totalDurationMs: this.requestDurationMs,
@@ -80,10 +98,11 @@ export class DefaultRequestLogger implements IRequestLogger {
   }
 
   reset(): void {
-    this.llmCalls = [];
+    this.requestLlmCalls = [];
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
     this.requestStartMs = 0;
     this.requestDurationMs = 0;
+    // NOTE: initLlmCalls is intentionally NOT reset
   }
 }

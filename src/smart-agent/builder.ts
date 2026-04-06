@@ -41,7 +41,11 @@ import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
-import type { IEmbedder } from './interfaces/rag.js';
+import {
+  type IEmbedder,
+  isBatchEmbedder,
+  supportsPrecomputed,
+} from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
@@ -111,6 +115,8 @@ export interface SmartAgentBuilderConfig {
   prompts?: BuilderPromptsConfig;
   /** Data governance policy for RAG records. */
   sessionPolicy?: SessionPolicy;
+  /** Skip startup model validation (useful for testing). Default: false. */
+  skipModelValidation?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -574,35 +580,37 @@ export class SmartAgentBuilder {
     // ---- Startup model validation ------------------------------------------
     // Verify that configured models respond before starting the server.
     // Only checks unique models from the pipeline config (main, classifier, helper).
-    const modelsToCheck = new Map<string, ILlm>();
-    modelsToCheck.set(mainLlm.model ?? 'main', mainLlm);
-    if (classifierLlm !== mainLlm) {
-      modelsToCheck.set(classifierLlm.model ?? 'classifier', classifierLlm);
-    }
-    if (helperLlm && helperLlm !== mainLlm) {
-      modelsToCheck.set(helperLlm.model ?? 'helper', helperLlm);
-    }
-
-    for (const [modelName, llm] of modelsToCheck) {
-      const result = await llm.chat(
-        [{ role: 'user', content: 'Reply with OK' }],
-        undefined,
-        { maxTokens: 10 },
-      );
-      if (!result.ok) {
-        const detail = result.error.message;
-        log?.log({
-          type: 'pipeline_error',
-          traceId: 'builder',
-          code: 'MODEL_UNAVAILABLE',
-          message: `Model "${modelName}" is not available: ${detail}`,
-          durationMs: 0,
-        });
-        throw new Error(
-          `Startup aborted: model "${modelName}" is not available.\n${detail}`,
-        );
+    if (!this.cfg.skipModelValidation) {
+      const modelsToCheck = new Map<string, ILlm>();
+      modelsToCheck.set(mainLlm.model ?? 'main', mainLlm);
+      if (classifierLlm !== mainLlm) {
+        modelsToCheck.set(classifierLlm.model ?? 'classifier', classifierLlm);
       }
-    }
+      if (helperLlm && helperLlm !== mainLlm) {
+        modelsToCheck.set(helperLlm.model ?? 'helper', helperLlm);
+      }
+
+      for (const [modelName, llm] of modelsToCheck) {
+        const result = await llm.chat(
+          [{ role: 'user', content: 'Reply with OK' }],
+          undefined,
+          { maxTokens: 10 },
+        );
+        if (!result.ok) {
+          const detail = result.error.message;
+          log?.log({
+            type: 'pipeline_error',
+            traceId: 'builder',
+            code: 'MODEL_UNAVAILABLE',
+            message: `Model "${modelName}" is not available: ${detail}`,
+            durationMs: 0,
+          });
+          throw new Error(
+            `Startup aborted: model "${modelName}" is not available.\n${detail}`,
+          );
+        }
+      }
+    } // end skipModelValidation guard
 
     // RAG stores — consumer defines which stores to use
     const ragStores: SmartAgentRagStores = { ...this._ragStores };
@@ -639,6 +647,9 @@ export class SmartAgentBuilder {
         );
       }
     }
+
+    // ---- Request logger ---------------------------------------------------
+    const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
 
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];
@@ -695,25 +706,129 @@ export class SmartAgentBuilder {
             }
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
-              const batchSize = 5;
-              const batchDelayMs = 500;
               const tools = toolsResult.value;
-              for (let i = 0; i < tools.length; i++) {
-                const t = tools[i];
-                const result = await toolStore.upsert(
-                  `Tool: ${t.name} — ${t.description}`,
-                  { id: `tool:${t.name}` },
+              // Try to access the embedder from the store for batch embedding.
+              // VectorRag and QdrantRag store their embedder as a private field.
+              // biome-ignore lint/suspicious/noExplicitAny: accessing private embedder for batch optimization
+              const storeEmbedder = (toolStore as any).embedder as
+                | IEmbedder
+                | undefined;
+
+              if (
+                storeEmbedder &&
+                isBatchEmbedder(storeEmbedder) &&
+                supportsPrecomputed(toolStore)
+              ) {
+                // Batch path: single HTTP call for all tools
+                const texts = tools.map(
+                  (t) => `Tool: ${t.name} — ${t.description}`,
                 );
-                if (!result.ok) {
+                const batchStart = Date.now();
+                try {
+                  const vectors = await storeEmbedder.embedBatch(texts);
+                  const batchDuration = Date.now() - batchStart;
+                  for (let i = 0; i < tools.length; i++) {
+                    const result = await toolStore.upsertPrecomputed(
+                      texts[i],
+                      vectors[i],
+                      { id: `tool:${tools[i].name}` },
+                    );
+                    if (!result.ok) {
+                      log?.log({
+                        type: 'warning',
+                        traceId: 'builder',
+                        message: `Tool vectorization failed for "${tools[i].name}": ${result.error.message}`,
+                      });
+                    }
+                  }
+                  const totalEstTokens = texts.reduce(
+                    (sum, t) => sum + Math.ceil(t.length / 4),
+                    0,
+                  );
+                  requestLogger.logLlmCall({
+                    component: 'embedding',
+                    model: 'embedder',
+                    promptTokens: totalEstTokens,
+                    completionTokens: 0,
+                    totalTokens: totalEstTokens,
+                    durationMs: batchDuration,
+                    estimated: true,
+                    scope: 'initialization',
+                    detail: 'tools',
+                  });
+                } catch (err) {
                   log?.log({
                     type: 'warning',
                     traceId: 'builder',
-                    message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                    message: `Batch embedding failed, falling back to sequential: ${String(err)}`,
                   });
+                  // Fallback to sequential
+                  const batchSize = 5;
+                  const batchDelayMs = 500;
+                  for (let i = 0; i < tools.length; i++) {
+                    const t = tools[i];
+                    const text = `Tool: ${t.name} — ${t.description}`;
+                    const embedStart = Date.now();
+                    const result = await toolStore.upsert(text, {
+                      id: `tool:${t.name}`,
+                    });
+                    if (!result.ok) {
+                      log?.log({
+                        type: 'warning',
+                        traceId: 'builder',
+                        message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                      });
+                    } else {
+                      requestLogger.logLlmCall({
+                        component: 'embedding',
+                        model: 'embedder',
+                        promptTokens: Math.ceil(text.length / 4),
+                        completionTokens: 0,
+                        totalTokens: Math.ceil(text.length / 4),
+                        durationMs: Date.now() - embedStart,
+                        estimated: true,
+                        scope: 'initialization',
+                        detail: 'tools',
+                      });
+                    }
+                    if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
+                      await new Promise((r) => setTimeout(r, batchDelayMs));
+                    }
+                  }
                 }
-                // Throttle embedding requests to avoid rate limits
-                if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
-                  await new Promise((r) => setTimeout(r, batchDelayMs));
+              } else {
+                // Sequential path (no batch support)
+                const batchSize = 5;
+                const batchDelayMs = 500;
+                for (let i = 0; i < tools.length; i++) {
+                  const t = tools[i];
+                  const text = `Tool: ${t.name} — ${t.description}`;
+                  const embedStart = Date.now();
+                  const result = await toolStore.upsert(text, {
+                    id: `tool:${t.name}`,
+                  });
+                  if (!result.ok) {
+                    log?.log({
+                      type: 'warning',
+                      traceId: 'builder',
+                      message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                    });
+                  } else {
+                    requestLogger.logLlmCall({
+                      component: 'embedding',
+                      model: 'embedder',
+                      promptTokens: Math.ceil(text.length / 4),
+                      completionTokens: 0,
+                      totalTokens: Math.ceil(text.length / 4),
+                      durationMs: Date.now() - embedStart,
+                      estimated: true,
+                      scope: 'initialization',
+                      detail: 'tools',
+                    });
+                  }
+                  if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
+                    await new Promise((r) => setTimeout(r, batchDelayMs));
+                  }
                 }
               }
             }
@@ -749,9 +864,6 @@ export class SmartAgentBuilder {
     if (agentCfg.retry) {
       wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
     }
-
-    // ---- Request logger ---------------------------------------------------
-    const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
@@ -835,17 +947,28 @@ export class SmartAgentBuilder {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
-          const result = await skillStore.upsert(
-            `Skill: ${s.name}\n${s.description}`,
-            {
-              id: `skill:${s.name}`,
-            },
-          );
+          const text = `Skill: ${s.name}\n${s.description}`;
+          const embedStart = Date.now();
+          const result = await skillStore.upsert(text, {
+            id: `skill:${s.name}`,
+          });
           if (!result.ok) {
             log?.log({
               type: 'warning',
               traceId: 'builder',
               message: `Skill vectorization failed for "${s.name}": ${result.error.message}`,
+            });
+          } else {
+            requestLogger.logLlmCall({
+              component: 'embedding',
+              model: 'embedder',
+              promptTokens: Math.ceil(text.length / 4),
+              completionTokens: 0,
+              totalTokens: Math.ceil(text.length / 4),
+              durationMs: Date.now() - embedStart,
+              estimated: true,
+              scope: 'initialization',
+              detail: 'skills',
             });
           }
         }
