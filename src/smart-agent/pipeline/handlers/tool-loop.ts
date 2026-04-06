@@ -178,10 +178,10 @@ export class ToolLoopHandler implements IStageHandler {
             .find((m) => m.role === 'assistant');
           const toolCallNames: string[] = [];
           if (lastAssistant && 'tool_calls' in lastAssistant) {
-            const tcs = (lastAssistant as any).tool_calls;
+            const tcs = lastAssistant.tool_calls;
             if (Array.isArray(tcs)) {
               for (const tc of tcs) {
-                const name = tc?.function?.name || tc?.name || '';
+                const name = tc?.function?.name || '';
                 if (name) toolCallNames.push(name);
               }
             }
