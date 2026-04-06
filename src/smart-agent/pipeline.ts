@@ -69,6 +69,7 @@ export interface PipelineConfig {
     url?: string;
     command?: string;
     args?: string[];
+    headers?: Record<string, string>;
   }>;
 
   // -- Structured pipeline (optional) ----------------------------------------
