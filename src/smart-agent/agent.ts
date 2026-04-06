@@ -110,6 +110,9 @@ export interface SmartAgentConfig {
   tokenLimit?: number;
   ragQueryK?: number;
   contextBudgetTokens?: number;
+  semanticHistoryEnabled?: boolean;
+  historyRecencyWindow?: number;
+  historyTurnSummaryPrompt?: string;
   smartAgentEnabled?: boolean;
   sessionPolicy?: SessionPolicy;
   showReasoning?: boolean;

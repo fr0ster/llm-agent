@@ -71,6 +71,9 @@ agent:
   toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
   # contextBudgetTokens: 4000          # Max tokens for RAG context in system prompt (0 = no limit)
+  # semanticHistoryEnabled: false      # Enable semantic history via RAG
+  # historyRecencyWindow: 3            # Last N turns always in context
+  # historyTurnSummaryPrompt: "..."    # LLM prompt for turn summarization
   showReasoning: false                # Explain strategy at start of response
   historyAutoSummarizeLimit: 10       # History length to trigger compression
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
@@ -332,6 +335,27 @@ export function resolveSmartServerConfig(
         ? {
             contextBudgetTokens: Number(
               get(yaml, 'agent', 'contextBudgetTokens'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'semanticHistoryEnabled') !== undefined
+        ? {
+            semanticHistoryEnabled: Boolean(
+              get(yaml, 'agent', 'semanticHistoryEnabled'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'historyRecencyWindow') !== undefined
+        ? {
+            historyRecencyWindow: Number(
+              get(yaml, 'agent', 'historyRecencyWindow'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'historyTurnSummaryPrompt') !== undefined
+        ? {
+            historyTurnSummaryPrompt: String(
+              get(yaml, 'agent', 'historyTurnSummaryPrompt'),
             ),
           }
         : {}),
