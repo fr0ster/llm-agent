@@ -700,6 +700,7 @@ export class SmartAgentBuilder {
 
     // ---- Assembler --------------------------------------------------------
     const assemblerCfg: ContextAssemblerConfig = {
+      maxTokens: agentCfg.contextBudgetTokens ?? 4000,
       showReasoning: agentCfg.showReasoning,
       reasoningInstruction: this.cfg.prompts?.reasoning,
     };

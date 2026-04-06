@@ -70,6 +70,7 @@ agent:
   maxToolCalls: 30
   toolUnavailableTtlMs: 600000       # Temporary tool blacklist TTL (ms)
   ragQueryK: 10
+  contextBudgetTokens: 4000           # Max tokens for RAG context in system prompt
   showReasoning: false                # Explain strategy at start of response
   historyAutoSummarizeLimit: 10       # History length to trigger compression
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
@@ -327,6 +328,9 @@ export function resolveSmartServerConfig(
         get(yaml, 'agent', 'toolUnavailableTtlMs') ?? 600000,
       ),
       ragQueryK: Number(get(yaml, 'agent', 'ragQueryK') ?? 10),
+      contextBudgetTokens: Number(
+        get(yaml, 'agent', 'contextBudgetTokens') ?? 4000,
+      ),
       showReasoning: Boolean(
         args['agent-show-reasoning'] ??
           get(yaml, 'agent', 'showReasoning') ??
