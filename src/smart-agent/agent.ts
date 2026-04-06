@@ -488,6 +488,11 @@ export class SmartAgent {
         const passToolCalls: unknown[] = [];
         for await (const chunk of stream) {
           if (chunk.ok) {
+            if (chunk.value.reset) {
+              passContent = '';
+              passToolCalls.length = 0;
+              continue;
+            }
             if (chunk.value.content) passContent += chunk.value.content;
             if (chunk.value.toolCalls)
               passToolCalls.push(...chunk.value.toolCalls);
@@ -1222,6 +1227,14 @@ export class SmartAgent {
           return;
         }
         const chunk = chunkResult.value;
+        // Mid-stream retry: discard accumulated state and restart accumulation
+        if (chunk.reset) {
+          content = '';
+          iterationBuffer = '';
+          toolCallsMap.clear();
+          finishReason = undefined;
+          continue;
+        }
         if (chunk.content) {
           content += chunk.content;
           // When a client adapter is detected, buffer content — it will be wrapped after the stream completes
