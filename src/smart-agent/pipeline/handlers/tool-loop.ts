@@ -127,6 +127,7 @@ export class ToolLoopHandler implements IStageHandler {
       }
 
       // Refresh MCP tools on each iteration (when enabled)
+      const prevSelectedTools = [...currentTools];
       if (iteration > 0 && ctx.config.refreshToolsPerIteration !== false) {
         const refreshSpan = ctx.tracer.startSpan('smart_agent.refresh_tools', {
           parent: parentSpan,
@@ -201,7 +202,11 @@ export class ToolLoopHandler implements IStageHandler {
               readOnlyPrefixes.some((p) => n.startsWith(p)),
             );
 
-          if (!allReadOnly) {
+          if (allReadOnly) {
+            // Read-only tools don't need re-selection — restore previous selection
+            // to avoid sending all MCP tools after refresh
+            currentTools = prevSelectedTools;
+          } else {
             // Build context-aware query from error/result context
             const lastToolMsg = [...messages]
               .reverse()
@@ -276,12 +281,6 @@ export class ToolLoopHandler implements IStageHandler {
                 });
               }
             }
-          } else {
-            ctx.options?.sessionLogger?.logStep('tools_reselect_skipped', {
-              iteration: iteration + 1,
-              reason: 'read-only tools only',
-              tools: toolCallNames,
-            });
           }
         } finally {
           reselectSpan.end();
