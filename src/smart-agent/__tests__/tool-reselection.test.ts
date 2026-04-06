@@ -203,7 +203,7 @@ describe('Per-iteration RAG tool re-selection', () => {
   });
 
   it('skips re-selection for read-only tools (Search*, Read*, Get*, List*, Describe*)', async () => {
-    const logSteps: Array<{ step: string; data: any }> = [];
+    const logSteps: Array<{ step: string; data: Record<string, unknown> }> = [];
 
     const llm = makeToolCallThenStopLlm('SearchClass', 'found 3 results');
 
@@ -257,7 +257,7 @@ describe('Per-iteration RAG tool re-selection', () => {
     await agent.process('search classes', {
       sessionId: 'readonly-skip',
       sessionLogger: {
-        logStep(step: string, data: any) {
+        logStep(step: string, data: Record<string, unknown>) {
           logSteps.push({ step, data });
         },
       },
