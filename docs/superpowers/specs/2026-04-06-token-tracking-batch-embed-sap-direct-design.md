@@ -6,15 +6,25 @@ Covers GitHub issues: #52, #53, #54
 
 Three related issues around token tracking and performance:
 
-1. **#53** — `byComponent` in session logs is empty `{}`. While the single `DefaultRequestLogger` instance is correctly shared across classifier and tool-loop, the summary lacks a higher-level categorization that separates initialization, auxiliary, and request tokens.
+1. **#53** — `byComponent` in session logs is empty `{}`. Root cause requires explicit diagnostic confirmation before structural changes. Separately, the logger lacks higher-level categorization that separates initialization, auxiliary, and request tokens.
 2. **#52** — 146 sequential `embed()` calls at startup → 146 HTTP requests → ~2.5 min with throttling. All three embedding providers (OpenAI, Ollama, SAP AI Core) support array input natively.
 3. **#54** — SAP AI Core Orchestration Service adds ~14K phantom tokens per request via internal prompt wrapping. A direct inference provider would yield accurate token counts.
 
 ## Design
 
-### 1. Token Categorization (#53)
+### 1. Token Categorization and Logger Diagnostics (#53)
 
-#### New types in `interfaces/request-logger.ts`
+#### Root cause investigation
+
+Before changing the logger model, confirm the actual root cause for empty `byComponent`:
+
+- Confirm whether `logLlmCall()` is executed on all expected paths (classifier, tool-loop, translate, etc.).
+- Confirm whether `startRequest()` / `reset()` clears data too early.
+- Confirm whether the affected observation comes from structured pipeline, legacy agent paths, or `/v1/usage`.
+
+`byCategory` is an observability enhancement. It does not replace root-cause analysis for missing `byComponent` entries.
+
+#### Token categories
 
 ```typescript
 type TokenCategory = 'initialization' | 'auxiliary' | 'request';
@@ -31,35 +41,36 @@ Component-to-category mapping:
 | `helper` | `auxiliary` | History summarization overhead |
 | `embedding` | `initialization` | Tool/skill vectorization at startup |
 
-#### Changes to `RequestSummary`
-
-Add `byCategory` field:
-
-```typescript
-export interface RequestSummary {
-  byModel: Record<string, TokenBucket>;
-  byComponent: Record<string, TokenBucket>;
-  byCategory: Record<TokenCategory, TokenBucket>;  // NEW
-  ragQueries: number;
-  toolCalls: number;
-  totalDurationMs: number;
-}
-```
-
-Where `TokenBucket` is extracted to reduce repetition:
+#### TokenBucket with physical/logical counters
 
 ```typescript
 interface TokenBucket {
   promptTokens: number;
   completionTokens: number;
   totalTokens: number;
-  requests: number;
+  requests: number;   // physical outbound API calls
+  items?: number;     // logical texts processed (relevant for batch embeddings)
 }
 ```
 
-#### Component-to-category mapping in `DefaultRequestLogger`
+For normal LLM calls, `items` remains undefined or equals `1`. For batch embedding, one `request` may cover many `items`.
 
-A static map inside `getSummary()` derives `byCategory` from existing `byComponent` data. No changes to call sites — the mapping is internal to the logger.
+#### RequestSummary changes
+
+```typescript
+export interface RequestSummary {
+  byModel: Record<string, TokenBucket>;
+  byComponent: Record<string, TokenBucket>;
+  byCategory: Record<TokenCategory, TokenBucket>;
+  ragQueries: number;
+  toolCalls: number;
+  totalDurationMs: number;
+}
+```
+
+#### Component-to-category mapping in DefaultRequestLogger
+
+A static map inside `getSummary()` derives `byCategory` from existing `byComponent` data. No changes to call sites.
 
 ```typescript
 const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
@@ -72,26 +83,74 @@ const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
 };
 ```
 
+#### LlmCallEntry — estimated token flag
+
+```typescript
+interface LlmCallEntry {
+  component: LlmComponent;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  estimated?: boolean;  // true for embedding token estimates
+  scope?: 'initialization' | 'request'; // explicit lifecycle scope
+  detail?: string; // optional finer label, e.g. 'tools' | 'skills'
+}
+```
+
+For embedding entries: `estimated: true`, `completionTokens: 0`, `promptTokens === totalTokens`. This prevents consumers from treating embedding counts as precise billing numbers.
+
 #### Embedding token tracking
 
-Add `'embedding'` to `LlmComponent` type. In `builder.ts` tool vectorization loop, call `requestLogger.logLlmCall()` with `component: 'embedding'` after each embed call (or batch call). Since embedders don't return token counts, estimate from text length: `Math.ceil(text.length / 4)` (standard ~4 chars/token approximation).
+Add `'embedding'` to `LlmComponent` type. In `builder.ts` tool/skill vectorization, call `requestLogger.logLlmCall()` with:
 
-#### Separate initialization tokens from per-request
+- `component: 'embedding'`
+- `scope: 'initialization'`
+- `detail: 'tools' | 'skills'`
+- `estimated: true`
 
-`RequestSummary.byCategory.initialization` accumulates during startup. `startRequest()` must NOT reset initialization entries — only reset `auxiliary` and `request` categories. This requires splitting internal storage:
+Token estimate: `Math.ceil(text.length / 4)` (~4 chars/token approximation).
 
-- `initLlmCalls: LlmCallEntry[]` — never reset
-- `requestLlmCalls: LlmCallEntry[]` — reset on `startRequest()`
+#### Initialization scope boundaries
 
-`getSummary()` merges both arrays for aggregation.
+What counts as `initialization`:
+- Tool vectorization at builder startup.
+- Skill vectorization at builder startup.
 
-#### Exclude embedder tokens from client-facing usage
+What is excluded:
+- Health checks and warmups.
+- Lazy first-use embedding during requests (these are `request`-scoped).
 
-In `tool-loop.ts` final response (line 463-474), the `usage` object sent to clients should only include `request` + `auxiliary` categories. `initialization` is logged to session log but excluded from the OpenAI-protocol `usage` field.
+Tools vs skills are distinguished through `detail` metadata on `LlmCallEntry` (for example `detail: 'tools'` and `detail: 'skills'`), not separate top-level categories.
+
+#### Separate initialization from per-request storage
+
+`DefaultRequestLogger` splits internal storage:
+
+- `initLlmCalls: LlmCallEntry[]` — never reset by `startRequest()`.
+- `requestLlmCalls: LlmCallEntry[]` — reset on `startRequest()`.
+
+`logLlmCall()` routes based on explicit `scope`:
+
+- `scope: 'initialization'` → `initLlmCalls`
+- `scope: 'request'` or undefined → `requestLlmCalls`
+
+This avoids overloading `component === 'embedding'` for two different lifecycles. Runtime embedding triggered during request handling remains request-scoped.
+
+#### Client-facing usage — semantics unchanged
+
+OpenAI-protocol response `usage` continues to represent only the current request's generation cost. It is sourced from actual request-time stream chunks, not derived from `RequestSummary`.
+
+- `byCategory` is exposed only in diagnostics / session logs / `/v1/usage`.
+- Initialization token estimates are observability-only, never included in client `usage`.
+- `/v1/usage` is treated as diagnostics-oriented and may include lifecycle-level initialization metrics if clearly labeled.
+
+Token metrics are scoped per agent instance (created in builder, lives as long as SmartAgent).
 
 ### 2. Batch Embedding (#52)
 
-#### New interface in `interfaces/rag.ts`
+#### IEmbedderBatch interface
 
 ```typescript
 export interface IEmbedderBatch extends IEmbedder {
@@ -99,7 +158,7 @@ export interface IEmbedderBatch extends IEmbedder {
 }
 ```
 
-`IEmbedderBatch` extends `IEmbedder` — every batch embedder is also a single embedder. This preserves backward compatibility: existing code using `IEmbedder` works unchanged.
+Extends `IEmbedder` — every batch embedder is also a single embedder. Backward compatible.
 
 #### Type guard
 
@@ -112,60 +171,118 @@ export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {
 #### Implementations
 
 **OpenAiEmbedder** — add `embedBatch()`:
-- POST `{ model, input: texts[] }` → response `{ data: [{ embedding }] }` sorted by `index`
-- Same retry logic as `embed()`
-- Chunk into batches of 100 (OpenAI limit) if `texts.length > 100`
+- POST `{ model, input: texts[] }` → response `{ data: [{ embedding, index }] }` sorted by `index`.
+- Same retry logic as `embed()`.
+- Configurable chunk size (default conservative value). Chunks processed sequentially.
 
 **OllamaEmbedder** — add `embedBatch()`:
-- Ollama `/api/embed` endpoint accepts `{ model, input: string[] }` → `{ embeddings: number[][] }`
-- Use `/api/embed` (not `/api/embeddings` which is single-only)
+- Ollama `/api/embed` endpoint accepts `{ model, input: string[] }` → `{ embeddings: number[][] }`.
+- Use `/api/embed` (not `/api/embeddings` which is single-only).
+- Fallback to smaller chunks on 413/timeout.
 
 **SapAiCoreEmbedder** — add `embedBatch()`:
-- `OrchestrationEmbeddingClient.embed({ input: texts[] })` → `EmbeddingData[]` sorted by `index`
+- `OrchestrationEmbeddingClient.embed({ input: texts[] })` → `EmbeddingData[]` sorted by `index`.
+- Configurable chunk size. Fallback to single-item mode if batch input fails.
 
 **CircuitBreakerEmbedder** — proxy `embedBatch()` if inner supports it.
 
+#### Batch sizing and fallback
+
+Configuration:
+
+```yaml
+rag:
+  embeddingBatchSize: 100
+  embeddingBatchEnabled: true
+```
+
+If a batch request fails, the builder degrades gracefully: retry with smaller batches, then fall back to single-item embedding. Startup is never aborted due to batch failure alone.
+
+#### IPrecomputedVectorRag — narrower interface
+
+Instead of expanding `IRag` globally, define a separate interface:
+
+```typescript
+export interface IPrecomputedVectorRag extends IRag {
+  upsertPrecomputed(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>>;
+}
+```
+
+Type guard in the builder:
+
+```typescript
+function supportsPrecomputed(rag: IRag): rag is IPrecomputedVectorRag {
+  return 'upsertPrecomputed' in rag;
+}
+```
+
+This keeps `IRag` minimal. Only `VectorRag` and `QdrantRag` implement `IPrecomputedVectorRag`.
+
+#### Shared internal write path in VectorRag
+
+Factor storage logic into an internal helper to avoid drift:
+
+```typescript
+private upsertKnownVector(
+  text: string,
+  vector: number[],
+  metadata: RagMetadata,
+): Result<void, RagError> { /* dedup, ID replacement, index update */ }
+```
+
+- `upsert()` computes the vector and delegates to `upsertKnownVector()`.
+- `upsertPrecomputed()` validates vector shape and delegates to `upsertKnownVector()`.
+
 #### Builder changes
 
-In `builder.ts` tool vectorization (lines 698-718), replace the sequential loop:
+The builder must use the same embedder instance that backs the target vector store. It must not independently resolve a second embedder with potentially different model/configuration, because that would produce incompatible vectors.
+
+Practical rule:
+
+- if the selected store implements `IPrecomputedVectorRag`, the builder may batch-embed only when it can access that store's effective embedder or an equivalent shared embedder instance configured for that store;
+- otherwise, it must fall back to normal store-managed `upsert()`.
 
 ```typescript
-if (isBatchEmbedder(embedder)) {
+if (isBatchEmbedder(embedderForToolStore)) {
   const texts = tools.map(t => `Tool: ${t.name} — ${t.description}`);
-  const vectors = await embedder.embedBatch(texts);
+  const vectors = await embedderForToolStore.embedBatch(texts);
   for (let i = 0; i < tools.length; i++) {
-    await toolStore.upsertWithVector(texts[i], vectors[i], { id: `tool:${tools[i].name}` });
+    if (supportsPrecomputed(toolStore)) {
+      await toolStore.upsertPrecomputed(texts[i], vectors[i], { id: `tool:${tools[i].name}` });
+    } else {
+      await toolStore.upsert(texts[i], { id: `tool:${tools[i].name}` });
+      // warning: precomputed vectors not used, re-embedding individual texts
+    }
   }
 } else {
-  // existing sequential loop with throttling
+  // existing sequential loop with 5/500ms throttling
 }
 ```
 
-This requires a new `upsertWithVector(text, vector, metadata)` method on `IRag` to skip re-embedding. Alternatively, add a `VectorRag.upsertPrecomputed()` method.
+If `upsertPrecomputed()` is unavailable on the target store, fall back to normal `upsert()` with a warning log.
 
-#### IRag extension
+Important clarification:
 
-Add optional method to `IRag`:
-
-```typescript
-export interface IRag {
-  upsert(text: string, metadata?: Record<string, unknown>, options?: CallOptions): Promise<Result<void, RagError>>;
-  upsertPrecomputed?(text: string, vector: number[], metadata?: Record<string, unknown>): Promise<Result<void, RagError>>;
-  query(...): Promise<Result<RagResult[], RagError>>;
-}
-```
-
-`VectorRag` and `QdrantRag` implement `upsertPrecomputed`. `InMemoryRag` and `FallbackRag` ignore vector (store text only).
+- this fallback preserves correctness;
+- it does **not** fully solve `#52` end-to-end for that store, because the store may re-embed each text individually;
+- `#52` is considered fully addressed only when both conditions hold:
+  - the embedder supports batch embedding;
+  - the target store supports precomputed-vector writes.
 
 ### 3. SAP AI Core Direct Provider (#54)
 
+#### Architecture boundary — compatibility-first path
+
+Add `src/llm-providers/sap-ai-core-direct.ts`, wrap it with `OpenAIAgent`, and expose it through `LlmAdapter`, matching the existing `providers.ts` composition style. This follows the current provider resolution flow that constructs legacy providers and adapts them through `LlmAdapter`.
+
 #### New provider: `sap-ai-core-direct`
 
-**File:** `src/llm-providers/sap-ai-core-direct.ts`
-
 Uses `resolveDeploymentUrl()` from `@sap-ai-sdk/ai-api` to get the model's inference endpoint, then sends OpenAI-compatible HTTP requests directly — bypassing OrchestrationClient entirely.
-
-#### Architecture
 
 ```
 Consumer → SapAiCoreDirectProvider.chat(messages, tools)
@@ -216,13 +333,15 @@ Reuse existing XSUAA token resolution from `@sap-ai-sdk/core`. The SDK handles t
 
 #### Deployment URL caching
 
-Cache `resolveDeploymentUrl()` result for the lifetime of the provider instance. Deployment URLs are stable — they only change on redeployment.
+Cache `resolveDeploymentUrl()` result for the lifetime of the provider instance. Deployment URLs are stable — they only change on redeployment. Implement refresh-on-error for resilience after redeployments.
 
-#### Agent: `SapCoreAiDirectAgent`
+#### Agent: extends OpenAIAgent
 
-Extends `OpenAIAgent` (not `SapCoreAIAgent`) since the direct API is OpenAI-compatible. No custom tool conversion needed.
+The direct API is OpenAI-compatible. Use `OpenAIAgent` directly — no custom agent subclass needed unless SAP-specific behavior diverges.
 
-#### Configuration
+#### Configuration — single source of truth
+
+Provider selection via YAML provider name only:
 
 ```yaml
 llm:
@@ -231,7 +350,17 @@ llm:
   resourceGroup: default
 ```
 
-New env var: `SAP_AI_DIRECT_PROVIDER=true` (or YAML `provider: sap-ai-core-direct`).
+No boolean env var for provider selection. Env vars are used only for credentials and connection settings (`AICORE_SERVICE_KEY`, etc.).
+
+#### Parity requirements
+
+Before broader adoption, the direct provider must pass parity checks:
+
+- Chat completion works with plain prompts.
+- Streaming works with OpenAI-style SSE framing.
+- Tool calling works with the same request/response shape expected by `OpenAIAgent`.
+- Per-request model override behavior remains compatible.
+- Model discovery: day one returns a minimal fallback set from the configured model. Full discovery deferred.
 
 #### Provider registration
 
@@ -243,7 +372,12 @@ Add to `providers.ts` factory map alongside existing providers. Builder resolves
 
 ```
 startup:
-  builder.ts → embedBatch() → requestLogger.logLlmCall({ component: 'embedding' })
+  builder.ts → embedBatch() → requestLogger.logLlmCall({
+    component: 'embedding',
+    scope: 'initialization',
+    detail: 'tools',
+    estimated: true
+  })
   → stored in initLlmCalls[] (never reset)
 
 per request:
@@ -251,7 +385,15 @@ per request:
   classifier → logLlmCall({ component: 'classifier' }) → requestLlmCalls[]
   translate → logLlmCall({ component: 'translate' }) → requestLlmCalls[]
   tool-loop → logLlmCall({ component: 'tool-loop' }) → requestLlmCalls[]
-  getSummary() → merge initLlmCalls + requestLlmCalls → byCategory, byComponent, byModel
+  runtime embedding (if any) → logLlmCall({
+    component: 'embedding',
+    scope: 'request'
+  }) → requestLlmCalls[]
+  getSummary() → merge initLlmCalls + requestLlmCalls
+    → byCategory, byComponent, byModel
+
+client response usage ← sourced from stream chunks (not RequestSummary)
+session log / /v1/usage ← includes byCategory with initialization
 ```
 
 ### Batch embedding flow (startup)
@@ -261,9 +403,12 @@ builder.ts:
   tools = mcpClient.listTools()              // 146 tools
   if isBatchEmbedder(embedder):
     texts = tools.map(formatToolText)         // 146 strings
-    vectors = embedder.embedBatch(texts)      // 1 HTTP request
+    vectors = embedder.embedBatch(texts)      // 1 HTTP request (or chunked)
     for each (text, vector, tool):
-      toolStore.upsertPrecomputed(text, vector, { id: `tool:${tool.name}` })
+      if supportsPrecomputed(store):
+        store.upsertPrecomputed(text, vector, metadata)
+      else:
+        store.upsert(text, metadata)          // fallback + warning
   else:
     // existing sequential loop with 5/500ms throttling
 ```
@@ -272,27 +417,55 @@ builder.ts:
 
 | File | Change |
 |------|--------|
-| `src/smart-agent/interfaces/request-logger.ts` | Add `TokenCategory`, `TokenBucket`, `byCategory` to `RequestSummary`, add `'embedding'` to `LlmComponent` |
-| `src/smart-agent/logger/default-request-logger.ts` | Split storage into init/request arrays, implement `byCategory` aggregation |
+| `src/smart-agent/interfaces/request-logger.ts` | Add `TokenCategory`, `TokenBucket`, `byCategory`, `estimated` flag, `'embedding'` to `LlmComponent` |
+| `src/smart-agent/logger/default-request-logger.ts` | Split init/request arrays, `byCategory` aggregation, `items` counter |
 | `src/smart-agent/logger/noop-request-logger.ts` | Return empty `byCategory` |
-| `src/smart-agent/interfaces/rag.ts` | Add `IEmbedderBatch`, `isBatchEmbedder()`, optional `upsertPrecomputed` on `IRag` |
+| `src/smart-agent/interfaces/rag.ts` | Add `IEmbedderBatch`, `isBatchEmbedder()`, `IPrecomputedVectorRag`, `supportsPrecomputed()` |
 | `src/smart-agent/rag/openai-embedder.ts` | Implement `IEmbedderBatch` |
 | `src/smart-agent/rag/ollama-rag.ts` | Implement `IEmbedderBatch` |
 | `src/smart-agent/rag/sap-ai-core-embedder.ts` | Implement `IEmbedderBatch` |
-| `src/smart-agent/rag/vector-rag.ts` | Add `upsertPrecomputed()` |
-| `src/smart-agent/rag/qdrant-rag.ts` | Add `upsertPrecomputed()` |
+| `src/smart-agent/rag/vector-rag.ts` | Extract `upsertKnownVector()`, implement `IPrecomputedVectorRag` |
+| `src/smart-agent/rag/qdrant-rag.ts` | Implement `IPrecomputedVectorRag` |
 | `src/smart-agent/resilience/circuit-breaker-embedder.ts` | Proxy `embedBatch()` |
-| `src/smart-agent/resilience/fallback-rag.ts` | Proxy `upsertPrecomputed()` |
-| `src/smart-agent/builder.ts` | Use batch embedding when available, log embedding tokens |
-| `src/smart-agent/pipeline/handlers/tool-loop.ts` | Exclude initialization tokens from client usage |
+| `src/smart-agent/resilience/fallback-rag.ts` | Proxy `upsertPrecomputed()` if inner supports it |
+| `src/smart-agent/builder.ts` | Batch embedding path, embedding token logging |
 | `src/llm-providers/sap-ai-core-direct.ts` | **NEW** — Direct inference provider |
-| `src/agents/sap-core-ai-direct-agent.ts` | **NEW** — Agent extending OpenAIAgent |
-| `src/smart-agent/providers.ts` | Register `sap-ai-core-direct` provider factory |
+| `src/smart-agent/providers.ts` | Register `sap-ai-core-direct` provider and embedder factories |
 | `src/index.ts` | Export new types and classes |
 
 ## Non-goals
 
-- Migration tool from Orchestration to Direct provider
-- Content filtering in Direct provider (consumer responsibility)
-- Embedder token counts from API (use estimation until providers expose this)
-- Changes to existing `sap-core-ai` Orchestration provider
+- Migration tool from Orchestration to Direct provider.
+- Content filtering in Direct provider (consumer responsibility).
+- Embedder token counts from API (use estimation until providers expose this).
+- Changes to existing `sap-core-ai` Orchestration provider.
+- Full model discovery for `sap-ai-core-direct` on day one.
+
+## Acceptance criteria
+
+- `RequestSummary.byCategory` is populated for request-scoped LLM activity without breaking existing `byModel` and `byComponent` outputs.
+- Empty `byComponent` root cause is diagnosed and covered by a test reproducing the original failure mode.
+- Estimated embedding tokens are clearly marked with `estimated: true` and never included in client-facing `usage`.
+- `/v1/usage` clearly distinguishes estimated initialization tokens from exact request-time LLM usage.
+- Startup vectorization performs batched embedding when the embedder supports it and falls back safely when it does not.
+- Batched embedding preserves idempotent `metadata.id` replacement semantics in vector-backed stores.
+- Runtime embedding, if logged, is stored as request-scoped rather than initialization-scoped.
+- `sap-ai-core-direct` supports chat, streaming, and tool-calling paths expected by the current adapter stack.
+- Switching from `sap-ai-sdk` to `sap-ai-core-direct` requires only provider config changes, not application code changes.
+
+## Risks
+
+- Estimated embedding tokens may be misread as billable usage if the API output is not clearly labeled.
+- Batch embedding may increase retry blast radius: one failed request can affect many pending vectors.
+- Precomputed-vector write paths can drift from normal `upsert()` behavior if logic is duplicated.
+- Direct SAP inference may differ from orchestration in safety filters, request shaping, or tool-call edge cases.
+- Caching deployment URLs for too long may break after redeployments unless refresh-on-error is implemented.
+
+## Rollout stages
+
+1. Diagnose #53 root cause; add `byCategory`, `TokenBucket`, and `estimated` flag without changing client `usage`.
+2. Add `IEmbedderBatch` plus provider implementations with chunking/fallback.
+3. Add `IPrecomputedVectorRag` with shared `upsertKnownVector()` write path.
+4. Switch builder startup vectorization to batch mode.
+5. Introduce `sap-ai-core-direct` behind explicit opt-in provider name.
+6. Compare direct vs orchestration token counts and tool-calling parity before broader adoption.
