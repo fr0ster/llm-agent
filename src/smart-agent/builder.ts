@@ -640,6 +640,9 @@ export class SmartAgentBuilder {
       }
     }
 
+    // ---- Request logger ---------------------------------------------------
+    const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
+
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];
     const closeFns: Array<() => Promise<void>> = [];
@@ -700,15 +703,28 @@ export class SmartAgentBuilder {
               const tools = toolsResult.value;
               for (let i = 0; i < tools.length; i++) {
                 const t = tools[i];
-                const result = await toolStore.upsert(
-                  `Tool: ${t.name} — ${t.description}`,
-                  { id: `tool:${t.name}` },
-                );
+                const text = `Tool: ${t.name} — ${t.description}`;
+                const embedStart = Date.now();
+                const result = await toolStore.upsert(text, {
+                  id: `tool:${t.name}`,
+                });
                 if (!result.ok) {
                   log?.log({
                     type: 'warning',
                     traceId: 'builder',
                     message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
+                  });
+                } else {
+                  requestLogger.logLlmCall({
+                    component: 'embedding',
+                    model: 'embedder',
+                    promptTokens: Math.ceil(text.length / 4),
+                    completionTokens: 0,
+                    totalTokens: Math.ceil(text.length / 4),
+                    durationMs: Date.now() - embedStart,
+                    estimated: true,
+                    scope: 'initialization',
+                    detail: 'tools',
                   });
                 }
                 // Throttle embedding requests to avoid rate limits
@@ -749,9 +765,6 @@ export class SmartAgentBuilder {
     if (agentCfg.retry) {
       wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
     }
-
-    // ---- Request logger ---------------------------------------------------
-    const requestLogger = this._requestLogger ?? new DefaultRequestLogger();
 
     // ---- Classifier -------------------------------------------------------
     const classifierCfg: LlmClassifierConfig = {};
@@ -835,17 +848,28 @@ export class SmartAgentBuilder {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
-          const result = await skillStore.upsert(
-            `Skill: ${s.name}\n${s.description}`,
-            {
-              id: `skill:${s.name}`,
-            },
-          );
+          const text = `Skill: ${s.name}\n${s.description}`;
+          const embedStart = Date.now();
+          const result = await skillStore.upsert(text, {
+            id: `skill:${s.name}`,
+          });
           if (!result.ok) {
             log?.log({
               type: 'warning',
               traceId: 'builder',
               message: `Skill vectorization failed for "${s.name}": ${result.error.message}`,
+            });
+          } else {
+            requestLogger.logLlmCall({
+              component: 'embedding',
+              model: 'embedder',
+              promptTokens: Math.ceil(text.length / 4),
+              completionTokens: 0,
+              totalTokens: Math.ceil(text.length / 4),
+              durationMs: Date.now() - embedStart,
+              estimated: true,
+              scope: 'initialization',
+              detail: 'skills',
             });
           }
         }
