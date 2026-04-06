@@ -86,6 +86,9 @@ export interface SmartServerAgentConfig {
   toolUnavailableTtlMs?: number;
   ragQueryK?: number;
   contextBudgetTokens?: number;
+  semanticHistoryEnabled?: boolean;
+  historyRecencyWindow?: number;
+  historyTurnSummaryPrompt?: string;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;
