@@ -46,6 +46,10 @@ agent:
   streamMode: final
   refreshToolsPerIteration: false
   toolReselectPerIteration: true
+  retry:
+    maxAttempts: 3
+    retryOnMidStream:
+      - 'SSE stream'
 
 log: smart-server.log
 logDir: sessions
