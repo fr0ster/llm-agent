@@ -182,7 +182,10 @@ export function resolveEnvVars(
   env: NodeJS.ProcessEnv = process.env,
 ): unknown {
   if (typeof value === 'string')
-    return value.replace(/\$\{([^}]+)\}/g, (_, n) => env[n] ?? '');
+    return value.replace(
+      /\$\{([^}:]+)(?::-(.*?))?\}/g,
+      (_, name, fallback) => env[name] || fallback || '',
+    );
   if (Array.isArray(value)) return value.map((v) => resolveEnvVars(v, env));
   if (value !== null && typeof value === 'object')
     return Object.fromEntries(
