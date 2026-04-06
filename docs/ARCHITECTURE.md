@@ -208,6 +208,9 @@ sequenceDiagram
                     end
                 end
                 SA->>SA: Append tool results to messages
+                opt IToolResultCompactor configured
+                    SA->>SA: Compact old tool results (keep last N full)
+                end
             else finishReason = stop
                 SA->>OV: validate(content, context)
                 alt Valid
@@ -228,7 +231,8 @@ sequenceDiagram
 2. **SAP context detection** — If any action subprompt has `context: "sap-abap"` or mode is `hard`, RAG retrieval and MCP tool selection are triggered. Otherwise, only external tools are used.
 3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
 4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
-5. **onBeforeStream hook** — If an `onBeforeStream` hook is configured, the final response content is passed through it before streaming to the caller (e.g., for reformatting or post-processing).
+5. **Tool result compaction** — When `IToolResultCompactor` is configured, old tool results are compacted before each LLM iteration (from iteration 1 onwards). This prevents payload overflow when tool results are large (e.g. multi-KB XML). The default `TruncatingToolResultCompactor` keeps the last N results full and truncates older ones.
+6. **onBeforeStream hook** — If an `onBeforeStream` hook is configured, the final response content is passed through it before streaming to the caller (e.g., for reformatting or post-processing).
 
 ## Request Lifecycle
 
