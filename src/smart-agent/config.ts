@@ -86,6 +86,7 @@ agent:
   #   maxAttempts: 3
   #   backoffMs: 1000
   #   retryOn: [429, 500, 502, 503]
+  #   retryOnMidStream: ['SSE stream']  # Substrings triggering mid-stream retry
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.
@@ -402,6 +403,7 @@ export function resolveSmartServerConfig(
               maxAttempts?: number;
               backoffMs?: number;
               retryOn?: number[];
+              retryOnMidStream?: string[];
             },
           }
         : {}),

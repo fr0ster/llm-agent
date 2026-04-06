@@ -146,6 +146,7 @@ export interface SmartAgentConfig {
     maxAttempts?: number;
     backoffMs?: number;
     retryOn?: number[];
+    retryOnMidStream?: string[];
   };
   /**
    * Streaming behavior for multi-iteration tool loops.
