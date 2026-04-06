@@ -1,4 +1,4 @@
-import type { IEmbedder } from '../interfaces/rag.js';
+import type { IEmbedderBatch } from '../interfaces/rag.js';
 import { type CallOptions, RagError } from '../interfaces/types.js';
 
 export interface OpenAiEmbedderConfig {
@@ -12,7 +12,7 @@ export interface OpenAiEmbedderConfig {
   timeoutMs?: number;
 }
 
-export class OpenAiEmbedder implements IEmbedder {
+export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
   private readonly apiKey: string;
   private readonly model: string;
@@ -78,5 +78,70 @@ export class OpenAiEmbedder implements IEmbedder {
       lastError ||
       new RagError('OpenAI embed failed after retries', 'EMBED_ERROR')
     );
+  }
+
+  async embedBatch(
+    texts: string[],
+    options?: CallOptions,
+  ): Promise<number[][]> {
+    if (texts.length === 0) return [];
+
+    const chunkSize = 100;
+    const results: number[][] = new Array(texts.length);
+
+    for (let start = 0; start < texts.length; start += chunkSize) {
+      const chunk = texts.slice(start, start + chunkSize);
+      const url = `${this.baseURL}/embeddings`;
+      let lastError: Error | undefined;
+      const maxRetries = 3;
+
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+          const signal = options?.signal
+            ? AbortSignal.any([options.signal, timeoutSignal])
+            : timeoutSignal;
+
+          const res = await fetch(url, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${this.apiKey}`,
+            },
+            body: JSON.stringify({ model: this.model, input: chunk }),
+            signal,
+          });
+
+          if (!res.ok) {
+            const errorText = await res.text();
+            throw new RagError(
+              `OpenAI batch embed error: HTTP ${res.status} - ${errorText}`,
+              'EMBED_ERROR',
+            );
+          }
+
+          const json = (await res.json()) as {
+            data: Array<{ embedding: number[]; index: number }>;
+          };
+          const sorted = json.data.sort((a, b) => a.index - b.index);
+          for (let i = 0; i < sorted.length; i++) {
+            results[start + i] = sorted[i].embedding;
+          }
+          lastError = undefined;
+          break;
+        } catch (err: unknown) {
+          lastError = err instanceof Error ? err : new Error(String(err));
+          if (err instanceof Error && err.name === 'AbortError') throw err;
+          const delay = 500 * 2 ** attempt;
+          await new Promise((resolve) => setTimeout(resolve, delay));
+        }
+      }
+
+      if (lastError) {
+        throw lastError;
+      }
+    }
+
+    return results;
   }
 }

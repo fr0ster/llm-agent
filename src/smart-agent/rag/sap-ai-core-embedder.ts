@@ -5,7 +5,7 @@
  * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
  */
 
-import type { IEmbedder } from '../interfaces/rag.js';
+import type { IEmbedderBatch } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 
 export interface SapAiCoreEmbedderConfig {
@@ -15,7 +15,7 @@ export interface SapAiCoreEmbedderConfig {
   resourceGroup?: string;
 }
 
-export class SapAiCoreEmbedder implements IEmbedder {
+export class SapAiCoreEmbedder implements IEmbedderBatch {
   private readonly model: string;
   private readonly resourceGroup?: string;
 
@@ -57,5 +57,44 @@ export class SapAiCoreEmbedder implements IEmbedder {
     }
 
     return embedding;
+  }
+
+  async embedBatch(
+    texts: string[],
+    _options?: CallOptions,
+  ): Promise<number[][]> {
+    if (texts.length === 0) return [];
+
+    const { OrchestrationEmbeddingClient } = await import(
+      '@sap-ai-sdk/orchestration'
+    );
+
+    const modelName = this
+      .model as unknown as import('@sap-ai-sdk/orchestration').EmbeddingModel;
+    const client = new OrchestrationEmbeddingClient(
+      { embeddings: { model: { name: modelName } } },
+      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+    );
+
+    const response = await client.embed({ input: texts });
+    const embeddings = response.getEmbeddings();
+
+    if (!embeddings || embeddings.length === 0) {
+      throw new Error('No embeddings returned from SAP AI Core batch');
+    }
+
+    const sorted = [...embeddings].sort((a, b) => a.index - b.index);
+    return sorted.map((e) => {
+      if (typeof e.embedding === 'string') {
+        const buffer = Buffer.from(e.embedding, 'base64');
+        const float32 = new Float32Array(
+          buffer.buffer,
+          buffer.byteOffset,
+          buffer.length / 4,
+        );
+        return Array.from(float32);
+      }
+      return e.embedding;
+    });
   }
 }

@@ -9,6 +9,7 @@
 
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IRag } from '../interfaces/rag.js';
+import { supportsPrecomputed } from '../interfaces/rag.js';
 import type {
   CallOptions,
   RagError,
@@ -46,6 +47,28 @@ export class FallbackRag implements IRag {
       return this.fallback.query(embedding, k, options);
     }
     return this.primary.query(embedding, k, options);
+  }
+
+  async upsertPrecomputed(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>> {
+    const primaryResult = supportsPrecomputed(this.primary)
+      ? await this.primary.upsertPrecomputed(text, vector, metadata, options)
+      : await this.primary.upsert(text, metadata, options);
+
+    // Best-effort write to fallback
+    if (supportsPrecomputed(this.fallback)) {
+      this.fallback
+        .upsertPrecomputed(text, vector, metadata, options)
+        .catch(() => {});
+    } else {
+      this.fallback.upsert(text, metadata, options).catch(() => {});
+    }
+
+    return primaryResult;
   }
 
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {

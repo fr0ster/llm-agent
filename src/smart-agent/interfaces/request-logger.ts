@@ -3,7 +3,18 @@ export type LlmComponent =
   | 'classifier'
   | 'helper'
   | 'translate'
-  | 'query-expander';
+  | 'query-expander'
+  | 'embedding';
+
+export type TokenCategory = 'initialization' | 'auxiliary' | 'request';
+
+export interface TokenBucket {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  requests: number;
+  items?: number;
+}
 
 export interface LlmCallEntry {
   component: LlmComponent;
@@ -12,6 +23,9 @@ export interface LlmCallEntry {
   completionTokens: number;
   totalTokens: number;
   durationMs: number;
+  estimated?: boolean;
+  scope?: 'initialization' | 'request';
+  detail?: string;
 }
 
 export interface RagQueryEntry {
@@ -30,25 +44,11 @@ export interface ToolCallEntry {
 
 export interface RequestSummary {
   /** Per-model aggregated token usage. */
-  byModel: Record<
-    string,
-    {
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      requests: number;
-    }
-  >;
+  byModel: Record<string, TokenBucket>;
   /** Per-component aggregated token usage. */
-  byComponent: Record<
-    string,
-    {
-      promptTokens: number;
-      completionTokens: number;
-      totalTokens: number;
-      requests: number;
-    }
-  >;
+  byComponent: Record<string, TokenBucket>;
+  /** Per-category aggregated token usage. */
+  byCategory: Record<string, TokenBucket>;
   ragQueries: number;
   toolCalls: number;
   /** Wall-clock time for the entire request. */
