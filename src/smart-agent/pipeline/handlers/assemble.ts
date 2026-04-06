@@ -51,9 +51,18 @@ export class AssembleHandler implements IStageHandler {
       ctx.activeTools.some((at) => at.name === t.name),
     );
 
+    const recentActions =
+      ctx.historyMemory && ctx.config.semanticHistoryEnabled
+        ? ctx.historyMemory.getRecent(
+            ctx.sessionId,
+            ctx.config.historyRecencyWindow ?? 3,
+          )
+        : undefined;
+
     const retrieved = {
       ragResults: ctx.ragResults,
       tools: selectedMcpTools as McpTool[],
+      recentActions,
     };
 
     const result = await ctx.assembler.assemble(
