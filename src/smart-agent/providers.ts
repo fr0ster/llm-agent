@@ -9,12 +9,10 @@
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
-import { SapAiCoreDirectAgent } from '../agents/sap-ai-core-direct-agent.js';
 import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
 import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { OpenAIProvider } from '../llm-providers/openai.js';
-import { SapAiCoreDirectProvider } from '../llm-providers/sap-ai-core-direct.js';
 import {
   type SapAICoreCredentials,
   SapCoreAIProvider,
@@ -34,12 +32,7 @@ import { VectorRag } from './rag/vector-rag.js';
 // ---------------------------------------------------------------------------
 
 export interface LlmProviderConfig {
-  provider:
-    | 'deepseek'
-    | 'openai'
-    | 'anthropic'
-    | 'sap-ai-sdk'
-    | 'sap-ai-core-direct';
+  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
   apiKey?: string;
   model?: string;
   temperature?: number;
@@ -130,23 +123,6 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         },
       });
       const agent = new SapCoreAIAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      return new LlmAdapter(agent, {
-        model: provider.model,
-        getModels: () => provider.getModels(),
-      });
-    }
-    case 'sap-ai-core-direct': {
-      const provider = new SapAiCoreDirectProvider({
-        apiKey: cfg.apiKey,
-        model: cfg.model,
-        temperature,
-        maxTokens,
-        resourceGroup: cfg.resourceGroup,
-      });
-      const agent = new SapAiCoreDirectAgent({
         llmProvider: provider,
         mcpClient: dummyMcp,
       });

@@ -53,8 +53,7 @@ BaseAgent (abstract)
 ├── OpenAIAgent            — native function calling (tools param)
 ├── AnthropicAgent         — native tools API (content blocks)
 ├── DeepSeekAgent          — OpenAI-compatible function calling
-├── SapCoreAIAgent         — SAP AI SDK native function calling (@sap-ai-sdk/orchestration)
-├── SapAiCoreDirectAgent   — SAP AI Core direct inference (bypasses Orchestration)
+├── SapCoreAIAgent     — SAP AI SDK native function calling (@sap-ai-sdk/orchestration)
 └── PromptBasedAgent   — tools described in system prompt
 ```
 
@@ -84,7 +83,7 @@ Copy `.env.template` to `.env`. Key variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `sap-ai-core-direct` |
+| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider credentials |
 | `AICORE_SERVICE_KEY` | SAP AI Core service key JSON (for `sap-ai-sdk` provider) |
 | `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |

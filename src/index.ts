@@ -35,10 +35,6 @@ export {
   DeepSeekProvider,
 } from './llm-providers/deepseek.js';
 export { type OpenAIConfig, OpenAIProvider } from './llm-providers/openai.js';
-export {
-  type SapAiCoreDirectConfig,
-  SapAiCoreDirectProvider,
-} from './llm-providers/sap-ai-core-direct.js';
 // LLM Providers
 // NOTE: All LLM providers are accessed through SAP AI Core
 export {
