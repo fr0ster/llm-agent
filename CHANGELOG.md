@@ -7,6 +7,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.14.3] — 2026-04-07
+
+### Fixed
+- **MCP YAML headers passthrough** — `resolveSmartServerConfig()` now reads `mcp.headers` from YAML and passes it to `MCPClientWrapper`, enabling `x-sap-destination` proxy routing. Closes #60.
+
+---
+
+## [5.14.2] — 2026-04-07
+
+### Changed
+- **Documentation** — updated CHANGELOG (5.9.0–5.14.1), added SAP AI Core Direct Provider section to `SAP_AI_CORE.md`, updated agent hierarchy in `CLAUDE.md`.
+
+---
+
 ## [5.14.1] — 2026-04-07
 
 ### Added
