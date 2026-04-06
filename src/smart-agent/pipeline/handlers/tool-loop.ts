@@ -119,6 +119,7 @@ export class ToolLoopHandler implements IStageHandler {
             usage: {
               ...usage,
               models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
             },
             timing: timingLog,
           },
@@ -464,6 +465,7 @@ export class ToolLoopHandler implements IStageHandler {
             usage: {
               ...usage,
               models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
             },
             timing: timingLog,
           },
@@ -585,6 +587,7 @@ export class ToolLoopHandler implements IStageHandler {
             usage: {
               ...usage,
               models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
             },
             timing: timingLog,
           },
@@ -627,6 +630,7 @@ export class ToolLoopHandler implements IStageHandler {
             usage: {
               ...usage,
               models: ctx.requestLogger.getSummary().byModel,
+              components: ctx.requestLogger.getSummary().byComponent,
             },
             timing: timingLog,
           },
