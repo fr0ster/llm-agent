@@ -485,31 +485,9 @@ export class SmartServer {
       circuitBreakers,
     });
 
-    // Run health check on startup
-    smartAgent
-      .healthCheck()
-      .then((res) => {
-        if (res.ok) {
-          const v = res.value;
-          const mcpStatus =
-            v.mcp.length === 0
-              ? 'NONE'
-              : v.mcp.every((m) => m.ok)
-                ? 'OK'
-                : 'PARTIAL/FAIL';
-          process.stderr.write(
-            `[Health] LLM: ${v.llm ? 'OK' : 'FAIL'}, RAG: ${v.rag ? 'OK' : 'FAIL'}, MCP: ${mcpStatus}\n`,
-          );
-          v.mcp
-            .filter((m) => !m.ok)
-            .forEach((m) => {
-              process.stderr.write(`  - MCP Error: ${m.error}\n`);
-            });
-        }
-      })
-      .catch((e) =>
-        process.stderr.write(`[Health] Unexpected check error: ${e}\n`),
-      );
+    // Startup health check removed — use llm-agent-check CLI for diagnostics.
+    // Running health check at startup wastes rate-limit budget when combined
+    // with tool vectorization (146+ embedding calls).
 
     // ---- Config hot-reload (optional) ------------------------------------
     if (this.cfg.configFile) {

@@ -658,7 +658,11 @@ export class SmartAgentBuilder {
             }
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
-              for (const t of toolsResult.value) {
+              const batchSize = 5;
+              const batchDelayMs = 500;
+              const tools = toolsResult.value;
+              for (let i = 0; i < tools.length; i++) {
+                const t = tools[i];
                 const result = await toolStore.upsert(
                   `Tool: ${t.name} — ${t.description}`,
                   { id: `tool:${t.name}` },
@@ -669,6 +673,10 @@ export class SmartAgentBuilder {
                     traceId: 'builder',
                     message: `Tool vectorization failed for "${t.name}": ${result.error.message}`,
                   });
+                }
+                // Throttle embedding requests to avoid rate limits
+                if ((i + 1) % batchSize === 0 && i < tools.length - 1) {
+                  await new Promise((r) => setTimeout(r, batchDelayMs));
                 }
               }
             }
