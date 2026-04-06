@@ -5,7 +5,7 @@
  * underlying embedding service.
  */
 
-import type { IEmbedder, IEmbedderBatch } from '../interfaces/rag.js';
+import type { IEmbedder } from '../interfaces/rag.js';
 import { isBatchEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';

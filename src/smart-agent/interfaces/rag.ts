@@ -56,9 +56,11 @@ export interface IEmbedderBatch extends IEmbedder {
   embedBatch(texts: string[], options?: CallOptions): Promise<number[][]>;
 }
 
-// biome-ignore lint/suspicious/noExplicitAny: runtime type check
 export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {
-  return 'embedBatch' in e && typeof (e as any).embedBatch === 'function';
+  return (
+    'embedBatch' in e &&
+    typeof (e as { embedBatch?: unknown }).embedBatch === 'function'
+  );
 }
 
 export interface IPrecomputedVectorRag extends IRag {
