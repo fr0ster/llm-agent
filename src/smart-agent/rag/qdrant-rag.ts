@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IRag } from '../interfaces/rag.js';
+import type { IEmbedder, IPrecomputedVectorRag } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -30,7 +30,7 @@ export interface QdrantRagConfig {
   timeoutMs?: number;
 }
 
-export class QdrantRag implements IRag {
+export class QdrantRag implements IPrecomputedVectorRag {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
@@ -110,16 +110,13 @@ export class QdrantRag implements IRag {
     this.collectionEnsured = true;
   }
 
-  async upsert(
+  private async upsertKnownVector(
     text: string,
+    vector: number[],
     metadata: RagMetadata,
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
-    if (options?.signal?.aborted) {
-      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
-    }
     try {
-      const vector = await this.embedder.embed(text, options);
       await this._ensureCollection(vector.length, options?.signal);
 
       const pointId = metadata?.id
@@ -153,6 +150,35 @@ export class QdrantRag implements IRag {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
     }
+  }
+
+  async upsert(
+    text: string,
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>> {
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    try {
+      const vector = await this.embedder.embed(text, options);
+      return this.upsertKnownVector(text, vector, metadata, options);
+    } catch (err) {
+      if (err instanceof RagError) return { ok: false, error: err };
+      return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
+    }
+  }
+
+  async upsertPrecomputed(
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>> {
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    return this.upsertKnownVector(text, vector, metadata, options);
   }
 
   async query(
