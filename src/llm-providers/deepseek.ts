@@ -72,6 +72,7 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
           temperature: this.config.temperature || 0.7,
           max_tokens: this.config.maxTokens || 4096,
           stream: true,
+          stream_options: { include_usage: true },
         },
         { responseType: 'stream' },
       );
@@ -89,11 +90,18 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
           if (data === '[DONE]') break;
           try {
             const parsed = JSON.parse(data);
-            const choice = parsed.choices[0];
+            const choice = parsed.choices?.[0];
             if (choice?.delta) {
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,
+                raw: parsed,
+              };
+            }
+            // Usage chunk (stream_options: include_usage)
+            if (parsed.usage && !choice) {
+              yield {
+                content: '',
                 raw: parsed,
               };
             }

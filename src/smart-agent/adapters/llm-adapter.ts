@@ -204,6 +204,21 @@ function parseStreamChunk(
     return { content: raw.content };
   }
 
+  // OpenAI / DeepSeek usage-only chunk (stream_options: include_usage)
+  if (providerRaw.usage && !providerRaw.choices?.[0]?.delta) {
+    return {
+      content: '',
+      usage: {
+        promptTokens: providerRaw.usage.prompt_tokens ?? 0,
+        completionTokens: providerRaw.usage.completion_tokens ?? 0,
+        totalTokens:
+          providerRaw.usage.total_tokens ??
+          (providerRaw.usage.prompt_tokens ?? 0) +
+            (providerRaw.usage.completion_tokens ?? 0),
+      },
+    };
+  }
+
   // OpenAI / DeepSeek format for chunks
   if (providerRaw.choices?.[0]?.delta) {
     const delta = providerRaw.choices[0].delta;
