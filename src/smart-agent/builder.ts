@@ -642,7 +642,7 @@ export class SmartAgentBuilder {
             if (toolsResult.ok) {
               for (const t of toolsResult.value) {
                 const result = await toolStore.upsert(
-                  `Tool: ${t.name}\nDescription: ${t.description}\nSchema: ${JSON.stringify(t.inputSchema)}`,
+                  `Tool: ${t.name} — ${t.description}`,
                   { id: `tool:${t.name}` },
                 );
                 if (!result.ok) {
@@ -700,7 +700,7 @@ export class SmartAgentBuilder {
 
     // ---- Assembler --------------------------------------------------------
     const assemblerCfg: ContextAssemblerConfig = {
-      maxTokens: agentCfg.contextBudgetTokens ?? 4000,
+      maxTokens: agentCfg.contextBudgetTokens,
       showReasoning: agentCfg.showReasoning,
       reasoningInstruction: this.cfg.prompts?.reasoning,
     };
