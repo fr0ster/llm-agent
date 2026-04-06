@@ -127,6 +127,8 @@ const provider = new SapAiCoreDirectProvider({
 
 Authentication uses the same `AICORE_SERVICE_KEY` environment variable. The provider resolves the deployment URL via `@sap-ai-sdk/ai-api` and caches it for the provider lifetime.
 
+**Limitation:** The direct provider sends OpenAI-compatible request format. It works with OpenAI models (gpt-4o, gpt-4.1, etc.) and DeepSeek models deployed on SAP AI Core. **Anthropic models (claude-*) require a different request format** — use `sap-ai-sdk` (Orchestration) provider for Anthropic models, as the Orchestration Service handles format conversion internally.
+
 ## Usage Examples
 
 ### CLI Usage
