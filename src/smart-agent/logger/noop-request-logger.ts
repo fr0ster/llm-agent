@@ -9,6 +9,7 @@ import type {
 const EMPTY_SUMMARY: RequestSummary = {
   byModel: {},
   byComponent: {},
+  byCategory: {},
   ragQueries: 0,
   toolCalls: 0,
   totalDurationMs: 0,
@@ -21,7 +22,7 @@ export class NoopRequestLogger implements IRequestLogger {
   startRequest(): void {}
   endRequest(): void {}
   getSummary(): RequestSummary {
-    return { ...EMPTY_SUMMARY, byModel: {}, byComponent: {} };
+    return { ...EMPTY_SUMMARY, byModel: {}, byComponent: {}, byCategory: {} };
   }
   reset(): void {}
 }
