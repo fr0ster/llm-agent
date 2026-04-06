@@ -138,6 +138,43 @@ describe('SapCoreAIProvider — formatMessages', () => {
 });
 
 // ---------------------------------------------------------------------------
+// streamChat — requestConfig
+// ---------------------------------------------------------------------------
+
+describe('SapCoreAIProvider — streamChat requestConfig', () => {
+  it('passes httpsAgent with keepAlive to client.stream()', async () => {
+    const p = new SapCoreAIProvider({ model: 'test-model' });
+
+    // Spy on createClient to capture stream() call args
+    let streamArgs: unknown[] = [];
+    const fakeStream = {
+      stream: (async function* () {
+        // empty stream
+      })(),
+    };
+    // biome-ignore lint/suspicious/noExplicitAny: test spy
+    (p as any).createClient = () => ({
+      stream: (...args: unknown[]) => {
+        streamArgs = args;
+        return Promise.resolve(fakeStream);
+      },
+    });
+
+    const iter = p.streamChat([{ role: 'user', content: 'hi' }]);
+    // Consume the iterator to trigger the call
+    for await (const _ of iter) {
+      // no chunks expected
+    }
+
+    // stream() should have been called with (undefined, undefined, undefined, requestConfig)
+    // where requestConfig contains httpsAgent
+    const requestConfig = streamArgs[3] as Record<string, unknown> | undefined;
+    assert.ok(requestConfig, 'requestConfig should be passed to stream()');
+    assert.ok(requestConfig.httpsAgent, 'httpsAgent should be set');
+  });
+});
+
+// ---------------------------------------------------------------------------
 // createClient (private — tested via casting to any)
 // ---------------------------------------------------------------------------
 
