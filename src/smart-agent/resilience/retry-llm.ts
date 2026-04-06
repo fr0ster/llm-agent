@@ -24,12 +24,15 @@ export interface RetryOptions {
   backoffMs: number;
   /** HTTP status codes that trigger retry. Default: [429, 500, 502, 503]. */
   retryOn: number[];
+  /** Substrings in error message that trigger mid-stream retry (replays entire stream). Default: []. */
+  retryOnMidStream: string[];
 }
 
 const DEFAULT_OPTIONS: RetryOptions = {
   maxAttempts: 3,
   backoffMs: 2000,
   retryOn: [429, 500, 502, 503],
+  retryOnMidStream: [],
 };
 
 export class RetryLlm implements ILlm {
@@ -93,14 +96,29 @@ export class RetryLlm implements ILlm {
           chunksYielded++;
           yield chunk;
         } else {
+          const canRetry = attempt < this.opts.maxAttempts;
+
+          // Pre-stream failure: retry on HTTP status codes (existing behavior)
           if (
             chunksYielded === 0 &&
-            attempt < this.opts.maxAttempts &&
+            canRetry &&
             this.isRetryable(chunk.error)
           ) {
             shouldRetry = true;
             break;
           }
+
+          // Mid-stream failure: retry on configured substrings
+          if (
+            chunksYielded > 0 &&
+            canRetry &&
+            this.isMidStreamRetryable(chunk.error)
+          ) {
+            yield { ok: true, value: { content: '', reset: true } };
+            shouldRetry = true;
+            break;
+          }
+
           yield chunk;
           return;
         }
@@ -115,6 +133,12 @@ export class RetryLlm implements ILlm {
   private isRetryable(error: LlmError): boolean {
     const msg = error.message;
     return this.opts.retryOn.some((code) => msg.includes(String(code)));
+  }
+
+  private isMidStreamRetryable(error: LlmError): boolean {
+    if (this.opts.retryOnMidStream.length === 0) return false;
+    const msg = error.message;
+    return this.opts.retryOnMidStream.some((sub) => msg.includes(sub));
   }
 
   private backoff(attempt: number, signal?: AbortSignal): Promise<void> {
