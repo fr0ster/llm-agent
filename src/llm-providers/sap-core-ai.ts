@@ -164,11 +164,18 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     try {
       const formatted = this.formatMessages(messages);
       const client = this.createClient(formatted, tools);
+      // Each stream gets its own agent to prevent connection multiplexing.
+      // A shared keepAlive agent can cause SAP AI Core to route SSE chunks
+      // to the wrong stream when multiple requests share the same XSUAA user.
+      const streamAgent = new https.Agent({
+        keepAlive: false,
+        timeout: 120_000,
+      });
       const streamResponse = await client.stream(
         undefined,
         undefined,
         undefined,
-        { httpsAgent: this.httpsAgent },
+        { httpsAgent: streamAgent },
       );
 
       for await (const chunk of streamResponse.stream) {
