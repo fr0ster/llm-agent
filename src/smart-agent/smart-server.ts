@@ -85,6 +85,7 @@ export interface SmartServerAgentConfig {
   maxToolCalls?: number;
   toolUnavailableTtlMs?: number;
   ragQueryK?: number;
+  contextBudgetTokens?: number;
   showReasoning?: boolean;
   historyAutoSummarizeLimit?: number;
   queryExpansionEnabled?: boolean;

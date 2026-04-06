@@ -109,6 +109,7 @@ export interface SmartAgentConfig {
   timeoutMs?: number;
   tokenLimit?: number;
   ragQueryK?: number;
+  contextBudgetTokens?: number;
   smartAgentEnabled?: boolean;
   sessionPolicy?: SessionPolicy;
   showReasoning?: boolean;
@@ -1144,25 +1145,6 @@ export class SmartAgent {
                   ...(newMcpTools as LlmTool[]),
                   ...externalTools,
                 ];
-
-                // Update system message "Available Tools" section
-                const sysIdx = messages.findIndex((m) => m.role === 'system');
-                if (
-                  sysIdx >= 0 &&
-                  typeof messages[sysIdx].content === 'string'
-                ) {
-                  const toolsSection = currentTools
-                    .filter((t) => !externalToolNames.has(t.name))
-                    .map((t) => `- ${t.name}: ${t.description || ''}`)
-                    .join('\n');
-                  messages[sysIdx] = {
-                    ...messages[sysIdx],
-                    content: (messages[sysIdx].content as string).replace(
-                      /## Available Tools\n[\s\S]*?(?=\n##|$)/,
-                      `## Available Tools\n${toolsSection}`,
-                    ),
-                  };
-                }
 
                 opts?.sessionLogger?.logStep('tools_reselected', {
                   iteration: iteration + 1,

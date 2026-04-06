@@ -95,7 +95,6 @@ function titleCase(key: string): string {
 /** Combine all sections into system message content */
 function buildSystemContent(
   ragResults: Record<string, RagResult[]>,
-  tools: McpTool[],
   provenance: boolean,
   sectionHeaders: Record<string, string>,
 ): string {
@@ -110,12 +109,6 @@ function buildSystemContent(
     if (section) sections.push(section);
   }
 
-  const toolsSection = buildSection(
-    'Available Tools',
-    tools.map((t) => `- ${t.name}: ${t.description}`),
-  );
-  if (toolsSection) sections.push(toolsSection);
-
   return sections.join('\n\n');
 }
 
@@ -129,27 +122,21 @@ function buildSystemContent(
  */
 function applyTokenBudget(
   ragResults: Record<string, RagResult[]>,
-  tools: McpTool[],
   actionTokens: number,
   maxTokens: number,
   provenance: boolean,
   sectionHeaders: Record<string, string>,
-): {
-  ragResults: Record<string, RagResult[]>;
-  tools: McpTool[];
-} {
+): Record<string, RagResult[]> {
   const mutableResults: Record<string, RagResult[]> = {};
   for (const [key, arr] of Object.entries(ragResults)) {
     mutableResults[key] = [...arr];
   }
-  let mutableTools = [...tools];
 
   const storeKeys = Object.keys(mutableResults);
 
   const totalTokens = (): number => {
     const content = buildSystemContent(
       mutableResults,
-      mutableTools,
       provenance,
       sectionHeaders,
     );
@@ -157,12 +144,6 @@ function applyTokenBudget(
   };
 
   while (totalTokens() > maxTokens) {
-    // First trim tools
-    if (mutableTools.length > 0) {
-      mutableTools = mutableTools.slice(0, -1);
-      continue;
-    }
-    // Then trim stores in reverse order
     let trimmed = false;
     for (let i = storeKeys.length - 1; i >= 0; i--) {
       const key = storeKeys[i];
@@ -175,7 +156,7 @@ function applyTokenBudget(
     if (!trimmed) break;
   }
 
-  return { ragResults: mutableResults, tools: mutableTools };
+  return mutableResults;
 }
 
 // ---------------------------------------------------------------------------
@@ -221,27 +202,20 @@ export class ContextAssembler implements IContextAssembler {
       for (const [key, results] of Object.entries(retrieved.ragResults)) {
         sortedResults[key] = [...results].sort((a, b) => b.score - a.score);
       }
-      const tools = [...retrieved.tools];
-
       let finalResults = sortedResults;
-      let finalTools = tools;
 
       if (this.maxTokens !== undefined) {
-        const budgeted = applyTokenBudget(
+        finalResults = applyTokenBudget(
           sortedResults,
-          tools,
           estimateTokens(action.text),
           this.maxTokens,
           this.includeProvenance,
           this.sectionHeaders,
         );
-        finalResults = budgeted.ragResults;
-        finalTools = budgeted.tools;
       }
 
       const systemContent = buildSystemContent(
         finalResults,
-        finalTools,
         this.includeProvenance,
         this.sectionHeaders,
       );

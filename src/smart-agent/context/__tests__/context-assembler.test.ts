@@ -117,7 +117,7 @@ describe('ContextAssembler — state only', () => {
 });
 
 describe('ContextAssembler — tools only', () => {
-  it('system message contains ## Available Tools with name and description', async () => {
+  it('tools-only input produces no tool descriptions in system prompt', async () => {
     const assembler = new ContextAssembler();
     const r = await assembler.assemble(
       ACTION,
@@ -125,11 +125,11 @@ describe('ContextAssembler — tools only', () => {
       [],
     );
     assert.ok(r.ok);
+    // Tool descriptions are no longer in system prompt — they go via LLM tools parameter
     const sys = r.value.find((m) => m.role === 'system');
-    assert.ok(sys, 'system message should exist');
-    assert.ok(sys.content.includes('## Available Tools'));
-    assert.ok(sys.content.includes('search'));
-    assert.ok(sys.content.includes('Search the web'));
+    if (sys) {
+      assert.ok(!sys.content.includes('## Available Tools'));
+    }
   });
 });
 
@@ -158,7 +158,7 @@ describe('ContextAssembler — all sections', () => {
     assert.ok(sys.content.includes('## Known Facts'));
     assert.ok(sys.content.includes('## Feedback'));
     assert.ok(sys.content.includes('## Current State'));
-    assert.ok(sys.content.includes('## Available Tools'));
+    assert.ok(!sys.content.includes('## Available Tools'));
 
     const userMsg = r.value.find((m) => m.role === 'user');
     assert.ok(userMsg);
@@ -291,8 +291,7 @@ describe('ContextAssembler — snapshot', () => {
     assert.ok(r.value[0].content.includes('You are a helpful assistant.'));
     assert.ok(r.value[0].content.includes('## Known Facts'));
     assert.ok(r.value[0].content.includes('[score: 0.95]'));
-    assert.ok(r.value[0].content.includes('## Available Tools'));
-    assert.ok(r.value[0].content.includes('calc: Basic arithmetic'));
+    assert.ok(!r.value[0].content.includes('## Available Tools'));
 
     assert.equal(r.value[1].role, 'user');
     assert.equal(r.value[1].content, 'Calculate 2+2.');
@@ -327,7 +326,8 @@ describe('ContextAssembler — token budget', () => {
     assert.ok(sys.content.includes('Fact A'));
     assert.ok(sys.content.includes('Feedback B'));
     assert.ok(sys.content.includes('State C'));
-    assert.ok(sys.content.includes('tool1'));
+    // Tool descriptions no longer in system prompt — passed via LLM tools parameter
+    assert.ok(!sys.content.includes('tool1'));
   });
 
   it('tools overflow — tools at end of list dropped first', async () => {
