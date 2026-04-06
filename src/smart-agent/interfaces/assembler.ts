@@ -17,6 +17,7 @@ export interface IContextAssembler {
     retrieved: {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
+      recentActions?: string[];
     },
     history: HistoryEntry[],
     options?: CallOptions,

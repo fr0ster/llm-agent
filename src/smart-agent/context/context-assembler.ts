@@ -52,6 +52,7 @@ const DEFAULT_SECTION_HEADERS: Record<string, string> = {
   facts: 'Known Facts',
   feedback: 'Feedback',
   state: 'Current State',
+  history: 'Relevant History',
 };
 
 // ---------------------------------------------------------------------------
@@ -97,6 +98,7 @@ function buildSystemContent(
   ragResults: Record<string, RagResult[]>,
   provenance: boolean,
   sectionHeaders: Record<string, string>,
+  recentActions?: string[],
 ): string {
   const sections: string[] = [];
 
@@ -105,6 +107,14 @@ function buildSystemContent(
     const section = buildSection(
       header,
       results.map((r) => formatRagEntry(r, provenance)),
+    );
+    if (section) sections.push(section);
+  }
+
+  if (recentActions && recentActions.length > 0) {
+    const section = buildSection(
+      'Recent Actions',
+      recentActions.map((a) => `- ${a}`),
     );
     if (section) sections.push(section);
   }
@@ -126,6 +136,7 @@ function applyTokenBudget(
   maxTokens: number,
   provenance: boolean,
   sectionHeaders: Record<string, string>,
+  recentActions?: string[],
 ): Record<string, RagResult[]> {
   const mutableResults: Record<string, RagResult[]> = {};
   for (const [key, arr] of Object.entries(ragResults)) {
@@ -139,6 +150,7 @@ function applyTokenBudget(
       mutableResults,
       provenance,
       sectionHeaders,
+      recentActions,
     );
     return actionTokens + estimateTokens(content);
   };
@@ -188,6 +200,7 @@ export class ContextAssembler implements IContextAssembler {
     retrieved: {
       ragResults: Record<string, RagResult[]>;
       tools: McpTool[];
+      recentActions?: string[];
     },
     history: HistoryEntry[],
     options?: CallOptions,
@@ -211,6 +224,7 @@ export class ContextAssembler implements IContextAssembler {
           this.maxTokens,
           this.includeProvenance,
           this.sectionHeaders,
+          retrieved.recentActions,
         );
       }
 
@@ -218,6 +232,7 @@ export class ContextAssembler implements IContextAssembler {
         finalResults,
         this.includeProvenance,
         this.sectionHeaders,
+        retrieved.recentActions,
       );
       const messages: Message[] = [];
 
