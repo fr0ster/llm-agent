@@ -1,4 +1,4 @@
-import type { IEmbedder } from '../interfaces/rag.js';
+import type { IEmbedderBatch } from '../interfaces/rag.js';
 import { type CallOptions, RagError } from '../interfaces/types.js';
 import { VectorRag, type VectorRagConfig } from './vector-rag.js';
 
@@ -11,7 +11,7 @@ export interface OllamaEmbedderConfig {
   timeoutMs?: number;
 }
 
-export class OllamaEmbedder implements IEmbedder {
+export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
   private readonly model: string;
   private readonly timeoutMs: number;
@@ -65,6 +65,54 @@ export class OllamaEmbedder implements IEmbedder {
     throw (
       lastError ||
       new RagError('Ollama embed failed after retries', 'EMBED_ERROR')
+    );
+  }
+
+  async embedBatch(
+    texts: string[],
+    options?: CallOptions,
+  ): Promise<number[][]> {
+    if (texts.length === 0) return [];
+
+    const url = `${this.ollamaUrl}/api/embed`;
+    let lastError: Error | undefined;
+    const maxRetries = 3;
+
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const timeoutSignal = AbortSignal.timeout(this.timeoutMs);
+        const signal = options?.signal
+          ? AbortSignal.any([options.signal, timeoutSignal])
+          : timeoutSignal;
+
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.model, input: texts }),
+          signal,
+        });
+
+        if (!res.ok) {
+          const errorText = await res.text();
+          throw new RagError(
+            `Ollama batch embed error: HTTP ${res.status} - ${errorText}`,
+            'EMBED_ERROR',
+          );
+        }
+
+        const json = (await res.json()) as { embeddings: number[][] };
+        return json.embeddings;
+      } catch (err: unknown) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        if (err instanceof Error && err.name === 'AbortError') throw err;
+        const delay = 500 * 2 ** attempt;
+        await new Promise((resolve) => setTimeout(resolve, delay));
+      }
+    }
+
+    throw (
+      lastError ||
+      new RagError('Ollama batch embed failed after retries', 'EMBED_ERROR')
     );
   }
 }
