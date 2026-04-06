@@ -115,6 +115,8 @@ export interface SmartAgentBuilderConfig {
   prompts?: BuilderPromptsConfig;
   /** Data governance policy for RAG records. */
   sessionPolicy?: SessionPolicy;
+  /** Skip startup model validation (useful for testing). Default: false. */
+  skipModelValidation?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -578,35 +580,37 @@ export class SmartAgentBuilder {
     // ---- Startup model validation ------------------------------------------
     // Verify that configured models respond before starting the server.
     // Only checks unique models from the pipeline config (main, classifier, helper).
-    const modelsToCheck = new Map<string, ILlm>();
-    modelsToCheck.set(mainLlm.model ?? 'main', mainLlm);
-    if (classifierLlm !== mainLlm) {
-      modelsToCheck.set(classifierLlm.model ?? 'classifier', classifierLlm);
-    }
-    if (helperLlm && helperLlm !== mainLlm) {
-      modelsToCheck.set(helperLlm.model ?? 'helper', helperLlm);
-    }
-
-    for (const [modelName, llm] of modelsToCheck) {
-      const result = await llm.chat(
-        [{ role: 'user', content: 'Reply with OK' }],
-        undefined,
-        { maxTokens: 10 },
-      );
-      if (!result.ok) {
-        const detail = result.error.message;
-        log?.log({
-          type: 'pipeline_error',
-          traceId: 'builder',
-          code: 'MODEL_UNAVAILABLE',
-          message: `Model "${modelName}" is not available: ${detail}`,
-          durationMs: 0,
-        });
-        throw new Error(
-          `Startup aborted: model "${modelName}" is not available.\n${detail}`,
-        );
+    if (!this.cfg.skipModelValidation) {
+      const modelsToCheck = new Map<string, ILlm>();
+      modelsToCheck.set(mainLlm.model ?? 'main', mainLlm);
+      if (classifierLlm !== mainLlm) {
+        modelsToCheck.set(classifierLlm.model ?? 'classifier', classifierLlm);
       }
-    }
+      if (helperLlm && helperLlm !== mainLlm) {
+        modelsToCheck.set(helperLlm.model ?? 'helper', helperLlm);
+      }
+
+      for (const [modelName, llm] of modelsToCheck) {
+        const result = await llm.chat(
+          [{ role: 'user', content: 'Reply with OK' }],
+          undefined,
+          { maxTokens: 10 },
+        );
+        if (!result.ok) {
+          const detail = result.error.message;
+          log?.log({
+            type: 'pipeline_error',
+            traceId: 'builder',
+            code: 'MODEL_UNAVAILABLE',
+            message: `Model "${modelName}" is not available: ${detail}`,
+            durationMs: 0,
+          });
+          throw new Error(
+            `Startup aborted: model "${modelName}" is not available.\n${detail}`,
+          );
+        }
+      }
+    } // end skipModelValidation guard
 
     // RAG stores — consumer defines which stores to use
     const ragStores: SmartAgentRagStores = { ...this._ragStores };
