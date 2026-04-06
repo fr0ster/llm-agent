@@ -177,6 +177,8 @@ export interface SmartServerConfig {
   apiAdapters?: ILlmApiAdapter[];
   /** Disable built-in adapter auto-registration. Default: false. */
   disableBuiltInAdapters?: boolean;
+  /** Skip startup model validation (useful for testing). Default: false. */
+  skipModelValidation?: boolean;
 }
 
 export interface SmartServerHandle {
@@ -374,6 +376,7 @@ export class SmartServer {
       mcp: pipeline?.mcp ?? this.cfg.mcp,
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
+      skipModelValidation: this.cfg.skipModelValidation,
     })
       .withMainLlm(mainLlm)
       .withClassifierLlm(classifierLlm)
