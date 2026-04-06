@@ -29,6 +29,11 @@ export {
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { IClientAdapter } from './client-adapter.js';
+export type { IHistoryMemory } from './history-memory.js';
+export type {
+  HistoryTurn,
+  IHistorySummarizer,
+} from './history-summarizer.js';
 export type { ILlm } from './llm.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
