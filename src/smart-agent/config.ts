@@ -320,6 +320,9 @@ export function resolveSmartServerConfig(
             (args['mcp-args'] as string) || get(yaml, 'mcp', 'args')
               ? String(args['mcp-args'] || get(yaml, 'mcp', 'args')).split(' ')
               : undefined,
+          headers:
+            (get(yaml, 'mcp', 'headers') as Record<string, string>) ||
+            undefined,
         }
       : undefined,
     agent: {
