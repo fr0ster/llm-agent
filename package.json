@@ -107,6 +107,7 @@
   },
   "bin": {
     "llm-agent": "./dist/smart-agent/cli.js",
+    "llm-agent-check": "./dist/smart-agent/check-models-cli.js",
     "claude-via-agent": "./tools/claude-via-agent.sh"
   },
   "license": "MIT",
