@@ -7,6 +7,81 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.14.1] — 2026-04-07
+
+### Added
+- **Tool result compaction strategy** — new `IToolResultCompactor` interface and `TruncatingToolResultCompactor` default implementation. When injected via `builder.withToolResultCompactor()`, the tool-loop compacts old tool results before each LLM iteration. Keeps last N (default 3) results full, truncates older ones. Prevents SAP AI Core HTTP 500 on large tool results. Closes #58.
+
+### Fixed
+- **SSE stream disconnect cause logging** — `SapCoreAIProvider.streamChat()` now logs the original cause error (`cause.message`, `cause.code`) from `@sap-ai-sdk/core` `ErrorWithCause`, enabling diagnosis of ECONNRESET/ETIMEDOUT issues. Refs #55.
+
+---
+
+## [5.14.0] — 2026-04-06
+
+### Added
+- **Token categorization** — `RequestSummary` now includes `byCategory` field with `initialization`, `auxiliary`, and `request` token breakdowns. `LlmCallEntry` extended with `estimated`, `scope`, and `detail` fields. `DefaultRequestLogger` splits storage into init (never reset) and request (reset per request) arrays. Estimated embedding tokens logged during tool/skill vectorization. Closes #53.
+- **Batch embedding** — new `IEmbedderBatch` interface with `embedBatch()` implemented for OpenAI (chunked at 100), Ollama (`/api/embed`), and SAP AI Core. `IPrecomputedVectorRag` with `upsertPrecomputed()` for VectorRag/QdrantRag (shared `upsertKnownVector` write path). Builder uses batch path when available, falls back to sequential with throttling. Closes #52.
+- **SAP AI Core Direct provider** — new `SapAiCoreDirectProvider` using `resolveDeploymentUrl()` + raw OpenAI-compatible HTTP, bypassing OrchestrationClient overhead (~14K phantom tokens). Registered as `sap-ai-core-direct` provider. Closes #54.
+- **`skipModelValidation` option** — new option in `SmartAgentBuilderConfig` and `SmartServerConfig` to skip startup model validation (useful for testing).
+- **New exports** — `IEmbedderBatch`, `IPrecomputedVectorRag`, `isBatchEmbedder`, `supportsPrecomputed`, `TokenBucket`, `TokenCategory`, `SapAiCoreDirectProvider`.
+
+---
+
+## [5.13.0] — 2026-04-06
+
+### Added
+- **Per-component token breakdown** — `byComponent` and `byModel` fields in `final_response` session log and usage chunk.
+- **Pipeline variants** — configurable pipeline stage compositions.
+- **DeepSeek streaming token usage** — streaming responses now include token usage.
+
+---
+
+## [5.12.1] — 2026-04-06
+
+### Added
+- **MCP headers support** — `MCPClientConfig.headers` for reverse proxy authentication (e.g. `x-sap-destination`).
+
+---
+
+## [5.12.0] — 2026-04-06
+
+### Added
+- **`llm-agent-check` CLI** — model health verification tool with `--config` mode for YAML pipeline verification.
+- **Startup model validation** — builder validates configured models respond before starting the server. Aborts on failure.
+
+### Fixed
+- **Client model override** — prevent client-provided model name from overriding the LLM provider's configured model.
+- **SSE cross-talk** — isolate HTTP agent per streaming request to prevent SSE chunk routing to wrong connections. Closes #46.
+- **Tool re-selection** — restore selected tools when re-selection is skipped for read-only calls.
+
+---
+
+## [5.11.0] — 2026-04-06
+
+### Added
+- **Semantic history via RAG** — `IHistoryMemory` ring buffer + `IHistorySummarizer` for LLM-based turn summarization. `history-upsert` pipeline stage stores summaries. `ContextAssembler` injects Recent Actions and Relevant History. Closes #49.
+
+---
+
+## [5.9.1] — 2026-04-06
+
+### Fixed
+- **Pipeline stream reset** — `ToolLoopHandler` now handles mid-stream reset chunks (discards accumulated state and restarts accumulation).
+
+---
+
+## [5.9.0] — 2026-04-06
+
+### Added
+- **Mid-stream retry** — `RetryLlm` supports retrying on mid-stream errors. Stream emits a `reset` chunk before re-sending content.
+- **HTTPS keepAlive agent** — SAP AI SDK streaming uses dedicated `https.Agent` for connection management.
+
+### Fixed
+- **SAP AI SDK streaming** — handle stream reset chunk in SmartAgent tool-loop.
+
+---
+
 ## [5.8.1] — 2026-04-06
 
 ### Fixed
