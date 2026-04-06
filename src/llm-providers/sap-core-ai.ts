@@ -8,6 +8,7 @@
  * - Agent → SapCoreAIProvider → OrchestrationClient → SAP AI Core → External LLM
  */
 
+import https from 'node:https';
 import {
   type ChatMessage,
   OrchestrationClient,
@@ -63,6 +64,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   readonly resourceGroup?: string;
   private log?: SapCoreAIConfig['log'];
   private readonly destination?: Record<string, unknown>;
+  private readonly httpsAgent: https.Agent;
   private modelsCache: IModelInfo[] | null = null;
   private modelsCacheExpiry = 0;
   private static readonly MODELS_CACHE_TTL_MS = 300_000; // 5 min
@@ -79,6 +81,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     this.model = config.model || 'gpt-4o';
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
+
+    this.httpsAgent = new https.Agent({
+      keepAlive: true,
+      timeout: 60_000,
+    });
 
     if (config.credentials) {
       this.destination = {
@@ -101,7 +108,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       const formatted = this.formatMessages(messages);
       const client = this.createClient(formatted, tools);
-      const response = await client.chatCompletion();
+      const response = await client.chatCompletion(undefined, {
+        httpsAgent: this.httpsAgent,
+      });
 
       const toolCalls = response.getToolCalls();
       const content = response.getContent() || '';
@@ -142,7 +151,12 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     try {
       const formatted = this.formatMessages(messages);
       const client = this.createClient(formatted, tools);
-      const streamResponse = await client.stream();
+      const streamResponse = await client.stream(
+        undefined,
+        undefined,
+        undefined,
+        { httpsAgent: this.httpsAgent },
+      );
 
       for await (const chunk of streamResponse.stream) {
         // TokenUsage is only available in the final chunk (final_result.usage)
