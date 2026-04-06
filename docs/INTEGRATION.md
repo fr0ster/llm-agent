@@ -1065,13 +1065,47 @@ const agent = new SmartAgentBuilder()
 The hook signature is: `onBeforeStream?: (content: string, ctx: StreamHookContext) => AsyncIterable<string>`
 `StreamHookContext` provides `{ messages: Message[] }`. The hook is optional — when omitted, the accumulated content is streamed as-is.
 
+### IToolResultCompactor (optional)
+
+Use `withToolResultCompactor()` to compact old tool results in the tool-loop message history. This prevents payload overflow when tool results are large (e.g. XML from ABAP tools).
+
+```ts
+import {
+  SmartAgentBuilder,
+  TruncatingToolResultCompactor,
+} from '@mcp-abap-adt/llm-agent';
+
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withToolResultCompactor(new TruncatingToolResultCompactor({
+    keep: 3,           // keep last 3 tool results full (default: 3)
+    threshold: 300,    // truncate results longer than 300 chars (default: 300)
+    previewLength: 200, // keep first 200 chars in truncated results (default: 200)
+  }))
+  .build();
+```
+
+The interface:
+
+```ts
+interface IToolResultCompactor {
+  compact(messages: Message[], currentIteration: number): Message[];
+}
+```
+
+Called before each LLM call in the tool-loop (starting from iteration 1). When not configured, no compaction occurs — tool results are sent in full.
+
+**Built-in implementation:** `TruncatingToolResultCompactor` keeps the last `keep` tool-result messages at full length. Older tool results exceeding `threshold` chars are truncated to `previewLength` chars with a truncation notice.
+
+**Custom implementation:** Implement `IToolResultCompactor` for domain-specific compaction (e.g. extracting key fields from XML, summarizing via LLM).
+
 ### Full example
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
 import {
   ToolCache, SessionManager, InMemoryMetrics,
-  OllamaEmbedder, QdrantRag,
+  OllamaEmbedder, QdrantRag, TruncatingToolResultCompactor,
 } from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
@@ -1121,6 +1155,7 @@ const handle = await new SmartAgentBuilder({
   .withQueryExpansion(true)          // expand queries with synonyms
   .withShowReasoning(false)
   .withHeartbeatInterval(3000)
+  .withToolResultCompactor(new TruncatingToolResultCompactor()) // compact old tool results to prevent payload overflow
   .build();
 
 // Use the agent
