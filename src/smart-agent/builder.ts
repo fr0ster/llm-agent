@@ -85,6 +85,8 @@ export interface BuilderMcpConfig {
   command?: string;
   /** stdio: command arguments */
   args?: string[];
+  /** HTTP headers (e.g. x-sap-destination for reverse proxy routing) */
+  headers?: Record<string, string>;
 }
 
 export interface BuilderPromptsConfig {
@@ -666,6 +668,7 @@ export class SmartAgentBuilder {
             wrapper = new MCPClientWrapper({
               transport: 'auto',
               url: mcpCfg.url,
+              headers: mcpCfg.headers,
             });
           }
           await wrapper.connect();

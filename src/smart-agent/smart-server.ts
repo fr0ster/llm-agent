@@ -77,6 +77,7 @@ export interface SmartServerMcpConfig {
   url?: string;
   command?: string;
   args?: string[];
+  headers?: Record<string, string>;
 }
 
 export interface SmartServerAgentConfig {
