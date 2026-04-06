@@ -5,25 +5,20 @@ mode: smart
 pipeline:
   llm:
     main:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
+      provider: sap-ai-sdk
+      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
       temperature: 0.7
-      maxTokens: 8192
+      maxTokens: 32768
     classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
+      provider: sap-ai-sdk
+      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
       temperature: 0.1
 
   mcp:
     - type: http
-      url: ${MCP_ENDPOINT}
+      url: ${MCP_ENDPOINT:-http://localhost:8080/mcp/stream/http}
+      headers:
+        x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
 
   rag:
     facts:
@@ -52,6 +47,10 @@ agent:
   streamMode: final
   refreshToolsPerIteration: false
   toolReselectPerIteration: true
+  retry:
+    maxAttempts: 3
+    retryOnMidStream:
+      - 'SSE stream'
 
 log: smart-server.log
 logDir: sessions

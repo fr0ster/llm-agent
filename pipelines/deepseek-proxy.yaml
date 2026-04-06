@@ -23,7 +23,9 @@ pipeline:
 
   mcp:
     - type: http
-      url: ${MCP_ENDPOINT}
+      url: ${MCP_ENDPOINT:-http://localhost:8080/mcp/stream/http}
+      headers:
+        x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
 
   rag:
     facts:

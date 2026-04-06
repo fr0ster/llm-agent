@@ -61,6 +61,7 @@ export interface LlmStreamChunk {
   finishReason?: LlmFinishReason;
   usage?: LlmUsage & {
     models?: Record<string, ModelUsageEntry>;
+    components?: Record<string, ModelUsageEntry>;
   };
   /** Periodic heartbeat emitted while an MCP tool is executing. */
   heartbeat?: ToolHeartbeat;
