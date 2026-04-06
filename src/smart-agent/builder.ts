@@ -29,10 +29,14 @@ import {
   ContextAssembler,
   type ContextAssemblerConfig,
 } from './context/context-assembler.js';
+import { HistoryMemory } from './history/history-memory.js';
+import { HistorySummarizer } from './history/history-summarizer.js';
 import type { ILlmApiAdapter } from './interfaces/api-adapter.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
+import type { IHistoryMemory } from './interfaces/history-memory.js';
+import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
@@ -184,6 +188,8 @@ export class SmartAgentBuilder {
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
   private _connectionStrategy?: IMcpConnectionStrategy;
+  private _historySummarizer?: IHistorySummarizer;
+  private _historyMemory?: IHistoryMemory;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -352,6 +358,18 @@ export class SmartAgentBuilder {
   /** Set an MCP connection strategy for dynamic client management. */
   withMcpConnectionStrategy(strategy: IMcpConnectionStrategy): this {
     this._connectionStrategy = strategy;
+    return this;
+  }
+
+  /** Override the history summarizer used for semantic history compression. */
+  withHistorySummarizer(summarizer: IHistorySummarizer): this {
+    this._historySummarizer = summarizer;
+    return this;
+  }
+
+  /** Override the history memory store used for semantic history retrieval. */
+  withHistoryMemory(memory: IHistoryMemory): this {
+    this._historyMemory = memory;
     return this;
   }
 
@@ -709,6 +727,27 @@ export class SmartAgentBuilder {
     const assembler: IContextAssembler =
       this._assembler ?? new ContextAssembler(assemblerCfg);
 
+    // ---- History memory & summarizer ----------------------------------------
+    let historyMemory: IHistoryMemory | undefined;
+    let historySummarizer: IHistorySummarizer | undefined;
+
+    if (agentCfg.semanticHistoryEnabled) {
+      historyMemory =
+        this._historyMemory ??
+        new HistoryMemory({
+          maxSize: agentCfg.historyRecencyWindow ?? 3,
+        });
+      const summarizerLlm = this._helperLlm ?? mainLlm;
+      historySummarizer =
+        this._historySummarizer ??
+        new HistorySummarizer(
+          summarizerLlm,
+          agentCfg.historyTurnSummaryPrompt
+            ? { prompt: agentCfg.historyTurnSummaryPrompt }
+            : undefined,
+        );
+    }
+
     // ---- Plugin loader (optional) -------------------------------------------
     let loadedPlugins: import('./plugins/types.js').LoadedPlugins | undefined;
     if (this._pluginLoader) {
@@ -810,6 +849,8 @@ export class SmartAgentBuilder {
           : {}),
         ...(this._embedder ? { embedder: this._embedder } : {}),
         ...(connectionStrategy ? { connectionStrategy } : {}),
+        ...(historyMemory ? { historyMemory } : {}),
+        ...(historySummarizer ? { historySummarizer } : {}),
         requestLogger,
       },
       agentCfg,

@@ -25,6 +25,8 @@ import type {
 import type { IToolCache } from '../cache/types.js';
 import type { IContextAssembler } from '../interfaces/assembler.js';
 import type { ISubpromptClassifier } from '../interfaces/classifier.js';
+import type { IHistoryMemory } from '../interfaces/history-memory.js';
+import type { IHistorySummarizer } from '../interfaces/history-summarizer.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
@@ -92,6 +94,8 @@ export interface PipelineContext {
   readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
   readonly embedder: IEmbedder | undefined;
+  readonly historyMemory: IHistoryMemory | undefined;
+  readonly historySummarizer: IHistorySummarizer | undefined;
 
   // -- Mutable state (populated by stages) ----------------------------------
 

@@ -5,6 +5,8 @@ import type { IToolCache } from './cache/types.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
+import type { IHistoryMemory } from './interfaces/history-memory.js';
+import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
@@ -101,6 +103,8 @@ export interface SmartAgentDeps {
   /** Shared embedder for RAG queries. When set, creates memoized IQueryEmbedding per request. */
   embedder?: IEmbedder;
   connectionStrategy?: IMcpConnectionStrategy;
+  historyMemory?: IHistoryMemory;
+  historySummarizer?: IHistorySummarizer;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -1811,6 +1815,8 @@ export class SmartAgent {
       pendingToolResults: this.pendingToolResults,
       skillManager: this.deps.skillManager,
       embedder: this.deps.embedder,
+      historyMemory: this.deps.historyMemory,
+      historySummarizer: this.deps.historySummarizer,
 
       // Mutable state
       inputText: text,
