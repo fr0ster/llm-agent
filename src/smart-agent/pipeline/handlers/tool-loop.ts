@@ -307,7 +307,7 @@ export class ToolLoopHandler implements IStageHandler {
 
       // Compact old tool results to prevent payload overflow on later iterations
       if (iteration > 0 && ctx.toolResultCompactor) {
-        messages = ctx.toolResultCompactor.compact(messages, iteration);
+        messages = await ctx.toolResultCompactor.compact(messages, iteration);
       }
 
       ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
