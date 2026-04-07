@@ -109,6 +109,7 @@ export type {
   IHistorySummarizer,
 } from './smart-agent/interfaces/history-summarizer.js';
 export type { ILlm } from './smart-agent/interfaces/llm.js';
+export type { ILlmCallStrategy } from './smart-agent/interfaces/llm-call-strategy.js';
 export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
 export type {
   ConnectionStrategyOptions,
@@ -213,6 +214,9 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
+export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-strategy.js';
+export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
+export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export { TruncatingToolResultCompactor } from './smart-agent/policy/truncating-tool-result-compactor.js';
 export {
   type EmbedderResolutionConfig,

@@ -8,6 +8,7 @@ import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IHistoryMemory } from './interfaces/history-memory.js';
 import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
 import type { ILlm } from './interfaces/llm.js';
+import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IEmbedder, IRag } from './interfaces/rag.js';
@@ -28,6 +29,7 @@ import type {
   Subprompt,
   TimingEntry,
 } from './interfaces/types.js';
+import { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 
 export {
   type AgentCallOptions,
@@ -107,6 +109,7 @@ export interface SmartAgentDeps {
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   toolResultCompactor?: IToolResultCompactor;
+  llmCallStrategy?: ILlmCallStrategy;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -131,8 +134,6 @@ export interface SmartAgentConfig {
   sessionTokenBudget?: number;
   /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
   heartbeatIntervalMs?: number;
-  /** Use chat() instead of streamChat() in tool-loop. Default: true (streaming). */
-  toolLoopStreaming?: boolean;
 
   // -- Pipeline stage toggles -----------------------------------------------
 
@@ -208,6 +209,7 @@ export class SmartAgent {
   private readonly sessionManager: ISessionManager;
   private readonly pendingToolResults: PendingToolResultsRegistry;
   private readonly requestLogger: IRequestLogger;
+  private readonly defaultLlmCallStrategy: ILlmCallStrategy;
   private _activeClients: IMcpClient[];
 
   constructor(
@@ -228,6 +230,8 @@ export class SmartAgent {
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
     this.requestLogger = deps.requestLogger ?? new NoopRequestLogger();
+    this.defaultLlmCallStrategy =
+      deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
     this._activeClients = [...deps.mcpClients];
   }
 
@@ -1822,6 +1826,7 @@ export class SmartAgent {
       historyMemory: this.deps.historyMemory,
       historySummarizer: this.deps.historySummarizer,
       toolResultCompactor: this.deps.toolResultCompactor,
+      llmCallStrategy: this.deps.llmCallStrategy ?? this.defaultLlmCallStrategy,
 
       // Mutable state
       inputText: text,
