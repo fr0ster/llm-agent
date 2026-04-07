@@ -1200,7 +1200,12 @@ export class SmartAgent {
       });
       this.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
-      const stream = this.deps.mainLlm.streamChat(messages, currentTools, opts);
+      const stream = this.defaultLlmCallStrategy.call(
+        this.deps.mainLlm,
+        messages,
+        currentTools,
+        opts,
+      );
       let content = '';
       let finishReason: LlmFinishReason | undefined;
       const toolCallsMap = new Map<
