@@ -216,7 +216,12 @@ export {
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
 export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-strategy.js';
+export {
+  LlmToolResultCompactor,
+  type LlmToolResultCompactorConfig,
+} from './smart-agent/policy/llm-tool-result-compactor.js';
 export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
+export { RagOnlyToolResultCompactor } from './smart-agent/policy/rag-only-tool-result-compactor.js';
 export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export { TruncatingToolResultCompactor } from './smart-agent/policy/truncating-tool-result-compactor.js';
 export {
