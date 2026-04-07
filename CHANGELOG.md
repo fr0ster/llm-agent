@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.17.4] — 2026-04-07
+
+### Changed
+- **Documentation** — added per-provider `streaming: false` YAML examples to INTEGRATION.md and SAP_AI_CORE.md.
+
+---
+
 ## [5.17.3] — 2026-04-07
 
 ### Added
