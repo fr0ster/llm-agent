@@ -47,6 +47,7 @@ import {
   isBatchEmbedder,
   supportsPrecomputed,
 } from './interfaces/rag.js';
+import type { ILlmRateLimiter } from './interfaces/rate-limiter.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type { IToolResultCompactor } from './interfaces/tool-result-compactor.js';
@@ -74,6 +75,7 @@ import {
 } from './resilience/circuit-breaker.js';
 import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
 import { FallbackRag } from './resilience/fallback-rag.js';
+import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';
 import type { ITracer } from './tracer/types.js';
@@ -202,6 +204,7 @@ export class SmartAgentBuilder {
   private _historyMemory?: IHistoryMemory;
   private _toolResultCompactor?: IToolResultCompactor;
   private _llmCallStrategy?: ILlmCallStrategy;
+  private _rateLimiter?: ILlmRateLimiter;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -382,6 +385,12 @@ export class SmartAgentBuilder {
   /** Set a strategy for compacting old tool results in tool-loop history. */
   withToolResultCompactor(compactor: IToolResultCompactor): this {
     this._toolResultCompactor = compactor;
+    return this;
+  }
+
+  /** Set a rate limiter to throttle outbound LLM requests. */
+  withRateLimiter(limiter: ILlmRateLimiter): this {
+    this._rateLimiter = limiter;
     return this;
   }
 
@@ -877,8 +886,18 @@ export class SmartAgentBuilder {
     };
 
     // ---- Retry wrapping (outside circuit breaker) ----------------------------
-    if (agentCfg.retry) {
-      wrappedMainLlm = new RetryLlm(wrappedMainLlm, agentCfg.retry);
+    // Enable retry by default with sensible defaults; explicit config overrides.
+    const retryOpts = agentCfg.retry ?? {
+      maxAttempts: 3,
+      backoffMs: 2000,
+      retryOn: [429, 500, 502, 503],
+      retryOnMidStream: [],
+    };
+    wrappedMainLlm = new RetryLlm(wrappedMainLlm, retryOpts);
+
+    // ---- Rate limiter wrapping (outermost — retry attempts also throttled) ----
+    if (this._rateLimiter) {
+      wrappedMainLlm = new RateLimiterLlm(wrappedMainLlm, this._rateLimiter);
     }
 
     // ---- Classifier -------------------------------------------------------

@@ -7,6 +7,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.16.0] — 2026-04-07
+
+### Added
+- **ILlmCallStrategy** — strategy pattern for tool-loop LLM calls. Three implementations: `StreamingLlmCallStrategy` (default, streamChat), `NonStreamingLlmCallStrategy` (chat, single chunk), `FallbackLlmCallStrategy` (streaming with auto-fallback to non-streaming on error, logs cause). Injected via `builder.withLlmCallStrategy()`. Replaces `toolLoopStreaming` config. Closes #64.
+- **Rate limiter** — new `ILlmRateLimiter` interface and `TokenBucketRateLimiter` implementation (configurable requests/window). `RateLimiterLlm` decorator wraps outermost in the chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`. Injected via `builder.withRateLimiter()`. Closes #65.
+- **RetryLlm enabled by default** — builder now wraps mainLlm with `RetryLlm` (3 attempts, 2s backoff, retry on 429/500/502/503) even without explicit retry config.
+
+### Fixed
+- **MCP Accept header** — `MCPClientWrapper` now sends `Accept: application/json, text/event-stream` per MCP spec. Closes #63.
+
+### Removed
+- **`toolLoopStreaming` config** — replaced by `ILlmCallStrategy`. Use `builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy())` for non-streaming mode.
+
+---
+
 ## [5.15.0] — 2026-04-07
 
 ### Added
