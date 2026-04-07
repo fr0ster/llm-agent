@@ -39,6 +39,13 @@ export interface ContextAssemblerConfig {
    * Unknown keys are title-cased automatically.
    */
   sectionHeaders?: Record<string, string>;
+  /**
+   * Maximum number of recent messages to include from client history.
+   * Only the last N non-system messages are passed to the LLM.
+   * Older messages are excluded — they are available via RAG if needed.
+   * When undefined, all messages are included (backward compatible).
+   */
+  historyRecencyWindow?: number;
 }
 
 export const DEFAULT_REASONING_INSTRUCTION = `IMPORTANT: Always start your response with a brief <reasoning> block.
@@ -182,6 +189,7 @@ export class ContextAssembler implements IContextAssembler {
   private readonly showReasoning: boolean;
   private readonly reasoningInstruction: string | undefined;
   private readonly sectionHeaders: Record<string, string>;
+  private readonly historyRecencyWindow: number | undefined;
 
   constructor(config?: ContextAssemblerConfig) {
     this.maxTokens = config?.maxTokens;
@@ -193,6 +201,7 @@ export class ContextAssembler implements IContextAssembler {
       ...DEFAULT_SECTION_HEADERS,
       ...config?.sectionHeaders,
     };
+    this.historyRecencyWindow = config?.historyRecencyWindow;
   }
 
   async assemble(
@@ -268,8 +277,16 @@ export class ContextAssembler implements IContextAssembler {
         }
       }
 
-      if (regularMessages.length > 0) {
-        messages.push(...regularMessages);
+      // Apply recency window — keep only the last N messages from client history.
+      // Older messages are excluded; they are available via RAG stores if needed.
+      const windowedMessages =
+        this.historyRecencyWindow !== undefined &&
+        regularMessages.length > this.historyRecencyWindow
+          ? regularMessages.slice(-this.historyRecencyWindow)
+          : regularMessages;
+
+      if (windowedMessages.length > 0) {
+        messages.push(...windowedMessages);
       } else {
         messages.push({ role: 'user', content: action.text });
       }
