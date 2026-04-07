@@ -42,6 +42,57 @@ import {
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
+function summarizeIterationMessages(
+  messages: Message[],
+): Record<string, unknown> {
+  const totalChars = messages.reduce((sum, msg) => {
+    const content =
+      typeof msg.content === 'string'
+        ? msg.content
+        : JSON.stringify(msg.content ?? '');
+    return sum + content.length;
+  }, 0);
+
+  return {
+    messageCount: messages.length,
+    totalChars,
+    roles: messages.map((msg, index) => ({
+      index,
+      role: msg.role,
+      contentLength:
+        typeof msg.content === 'string'
+          ? msg.content.length
+          : JSON.stringify(msg.content ?? '').length,
+      hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+      toolCallCount:
+        'tool_calls' in msg && Array.isArray(msg.tool_calls)
+          ? msg.tool_calls.length
+          : 0,
+      toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+    })),
+    tail: messages.slice(-6).map((msg, index) => {
+      const content =
+        typeof msg.content === 'string'
+          ? msg.content
+          : JSON.stringify(msg.content ?? '');
+      return {
+        index: messages.length - Math.min(messages.length, 6) + index,
+        role: msg.role,
+        preview:
+          content.length > 240
+            ? `${content.slice(0, 240)}...[truncated]`
+            : content,
+        hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+        toolCallNames:
+          'tool_calls' in msg && Array.isArray(msg.tool_calls)
+            ? msg.tool_calls.map((tc) => tc.function?.name || '')
+            : [],
+        toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+      };
+    }),
+  };
+}
+
 export class ToolLoopHandler implements IStageHandler {
   async execute(
     ctx: PipelineContext,
@@ -308,6 +359,32 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.options?.sessionLogger?.logStep(`llm_request_iter_${iteration + 1}`, {
         messages,
         tools: currentTools,
+      });
+      const iterationMessageSummary = summarizeIterationMessages(messages);
+      const looksLikeFinalPass = messages.some(
+        (msg) =>
+          msg.role === 'tool' ||
+          ('tool_calls' in msg &&
+            Array.isArray(msg.tool_calls) &&
+            msg.tool_calls.length > 0),
+      );
+      ctx.options?.sessionLogger?.logStep('llm_request_iter_context_summary', {
+        iteration: iteration + 1,
+        toolCount: currentTools.length,
+        looksLikeFinalPass,
+        summary: iterationMessageSummary,
+      });
+      ctx.logger?.log({
+        type: 'warning',
+        traceId: ctx.options?.trace?.traceId ?? 'tool-loop',
+        message: `tool-loop iteration ${iteration + 1} context summary ${JSON.stringify(
+          {
+            iteration: iteration + 1,
+            toolCount: currentTools.length,
+            looksLikeFinalPass,
+            summary: iterationMessageSummary,
+          },
+        )}`,
       });
 
       const llmSpan = ctx.tracer.startSpan('smart_agent.llm_call', {
