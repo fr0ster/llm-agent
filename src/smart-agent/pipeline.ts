@@ -23,6 +23,8 @@ export interface PipelineLlmProviderConfig {
   resourceGroup?: string;
   /** Programmatic OAuth2 credentials for SAP AI Core (bypasses AICORE_SERVICE_KEY env var) */
   credentials?: SapAICoreCredentials;
+  /** When false, streamChat() is replaced with chat(). Default: true. */
+  streaming?: boolean;
 }
 
 export interface PipelineRagStoreConfig {

@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.17.3] — 2026-04-07
+
+### Added
+- **Per-provider `streaming` flag** — `streaming: false` in pipeline LLM config disables streaming for that specific provider. `makeLlm()` wraps the LLM with `NonStreamingLlm` adapter when `streaming: false`. Enables mixed configurations (e.g. SAP AI Core non-streaming + DeepSeek streaming).
+
+### Fixed
+- **`llmCallStrategy` in default flow** — default hardcoded tool-loop now delegates LLM calls through `ILlmCallStrategy` instead of hardcoding `streamChat()`. Closes #68, closes #67.
+
+---
+
 ## [5.17.2] — 2026-04-07
 
 ### Changed
