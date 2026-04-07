@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.17.2] — 2026-04-07
+
+### Changed
+- **Documentation** — added YAML `llmCallStrategy` configuration example to INTEGRATION.md.
+
+---
+
 ## [5.17.1] — 2026-04-07
 
 ### Added

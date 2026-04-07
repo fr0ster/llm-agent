@@ -1018,6 +1018,15 @@ interface ILlmCallStrategy {
 }
 ```
 
+### YAML configuration
+
+```yaml
+agent:
+  llmCallStrategy: non-streaming   # streaming | non-streaming | fallback
+```
+
+When set in YAML, SmartServer automatically injects the corresponding strategy into the builder. No programmatic setup needed.
+
 ## ILlmRateLimiter — Rate Limiting
 
 Throttle outbound LLM requests to stay within provider rate limits.
