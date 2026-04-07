@@ -12,6 +12,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - **SAP AI Core streaming diagnostics** — `SapCoreAIProvider.streamChat()` now logs stream lifecycle events, compact message summaries, per-chunk progress, and enriched failure metadata (`streamOpened`, emitted chunk counts, status/response payload, cause/code) when a logger is injected. This is intended to diagnose SAP AI Core SSE failures that happen after successful tool execution.
 - **Tool-loop iteration context logging** — the pipeline tool-loop now emits a compact context snapshot before each LLM iteration, including message roles, content lengths, tail previews, tool-call markers, and a heuristic flag for final post-tool-call passes. This makes it easier to correlate SAP AI Core streaming failures with the exact final context sent to the LLM.
+- **YAML `llmCallStrategy` config** — `agent.llmCallStrategy` selects tool-loop LLM call strategy: `streaming` (default), `non-streaming`, or `fallback`. For SAP AI Core with unstable streaming, set `non-streaming` to use `chat()` instead of `streamChat()`.
 
 ### Changed
 - **SAP AI Core operational guidance** — documentation now recommends non-streaming SAP AI Core usage for production when the final streaming response is unstable, while treating streaming as a controlled diagnostic path.
