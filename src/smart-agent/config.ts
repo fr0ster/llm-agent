@@ -98,10 +98,11 @@ agent:
 # pipeline:
 #   llm:
 #     main:
-#       provider: deepseek            # deepseek | openai | anthropic
+#       provider: deepseek            # deepseek | openai | anthropic | sap-ai-sdk
 #       apiKey: \${DEEPSEEK_API_KEY}
 #       model: deepseek-chat
 #       temperature: 0.7
+#       streaming: true               # false to disable streaming for this provider
 #     classifier:                     # optional; if absent, main config is reused
 #       provider: deepseek
 #       apiKey: \${DEEPSEEK_API_KEY}

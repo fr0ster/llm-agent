@@ -19,6 +19,7 @@ import {
 } from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
+import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 import type { ILlm } from './interfaces/llm.js';
 import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
 import { builtInEmbedderFactories } from './rag/embedder-factories.js';
@@ -39,6 +40,8 @@ export interface LlmProviderConfig {
   maxTokens?: number;
   resourceGroup?: string;
   credentials?: SapAICoreCredentials;
+  /** When false, streamChat() is replaced with chat() yielding a single chunk. Default: true. */
+  streaming?: boolean;
 }
 
 /**
@@ -54,6 +57,8 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
   // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
 
+  let llm: ILlm;
+
   switch (cfg.provider) {
     case 'deepseek': {
       const provider = new DeepSeekProvider({
@@ -66,10 +71,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new LlmAdapter(agent, {
+      llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
       });
+      break;
     }
     case 'openai': {
       const provider = new OpenAIProvider({
@@ -82,10 +88,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new LlmAdapter(agent, {
+      llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
       });
+      break;
     }
     case 'anthropic': {
       const provider = new AnthropicProvider({
@@ -98,10 +105,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new LlmAdapter(agent, {
+      llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
       });
+      break;
     }
     case 'sap-ai-sdk': {
       const provider = new SapCoreAIProvider({
@@ -126,16 +134,24 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         llmProvider: provider,
         mcpClient: dummyMcp,
       });
-      return new LlmAdapter(agent, {
+      llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
       });
+      break;
     }
     default: {
       const _exhaustive: never = cfg.provider;
       throw new Error(`Unknown LLM provider: ${_exhaustive}`);
     }
   }
+
+  // Wrap with non-streaming adapter when streaming is disabled for this provider
+  if (cfg.streaming === false) {
+    llm = new NonStreamingLlm(llm);
+  }
+
+  return llm;
 }
 
 /**
