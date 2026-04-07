@@ -138,6 +138,7 @@ export {
   isBatchEmbedder,
   supportsPrecomputed,
 } from './smart-agent/interfaces/rag.js';
+export type { ILlmRateLimiter } from './smart-agent/interfaces/rate-limiter.js';
 // Request Logger
 export type {
   IRequestLogger,
@@ -277,10 +278,15 @@ export {
 export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
 export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
 export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
+export { RateLimiterLlm } from './smart-agent/resilience/rate-limiter-llm.js';
 export {
   RetryLlm,
   type RetryOptions,
 } from './smart-agent/resilience/retry-llm.js';
+export {
+  type TokenBucketConfig,
+  TokenBucketRateLimiter,
+} from './smart-agent/resilience/token-bucket-rate-limiter.js';
 export { NoopSessionManager } from './smart-agent/session/noop-session-manager.js';
 export { SessionManager } from './smart-agent/session/session-manager.js';
 // Session Manager
