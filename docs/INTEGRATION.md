@@ -1027,6 +1027,25 @@ agent:
 
 When set in YAML, SmartServer automatically injects the corresponding strategy into the builder. No programmatic setup needed.
 
+### Per-provider streaming control
+
+For multi-model pipelines, control streaming per provider with the `streaming` flag:
+
+```yaml
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: gpt-4o
+      streaming: false          # non-streaming for SAP AI Core
+    classifier:
+      provider: deepseek
+      model: deepseek-chat
+      streaming: true           # streaming for DeepSeek (default)
+```
+
+When `streaming: false`, `makeLlm()` wraps the provider with `NonStreamingLlm` — `streamChat()` is replaced with `chat()` yielding a single chunk. This is independent of `llmCallStrategy` and works per-provider.
+
 ## ILlmRateLimiter — Rate Limiting
 
 Throttle outbound LLM requests to stay within provider rate limits.
