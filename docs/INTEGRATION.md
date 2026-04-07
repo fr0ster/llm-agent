@@ -1120,58 +1120,15 @@ const agent = new SmartAgentBuilder()
 The hook signature is: `onBeforeStream?: (content: string, ctx: StreamHookContext) => AsyncIterable<string>`
 `StreamHookContext` provides `{ messages: Message[] }`. The hook is optional — when omitted, the accumulated content is streamed as-is.
 
-### IToolResultCompactor (optional)
+### Tool-loop context design
 
-Use `withToolResultCompactor()` to compact old tool results in the tool-loop message history. This prevents payload overflow when tool results are large (e.g. XML from ABAP tools).
+The tool-loop passes **full tool results** between iterations without compaction. This is by design:
 
-The interface:
+- **Assistant messages** (tool calls) — LLM's decisions, must be preserved
+- **Tool results** — MCP server responses, must not be modified or truncated. The LLM needs the full result to make the next decision
+- **If a tool result is too large** for the provider's payload limit — that's the MCP server's responsibility to fix (e.g. return TSV instead of XML, paginate results)
 
-```ts
-interface IToolResultCompactor {
-  compact(messages: Message[], currentIteration: number): Promise<Message[]> | Message[];
-}
-```
-
-Called before each LLM call in the tool-loop (starting from iteration 1). When not configured, no compaction occurs — tool results are sent in full. Supports both sync and async implementations.
-
-Three built-in strategies:
-
-**1. `TruncatingToolResultCompactor`** — cheap, fast, no LLM cost. Blindly truncates old results to `previewLength` chars. Use as a fallback when LLM summarization is not available.
-
-```ts
-import { TruncatingToolResultCompactor } from '@mcp-abap-adt/llm-agent';
-
-builder.withToolResultCompactor(new TruncatingToolResultCompactor({
-  keep: 3,           // keep last 3 tool results full (default: 3)
-  threshold: 300,    // truncate results longer than 300 chars (default: 300)
-  previewLength: 200, // keep first 200 chars in truncated results (default: 200)
-}));
-```
-
-**2. `LlmToolResultCompactor`** — uses helper LLM to create meaningful summaries. Only summarizes results exceeding `threshold` (default 1024 chars). Small results and the last `keep` results pass through unchanged.
-
-```ts
-import { LlmToolResultCompactor } from '@mcp-abap-adt/llm-agent';
-
-builder.withToolResultCompactor(new LlmToolResultCompactor(helperLlm, {
-  threshold: 1024,   // summarize results > 1KB (default: 1024)
-  keep: 3,           // keep last 3 full (default: 3)
-}));
-```
-
-The LLM produces a one-line summary preserving object names, counts, and status. Falls back to truncation on LLM failure.
-
-**3. `RagOnlyToolResultCompactor`** — removes old tool results entirely, replacing them with `[result removed — available via history]`. Use when all history is managed via RAG stores — the tool-loop context contains only recent actions.
-
-```ts
-import { RagOnlyToolResultCompactor } from '@mcp-abap-adt/llm-agent';
-
-builder.withToolResultCompactor(new RagOnlyToolResultCompactor({
-  keep: 1,           // keep only the last tool result (default: 1)
-}));
-```
-
-**Custom implementation:** Implement `IToolResultCompactor` for domain-specific compaction (e.g. extracting structured fields from XML, applying provider-specific size limits).
+History between user requests is managed separately via `HistoryMemory` (ring buffer) and RAG stores — not by the tool-loop.
 
 ### Full example
 
@@ -1179,7 +1136,7 @@ builder.withToolResultCompactor(new RagOnlyToolResultCompactor({
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
 import {
   ToolCache, SessionManager, InMemoryMetrics,
-  OllamaEmbedder, QdrantRag, TruncatingToolResultCompactor,
+  OllamaEmbedder, QdrantRag,
 } from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
@@ -1229,7 +1186,6 @@ const handle = await new SmartAgentBuilder({
   .withQueryExpansion(true)          // expand queries with synonyms
   .withShowReasoning(false)
   .withHeartbeatInterval(3000)
-  .withToolResultCompactor(new TruncatingToolResultCompactor()) // compact old tool results to prevent payload overflow
   .build();
 
 // Use the agent

@@ -50,7 +50,6 @@ import {
 import type { ILlmRateLimiter } from './interfaces/rate-limiter.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
-import type { IToolResultCompactor } from './interfaces/tool-result-compactor.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
@@ -202,7 +201,6 @@ export class SmartAgentBuilder {
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
-  private _toolResultCompactor?: IToolResultCompactor;
   private _llmCallStrategy?: ILlmCallStrategy;
   private _rateLimiter?: ILlmRateLimiter;
 
@@ -379,12 +377,6 @@ export class SmartAgentBuilder {
   /** Override the history summarizer used for semantic history compression. */
   withHistorySummarizer(summarizer: IHistorySummarizer): this {
     this._historySummarizer = summarizer;
-    return this;
-  }
-
-  /** Set a strategy for compacting old tool results in tool-loop history. */
-  withToolResultCompactor(compactor: IToolResultCompactor): this {
-    this._toolResultCompactor = compactor;
     return this;
   }
 
@@ -1062,9 +1054,6 @@ export class SmartAgentBuilder {
         ...(connectionStrategy ? { connectionStrategy } : {}),
         ...(historyMemory ? { historyMemory } : {}),
         ...(historySummarizer ? { historySummarizer } : {}),
-        ...(this._toolResultCompactor
-          ? { toolResultCompactor: this._toolResultCompactor }
-          : {}),
         ...(this._llmCallStrategy
           ? { llmCallStrategy: this._llmCallStrategy }
           : {}),

@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.16.2] — 2026-04-07
+
+### Removed
+- **IToolResultCompactor** — removed entirely. Tool-loop passes full tool results between iterations without compaction. Large tool results are the MCP server's responsibility to fix at source (e.g. TSV instead of XML). Compacting/truncating tool results hides the problem and breaks LLM context.
+
+---
+
 ## [5.16.0] — 2026-04-07
 
 ### Added
