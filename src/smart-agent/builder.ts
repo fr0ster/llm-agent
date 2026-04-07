@@ -905,6 +905,7 @@ export class SmartAgentBuilder {
       maxTokens: agentCfg.contextBudgetTokens,
       showReasoning: agentCfg.showReasoning,
       reasoningInstruction: this.cfg.prompts?.reasoning,
+      historyRecencyWindow: agentCfg.historyRecencyWindow,
     };
     if (this.cfg.prompts?.system)
       assemblerCfg.systemPromptPreamble = this.cfg.prompts.system;
