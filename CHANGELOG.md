@@ -12,7 +12,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - **ILlmCallStrategy** — strategy pattern for tool-loop LLM calls. Three implementations: `StreamingLlmCallStrategy` (default, streamChat), `NonStreamingLlmCallStrategy` (chat, single chunk), `FallbackLlmCallStrategy` (streaming with auto-fallback to non-streaming on error, logs cause). Injected via `builder.withLlmCallStrategy()`. Replaces `toolLoopStreaming` config. Closes #64.
 - **Rate limiter** — new `ILlmRateLimiter` interface and `TokenBucketRateLimiter` implementation (configurable requests/window). `RateLimiterLlm` decorator wraps outermost in the chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`. Injected via `builder.withRateLimiter()`. Closes #65.
+- **LlmToolResultCompactor** — uses helper LLM to create meaningful summaries of large tool results (> threshold, default 1KB). Only large results are summarized, small pass through. Closes #66.
+- **RagOnlyToolResultCompactor** — removes old tool results from context entirely. For RAG-managed history workflows where all history is retrieved at assembly time.
 - **RetryLlm enabled by default** — builder now wraps mainLlm with `RetryLlm` (3 attempts, 2s backoff, retry on 429/500/502/503) even without explicit retry config.
+- **Async IToolResultCompactor** — `compact()` now returns `Promise<Message[]> | Message[]` to support async LLM summarization.
 
 ### Fixed
 - **MCP Accept header** — `MCPClientWrapper` now sends `Accept: application/json, text/event-stream` per MCP spec. Closes #63.

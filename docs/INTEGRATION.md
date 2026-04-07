@@ -976,28 +976,60 @@ const { agent, close } = await new SmartAgentBuilder({ mcp: mcpConfigs })
 
 `close()` calls `strategy.dispose()`, which clears timers and closes underlying transport connections.
 
-## Non-streaming Tool Loop
+## ILlmCallStrategy — Tool Loop LLM Call Strategy
 
-When SAP AI Core Orchestration streaming is unreliable (e.g. HTTP 500 on 2nd iteration), disable streaming in the tool-loop:
+Controls how the tool-loop calls the LLM. Three built-in strategies:
 
-```yaml
-agent:
-  toolLoopStreaming: false
-```
-
-Or programmatically:
+**1. `StreamingLlmCallStrategy`** (default) — uses `streamChat()`. Chunks streamed to client in real-time.
 
 ```ts
-const handle = await new SmartAgentBuilder({
-  agent: { toolLoopStreaming: false },
-})
-  .withMainLlm(myLlm)
-  .build();
+import { StreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+builder.withLlmCallStrategy(new StreamingLlmCallStrategy());
 ```
 
-When `toolLoopStreaming: false`, the tool-loop calls `chat()` instead of `streamChat()`. The full response is yielded as a single chunk. SSE streaming to the client still works — the OpenAI adapter emulates incremental events from the complete response.
+**2. `NonStreamingLlmCallStrategy`** — uses `chat()`. Full response yielded as a single chunk. Use when streaming is unreliable.
 
-Default: `true` (streaming).
+```ts
+import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy());
+```
+
+**3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause.
+
+```ts
+import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+builder.withLlmCallStrategy(new FallbackLlmCallStrategy(logger));
+```
+
+The interface:
+
+```ts
+interface ILlmCallStrategy {
+  call(
+    llm: ILlm,
+    messages: Message[],
+    tools: LlmTool[],
+    options?: CallOptions,
+  ): AsyncIterable<Result<LlmStreamChunk, LlmError>>;
+}
+```
+
+## ILlmRateLimiter — Rate Limiting
+
+Throttle outbound LLM requests to stay within provider rate limits.
+
+```ts
+import { TokenBucketRateLimiter } from '@mcp-abap-adt/llm-agent';
+
+builder.withRateLimiter(new TokenBucketRateLimiter({
+  maxRequests: 10,     // max requests per window
+  windowMs: 60_000,    // window duration (default: 1 minute)
+}));
+```
+
+The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry attempts also respect the rate limit.
+
+`RetryLlm` is now enabled by default (3 attempts, 2s backoff, retry on 429/500/502/503).
 
 ## IMetrics / ITracer / ISessionManager / IToolCache
 
@@ -1092,35 +1124,54 @@ The hook signature is: `onBeforeStream?: (content: string, ctx: StreamHookContex
 
 Use `withToolResultCompactor()` to compact old tool results in the tool-loop message history. This prevents payload overflow when tool results are large (e.g. XML from ABAP tools).
 
-```ts
-import {
-  SmartAgentBuilder,
-  TruncatingToolResultCompactor,
-} from '@mcp-abap-adt/llm-agent';
-
-const handle = await new SmartAgentBuilder()
-  .withMainLlm(myLlm)
-  .withToolResultCompactor(new TruncatingToolResultCompactor({
-    keep: 3,           // keep last 3 tool results full (default: 3)
-    threshold: 300,    // truncate results longer than 300 chars (default: 300)
-    previewLength: 200, // keep first 200 chars in truncated results (default: 200)
-  }))
-  .build();
-```
-
 The interface:
 
 ```ts
 interface IToolResultCompactor {
-  compact(messages: Message[], currentIteration: number): Message[];
+  compact(messages: Message[], currentIteration: number): Promise<Message[]> | Message[];
 }
 ```
 
-Called before each LLM call in the tool-loop (starting from iteration 1). When not configured, no compaction occurs — tool results are sent in full.
+Called before each LLM call in the tool-loop (starting from iteration 1). When not configured, no compaction occurs — tool results are sent in full. Supports both sync and async implementations.
 
-**Built-in implementation:** `TruncatingToolResultCompactor` keeps the last `keep` tool-result messages at full length. Older tool results exceeding `threshold` chars are truncated to `previewLength` chars with a truncation notice.
+Three built-in strategies:
 
-**Custom implementation:** Implement `IToolResultCompactor` for domain-specific compaction (e.g. extracting key fields from XML, summarizing via LLM).
+**1. `TruncatingToolResultCompactor`** — cheap, fast, no LLM cost. Blindly truncates old results to `previewLength` chars. Use as a fallback when LLM summarization is not available.
+
+```ts
+import { TruncatingToolResultCompactor } from '@mcp-abap-adt/llm-agent';
+
+builder.withToolResultCompactor(new TruncatingToolResultCompactor({
+  keep: 3,           // keep last 3 tool results full (default: 3)
+  threshold: 300,    // truncate results longer than 300 chars (default: 300)
+  previewLength: 200, // keep first 200 chars in truncated results (default: 200)
+}));
+```
+
+**2. `LlmToolResultCompactor`** — uses helper LLM to create meaningful summaries. Only summarizes results exceeding `threshold` (default 1024 chars). Small results and the last `keep` results pass through unchanged.
+
+```ts
+import { LlmToolResultCompactor } from '@mcp-abap-adt/llm-agent';
+
+builder.withToolResultCompactor(new LlmToolResultCompactor(helperLlm, {
+  threshold: 1024,   // summarize results > 1KB (default: 1024)
+  keep: 3,           // keep last 3 full (default: 3)
+}));
+```
+
+The LLM produces a one-line summary preserving object names, counts, and status. Falls back to truncation on LLM failure.
+
+**3. `RagOnlyToolResultCompactor`** — removes old tool results entirely, replacing them with `[result removed — available via history]`. Use when all history is managed via RAG stores — the tool-loop context contains only recent actions.
+
+```ts
+import { RagOnlyToolResultCompactor } from '@mcp-abap-adt/llm-agent';
+
+builder.withToolResultCompactor(new RagOnlyToolResultCompactor({
+  keep: 1,           // keep only the last tool result (default: 1)
+}));
+```
+
+**Custom implementation:** Implement `IToolResultCompactor` for domain-specific compaction (e.g. extracting structured fields from XML, applying provider-specific size limits).
 
 ### Full example
 
