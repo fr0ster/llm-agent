@@ -1162,6 +1162,28 @@ The tool-loop passes **full tool results** between iterations without compaction
 
 History between user requests is managed separately via `HistoryMemory` (ring buffer) and RAG stores — not by the tool-loop.
 
+### History recency window
+
+By default, `ContextAssembler` passes the full client message history to the LLM. On multi-turn conversations this causes the LLM to re-process old context (e.g. re-analyzing a dump when the user just asks "show me that program").
+
+Set `historyRecencyWindow` to limit how many recent messages are included:
+
+```yaml
+agent:
+  historyRecencyWindow: 4    # only last 4 messages in LLM context
+```
+
+Or programmatically via `ContextAssemblerConfig`:
+
+```ts
+const assembler = new ContextAssembler({
+  historyRecencyWindow: 4,
+});
+builder.withAssembler(assembler);
+```
+
+When set, only the last N non-system messages from client history are passed to the LLM. Older messages are excluded — they remain available via RAG stores (`semanticHistoryEnabled`) if the LLM needs them. When not set, all messages are included (backward compatible).
+
 ### Full example
 
 ```ts

@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.18.0] — 2026-04-07
+
+### Added
+- **Context recency window** — `ContextAssembler` now respects `historyRecencyWindow` config. Only the last N non-system messages from client history are included in the LLM context. Older messages are excluded (available via RAG if needed). Prevents LLM from re-processing old context on follow-up requests. YAML: `agent.historyRecencyWindow: 4`. Backward compatible — when not set, all messages included. Closes #69.
+
+---
+
 ## [5.17.4] — 2026-04-07
 
 ### Changed
