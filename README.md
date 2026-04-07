@@ -28,6 +28,7 @@ See [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md) for connection instructions for
 
 - ✅ **Real Incremental Streaming:** True per-token streaming for both text and tool-call deltas.
 - ✅ **OpenAI SSE Compliance:** Fully compatible with official OpenAI SDKs and IDE plugins.
+- ✅ **Provider-Aware Operations:** SAP AI Core can be run in non-streaming mode for production stability while retaining detailed streaming diagnostics for investigation.
 - ✅ **Hybrid RAG Search:** Combines Vector similarity (semantic) with BM25 (lexical) for pinpoint accuracy in technical domains like SAP/ABAP.
 - ✅ **Multi-Intent Classification:** Automatically routes requests to `chat` (fast-path), `action` (tool-loop), or long-term memory (`fact`/`state`).
 - ✅ **Reasoning Mode:** Optional transparent thought process (`<reasoning>` blocks) to explain agent strategy.
@@ -111,6 +112,12 @@ agent:
   maxIterations: 10
   historyAutoSummarizeLimit: 15
 ```
+
+## SAP AI Core Note
+
+If you use `sap-ai-sdk` and see streaming failures after successful tool execution, prefer a non-streaming request path for production traffic. The package now includes detailed SAP AI Core streaming diagnostics and tool-loop iteration context logging to investigate those failures without relying on streaming in production.
+
+See [docs/SAP_AI_CORE.md](docs/SAP_AI_CORE.md) for the operational guidance and troubleshooting details.
 
 ## Development
 

@@ -994,12 +994,16 @@ import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
 builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy());
 ```
 
+For `sap-ai-sdk`, this is the recommended production strategy when SAP AI Core streaming is unstable after successful tool execution.
+
 **3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause.
 
 ```ts
 import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
 builder.withLlmCallStrategy(new FallbackLlmCallStrategy(logger));
 ```
+
+`FallbackLlmCallStrategy` is not a safe recovery mechanism when the provider already emitted content chunks to the client. For SAP AI Core, prefer `NonStreamingLlmCallStrategy` in production and treat streaming as a diagnostic path backed by provider logs and session-step context logs.
 
 The interface:
 
