@@ -103,6 +103,8 @@ export interface SmartServerAgentConfig {
   ragTranslationEnabled?: boolean;
   /** Whether to upsert classified subprompts to RAG stores. Default: true. */
   ragUpsertEnabled?: boolean;
+  /** LLM call strategy for tool-loop. 'streaming' (default) | 'non-streaming' | 'fallback'. */
+  llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
 }
 
 export interface SmartServerPromptsConfig {
@@ -417,6 +419,29 @@ export class SmartServer {
       resolveSkillManager(this.cfg.skills);
     if (skillManager) {
       builder = builder.withSkillManager(skillManager);
+    }
+
+    // LLM call strategy (from agent config)
+    const strategyName = this.cfg.agent?.llmCallStrategy;
+    if (strategyName) {
+      const { StreamingLlmCallStrategy } = await import(
+        './policy/streaming-llm-call-strategy.js'
+      );
+      const { NonStreamingLlmCallStrategy } = await import(
+        './policy/non-streaming-llm-call-strategy.js'
+      );
+      const { FallbackLlmCallStrategy } = await import(
+        './policy/fallback-llm-call-strategy.js'
+      );
+      const strategies = {
+        streaming: () => new StreamingLlmCallStrategy(),
+        'non-streaming': () => new NonStreamingLlmCallStrategy(),
+        fallback: () => new FallbackLlmCallStrategy(fileLogger),
+      };
+      const factory = strategies[strategyName];
+      if (factory) {
+        builder = builder.withLlmCallStrategy(factory());
+      }
     }
 
     // MCP clients (DI > plugin; YAML fallback handled by builder)

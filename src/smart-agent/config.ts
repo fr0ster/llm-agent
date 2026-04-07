@@ -84,6 +84,7 @@ agent:
   # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
   # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
   # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
+  # llmCallStrategy: streaming       # streaming | non-streaming | fallback
   # streamMode: full                 # full | final — streaming behavior for tool loops
   # heartbeatIntervalMs: 5000       # SSE heartbeat interval during tool execution (ms)
   # retry:                           # LLM retry config for 429/5xx errors
@@ -426,6 +427,14 @@ export function resolveSmartServerConfig(
             streamMode: String(get(yaml, 'agent', 'streamMode')) as
               | 'full'
               | 'final',
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'llmCallStrategy') !== undefined
+        ? {
+            llmCallStrategy: String(get(yaml, 'agent', 'llmCallStrategy')) as
+              | 'streaming'
+              | 'non-streaming'
+              | 'fallback',
           }
         : {}),
       ...(get(yaml, 'agent', 'heartbeatIntervalMs') !== undefined
