@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.17.1] — 2026-04-07
+
+### Added
+- **YAML `llmCallStrategy` config** — `agent.llmCallStrategy` in YAML/SmartServer config selects tool-loop strategy: `streaming`, `non-streaming`, `fallback`. For SAP AI Core with unstable streaming, set `non-streaming`.
+
+---
+
 ## [5.17.0] — 2026-04-07
 
 ### Added
