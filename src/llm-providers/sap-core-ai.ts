@@ -70,6 +70,78 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   private static readonly MODELS_CACHE_TTL_MS = 300_000; // 5 min
   private modelOverride?: string;
 
+  private static summarizeMessages(
+    messages: Message[],
+  ): Record<string, unknown> {
+    const totalChars = messages.reduce((sum, msg) => {
+      const content =
+        typeof msg.content === 'string'
+          ? msg.content
+          : JSON.stringify(msg.content ?? '');
+      return sum + content.length;
+    }, 0);
+
+    return {
+      totalChars,
+      roles: messages.map((msg, index) => ({
+        index,
+        role: msg.role,
+        contentLength:
+          typeof msg.content === 'string'
+            ? msg.content.length
+            : JSON.stringify(msg.content ?? '').length,
+        hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+        toolCallCount:
+          'tool_calls' in msg && Array.isArray(msg.tool_calls)
+            ? msg.tool_calls.length
+            : 0,
+        toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+      })),
+      tail: messages.slice(-4).map((msg, index) => {
+        const content =
+          typeof msg.content === 'string'
+            ? msg.content
+            : JSON.stringify(msg.content ?? '');
+        return {
+          index: messages.length - Math.min(messages.length, 4) + index,
+          role: msg.role,
+          preview:
+            content.length > 240
+              ? `${content.slice(0, 240)}...[truncated]`
+              : content,
+          hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+          toolCallNames:
+            'tool_calls' in msg && Array.isArray(msg.tool_calls)
+              ? msg.tool_calls.map((tc) => tc.function?.name || '')
+              : [],
+          toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+        };
+      }),
+    };
+  }
+
+  private static summarizeStreamingError(
+    error: unknown,
+  ): Record<string, unknown> {
+    // biome-ignore lint/suspicious/noExplicitAny: diagnostic error shape from SDK/axios
+    const err = error as any;
+    const cause = err?.cause;
+    return {
+      error: SapCoreAIProvider.extractErrorDetail(error),
+      name: err?.name,
+      message: err?.message,
+      cause: cause?.message || cause,
+      causeCode: cause?.code,
+      status: err?.response?.status,
+      responseData:
+        typeof err?.response?.data === 'string'
+          ? err.response.data
+          : err?.response?.data
+            ? JSON.stringify(err.response.data)
+            : undefined,
+    };
+  }
+
   /** Set a per-request model override. Cleared after each chat/streamChat call. */
   setModelOverride(model?: string): void {
     this.modelOverride = model;
@@ -161,9 +233,36 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     messages: Message[],
     tools?: unknown[],
   ): AsyncIterable<LLMResponse> {
+    const model = this.modelOverride ?? this.model;
+    const messageSummary = SapCoreAIProvider.summarizeMessages(messages);
+    const toolCount = tools?.length || 0;
+    let streamOpened = false;
+    let chunkIndex = 0;
+    let emittedContentChunks = 0;
+    let emittedContentChars = 0;
+
     try {
+      this.log?.debug('SAP AI SDK streamChat start', {
+        model,
+        resourceGroup: this.resourceGroup ?? 'default',
+        messageCount: messages.length,
+        toolCount,
+        maxTokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+        messageSummary,
+      });
+
       const formatted = this.formatMessages(messages);
+      this.log?.debug('SAP AI SDK streamChat messages formatted', {
+        model,
+        formattedMessageCount: formatted.length,
+        messageSummary,
+      });
       const client = this.createClient(formatted, tools);
+      this.log?.debug('SAP AI SDK streamChat client created', {
+        model,
+        toolCount,
+      });
       // Each stream gets its own agent to prevent connection multiplexing.
       // A shared keepAlive agent can cause SAP AI Core to route SSE chunks
       // to the wrong stream when multiple requests share the same XSUAA user.
@@ -171,14 +270,26 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
         keepAlive: false,
         timeout: 120_000,
       });
+      this.log?.debug('SAP AI SDK streamChat opening stream', {
+        model,
+        keepAlive: false,
+        timeoutMs: 120_000,
+      });
       const streamResponse = await client.stream(
         undefined,
         undefined,
         undefined,
         { httpsAgent: streamAgent },
       );
+      streamOpened = true;
+      this.log?.debug('SAP AI SDK streamChat stream opened', {
+        model,
+        messageCount: messages.length,
+        toolCount,
+      });
 
       for await (const chunk of streamResponse.stream) {
+        chunkIndex += 1;
         // TokenUsage is only available in the final chunk (final_result.usage)
         const tokenUsage = chunk.getTokenUsage() as
           | {
@@ -187,9 +298,31 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               total_tokens: number;
             }
           | undefined;
+        const deltaContent = chunk.getDeltaContent() || '';
+        if (deltaContent) {
+          emittedContentChunks += 1;
+          emittedContentChars += deltaContent.length;
+        }
+        const finishReason = chunk.getFinishReason();
+        this.log?.debug('SAP AI SDK streamChat chunk received', {
+          model,
+          chunkIndex,
+          hasContent: deltaContent.length > 0,
+          contentLength: deltaContent.length,
+          emittedContentChunks,
+          emittedContentChars,
+          finishReason,
+          usage: tokenUsage
+            ? {
+                promptTokens: tokenUsage.prompt_tokens || 0,
+                completionTokens: tokenUsage.completion_tokens || 0,
+                totalTokens: tokenUsage.total_tokens || 0,
+              }
+            : undefined,
+        });
         yield {
-          content: chunk.getDeltaContent() || '',
-          finishReason: chunk.getFinishReason(),
+          content: deltaContent,
+          finishReason,
           raw: chunk,
           ...(tokenUsage
             ? {
@@ -202,15 +335,25 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
             : {}),
         };
       }
-    } catch (error: unknown) {
-      const detail = SapCoreAIProvider.extractErrorDetail(error);
-      // biome-ignore lint/suspicious/noExplicitAny: ErrorWithCause shape from @sap-ai-sdk/core
-      const cause = (error as any)?.cause;
-      this.log?.error('SAP AI SDK streaming error', {
-        error: detail,
-        cause: cause?.message || cause,
-        causeCode: cause?.code,
+      this.log?.debug('SAP AI SDK streamChat completed', {
+        model,
+        chunkCount: chunkIndex,
+        emittedContentChunks,
+        emittedContentChars,
       });
+    } catch (error: unknown) {
+      this.log?.error('SAP AI SDK streaming error', {
+        model,
+        resourceGroup: this.resourceGroup ?? 'default',
+        streamOpened,
+        chunkIndex,
+        emittedContentChunks,
+        emittedContentChars,
+        toolCount,
+        messageSummary,
+        ...SapCoreAIProvider.summarizeStreamingError(error),
+      });
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
       throw new Error(`SAP AI SDK streaming error: ${detail}`);
     } finally {
       this.modelOverride = undefined;

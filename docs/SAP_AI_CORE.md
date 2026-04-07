@@ -164,6 +164,30 @@ llm:
   resourceGroup: default
 ```
 
+## Streaming Diagnostics
+
+SAP AI Core streaming can fail after successful MCP/tool execution but before the final response is fully delivered to the client. In production, if your host sees unstable `sap-ai-sdk` streaming behavior, prefer a non-streaming request path for SAP AI Core and use the streaming path only for diagnosis.
+
+`SapCoreAIProvider` now emits detailed debug/error logs when a `log` object is injected:
+
+- stream start metadata: model, resource group, message count, tool count, max tokens, temperature
+- compact message summary: roles, content lengths, tail previews, tool-call markers
+- stream lifecycle markers: messages formatted, client created, stream opening, stream opened
+- per-chunk diagnostics: chunk index, content length, cumulative emitted content, finish reason, token usage when available
+- enriched failure diagnostics: whether the stream opened, how many chunks/content chunks were emitted, SDK cause/code, HTTP status, and response payload when available
+
+When SmartAgent pipeline logging is enabled, the tool-loop also records a compact context snapshot before each LLM iteration. This is especially useful for the final post-tool-call pass because it shows the exact message shape that was sent into the failing SAP AI Core streaming call.
+
+### Recommended Production Policy
+
+- Use non-streaming for `sap-ai-sdk` in production if the final response stream is unstable.
+- Keep streaming enabled only in controlled debugging scenarios.
+- Collect both provider logs and SmartAgent session-step logs for the same request to correlate:
+  - final iteration context
+  - stream open event
+  - first emitted chunks
+  - exact failure boundary
+
 ## Tool Format Conversion
 
 MCP tools are converted to OpenAI function format before being sent to SAP AI Core. The `SapCoreAIAgent` handles this conversion automatically.
@@ -220,3 +244,4 @@ If a tool is missing `name`, `description`, or `inputSchema`, safe defaults are 
 | `400 "Either a prompt template or messages must be defined"` | SDK requires `prompt.template` | Fixed in v2.9.0 — upgrade the package |
 | `400 "Unused parameters"` | Using `messagesHistory` instead of `messages` | Fixed in v2.9.0 — upgrade the package |
 | `Stream finished with token length exceeded` | `maxTokens` too low for tool-calling models | Set `maxTokens: 32768` or higher in config |
+| `SAP AI SDK streaming error` after successful tool calls | AI Core SSE path is unstable or fails on the final post-tool-call response | Switch SAP AI Core traffic to non-streaming for production, then inspect provider debug logs and SmartAgent iteration context logs |
