@@ -28,6 +28,7 @@ import type { ISubpromptClassifier } from '../interfaces/classifier.js';
 import type { IHistoryMemory } from '../interfaces/history-memory.js';
 import type { IHistorySummarizer } from '../interfaces/history-summarizer.js';
 import type { ILlm } from '../interfaces/llm.js';
+import type { ILlmCallStrategy } from '../interfaces/llm-call-strategy.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type { IEmbedder } from '../interfaces/rag.js';
@@ -98,6 +99,7 @@ export interface PipelineContext {
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;
   readonly toolResultCompactor: IToolResultCompactor | undefined;
+  readonly llmCallStrategy: ILlmCallStrategy;
 
   // -- Mutable state (populated by stages) ----------------------------------
 

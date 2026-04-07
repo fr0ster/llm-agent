@@ -38,6 +38,7 @@ import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IHistoryMemory } from './interfaces/history-memory.js';
 import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
 import type { ILlm } from './interfaces/llm.js';
+import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
@@ -200,6 +201,7 @@ export class SmartAgentBuilder {
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
   private _toolResultCompactor?: IToolResultCompactor;
+  private _llmCallStrategy?: ILlmCallStrategy;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -380,6 +382,12 @@ export class SmartAgentBuilder {
   /** Set a strategy for compacting old tool results in tool-loop history. */
   withToolResultCompactor(compactor: IToolResultCompactor): this {
     this._toolResultCompactor = compactor;
+    return this;
+  }
+
+  /** Set the LLM call strategy for tool-loop (streaming, non-streaming, or fallback). */
+  withLlmCallStrategy(strategy: ILlmCallStrategy): this {
+    this._llmCallStrategy = strategy;
     return this;
   }
 
@@ -1037,6 +1045,9 @@ export class SmartAgentBuilder {
         ...(historySummarizer ? { historySummarizer } : {}),
         ...(this._toolResultCompactor
           ? { toolResultCompactor: this._toolResultCompactor }
+          : {}),
+        ...(this._llmCallStrategy
+          ? { llmCallStrategy: this._llmCallStrategy }
           : {}),
         requestLogger,
       },

@@ -329,139 +329,82 @@ export class ToolLoopHandler implements IStageHandler {
         { id: string; name: string; arguments: string }
       >();
 
-      const useStreaming = ctx.config.toolLoopStreaming !== false;
+      // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
+      const llmStream = ctx.llmCallStrategy.call(
+        ctx.mainLlm,
+        messages,
+        currentTools,
+        ctx.options,
+      );
 
-      if (useStreaming) {
-        // -- Streaming path (default) ------------------------------------------
-        const stream = ctx.mainLlm.streamChat(
-          messages,
-          currentTools,
-          ctx.options,
-        );
-
-        for await (const chunkResult of stream) {
-          if (!chunkResult.ok) {
-            llmSpan.setStatus('error', chunkResult.error.message);
-            llmSpan.end();
-            ctx.yield({
-              ok: false,
-              error: new OrchestratorError(
-                chunkResult.error.message,
-                'LLM_ERROR',
-              ),
-            });
-            return false;
-          }
-          const chunk = chunkResult.value;
-          // Mid-stream retry: discard accumulated state and restart accumulation
-          if (chunk.reset) {
-            content = '';
-            toolCallsMap.clear();
-            finishReason = undefined;
-            continue;
-          }
-          if (chunk.content) {
-            content += chunk.content;
-            ctx.yield({ ok: true, value: { content: chunk.content } });
-          }
-          if (chunk.toolCalls) {
-            const externalDeltas = chunk.toolCalls.filter((tc) =>
-              externalToolNames.has(getStreamToolCallName(tc) ?? ''),
-            );
-            if (externalDeltas.length > 0) {
-              ctx.yield({
-                ok: true,
-                value: { content: '', toolCalls: externalDeltas },
-              });
-            }
-            for (const [
-              fallbackIndex,
-              rawToolCall,
-            ] of chunk.toolCalls.entries()) {
-              const tc = toToolCallDelta(rawToolCall, fallbackIndex);
-              if (!toolCallsMap.has(tc.index)) {
-                toolCallsMap.set(tc.index, {
-                  id: tc.id || '',
-                  name: tc.name || '',
-                  arguments: tc.arguments || '',
-                });
-              } else {
-                const ex = toolCallsMap.get(tc.index);
-                if (ex) {
-                  if (tc.id) ex.id = tc.id;
-                  if (tc.name) ex.name = tc.name;
-                  if (tc.arguments) ex.arguments += tc.arguments;
-                }
-              }
-            }
-          }
-          if (chunk.finishReason) finishReason = chunk.finishReason;
-          if (chunk.usage) {
-            usage.promptTokens += chunk.usage.promptTokens;
-            usage.completionTokens += chunk.usage.completionTokens;
-            usage.totalTokens += chunk.usage.totalTokens;
-            iterPromptTokens += chunk.usage.promptTokens;
-            iterCompletionTokens += chunk.usage.completionTokens;
-            iterTotalTokens += chunk.usage.totalTokens;
-            ctx.sessionManager.addTokens(chunk.usage.totalTokens);
-          }
-        }
-      } else {
-        // -- Non-streaming path ------------------------------------------------
-        const chatResult = await ctx.mainLlm.chat(
-          messages,
-          currentTools,
-          ctx.options,
-        );
-
-        if (!chatResult.ok) {
-          llmSpan.setStatus('error', chatResult.error.message);
+      for await (const chunkResult of llmStream) {
+        if (!chunkResult.ok) {
+          llmSpan.setStatus('error', chunkResult.error.message);
           llmSpan.end();
           ctx.yield({
             ok: false,
-            error: new OrchestratorError(chatResult.error.message, 'LLM_ERROR'),
+            error: new OrchestratorError(
+              chunkResult.error.message,
+              'LLM_ERROR',
+            ),
           });
           return false;
         }
-
-        const response = chatResult.value;
-        content = response.content;
-        finishReason = response.finishReason;
-
-        if (content) {
-          ctx.yield({ ok: true, value: { content } });
+        const chunk = chunkResult.value;
+        // Mid-stream retry or fallback reset: discard accumulated state
+        if (chunk.reset) {
+          content = '';
+          toolCallsMap.clear();
+          finishReason = undefined;
+          iterPromptTokens = 0;
+          iterCompletionTokens = 0;
+          iterTotalTokens = 0;
+          continue;
         }
-
-        if (response.toolCalls) {
-          for (const [i, tc] of response.toolCalls.entries()) {
-            if (externalToolNames.has(tc.name)) {
-              ctx.yield({
-                ok: true,
-                value: {
-                  content: '',
-                  toolCalls: [tc],
-                },
-              });
-            }
-            toolCallsMap.set(i, {
-              id: tc.id,
-              name: tc.name,
-              arguments:
-                typeof tc.arguments === 'string'
-                  ? tc.arguments
-                  : JSON.stringify(tc.arguments),
+        if (chunk.content) {
+          content += chunk.content;
+          ctx.yield({ ok: true, value: { content: chunk.content } });
+        }
+        if (chunk.toolCalls) {
+          const externalDeltas = chunk.toolCalls.filter((tc) =>
+            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
+          );
+          if (externalDeltas.length > 0) {
+            ctx.yield({
+              ok: true,
+              value: { content: '', toolCalls: externalDeltas },
             });
           }
+          for (const [
+            fallbackIndex,
+            rawToolCall,
+          ] of chunk.toolCalls.entries()) {
+            const tc = toToolCallDelta(rawToolCall, fallbackIndex);
+            if (!toolCallsMap.has(tc.index)) {
+              toolCallsMap.set(tc.index, {
+                id: tc.id || '',
+                name: tc.name || '',
+                arguments: tc.arguments || '',
+              });
+            } else {
+              const ex = toolCallsMap.get(tc.index);
+              if (ex) {
+                if (tc.id) ex.id = tc.id;
+                if (tc.name) ex.name = tc.name;
+                if (tc.arguments) ex.arguments += tc.arguments;
+              }
+            }
+          }
         }
-
-        if (response.usage) {
-          usage.promptTokens += response.usage.promptTokens;
-          usage.completionTokens += response.usage.completionTokens;
-          usage.totalTokens += response.usage.totalTokens;
-          iterPromptTokens += response.usage.promptTokens;
-          iterCompletionTokens += response.usage.completionTokens;
-          iterTotalTokens += response.usage.totalTokens;
-          ctx.sessionManager.addTokens(response.usage.totalTokens);
+        if (chunk.finishReason) finishReason = chunk.finishReason;
+        if (chunk.usage) {
+          usage.promptTokens += chunk.usage.promptTokens;
+          usage.completionTokens += chunk.usage.completionTokens;
+          usage.totalTokens += chunk.usage.totalTokens;
+          iterPromptTokens += chunk.usage.promptTokens;
+          iterCompletionTokens += chunk.usage.completionTokens;
+          iterTotalTokens += chunk.usage.totalTokens;
+          ctx.sessionManager.addTokens(chunk.usage.totalTokens);
         }
       }
 
