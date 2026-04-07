@@ -188,6 +188,24 @@ When SmartAgent pipeline logging is enabled, the tool-loop also records a compac
   - first emitted chunks
   - exact failure boundary
 
+Two ways to disable streaming for SAP AI Core:
+
+**Per-provider** (recommended for multi-model pipelines):
+```yaml
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: gpt-4o
+      streaming: false
+```
+
+**Global** (applies to tool-loop regardless of provider):
+```yaml
+agent:
+  llmCallStrategy: non-streaming
+```
+
 ## Tool Format Conversion
 
 MCP tools are converted to OpenAI function format before being sent to SAP AI Core. The `SapCoreAIAgent` handles this conversion automatically.
