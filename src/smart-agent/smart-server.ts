@@ -249,7 +249,7 @@ function resolveSkillManager(
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -682,6 +682,23 @@ export class SmartServer {
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(requestLogger.getSummary()));
+      return;
+    }
+    // /v1/config or /config
+    if (urlPath === '/v1/config' || urlPath === '/config') {
+      if (req.method === 'GET') {
+        const models = smartAgent.getActiveConfig();
+        const agent = smartAgent.getAgentConfig();
+        const body = { models, agent };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
+      // PUT and 405 handling will be added in Task 5
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'),
+      );
       return;
     }
     if (
