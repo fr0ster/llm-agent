@@ -37,12 +37,16 @@ const DEFAULT_OPTIONS: RetryOptions = {
 
 export class RetryLlm implements ILlm {
   private readonly opts: RetryOptions;
+  healthCheck?: ILlm['healthCheck'];
 
   constructor(
     private readonly inner: ILlm,
     options?: Partial<RetryOptions>,
   ) {
     this.opts = { ...DEFAULT_OPTIONS, ...options };
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
   }
 
   get model(): string | undefined {

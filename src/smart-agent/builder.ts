@@ -450,6 +450,12 @@ export class SmartAgentBuilder {
     return this;
   }
 
+  /** Set the health check probe timeout in milliseconds. Default: 5000. */
+  withHealthTimeout(ms: number): this {
+    this._agentOverrides.healthTimeoutMs = ms;
+    return this;
+  }
+
   /** Enable or disable the classification pipeline stage. When disabled, input is treated as a single action. */
   withClassification(enabled: boolean): this {
     this._agentOverrides.classificationEnabled = enabled;

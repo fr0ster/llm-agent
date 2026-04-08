@@ -18,10 +18,16 @@ import type {
 } from '../interfaces/types.js';
 
 export class RateLimiterLlm implements ILlm {
+  healthCheck?: ILlm['healthCheck'];
+
   constructor(
     private readonly inner: ILlm,
     private readonly limiter: ILlmRateLimiter,
-  ) {}
+  ) {
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
+  }
 
   get model(): string | undefined {
     return this.inner.model;

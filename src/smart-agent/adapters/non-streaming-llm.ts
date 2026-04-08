@@ -18,17 +18,16 @@ import type {
 } from '../interfaces/types.js';
 
 export class NonStreamingLlm implements ILlm {
-  constructor(private readonly inner: ILlm) {}
+  healthCheck?: ILlm['healthCheck'];
+
+  constructor(private readonly inner: ILlm) {
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
+  }
 
   get model(): string | undefined {
     return this.inner.model;
-  }
-
-  async healthCheck(options?: CallOptions): Promise<Result<boolean, LlmError>> {
-    if (this.inner.healthCheck) {
-      return this.inner.healthCheck(options);
-    }
-    return { ok: true, value: true };
   }
 
   chat(
