@@ -694,10 +694,18 @@ export class SmartServer {
         res.end(JSON.stringify(body));
         return;
       }
-      // PUT and 405 handling will be added in Task 5
-      res.writeHead(404, { 'Content-Type': 'application/json' });
+      if (req.method === 'PUT') {
+        await this._handleConfigUpdate(req, res, smartAgent);
+        return;
+      }
+      // 405 for other methods
+      res.setHeader('Allow', 'GET, PUT, OPTIONS');
+      res.writeHead(405, { 'Content-Type': 'application/json' });
       res.end(
-        jsonError(`Cannot ${req.method} ${urlPath}`, 'invalid_request_error'),
+        jsonError(
+          `Method ${req.method} not allowed on ${urlPath}`,
+          'invalid_request_error',
+        ),
       );
       return;
     }
@@ -1212,5 +1220,92 @@ export class SmartServer {
         },
       }),
     );
+  }
+
+  /** Whitelisted agent config fields allowed via PUT /v1/config. */
+  private static readonly AGENT_CONFIG_FIELDS = new Set([
+    'maxIterations',
+    'maxToolCalls',
+    'ragQueryK',
+    'toolUnavailableTtlMs',
+    'showReasoning',
+    'historyAutoSummarizeLimit',
+    'classificationEnabled',
+    'ragRetrievalMode',
+    'ragTranslationEnabled',
+    'ragUpsertEnabled',
+  ]);
+
+  private async _handleConfigUpdate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    smartAgent: SmartAgent,
+  ): Promise<void> {
+    const raw = await readBody(req);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
+      return;
+    }
+
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(
+          'Request body must be a JSON object',
+          'invalid_request_error',
+        ),
+      );
+      return;
+    }
+
+    const body = parsed as Record<string, unknown>;
+
+    // --- Validate agent fields against whitelist ---
+    if (body.agent !== undefined) {
+      if (
+        typeof body.agent !== 'object' ||
+        body.agent === null ||
+        Array.isArray(body.agent)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('"agent" must be a JSON object', 'invalid_request_error'),
+        );
+        return;
+      }
+      const agentFields = body.agent as Record<string, unknown>;
+      const unsupported = Object.keys(agentFields).filter(
+        (k) => !SmartServer.AGENT_CONFIG_FIELDS.has(k),
+      );
+      if (unsupported.length > 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `Unsupported agent config fields: ${unsupported.join(', ')}`,
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+    }
+
+    // --- Apply agent config update ---
+    if (body.agent) {
+      smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
+    }
+
+    // --- Return updated config ---
+    const models = smartAgent.getActiveConfig();
+    const agent = smartAgent.getAgentConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ models, agent }));
   }
 }
