@@ -155,3 +155,110 @@ describe('GET /v1/config', () => {
     }
   });
 });
+
+describe('PUT /v1/config', () => {
+  it('updates agent parameters and returns updated config', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      agent: { maxIterations: 10 },
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        agent: { maxIterations: 20, classificationEnabled: false },
+      });
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const agent = body.agent as Record<string, unknown>;
+      assert.equal(agent.maxIterations, 20);
+      assert.equal(agent.classificationEnabled, false);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('rejects unsupported agent fields', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        agent: { timeoutMs: 9999 },
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('rejects invalid JSON body', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      // Send raw non-JSON body
+      const res = await new Promise<{
+        status: number;
+        body: unknown;
+        raw: string;
+      }>((resolve, reject) => {
+        const req = request(
+          {
+            host: '127.0.0.1',
+            port: handle.port,
+            method: 'PUT',
+            path: '/v1/config',
+            headers: { 'Content-Type': 'application/json' },
+          },
+          (httpRes) => {
+            const chunks: Buffer[] = [];
+            httpRes.on('data', (c: Buffer) => chunks.push(c));
+            httpRes.on('end', () => {
+              const text = Buffer.concat(chunks).toString('utf8');
+              let parsed: unknown;
+              try {
+                parsed = JSON.parse(text);
+              } catch {
+                parsed = text;
+              }
+              resolve({
+                status: httpRes.statusCode ?? 0,
+                body: parsed,
+                raw: text,
+              });
+            });
+          },
+        );
+        req.on('error', reject);
+        req.write('not-json');
+        req.end();
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('returns 405 for unsupported methods on /v1/config', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'DELETE', '/v1/config');
+      assert.equal(res.status, 405);
+    } finally {
+      await handle.close();
+    }
+  });
+});
