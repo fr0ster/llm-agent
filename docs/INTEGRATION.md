@@ -1062,16 +1062,30 @@ pipeline:
 
 `makeLlm()` forwards `baseURL` to `OpenAIProvider`, `AnthropicProvider`, and `DeepSeekProvider`. When omitted, each provider uses its default API URL.
 
-### Health check timeout (`healthTimeoutMs`)
+### Health Check Timeout
 
-`SmartAgent.healthCheck()` probes LLM, RAG, and MCP with a single timeout. The default is 5 000 ms, which may be too short for slow providers (SAP AI Core Orchestration typically takes 5–8 s).
+The `/v1/health` endpoint runs LLM, RAG, and MCP probes under a shared timeout. The default is 5000 ms. For providers with high latency (e.g., SAP AI Core Orchestration with OAuth), increase the timeout:
+
+**YAML:**
 
 ```yaml
 agent:
-  healthTimeoutMs: 15000   # 15 s — recommended for SAP AI Core
+  healthTimeoutMs: 15000
 ```
 
-`NonStreamingLlm` now proxies `healthCheck()` to the inner LLM, so the lightweight `getModels()` path is used instead of the `chat('ping')` fallback.
+**Builder:**
+
+```typescript
+new SmartAgentBuilder()
+  .withHealthTimeout(15_000)
+  .build();
+```
+
+All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLimiterLlm`) now proxy `healthCheck()` to the inner LLM, so the lightweight `getModels()` path is used instead of the `chat('ping')` fallback.
+
+> **Note:** When increasing `healthTimeoutMs`, ensure that Kubernetes readiness/liveness probe `timeoutSeconds` and load balancer health check timeouts are also adjusted accordingly. The infrastructure timeout must be greater than `healthTimeoutMs` to avoid false negatives.
+
+> **Verification:** Unit tests cover timeout configuration and signal merging, but they use fast in-memory stubs. After changing `healthTimeoutMs` in production, manually verify `/v1/health` against your actual provider to confirm the timeout is sufficient. For SAP AI Core, a cold-start health check (first call after deploy, when the OAuth token is not yet cached) is the slowest path — test that scenario specifically.
 
 ## ILlmRateLimiter — Rate Limiting
 
@@ -1267,6 +1281,7 @@ const handle = await new SmartAgentBuilder({
   .withQueryExpansion(true)          // expand queries with synonyms
   .withShowReasoning(false)
   .withHeartbeatInterval(3000)
+  .withHealthTimeout(15_000)           // health check probe timeout (default: 5000)
   .build();
 
 // Use the agent
