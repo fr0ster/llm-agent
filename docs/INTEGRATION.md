@@ -1062,6 +1062,19 @@ pipeline:
 
 `makeLlm()` forwards `baseURL` to `OpenAIProvider`, `AnthropicProvider`, and `DeepSeekProvider`. When omitted, each provider uses its default API URL.
 
+### Per-request LLM parameters
+
+Standard OpenAI and Anthropic per-request parameters are forwarded through the pipeline to the LLM:
+
+| Parameter | OpenAI (`/v1/chat/completions`) | Anthropic (`/v1/messages`) |
+|-----------|--------------------------------|----------------------------|
+| `temperature` | ✅ | ✅ |
+| `max_tokens` | ✅ | ✅ |
+| `top_p` | ✅ | ✅ |
+| `stop` | ✅ (string or array) | ✅ (`stop_sequences` array) |
+
+When omitted, the provider's configured defaults (from YAML / env) are used. When specified, they override for that request only.
+
 ### Health Check Timeout
 
 The `/v1/health` endpoint runs LLM, RAG, and MCP probes under a shared timeout. The default is 5000 ms. For providers with high latency (e.g., SAP AI Core Orchestration with OAuth), increase the timeout:
