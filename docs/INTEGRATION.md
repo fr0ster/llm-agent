@@ -1046,6 +1046,33 @@ pipeline:
 
 When `streaming: false`, `makeLlm()` wraps the provider with `NonStreamingLlm` — `streamChat()` is replaced with `chat()` yielding a single chunk. This is independent of `llmCallStrategy` and works per-provider.
 
+### Custom base URL (`baseURL`)
+
+Use `baseURL` to point any OpenAI-compatible provider at a custom endpoint (Azure OpenAI, Ollama, vLLM, etc.):
+
+```yaml
+pipeline:
+  llm:
+    main:
+      provider: openai
+      apiKey: ${OPENAI_API_KEY}
+      baseURL: https://my-azure-openai.openai.azure.com/openai/deployments/gpt-4o
+      model: gpt-4o
+```
+
+`makeLlm()` forwards `baseURL` to `OpenAIProvider`, `AnthropicProvider`, and `DeepSeekProvider`. When omitted, each provider uses its default API URL.
+
+### Health check timeout (`healthTimeoutMs`)
+
+`SmartAgent.healthCheck()` probes LLM, RAG, and MCP with a single timeout. The default is 5 000 ms, which may be too short for slow providers (SAP AI Core Orchestration typically takes 5–8 s).
+
+```yaml
+agent:
+  healthTimeoutMs: 15000   # 15 s — recommended for SAP AI Core
+```
+
+`NonStreamingLlm` now proxies `healthCheck()` to the inner LLM, so the lightweight `getModels()` path is used instead of the `chat('ping')` fallback.
+
 ## ILlmRateLimiter — Rate Limiting
 
 Throttle outbound LLM requests to stay within provider rate limits.

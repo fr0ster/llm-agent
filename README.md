@@ -117,6 +117,8 @@ agent:
 
 If you use `sap-ai-sdk` and see streaming failures after successful tool execution, prefer a non-streaming request path for production traffic. The package now includes detailed SAP AI Core streaming diagnostics and tool-loop iteration context logging to investigate those failures without relying on streaming in production.
 
+SAP AI Core Orchestration round-trips (OAuth + inference) often exceed the default 5 s health check timeout. Set `agent.healthTimeoutMs: 15000` in your YAML config to avoid permanent `unhealthy` status on `/v1/health`.
+
 See [docs/SAP_AI_CORE.md](docs/SAP_AI_CORE.md) for the operational guidance and troubleshooting details.
 
 ## Development
