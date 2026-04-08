@@ -35,6 +35,8 @@ import { VectorRag } from './rag/vector-rag.js';
 export interface LlmProviderConfig {
   provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
   apiKey?: string;
+  /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
+  baseURL?: string;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -63,6 +65,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
     case 'deepseek': {
       const provider = new DeepSeekProvider({
         apiKey: cfg.apiKey,
+        baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
         maxTokens,
@@ -80,6 +83,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
     case 'openai': {
       const provider = new OpenAIProvider({
         apiKey: cfg.apiKey,
+        baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
         maxTokens,
@@ -97,6 +101,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
     case 'anthropic': {
       const provider = new AnthropicProvider({
         apiKey: cfg.apiKey,
+        baseURL: cfg.baseURL,
         model: cfg.model,
         temperature,
         maxTokens,

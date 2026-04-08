@@ -132,6 +132,8 @@ export interface SmartAgentConfig {
   sessionTokenBudget?: number;
   /** Interval (ms) for SSE heartbeat comments during MCP tool execution. Default: 5000. */
   heartbeatIntervalMs?: number;
+  /** Timeout (ms) for health check probes (LLM, RAG, MCP). Default: 5000. Increase for slow providers (e.g. SAP AI Core). */
+  healthTimeoutMs?: number;
 
   // -- Pipeline stage toggles -----------------------------------------------
 
@@ -277,8 +279,8 @@ export class SmartAgent {
       OrchestratorError
     >
   > {
-    const HEALTH_TIMEOUT_MS = 5_000;
-    const healthSignal = AbortSignal.timeout(HEALTH_TIMEOUT_MS);
+    const healthTimeoutMs = this.config.healthTimeoutMs ?? 5_000;
+    const healthSignal = AbortSignal.timeout(healthTimeoutMs);
     const healthOptions: CallOptions = {
       ...options,
       signal: healthSignal,
