@@ -7,7 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { Message } from '../types.js';
-import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
+import type {
+  SmartAgent,
+  SmartAgentRagStores,
+  SmartAgentReconfigureOptions,
+  StopReason,
+} from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
 import {
   ConfigWatcher,
@@ -22,6 +27,7 @@ import { AdapterValidationError } from './interfaces/api-adapter.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
+import type { IModelResolver } from './interfaces/model-resolver.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
@@ -181,6 +187,8 @@ export interface SmartServerConfig {
   disableBuiltInAdapters?: boolean;
   /** Skip startup model validation (useful for testing). Default: false. */
   skipModelValidation?: boolean;
+  /** Model resolver for PUT /v1/config model changes. When not set, model updates are rejected with 400. */
+  modelResolver?: IModelResolver;
 }
 
 export interface SmartServerHandle {
@@ -249,7 +257,7 @@ function resolveSkillManager(
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, PUT, OPTIONS',
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 };
 
@@ -682,6 +690,31 @@ export class SmartServer {
     if (req.method === 'GET' && urlPath === '/v1/usage') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(requestLogger.getSummary()));
+      return;
+    }
+    // /v1/config or /config
+    if (urlPath === '/v1/config' || urlPath === '/config') {
+      if (req.method === 'GET') {
+        const models = smartAgent.getActiveConfig();
+        const agent = smartAgent.getAgentConfig();
+        const body = { models, agent };
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
+      if (req.method === 'PUT') {
+        await this._handleConfigUpdate(req, res, smartAgent);
+        return;
+      }
+      // 405 for other methods
+      res.setHeader('Allow', 'GET, PUT, OPTIONS');
+      res.writeHead(405, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(
+          `Method ${req.method} not allowed on ${urlPath}`,
+          'invalid_request_error',
+        ),
+      );
       return;
     }
     if (
@@ -1195,5 +1228,161 @@ export class SmartServer {
         },
       }),
     );
+  }
+
+  /** Whitelisted agent config fields allowed via PUT /v1/config. */
+  private static readonly AGENT_CONFIG_FIELDS = new Set([
+    'maxIterations',
+    'maxToolCalls',
+    'ragQueryK',
+    'toolUnavailableTtlMs',
+    'showReasoning',
+    'historyAutoSummarizeLimit',
+    'classificationEnabled',
+    'ragRetrievalMode',
+    'ragTranslationEnabled',
+    'ragUpsertEnabled',
+  ]);
+
+  private async _handleConfigUpdate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    smartAgent: SmartAgent,
+  ): Promise<void> {
+    const raw = await readBody(req);
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(jsonError('Invalid JSON body', 'invalid_request_error'));
+      return;
+    }
+
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      Array.isArray(parsed)
+    ) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(
+        jsonError(
+          'Request body must be a JSON object',
+          'invalid_request_error',
+        ),
+      );
+      return;
+    }
+
+    const body = parsed as Record<string, unknown>;
+
+    // --- Validate agent fields against whitelist ---
+    if (body.agent !== undefined) {
+      if (
+        typeof body.agent !== 'object' ||
+        body.agent === null ||
+        Array.isArray(body.agent)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('"agent" must be a JSON object', 'invalid_request_error'),
+        );
+        return;
+      }
+      const agentFields = body.agent as Record<string, unknown>;
+      const unsupported = Object.keys(agentFields).filter(
+        (k) => !SmartServer.AGENT_CONFIG_FIELDS.has(k),
+      );
+      if (unsupported.length > 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `Unsupported agent config fields: ${unsupported.join(', ')}`,
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+    }
+
+    // --- Validate and resolve models (atomic: resolve ALL before mutating) ---
+    let resolvedModels: SmartAgentReconfigureOptions | undefined;
+    if (body.models !== undefined) {
+      if (
+        typeof body.models !== 'object' ||
+        body.models === null ||
+        Array.isArray(body.models)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('"models" must be a JSON object', 'invalid_request_error'),
+        );
+        return;
+      }
+      if (!this.cfg.modelResolver) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('model resolver not configured', 'invalid_request_error'),
+        );
+        return;
+      }
+      const modelFields = body.models as Record<string, unknown>;
+      const validKeys = new Set([
+        'mainModel',
+        'classifierModel',
+        'helperModel',
+      ]);
+      const unknownKeys = Object.keys(modelFields).filter(
+        (k) => !validKeys.has(k),
+      );
+      if (unknownKeys.length > 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `Unknown model fields: ${unknownKeys.join(', ')}`,
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+      try {
+        const resolver = this.cfg.modelResolver;
+        const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
+          modelFields.mainModel
+            ? resolver.resolve(String(modelFields.mainModel), 'main')
+            : undefined,
+          modelFields.classifierModel
+            ? resolver.resolve(
+                String(modelFields.classifierModel),
+                'classifier',
+              )
+            : undefined,
+          modelFields.helperModel
+            ? resolver.resolve(String(modelFields.helperModel), 'helper')
+            : undefined,
+        ]);
+        resolvedModels = {};
+        if (mainLlm) resolvedModels.mainLlm = mainLlm;
+        if (classifierLlm) resolvedModels.classifierLlm = classifierLlm;
+        if (helperLlm) resolvedModels.helperLlm = helperLlm;
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError(String(err), 'server_error'));
+        return;
+      }
+    }
+
+    // --- All validation passed — apply mutations ---
+    if (resolvedModels) {
+      smartAgent.reconfigure(resolvedModels);
+    }
+    if (body.agent) {
+      smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
+    }
+    // --- Return updated config ---
+    const models = smartAgent.getActiveConfig();
+    const agent = smartAgent.getAgentConfig();
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ models, agent }));
   }
 }
