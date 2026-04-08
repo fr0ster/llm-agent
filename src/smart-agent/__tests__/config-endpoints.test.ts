@@ -274,6 +274,26 @@ describe('PUT /v1/config', () => {
       await handle.close();
     }
   });
+
+  it('works with /config alias for PUT', async () => {
+    const server = new SmartServer({
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      agent: { maxIterations: 10 },
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/config', {
+        agent: { maxIterations: 15 },
+      });
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const agent = body.agent as Record<string, unknown>;
+      assert.equal(agent.maxIterations, 15);
+    } finally {
+      await handle.close();
+    }
+  });
 });
 
 describe('llmDefaults in config', () => {
@@ -398,6 +418,31 @@ describe('PUT /v1/config — models', () => {
         models: { mainModel: 'bad-model' },
       });
       assert.equal(res.status, 500);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('returns 500 for unknown model name', async () => {
+    const resolver: IModelResolver = {
+      async resolve(modelName: string): Promise<ILlm> {
+        throw new Error(`Unknown model: ${modelName}`);
+      },
+    };
+    const server = new SmartServer({
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      modelResolver: resolver,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'nonexistent-model' },
+      });
+      assert.equal(res.status, 500);
+      const body = res.body as Record<string, unknown>;
+      const error = body.error as Record<string, unknown>;
+      assert.ok(String(error.message).includes('nonexistent-model'));
     } finally {
       await handle.close();
     }
