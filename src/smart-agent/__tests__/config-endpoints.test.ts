@@ -1,7 +1,51 @@
 import assert from 'node:assert/strict';
+import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import { SmartAgent } from '../agent.js';
+import { SmartServer } from '../smart-server.js';
 import { makeDefaultDeps } from '../testing/index.js';
+
+function httpRequest(
+  port: number,
+  method: string,
+  path: string,
+  body?: unknown,
+): Promise<{ status: number; body: unknown; raw: string }> {
+  return new Promise((resolve, reject) => {
+    const bodyStr = body !== undefined ? JSON.stringify(body) : undefined;
+    const options = {
+      host: '127.0.0.1',
+      port,
+      method,
+      path,
+      headers: {
+        'Content-Type': 'application/json',
+        ...(bodyStr !== undefined
+          ? { 'Content-Length': Buffer.byteLength(bodyStr) }
+          : {}),
+      },
+    };
+    const req = request(options, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        const text = Buffer.concat(chunks).toString('utf8');
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(text);
+        } catch {
+          parsed = text;
+        }
+        resolve({ status: res.statusCode ?? 0, body: parsed, raw: text });
+      });
+    });
+    req.on('error', reject);
+    if (bodyStr !== undefined) {
+      req.write(bodyStr);
+    }
+    req.end();
+  });
+}
 
 describe('SmartAgent.getAgentConfig', () => {
   it('returns only whitelisted fields', () => {
@@ -48,5 +92,66 @@ describe('SmartAgent.getAgentConfig', () => {
     assert.equal(config.maxIterations, 5);
     assert.equal(config.maxToolCalls, undefined);
     assert.equal(config.classificationEnabled, undefined);
+  });
+});
+
+describe('GET /v1/config', () => {
+  it('returns models and agent config', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      agent: { maxIterations: 8 },
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'GET', '/v1/config');
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      assert.ok(body.models);
+      assert.ok(body.agent);
+      const agent = body.agent as Record<string, unknown>;
+      assert.equal(agent.maxIterations, 8);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('works with /config alias', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'GET', '/config');
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      assert.ok(body.models);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('returns only whitelisted fields, not raw SmartAgentConfig', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      agent: { maxIterations: 5, timeoutMs: 9999, tokenLimit: 4096 },
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'GET', '/v1/config');
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const agent = body.agent as Record<string, unknown>;
+      assert.equal(agent.maxIterations, 5);
+      assert.equal(agent.timeoutMs, undefined);
+      assert.equal(agent.tokenLimit, undefined);
+    } finally {
+      await handle.close();
+    }
   });
 });
