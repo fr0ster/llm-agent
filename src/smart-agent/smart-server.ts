@@ -7,7 +7,12 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { Message } from '../types.js';
-import type { SmartAgent, SmartAgentRagStores, StopReason } from './agent.js';
+import type {
+  SmartAgent,
+  SmartAgentRagStores,
+  SmartAgentReconfigureOptions,
+  StopReason,
+} from './agent.js';
 import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
 import {
   ConfigWatcher,
@@ -22,6 +27,7 @@ import { AdapterValidationError } from './interfaces/api-adapter.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
+import type { IModelResolver } from './interfaces/model-resolver.js';
 import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
@@ -181,6 +187,8 @@ export interface SmartServerConfig {
   disableBuiltInAdapters?: boolean;
   /** Skip startup model validation (useful for testing). Default: false. */
   skipModelValidation?: boolean;
+  /** Model resolver for PUT /v1/config model changes. When not set, model updates are rejected with 400. */
+  modelResolver?: IModelResolver;
 }
 
 export interface SmartServerHandle {
@@ -1297,7 +1305,77 @@ export class SmartServer {
       }
     }
 
-    // --- Apply agent config update ---
+    // --- Validate and resolve models (atomic: resolve ALL before mutating) ---
+    let resolvedModels: SmartAgentReconfigureOptions | undefined;
+    if (body.models !== undefined) {
+      if (
+        typeof body.models !== 'object' ||
+        body.models === null ||
+        Array.isArray(body.models)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('"models" must be a JSON object', 'invalid_request_error'),
+        );
+        return;
+      }
+      if (!this.cfg.modelResolver) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError('model resolver not configured', 'invalid_request_error'),
+        );
+        return;
+      }
+      const modelFields = body.models as Record<string, unknown>;
+      const validKeys = new Set([
+        'mainModel',
+        'classifierModel',
+        'helperModel',
+      ]);
+      const unknownKeys = Object.keys(modelFields).filter(
+        (k) => !validKeys.has(k),
+      );
+      if (unknownKeys.length > 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `Unknown model fields: ${unknownKeys.join(', ')}`,
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+      try {
+        resolvedModels = {};
+        if (modelFields.mainModel) {
+          resolvedModels.mainLlm = await this.cfg.modelResolver.resolve(
+            String(modelFields.mainModel),
+            'main',
+          );
+        }
+        if (modelFields.classifierModel) {
+          resolvedModels.classifierLlm = await this.cfg.modelResolver.resolve(
+            String(modelFields.classifierModel),
+            'classifier',
+          );
+        }
+        if (modelFields.helperModel) {
+          resolvedModels.helperLlm = await this.cfg.modelResolver.resolve(
+            String(modelFields.helperModel),
+            'helper',
+          );
+        }
+      } catch (err) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError(String(err), 'server_error'));
+        return;
+      }
+    }
+
+    // --- All validation passed — apply mutations ---
+    if (resolvedModels) {
+      smartAgent.reconfigure(resolvedModels);
+    }
     if (body.agent) {
       smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
     }

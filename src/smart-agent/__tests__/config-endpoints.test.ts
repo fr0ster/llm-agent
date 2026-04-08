@@ -2,8 +2,21 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import { SmartAgent } from '../agent.js';
+import type { ILlm } from '../interfaces/llm.js';
+import type { IModelResolver } from '../interfaces/model-resolver.js';
 import { SmartServer } from '../smart-server.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps, makeLlm as makeTestLlm } from '../testing/index.js';
+
+function makeResolver(results: Record<string, ILlm | Error>): IModelResolver {
+  return {
+    async resolve(modelName: string): Promise<ILlm> {
+      const result = results[modelName];
+      if (!result) throw new Error(`Unknown model: ${modelName}`);
+      if (result instanceof Error) throw result;
+      return result;
+    },
+  };
+}
 
 function httpRequest(
   port: number,
@@ -257,6 +270,112 @@ describe('PUT /v1/config', () => {
     try {
       const res = await httpRequest(handle.port, 'DELETE', '/v1/config');
       assert.equal(res.status, 405);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
+describe('PUT /v1/config — models', () => {
+  it('resolves and reconfigures models when resolver is set', async () => {
+    const newMain = { ...makeTestLlm([{ content: 'ok' }]), model: 'gpt-4o' };
+    const resolver = makeResolver({ 'gpt-4o': newMain });
+
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      modelResolver: resolver,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'gpt-4o' },
+      });
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const models = body.models as Record<string, unknown>;
+      assert.equal(models.mainModel, 'gpt-4o');
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('returns 400 when models sent but no resolver configured', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'gpt-4o' },
+      });
+      assert.equal(res.status, 400);
+      const body = res.body as Record<string, unknown>;
+      const error = body.error as Record<string, unknown>;
+      assert.ok(
+        String(error.message).includes('model resolver not configured'),
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('returns 500 when model resolution fails', async () => {
+    const resolver = makeResolver({
+      'bad-model': new Error('Provider unreachable'),
+    });
+
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      modelResolver: resolver,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'bad-model' },
+      });
+      assert.equal(res.status, 500);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('is atomic — no changes applied when one model resolution fails', async () => {
+    const goodLlm = {
+      ...makeTestLlm([{ content: 'ok' }]),
+      model: 'good-model',
+    };
+    const resolver = makeResolver({
+      'good-model': goodLlm,
+      'bad-model': new Error('resolution failed'),
+    });
+
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      modelResolver: resolver,
+      agent: { maxIterations: 10 },
+    });
+    const handle = await server.start();
+    try {
+      // Attempt to update both models + agent param — one model fails
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        models: { mainModel: 'good-model', classifierModel: 'bad-model' },
+        agent: { maxIterations: 99 },
+      });
+      assert.equal(res.status, 500);
+
+      // Verify nothing changed
+      const getRes = await httpRequest(handle.port, 'GET', '/v1/config');
+      const body = getRes.body as Record<string, unknown>;
+      const agent = body.agent as Record<string, unknown>;
+      assert.equal(agent.maxIterations, 10); // unchanged
     } finally {
       await handle.close();
     }
