@@ -326,6 +326,15 @@ export class SmartServer {
         )
       : undefined;
 
+    // Mutable runtime LLM defaults exposed via /v1/config
+    const llmDefaults = {
+      temperature: mainTemp,
+      maxTokens:
+        pipeline?.llm?.main?.maxTokens != null
+          ? Number(pipeline.llm.main.maxTokens)
+          : undefined,
+    };
+
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
       this.cfg.pluginLoader ??
@@ -600,6 +609,7 @@ export class SmartServer {
         healthChecker,
         modelProvider,
         adapterMap,
+        llmDefaults,
       ).catch((err) => {
         if (!res.headersSent) {
           res.writeHead(500, { 'Content-Type': 'application/json' });
@@ -642,6 +652,7 @@ export class SmartServer {
     healthChecker: HealthChecker,
     modelProvider?: IModelProvider,
     adapterMap?: Map<string, ILlmApiAdapter>,
+    llmDefaults?: { temperature: number; maxTokens?: number },
   ): Promise<void> {
     const rawUrl = req.url ?? '/';
     const urlPath = rawUrl.split('?')[0].replace(/\/$/, '') || '/';
@@ -697,13 +708,13 @@ export class SmartServer {
       if (req.method === 'GET') {
         const models = smartAgent.getActiveConfig();
         const agent = smartAgent.getAgentConfig();
-        const body = { models, agent };
+        const body = { models, agent, llmDefaults };
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(body));
         return;
       }
       if (req.method === 'PUT') {
-        await this._handleConfigUpdate(req, res, smartAgent);
+        await this._handleConfigUpdate(req, res, smartAgent, llmDefaults);
         return;
       }
       // 405 for other methods
@@ -1248,6 +1259,7 @@ export class SmartServer {
     req: IncomingMessage,
     res: ServerResponse,
     smartAgent: SmartAgent,
+    llmDefaults?: { temperature: number; maxTokens?: number },
   ): Promise<void> {
     const raw = await readBody(req);
     let parsed: unknown;
@@ -1298,6 +1310,39 @@ export class SmartServer {
         res.end(
           jsonError(
             `Unsupported agent config fields: ${unsupported.join(', ')}`,
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+    }
+
+    // --- Validate llmDefaults fields ---
+    const LLM_DEFAULTS_FIELDS = new Set(['temperature', 'maxTokens']);
+    if (body.llmDefaults !== undefined) {
+      if (
+        typeof body.llmDefaults !== 'object' ||
+        body.llmDefaults === null ||
+        Array.isArray(body.llmDefaults)
+      ) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            '"llmDefaults" must be a JSON object',
+            'invalid_request_error',
+          ),
+        );
+        return;
+      }
+      const fields = body.llmDefaults as Record<string, unknown>;
+      const unsupported = Object.keys(fields).filter(
+        (k) => !LLM_DEFAULTS_FIELDS.has(k),
+      );
+      if (unsupported.length > 0) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(
+          jsonError(
+            `Unsupported llmDefaults fields: ${unsupported.join(', ')}`,
             'invalid_request_error',
           ),
         );
@@ -1379,11 +1424,18 @@ export class SmartServer {
     if (body.agent) {
       smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
     }
+    if (body.llmDefaults && llmDefaults) {
+      const fields = body.llmDefaults as Record<string, unknown>;
+      if (fields.temperature !== undefined)
+        llmDefaults.temperature = Number(fields.temperature);
+      if (fields.maxTokens !== undefined)
+        llmDefaults.maxTokens = Number(fields.maxTokens);
+    }
 
     // --- Return updated config ---
     const models = smartAgent.getActiveConfig();
     const agent = smartAgent.getAgentConfig();
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify({ models, agent }));
+    res.end(JSON.stringify({ models, agent, llmDefaults }));
   }
 }

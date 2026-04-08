@@ -276,6 +276,64 @@ describe('PUT /v1/config', () => {
   });
 });
 
+describe('llmDefaults in config', () => {
+  it('GET /v1/config includes llmDefaults', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model', temperature: 0.9 },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'GET', '/v1/config');
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      assert.ok(body.llmDefaults);
+      const defaults = body.llmDefaults as Record<string, unknown>;
+      assert.equal(defaults.temperature, 0.9);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('PUT /v1/config updates llmDefaults', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model', temperature: 0.7 },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        llmDefaults: { temperature: 0.3 },
+      });
+      assert.equal(res.status, 200);
+      const body = res.body as Record<string, unknown>;
+      const defaults = body.llmDefaults as Record<string, unknown>;
+      assert.equal(defaults.temperature, 0.3);
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('rejects unsupported llmDefaults fields', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+    });
+    const handle = await server.start();
+    try {
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        llmDefaults: { topP: 0.9 },
+      });
+      assert.equal(res.status, 400);
+    } finally {
+      await handle.close();
+    }
+  });
+});
+
 describe('PUT /v1/config — models', () => {
   it('resolves and reconfigures models when resolver is set', async () => {
     const newMain = { ...makeTestLlm([{ content: 'ok' }]), model: 'gpt-4o' };
