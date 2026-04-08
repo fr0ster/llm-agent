@@ -1255,6 +1255,12 @@ export class SmartServer {
     'ragUpsertEnabled',
   ]);
 
+  /** Whitelisted llmDefaults fields allowed via PUT /v1/config. */
+  private static readonly LLM_DEFAULTS_FIELDS = new Set([
+    'temperature',
+    'maxTokens',
+  ]);
+
   private async _handleConfigUpdate(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1318,7 +1324,6 @@ export class SmartServer {
     }
 
     // --- Validate llmDefaults fields ---
-    const LLM_DEFAULTS_FIELDS = new Set(['temperature', 'maxTokens']);
     if (body.llmDefaults !== undefined) {
       if (
         typeof body.llmDefaults !== 'object' ||
@@ -1336,7 +1341,7 @@ export class SmartServer {
       }
       const fields = body.llmDefaults as Record<string, unknown>;
       const unsupported = Object.keys(fields).filter(
-        (k) => !LLM_DEFAULTS_FIELDS.has(k),
+        (k) => !SmartServer.LLM_DEFAULTS_FIELDS.has(k),
       );
       if (unsupported.length > 0) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
@@ -1391,25 +1396,25 @@ export class SmartServer {
         return;
       }
       try {
+        const resolver = this.cfg.modelResolver;
+        const [mainLlm, classifierLlm, helperLlm] = await Promise.all([
+          modelFields.mainModel
+            ? resolver.resolve(String(modelFields.mainModel), 'main')
+            : undefined,
+          modelFields.classifierModel
+            ? resolver.resolve(
+                String(modelFields.classifierModel),
+                'classifier',
+              )
+            : undefined,
+          modelFields.helperModel
+            ? resolver.resolve(String(modelFields.helperModel), 'helper')
+            : undefined,
+        ]);
         resolvedModels = {};
-        if (modelFields.mainModel) {
-          resolvedModels.mainLlm = await this.cfg.modelResolver.resolve(
-            String(modelFields.mainModel),
-            'main',
-          );
-        }
-        if (modelFields.classifierModel) {
-          resolvedModels.classifierLlm = await this.cfg.modelResolver.resolve(
-            String(modelFields.classifierModel),
-            'classifier',
-          );
-        }
-        if (modelFields.helperModel) {
-          resolvedModels.helperLlm = await this.cfg.modelResolver.resolve(
-            String(modelFields.helperModel),
-            'helper',
-          );
-        }
+        if (mainLlm) resolvedModels.mainLlm = mainLlm;
+        if (classifierLlm) resolvedModels.classifierLlm = classifierLlm;
+        if (helperLlm) resolvedModels.helperLlm = helperLlm;
       } catch (err) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(jsonError(String(err), 'server_error'));
