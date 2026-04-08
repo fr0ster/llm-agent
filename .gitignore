@@ -44,3 +44,4 @@ yarn-error.log*
 sessions/
 logs_debug/
 .codex
+.worktrees
