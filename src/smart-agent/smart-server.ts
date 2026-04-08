@@ -841,6 +841,10 @@ export class SmartServer {
         tool_calls?: unknown;
       }>;
       model?: string;
+      temperature?: number;
+      max_tokens?: number;
+      top_p?: number;
+      stop?: string | string[];
       tools?: unknown[];
       stream?: boolean;
       stream_options?: { include_usage?: boolean };
@@ -925,6 +929,14 @@ export class SmartServer {
       trace: { traceId },
       sessionLogger,
       model: body.model,
+      ...(body.temperature !== undefined
+        ? { temperature: body.temperature }
+        : {}),
+      ...(body.max_tokens !== undefined ? { maxTokens: body.max_tokens } : {}),
+      ...(body.top_p !== undefined ? { topP: body.top_p } : {}),
+      ...(body.stop !== undefined
+        ? { stop: Array.isArray(body.stop) ? body.stop : [body.stop] }
+        : {}),
     };
 
     const responseModel =
