@@ -18,10 +18,16 @@ import {
 import type { CircuitBreaker } from './circuit-breaker.js';
 
 export class CircuitBreakerLlm implements ILlm {
+  healthCheck?: ILlm['healthCheck'];
+
   constructor(
     private readonly inner: ILlm,
     readonly breaker: CircuitBreaker,
-  ) {}
+  ) {
+    if (inner.healthCheck) {
+      this.healthCheck = inner.healthCheck.bind(inner);
+    }
+  }
 
   get model(): string | undefined {
     return this.inner.model;
