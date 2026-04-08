@@ -21,6 +21,7 @@ import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 import type { ILlm } from './interfaces/llm.js';
+import type { IModelResolver } from './interfaces/model-resolver.js';
 import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
 import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
@@ -169,6 +170,26 @@ export function makeDefaultLlm(
   temperature: number,
 ): ILlm {
   return makeLlm({ provider: 'deepseek', apiKey, model }, temperature);
+}
+
+/**
+ * Default IModelResolver — delegates to makeLlm() with the given provider settings.
+ * Returns fully constructed ILlm instances ready for use with SmartAgent.reconfigure().
+ */
+export class DefaultModelResolver implements IModelResolver {
+  constructor(
+    private readonly providerConfig: Omit<LlmProviderConfig, 'model'>,
+    private readonly defaults: { temperature?: number } = {},
+  ) {}
+
+  async resolve(
+    modelName: string,
+    role: 'main' | 'classifier' | 'helper',
+  ): Promise<ILlm> {
+    const temperature =
+      this.defaults.temperature ?? (role === 'main' ? 0.7 : 0.1);
+    return makeLlm({ ...this.providerConfig, model: modelName }, temperature);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -322,6 +322,33 @@ export class SmartAgent {
     };
   }
 
+  /** Returns whitelisted runtime-safe agent config fields (for HTTP DTO). */
+  getAgentConfig(): {
+    maxIterations: number;
+    maxToolCalls?: number;
+    ragQueryK?: number;
+    toolUnavailableTtlMs?: number;
+    showReasoning?: boolean;
+    historyAutoSummarizeLimit?: number;
+    classificationEnabled?: boolean;
+    ragRetrievalMode?: 'auto' | 'always' | 'never';
+    ragTranslationEnabled?: boolean;
+    ragUpsertEnabled?: boolean;
+  } {
+    return {
+      maxIterations: this.config.maxIterations,
+      maxToolCalls: this.config.maxToolCalls,
+      ragQueryK: this.config.ragQueryK,
+      toolUnavailableTtlMs: this.config.toolUnavailableTtlMs,
+      showReasoning: this.config.showReasoning,
+      historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
+      classificationEnabled: this.config.classificationEnabled,
+      ragRetrievalMode: this.config.ragRetrievalMode,
+      ragTranslationEnabled: this.config.ragTranslationEnabled,
+      ragUpsertEnabled: this.config.ragUpsertEnabled,
+    };
+  }
+
   async healthCheck(options?: CallOptions): Promise<
     Result<
       {

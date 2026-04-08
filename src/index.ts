@@ -126,6 +126,7 @@ export type {
   IModelInfo,
   IModelProvider,
 } from './smart-agent/interfaces/model-provider.js';
+export type { IModelResolver } from './smart-agent/interfaces/model-resolver.js';
 // Query Embedding
 export type { IQueryEmbedding } from './smart-agent/interfaces/query-embedding.js';
 // Embedder & RAG
@@ -221,6 +222,7 @@ export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-
 export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export {
+  DefaultModelResolver,
   type EmbedderResolutionConfig,
   type EmbedderResolutionOptions,
   type LlmProviderConfig,
