@@ -468,6 +468,8 @@ print(response.choices[0].message.content)
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (JSON or SSE streaming) |
 | `/v1/models` | GET | List available models |
+| `/v1/config` | GET | Active runtime configuration (models + agent params) |
+| `/v1/config` | PUT | Partial runtime reconfiguration |
 | `/v1/health` | GET | Health check |
 | `/v1/usage` | GET | Token usage statistics |
 

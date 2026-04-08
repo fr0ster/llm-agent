@@ -198,6 +198,55 @@ const result = await handle.chat(messages, tools, { model: 'gpt-4o-mini' });
 
 Via `SmartServer`: the `model` field in `POST /v1/chat/completions` request body is forwarded automatically to the main LLM. Classifier and helper models are unaffected.
 
+## IModelResolver
+
+**File:** `src/smart-agent/interfaces/model-resolver.ts`
+
+Resolves a model name into an `ILlm` instance at runtime. Used by `SmartServer` to handle `PUT /v1/config` model changes:
+
+```ts
+interface IModelResolver {
+  resolve(modelName: string, role: 'main' | 'classifier' | 'helper'): Promise<ILlm>;
+}
+```
+
+### DefaultModelResolver
+
+Wraps `makeLlm()` with provider settings. Pass the same provider config used at startup:
+
+```ts
+import { DefaultModelResolver, SmartServer } from '@mcp-abap-adt/llm-agent';
+
+const server = new SmartServer({
+  llm: { apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
+  modelResolver: new DefaultModelResolver({
+    provider: 'openai',
+    apiKey: process.env.OPENAI_API_KEY!,
+  }),
+});
+```
+
+### Runtime config endpoints
+
+`GET /v1/config` returns models and whitelisted agent parameters:
+
+```json
+{
+  "models": { "mainModel": "gpt-4o", "classifierModel": "gpt-4o-mini" },
+  "agent": { "maxIterations": 10, "classificationEnabled": true }
+}
+```
+
+`PUT /v1/config` applies partial updates atomically (all-or-nothing):
+
+```bash
+curl -X PUT http://localhost:4004/v1/config \
+  -H "Content-Type: application/json" \
+  -d '{"models": {"classifierModel": "gpt-4o"}, "agent": {"maxIterations": 20}}'
+```
+
+Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are validated against a whitelist — unsupported fields return 400.
+
 ## IRag
 
 **File:** `src/smart-agent/interfaces/rag.ts`

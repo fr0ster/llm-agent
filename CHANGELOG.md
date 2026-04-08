@@ -7,6 +7,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.19.0] — 2026-04-09
+
+### Added
+- **Runtime configuration HTTP endpoints** — `GET /v1/config` returns active models and whitelisted agent parameters. `PUT /v1/config` applies partial runtime reconfiguration with atomicity (all-or-nothing). Supports model changes via `IModelResolver` interface and agent parameter updates via whitelist. Closes #78.
+- **`IModelResolver` interface** — pluggable model name → `ILlm` resolution for HTTP config updates. `DefaultModelResolver` wraps `makeLlm()` with provider settings.
+- **`SmartAgent.getAgentConfig()`** — returns a stable DTO of whitelisted runtime-safe config fields, decoupled from internal `SmartAgentConfig`.
+
+---
+
 ## [5.18.1] — 2026-04-08
 
 ### Fixed
