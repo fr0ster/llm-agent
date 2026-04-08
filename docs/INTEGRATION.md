@@ -1087,6 +1087,34 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 
 > **Verification:** Unit tests cover timeout configuration and signal merging, but they use fast in-memory stubs. After changing `healthTimeoutMs` in production, manually verify `/v1/health` against your actual provider to confirm the timeout is sufficient. For SAP AI Core, a cold-start health check (first call after deploy, when the OAuth token is not yet cached) is the slowest path — test that scenario specifically.
 
+### Runtime Reconfiguration
+
+Swap LLM instances at runtime without restarting the server:
+
+```typescript
+import { makeLlm } from '@mcp-abap-adt/llm-agent';
+
+// Create a new classifier LLM
+const newClassifier = makeLlm(
+  { provider: 'openai', apiKey: key, model: 'gpt-4.1-mini' },
+  0.1,
+);
+
+// Swap it at runtime
+agent.reconfigure({ classifierLlm: newClassifier });
+
+// Inspect active configuration
+console.log(agent.getActiveConfig());
+// { mainModel: 'deepseek-chat', classifierModel: 'gpt-4.1-mini', helperModel: undefined }
+```
+
+**Important:**
+
+- Changes apply only to **new requests** — in-flight requests continue with the previous LLM snapshot.
+- Reconfigured LLMs do **not** inherit builder-time wrappers (retry, circuit breaker, rate limiter). Wrap before passing if needed.
+- Derived components created during `build()` (e.g., `historySummarizer`, `queryExpander`) are **not** automatically rebuilt.
+- `reconfigure()` is synchronous and in-memory only — it does not persist changes to YAML config.
+
 ## ILlmRateLimiter — Rate Limiting
 
 Throttle outbound LLM requests to stay within provider rate limits.
