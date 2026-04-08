@@ -30,13 +30,6 @@ export class NonStreamingLlm implements ILlm {
     return this.inner.model;
   }
 
-  async healthCheck(options?: CallOptions): Promise<Result<boolean, LlmError>> {
-    if (this.inner.healthCheck) {
-      return this.inner.healthCheck(options);
-    }
-    return { ok: true, value: true };
-  }
-
   chat(
     messages: Message[],
     tools?: LlmTool[],
