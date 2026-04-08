@@ -87,6 +87,7 @@ agent:
   # llmCallStrategy: streaming       # streaming | non-streaming | fallback
   # streamMode: full                 # full | final — streaming behavior for tool loops
   # heartbeatIntervalMs: 5000       # SSE heartbeat interval during tool execution (ms)
+  # healthTimeoutMs: 5000            # Health check probe timeout (ms); increase for slow providers (SAP AI Core: 15000)
   # retry:                           # LLM retry config for 429/5xx errors
   #   maxAttempts: 3
   #   backoffMs: 1000
@@ -443,6 +444,11 @@ export function resolveSmartServerConfig(
             heartbeatIntervalMs: Number(
               get(yaml, 'agent', 'heartbeatIntervalMs'),
             ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'healthTimeoutMs') !== undefined
+        ? {
+            healthTimeoutMs: Number(get(yaml, 'agent', 'healthTimeoutMs')),
           }
         : {}),
       ...(get(yaml, 'agent', 'retry') !== undefined
