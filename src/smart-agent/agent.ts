@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Message } from '../types.js';
 import { NoopToolCache } from './cache/noop-tool-cache.js';
 import type { IToolCache } from './cache/types.js';
+import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
@@ -88,6 +89,7 @@ export interface SmartAgentDeps {
   mcpClients: IMcpClient[];
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
+  classifierConfig?: LlmClassifierConfig;
   assembler: IContextAssembler;
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
