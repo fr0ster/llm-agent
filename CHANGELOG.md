@@ -7,6 +7,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.18.1] — 2026-04-08
+
+### Fixed
+- **`baseURL` passthrough** — `makeLlm()` now forwards `baseURL` to OpenAI, Anthropic, and DeepSeek providers. `LlmProviderConfig` and `PipelineLlmProviderConfig` include `baseURL?: string` for custom OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM). Closes #73.
+- **Health check timeout** — `HEALTH_TIMEOUT_MS` is no longer hardcoded to 5 000 ms. New `SmartAgentConfig.healthTimeoutMs` (default 5 000) allows higher values for slow providers like SAP AI Core Orchestration. `NonStreamingLlm` now proxies `healthCheck()` to the inner LLM so the lightweight `getModels()` path is used instead of the `chat('ping')` fallback. Closes #71.
+
+---
+
 ## [5.18.0] — 2026-04-07
 
 ### Added

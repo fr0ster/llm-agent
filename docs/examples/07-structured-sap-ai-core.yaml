@@ -11,6 +11,9 @@ port: 4004
 host: 0.0.0.0
 mode: smart
 
+agent:
+  healthTimeoutMs: 15000   # SAP AI Core round-trips often exceed the default 5 s
+
 pipeline:
   llm:
     main:
