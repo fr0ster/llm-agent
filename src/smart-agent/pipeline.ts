@@ -15,6 +15,8 @@ export interface PipelineLlmProviderConfig {
   provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
   /** API key. Required for openai/anthropic/deepseek; optional for sap-ai-sdk. */
   apiKey?: string;
+  /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
+  baseURL?: string;
   model?: string;
   temperature?: number;
   /** Maximum number of tokens in the LLM response. */
