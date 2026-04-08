@@ -222,6 +222,7 @@ export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-
 export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
 export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export {
+  DefaultModelResolver,
   type EmbedderResolutionConfig,
   type EmbedderResolutionOptions,
   type LlmProviderConfig,
