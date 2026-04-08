@@ -3,6 +3,7 @@ import type { Message } from '../types.js';
 import { NoopToolCache } from './cache/noop-tool-cache.js';
 import type { IToolCache } from './cache/types.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
+import { LlmClassifier } from './classifier/llm-classifier.js';
 import type { IContextAssembler } from './interfaces/assembler.js';
 import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
@@ -200,6 +201,12 @@ function createTimeoutSignal(ms: number): {
   return { signal: ctrl.signal, clear: () => clearTimeout(id) };
 }
 
+export interface SmartAgentReconfigureOptions {
+  mainLlm?: ILlm;
+  classifierLlm?: ILlm;
+  helperLlm?: ILlm;
+}
+
 export class SmartAgent {
   private readonly toolAvailabilityRegistry: ToolAvailabilityRegistry;
   private readonly tracer: ITracer;
@@ -213,6 +220,10 @@ export class SmartAgent {
   private readonly requestLogger: IRequestLogger;
   private readonly defaultLlmCallStrategy: ILlmCallStrategy;
   private _activeClients: IMcpClient[];
+  private _mainLlm: ILlm;
+  private _classifierLlm: ILlm | undefined;
+  private _helperLlm: ILlm | undefined;
+  private _classifier: ISubpromptClassifier;
 
   constructor(
     private readonly deps: SmartAgentDeps,
@@ -235,6 +246,10 @@ export class SmartAgent {
     this.defaultLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
     this._activeClients = [...deps.mcpClients];
+    this._mainLlm = deps.mainLlm;
+    this._helperLlm = deps.helperLlm;
+    this._classifier = deps.classifier;
+    this._classifierLlm = undefined;
   }
 
   private async _resolveActiveClients(opts?: CallOptions): Promise<void> {
@@ -271,6 +286,42 @@ export class SmartAgent {
     this.config = { ...this.config, ...update };
   }
 
+  /**
+   * Replace active LLM instances at runtime.
+   * Changes apply to new requests only — in-flight requests continue
+   * using the dependency snapshot captured at request start.
+   * Reconfigured LLMs do not inherit builder-time wrappers (retry, circuit breaker, rate limiter).
+   */
+  reconfigure(update: SmartAgentReconfigureOptions): void {
+    if (update.mainLlm) {
+      this._mainLlm = update.mainLlm;
+    }
+    if (update.helperLlm) {
+      this._helperLlm = update.helperLlm;
+    }
+    if (update.classifierLlm) {
+      this._classifierLlm = update.classifierLlm;
+      this._classifier = new LlmClassifier(
+        update.classifierLlm,
+        this.deps.classifierConfig,
+        this.requestLogger,
+      );
+    }
+  }
+
+  /** Returns the model identifiers of the currently active LLM instances. */
+  getActiveConfig(): {
+    mainModel?: string;
+    classifierModel?: string;
+    helperModel?: string;
+  } {
+    return {
+      mainModel: this._mainLlm.model,
+      classifierModel: this._classifierLlm?.model,
+      helperModel: this._helperLlm?.model,
+    };
+  }
+
   async healthCheck(options?: CallOptions): Promise<
     Result<
       {
@@ -297,12 +348,12 @@ export class SmartAgent {
       mcp: [] as { name: string; ok: boolean; error?: string }[],
     };
     try {
-      if (this.deps.mainLlm.healthCheck) {
-        const hc = await this.deps.mainLlm.healthCheck(healthOptions);
+      if (this._mainLlm.healthCheck) {
+        const hc = await this._mainLlm.healthCheck(healthOptions);
         results.llm = hc.ok && hc.value;
       } else {
         // Fallback for ILlm implementations without healthCheck
-        const llmRes = await this.deps.mainLlm.chat(
+        const llmRes = await this._mainLlm.chat(
           [{ role: 'user' as const, content: 'ping' }],
           [],
           healthOptions,
@@ -501,11 +552,7 @@ export class SmartAgent {
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
-        const stream = this.deps.mainLlm.streamChat(
-          messages,
-          externalTools,
-          opts,
-        );
+        const stream = this._mainLlm.streamChat(messages, externalTools, opts);
         let passContent = '';
         const passToolCalls: unknown[] = [];
         for await (const chunk of stream) {
@@ -890,7 +937,7 @@ export class SmartAgent {
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
     let processedHistory = history;
     const summarizeLimit = this.config.historyAutoSummarizeLimit ?? 10;
-    if (this.deps.helperLlm && history.length > summarizeLimit) {
+    if (this._helperLlm && history.length > summarizeLimit) {
       const res = await this._summarizeHistory(history, opts);
       if (res.ok) processedHistory = res.value;
     }
@@ -907,7 +954,7 @@ export class SmartAgent {
       const classifySpan = this.tracer.startSpan('smart_agent.classify', {
         parent: parentSpan,
       });
-      const classifyResult = await this.deps.classifier.classify(text, opts);
+      const classifyResult = await this._classifier.classify(text, opts);
       if (!classifyResult.ok) {
         classifySpan.setStatus('error', classifyResult.error.message);
         classifySpan.end();
@@ -1208,7 +1255,7 @@ export class SmartAgent {
       this.metrics.llmCallCount.add();
       const llmCallStart = Date.now();
       const stream = this.defaultLlmCallStrategy.call(
-        this.deps.mainLlm,
+        this._mainLlm,
         messages,
         currentTools,
         opts,
@@ -1709,7 +1756,7 @@ export class SmartAgent {
     if (/^[\p{ASCII}]+$/u.test(text) || text.length < 15) return text;
     const dp =
       'Translate the user request to English for search purposes. Preserve technical terms if present. Reply with only the expanded English terms, no explanation.';
-    const llm = this.deps.helperLlm || this.deps.mainLlm;
+    const llm = this._helperLlm || this._mainLlm;
     const res = await llm.chat(
       [
         {
@@ -1728,14 +1775,14 @@ export class SmartAgent {
     h: Message[],
     opts?: CallOptions,
   ): Promise<Result<Message[], OrchestratorError>> {
-    if (!this.deps.helperLlm) return { ok: true, value: h };
+    if (!this._helperLlm) return { ok: true, value: h };
     const toS = h.slice(0, -5);
     const rec = h.slice(-5);
     if (toS.length === 0) return { ok: true, value: h };
     const dp =
       'Summarize the conversation so far in 2-3 sentences. Focus on the user goals and the current status of the task. Keep technical SAP terms as is.';
     const summarizeStart = Date.now();
-    const res = await this.deps.helperLlm.chat(
+    const res = await this._helperLlm.chat(
       [
         ...toS,
         {
@@ -1748,7 +1795,7 @@ export class SmartAgent {
     );
     this.requestLogger.logLlmCall({
       component: 'helper',
-      model: this.deps.helperLlm.model ?? 'unknown',
+      model: this._helperLlm.model ?? 'unknown',
       promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
@@ -1811,10 +1858,10 @@ export class SmartAgent {
       sessionId,
 
       // Dependencies
-      mainLlm: this.deps.mainLlm,
-      helperLlm: this.deps.helperLlm,
-      classifierLlm: this.deps.mainLlm,
-      classifier: this.deps.classifier,
+      mainLlm: this._mainLlm,
+      helperLlm: this._helperLlm,
+      classifierLlm: this._mainLlm,
+      classifier: this._classifier,
       assembler: this.deps.assembler,
       ragStores: this.deps.ragStores,
       mcpClients: this._activeClients,
