@@ -11,10 +11,7 @@ export { evaluateCondition } from './condition-evaluator.js';
 // Context
 export type { PipelineContext } from './context.js';
 // Default pipeline
-export {
-  getDefaultPipelineDefinition,
-  getDefaultStages,
-} from './default-pipeline.js';
+export { DefaultPipeline } from './default-pipeline.js';
 
 // Executor
 export { PipelineExecutor } from './executor.js';
