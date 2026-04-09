@@ -164,7 +164,7 @@ export class DefaultPipeline implements IPipeline {
       ragChildren.push({
         id: 'rag-history',
         type: 'rag-query',
-        config: { store: 'history' },
+        config: { store: 'history', scope: 'session' },
       });
     }
 
