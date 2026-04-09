@@ -7,6 +7,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.19.2] — 2026-04-09
+
+### Added
+- **Docker deployment examples** — three ready-to-use Docker Compose setups:
+  - `examples/docker-ollama/` — fully local (Ollama LLM + embeddings, no API keys)
+  - `examples/docker-deepseek/` — DeepSeek LLM + Ollama embeddings
+  - `examples/docker-sap-ai-core/` — SAP AI Core with Qdrant, plugins, skills, and compat layer
+
+### Changed
+- **Docs reorganized** — moved `QUICK_START.md` to `docs/`, removed `EXAMPLES.md` stub from root. Root now contains only standard files (`README.md`, `CHANGELOG.md`, `CLAUDE.md`, `AGENTS.md`).
+
+---
+
 ## [5.19.1] — 2026-04-09
 
 ### Fixed
