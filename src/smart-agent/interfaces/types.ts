@@ -23,6 +23,7 @@ export interface TraceContext {
 export interface CallOptions {
   trace?: TraceContext;
   sessionId?: string;
+  userId?: string;
   signal?: AbortSignal;
   temperature?: number;
   maxTokens?: number;
@@ -34,6 +35,9 @@ export interface CallOptions {
   /** Filter RAG results by namespace or other metadata. */
   ragFilter?: {
     namespace?: string;
+    userId?: string;
+    sessionId?: string;
+    [key: string]: unknown;
   };
   /** Detailed session debugger logger. */
   sessionLogger?: {
@@ -132,7 +136,7 @@ export class SkillError extends SmartAgentError {
 // Subprompt
 // ---------------------------------------------------------------------------
 
-export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action' | 'chat';
+export type SubpromptType = 'action' | 'chat' | (string & {});
 
 export interface Subprompt {
   type: SubpromptType;

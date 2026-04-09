@@ -26,9 +26,6 @@ export interface HotReloadableConfig {
   toolResultCacheTtlMs?: number;
   sessionTokenBudget?: number;
   classificationEnabled?: boolean;
-  ragRetrievalMode?: 'auto' | 'always' | 'never';
-  ragTranslationEnabled?: boolean;
-  ragUpsertEnabled?: boolean;
   vectorWeight?: number;
   keywordWeight?: number;
   prompts?: {
@@ -140,15 +137,6 @@ export class ConfigWatcher extends EventEmitter {
       config.sessionTokenBudget = Number(agent.sessionTokenBudget);
     if (agent.classificationEnabled !== undefined)
       config.classificationEnabled = Boolean(agent.classificationEnabled);
-    if (agent.ragRetrievalMode !== undefined)
-      config.ragRetrievalMode = String(agent.ragRetrievalMode) as
-        | 'auto'
-        | 'always'
-        | 'never';
-    if (agent.ragTranslationEnabled !== undefined)
-      config.ragTranslationEnabled = Boolean(agent.ragTranslationEnabled);
-    if (agent.ragUpsertEnabled !== undefined)
-      config.ragUpsertEnabled = Boolean(agent.ragUpsertEnabled);
 
     if (rag.vectorWeight !== undefined)
       config.vectorWeight = Number(rag.vectorWeight);

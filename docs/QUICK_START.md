@@ -199,12 +199,10 @@ pipeline:
       temperature: 0.1
 
   rag:
-    facts:
-      type: ollama              # neural embeddings for tool knowledge
-    feedback:
-      type: in-memory           # lightweight for user corrections
-    state:
-      type: in-memory
+    tools:
+      type: ollama              # neural embeddings for tool/skill selection
+    history:
+      type: in-memory           # semantic conversation history (optional)
 
   mcp:
     - type: http

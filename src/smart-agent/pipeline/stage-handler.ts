@@ -16,9 +16,9 @@
  *
  * ## Custom handlers
  *
- * Consumers can register custom stage handlers via
- * `SmartAgentBuilder.withStageHandler(type, handler)` to extend the pipeline
- * with domain-specific operations.
+ * Consumers can extend the pipeline by supplying a custom `IPipeline`
+ * implementation to `SmartAgentBuilder.setPipeline()` and registering
+ * additional handlers in their own `buildDefaultHandlerRegistry()` call.
  */
 
 import type { ISpan } from '../tracer/types.js';

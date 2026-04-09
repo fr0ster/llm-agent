@@ -5,7 +5,6 @@
  * Writes: `ctx.ragText`
  *
  * Skips translation when:
- * - `ragTranslationEnabled` is false
  * - Text is ASCII-only
  * - Text is shorter than 15 characters
  */
@@ -20,12 +19,6 @@ export class TranslateHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
-    if (ctx.config.ragTranslationEnabled === false) {
-      span.setAttribute('skipped', true);
-      span.setAttribute('reason', 'disabled');
-      return true;
-    }
-
     ctx.isAscii = /^[\p{ASCII}]+$/u.test(ctx.ragText);
 
     if (ctx.isAscii || ctx.ragText.length < 15) {

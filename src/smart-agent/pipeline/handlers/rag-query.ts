@@ -6,10 +6,11 @@
  *
  * ## Config
  *
- * | Field   | Type   | Default  | Description                          |
- * |---------|--------|----------|--------------------------------------|
- * | `store` | string | required | Store key (must exist in `ctx.ragStores`) |
- * | `k`     | number | from ctx | Number of results to retrieve        |
+ * | Field   | Type                           | Default  | Description                          |
+ * |---------|--------------------------------|----------|--------------------------------------|
+ * | `store` | string                         | required | Store key (must exist in `ctx.ragStores`) |
+ * | `k`     | number                         | from ctx | Number of results to retrieve        |
+ * | `scope` | `global` \| `user` \| `session` | —        | Scope filter: `user` adds userId filter, `session` adds sessionId filter, `global` adds no filter |
  *
  * ## Parallel safety
  *
@@ -17,6 +18,8 @@
  * multiple rag-query stages can safely run in parallel.
  */
 
+import type { RagScope } from '../../interfaces/plugin.js';
+import type { CallOptions } from '../../interfaces/types.js';
 import {
   QueryEmbedding,
   TextOnlyEmbedding,
@@ -50,8 +53,23 @@ export class RagQueryHandler implements IStageHandler {
         : new TextOnlyEmbedding(ctx.ragText);
     }
 
+    // Build scope filter based on config
+    const scope = config.scope as RagScope | undefined;
+    const scopeFilter: Record<string, unknown> = {};
+    if (scope === 'user' && ctx.options?.userId) {
+      scopeFilter.userId = ctx.options.userId;
+    }
+    if (scope === 'session') {
+      scopeFilter.sessionId = ctx.sessionId;
+    }
+
+    const queryOptions: CallOptions = {
+      ...ctx.options,
+      ragFilter: { ...ctx.options?.ragFilter, ...scopeFilter },
+    };
+
     const ragStart = Date.now();
-    const result = await store.query(ctx.queryEmbedding, k, ctx.options);
+    const result = await store.query(ctx.queryEmbedding, k, queryOptions);
     ctx.requestLogger.logRagQuery({
       store: storeName,
       query: ctx.ragText.slice(0, 200),

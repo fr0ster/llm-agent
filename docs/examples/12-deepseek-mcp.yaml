@@ -42,9 +42,6 @@ agent:
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
   sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
   # classificationEnabled: true      # Enable/disable intent classification stage
-  # ragRetrievalMode: auto           # auto | always | never — controls RAG retrieval
-  # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
-  # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
 
 # --- Advanced Multi-Model Pipeline (optional) -------------------------------
 # Use this section to assign different models for different internal tasks.
@@ -67,15 +64,13 @@ agent:
 #       temperature: 0.1
 #
 #   rag:
-#     facts:
+#     tools:
 #       type: qdrant
 #       url: http://qdrant:6333
 #       embedder: openai              # ollama | openai | <custom registered name>
 #       model: text-embedding-3-small
 #       apiKey: ${OPENAI_API_KEY}
-#     feedback:
-#       type: in-memory
-#     state:
+#     history:
 #       type: in-memory
 #
 #   mcp:
@@ -83,8 +78,8 @@ agent:
 #       url: http://localhost:3001/mcp/stream/http
 
 # --- Structured Pipeline (optional) -------------------------------------------
-# Replaces the hardcoded orchestration flow with a YAML-defined stage tree.
-# When absent, the default flow runs unchanged (full backwards compatibility).
+# Replaces DefaultPipeline with a YAML-defined stage tree.
+# When absent, DefaultPipeline runs (tools + history stores, no rag-upsert).
 #
 # pipeline:
 #   version: "1"
@@ -93,27 +88,21 @@ agent:
 #       type: classify
 #     - id: summarize
 #       type: summarize
-#     - id: rag-upsert
-#       type: rag-upsert
 #     - id: rag-retrieval
 #       type: parallel
-#       when: "shouldRetrieve"
 #       stages:
-#         - { id: translate, type: translate }
-#         - { id: expand, type: expand }
+#         - { id: rag-tools, type: rag-query, config: { store: tools, k: 10 } }
+#         - { id: rag-history, type: rag-query, config: { store: history, k: 5 } }
 #       after:
-#         - id: rag-queries
-#           type: parallel
-#           stages:
-#             - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
-#             - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-#             - { id: state, type: rag-query, config: { store: state, k: 5 } }
 #         - { id: rerank, type: rerank }
-#         - { id: tool-select, type: tool-select }
+#     - { id: skill-select, type: skill-select }
+#     - { id: tool-select, type: tool-select }
 #     - id: assemble
 #       type: assemble
 #     - id: tool-loop
 #       type: tool-loop
+#     - id: history-upsert
+#       type: history-upsert
 
 # --- Custom Prompts (optional) ------------------------------------------------
 # prompts:

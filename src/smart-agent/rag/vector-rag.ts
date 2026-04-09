@@ -263,4 +263,9 @@ export class VectorRag implements IPrecomputedVectorRag {
       };
     }
   }
+
+  clear(): void {
+    this.records.length = 0;
+    this.index.clear();
+  }
 }

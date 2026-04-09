@@ -127,6 +127,16 @@ export type {
   IModelProvider,
 } from './smart-agent/interfaces/model-provider.js';
 export type { IModelResolver } from './smart-agent/interfaces/model-resolver.js';
+export type {
+  IPipeline,
+  PipelineDeps,
+  PipelineResult,
+} from './smart-agent/interfaces/pipeline.js';
+export type {
+  IRagStoreConfig,
+  ISmartAgentPlugin,
+  RagScope,
+} from './smart-agent/interfaces/plugin.js';
 // Query Embedding
 export type { IQueryEmbedding } from './smart-agent/interfaces/query-embedding.js';
 // Embedder & RAG
@@ -195,13 +205,11 @@ export type {
   PipelineContext,
   StageDefinition,
   StageType,
-  StructuredPipelineDefinition,
 } from './smart-agent/pipeline/index.js';
 export {
   buildDefaultHandlerRegistry,
+  DefaultPipeline,
   evaluateCondition,
-  getDefaultPipelineDefinition,
-  getDefaultStages,
   PipelineExecutor,
 } from './smart-agent/pipeline/index.js';
 // Plugins

@@ -21,7 +21,8 @@ Client (OpenAI-compatible)
      -> SmartAgentBuilder (interface-only wiring, no provider knowledge)
         -> SmartAgent (orchestration loop)
            -> ILlm (main/helper/classifier via adapters)
-           -> IRag stores (facts/feedback/state)
+           -> IPipeline (request orchestration — DefaultPipeline or consumer-defined)
+           -> IRag stores (tools / history — consumer-defined)
            -> IMcpClient[] (one or many MCP endpoints)
            -> Policy guards (tool policy + injection detector)
 ```
@@ -35,9 +36,8 @@ flowchart LR
   P --> LMain("ILlm main")
   P --> LCls("ILlm classifier")
   P --> LHelp("ILlm helper")
-  P --> RF("IRag facts")
-  P --> RFB("IRag feedback")
-  P --> RS("IRag state")
+  P --> RT("IRag tools (optional)")
+  P --> RH("IRag history (optional)")
 
   SS --> B("SmartAgentBuilder — interface-only")
   B --> SA("SmartAgent")
@@ -45,9 +45,9 @@ flowchart LR
   B -.->|injected| LMain
   B -.->|injected| LCls
   B -.->|injected| LHelp
-  B -.->|injected| RF
-  B -.->|injected| RFB
-  B -.->|injected| RS
+  B -.->|injected| RT
+  B -.->|injected| RH
+  B --> PL("IPipeline")
   B --> CfgC("ISubpromptClassifier")
   B --> Ctx("IContextAssembler")
   B --> MCPS("IMcpClient list")
@@ -58,12 +58,12 @@ flowchart LR
   SA --> LMain
   SA --> LCls
   SA --> LHelp
+  SA --> PL
   SA --> CfgC
   SA --> Ctx
   SA --> MCPS
-  SA --> RF
-  SA --> RFB
-  SA --> RS
+  SA --> RT
+  SA --> RH
 
   P --> LA("LlmAdapter")
   LA --> BA("BaseAgent bridge")
@@ -163,20 +163,18 @@ sequenceDiagram
             H-->>SA: Condensed history
         end
         SA->>CL: classify(userText)
-        CL-->>SA: Subprompt[] (action/fact/chat/state/feedback)
-        SA->>RAG: upsert fact/state/feedback subprompts
+        CL-->>SA: Subprompt[] (action/chat)
     end
 
     Note over SA: Token budget check → auto-summarize if over
 
     rect rgb(255, 248, 240)
-        Note over SA,RR: 2. RAG Retrieval (if SAP/action context)
-        SA->>H: Translate query to English (if non-ASCII)
+        Note over SA,RR: 2. RAG Retrieval (tools + history stores, if configured)
         opt queryExpansionEnabled
             SA->>QE: expand(query)
             QE-->>SA: Expanded query with synonyms
         end
-        SA->>RAG: query facts, feedback, state (parallel)
+        SA->>RAG: query tools store, history store (parallel)
         RAG-->>SA: RagResult[] per store
         SA->>RR: rerank(query, results) per store
         RR-->>SA: Re-scored results
@@ -225,7 +223,7 @@ sequenceDiagram
 ### Key decision points
 
 1. **Mode selection** — `pass` skips the entire pipeline and streams directly from LLM. `smart` runs full orchestration. `hard` forces MCP-only tools (no external tools).
-2. **SAP context detection** — If any action subprompt has `context: "sap-abap"` or mode is `hard`, RAG retrieval and MCP tool selection are triggered. Otherwise, only external tools are used.
+2. **RAG retrieval** — When `tools` or `history` RAG stores are configured, they are queried in parallel. Tool selection uses `tools` store results. History retrieval uses `history` store results. Both are optional.
 3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
 4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
 5. **onBeforeStream hook** — If an `onBeforeStream` hook is configured, the final response content is passed through it before streaming to the caller (e.g., for reformatting or post-processing).
@@ -250,32 +248,15 @@ Entry points:
 Main implementation:
 - `src/smart-agent/agent.ts` (`SmartAgent`)
 
-SmartAgent has two execution paths:
-
-**Path A — Hardcoded flow** (default, when `pipeline.stages` is absent):
+SmartAgent delegates request orchestration to the injected `IPipeline`:
 
 1. Pre-flight and timeout/abort merging.
-2. Subprompt classification (`ISubpromptClassifier`).
-3. Optional history summarization (helper LLM).
-4. RAG retrieval for action subprompts (`facts/feedback/state`).
-5. MCP tool catalog retrieval and tool selection.
-6. Context assembly (`IContextAssembler`).
-7. Streaming tool loop:
-  - stream model output,
-  - accumulate tool-call deltas,
-  - execute internal MCP tools,
-  - return external tool calls to caller,
-  - enforce loop/tool limits.
+2. `pipeline.initialize(deps)` is called once at build time.
+3. Per request: `pipeline.execute(input, history, options, yieldChunk)`.
+4. `DefaultPipeline` (built-in): classify → summarize → RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert.
+5. Consumer pipelines can replace any or all stages.
 
-**Path B — Structured pipeline** (when `pipeline.stages` is present):
-
-1. Pre-flight and timeout/abort merging.
-2. Build `PipelineContext` with all dependencies and mutable state.
-3. `PipelineExecutor.executeStages()` walks the stage definition tree.
-4. Each stage handler reads/writes `PipelineContext`.
-5. The `tool-loop` handler streams via `ctx.yield()` callback.
-
-See [Structured Pipeline DSL](#structured-pipeline-dsl) for details.
+See [Pipeline Architecture](#pipeline-architecture) for details.
 
 ### 3. LLM Integration
 
@@ -307,13 +288,14 @@ Embedders are injectable via DI:
 - Programmatic: `SmartServer({ embedder: myEmbedder })`
 - YAML-driven: register custom factory via `SmartServer({ embedderFactories: { 'my-embedder': fn } })`, then reference in YAML as `embedder: my-embedder`
 
-Stores are split by intent:
+Stores are consumer-defined. The built-in DefaultPipeline recognizes two store keys:
 - `tools` (tool/skill schemas for RAG-based tool selection)
-- `facts` (domain/tool knowledge)
-- `feedback` (user guidance)
-- `state` (session memory)
+- `history` (semantic conversation history / long-term memory)
 
-The builder selects the `tools` store by key for tool/skill vectorization. If no `tools` key exists, it falls back to the first available store with a warning log.
+Both are optional. Consumer pipelines may define additional stores with arbitrary keys — the
+DefaultPipeline simply queries the stores it receives; it does not hard-code any store names.
+
+The builder selects the `tools` store by key for tool/skill vectorization at startup. If no `tools` store is provided, tool vectorization is skipped and all MCP tools are included in every request context.
 
 **Idempotent upsert contract:** when `metadata.id` is provided, implementations MUST treat it as an idempotent key — repeated upserts with the same id replace the previous record instead of creating duplicates. All built-in implementations (`QdrantRag`, `InMemoryRag`, `VectorRag`) enforce this.
 
@@ -387,7 +369,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 | `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
-| `IRag` (`facts/feedback/state`) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
+| `IRag` (`tools`/`history` + consumer-defined) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
 | `IMcpConnectionStrategy` | Per-request MCP reconnection / health recovery | `NoopConnectionStrategy` (no-op, default); `LazyConnectionStrategy` / `PeriodicConnectionStrategy` for auto-reconnect |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |
@@ -397,7 +379,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 ### Separation of concerns
 
-- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, etc. Has no knowledge of concrete providers. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
+- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
 - **`providers.ts`** (`src/smart-agent/providers.ts`) — composition root. The only module that imports concrete LLM providers (`DeepSeek`, `OpenAI`, `Anthropic`, `SapCoreAI`) and RAG implementations (`OllamaRag`, `QdrantRag`, etc.). Resolves config → interface instances.
 - **`SmartServer`** (`src/smart-agent/smart-server.ts`) — uses `providers.ts` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
@@ -501,7 +483,7 @@ Action policy:
 - `src/smart-agent/smart-server.ts`: production OpenAI-compatible server.
 - `src/smart-agent/builder.ts`: interface-only dependency wiring (no provider knowledge).
 - `src/smart-agent/providers.ts`: composition root — concrete provider/embedder/RAG resolution.
-- `src/smart-agent/pipeline.ts`: pipeline config types (types only, no logic).
+- `src/smart-agent/pipeline/default-pipeline.ts`: DefaultPipeline — built-in IPipeline implementation.
 - `src/smart-agent/context/context-assembler.ts`: final context construction.
 - `src/smart-agent/classifier/llm-classifier.ts`: subprompt decomposition.
 - `src/smart-agent/policy/*`: policy guard + injection detector.
@@ -548,18 +530,60 @@ src/
     pipeline.ts            # pipeline config types
 ```
 
-## Structured Pipeline DSL
+## Pipeline Architecture
 
-The SmartAgent supports an optional structured YAML pipeline that replaces the hardcoded orchestration flow. When `pipeline.stages` is present in config, the `PipelineExecutor` walks a stage definition tree instead of running the default hardcoded sequence.
+The pipeline layer has two levels:
 
-### Pipeline Architecture
+### Level 1 — Builder DI (global)
 
-```text
-PipelineConfig (YAML / programmatic)
-  → PipelineExecutor (tree walker)
-    → IStageHandler implementations (one per stage type)
-      → PipelineContext (shared mutable state bag)
+`SmartAgentBuilder` is the global composition root. It wires interface instances (LLM, RAG stores, MCP clients, etc.) once at startup and injects them into the pipeline via `PipelineDeps`.
+
+```ts
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(llm)
+  .setMcpClients([mcp])
+  .setToolsRag(myToolsRag)   // optional — tool vectorization + RAG selection
+  .setHistoryRag(myHistoryRag) // optional — semantic history retrieval
+  .setPipeline(new DefaultPipeline())
+  .build();
 ```
+
+### Level 2 — IPipeline (per-request orchestration)
+
+`IPipeline` is the per-request orchestration contract. `SmartAgent` calls `pipeline.initialize(deps)` once after build and `pipeline.execute(input, history, options, yieldChunk)` per request.
+
+```ts
+interface IPipeline {
+  initialize(deps: PipelineDeps): void;
+  execute(
+    input: string | Message[],
+    history: Message[],
+    options: CallOptions | undefined,
+    yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
+  ): Promise<PipelineResult>;
+}
+```
+
+### DefaultPipeline
+
+`DefaultPipeline` is the built-in `IPipeline` implementation. It is minimal and non-extensible by design:
+
+- Fixed stage sequence: `classify → summarize → parallel(rag-tools, rag-history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert`
+- Only two RAG stores: `tools` and `history` (both optional)
+- No `facts`, `feedback`, or `state` stores
+- No `rag-upsert` stage — the agent does not write to RAG automatically
+
+### Consumer-defined pipelines
+
+Consumers extend the agent by implementing `IPipeline` directly and injecting it via `.setPipeline()`. A consumer pipeline can:
+- Add arbitrary RAG stores (e.g., `facts`, `feedback`, `state`)
+- Upsert classified subprompts to RAG
+- Translate or expand queries
+- Integrate custom rerankers, validators, or audit stages
+
+### PipelineExecutor (internal)
+
+`DefaultPipeline` is backed by `PipelineExecutor` — a tree walker over `StageDefinition[]` objects.
 
 Key components:
 - **`PipelineExecutor`** (`src/smart-agent/pipeline/executor.ts`) — walks the stage tree, handles `parallel`/`repeat` control flow, evaluates `when` conditions, creates tracer spans.
@@ -573,9 +597,8 @@ Key components:
 
 | Stage type | Handler | Role |
 |---|---|---|
-| `classify` | `ClassifyHandler` | Decompose input into typed subprompts |
+| `classify` | `ClassifyHandler` | Decompose input into typed subprompts (action / chat) |
 | `summarize` | `SummarizeHandler` | Condense history using helper LLM |
-| `rag-upsert` | `RagUpsertHandler` | Upsert subprompts to RAG stores |
 | `translate` | `TranslateHandler` | Translate non-ASCII query to English |
 | `expand` | `ExpandHandler` | Expand query with synonyms |
 | `rag-query` | `RagQueryHandler` | Query a single RAG store (`config.store`) |
@@ -593,46 +616,37 @@ Key components:
 | `parallel` | Run `stages` concurrently via `Promise.all`, then run `after` stages sequentially |
 | `repeat` | Loop `stages` until `until` condition or `maxIterations` |
 
-### Default Pipeline
-
-`getDefaultStages()` returns a stage tree that matches the current hardcoded flow:
+### DefaultPipeline stage sequence
 
 ```text
-classify → summarize → rag-upsert
-  → rag-retrieval (parallel, when: shouldRetrieve):
-      stages: [translate, expand]
-      after: [rag-query×3 (parallel), rerank, tool-select, skill-select]
-  → assemble → tool-loop → history-upsert
+classify → summarize
+  → rag-retrieval (parallel, when stores present):
+      stages: [rag-tools, rag-history]
+      after: [rerank]
+  → skill-select → tool-select → assemble → tool-loop → history-upsert
 ```
 
-### YAML Example
+### Custom pipeline example (with consumer-defined stores)
 
-```yaml
-pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: summarize
-      type: summarize
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - { id: translate, type: translate }
-        - { id: expand, type: expand }
-      after:
-        - id: rag-query
-          type: parallel
-          stages:
-            - { id: rag-facts, type: rag-query, config: { store: facts, k: 10 } }
-            - { id: rag-feedback, type: rag-query, config: { store: feedback, k: 5 } }
-        - { id: rerank, type: rerank }
-        - { id: tool-select, type: tool-select }
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
+A consumer can implement `IPipeline` to add stores and stages not present in `DefaultPipeline`:
+
+```ts
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+
+class MyPipeline implements IPipeline {
+  initialize(deps: PipelineDeps): void { /* wire deps */ }
+  async execute(input, history, options, yieldChunk): Promise<PipelineResult> {
+    // custom orchestration: classify, upsert to facts/feedback RAG,
+    // query stores, rerank, assemble, tool-loop
+  }
+}
+
+builder
+  .withMainLlm(llm)
+  .setMcpClients([mcp])
+  .setToolsRag(toolsStore)
+  .setPipeline(new MyPipeline())
+  .build();
 ```
 
 ### Custom Stage Handlers
@@ -665,7 +679,7 @@ stages:
 
 ### Backwards Compatibility
 
-When `pipeline.stages` is absent from config, the hardcoded flow in `SmartAgent.streamProcess()` runs unchanged. The structured pipeline is opt-in only.
+When no pipeline is configured, `SmartAgent` uses `DefaultPipeline` automatically. Consumer-defined pipelines are opt-in via `.setPipeline(pipeline)`.
 
 ### Pipeline Files
 
@@ -676,19 +690,20 @@ src/smart-agent/pipeline/
   stage-handler.ts      # IStageHandler interface
   condition-evaluator.ts # Safe expression evaluator for when/until
   executor.ts           # PipelineExecutor — tree walker
-  default-pipeline.ts   # getDefaultStages() — matches hardcoded flow
+  default-pipeline.ts   # DefaultPipeline — IPipeline implementation
   handlers/
     index.ts            # buildDefaultHandlerRegistry() + re-exports
     classify.ts         # ClassifyHandler
     summarize.ts        # SummarizeHandler
-    rag-upsert.ts       # RagUpsertHandler
     translate.ts        # TranslateHandler
     expand.ts           # ExpandHandler
     rag-query.ts        # RagQueryHandler
     rerank.ts           # RerankHandler
     tool-select.ts      # ToolSelectHandler
+    skill-select.ts     # SkillSelectHandler
     assemble.ts         # AssembleHandler
     tool-loop.ts        # ToolLoopHandler
+    history-upsert.ts   # HistoryUpsertHandler
   index.ts              # Re-exports all pipeline types and classes
 ```
 

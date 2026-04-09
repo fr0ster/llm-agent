@@ -28,11 +28,7 @@ pipeline:
       temperature: 0.1
 
   rag:
-    facts:
-      type: in-memory
-    feedback:
-      type: in-memory
-    state:
+    tools:
       type: in-memory
 
   mcp:
@@ -43,24 +39,15 @@ pipeline:
   stages:
     - id: classify
       type: classify
-    - id: rag-upsert
-      type: rag-upsert
     - id: rag-retrieval
       type: parallel
-      when: "shouldRetrieve"
       stages:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - id: rag-facts
-              type: rag-query
-              config: { store: facts, k: 10 }
-            - id: rag-state
-              type: rag-query
-              config: { store: state, k: 5 }
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+      after:
         - id: tool-select
           type: tool-select
-      after: []
     - id: assemble
       type: assemble
     - id: tool-loop

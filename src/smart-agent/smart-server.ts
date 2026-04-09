@@ -9,7 +9,6 @@ import { PACKAGE_VERSION } from '../generated/version.js';
 import type { Message } from '../types.js';
 import type {
   SmartAgent,
-  SmartAgentRagStores,
   SmartAgentReconfigureOptions,
   StopReason,
 } from './agent.js';
@@ -103,12 +102,6 @@ export interface SmartServerAgentConfig {
   sessionTokenBudget?: number;
   /** Whether classification stage runs. Default: true. */
   classificationEnabled?: boolean;
-  /** RAG retrieval behavior. 'auto' | 'always' | 'never'. Default: 'auto'. */
-  ragRetrievalMode?: 'auto' | 'always' | 'never';
-  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
-  ragTranslationEnabled?: boolean;
-  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
-  ragUpsertEnabled?: boolean;
   /** LLM call strategy for tool-loop. 'streaming' (default) | 'non-streaming' | 'fallback'. */
   llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
 }
@@ -362,25 +355,6 @@ export class SmartServer {
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
 
-    // RAG resolution
-    const ragOptions = {
-      injectedEmbedder: this.cfg.embedder,
-      extraFactories: mergedEmbedderFactories,
-    };
-
-    const stores: SmartAgentRagStores = {};
-    if (pipeline?.rag) {
-      for (const [key, ragCfg] of Object.entries(pipeline.rag)) {
-        if (ragCfg) stores[key] = makeRag(ragCfg, ragOptions);
-      }
-    } else if (this.cfg.rag) {
-      const ragCfg = this.cfg.rag;
-      const rag = makeRag(ragCfg, ragOptions);
-      stores.facts = rag;
-      stores.feedback = makeRag({ ...ragCfg }, ragOptions);
-      stores.state = makeRag({ ...ragCfg }, ragOptions);
-    }
-
     // ---- Build agent via Builder (interface-only) -------------------------
     let builder = new SmartAgentBuilder({
       mcp: pipeline?.mcp ?? this.cfg.mcp,
@@ -397,19 +371,19 @@ export class SmartServer {
       builder = builder.withHelperLlm(helperLlm);
     }
 
-    if (Object.keys(stores).length > 0) {
-      builder = builder.withRag(stores);
+    if (this.cfg.rag) {
+      const ragOptions = {
+        injectedEmbedder: this.cfg.embedder,
+        extraFactories: mergedEmbedderFactories,
+      };
+      builder = builder.setToolsRag(makeRag(this.cfg.rag, ragOptions));
+      builder = builder.setHistoryRag(makeRag({ ...this.cfg.rag }, ragOptions));
     }
 
     if (this.cfg.circuitBreaker) {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
 
-    // Apply pre-loaded plugin registrations to builder
-    // (pre-loaded above to extract embedder factories before RAG resolution)
-    for (const [type, handler] of plugins.stageHandlers) {
-      builder = builder.withStageHandler(type, handler);
-    }
     if (plugins.reranker) {
       builder = builder.withReranker(plugins.reranker);
     }
@@ -471,14 +445,6 @@ export class SmartServer {
     ];
     for (const adapter of adapterSources) {
       builder = builder.withClientAdapter(adapter);
-    }
-
-    // Structured pipeline (when YAML contains `pipeline.stages`)
-    if (pipeline?.stages && Array.isArray(pipeline.stages)) {
-      builder = builder.withPipeline({
-        version: pipeline.version ?? '1',
-        stages: pipeline.stages,
-      });
     }
 
     const agentHandle = await builder.build();
@@ -552,12 +518,6 @@ export class SmartServer {
           agentUpdate.historySummaryPrompt = update.prompts.historySummary;
         if (update.classificationEnabled !== undefined)
           agentUpdate.classificationEnabled = update.classificationEnabled;
-        if (update.ragRetrievalMode !== undefined)
-          agentUpdate.ragRetrievalMode = update.ragRetrievalMode;
-        if (update.ragTranslationEnabled !== undefined)
-          agentUpdate.ragTranslationEnabled = update.ragTranslationEnabled;
-        if (update.ragUpsertEnabled !== undefined)
-          agentUpdate.ragUpsertEnabled = update.ragUpsertEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
         }
@@ -1239,9 +1199,6 @@ export class SmartServer {
     'showReasoning',
     'historyAutoSummarizeLimit',
     'classificationEnabled',
-    'ragRetrievalMode',
-    'ragTranslationEnabled',
-    'ragUpsertEnabled',
   ]);
 
   private async _handleConfigUpdate(

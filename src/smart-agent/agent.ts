@@ -23,7 +23,6 @@ import type {
   LlmTool,
   McpTool,
   ModelUsageEntry,
-  RagMetadata,
   RagResult,
   Result,
   StreamHookContext,
@@ -45,13 +44,11 @@ import {
   type SmartAgentResponse,
   type StopReason,
 } from './interfaces/agent-contracts.js';
+import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
-import type { PipelineContext } from './pipeline/context.js';
-import type { PipelineExecutor } from './pipeline/executor.js';
-import type { StageDefinition } from './pipeline/types.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
 import {
@@ -112,6 +109,7 @@ export interface SmartAgentDeps {
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
+  pipeline?: IPipeline;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -143,12 +141,6 @@ export interface SmartAgentConfig {
 
   /** Whether classification stage runs. Default: true. When false, input is treated as a single action. */
   classificationEnabled?: boolean;
-  /** RAG retrieval behavior. 'auto': based on SAP context detection (default), 'always': force retrieval, 'never': skip. */
-  ragRetrievalMode?: 'auto' | 'always' | 'never';
-  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
-  ragTranslationEnabled?: boolean;
-  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
-  ragUpsertEnabled?: boolean;
   /** Whether to inject matched skills into the system prompt. Default: true (when skillManager is configured). */
   skillInjectionEnabled?: boolean;
   /**
@@ -229,8 +221,6 @@ export class SmartAgent {
   constructor(
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
-    private readonly pipelineExecutor?: PipelineExecutor,
-    private readonly pipelineStages?: StageDefinition[],
   ) {
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -332,9 +322,6 @@ export class SmartAgent {
     showReasoning?: boolean;
     historyAutoSummarizeLimit?: number;
     classificationEnabled?: boolean;
-    ragRetrievalMode?: 'auto' | 'always' | 'never';
-    ragTranslationEnabled?: boolean;
-    ragUpsertEnabled?: boolean;
   } {
     return {
       maxIterations: this.config.maxIterations,
@@ -344,9 +331,6 @@ export class SmartAgent {
       showReasoning: this.config.showReasoning,
       historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
       classificationEnabled: this.config.classificationEnabled,
-      ragRetrievalMode: this.config.ragRetrievalMode,
-      ragTranslationEnabled: this.config.ragTranslationEnabled,
-      ragUpsertEnabled: this.config.ragUpsertEnabled,
     };
   }
 
@@ -605,8 +589,8 @@ export class SmartAgent {
         return;
       }
 
-      // Structured pipeline path (when configured via Builder.withPipeline)
-      if (this.pipelineExecutor && this.pipelineStages) {
+      // Pipeline path (when configured via Builder)
+      if (this.deps.pipeline) {
         const stream = this._runStructuredPipeline(
           textOrMessages,
           externalTools,
@@ -645,14 +629,11 @@ export class SmartAgent {
       // 2. Decide context and tools for the WHOLE request
       await this._resolveActiveClients(opts);
       const actions = subprompts.filter((sp) => sp.type === 'action');
-      const ragMode = this.config.ragRetrievalMode ?? 'auto';
       const hasActions = actions.length > 0;
       const hasMcpClients = this._activeClients.length > 0;
       const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
       const shouldRetrieve =
-        ragMode === 'always' ||
-        mode === 'hard' ||
-        (ragMode === 'auto' && hasActions && (hasMcpClients || hasRagStores));
+        mode === 'hard' || (hasActions && (hasMcpClients || hasRagStores));
 
       let finalTools: LlmTool[] = [];
       let retrieved: {
@@ -667,10 +648,7 @@ export class SmartAgent {
       if (shouldRetrieve) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        let ragText =
-          this.config.ragTranslationEnabled !== false
-            ? await this._toEnglishForRag(combinedActionText, opts)
-            : combinedActionText;
+        let ragText = await this._toEnglishForRag(combinedActionText, opts);
         if (this.config.queryExpansionEnabled) {
           const expandResult = await this.queryExpander.expand(ragText, opts);
           if (expandResult.ok) ragText = expandResult.value;
@@ -1004,31 +982,6 @@ export class SmartAgent {
     for (const sp of subprompts) {
       this.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const resolveStore = (type: string): IRag | undefined =>
-      this.deps.ragStores[type] ?? this.deps.ragStores[`${type}s`];
-    const others =
-      this.config.ragUpsertEnabled !== false
-        ? subprompts.filter(
-            (sp) =>
-              sp.type !== 'action' &&
-              sp.type !== 'chat' &&
-              resolveStore(sp.type),
-          )
-        : [];
-    if (others.length > 0) {
-      const upsertSpan = this.tracer.startSpan('smart_agent.rag_upsert', {
-        parent: parentSpan,
-        attributes: { 'rag.upsert_count': others.length },
-      });
-      await Promise.allSettled(
-        others.map(async (sp) => {
-          const s = resolveStore(sp.type);
-          if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts);
-        }),
-      );
-      upsertSpan.end();
-    }
-
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
   }
@@ -1842,116 +1795,29 @@ export class SmartAgent {
     };
   }
 
-  private _buildRagMetadata(): RagMetadata {
-    const p = this.config.sessionPolicy;
-    if (!p) return {};
-    const m: RagMetadata = {};
-    if (p.namespace !== undefined) m.namespace = p.namespace;
-    if (p.maxSessionAgeMs !== undefined)
-      m.ttl = Math.floor((Date.now() + p.maxSessionAgeMs) / 1000);
-    return m;
-  }
-
-  /**
-   * Execute the structured pipeline — delegates stage execution to
-   * the PipelineExecutor instead of running the hardcoded flow.
-   */
   private async *_runStructuredPipeline(
     textOrMessages: string | Message[],
-    externalTools: LlmTool[],
+    _externalTools: LlmTool[],
     opts: CallOptions | undefined,
-    parentSpan: ISpan,
-    sessionId: string,
+    _parentSpan: ISpan,
+    _sessionId: string,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
-    if (!this.pipelineExecutor || !this.pipelineStages) return;
+    if (!this.deps.pipeline) return;
 
-    const text =
-      typeof textOrMessages === 'string'
-        ? textOrMessages
-        : (textOrMessages.filter((m) => m.role === 'user').slice(-1)[0]
-            ?.content ?? '');
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
 
-    // Collect yielded chunks via a queue
     const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
     let resolveWait: (() => void) | null = null;
     let done = false;
 
-    await this._resolveActiveClients(opts);
-    const ctx: PipelineContext = {
-      // Immutable input
-      textOrMessages,
-      options: opts,
-      config: this.config,
-      sessionId,
-
-      // Dependencies
-      mainLlm: this._mainLlm,
-      helperLlm: this._helperLlm,
-      classifierLlm: this._mainLlm,
-      classifier: this._classifier,
-      assembler: this.deps.assembler,
-      ragStores: this.deps.ragStores,
-      mcpClients: this._activeClients,
-      reranker: this.reranker,
-      queryExpander: this.queryExpander,
-      toolCache: this.toolCache,
-      outputValidator: this.outputValidator,
-      sessionManager: this.sessionManager,
-      tracer: this.tracer,
-      metrics: this.metrics,
-      logger: this.deps.logger,
-      requestLogger: this.requestLogger,
-      toolPolicy: this.deps.toolPolicy,
-      injectionDetector: this.deps.injectionDetector,
-      toolAvailabilityRegistry: this.toolAvailabilityRegistry,
-      pendingToolResults: this.pendingToolResults,
-      skillManager: this.deps.skillManager,
-      embedder: this.deps.embedder,
-      historyMemory: this.deps.historyMemory,
-      historySummarizer: this.deps.historySummarizer,
-      llmCallStrategy: this.deps.llmCallStrategy ?? this.defaultLlmCallStrategy,
-
-      // Mutable state
-      inputText: text,
-      history: [...history],
-      subprompts: [],
-      toolClientMap: new Map(),
-      ragText: '',
-      ragResults: Object.fromEntries(
-        Object.keys(this.deps.ragStores).map((k) => [k, []]),
-      ),
-      mcpTools: [],
-      selectedTools: [],
-      externalTools,
-      assembledMessages: [],
-      activeTools: [],
-      selectedSkills: [],
-      skillContent: '',
-      skillArgs: '',
-      queryEmbedding: undefined,
-
-      // Control flags
-      shouldRetrieve: false,
-      isAscii: true,
-      isSapRequired: false,
-
-      // Output
-      timing: [],
-
-      // Streaming yield
-      yield: (chunk) => {
+    const executorPromise = this.deps.pipeline
+      .execute(textOrMessages, history, opts, (chunk) => {
         chunkQueue.push(chunk);
         if (resolveWait) {
           resolveWait();
           resolveWait = null;
         }
-      },
-    };
-
-    // Run executor in background, yield chunks as they arrive
-    const executorPromise = this.pipelineExecutor
-      .executeStages(this.pipelineStages, ctx, parentSpan)
+      })
       .then(() => {
         done = true;
         if (resolveWait) {

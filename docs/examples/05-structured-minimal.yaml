@@ -1,6 +1,6 @@
 # Structured pipeline — minimal (no RAG).
 # For simple LLM + MCP tools setups where RAG retrieval is not needed.
-# Skips: summarize, rag-upsert, translate, expand, rag-query, rerank.
+# Skips: summarize, rag-query, rerank, skill-select, history-upsert.
 #
 # Usage:
 #   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml

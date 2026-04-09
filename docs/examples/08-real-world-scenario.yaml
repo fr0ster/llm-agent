@@ -1,73 +1,43 @@
-# Real-world scenario: MCP agent with RAG-based tool selection and memory.
+# Real-world scenario: MCP agent with RAG-based tool selection and semantic history.
 #
 # How it works:
 #
 # AT STARTUP:
 #   The builder connects to MCP server(s) and vectorizes every tool's name,
-#   description, and JSON schema into the `facts` RAG store.
+#   description, and JSON schema into the `tools` RAG store.
 #   Each tool is stored with metadata `{ id: "tool:TOOL_NAME" }`.
 #   This allows the agent to select only relevant tools per request
 #   instead of flooding the LLM context with the entire tool catalog.
 #
-# PER REQUEST:
+# PER REQUEST (DefaultPipeline):
 #
 #   1. CLASSIFY — the classifier LLM decomposes the user message into
 #      typed subprompts:
 #        - action:   "read table T100"           → drives the tool loop
-#        - fact:     "T100 stores error messages" → saved to facts RAG
-#        - feedback: "always use SE16N for this"  → saved to feedback RAG
-#        - state:    "I'm working on package Z01" → saved to state RAG
 #        - chat:     "thanks!"                    → no RAG, just reply
 #
-#   2. RAG UPSERT — fact/feedback/state subprompts are upserted to their
-#      respective RAG stores. This is how the agent "remembers" what the
-#      user tells it. Next time the user asks a related question, this
-#      information will be retrieved automatically.
+#   2. SUMMARIZE — condense conversation history if it exceeds the limit.
 #
-#   3. RAG RETRIEVAL (parallel) — runs only when relevant context is needed
-#      (SAP request detected, or ragRetrievalMode: always):
+#   3. RAG RETRIEVAL (parallel):
+#        - query tools  → returns MCP tool descriptions + skill descriptions
+#        - query history → returns semantic conversation history (if configured)
 #
-#      a. translate — if the query is non-ASCII (e.g. German, Ukrainian),
-#         translate it to English for better embedding match
-#      b. expand — add synonyms to the query for broader recall
+#   4. RERANK — re-score results by relevance to the query.
 #
-#      Then in parallel:
-#        - query facts  → returns MCP tool descriptions + saved facts
-#        - query feedback → returns user corrections/guidance
-#        - query state  → returns session context ("I'm in package Z01")
+#   5. SKILL/TOOL SELECT — extract tool:XXX and skill:XXX IDs from tools results,
+#      select only matching MCP tools and skills for the LLM context.
 #
-#      Then sequentially:
-#        - rerank — re-score results by relevance
-#        - tool-select — extract tool:XXX IDs from facts results,
-#          select only matching MCP tools for the LLM context
+#   6. ASSEMBLE — merge action subprompts + RAG results + selected tools
+#      + conversation history into the LLM context.
 #
-#   4. ASSEMBLE — merge action subprompts + RAG results (facts, feedback,
-#      state, selected tools) + conversation history into the LLM context.
-#
-#   5. TOOL LOOP — streaming LLM call. If the LLM requests a tool call,
+#   7. TOOL LOOP — streaming LLM call. If the LLM requests a tool call,
 #      execute it via MCP, append the result, and continue the loop.
 #      Streams text chunks to the client in real-time.
 #
-# EXAMPLE SESSION:
+#   8. HISTORY UPSERT — summarize the turn and upsert to history RAG store.
 #
-#   User: "Пам'ятай: для таблиці T100 використовуй SE16N. Покажи вміст T100."
-#
-#   Classifier output:
-#     [
-#       { type: "feedback", text: "For table T100 use SE16N" },
-#       { type: "action",   text: "Show content of table T100", context: "sap-abap" }
-#     ]
-#
-#   1. feedback "For table T100 use SE16N" → upserted to feedback RAG
-#   2. RAG query finds:
-#      - facts: tool:read_table (MCP tool), tool:se16n_display (MCP tool)
-#      - feedback: "For table T100 use SE16N" (just saved!)
-#   3. tool-select picks: read_table, se16n_display
-#   4. LLM sees the feedback context and prefers se16n_display
-#   5. Tool loop executes se16n_display(table="T100") via MCP
-#
-#   Next request: "А що щодо T001?"
-#   → feedback RAG still has "use SE16N" → agent remembers the preference
+# NOTE: Domain knowledge, user corrections, and session state are consumer
+# responsibilities. Implement a custom IPipeline to add those stores.
 #
 # Usage:
 #   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/08-real-world-scenario.yaml
@@ -99,19 +69,16 @@ agent:
   maxToolCalls: 30
   ragQueryK: 10
   classificationEnabled: true
-  ragRetrievalMode: auto            # auto | always | never
-  ragUpsertEnabled: true            # save facts/feedback/state to RAG
-  ragTranslationEnabled: true       # translate non-ASCII queries for embeddings
-  queryExpansionEnabled: true        # expand queries with synonyms
+  queryExpansionEnabled: true
   showReasoning: false
   historyAutoSummarizeLimit: 10
 
-# Structured pipeline — same as default flow, but explicit and customizable.
+# Structured pipeline — same as DefaultPipeline flow, but explicit and customizable.
 # Remove or reorder stages as needed.
 pipeline:
   version: "1"
   stages:
-    # Decompose user message into typed subprompts
+    # Decompose user message into typed subprompts (action/chat)
     - id: classify
       type: classify
 
@@ -119,48 +86,39 @@ pipeline:
     - id: summarize
       type: summarize
 
-    # Save fact/feedback/state subprompts to RAG (agent "memory")
-    - id: rag-upsert
-      type: rag-upsert
-
-    # Retrieve relevant context — only when SAP/domain context detected
+    # Query tools and history RAG stores in parallel
     - id: rag-retrieval
       type: parallel
-      when: "shouldRetrieve"
       stages:
-        # Prepare the query for better RAG matching
-        - id: translate
-          type: translate
-        - id: expand
-          type: expand
+        # tools: MCP tool descriptions + skill descriptions
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+        # history: semantic conversation history
+        - id: rag-history
+          type: rag-query
+          config: { store: history, k: 5 }
       after:
-        # Query all stores in parallel
-        - id: rag-queries
-          type: parallel
-          stages:
-            # facts: MCP tool descriptions + domain knowledge
-            - id: rag-facts
-              type: rag-query
-              config: { store: facts, k: 10 }
-            # feedback: user corrections and preferences
-            - id: rag-feedback
-              type: rag-query
-              config: { store: feedback, k: 5 }
-            # state: session context ("I'm in package Z01")
-            - id: rag-state
-              type: rag-query
-              config: { store: state, k: 5 }
         # Re-score results by relevance to the query
         - id: rerank
           type: rerank
-        # Pick MCP tools whose descriptions matched the query
-        - id: tool-select
-          type: tool-select
 
-    # Build LLM context: actions + facts + feedback + state + tools + history
+    # Pick skills whose descriptions matched the query
+    - id: skill-select
+      type: skill-select
+
+    # Pick MCP tools whose descriptions matched the query
+    - id: tool-select
+      type: tool-select
+
+    # Build LLM context: actions + RAG results + selected tools + history
     - id: assemble
       type: assemble
 
     # Stream LLM response, execute MCP tools, loop until done
     - id: tool-loop
       type: tool-loop
+
+    # Summarize turn and upsert to history RAG store
+    - id: history-upsert
+      type: history-upsert

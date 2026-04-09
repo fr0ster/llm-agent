@@ -184,4 +184,8 @@ export class InMemoryRag implements IRag {
   async healthCheck(): Promise<Result<void, RagError>> {
     return { ok: true, value: undefined };
   }
+
+  clear(): void {
+    this.records.length = 0;
+  }
 }
