@@ -523,7 +523,7 @@ src/
     context/               # final LLM context assembly
     health/                # health check endpoint
     interfaces/            # all public interfaces (ILlm, IRag, IMcpClient, etc.)
-    llm/                   # LLM client wrappers
+    history/               # session history memory and summarization
     logger/                # structured logging (ConsoleLogger, SessionLogger)
     metrics/               # Prometheus / metrics collection
     otel/                  # OpenTelemetry integration
@@ -584,6 +584,7 @@ Key components:
 | `skill-select` | `SkillSelectHandler` | Select skills from RAG results, load content into `ctx.skillContent` |
 | `assemble` | `AssembleHandler` | Build final LLM context; appends skill content as `## Active Skills` section |
 | `tool-loop` | `ToolLoopHandler` | Streaming LLM + tool execution loop |
+| `history-upsert` | `HistoryUpsertHandler` | Summarize turn via IHistorySummarizer, upsert to history RAG, push to recency buffer (best-effort) |
 
 **Control flow** — orchestrate child stages:
 
@@ -601,7 +602,7 @@ classify → summarize → rag-upsert
   → rag-retrieval (parallel, when: shouldRetrieve):
       stages: [translate, expand]
       after: [rag-query×3 (parallel), rerank, tool-select, skill-select]
-  → assemble → tool-loop
+  → assemble → tool-loop → history-upsert
 ```
 
 ### YAML Example
