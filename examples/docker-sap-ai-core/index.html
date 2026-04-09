@@ -1,0 +1,684 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LLM Agent - Engineering Terminal</title>
+    <style>
+        body { font-family: 'Courier New', Courier, monospace; background: #0a0a0a; color: #00ff00; margin: 0; padding: 0; overflow: hidden; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 10px; display: flex; flex-direction: column; height: 100vh; box-sizing: border-box; }
+        .system-bar { background: #111; padding: 12px; border: 1px solid #333; margin-bottom: 10px; display: flex; justify-content: space-between; align-items: center; font-size: 13px; border-radius: 4px; }
+        #model-select { background: #1a1a1a; color: #00ff00; border: 1px solid #333; font-family: 'Courier New', monospace; font-size: 12px; padding: 2px 6px; border-radius: 3px; cursor: pointer; }
+        #model-select:focus { border-color: #00ff00; outline: none; }
+        #chat-window { flex: 1; overflow-y: auto; background: #000; padding: 20px; border: 1px solid #333; margin-bottom: 15px; border-radius: 4px; }
+        .message { margin-bottom: 25px; border-bottom: 1px solid #1a1a1a; padding-bottom: 15px; }
+        .user { color: #00bfff; font-weight: bold; font-size: 16px; }
+        .agent { color: #e0e0e0; font-size: 16px; line-height: 1.6; display: block; margin-top: 5px; }
+        .agent pre { background: rgba(255,255,255,0.05); padding: 8px 12px; border-radius: 4px; overflow-x: auto; white-space: pre-wrap; }
+        .agent pre code { font-family: inherit; }
+        .agent code { background: rgba(255,255,255,0.08); padding: 1px 4px; border-radius: 3px; }
+        .agent a { color: #0f0; text-decoration: underline; }
+        .thinking { color: #ffcc00; font-style: italic; animation: blink 1s infinite; font-size: 14px; }
+        @keyframes blink { 0% { opacity: 1; } 50% { opacity: 0.3; } 100% { opacity: 1; } }
+
+        .trace-container { margin-top: 15px; background: #0c0c0c; border: 1px solid #222; padding: 12px; border-left: 4px solid #ffcc00; border-radius: 2px; }
+        .trace-header { font-weight: bold; color: #ffcc00; font-size: 11px; text-transform: uppercase; margin-bottom: 8px; }
+        .trace-step { font-size: 13px; color: #aaa; margin: 8px 0; font-family: 'Consolas', monospace; }
+        .trace-step b { color: #fff; }
+        .trace-args { color: #666; font-size: 11px; display: block; margin-top: 2px; font-style: italic; }
+
+        .stats-bar { margin-top: 10px; font-size: 12px; color: #888; display: flex; gap: 20px; padding: 6px 0; }
+        .stats-bar .val { color: #ff00ff; font-weight: bold; }
+        .stats-bar .duration { color: #ffcc00; font-weight: bold; }
+
+        .trace-toggle { margin-top: 8px; font-size: 11px; color: #555; cursor: pointer; user-select: none; }
+        .trace-toggle:hover { color: #888; }
+        .trace-body { display: none; }
+
+        .input-area { display: flex; gap: 10px; padding-bottom: 10px; }
+        #user-input { flex: 1; padding: 18px 20px; border: 2px solid #333; background: #111; color: #00ff00; outline: none; font-size: 18px; font-family: 'Courier New', Courier, monospace; border-radius: 6px; }
+        #user-input:focus { border-color: #00ff00; }
+        button { background: #1a1a1a; color: #00ff00; border: 2px solid #333; cursor: pointer; padding: 0 30px; font-weight: bold; font-size: 16px; border-radius: 6px; }
+        button:hover:not(:disabled) { background: #00ff00; color: #000; }
+        button:disabled, #user-input:disabled { opacity: 0.4; cursor: not-allowed; }
+        .status-connecting { color: #ffcc00; animation: blink 1s infinite; }
+        .status-ready { color: #00ff00; }
+        .status-starting { color: #ff8800; animation: blink 1.5s infinite; }
+
+        /* File artifact cards */
+        .file-card { margin: 12px 0; background: #0c0c0c; border: 1px solid #333; border-left: 4px solid #00bfff; border-radius: 4px; overflow: hidden; }
+        .file-card-header { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; background: #111; border-bottom: 1px solid #222; }
+        .file-card-name { color: #00bfff; font-weight: bold; font-size: 13px; }
+        .file-card-actions { display: flex; gap: 6px; }
+        .file-card-btn { background: #1a1a1a; color: #00ff00; border: 1px solid #333; padding: 3px 10px; font-size: 11px; font-family: 'Courier New', monospace; cursor: pointer; border-radius: 3px; }
+        .file-card-btn:hover { background: #00ff00; color: #000; }
+        .file-card-preview { max-height: 200px; overflow: auto; padding: 10px 12px; font-size: 13px; color: #ccc; white-space: pre-wrap; font-family: 'Consolas', 'Courier New', monospace; }
+        .file-card-preview iframe { border: none; width: 100%; height: 180px; background: #fff; border-radius: 2px; }
+        .file-card-preview img { max-width: 100%; max-height: 180px; }
+        .file-card-toggle { padding: 4px 12px; font-size: 11px; color: #555; cursor: pointer; user-select: none; border-top: 1px solid #222; }
+        .file-card-toggle:hover { color: #888; }
+        .file-card-body { display: none; }
+        .file-card-body.open { display: block; }
+        .mermaid-render { background: #fff; padding: 10px; border-radius: 2px; text-align: center; }
+        .mermaid-render svg { max-width: 100%; height: auto; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="system-bar">
+            <span id="core-version">CORE: LLM-Agent</span>
+            <span>BRANCH: {{GIT_BRANCH}}</span>
+            <span>MODEL: <select id="model-select"><option>loading...</option></select></span>
+            <span id="health-info"></span>
+            <span>STATUS: <span id="status-text">CONNECTING...</span></span>
+        </div>
+        <div class="system-bar" style="margin-top:-5px;font-size:12px;color:#888;">
+            <span>CLASSIFIER: <select id="classifier-select" style="background:#1a1a1a;color:#aaa;border:1px solid #333;font-family:'Courier New',monospace;font-size:11px;padding:1px 4px;border-radius:3px;cursor:pointer;" disabled><option>—</option></select></span>
+            <span>EMBEDDER: <span id="embedding-model" style="color:#aaa;">—</span></span>
+            <span>RAG: <span id="rag-type" style="color:#aaa;">—</span></span>
+        </div>
+        <div id="chat-window"></div>
+        <div class="input-area">
+            <input type="text" id="user-input" placeholder="root@llm-agent:~# TYPE YOUR COMMAND" autofocus onkeydown="if(event.key === 'Enter') sendMessage()">
+            <button id="send-btn" onclick="sendMessage()">EXECUTE</button>
+            <button onclick="clearChat()" style="padding:0 15px;font-size:12px;color:#888;border-color:#222">CLR</button>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+    <script>
+        mermaid.initialize({ startOnLoad: false, theme: 'dark' });
+
+        // -----------------------------------------------------------------------
+        // File artifact parser and renderer
+        // -----------------------------------------------------------------------
+        const FILE_TAG_RE = /<file\s+([^>]*?)>([\s\S]*?)<\/file>/gi;
+        const ATTR_RE = /(\w+)="([^"]*)"/g;
+
+        const MIME_TYPES = {
+            md: 'text/markdown', json: 'application/json', yaml: 'text/yaml',
+            yml: 'text/yaml', xml: 'application/xml', csv: 'text/csv',
+            html: 'text/html', svg: 'image/svg+xml', txt: 'text/plain',
+            py: 'text/x-python', js: 'text/javascript', ts: 'text/typescript',
+            abap: 'text/plain', sh: 'text/x-shellscript', css: 'text/css',
+            png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg',
+            gif: 'image/gif', mmd: 'text/plain',
+        };
+
+        function parseFileAttrs(attrStr) {
+            const attrs = {};
+            let m;
+            while ((m = ATTR_RE.exec(attrStr)) !== null) attrs[m[1]] = m[2];
+            ATTR_RE.lastIndex = 0;
+            return attrs;
+        }
+
+        function getExt(path) {
+            const dot = path.lastIndexOf('.');
+            return dot >= 0 ? path.slice(dot + 1).toLowerCase() : 'txt';
+        }
+
+        function getMime(path) {
+            return MIME_TYPES[getExt(path)] || 'text/plain';
+        }
+
+        function downloadBlob(filename, blob) {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = filename;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        }
+
+        function downloadTextFile(filename, content) {
+            downloadBlob(filename, new Blob([content], { type: getMime(filename) }));
+        }
+
+        function downloadBase64File(filename, base64) {
+            const bin = atob(base64.replace(/\s/g, ''));
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            downloadBlob(filename, new Blob([bytes], { type: getMime(filename) }));
+        }
+
+        function escapeHtml(str) {
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+        }
+
+        function markdownToHtml(text) {
+            if (!text) return '';
+            const parts = [];
+            const codeBlockRe = /```(\w*)\n([\s\S]*?)```/g;
+            let lastIdx = 0;
+            let match;
+            while ((match = codeBlockRe.exec(text)) !== null) {
+                if (match.index > lastIdx) parts.push({ type: 'text', value: text.slice(lastIdx, match.index) });
+                parts.push({ type: 'code', lang: match[1], value: match[2] });
+                lastIdx = match.index + match[0].length;
+            }
+            if (lastIdx < text.length) {
+                const remainder = text.slice(lastIdx);
+                const openFence = remainder.match(/```(\w*)\n([\s\S]*)$/);
+                if (openFence) {
+                    if (openFence.index > 0) parts.push({ type: 'text', value: remainder.slice(0, openFence.index) });
+                    parts.push({ type: 'code', lang: openFence[1], value: openFence[2] });
+                } else {
+                    parts.push({ type: 'text', value: remainder });
+                }
+            }
+            let html = '';
+            for (const part of parts) {
+                if (part.type === 'code') {
+                    html += '<pre><code>' + escapeHtml(part.value) + '</code></pre>';
+                } else {
+                    let t = escapeHtml(part.value);
+                    t = t.replace(/`([^`]+)`/g, (_, c) => '<code>' + c + '</code>');
+                    t = t.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+                    t = t.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+                    t = t.replace(/^### (.+)$/gm, '<strong>$1</strong><br>');
+                    t = t.replace(/^[-*] (.+)$/gm, '&bull; $1<br>');
+                    t = t.replace(/^(\d+\.)\s(.+)$/gm, '&nbsp;&nbsp;$1 $2<br>');
+                    t = t.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>');
+                    t = t.replace(/\n\n/g, '<br><br>');
+                    t = t.replace(/\n/g, '<br>');
+                    html += t;
+                }
+            }
+            return html;
+        }
+
+        function buildFileCardHtml(attrs, content, cardId) {
+            const path = attrs.path || 'file.txt';
+            const encoding = attrs.encoding || '';
+            const render = attrs.render || '';
+            const ext = getExt(path);
+            const trimmed = content.trim();
+
+            let previewHtml = '';
+            let extraButtons = '';
+
+            if (encoding === 'base64') {
+                // Binary image
+                const mime = getMime(path);
+                if (mime.startsWith('image/')) {
+                    previewHtml = `<img src="data:${mime};base64,${trimmed.replace(/\s/g, '')}" alt="${escapeHtml(path)}">`;
+                } else {
+                    previewHtml = `<span style="color:#888">[Binary file — ${trimmed.length} chars base64]</span>`;
+                }
+            } else if (render === 'mermaid') {
+                // Mermaid diagram — rendered async after DOM insert
+                previewHtml = `<div class="mermaid-render" id="mmd-${cardId}"><pre style="color:#888">Loading diagram...</pre></div>`;
+                extraButtons = `<button class="file-card-btn" onclick="downloadMermaidSvg('mmd-${cardId}', '${escapeHtml(path.replace(/\.mmd$/, '.svg'))}')">SVG</button>`;
+            } else if (ext === 'svg') {
+                previewHtml = `<iframe sandbox="allow-same-origin" srcdoc="${escapeHtml(trimmed)}" style="background:#fff"></iframe>`;
+            } else if (ext === 'html') {
+                previewHtml = `<iframe sandbox="allow-same-origin" srcdoc="${escapeHtml(trimmed)}"></iframe>`;
+            } else {
+                // Text/code — show first 30 lines
+                const lines = trimmed.split('\n');
+                const preview = lines.slice(0, 30).join('\n');
+                const truncated = lines.length > 30 ? '\n...' : '';
+                previewHtml = escapeHtml(preview + truncated);
+            }
+
+            const bodyId = `file-body-${cardId}`;
+            return `<div class="file-card">
+                <div class="file-card-header">
+                    <span class="file-card-name">${escapeHtml(path)}</span>
+                    <div class="file-card-actions">
+                        ${encoding !== 'base64' ? `<button class="file-card-btn" onclick="navigator.clipboard.writeText(fileArtifacts['${cardId}'].content)">COPY</button>` : ''}
+                        ${extraButtons}
+                        <button class="file-card-btn" onclick="downloadArtifact('${cardId}')">DOWNLOAD</button>
+                    </div>
+                </div>
+                <div class="file-card-toggle" onclick="document.getElementById('${bodyId}').classList.toggle('open')">&#9654; Preview</div>
+                <div class="file-card-body" id="${bodyId}">
+                    <div class="file-card-preview">${previewHtml}</div>
+                </div>
+            </div>`;
+        }
+
+        // Global store for artifact content (referenced by card buttons)
+        const fileArtifacts = {};
+
+        function downloadArtifact(cardId) {
+            const art = fileArtifacts[cardId];
+            if (!art) return;
+            if (art.encoding === 'base64') {
+                downloadBase64File(art.path, art.content);
+            } else {
+                downloadTextFile(art.path, art.content);
+            }
+        }
+
+        function downloadMermaidSvg(renderId, filename) {
+            const el = document.getElementById(renderId);
+            const svg = el?.querySelector('svg');
+            if (svg) {
+                downloadBlob(filename, new Blob([svg.outerHTML], { type: 'image/svg+xml' }));
+            }
+        }
+
+
+        /**
+         * Parse response text, extract <file> artifacts, return { html, mermaidIds }
+         * where html has file cards inline and mermaidIds lists IDs to render after DOM insert.
+         */
+        function parseFileArtifacts(responseText) {
+            const mermaidIds = [];
+            const cards = [];
+            let cardCount = 0;
+            const markedText = responseText.replace(FILE_TAG_RE, (match, attrStr, content) => {
+                const attrs = parseFileAttrs(attrStr);
+                if (!attrs.path && attrs.name) attrs.path = attrs.name;
+                if (!attrs.path) return match;
+                const cardId = 'art-' + Date.now() + '-' + (cardCount++);
+                fileArtifacts[cardId] = {
+                    path: attrs.path,
+                    content: content.trim(),
+                    encoding: attrs.encoding || '',
+                    render: attrs.render || '',
+                };
+                if (attrs.render === 'mermaid') mermaidIds.push({ cardId, renderId: 'mmd-' + cardId, content: content.trim() });
+                const marker = '__FILE_CARD_' + cards.length + '__';
+                cards.push(buildFileCardHtml(attrs, content, cardId));
+                return marker;
+            });
+            let html = markdownToHtml(markedText);
+            cards.forEach((cardHtml, i) => {
+                html = html.replace('__FILE_CARD_' + i + '__', cardHtml);
+            });
+            return { html, mermaidIds };
+        }
+
+        async function renderMermaidDiagrams(mermaidIds) {
+            for (const { renderId, content } of mermaidIds) {
+                try {
+                    const { svg } = await mermaid.render('mmd-svg-' + renderId, content);
+                    const el = document.getElementById(renderId);
+                    if (el) el.innerHTML = `<div class="mermaid-render">${svg}</div>`;
+                } catch (e) {
+                    const el = document.getElementById(renderId);
+                    if (el) el.innerHTML = `<pre style="color:#ff4444">Mermaid error: ${escapeHtml(e.message)}</pre>`;
+                }
+            }
+        }
+
+        async function clearChat() {
+            document.getElementById('chat-window').innerHTML = '';
+            try { await fetch('/chat/clear', { method: 'POST' }); } catch {}
+        }
+
+        let agentReady = false;
+        let healthPollTimer = null;
+        let selectedModel = null;
+        let modelsLoaded = false;
+
+        async function loadConfig() {
+            try {
+                const [cfgResp, modelsResp] = await Promise.all([
+                    fetch('/v1/config', { signal: AbortSignal.timeout(3000) }),
+                    fetch('/v1/models', { signal: AbortSignal.timeout(3000) }),
+                ]);
+                if (!cfgResp.ok) return;
+                const cfg = await cfgResp.json();
+                const modelsData = modelsResp.ok ? await modelsResp.json() : null;
+                if (cfg.models) {
+                    const select = document.getElementById('classifier-select');
+                    const currentClassifier = cfg.models.classifierModel || '';
+                    // Populate with all available models
+                    const models = modelsData?.data || [];
+                    if (models.length > 0) {
+                        select.innerHTML = '';
+                        models.forEach(m => {
+                            const opt = document.createElement('option');
+                            opt.value = m.id;
+                            opt.textContent = m.id;
+                            select.appendChild(opt);
+                        });
+                        if (currentClassifier) select.value = currentClassifier;
+                        select.disabled = false;
+                        select.onchange = async () => {
+                            try {
+                                await fetch('/v1/config', {
+                                    method: 'PUT',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ models: { classifierModel: select.value } }),
+                                });
+                            } catch { /* ignore */ }
+                        };
+                    }
+                }
+                if (cfg.embedding) {
+                    document.getElementById('embedding-model').innerText = cfg.embedding.model || '—';
+                    document.getElementById('rag-type').innerText = cfg.embedding.rag_type || '—';
+                }
+            } catch { /* core not ready yet */ }
+        }
+
+        async function loadModels() {
+            try {
+                const resp = await fetch('/v1/models', { signal: AbortSignal.timeout(5000) });
+                const data = await resp.json();
+                if (!data.data || data.data.length === 0) return; // probe not ready yet
+                const select = document.getElementById('model-select');
+                select.innerHTML = '';
+                (data.data || []).forEach(m => {
+                    const opt = document.createElement('option');
+                    opt.value = m.id;
+                    opt.textContent = m.id;
+                    select.appendChild(opt);
+                });
+                // Pre-select the default model if available
+                const defaultModel = [...select.options].find(o => o.value.includes('claude-4.6-sonnet'));
+                if (defaultModel) select.value = defaultModel.value;
+                if (select.options.length > 0) {
+                    selectedModel = select.value;
+                    modelsLoaded = true;
+                }
+                // Fetch pipeline config from core
+                loadConfig();
+                select.onchange = () => { selectedModel = select.value; };
+            } catch {
+                // Core not ready yet — will retry on next health poll
+            }
+        }
+
+        function setStatus(text, cssClass) {
+            const el = document.getElementById('status-text');
+            el.innerText = text;
+            el.className = cssClass;
+        }
+
+        function setHealthInfo(text) {
+            document.getElementById('health-info').innerText = text;
+        }
+
+        function setInputEnabled(enabled) {
+            document.getElementById('user-input').disabled = !enabled;
+            document.getElementById('send-btn').disabled = !enabled;
+        }
+
+        let healthPollInFlight = false;
+
+        async function pollHealth() {
+            if (chatInProgress || healthPollInFlight) return;
+            healthPollInFlight = true;
+            try {
+                const resp = await fetch('/health');
+                // Discard result if a chat started while we were waiting
+                if (chatInProgress) return;
+                const data = await resp.json();
+                const parts = [];
+                const c = data.components || data;
+                // mcpMode: 'true' = required, 'optional' = best-effort, 'false' = disabled
+                const mcpMode = data.mcpMode || 'true';
+                const llmOk = c.llm === true;
+                // Use independent probe result (mcpReachable) — core's mcp[].ok is unreliable
+                const mcpOk = data.mcpReachable === true;
+                if (c.llm !== undefined) parts.push('CORE: ' + (llmOk ? '\u2713' : '\u2717'));
+                if (mcpMode === 'false') {
+                    parts.push('MCP: OFF');
+                } else if (mcpMode === 'optional') {
+                    parts.push('MCP: ' + (mcpOk ? '\u2713' : 'N/A'));
+                } else {
+                    parts.push('MCP: ' + (mcpOk ? '\u2713' : '\u2717'));
+                }
+                setHealthInfo(parts.join(' | '));
+
+                // Update core version from health response
+                if (data.coreVersion && data.coreVersion !== '0.0.0') {
+                    document.getElementById('core-version').innerText = 'CORE: LLM-Agent-v' + data.coreVersion;
+                }
+
+                // Ready when core agent is up; MCP blocks only in 'true' mode
+                const mcpSatisfied = mcpMode !== 'true' || mcpOk;
+                const isReady = llmOk && mcpSatisfied && modelsLoaded;
+                if (isReady) {
+                    if (!agentReady) {
+                        document.getElementById('user-input').focus();
+                    }
+                    agentReady = true;
+                    setStatus('READY', 'status-ready');
+                    setInputEnabled(true);
+                    return;
+                }
+                // Lost readiness — disable input
+                if (agentReady) {
+                    agentReady = false;
+                    setInputEnabled(false);
+                }
+                if (llmOk && mcpSatisfied && !modelsLoaded) {
+                    setStatus('LOADING MODELS...', 'status-starting');
+                    loadModels();
+                } else {
+                    const degradedParts = [];
+                    if (!llmOk) degradedParts.push('CORE');
+                    if (mcpMode === 'true' && !mcpOk) degradedParts.push('MCP');
+                    setStatus('DEGRADED — ' + degradedParts.join(', ') + ' unavailable', 'status-starting');
+                }
+            } catch {
+                // Only update status if no chat is active (avoid flicker during requests)
+                if (!chatInProgress) {
+                    if (agentReady) {
+                        agentReady = false;
+                        setInputEnabled(false);
+                    }
+                    setStatus('CONNECTING...', 'status-connecting');
+                    setHealthInfo('');
+                }
+            } finally {
+                healthPollInFlight = false;
+            }
+        }
+
+        const HEALTH_POLL_MS = 5000;
+        let chatInProgress = false;
+
+        // Start health polling on page load — pauses during active chat requests
+        (function initHealthCheck() {
+            setInputEnabled(false);
+            setStatus('CONNECTING...', 'status-connecting');
+            pollHealth();
+            loadModels();
+            healthPollTimer = setInterval(() => {
+                if (!chatInProgress) {
+                    pollHealth();
+                    if (document.getElementById('model-select').options.length <= 1 &&
+                        document.getElementById('model-select').options[0]?.text === 'loading...') {
+                        loadModels();
+                    }
+                }
+            }, HEALTH_POLL_MS);
+        })();
+
+        async function sendMessage() {
+            if (!agentReady) return;
+            const input = document.getElementById('user-input');
+            const btn = document.getElementById('send-btn');
+            const window = document.getElementById('chat-window');
+            const text = input.value.trim();
+            if (!text) return;
+
+            window.innerHTML += `<div class="message user"><b>> USER:</b> ${text}</div>`;
+            input.value = '';
+            input.disabled = true;
+            btn.disabled = true;
+            chatInProgress = true;
+            setStatus('PROCESSING', 'status-connecting');
+
+            const thinkingId = 'thinking-' + Date.now();
+            window.innerHTML += `<div class="message" id="${thinkingId}"><span class="thinking">> SYSTEM: AGENT IS SELECTING TOOLS...</span><span id="elapsed-${thinkingId}" style="color:#555;margin-left:10px;font-size:12px;"></span></div>`;
+            window.scrollTop = window.scrollHeight;
+
+            try {
+                const data = await new Promise((resolve, reject) => {
+                    const response = fetch('/chat', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ message: text, ...(selectedModel && { model: selectedModel }) })
+                    });
+                    response.then(resp => {
+                        const reader = resp.body.getReader();
+                        const decoder = new TextDecoder();
+                        let buf = '';
+                        let resolved = false;
+                        function processLines(lines) {
+                            let eventType = '';
+                            for (const line of lines) {
+                                if (line.startsWith('event: ')) { eventType = line.slice(7).trim(); continue; }
+                                if (line.startsWith('data: ')) {
+                                    try {
+                                        const payload = JSON.parse(line.slice(6));
+                                        if (eventType === 'heartbeat') {
+                                            const el = document.getElementById('elapsed-' + thinkingId);
+                                            if (el) el.innerText = payload.elapsed + 's';
+                                        } else if (eventType === 'phase') {
+                                            const el = document.getElementById(thinkingId);
+                                            const phaseLabels = {
+                                                core_agent: 'AGENT WORKING (RAG + MCP + LLM)...',
+                                                file_created: 'FILES GENERATED, PREPARING SUMMARY...',
+                                            };
+                                            if (el) el.querySelector('.thinking').innerText = '> SYSTEM: ' + (phaseLabels[payload.phase] || payload.phase);
+                                        } else if (eventType === 'result') {
+                                            resolved = true;
+                                            resolve(payload); return true;
+                                        }
+                                    } catch { /* skip malformed JSON */ }
+                                    eventType = '';
+                                }
+                            }
+                            return false;
+                        }
+                        function pump() {
+                            reader.read().then(({ done, value }) => {
+                                if (value) buf += decoder.decode(value, { stream: !done });
+                                if (buf) {
+                                    const lines = buf.split('\n');
+                                    buf = done ? '' : lines.pop();
+                                    if (processLines(lines)) return;
+                                }
+                                if (done) {
+                                    if (!resolved) reject(new Error('Stream ended without result'));
+                                    return;
+                                }
+                                pump();
+                            }).catch(reject);
+                        }
+                        pump();
+                    }).catch(reject);
+                });
+
+                const placeholder = document.getElementById(thinkingId);
+                if (placeholder) placeholder.remove();
+
+                let stepsHtml = "";
+                if (data.steps && data.steps.length > 0) {
+                    data.steps.forEach(s => {
+                        const argsStr = s.args ? JSON.stringify(s.args) : "{}";
+                        let icon = '🛠️';
+                        let color = 'inherit';
+                        if (s.type === 'RAG') icon = '🔍';
+                        if (s.type === 'MEMORY') icon = '💾';
+                        if (s.type === 'ERROR') { icon = '❌'; color = '#ff0000'; }
+
+                        const colName = (s.args && s.args.collection) ? s.args.collection : s.tool;
+                        stepsHtml += `<div class="trace-step" style="color: ${color}">${icon} [${s.type}]: <b>${colName}</b><span class="trace-args">${argsStr}</span></div>`;
+                    });
+                }
+
+                const usage = data.usage || {};
+                const totalTokens = (usage.prompt_tokens || 0) + (usage.completion_tokens || 0);
+                const tokensStr = totalTokens > 0
+                    ? `<span class="val">${totalTokens}</span> (in: ${usage.prompt_tokens || 0} / out: ${usage.completion_tokens || 0})`
+                    : '<span style="color:#555">N/A</span>';
+                const durationMs = usage.total_duration_ms || 0;
+                const durationStr = durationMs > 0
+                    ? (durationMs >= 1000 ? (durationMs / 1000).toFixed(1) + 's' : durationMs + 'ms')
+                    : '—';
+
+                const traceId = 'trace-' + Date.now();
+                const traceBlock = stepsHtml
+                    ? `<div class="trace-toggle" onclick="const b=document.getElementById('${traceId}');b.style.display=b.style.display==='none'?'block':'none'">▶ Execution trace (${data.steps.length} steps)</div>
+                       <div class="trace-body" id="${traceId}">
+                           <div class="trace-container">
+                               <div class="trace-header">Terminal Execution Trace</div>
+                               ${stepsHtml}
+                           </div>
+                       </div>`
+                    : '';
+
+                const rawResponse = data.response || data.reply || '';
+                // Extract MCP tool calls from SmartAgent markers and clean response text
+                const toolCallMatches = [...rawResponse.matchAll(/\[SmartAgent: Executing (\w+)\.\.\.\]\n?/g)];
+                const cleanedResponse = rawResponse.replace(/\[SmartAgent: Executing \w+\.\.\.\]\n?/g, '').trim();
+                const toolCallCounts = {};
+                for (const m of toolCallMatches) {
+                    toolCallCounts[m[1]] = (toolCallCounts[m[1]] || 0) + 1;
+                }
+                const toolCallNames = Object.keys(toolCallCounts);
+                let toolCallsHtml = '';
+                if (toolCallNames.length > 0) {
+                    const toolSteps = toolCallNames.map(name => {
+                        const count = toolCallCounts[name];
+                        return `<div class="trace-step"><b>${name}</b>${count > 1 ? `<span style="color:#888">&times;${count}</span>` : ''}</div>`;
+                    }).join('');
+                    toolCallsHtml = `<div class="trace-container"><div class="trace-header">Tool Calls (${toolCallMatches.length})</div>${toolSteps}</div>`;
+                }
+                const { html: responseHtml, mermaidIds } = parseFileArtifacts(cleanedResponse);
+
+                // Render file cards from tool_calls (new path)
+                let toolFileCardsHtml = '';
+                const toolMermaidIds = [];
+                if (data.files && data.files.length > 0) {
+                    for (let fi = 0; fi < data.files.length; fi++) {
+                        const file = data.files[fi];
+                        const cardId = 'art-' + Date.now() + '-tool-' + fi;
+                        const ext = (file.path.split('.').pop() || '').toLowerCase();
+                        const attrs = { path: file.path };
+                        if (ext === 'mmd') attrs.render = 'mermaid';
+                        if (['png', 'jpg', 'jpeg', 'gif'].includes(ext)) attrs.encoding = 'base64';
+                        fileArtifacts[cardId] = {
+                            path: file.path,
+                            content: file.content,
+                            encoding: attrs.encoding || '',
+                            render: attrs.render || '',
+                        };
+                        if (attrs.render === 'mermaid') toolMermaidIds.push({ cardId, renderId: 'mmd-' + cardId, content: file.content });
+                        toolFileCardsHtml += buildFileCardHtml(attrs, file.content, cardId);
+                    }
+                }
+
+                window.innerHTML += `
+                    <div class="message">
+                        <span class="agent"><b>> AGENT:</b> ${toolFileCardsHtml}${responseHtml}</span>
+                        ${toolCallsHtml}
+                        <div class="stats-bar">
+                            <span>TOKENS: ${tokensStr}</span>
+                            <span>TIME: <span class="duration">${durationStr}</span></span>
+                        </div>
+                        ${traceBlock}
+                    </div>
+                `;
+
+                // Render mermaid diagrams after DOM is updated
+                if (mermaidIds.length > 0 || toolMermaidIds.length > 0) renderMermaidDiagrams([...mermaidIds, ...toolMermaidIds]);
+            } catch (e) {
+                const placeholder = document.getElementById(thinkingId);
+                if (placeholder) placeholder.remove();
+                window.innerHTML += `<div class="message" style="color: red;">! ERROR: ${e.message}</div>`;
+            } finally {
+                chatInProgress = false;
+                setStatus('READY', 'status-ready');
+                input.disabled = false;
+                btn.disabled = false;
+                input.focus();
+                window.scrollTop = window.scrollHeight;
+            }
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,35 @@
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+# Fully local — all inference via Ollama
+llm:
+  provider: ollama
+  url: ${OLLAMA_URL:-http://host.docker.internal:11434}
+  model: qwen2.5:14b
+  temperature: 0.7
+  maxTokens: 8192
+
+rag:
+  type: ollama
+  url: ${OLLAMA_URL:-http://host.docker.internal:11434}
+  model: nomic-embed-text
+  vectorWeight: 0.7
+  keywordWeight: 0.3
+
+mcp:
+  type: http
+  url: ${MCP_SERVER_URL}
+  headers:
+    Accept: "application/json, text/event-stream"
+
+agent:
+  maxIterations: 10
+  maxToolCalls: 30
+  ragRetrievalMode: always
+  ragQueryK: 5
+  historyAutoSummarizeLimit: 15
+  retry:
+    maxAttempts: 3
+    backoffMs: 2000
+    retryOn: [429, 500, 502, 503]

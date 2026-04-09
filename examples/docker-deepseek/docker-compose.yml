@@ -1,0 +1,14 @@
+services:
+  llm-agent:
+    build: .
+    container_name: llm-agent-deepseek
+    restart: unless-stopped
+    ports:
+      - "${PORT:-4004}:4004"
+    environment:
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:3001/mcp/stream/http}
+      - MCP_ENABLED=${MCP_ENABLED:-true}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

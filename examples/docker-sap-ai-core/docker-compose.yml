@@ -1,0 +1,78 @@
+services:
+  llm-agent-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: mcp-abap-adt-llm-agent-core
+    restart: unless-stopped
+    # Port 8010 is internal-only (compat reaches core via llm-agent-core:8010).
+    # External clients must use compat (20011) which handles streaming correctly.
+    expose:
+      - "8010"
+    command:
+      - sh
+      - -lc
+      - >
+        llm-agent
+        --config /app/smart-server.yaml
+        --log-stdout
+    environment:
+      # --- LLM provider & model (used in smart-server.yaml via ${} substitution) ---
+      - LLM_PROVIDER=${LLM_PROVIDER:-sap-ai-sdk}
+      - LLM_MODEL_NAME=${LLM_MODEL_NAME:-anthropic--claude-4.6-sonnet}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-32768}
+
+      # --- RAG: embedder + vector DB ---
+      - RAG_EMBEDDER=${RAG_EMBEDDER:-sap-aicore}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding}
+      - QDRANT_URL=${QDRANT_URL:-http://host.docker.internal:6333}
+
+      # --- MCP endpoint (lazy connect via plugin, optional) ---
+      - MCP_ENABLED=${MCP_ENABLED:-true}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:3001/mcp/stream/http}
+
+      # --- SAP AI Core credentials (needed when LLM_PROVIDER=sap-ai-sdk or RAG_EMBEDDER=sap-aicore) ---
+      - AICORE_AUTH_URL
+      - AICORE_CLIENT_ID
+      - AICORE_CLIENT_SECRET
+      - AICORE_BASE_URL
+      - AICORE_SERVICE_KEY={"serviceurls":{"AI_API_URL":"${AICORE_BASE_URL}"},"url":"${AICORE_AUTH_URL}","clientid":"${AICORE_CLIENT_ID}","clientsecret":"${AICORE_CLIENT_SECRET}"}
+
+      # --- Ollama (needed when RAG_EMBEDDER=ollama) ---
+      - OLLAMA_URL=${OLLAMA_URL:-http://host.docker.internal:11434}
+
+      # --- Embedding throttle: ms between calls during tool vectorization (0 for Ollama) ---
+      - EMBED_THROTTLE_MS=${EMBED_THROTTLE_MS:-350}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  llm-agent-compat:
+    build:
+      context: .
+      dockerfile: Dockerfile.compat
+    container_name: mcp-abap-adt-llm-agent-compat
+    restart: unless-stopped
+    ports:
+      - "20011:8080"
+    environment:
+      - PORT=8080
+      - LLM_AGENT_URL=http://llm-agent-core:8010/v1/chat/completions
+      - LLM_MODEL=${LLM_MODEL_NAME:-anthropic--claude-4.6-sonnet}
+      - GIT_BRANCH=${GIT_BRANCH:-master}
+      - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-32768}
+      - MCP_ENABLED=${MCP_ENABLED:-true}
+      - MCP_SERVER_URL=${MCP_SERVER_URL:-http://host.docker.internal:3001/mcp/stream/http}
+      - MODELS_REFRESH_INTERVAL_MS=${MODELS_REFRESH_INTERVAL_MS:-0}
+      - LLM_CLASSIFIER_MODEL=${LLM_CLASSIFIER_MODEL:-gpt-4.1-mini}
+      - RAG_EMBEDDER=${RAG_EMBEDDER:-sap-aicore}
+      # --- AI Core + Qdrant for chat history RAG ---
+      - AICORE_AUTH_URL
+      - AICORE_CLIENT_ID
+      - AICORE_CLIENT_SECRET
+      - AICORE_BASE_URL
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding}
+      - QDRANT_URL=${QDRANT_URL:-http://host.docker.internal:6333}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - llm-agent-core
