@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.19.1] — 2026-04-09
+
+### Fixed
+- **`getActiveConfig()` classifierModel always undefined** — `SmartAgent` constructor hardcoded `_classifierLlm = undefined` instead of reading it from deps. Added `classifierLlm?: ILlm` to `SmartAgentDeps` and pass it from the builder. Closes #80.
+
+### Changed
+- **Documentation** — updated `docs/ARCHITECTURE.md`: replaced non-existent `llm/` directory with `history/` in repo structure, added `history-upsert` stage handler to the stage types table and default pipeline diagram.
+
+---
+
 ## [5.19.0] — 2026-04-09
 
 ### Added
