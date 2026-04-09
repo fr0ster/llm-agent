@@ -12,8 +12,6 @@
  *   ↓
  * summarize          — condense history if too long (conditional)
  *   ↓
- * rag-upsert         — upsert fact/state/feedback to RAG (conditional)
- *   ↓
  * rag-retrieval      — parallel block (conditional on shouldRetrieve):
  *   ├─ translate      — translate non-ASCII to English
  *   └─ expand         — expand query with synonyms
@@ -60,10 +58,6 @@ export function getDefaultStages(): StageDefinition[] {
     {
       id: 'summarize',
       type: 'summarize',
-    },
-    {
-      id: 'rag-upsert',
-      type: 'rag-upsert',
     },
     {
       id: 'rag-retrieval',

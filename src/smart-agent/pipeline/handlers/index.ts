@@ -11,7 +11,6 @@ import { ClassifyHandler } from './classify.js';
 import { ExpandHandler } from './expand.js';
 import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
-import { RagUpsertHandler } from './rag-upsert.js';
 import { RerankHandler } from './rerank.js';
 import { SkillSelectHandler } from './skill-select.js';
 import { SummarizeHandler } from './summarize.js';
@@ -32,7 +31,6 @@ export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
   return new Map<string, IStageHandler>([
     ['classify', new ClassifyHandler()],
     ['summarize', new SummarizeHandler()],
-    ['rag-upsert', new RagUpsertHandler()],
     ['translate', new TranslateHandler()],
     ['expand', new ExpandHandler()],
     ['rag-query', new RagQueryHandler()],
@@ -52,7 +50,6 @@ export {
   ExpandHandler,
   HistoryUpsertHandler,
   RagQueryHandler,
-  RagUpsertHandler,
   RerankHandler,
   SkillSelectHandler,
   SummarizeHandler,

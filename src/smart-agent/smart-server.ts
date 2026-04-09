@@ -107,8 +107,6 @@ export interface SmartServerAgentConfig {
   ragRetrievalMode?: 'auto' | 'always' | 'never';
   /** Whether to translate non-ASCII RAG queries to English. Default: true. */
   ragTranslationEnabled?: boolean;
-  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
-  ragUpsertEnabled?: boolean;
   /** LLM call strategy for tool-loop. 'streaming' (default) | 'non-streaming' | 'fallback'. */
   llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
 }
@@ -556,8 +554,6 @@ export class SmartServer {
           agentUpdate.ragRetrievalMode = update.ragRetrievalMode;
         if (update.ragTranslationEnabled !== undefined)
           agentUpdate.ragTranslationEnabled = update.ragTranslationEnabled;
-        if (update.ragUpsertEnabled !== undefined)
-          agentUpdate.ragUpsertEnabled = update.ragUpsertEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
         }
@@ -1241,7 +1237,6 @@ export class SmartServer {
     'classificationEnabled',
     'ragRetrievalMode',
     'ragTranslationEnabled',
-    'ragUpsertEnabled',
   ]);
 
   private async _handleConfigUpdate(

@@ -23,7 +23,6 @@ import type {
   LlmTool,
   McpTool,
   ModelUsageEntry,
-  RagMetadata,
   RagResult,
   Result,
   StreamHookContext,
@@ -147,8 +146,6 @@ export interface SmartAgentConfig {
   ragRetrievalMode?: 'auto' | 'always' | 'never';
   /** Whether to translate non-ASCII RAG queries to English. Default: true. */
   ragTranslationEnabled?: boolean;
-  /** Whether to upsert classified subprompts to RAG stores. Default: true. */
-  ragUpsertEnabled?: boolean;
   /** Whether to inject matched skills into the system prompt. Default: true (when skillManager is configured). */
   skillInjectionEnabled?: boolean;
   /**
@@ -334,7 +331,6 @@ export class SmartAgent {
     classificationEnabled?: boolean;
     ragRetrievalMode?: 'auto' | 'always' | 'never';
     ragTranslationEnabled?: boolean;
-    ragUpsertEnabled?: boolean;
   } {
     return {
       maxIterations: this.config.maxIterations,
@@ -346,7 +342,6 @@ export class SmartAgent {
       classificationEnabled: this.config.classificationEnabled,
       ragRetrievalMode: this.config.ragRetrievalMode,
       ragTranslationEnabled: this.config.ragTranslationEnabled,
-      ragUpsertEnabled: this.config.ragUpsertEnabled,
     };
   }
 
@@ -1004,31 +999,6 @@ export class SmartAgent {
     for (const sp of subprompts) {
       this.metrics.classifierIntentCount.add(1, { intent: sp.type });
     }
-    const resolveStore = (type: string): IRag | undefined =>
-      this.deps.ragStores[type] ?? this.deps.ragStores[`${type}s`];
-    const others =
-      this.config.ragUpsertEnabled !== false
-        ? subprompts.filter(
-            (sp) =>
-              sp.type !== 'action' &&
-              sp.type !== 'chat' &&
-              resolveStore(sp.type),
-          )
-        : [];
-    if (others.length > 0) {
-      const upsertSpan = this.tracer.startSpan('smart_agent.rag_upsert', {
-        parent: parentSpan,
-        attributes: { 'rag.upsert_count': others.length },
-      });
-      await Promise.allSettled(
-        others.map(async (sp) => {
-          const s = resolveStore(sp.type);
-          if (s) await s.upsert(sp.text, this._buildRagMetadata(), opts);
-        }),
-      );
-      upsertSpan.end();
-    }
-
     const { toolClientMap } = await this._listAllTools(opts);
     return { ok: true, value: { subprompts, processedHistory, toolClientMap } };
   }
@@ -1840,16 +1810,6 @@ export class SmartAgent {
         ...rec,
       ],
     };
-  }
-
-  private _buildRagMetadata(): RagMetadata {
-    const p = this.config.sessionPolicy;
-    if (!p) return {};
-    const m: RagMetadata = {};
-    if (p.namespace !== undefined) m.namespace = p.namespace;
-    if (p.maxSessionAgeMs !== undefined)
-      m.ttl = Math.floor((Date.now() + p.maxSessionAgeMs) / 1000);
-    return m;
   }
 
   /**

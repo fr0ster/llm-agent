@@ -28,7 +28,6 @@ export interface HotReloadableConfig {
   classificationEnabled?: boolean;
   ragRetrievalMode?: 'auto' | 'always' | 'never';
   ragTranslationEnabled?: boolean;
-  ragUpsertEnabled?: boolean;
   vectorWeight?: number;
   keywordWeight?: number;
   prompts?: {
@@ -147,8 +146,6 @@ export class ConfigWatcher extends EventEmitter {
         | 'never';
     if (agent.ragTranslationEnabled !== undefined)
       config.ragTranslationEnabled = Boolean(agent.ragTranslationEnabled);
-    if (agent.ragUpsertEnabled !== undefined)
-      config.ragUpsertEnabled = Boolean(agent.ragUpsertEnabled);
 
     if (rag.vectorWeight !== undefined)
       config.vectorWeight = Number(rag.vectorWeight);

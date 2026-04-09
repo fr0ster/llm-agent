@@ -474,12 +474,6 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Enable or disable upserting classified subprompts to RAG stores. */
-  withRagUpsert(enabled: boolean): this {
-    this._agentOverrides.ragUpsertEnabled = enabled;
-    return this;
-  }
-
   /** Enable per-iteration RAG-based tool re-selection in the tool loop. */
   withToolReselection(enabled: boolean): this {
     this._agentOverrides.toolReselectPerIteration = enabled;

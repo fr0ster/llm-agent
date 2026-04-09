@@ -82,7 +82,6 @@ agent:
   # classificationEnabled: true      # Enable/disable intent classification stage
   # ragRetrievalMode: auto           # auto | always | never — controls RAG retrieval
   # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
-  # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
   # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
   # llmCallStrategy: streaming       # streaming | non-streaming | fallback
   # streamMode: full                 # full | final — streaming behavior for tool loops
@@ -142,8 +141,6 @@ agent:
 #       type: classify
 #     - id: summarize
 #       type: summarize
-#     - id: rag-upsert
-#       type: rag-upsert
 #     - id: rag-retrieval
 #       type: parallel
 #       when: "shouldRetrieve"
@@ -403,11 +400,6 @@ export function resolveSmartServerConfig(
             ragTranslationEnabled: Boolean(
               get(yaml, 'agent', 'ragTranslationEnabled'),
             ),
-          }
-        : {}),
-      ...(get(yaml, 'agent', 'ragUpsertEnabled') !== undefined
-        ? {
-            ragUpsertEnabled: Boolean(get(yaml, 'agent', 'ragUpsertEnabled')),
           }
         : {}),
       ...(get(yaml, 'agent', 'toolReselectPerIteration') !== undefined
