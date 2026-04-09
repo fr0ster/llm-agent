@@ -103,10 +103,6 @@ export interface SmartServerAgentConfig {
   sessionTokenBudget?: number;
   /** Whether classification stage runs. Default: true. */
   classificationEnabled?: boolean;
-  /** RAG retrieval behavior. 'auto' | 'always' | 'never'. Default: 'auto'. */
-  ragRetrievalMode?: 'auto' | 'always' | 'never';
-  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
-  ragTranslationEnabled?: boolean;
   /** LLM call strategy for tool-loop. 'streaming' (default) | 'non-streaming' | 'fallback'. */
   llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
 }
@@ -395,8 +391,12 @@ export class SmartServer {
       builder = builder.withHelperLlm(helperLlm);
     }
 
-    if (Object.keys(stores).length > 0) {
-      builder = builder.withRag(stores);
+    // TODO: Task 7 will refactor SmartServer RAG store wiring to use setToolsRag/setHistoryRag
+    if (stores.tools) {
+      builder = builder.setToolsRag(stores.tools);
+    }
+    if (stores.history) {
+      builder = builder.setHistoryRag(stores.history);
     }
 
     if (this.cfg.circuitBreaker) {
@@ -550,10 +550,6 @@ export class SmartServer {
           agentUpdate.historySummaryPrompt = update.prompts.historySummary;
         if (update.classificationEnabled !== undefined)
           agentUpdate.classificationEnabled = update.classificationEnabled;
-        if (update.ragRetrievalMode !== undefined)
-          agentUpdate.ragRetrievalMode = update.ragRetrievalMode;
-        if (update.ragTranslationEnabled !== undefined)
-          agentUpdate.ragTranslationEnabled = update.ragTranslationEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
         }
@@ -1235,8 +1231,6 @@ export class SmartServer {
     'showReasoning',
     'historyAutoSummarizeLimit',
     'classificationEnabled',
-    'ragRetrievalMode',
-    'ragTranslationEnabled',
   ]);
 
   private async _handleConfigUpdate(

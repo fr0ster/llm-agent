@@ -71,8 +71,6 @@ describe('SmartAgent.getAgentConfig', () => {
       showReasoning: true,
       historyAutoSummarizeLimit: 20,
       classificationEnabled: true,
-      ragRetrievalMode: 'auto',
-      ragTranslationEnabled: true,
       // These should NOT appear in the output:
       timeoutMs: 5000,
       tokenLimit: 4096,
@@ -89,8 +87,6 @@ describe('SmartAgent.getAgentConfig', () => {
       showReasoning: true,
       historyAutoSummarizeLimit: 20,
       classificationEnabled: true,
-      ragRetrievalMode: 'auto',
-      ragTranslationEnabled: true,
     });
   });
 

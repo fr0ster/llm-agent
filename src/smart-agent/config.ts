@@ -387,21 +387,6 @@ export function resolveSmartServerConfig(
             ),
           }
         : {}),
-      ...(get(yaml, 'agent', 'ragRetrievalMode') !== undefined
-        ? {
-            ragRetrievalMode: String(get(yaml, 'agent', 'ragRetrievalMode')) as
-              | 'auto'
-              | 'always'
-              | 'never',
-          }
-        : {}),
-      ...(get(yaml, 'agent', 'ragTranslationEnabled') !== undefined
-        ? {
-            ragTranslationEnabled: Boolean(
-              get(yaml, 'agent', 'ragTranslationEnabled'),
-            ),
-          }
-        : {}),
       ...(get(yaml, 'agent', 'toolReselectPerIteration') !== undefined
         ? {
             toolReselectPerIteration: Boolean(

@@ -142,10 +142,6 @@ export interface SmartAgentConfig {
 
   /** Whether classification stage runs. Default: true. When false, input is treated as a single action. */
   classificationEnabled?: boolean;
-  /** RAG retrieval behavior. 'auto': based on SAP context detection (default), 'always': force retrieval, 'never': skip. */
-  ragRetrievalMode?: 'auto' | 'always' | 'never';
-  /** Whether to translate non-ASCII RAG queries to English. Default: true. */
-  ragTranslationEnabled?: boolean;
   /** Whether to inject matched skills into the system prompt. Default: true (when skillManager is configured). */
   skillInjectionEnabled?: boolean;
   /**
@@ -329,8 +325,6 @@ export class SmartAgent {
     showReasoning?: boolean;
     historyAutoSummarizeLimit?: number;
     classificationEnabled?: boolean;
-    ragRetrievalMode?: 'auto' | 'always' | 'never';
-    ragTranslationEnabled?: boolean;
   } {
     return {
       maxIterations: this.config.maxIterations,
@@ -340,8 +334,6 @@ export class SmartAgent {
       showReasoning: this.config.showReasoning,
       historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
       classificationEnabled: this.config.classificationEnabled,
-      ragRetrievalMode: this.config.ragRetrievalMode,
-      ragTranslationEnabled: this.config.ragTranslationEnabled,
     };
   }
 
@@ -640,14 +632,12 @@ export class SmartAgent {
       // 2. Decide context and tools for the WHOLE request
       await this._resolveActiveClients(opts);
       const actions = subprompts.filter((sp) => sp.type === 'action');
-      const ragMode = this.config.ragRetrievalMode ?? 'auto';
+      // ragRetrievalMode removed from SmartAgentConfig in Task 4 — behavior is 'auto'
       const hasActions = actions.length > 0;
       const hasMcpClients = this._activeClients.length > 0;
       const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
       const shouldRetrieve =
-        ragMode === 'always' ||
-        mode === 'hard' ||
-        (ragMode === 'auto' && hasActions && (hasMcpClients || hasRagStores));
+        mode === 'hard' || (hasActions && (hasMcpClients || hasRagStores));
 
       let finalTools: LlmTool[] = [];
       let retrieved: {
@@ -662,10 +652,8 @@ export class SmartAgent {
       if (shouldRetrieve) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        let ragText =
-          this.config.ragTranslationEnabled !== false
-            ? await this._toEnglishForRag(combinedActionText, opts)
-            : combinedActionText;
+        // ragTranslationEnabled removed from SmartAgentConfig in Task 4 — always translate
+        let ragText = await this._toEnglishForRag(combinedActionText, opts);
         if (this.config.queryExpansionEnabled) {
           const expandResult = await this.queryExpander.expand(ragText, opts);
           if (expandResult.ok) ragText = expandResult.value;
