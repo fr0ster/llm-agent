@@ -3,7 +3,7 @@
 #
 # - Main LLM: OpenAI GPT-4o (creative, high temperature)
 # - Classifier/Helper: DeepSeek (cheap, low temperature)
-# - Facts RAG: Qdrant + OpenAI embeddings
+# - Tools RAG: Qdrant + OpenAI embeddings (for tool/skill selection)
 # - Custom tool-loop config: higher iteration/tool limits
 #
 # Usage:
@@ -33,17 +33,13 @@ pipeline:
       temperature: 0.1
 
   rag:
-    facts:
+    tools:
       type: qdrant
       url: http://qdrant:6333
-      collectionName: llm-agent-facts
+      collectionName: llm-agent-tools
       embedder: openai
       model: text-embedding-3-small
       apiKey: ${OPENAI_API_KEY}
-    feedback:
-      type: in-memory
-    state:
-      type: in-memory
 
   mcp:
     - type: http
@@ -57,24 +53,15 @@ pipeline:
       type: summarize
     - id: rag-retrieval
       type: parallel
-      when: "shouldRetrieve"
       stages:
-        - id: translate
-          type: translate
-        - id: expand
-          type: expand
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 15 }
       after:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - id: rag-facts
-              type: rag-query
-              config: { store: facts, k: 15 }
-            - id: rag-feedback
-              type: rag-query
-              config: { store: feedback, k: 5 }
         - id: rerank
           type: rerank
+        - id: skill-select
+          type: skill-select
         - id: tool-select
           type: tool-select
     - id: assemble
@@ -82,3 +69,5 @@ pipeline:
     - id: tool-loop
       type: tool-loop
       config: { maxIterations: 15, maxToolCalls: 50 }
+    - id: history-upsert
+      type: history-upsert
