@@ -63,8 +63,7 @@ export class ClassifyHandler implements IStageHandler {
     ctx.isSapRequired =
       actions.some((a) => a.context === 'sap-abap') || mode === 'hard';
 
-    const ragMode = ctx.config.ragRetrievalMode ?? 'auto';
-    ctx.shouldRetrieve =
-      ragMode === 'always' || (ragMode === 'auto' && ctx.isSapRequired);
+    // ragRetrievalMode removed from SmartAgentConfig in Task 4 — behavior is 'auto'
+    ctx.shouldRetrieve = ctx.isSapRequired;
   }
 }

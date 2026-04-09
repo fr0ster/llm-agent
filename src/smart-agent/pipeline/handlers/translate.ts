@@ -20,11 +20,7 @@ export class TranslateHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
-    if (ctx.config.ragTranslationEnabled === false) {
-      span.setAttribute('skipped', true);
-      span.setAttribute('reason', 'disabled');
-      return true;
-    }
+    // ragTranslationEnabled removed from SmartAgentConfig in Task 4 — always translate
 
     ctx.isAscii = /^[\p{ASCII}]+$/u.test(ctx.ragText);
 

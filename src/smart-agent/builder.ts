@@ -42,8 +42,10 @@ import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IModelProvider } from './interfaces/model-provider.js';
+import type { IPipeline } from './interfaces/pipeline.js';
 import {
   type IEmbedder,
+  type IRag,
   isBatchEmbedder,
   supportsPrecomputed,
 } from './interfaces/rag.js';
@@ -173,7 +175,9 @@ export class SmartAgentBuilder {
   private _helperLlm?: ILlm;
   private _classifierLlm?: ILlm;
   private _onBeforeStream?: SmartAgentConfig['onBeforeStream'];
-  private _ragStores: SmartAgentRagStores = {};
+  private _toolsRag?: IRag;
+  private _historyRag?: IRag;
+  private _pipeline?: IPipeline;
   private _mcpClients?: IMcpClient[];
   private _classifier?: ISubpromptClassifier;
   private _assembler?: IContextAssembler;
@@ -242,12 +246,21 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /**
-   * Set RAG stores. The consumer defines the store keys and instances.
-   * Stores are merged with previously set stores.
-   */
-  withRag(stores: SmartAgentRagStores): this {
-    this._ragStores = { ...this._ragStores, ...stores };
+  /** Inject a custom RAG store for MCP tool selection. Overrides auto-created in-memory store. */
+  setToolsRag(rag: IRag): this {
+    this._toolsRag = rag;
+    return this;
+  }
+
+  /** Inject a custom RAG store for conversation history. Overrides auto-created in-memory store. */
+  setHistoryRag(rag: IRag): this {
+    this._historyRag = rag;
+    return this;
+  }
+
+  /** Inject a pipeline implementation. Defaults to DefaultPipeline if not set. */
+  setPipeline(pipeline: IPipeline): this {
+    this._pipeline = pipeline;
     return this;
   }
 
@@ -462,18 +475,6 @@ export class SmartAgentBuilder {
     return this;
   }
 
-  /** Set RAG retrieval mode: 'auto' (SAP context), 'always', or 'never'. */
-  withRagRetrieval(mode: 'auto' | 'always' | 'never'): this {
-    this._agentOverrides.ragRetrievalMode = mode;
-    return this;
-  }
-
-  /** Enable or disable translation of non-ASCII RAG queries to English. */
-  withRagTranslation(enabled: boolean): this {
-    this._agentOverrides.ragTranslationEnabled = enabled;
-    return this;
-  }
-
   /** Enable per-iteration RAG-based tool re-selection in the tool loop. */
   withToolReselection(enabled: boolean): this {
     this._agentOverrides.toolReselectPerIteration = enabled;
@@ -629,8 +630,9 @@ export class SmartAgentBuilder {
       }
     } // end skipModelValidation guard
 
-    // RAG stores — consumer defines which stores to use
-    const ragStores: SmartAgentRagStores = { ...this._ragStores };
+    // TODO: Task 6 will refactor build() to use IPipeline and _toolsRag/_historyRag
+    // For now, use empty stores to keep the build compiling.
+    const ragStores: SmartAgentRagStores = {};
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
