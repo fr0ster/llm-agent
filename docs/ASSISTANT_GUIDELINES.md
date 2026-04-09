@@ -48,7 +48,9 @@ Legacy modules under `src/agents`, `src/llm-providers`, and `src/mcp` are still 
 ## Documentation Sources of Truth
 
 - Product overview and usage: `README.md`
+- Quick start guide: `docs/QUICK_START.md`
 - Runtime and contracts: `docs/ARCHITECTURE.md`
 - Usage snippets: `docs/EXAMPLES.md`
+- Deployment examples: `examples/`
 
 If docs conflict, align them to actual `src/smart-agent/*` behavior and tests.

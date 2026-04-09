@@ -93,8 +93,13 @@ Copy `.env.template` to `.env`. Key variables:
 
 ## Docs
 
+- `docs/QUICK_START.md` — end-to-end guide: install, config, connect IDE
 - `docs/ARCHITECTURE.md` — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
+- `docs/EXAMPLES.md` — YAML config examples and programmatic usage snippets
 - `src/mcp/README.md` — MCP transport configuration details
 - `docs/DEPLOYMENT.md` — production deployment patterns (Docker, systemd, serverless)
 - `docs/PERFORMANCE.md` — RAG, BM25, model selection, token budget tuning
 - `docs/INTEGRATION.md` — custom interface implementation guide with code examples
+- `examples/docker-ollama/` — Docker Compose, fully local (Ollama LLM + embeddings, no API keys)
+- `examples/docker-deepseek/` — Docker Compose, DeepSeek LLM + Ollama embeddings
+- `examples/docker-sap-ai-core/` — Docker Compose, SAP AI Core (LLM + embeddings + Qdrant + compat layer)

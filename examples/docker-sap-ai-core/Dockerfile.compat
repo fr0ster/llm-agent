@@ -1,0 +1,10 @@
+FROM node:20-alpine
+
+WORKDIR /app
+
+COPY compat-server.mjs /app/compat-server.mjs
+COPY index.html /app/index.html
+
+EXPOSE 8080
+
+CMD ["node", "/app/compat-server.mjs"]
