@@ -39,7 +39,7 @@ host: 0.0.0.0
 # Request routing mode:
 #   hard        — Fully managed context. Ignores client history/system prompt. Uses RAG + internal MCP tools only.
 #   pass        — Transparent proxy. Logs everything but modifies nothing.
-#   smart       — Hybrid. Preserves client history but enriches it with RAG facts and MCP tools based on analysis. (default)
+#   smart       — Hybrid. Preserves client history but enriches it with RAG context and MCP tools based on analysis. (default)
 mode: smart
 
 llm:
@@ -80,9 +80,6 @@ agent:
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
   sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
   # classificationEnabled: true      # Enable/disable intent classification stage
-  # ragRetrievalMode: auto           # auto | always | never — controls RAG retrieval
-  # ragTranslationEnabled: true      # Translate non-ASCII RAG queries to English
-  # ragUpsertEnabled: true           # Upsert classified subprompts to RAG stores
   # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
   # llmCallStrategy: streaming       # streaming | non-streaming | fallback
   # streamMode: full                 # full | final — streaming behavior for tool loops
@@ -116,15 +113,13 @@ agent:
 #       temperature: 0.1
 #
 #   rag:
-#     facts:
+#     tools:
 #       type: qdrant
 #       url: http://qdrant:6333
 #       embedder: openai              # ollama | openai | <custom registered name>
 #       model: text-embedding-3-small
 #       apiKey: \${OPENAI_API_KEY}
-#     feedback:
-#       type: in-memory
-#     state:
+#     history:
 #       type: in-memory
 #
 #   mcp:
@@ -142,8 +137,6 @@ agent:
 #       type: classify
 #     - id: summarize
 #       type: summarize
-#     - id: rag-upsert
-#       type: rag-upsert
 #     - id: rag-retrieval
 #       type: parallel
 #       when: "shouldRetrieve"
@@ -154,9 +147,8 @@ agent:
 #         - id: rag-queries
 #           type: parallel
 #           stages:
-#             - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
-#             - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-#             - { id: state, type: rag-query, config: { store: state, k: 5 } }
+#             - { id: tools, type: rag-query, config: { store: tools, k: 10 } }
+#             - { id: history, type: rag-query, config: { store: history, k: 5 } }
 #         - { id: rerank, type: rerank }
 #         - { id: tool-select, type: tool-select }
 #     - id: assemble
@@ -388,26 +380,6 @@ export function resolveSmartServerConfig(
             classificationEnabled: Boolean(
               get(yaml, 'agent', 'classificationEnabled'),
             ),
-          }
-        : {}),
-      ...(get(yaml, 'agent', 'ragRetrievalMode') !== undefined
-        ? {
-            ragRetrievalMode: String(get(yaml, 'agent', 'ragRetrievalMode')) as
-              | 'auto'
-              | 'always'
-              | 'never',
-          }
-        : {}),
-      ...(get(yaml, 'agent', 'ragTranslationEnabled') !== undefined
-        ? {
-            ragTranslationEnabled: Boolean(
-              get(yaml, 'agent', 'ragTranslationEnabled'),
-            ),
-          }
-        : {}),
-      ...(get(yaml, 'agent', 'ragUpsertEnabled') !== undefined
-        ? {
-            ragUpsertEnabled: Boolean(get(yaml, 'agent', 'ragUpsertEnabled')),
           }
         : {}),
       ...(get(yaml, 'agent', 'toolReselectPerIteration') !== undefined

@@ -10,10 +10,9 @@
  * **Built-in operations** — correspond to pipeline phases:
  * - `classify`    — decompose user input into typed subprompts
  * - `summarize`   — condense conversation history (uses helper LLM)
- * - `rag-upsert`  — upsert classified subprompts to RAG stores
  * - `translate`   — translate non-ASCII RAG query to English
  * - `expand`      — expand query with synonyms (query expander)
- * - `rag-query`   — query a RAG store (config: { store: 'facts' | 'feedback' | 'state' })
+ * - `rag-query`   — query a RAG store (config: { store: '<store-name>', k: 10 })
  * - `rerank`      — re-score RAG results
  * - `tool-select` — select MCP tools based on RAG results
  * - `assemble`      — build final LLM context
@@ -43,8 +42,8 @@
  *       type: parallel
  *       when: "shouldRetrieve"
  *       stages:
- *         - { id: query-facts, type: rag-query, config: { store: facts, k: 10 } }
- *         - { id: query-state, type: rag-query, config: { store: state, k: 10 } }
+ *         - { id: query-tools, type: rag-query, config: { store: tools, k: 10 } }
+ *         - { id: query-history, type: rag-query, config: { store: history, k: 5 } }
  *     - id: assemble
  *       type: assemble
  *     - id: tool-loop
@@ -63,7 +62,6 @@
 export type BuiltInStageType =
   | 'classify'
   | 'summarize'
-  | 'rag-upsert'
   | 'translate'
   | 'expand'
   | 'rag-query'
@@ -105,7 +103,7 @@ export interface StageDefinition {
    * Each handler defines its own expected config shape.
    *
    * Examples:
-   * - rag-query: `{ store: 'facts', k: 10 }`
+   * - rag-query: `{ store: 'tools', k: 10 }`
    * - tool-loop: `{ maxIterations: 10, maxToolCalls: 30 }`
    */
   config?: Record<string, unknown>;
@@ -144,23 +142,4 @@ export interface StageDefinition {
    * The loop stops when this expression evaluates to truthy.
    */
   until?: string;
-}
-
-// ---------------------------------------------------------------------------
-// Pipeline definition
-// ---------------------------------------------------------------------------
-
-/**
- * Top-level structured pipeline definition.
- *
- * When present in the YAML config (`pipeline.stages`), the structured
- * pipeline replaces the default hardcoded execution flow in SmartAgent.
- * When absent, the default flow runs unchanged (full backwards compatibility).
- */
-export interface StructuredPipelineDefinition {
-  /** Schema version for forward compatibility. Currently only `'1'`. */
-  version: '1';
-
-  /** Ordered list of top-level stages. */
-  stages: StageDefinition[];
 }

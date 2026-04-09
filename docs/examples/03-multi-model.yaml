@@ -1,5 +1,5 @@
 # Multi-model pipeline — separate LLMs for main/classifier/helper.
-# Uses Qdrant for facts RAG with OpenAI embeddings; in-memory for feedback/state.
+# Uses Qdrant for tools RAG with OpenAI embeddings.
 #
 # Usage:
 #   DEEPSEEK_API_KEY=sk-xxx OPENAI_API_KEY=sk-xxx \
@@ -28,17 +28,13 @@ pipeline:
       temperature: 0.1
 
   rag:
-    facts:
+    tools:
       type: qdrant
       url: http://qdrant:6333
-      collectionName: llm-agent-facts
+      collectionName: llm-agent-tools
       embedder: openai
       model: text-embedding-3-small
       apiKey: ${OPENAI_API_KEY}
-    feedback:
-      type: in-memory
-    state:
-      type: in-memory
 
   mcp:
     - type: http

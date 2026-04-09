@@ -1,8 +1,12 @@
-# Structured pipeline — reproduces the default hardcoded flow as explicit YAML.
-# Good starting point for customization: reorder, skip, or add stages.
+# Structured pipeline — reproduces the DefaultPipeline flow as explicit YAML.
+# Good starting point for understanding the built-in stage sequence.
 #
-# This is equivalent to the hardcoded SmartAgent.streamProcess() flow.
-# See docs/ARCHITECTURE.md → "Structured Pipeline DSL" for stage type reference.
+# DefaultPipeline uses only two RAG stores:
+#   - tools:   MCP tool descriptions + skill descriptions (for tool/skill selection)
+#   - history: semantic conversation history (optional, for long-term memory)
+#
+# No facts/feedback/state stores. No rag-upsert stage.
+# To add domain stores or upsert, implement a custom IPipeline.
 #
 # Usage:
 #   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/04-structured-default.yaml
@@ -28,7 +32,7 @@ mcp:
 pipeline:
   version: "1"
   stages:
-    # 1. Classify user input into typed subprompts (action/fact/chat/state/feedback)
+    # 1. Classify user input into typed subprompts (action/chat)
     - id: classify
       type: classify
 
@@ -36,46 +40,39 @@ pipeline:
     - id: summarize
       type: summarize
 
-    # 3. Upsert classified subprompts to RAG stores
-    - id: rag-upsert
-      type: rag-upsert
-
-    # 4. RAG retrieval block — runs only when retrieval is needed
+    # 3. RAG retrieval block — query tools and history stores in parallel
     - id: rag-retrieval
       type: parallel
-      when: "shouldRetrieve"
       stages:
-        # Translate non-ASCII query to English for better embedding match
-        - id: translate
-          type: translate
-        # Expand query with synonyms
-        - id: expand
-          type: expand
+        # Query tools store: MCP tool descriptions + skill descriptions
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+        # Query history store: semantic conversation history (if configured)
+        - id: rag-history
+          type: rag-query
+          config: { store: history, k: 5 }
       after:
-        # Query all RAG stores in parallel
-        - id: rag-queries
-          type: parallel
-          stages:
-            - id: rag-facts
-              type: rag-query
-              config: { store: facts, k: 10 }
-            - id: rag-feedback
-              type: rag-query
-              config: { store: feedback, k: 5 }
-            - id: rag-state
-              type: rag-query
-              config: { store: state, k: 5 }
         # Re-score RAG results
         - id: rerank
           type: rerank
-        # Select MCP tools based on RAG matches
-        - id: tool-select
-          type: tool-select
 
-    # 5. Build final LLM context from subprompts + RAG + tools
+    # 4. Select skills based on tools RAG matches
+    - id: skill-select
+      type: skill-select
+
+    # 5. Select MCP tools based on RAG matches
+    - id: tool-select
+      type: tool-select
+
+    # 6. Build final LLM context from subprompts + RAG + tools
     - id: assemble
       type: assemble
 
-    # 6. Streaming LLM call + tool execution loop
+    # 7. Streaming LLM call + tool execution loop
     - id: tool-loop
       type: tool-loop
+
+    # 8. Summarize turn and upsert to history RAG (if historyRag is set)
+    - id: history-upsert
+      type: history-upsert

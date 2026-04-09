@@ -35,6 +35,7 @@ export type {
   IHistorySummarizer,
 } from './history-summarizer.js';
 export type { ILlm } from './llm.js';
+export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
   ConnectionStrategyOptions,
@@ -45,11 +46,17 @@ export type {
   McpConnectionResult,
 } from './mcp-connection-strategy.js';
 export type {
+  IPipeline,
+  PipelineDeps,
+  PipelineResult,
+} from './pipeline.js';
+export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
   IEmbedder,
   IRag,
 } from './rag.js';
+export type { IRequestLogger } from './request-logger.js';
 export type {
   ISkill,
   ISkillManager,
