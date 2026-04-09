@@ -8,20 +8,11 @@ import {
   type Result,
   type SmartAgentError,
   type Subprompt,
-  type SubpromptType,
 } from '../interfaces/types.js';
-
-const VALID_TYPES: ReadonlySet<string> = new Set<SubpromptType>([
-  'fact',
-  'feedback',
-  'state',
-  'action',
-  'chat',
-]);
 
 export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
 For each task, identify:
-  - "type": chat (greetings/math), action (tasks), fact (knowledge), state (context), feedback.
+  - "type": chat (greetings, simple questions, math), action (tasks requiring tools or execution).
   - "text": the actual task description.
   - "context": the domain of the task (e.g., "sap-abap", "math", "general").
   - "dependency": "independent", "sequential" (must run after previous action), or an ID of a subprompt this one depends on.
@@ -65,7 +56,8 @@ function parseSubprompts(raw: string): Subprompt[] {
     if (
       typeof entry !== 'object' ||
       entry === null ||
-      !VALID_TYPES.has(entry.type) ||
+      typeof entry.type !== 'string' ||
+      entry.type.length === 0 ||
       typeof entry.text !== 'string' ||
       entry.text.length === 0
     ) {

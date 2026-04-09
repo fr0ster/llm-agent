@@ -132,7 +132,7 @@ export class SkillError extends SmartAgentError {
 // Subprompt
 // ---------------------------------------------------------------------------
 
-export type SubpromptType = 'fact' | 'feedback' | 'state' | 'action' | 'chat';
+export type SubpromptType = 'action' | 'chat' | (string & {});
 
 export interface Subprompt {
   type: SubpromptType;
