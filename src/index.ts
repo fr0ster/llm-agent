@@ -209,9 +209,8 @@ export type {
 } from './smart-agent/pipeline/index.js';
 export {
   buildDefaultHandlerRegistry,
+  DefaultPipeline,
   evaluateCondition,
-  getDefaultPipelineDefinition,
-  getDefaultStages,
   PipelineExecutor,
 } from './smart-agent/pipeline/index.js';
 // Plugins
