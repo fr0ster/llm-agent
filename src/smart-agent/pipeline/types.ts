@@ -143,22 +143,3 @@ export interface StageDefinition {
    */
   until?: string;
 }
-
-// ---------------------------------------------------------------------------
-// Pipeline definition
-// ---------------------------------------------------------------------------
-
-/**
- * Top-level structured pipeline definition.
- *
- * When present in the YAML config (`pipeline.stages`), the structured
- * pipeline replaces the default hardcoded execution flow in SmartAgent.
- * When absent, the default flow runs unchanged (full backwards compatibility).
- */
-export interface StructuredPipelineDefinition {
-  /** Schema version for forward compatibility. Currently only `'1'`. */
-  version: '1';
-
-  /** Ordered list of top-level stages. */
-  stages: StageDefinition[];
-}

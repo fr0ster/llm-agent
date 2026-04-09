@@ -39,5 +39,4 @@ export type {
   ControlFlowType,
   StageDefinition,
   StageType,
-  StructuredPipelineDefinition,
 } from './types.js';

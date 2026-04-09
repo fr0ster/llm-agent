@@ -205,7 +205,6 @@ export type {
   PipelineContext,
   StageDefinition,
   StageType,
-  StructuredPipelineDefinition,
 } from './smart-agent/pipeline/index.js';
 export {
   buildDefaultHandlerRegistry,
