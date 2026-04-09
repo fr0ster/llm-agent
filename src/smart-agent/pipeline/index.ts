@@ -26,7 +26,6 @@ export {
   ClassifyHandler,
   ExpandHandler,
   RagQueryHandler,
-  RagUpsertHandler,
   RerankHandler,
   SkillSelectHandler,
   type StageHandlerRegistry,

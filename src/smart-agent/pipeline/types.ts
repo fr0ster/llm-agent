@@ -10,7 +10,6 @@
  * **Built-in operations** — correspond to pipeline phases:
  * - `classify`    — decompose user input into typed subprompts
  * - `summarize`   — condense conversation history (uses helper LLM)
- * - `rag-upsert`  — upsert classified subprompts to RAG stores
  * - `translate`   — translate non-ASCII RAG query to English
  * - `expand`      — expand query with synonyms (query expander)
  * - `rag-query`   — query a RAG store (config: { store: 'facts' | 'feedback' | 'state' })
@@ -63,7 +62,6 @@
 export type BuiltInStageType =
   | 'classify'
   | 'summarize'
-  | 'rag-upsert'
   | 'translate'
   | 'expand'
   | 'rag-query'
