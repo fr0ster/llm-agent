@@ -90,6 +90,7 @@ export interface SmartAgentDeps {
   mcpClients: IMcpClient[];
   ragStores: SmartAgentRagStores;
   classifier: ISubpromptClassifier;
+  classifierLlm?: ILlm;
   classifierConfig?: LlmClassifierConfig;
   assembler: IContextAssembler;
   reranker?: IReranker;
@@ -249,7 +250,7 @@ export class SmartAgent {
     this._mainLlm = deps.mainLlm;
     this._helperLlm = deps.helperLlm;
     this._classifier = deps.classifier;
-    this._classifierLlm = undefined;
+    this._classifierLlm = deps.classifierLlm;
   }
 
   private async _resolveActiveClients(opts?: CallOptions): Promise<void> {

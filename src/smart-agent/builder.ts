@@ -1036,6 +1036,7 @@ export class SmartAgentBuilder {
         mcpClients,
         ragStores,
         classifier,
+        classifierLlm,
         classifierConfig: classifierCfg,
         assembler,
         ...(log ? { logger: log } : {}),
