@@ -65,4 +65,11 @@ export class InvertedIndex {
   get docCount(): number {
     return this.docLengths.size;
   }
+
+  /** Remove all indexed terms and document lengths. */
+  clear(): void {
+    this.termDf.clear();
+    this.docLengths.clear();
+    this.totalTokens = 0;
+  }
 }

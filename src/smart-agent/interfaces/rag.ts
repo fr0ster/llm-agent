@@ -50,6 +50,8 @@ export interface IRag {
   ): Promise<Result<RagResult[], RagError>>;
 
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
+  /** Clear all records. Used for session-scoped store cleanup. Optional — not all backends support it. */
+  clear?(): void;
 }
 
 export interface IEmbedderBatch extends IEmbedder {
