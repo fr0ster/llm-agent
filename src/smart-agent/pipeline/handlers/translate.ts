@@ -5,7 +5,6 @@
  * Writes: `ctx.ragText`
  *
  * Skips translation when:
- * - `ragTranslationEnabled` is false
  * - Text is ASCII-only
  * - Text is shorter than 15 characters
  */
@@ -20,8 +19,6 @@ export class TranslateHandler implements IStageHandler {
     _config: Record<string, unknown>,
     span: ISpan,
   ): Promise<boolean> {
-    // ragTranslationEnabled removed from SmartAgentConfig in Task 4 — always translate
-
     ctx.isAscii = /^[\p{ASCII}]+$/u.test(ctx.ragText);
 
     if (ctx.isAscii || ctx.ragText.length < 15) {

@@ -12,7 +12,7 @@
  * - `summarize`   — condense conversation history (uses helper LLM)
  * - `translate`   — translate non-ASCII RAG query to English
  * - `expand`      — expand query with synonyms (query expander)
- * - `rag-query`   — query a RAG store (config: { store: 'facts' | 'feedback' | 'state' })
+ * - `rag-query`   — query a RAG store (config: { store: '<store-name>', k: 10 })
  * - `rerank`      — re-score RAG results
  * - `tool-select` — select MCP tools based on RAG results
  * - `assemble`      — build final LLM context
@@ -42,8 +42,8 @@
  *       type: parallel
  *       when: "shouldRetrieve"
  *       stages:
- *         - { id: query-facts, type: rag-query, config: { store: facts, k: 10 } }
- *         - { id: query-state, type: rag-query, config: { store: state, k: 10 } }
+ *         - { id: query-tools, type: rag-query, config: { store: tools, k: 10 } }
+ *         - { id: query-history, type: rag-query, config: { store: history, k: 5 } }
  *     - id: assemble
  *       type: assemble
  *     - id: tool-loop
@@ -103,7 +103,7 @@ export interface StageDefinition {
    * Each handler defines its own expected config shape.
    *
    * Examples:
-   * - rag-query: `{ store: 'facts', k: 10 }`
+   * - rag-query: `{ store: 'tools', k: 10 }`
    * - tool-loop: `{ maxIterations: 10, maxToolCalls: 30 }`
    */
   config?: Record<string, unknown>;

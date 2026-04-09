@@ -9,7 +9,7 @@
  * Usage:
  *   const handle = await new SmartAgentBuilder()
  *     .withMainLlm(myLlm)
- *     .withRag({ facts: myRag, feedback: myRag })
+ *     .setToolsRag(myRag)
  *     .build();
  */
 

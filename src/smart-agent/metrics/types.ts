@@ -23,9 +23,9 @@ export interface IMetrics {
   requestLatency: IHistogram;
   /** Number of tool calls executed (internal MCP). */
   toolCallCount: ICounter;
-  /** Number of RAG queries executed. Attributes: store (facts|feedback|state), hit (true|false). */
+  /** Number of RAG queries executed. Attributes: store (store name), hit (true|false). */
   ragQueryCount: ICounter;
-  /** Intent classifier invocation count. Attributes: intent (action|fact|feedback|state|chat). */
+  /** Intent classifier invocation count. Attributes: intent (action|feedback|chat). */
   classifierIntentCount: ICounter;
   /** LLM chat / streamChat invocations. */
   llmCallCount: ICounter;

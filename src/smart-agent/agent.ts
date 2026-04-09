@@ -629,7 +629,6 @@ export class SmartAgent {
       // 2. Decide context and tools for the WHOLE request
       await this._resolveActiveClients(opts);
       const actions = subprompts.filter((sp) => sp.type === 'action');
-      // ragRetrievalMode removed from SmartAgentConfig in Task 4 — behavior is 'auto'
       const hasActions = actions.length > 0;
       const hasMcpClients = this._activeClients.length > 0;
       const hasRagStores = Object.keys(this.deps.ragStores).length > 0;
@@ -649,7 +648,6 @@ export class SmartAgent {
       if (shouldRetrieve) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        // ragTranslationEnabled removed from SmartAgentConfig in Task 4 — always translate
         let ragText = await this._toEnglishForRag(combinedActionText, opts);
         if (this.config.queryExpansionEnabled) {
           const expandResult = await this.queryExpander.expand(ragText, opts);

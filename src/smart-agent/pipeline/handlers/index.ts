@@ -2,7 +2,7 @@
  * Default stage handler registry.
  *
  * Maps built-in stage type names to their handler implementations.
- * Custom handlers can be added via `SmartAgentBuilder.withStageHandler()`.
+ * Custom handlers can be registered by supplying a custom `IPipeline` implementation.
  */
 
 import type { IStageHandler } from '../stage-handler.js';
