@@ -9,7 +9,6 @@ import { PACKAGE_VERSION } from '../generated/version.js';
 import type { Message } from '../types.js';
 import type {
   SmartAgent,
-  SmartAgentRagStores,
   SmartAgentReconfigureOptions,
   StopReason,
 } from './agent.js';
@@ -356,25 +355,6 @@ export class SmartServer {
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
 
-    // RAG resolution
-    const ragOptions = {
-      injectedEmbedder: this.cfg.embedder,
-      extraFactories: mergedEmbedderFactories,
-    };
-
-    const stores: SmartAgentRagStores = {};
-    if (pipeline?.rag) {
-      for (const [key, ragCfg] of Object.entries(pipeline.rag)) {
-        if (ragCfg) stores[key] = makeRag(ragCfg, ragOptions);
-      }
-    } else if (this.cfg.rag) {
-      const ragCfg = this.cfg.rag;
-      const rag = makeRag(ragCfg, ragOptions);
-      stores.facts = rag;
-      stores.feedback = makeRag({ ...ragCfg }, ragOptions);
-      stores.state = makeRag({ ...ragCfg }, ragOptions);
-    }
-
     // ---- Build agent via Builder (interface-only) -------------------------
     let builder = new SmartAgentBuilder({
       mcp: pipeline?.mcp ?? this.cfg.mcp,
@@ -391,12 +371,13 @@ export class SmartServer {
       builder = builder.withHelperLlm(helperLlm);
     }
 
-    // TODO: Task 7 will refactor SmartServer RAG store wiring to use setToolsRag/setHistoryRag
-    if (stores.tools) {
-      builder = builder.setToolsRag(stores.tools);
-    }
-    if (stores.history) {
-      builder = builder.setHistoryRag(stores.history);
+    if (this.cfg.rag) {
+      const ragOptions = {
+        injectedEmbedder: this.cfg.embedder,
+        extraFactories: mergedEmbedderFactories,
+      };
+      builder = builder.setToolsRag(makeRag(this.cfg.rag, ragOptions));
+      builder = builder.setHistoryRag(makeRag({ ...this.cfg.rag }, ragOptions));
     }
 
     if (this.cfg.circuitBreaker) {
