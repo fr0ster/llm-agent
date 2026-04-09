@@ -44,13 +44,11 @@ import {
   type SmartAgentResponse,
   type StopReason,
 } from './interfaces/agent-contracts.js';
+import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
-import type { PipelineContext } from './pipeline/context.js';
-import type { PipelineExecutor } from './pipeline/executor.js';
-import type { StageDefinition } from './pipeline/types.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
 import {
@@ -111,6 +109,7 @@ export interface SmartAgentDeps {
   historyMemory?: IHistoryMemory;
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
+  pipeline?: IPipeline;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -222,8 +221,6 @@ export class SmartAgent {
   constructor(
     private readonly deps: SmartAgentDeps,
     private config: SmartAgentConfig,
-    private readonly pipelineExecutor?: PipelineExecutor,
-    private readonly pipelineStages?: StageDefinition[],
   ) {
     this.toolAvailabilityRegistry = new ToolAvailabilityRegistry(
       this.config.toolUnavailableTtlMs,
@@ -592,8 +589,8 @@ export class SmartAgent {
         return;
       }
 
-      // Structured pipeline path (when configured via Builder.withPipeline)
-      if (this.pipelineExecutor && this.pipelineStages) {
+      // Pipeline path (when configured via Builder)
+      if (this.deps.pipeline) {
         const stream = this._runStructuredPipeline(
           textOrMessages,
           externalTools,
@@ -1800,106 +1797,29 @@ export class SmartAgent {
     };
   }
 
-  /**
-   * Execute the structured pipeline — delegates stage execution to
-   * the PipelineExecutor instead of running the hardcoded flow.
-   */
   private async *_runStructuredPipeline(
     textOrMessages: string | Message[],
-    externalTools: LlmTool[],
+    _externalTools: LlmTool[],
     opts: CallOptions | undefined,
-    parentSpan: ISpan,
-    sessionId: string,
+    _parentSpan: ISpan,
+    _sessionId: string,
   ): AsyncIterable<Result<LlmStreamChunk, OrchestratorError>> {
-    if (!this.pipelineExecutor || !this.pipelineStages) return;
+    if (!this.deps.pipeline) return;
 
-    const text =
-      typeof textOrMessages === 'string'
-        ? textOrMessages
-        : (textOrMessages.filter((m) => m.role === 'user').slice(-1)[0]
-            ?.content ?? '');
     const history = typeof textOrMessages === 'string' ? [] : textOrMessages;
 
-    // Collect yielded chunks via a queue
     const chunkQueue: Result<LlmStreamChunk, OrchestratorError>[] = [];
     let resolveWait: (() => void) | null = null;
     let done = false;
 
-    await this._resolveActiveClients(opts);
-    const ctx: PipelineContext = {
-      // Immutable input
-      textOrMessages,
-      options: opts,
-      config: this.config,
-      sessionId,
-
-      // Dependencies
-      mainLlm: this._mainLlm,
-      helperLlm: this._helperLlm,
-      classifierLlm: this._mainLlm,
-      classifier: this._classifier,
-      assembler: this.deps.assembler,
-      ragStores: this.deps.ragStores,
-      mcpClients: this._activeClients,
-      reranker: this.reranker,
-      queryExpander: this.queryExpander,
-      toolCache: this.toolCache,
-      outputValidator: this.outputValidator,
-      sessionManager: this.sessionManager,
-      tracer: this.tracer,
-      metrics: this.metrics,
-      logger: this.deps.logger,
-      requestLogger: this.requestLogger,
-      toolPolicy: this.deps.toolPolicy,
-      injectionDetector: this.deps.injectionDetector,
-      toolAvailabilityRegistry: this.toolAvailabilityRegistry,
-      pendingToolResults: this.pendingToolResults,
-      skillManager: this.deps.skillManager,
-      embedder: this.deps.embedder,
-      historyMemory: this.deps.historyMemory,
-      historySummarizer: this.deps.historySummarizer,
-      llmCallStrategy: this.deps.llmCallStrategy ?? this.defaultLlmCallStrategy,
-
-      // Mutable state
-      inputText: text,
-      history: [...history],
-      subprompts: [],
-      toolClientMap: new Map(),
-      ragText: '',
-      ragResults: Object.fromEntries(
-        Object.keys(this.deps.ragStores).map((k) => [k, []]),
-      ),
-      mcpTools: [],
-      selectedTools: [],
-      externalTools,
-      assembledMessages: [],
-      activeTools: [],
-      selectedSkills: [],
-      skillContent: '',
-      skillArgs: '',
-      queryEmbedding: undefined,
-
-      // Control flags
-      shouldRetrieve: false,
-      isAscii: true,
-      isSapRequired: false,
-
-      // Output
-      timing: [],
-
-      // Streaming yield
-      yield: (chunk) => {
+    const executorPromise = this.deps.pipeline
+      .execute(textOrMessages, history, opts, (chunk) => {
         chunkQueue.push(chunk);
         if (resolveWait) {
           resolveWait();
           resolveWait = null;
         }
-      },
-    };
-
-    // Run executor in background, yield chunks as they arrive
-    const executorPromise = this.pipelineExecutor
-      .executeStages(this.pipelineStages, ctx, parentSpan)
+      })
       .then(() => {
         done = true;
         if (resolveWait) {

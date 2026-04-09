@@ -403,11 +403,6 @@ export class SmartServer {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
 
-    // Apply pre-loaded plugin registrations to builder
-    // (pre-loaded above to extract embedder factories before RAG resolution)
-    for (const [type, handler] of plugins.stageHandlers) {
-      builder = builder.withStageHandler(type, handler);
-    }
     if (plugins.reranker) {
       builder = builder.withReranker(plugins.reranker);
     }
@@ -469,14 +464,6 @@ export class SmartServer {
     ];
     for (const adapter of adapterSources) {
       builder = builder.withClientAdapter(adapter);
-    }
-
-    // Structured pipeline (when YAML contains `pipeline.stages`)
-    if (pipeline?.stages && Array.isArray(pipeline.stages)) {
-      builder = builder.withPipeline({
-        version: pipeline.version ?? '1',
-        stages: pipeline.stages,
-      });
     }
 
     const agentHandle = await builder.build();

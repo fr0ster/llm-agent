@@ -55,12 +55,7 @@ import type { ISkillManager } from './interfaces/skill.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
-import { PipelineExecutor } from './pipeline/executor.js';
-import type { IStageHandler } from './pipeline/stage-handler.js';
-import type {
-  StageDefinition,
-  StructuredPipelineDefinition,
-} from './pipeline/types.js';
+import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { IPluginLoader } from './plugins/types.js';
 import type {
   IPromptInjectionDetector,
@@ -196,10 +191,8 @@ export class SmartAgentBuilder {
   private _agentOverrides: Partial<SmartAgentConfig> = {};
   private _pluginLoader?: IPluginLoader;
   private _skillManager?: ISkillManager;
-  private _pipelineDefinition?: StructuredPipelineDefinition;
   private _clientAdapters: IClientAdapter[] = [];
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
-  private _customStageHandlers = new Map<string, IStageHandler>();
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
   private _connectionStrategy?: IMcpConnectionStrategy;
@@ -508,7 +501,7 @@ export class SmartAgentBuilder {
    * Consumers can provide their own `IPluginLoader` implementation to
    * load plugins from npm packages, remote registries, or any other source.
    *
-   * Explicit `withStageHandler()`, `withReranker()`, etc. calls take
+   * Explicit `withReranker()`, etc. calls take
    * precedence over plugin-loaded registrations.
    *
    * @example Filesystem (default)
@@ -526,52 +519,6 @@ export class SmartAgentBuilder {
    */
   withPluginLoader(loader: IPluginLoader): this {
     this._pluginLoader = loader;
-    return this;
-  }
-
-  // -------------------------------------------------------------------------
-  // Structured pipeline
-  // -------------------------------------------------------------------------
-
-  /**
-   * Set a structured pipeline definition.
-   *
-   * When set, SmartAgent uses the {@link PipelineExecutor} to run the
-   * defined stages instead of the default hardcoded flow.
-   *
-   * The pipeline can come from structured YAML or be built programmatically.
-   *
-   * @example
-   * ```ts
-   * builder.withPipeline({
-   *   version: '1',
-   *   stages: [
-   *     { id: 'classify', type: 'classify' },
-   *     { id: 'assemble', type: 'assemble' },
-   *     { id: 'tool-loop', type: 'tool-loop' },
-   *   ],
-   * });
-   * ```
-   */
-  withPipeline(pipeline: StructuredPipelineDefinition): this {
-    this._pipelineDefinition = pipeline;
-    return this;
-  }
-
-  /**
-   * Register a custom stage handler for the structured pipeline.
-   *
-   * Custom handlers extend the pipeline with domain-specific operations.
-   * The handler's `type` name can then be used in YAML stage definitions.
-   *
-   * @example
-   * ```ts
-   * builder.withStageHandler('custom-enrich', new MyEnrichHandler());
-   * // Then in YAML: { id: 'enrich', type: 'custom-enrich' }
-   * ```
-   */
-  withStageHandler(type: string, handler: IStageHandler): this {
-    this._customStageHandlers.set(type, handler);
     return this;
   }
 
@@ -630,9 +577,25 @@ export class SmartAgentBuilder {
       }
     } // end skipModelValidation guard
 
-    // TODO: Task 6 will refactor build() to use IPipeline and _toolsRag/_historyRag
-    // For now, use empty stores to keep the build compiling.
+    // Auto-create tools RAG if MCP clients will be configured and embedder available
+    const toolsRag: IRag | undefined =
+      this._toolsRag ??
+      ((this.cfg.mcp || this._mcpClients) && this._embedder
+        ? new InMemoryRag()
+        : undefined);
+
+    // Auto-create history RAG if history summarization is enabled
+    const historyRag: IRag | undefined =
+      this._historyRag ??
+      (this._agentOverrides.historyAutoSummarizeLimit ||
+      this.cfg.agent?.historyAutoSummarizeLimit
+        ? new InMemoryRag()
+        : undefined);
+
+    // Build ragStores record for SmartAgent (backward compat for revectorization)
     const ragStores: SmartAgentRagStores = {};
+    if (toolsRag) ragStores.tools = toolsRag;
+    if (historyRag) ragStores.history = historyRag;
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
@@ -712,31 +675,22 @@ export class SmartAgentBuilder {
             durationMs: 0,
           });
 
-          // Vectorize tools into the first available RAG store
-          const toolStore = ragStores.tools ?? Object.values(ragStores)[0];
-          if (toolStore) {
-            if (!ragStores.tools && Object.keys(ragStores).length > 1) {
-              log?.log({
-                type: 'warning',
-                traceId: 'builder',
-                message:
-                  'No "tools" RAG store found, falling back to first available store',
-              });
-            }
+          // Vectorize tools into the tools RAG store
+          if (toolsRag) {
             const toolsResult = await adapter.listTools();
             if (toolsResult.ok) {
               const tools = toolsResult.value;
               // Try to access the embedder from the store for batch embedding.
               // VectorRag and QdrantRag store their embedder as a private field.
               // biome-ignore lint/suspicious/noExplicitAny: accessing private embedder for batch optimization
-              const storeEmbedder = (toolStore as any).embedder as
+              const storeEmbedder = (toolsRag as any).embedder as
                 | IEmbedder
                 | undefined;
 
               if (
                 storeEmbedder &&
                 isBatchEmbedder(storeEmbedder) &&
-                supportsPrecomputed(toolStore)
+                supportsPrecomputed(toolsRag)
               ) {
                 // Batch path: single HTTP call for all tools
                 const texts = tools.map(
@@ -747,7 +701,7 @@ export class SmartAgentBuilder {
                   const vectors = await storeEmbedder.embedBatch(texts);
                   const batchDuration = Date.now() - batchStart;
                   for (let i = 0; i < tools.length; i++) {
-                    const result = await toolStore.upsertPrecomputed(
+                    const result = await toolsRag.upsertPrecomputed(
                       texts[i],
                       vectors[i],
                       { id: `tool:${tools[i].name}` },
@@ -788,7 +742,7 @@ export class SmartAgentBuilder {
                     const t = tools[i];
                     const text = `Tool: ${t.name} — ${t.description}`;
                     const embedStart = Date.now();
-                    const result = await toolStore.upsert(text, {
+                    const result = await toolsRag.upsert(text, {
                       id: `tool:${t.name}`,
                     });
                     if (!result.ok) {
@@ -823,7 +777,7 @@ export class SmartAgentBuilder {
                   const t = tools[i];
                   const text = `Tool: ${t.name} — ${t.description}`;
                   const embedStart = Date.now();
-                  const result = await toolStore.upsert(text, {
+                  const result = await toolsRag.upsert(text, {
                     id: `tool:${t.name}`,
                   });
                   if (!result.ok) {
@@ -934,12 +888,8 @@ export class SmartAgentBuilder {
             : undefined,
         );
 
-      // Ensure history RAG store exists — share the same backend as the first available store
-      if (!ragStores.history) {
-        const firstStore = Object.values(ragStores)[0];
-        if (firstStore) {
-          ragStores.history = firstStore;
-        }
+      if (historyRag && !ragStores.history) {
+        ragStores.history = historyRag;
       }
     }
 
@@ -948,12 +898,6 @@ export class SmartAgentBuilder {
     if (this._pluginLoader) {
       const plugins = await this._pluginLoader.load();
       loadedPlugins = plugins;
-      // Plugin registrations act as defaults — explicit withXxx() wins
-      for (const [type, handler] of plugins.stageHandlers) {
-        if (!this._customStageHandlers.has(type)) {
-          this._customStageHandlers.set(type, handler);
-        }
-      }
       if (plugins.reranker && !this._reranker) {
         this._reranker = plugins.reranker;
       }
@@ -972,14 +916,13 @@ export class SmartAgentBuilder {
     }
 
     // ---- Skill vectorization (optional) ------------------------------------
-    const skillStore = ragStores.tools ?? Object.values(ragStores)[0];
-    if (this._skillManager && skillStore) {
+    if (this._skillManager && toolsRag) {
       const skillsResult = await this._skillManager.listSkills();
       if (skillsResult.ok) {
         for (const s of skillsResult.value) {
           const text = `Skill: ${s.name}\n${s.description}`;
           const embedStart = Date.now();
-          const result = await skillStore.upsert(text, {
+          const result = await toolsRag.upsert(text, {
             id: `skill:${s.name}`,
           });
           if (!result.ok) {
@@ -1005,25 +948,34 @@ export class SmartAgentBuilder {
       }
     }
 
-    // ---- Structured pipeline (optional) ------------------------------------
-    let pipelineExecutor: PipelineExecutor | undefined;
-    let pipelineStages: StageDefinition[] | undefined;
-
-    if (this._pipelineDefinition) {
-      const { buildDefaultHandlerRegistry } = await import(
-        './pipeline/handlers/index.js'
-      );
-      const handlers = buildDefaultHandlerRegistry();
-      // Merge custom handlers (override built-ins if same name)
-      for (const [type, handler] of this._customStageHandlers) {
-        handlers.set(type, handler);
-      }
-      const tracer =
-        this._tracer ??
-        new (await import('./tracer/noop-tracer.js')).NoopTracer();
-      pipelineExecutor = new PipelineExecutor(handlers, tracer);
-      pipelineStages = this._pipelineDefinition.stages;
-    }
+    // ---- Pipeline initialization -------------------------------------------
+    const pipeline = this._pipeline ?? new DefaultPipeline();
+    pipeline.initialize({
+      mainLlm: wrappedMainLlm,
+      helperLlm,
+      classifierLlm,
+      classifier,
+      assembler,
+      mcpClients,
+      toolsRag,
+      historyRag,
+      embedder: this._embedder,
+      reranker: this._reranker,
+      queryExpander: this._queryExpander,
+      toolPolicy: this._toolPolicy,
+      injectionDetector: this._injectionDetector,
+      toolCache: this._toolCache,
+      outputValidator: this._outputValidator,
+      sessionManager: this._sessionManager,
+      skillManager: this._skillManager,
+      logger: log,
+      requestLogger,
+      tracer: this._tracer,
+      metrics: this._metrics,
+      historyMemory,
+      historySummarizer,
+      llmCallStrategy: this._llmCallStrategy,
+    });
 
     const agent = new SmartAgent(
       {
@@ -1035,6 +987,7 @@ export class SmartAgentBuilder {
         classifierLlm,
         classifierConfig: classifierCfg,
         assembler,
+        pipeline,
         ...(log ? { logger: log } : {}),
         ...(this._toolPolicy ? { toolPolicy: this._toolPolicy } : {}),
         ...(this._injectionDetector
@@ -1065,8 +1018,6 @@ export class SmartAgentBuilder {
         requestLogger,
       },
       agentCfg,
-      pipelineExecutor,
-      pipelineStages,
     );
 
     // ---- Model provider auto-detection ------------------------------------
