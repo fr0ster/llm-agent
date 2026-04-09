@@ -5,46 +5,45 @@ YAML config examples are in [`docs/examples/`](examples/) as standalone files yo
 
 ## How the Agent Works
 
-Understanding the data flow helps choose the right config. See [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) for a fully commented example.
+Understanding the data flow helps choose the right config.
 
 ```
 STARTUP
   MCP server(s) connected
-  → each tool's name + description + schema vectorized into facts RAG store
+  → each tool's name + description + schema vectorized into tools RAG store
   → metadata: { id: "tool:TOOL_NAME" }
   Skills discovered (if ISkillManager configured)
-  → each skill's name + description vectorized into facts RAG store
+  → each skill's name + description vectorized into tools RAG store
   → metadata: { id: "skill:SKILL_NAME" }
 
-PER REQUEST
+PER REQUEST (DefaultPipeline)
   User message
     ↓
   Classify → split into typed subprompts:
     action:   "read table T100"             → drives the tool loop
-    fact:     "T100 stores error messages"   → saved to facts RAG
-    feedback: "always use SE16N for this"    → saved to feedback RAG
-    state:    "working on package Z01"       → saved to state RAG
     chat:     "thanks!"                      → just reply
     ↓
-  RAG Upsert → fact/feedback/state subprompts saved to RAG (agent "memory")
+  Summarize → condense conversation history if too long
     ↓
-  RAG Retrieval (parallel, if relevant context needed):
-    ├─ translate query to English (for non-ASCII input)
-    ├─ expand query with synonyms
-    ├─ query facts   → MCP tool descriptions + skill descriptions + domain knowledge
-    ├─ query feedback → user preferences ("use SE16N for tables")
-    └─ query state   → session context ("working on package Z01")
+  RAG Retrieval (parallel, if stores configured):
+    ├─ query tools   → MCP tool descriptions + skill descriptions
+    └─ query history → semantic conversation history (if historyRag set)
     ↓
   Rerank → re-score RAG results by relevance
     ↓
-  Tool Select  → extract tool:XXX IDs from facts → select matching MCP tools
-  Skill Select → extract skill:XXX IDs from facts → load matching skill content
+  Tool Select  → extract tool:XXX IDs from tools results → select matching MCP tools
+  Skill Select → extract skill:XXX IDs from tools results → load matching skill content
     ↓
-  Assemble → build LLM context: actions + facts + feedback + state + tools + history
+  Assemble → build LLM context: actions + tool/history RAG results + selected tools + history
            → append skill content as "## Active Skills" section in system message
     ↓
   Tool Loop → streaming LLM call → execute MCP tools → loop until done
+    ↓
+  History Upsert → summarize turn, upsert to history RAG store (if historyRag set)
 ```
+
+> **Consumer-defined RAG**: the DefaultPipeline only uses `tools` and `history` stores.
+> To add domain knowledge, user feedback, or session state stores, implement a custom `IPipeline`.
 
 ## YAML Config Examples
 
@@ -61,12 +60,12 @@ PER REQUEST
 
 | File | Description |
 |---|---|
-| [`04-structured-default.yaml`](examples/04-structured-default.yaml) | Default flow as explicit YAML (good starting point) |
+| [`04-structured-default.yaml`](examples/04-structured-default.yaml) | DefaultPipeline flow as explicit YAML (tools + history stores) |
 | [`05-structured-minimal.yaml`](examples/05-structured-minimal.yaml) | Minimal pipeline — no RAG, just classify + assemble + tool-loop |
-| [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant + higher tool limits |
+| [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant tools store + higher tool limits |
 | [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
-| [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining how tool vectorization, classification, RAG memory, and tool selection work together |
-| [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — maximizes concurrency (summarize ‖ rag-upsert, translate ‖ expand, 3× rag-query) |
+| [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining tool vectorization, classification, and tool selection |
+| [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — summarize ‖ RAG queries run in parallel |
 | [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
 | [`11-skills.yaml`](examples/11-skills.yaml) | **Agent Skills** — discovers SKILL.md files and injects skill context into LLM prompt via RAG selection |
 
@@ -84,17 +83,20 @@ OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 | Feature | Simple (flat YAML) | Structured pipeline |
 |---|---|---|
 | Config location | `llm:`, `rag:`, `mcp:`, `agent:` top-level keys | `pipeline:` section with `version` + `stages` |
-| Orchestration flow | Hardcoded in `SmartAgent.streamProcess()` | YAML-defined stage tree |
+| Orchestration flow | DefaultPipeline (tools + history stores) | YAML-defined stage tree |
 | Stage ordering | Fixed | Fully customizable |
 | Parallel stages | Fixed internal parallelism | Explicit `parallel` type with `after` |
 | Custom stages | Not possible | `withStageHandler()` + YAML reference |
-| Conditional stages | `agent.ragRetrievalMode`, `agent.classificationEnabled` | `when` expressions on any stage |
+| Conditional stages | `agent.classificationEnabled` | `when` expressions on any stage |
 | Loops | Fixed tool loop | `repeat` type with `until` + `maxIterations` |
-| Best for | Simple setups, quick start | Complex orchestration, custom pipelines |
+| Custom RAG stores | Not possible | Implement custom `IPipeline` |
+| Best for | Simple setups, quick start | Complex orchestration, consumer-defined pipelines |
 
-**Without `pipeline.stages`** — the hardcoded flow runs unchanged. No migration needed.
+**Without `pipeline.stages`** — `DefaultPipeline` runs (tools + history stores only).
 
-**With `pipeline.stages`** — the executor replaces the hardcoded flow entirely.
+**With `pipeline.stages`** — the executor replaces DefaultPipeline entirely.
+
+**With custom `IPipeline`** — inject via `.setPipeline(myPipeline)` for full control.
 
 ## Programmatic Examples
 
@@ -184,17 +186,20 @@ import {
 // Option 1: Claude-convention directories (~/.claude/skills/ + <project>/.claude/skills/)
 const builder = new SmartAgentBuilder()
   .withMainLlm(myLlm)
+  .setMcpClients([mcp])
+  .setToolsRag(myRag)   // skills are vectorized into the tools RAG store
   .withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 // Option 2: Custom directories
 const builder2 = new SmartAgentBuilder()
   .withMainLlm(myLlm)
+  .setToolsRag(myRag)
   .withSkillManager(new FileSystemSkillManager([
     '/opt/shared-skills',
     './my-project-skills',
   ]));
 
-// Skills are automatically vectorized into facts RAG at build() time.
+// Skills are automatically vectorized into the tools RAG store at build() time.
 // The skill-select pipeline stage handles RAG-based selection and content loading.
 const handle = await builder.build();
 ```
@@ -308,21 +313,34 @@ Look for these log entries:
 
 **Note:** Skill discovery requires an embedder (e.g., Ollama) for semantic matching. BM25 keyword matching (in-memory without embedder) may not match skills if the user query doesn't contain the skill's exact keywords.
 
-### Programmatic pipeline with `getDefaultStages()`
+### Custom pipeline implementation
 
 ```ts
-import { SmartAgentBuilder, getDefaultStages } from '@mcp-abap-adt/llm-agent';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent';
 
-// Get default stages and insert a custom stage before tool-loop
-const stages = getDefaultStages();
-const toolLoopIndex = stages.findIndex(s => s.id === 'tool-loop');
-stages.splice(toolLoopIndex, 0, {
-  id: 'audit',
-  type: 'audit-log',
-  config: { level: 'info' },
-});
+// Extend the default pipeline by wrapping it
+class AuditedPipeline implements IPipeline {
+  private inner = new DefaultPipeline();
 
-builder.withPipeline({ version: '1', stages });
+  initialize(deps: PipelineDeps): void {
+    this.inner.initialize(deps);
+  }
+
+  async execute(input, history, options, yieldChunk): Promise<PipelineResult> {
+    console.log('[audit] request start');
+    const result = await this.inner.execute(input, history, options, yieldChunk);
+    console.log('[audit] request end');
+    return result;
+  }
+}
+
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(llm)
+  .setMcpClients([mcp])
+  .setToolsRag(myRag)
+  .setPipeline(new AuditedPipeline())
+  .build();
 ```
 
 ## External tools validation mode
@@ -370,17 +388,15 @@ Server:  http://127.0.0.1:4004
 Session: a1b2c3d4-...
 Commands: /clear /session /exit
 
-> Пам'ятай: для таблиці T100 завжди використовуй SE16N
-Зрозумів, запам'ятав — для T100 використовувати SE16N.
+> List available MCP tools
+[Agent queries tools RAG → finds matching tool descriptions]
+[Agent selects relevant tools → streams result]
+Available tools: read_table, se16n_display, ...
 
-> Покажи вміст T100
-[Agent queries RAG → finds "use SE16N for T100" in feedback store]
-[Agent selects se16n_display tool → calls MCP → streams result]
-Ось вміст таблиці T100: ...
-
-> А тепер T001?
-[RAG feedback still has "use SE16N" → agent remembers preference]
-...
+> Show content of T100
+[Agent queries tools RAG → finds se16n_display, read_table]
+[Agent calls MCP → streams result]
+Contents of T100: ...
 
 > /clear
 History cleared.

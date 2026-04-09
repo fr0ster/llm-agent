@@ -1,25 +1,20 @@
-# Parallel-optimized pipeline — maximizes concurrency for real-world usage.
+# Parallel-optimized pipeline — maximizes concurrency.
 #
-# Key difference from the default sequential flow:
+# Key differences from the sequential default (04):
 #
-#   DEFAULT (04):  classify → summarize → rag-upsert → [translate, expand] → [queries] → ...
-#   THIS (09):     classify → parallel { summarize | rag-upsert } → parallel { translate+expand → queries → rerank+tool-select } → ...
+#   DEFAULT (04):  classify → summarize → [rag-tools, rag-history] → rerank → ...
+#   THIS (09):     classify → parallel { summarize | [rag-tools, rag-history] } → rerank → ...
 #
 # What runs in parallel:
 #
-#   1. After classification, summarize and rag-upsert run SIMULTANEOUSLY.
-#      Summarize compresses old history (reads history, writes condensed history).
-#      Rag-upsert saves fact/feedback/state subprompts to RAG.
-#      These two have zero data dependency on each other.
-#
-#   2. RAG retrieval block — translate and expand run in parallel
-#      (both transform the query text independently),
-#      then 3 RAG queries run in parallel (facts/feedback/state),
-#      then rerank and tool-select run sequentially (they depend on query results).
+#   After classification, summarize and RAG queries run SIMULTANEOUSLY.
+#   Summarize compresses old history (reads history, writes condensed history).
+#   RAG queries fetch tool/history matches for the current request.
+#   These two have zero data dependency on each other.
 #
 # Why this is faster:
 #   - summarize can take 1-3s (LLM call to condense history)
-#   - rag-upsert can take 0.5-2s (3 embedding + upsert calls)
+#   - RAG queries can take 0.2-1s (embedding + vector search)
 #   - Running them in parallel saves the slower one's entire duration
 #
 # Usage:
@@ -54,9 +49,6 @@ agent:
   maxToolCalls: 30
   ragQueryK: 10
   classificationEnabled: true
-  ragRetrievalMode: auto
-  ragUpsertEnabled: true
-  ragTranslationEnabled: true
   queryExpansionEnabled: true
   historyAutoSummarizeLimit: 10
 
@@ -67,49 +59,33 @@ pipeline:
     - id: classify
       type: classify
 
-    # ── Step 2: summarize + rag-upsert IN PARALLEL
+    # ── Step 2: summarize + RAG queries IN PARALLEL
     #    No data dependency between them:
     #    - summarize reads history, writes condensed history
-    #    - rag-upsert reads subprompts, writes to RAG stores
+    #    - RAG queries read from vector stores
     - id: post-classify
       type: parallel
       stages:
         - id: summarize
           type: summarize
-        - id: rag-upsert
-          type: rag-upsert
-
-    # ── Step 3: RAG retrieval (only when domain context is needed)
-    #    translate + expand run in parallel (both transform query text),
-    #    then 3 RAG queries run in parallel,
-    #    then rerank sequentially
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - id: translate
-          type: translate
-        - id: expand
-          type: expand
-      after:
         - id: rag-queries
           type: parallel
           stages:
-            - id: rag-facts
+            - id: rag-tools
               type: rag-query
-              config: { store: facts, k: 20 }
-            - id: rag-feedback
+              config: { store: tools, k: 20 }
+            - id: rag-history
               type: rag-query
-              config: { store: feedback, k: 5 }
-            - id: rag-state
-              type: rag-query
-              config: { store: state, k: 5 }
-        - id: rerank
-          type: rerank
+              config: { store: history, k: 5 }
 
-    # ── Step 4: tool discovery (ALWAYS runs, not gated by shouldRetrieve)
-    #    If RAG retrieval was skipped, tool-select queries facts RAG directly
-    #    to discover relevant tools. Tools must always be discoverable.
+    # ── Step 3: rerank sequentially (depends on RAG query results)
+    - id: rerank
+      type: rerank
+
+    # ── Step 4: skill and tool discovery (uses reranked RAG results)
+    - id: skill-select
+      type: skill-select
+
     - id: tool-select
       type: tool-select
       config: { k: 20 }
@@ -118,6 +94,10 @@ pipeline:
     - id: assemble
       type: assemble
 
-    # ── Step 5: streaming LLM + tool execution loop
+    # ── Step 6: streaming LLM + tool execution loop
     - id: tool-loop
       type: tool-loop
+
+    # ── Step 7: upsert turn to history RAG store
+    - id: history-upsert
+      type: history-upsert

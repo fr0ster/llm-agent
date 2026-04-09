@@ -50,26 +50,21 @@ pipeline:
     - id: classify
       type: classify
 
-    - id: summarize-and-upsert
+    - id: summarize-and-query
       type: parallel
       stages:
         - { id: summarize, type: summarize }
-        - { id: rag-upsert, type: rag-upsert }
-
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - { id: translate, type: translate }
-        - { id: expand, type: expand }
-      after:
         - id: rag-queries
           type: parallel
           stages:
-            - { id: facts, type: rag-query, config: { store: facts, k: 20 } }
-            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-            - { id: state, type: rag-query, config: { store: state, k: 5 } }
-        - { id: rerank, type: rerank }
+            - { id: rag-tools, type: rag-query, config: { store: tools, k: 20 } }
+            - { id: rag-history, type: rag-query, config: { store: history, k: 5 } }
+
+    - id: rerank
+      type: rerank
+
+    - id: skill-select
+      type: skill-select
 
     - id: tool-select
       type: tool-select
@@ -79,3 +74,6 @@ pipeline:
 
     - id: tool-loop
       type: tool-loop
+
+    - id: history-upsert
+      type: history-upsert
