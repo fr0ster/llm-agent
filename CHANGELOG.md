@@ -7,6 +7,37 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [6.0.0] — 2026-04-09
+
+### BREAKING CHANGES
+- **Removed default `facts`/`feedback`/`state` RAG stores** — llm-agent no longer creates domain-specific stores. The minimal default agent provides only MCP tool selection and conversation history.
+- **Removed builder methods:** `withRag()`, `withRagUpsert()`, `withRagRetrieval()`, `withRagTranslation()`, `withPipeline(StructuredPipelineDefinition)`, `withStageHandler()`.
+- **Removed `RagUpsertHandler`** — no auto-write from classifier subprompts.
+- **Removed `StructuredPipelineDefinition`** from public API — consumers use `IPipeline` interface instead.
+- **`SubpromptType` changed** from closed union (`'fact' | 'feedback' | 'state' | 'action' | 'chat'`) to extensible `'action' | 'chat' | (string & {})`.
+- **SmartServer** no longer creates facts/feedback/state stores from YAML config.
+
+### Added
+- **`IPipeline` interface** — pipeline abstraction for request processing orchestration. Builder accepts via `setPipeline(IPipeline)`.
+- **`DefaultPipeline`** — minimal, non-extensible pipeline: classify → summarize → parallel RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert.
+- **Plugin system** — `ISmartAgentPlugin`, `IRagStoreConfig`, `RagScope` types for consumer-defined stores via custom pipeline implementations.
+- **Scope model** — `global` / `user` / `session` scopes with automatic metadata filtering in `RagQueryHandler`.
+- **Builder DI methods** — `setToolsRag(IRag)`, `setHistoryRag(IRag)`, `setPipeline(IPipeline)` for dependency injection.
+- **`IRag.clear()`** — optional method for session-scoped store cleanup. Implemented in `InMemoryRag` and `VectorRag`.
+- **`userId` in `CallOptions`** — supports user-scoped RAG filtering.
+
+### Changed
+- **Two-level architecture** — Builder handles global DI (LLM, embedder, MCP, tools/history RAG, pipeline). Pipeline handles request orchestration.
+- **Default classifier** knows only `action` and `chat` types. Consumer classifiers can return arbitrary string types.
+
+### Migration
+1. Replace `withRag()` → `setToolsRag()` / `setHistoryRag()`
+2. Replace `withRagUpsert(false)` → pipeline handles upsert
+3. Replace `withPipeline(structured)` → `setPipeline(new DefaultPipeline())`
+4. Custom stores → implement `IPipeline` with `ISmartAgentPlugin`
+
+---
+
 ## [5.19.2] — 2026-04-09
 
 ### Added
