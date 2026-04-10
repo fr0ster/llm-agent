@@ -195,29 +195,7 @@ describe('Pipeline spans — RAG query', () => {
 // RAG upsert spans
 // ---------------------------------------------------------------------------
 
-describe('Pipeline spans — RAG upsert', () => {
-  it('creates rag_upsert span when fact/state/feedback subprompts present', async () => {
-    const tracer = makeCapturingTracer();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([
-        { type: 'fact', text: 'some fact' },
-        { type: 'action', text: 'do something' },
-      ]),
-      ragStores: { facts: makeRag() },
-      tracer,
-    });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
-
-    const upsert = tracer.spans.find(
-      (s) => s.name === 'smart_agent.rag_upsert',
-    );
-    assert.ok(upsert, 'rag_upsert span exists');
-    assert.equal(upsert.parentName, 'smart_agent.process');
-    assert.equal(upsert.attributes['rag.upsert_count'], 1);
-    assert.ok(upsert.ended);
-  });
-});
+// RAG upsert span test removed in 6.0.0 (RagUpsertHandler removed)
 
 // ---------------------------------------------------------------------------
 // Error status propagation
