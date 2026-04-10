@@ -21,70 +21,12 @@ import {
   makeLlm,
   makeMcpClient,
   makeMetadataRag,
-  makeRag,
 } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 
-// ---------------------------------------------------------------------------
-// Classifier regression
-// ---------------------------------------------------------------------------
-
-describe('Regression — 3-type message: fact + state + action', () => {
-  it('upserts fact and state stores, processes action', async () => {
-    const facts = makeRag();
-    const state = makeRag();
-    const feedback = makeRag();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([
-        { type: 'fact', text: 'Paris is the capital of France' },
-        { type: 'state', text: 'user mode: dark' },
-        { type: 'action', text: 'What is the capital of France?' },
-      ]),
-      llmResponses: [{ content: 'Paris', finishReason: 'stop' }],
-      ragStores: { facts, state, feedback },
-    });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    const r = await agent.process('test');
-    assert.ok(r.ok);
-    assert.ok(facts.upsertCalls.includes('Paris is the capital of France'));
-    assert.ok(state.upsertCalls.includes('user mode: dark'));
-    assert.equal(feedback.upsertCalls.length, 0);
-    assert.equal(r.value.content, 'Paris');
-  });
-});
-
-describe('Regression — feedback subprompt upserted to feedback store', () => {
-  it('feedback text goes to ragStores.feedback', async () => {
-    const feedback = makeRag();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([
-        { type: 'feedback', text: 'That was wrong' },
-      ]),
-      ragStores: { feedback },
-    });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
-    assert.ok(feedback.upsertCalls.includes('That was wrong'));
-  });
-});
-
-describe('Regression — state subprompt only goes to state store', () => {
-  it('facts and feedback not touched', async () => {
-    const facts = makeRag();
-    const feedback = makeRag();
-    const state = makeRag();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([{ type: 'state', text: 'logged_in=true' }]),
-      ragStores: { facts, feedback, state },
-    });
-    const agent = new SmartAgent(deps, DEFAULT_CONFIG);
-    await agent.process('test');
-    assert.equal(facts.upsertCalls.length, 0);
-    assert.equal(feedback.upsertCalls.length, 0);
-    assert.ok(state.upsertCalls.includes('logged_in=true'));
-  });
-});
+// Classifier regression tests for fact/feedback/state upsert removed in 6.0.0
+// (RagUpsertHandler removed — consumers now own RAG upsert via IRag)
 
 // ---------------------------------------------------------------------------
 // RAG regression
@@ -317,44 +259,8 @@ describe('Regression — context assembled once before tool loop', () => {
 // SmartAgent config regression
 // ---------------------------------------------------------------------------
 
-describe('Regression — sessionPolicy.maxSessionAgeMs sets metadata.ttl', () => {
-  it('ttl is a unix timestamp in the future', async () => {
-    const facts = makeMetadataRag();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([{ type: 'fact', text: 'some fact' }]),
-      ragStores: { facts },
-    });
-    const nowSeconds = Math.floor(Date.now() / 1000);
-    const agent = new SmartAgent(deps, {
-      ...DEFAULT_CONFIG,
-      sessionPolicy: { maxSessionAgeMs: 60_000 },
-    });
-    await agent.process('test');
-    assert.ok(facts.upsertMetadata.length > 0);
-    const ttl = facts.upsertMetadata[0].ttl;
-    assert.ok(typeof ttl === 'number', 'ttl should be a number');
-    assert.ok(ttl > nowSeconds, 'ttl should be in the future');
-  });
-});
-
-describe('Regression — sessionPolicy namespace + maxSessionAgeMs both propagated', () => {
-  it('metadata has both namespace and ttl', async () => {
-    const facts = makeMetadataRag();
-    const { deps } = makeDefaultDeps({
-      classifier: makeClassifier([{ type: 'fact', text: 'some fact' }]),
-      ragStores: { facts },
-    });
-    const agent = new SmartAgent(deps, {
-      ...DEFAULT_CONFIG,
-      sessionPolicy: { namespace: 'tenant/user1', maxSessionAgeMs: 30_000 },
-    });
-    await agent.process('test');
-    assert.ok(facts.upsertMetadata.length > 0);
-    const meta = facts.upsertMetadata[0];
-    assert.equal(meta.namespace, 'tenant/user1');
-    assert.ok(typeof meta.ttl === 'number');
-  });
-});
+// sessionPolicy metadata tests removed in 6.0.0
+// (RagUpsertHandler removed — sessionPolicy TTL/namespace are consumer responsibilities)
 
 describe('Regression — helperLlm called for history summarization', () => {
   it('helperLlm called when history exceeds summarizeLimit', async () => {
