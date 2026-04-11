@@ -123,6 +123,7 @@ export type {
   McpConnectionResult,
 } from './smart-agent/interfaces/mcp-connection-strategy.js';
 export type {
+  IModelFilter,
   IModelInfo,
   IModelProvider,
 } from './smart-agent/interfaces/model-provider.js';
