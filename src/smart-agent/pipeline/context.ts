@@ -136,6 +136,8 @@ export interface PipelineContext {
 
   /** Whether RAG retrieval should run (set by classify or condition logic). */
   shouldRetrieve: boolean;
+  /** Whether embedding usage has been logged for this request (prevents double-logging). */
+  embeddingUsageLogged?: boolean;
   /** Whether input text is ASCII-only (affects translation decision). */
   isAscii: boolean;
   /** Whether SAP/ABAP context was detected. */
