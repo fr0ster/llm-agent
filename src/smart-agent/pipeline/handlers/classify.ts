@@ -60,9 +60,20 @@ export class ClassifyHandler implements IStageHandler {
   private _updateControlFlags(ctx: PipelineContext): void {
     const actions = ctx.subprompts.filter((sp) => sp.type === 'action');
     const mode = ctx.config.mode || 'smart';
+    const hasRagStores = Object.keys(ctx.ragStores).length > 0;
+    const hasMcpClients = ctx.mcpClients.length > 0;
+
     ctx.isSapRequired =
       actions.some((a) => a.context === 'sap-abap') || mode === 'hard';
 
-    ctx.shouldRetrieve = ctx.isSapRequired;
+    // Populate ragText from action texts — downstream stages (translate, expand,
+    // rag-query) all read from ctx.ragText.
+    ctx.ragText = actions.map((a) => a.text).join(' ');
+
+    // Retrieve when there are actions and stores/tools to search,
+    // or when mode is 'hard' (always retrieve).
+    ctx.shouldRetrieve =
+      mode === 'hard' ||
+      (actions.length > 0 && (hasMcpClients || hasRagStores));
   }
 }
