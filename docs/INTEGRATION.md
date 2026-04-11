@@ -139,14 +139,34 @@ interface IModelInfo {
   owned_by?: string;
 }
 
+interface IModelFilter {
+  /** When true, exclude embedding-only models from the result. */
+  excludeEmbedding?: boolean;
+}
+
 interface IModelProvider {
   /** Currently configured (default) model name. */
   getModel(): string;
 
   /** Fetch available models from the provider. */
-  getModels(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
+  getModels(filter?: IModelFilter, options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
+
+  /**
+   * Fetch embedding-capable models from the provider (optional).
+   * Returns an empty array on providers that do not expose embedding model lists.
+   */
+  getEmbeddingModels?(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
 }
 ```
+
+`IModelFilter` can be passed to `getModels()` to exclude embedding models from the list. Per-provider behaviour:
+
+| Provider | `excludeEmbedding` | `getEmbeddingModels()` |
+|---|---|---|
+| SAP AI Core | Uses model capabilities metadata (reliable) | Uses model capabilities metadata (reliable) |
+| OpenAI | Filters by `/embed/i` name pattern (best-effort) | Filters by `/embed/i` name pattern (best-effort) |
+| Anthropic | N/A — returns `[]` | Returns `[]` |
+| DeepSeek | N/A — returns `[]` | Returns `[]` |
 
 ### Auto-detection
 
@@ -168,8 +188,8 @@ class FilteredModelProvider implements IModelProvider {
     return this.inner.getModel();
   }
 
-  async getModels(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>> {
-    const result = await this.inner.getModels(options);
+  async getModels(filter?: IModelFilter, options?: CallOptions): Promise<Result<IModelInfo[], LlmError>> {
+    const result = await this.inner.getModels(filter, options);
     if (!result.ok) return result;
     return {
       ok: true,
@@ -285,7 +305,7 @@ class PineconeRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<void, RagError>> {
     try {
-      const vector = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embed(text, options);
       await this.index.upsert([{
         id: metadata.id ?? crypto.randomUUID(),
         values: vector,
@@ -303,7 +323,7 @@ class PineconeRag implements IRag {
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     try {
-      const vector = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embed(text, options);
       const results = await this.index.query({ vector, topK: k, includeMetadata: true });
       return {
         ok: true,
@@ -334,9 +354,53 @@ class PineconeRag implements IRag {
 Custom embedding providers implement `IEmbedder`:
 
 ```ts
-interface IEmbedder {
-  embed(text: string, options?: CallOptions): Promise<number[]>;
+interface IEmbedResult {
+  vector: number[];
+  usage?: { promptTokens: number; totalTokens: number };
 }
+
+interface IEmbedder {
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
+}
+```
+
+`embed()` returns `IEmbedResult` rather than a raw `number[]`. Access the embedding via the `.vector` property. The optional `usage` field reports token consumption for providers that expose it (e.g. OpenAI, SAP AI Core).
+
+### Runtime RAG store management
+
+`SmartAgent` exposes two methods for adding and removing custom RAG stores at runtime, without rebuilding the agent:
+
+```ts
+agent.addRagStore(name: string, store: IRag): void
+agent.removeRagStore(name: string): void
+```
+
+Custom stores are queried in parallel with the built-in `tools` and `history` RAG stores on every request. Changes take effect on the next request — in-flight requests see the previous store set.
+
+**Constraints:**
+
+- The names `'tools'` and `'history'` are reserved for built-in stores and cannot be overwritten. Attempting to call `addRagStore('tools', ...)` throws an error.
+- Passing a `name` that does not exist to `removeRagStore()` is a no-op.
+
+**Example:**
+
+```ts
+import { SmartAgentBuilder, QdrantRag } from '@mcp-abap-adt/llm-agent';
+
+const { agent } = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
+  .withMainLlm(myLlm)
+  .build();
+
+// Add a per-tenant knowledge base at runtime
+const tenantRag = new QdrantRag({
+  url: 'http://qdrant:6333',
+  collectionName: 'tenant-42-docs',
+  embedder,
+});
+agent.addRagStore('tenant-42', tenantRag);
+
+// Remove it when the tenant disconnects
+agent.removeRagStore('tenant-42');
 ```
 
 ## IMcpClient

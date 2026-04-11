@@ -250,6 +250,32 @@ If a tool is missing `name`, `description`, or `inputSchema`, safe defaults are 
 - `description` → `''`
 - `inputSchema` → `{ "type": "object", "properties": {} }`
 
+## Model Discovery
+
+### getModels()
+
+`getModels()` now returns **all models** available in the configured resource group, including both text-generation and embedding models. Previously it was filtered to text-generation only.
+
+If you need the old behaviour (text-generation models only), use the `?exclude_embedding=true` query parameter on the `/v1/models` endpoint:
+
+```bash
+# All models (new default)
+curl http://localhost:4004/v1/models
+
+# Text-generation models only (previous behaviour)
+curl http://localhost:4004/v1/models?exclude_embedding=true
+```
+
+### GET /v1/embedding-models
+
+A dedicated endpoint that reliably returns only embedding models for SAP AI Core. Unlike `/v1/models`, this endpoint uses the capabilities metadata from SAP AI Core to filter models — avoiding heuristics based on model name patterns.
+
+```bash
+curl http://localhost:4004/v1/embedding-models
+```
+
+Use this endpoint to dynamically discover which embedding model names are valid when configuring the `EMBEDDING_MODEL` variable or the `rag.embedder.model` field in `smart-server.yaml`.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |
