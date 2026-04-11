@@ -698,12 +698,12 @@ export class SmartAgentBuilder {
                 );
                 const batchStart = Date.now();
                 try {
-                  const vectors = await storeEmbedder.embedBatch(texts);
+                  const embedResults = await storeEmbedder.embedBatch(texts);
                   const batchDuration = Date.now() - batchStart;
                   for (let i = 0; i < tools.length; i++) {
                     const result = await toolsRag.upsertPrecomputed(
                       texts[i],
-                      vectors[i],
+                      embedResults[i].vector,
                       { id: `tool:${tools[i].name}` },
                     );
                     if (!result.ok) {
@@ -714,6 +714,18 @@ export class SmartAgentBuilder {
                       });
                     }
                   }
+                  const realUsage = embedResults.reduce<{
+                    promptTokens: number;
+                    totalTokens: number;
+                  } | null>((acc, r) => {
+                    if (!r.usage) return acc;
+                    return {
+                      promptTokens:
+                        (acc?.promptTokens ?? 0) + r.usage.promptTokens,
+                      totalTokens:
+                        (acc?.totalTokens ?? 0) + r.usage.totalTokens,
+                    };
+                  }, null);
                   const totalEstTokens = texts.reduce(
                     (sum, t) => sum + Math.ceil(t.length / 4),
                     0,
@@ -721,11 +733,11 @@ export class SmartAgentBuilder {
                   requestLogger.logLlmCall({
                     component: 'embedding',
                     model: 'embedder',
-                    promptTokens: totalEstTokens,
+                    promptTokens: realUsage?.promptTokens ?? totalEstTokens,
                     completionTokens: 0,
-                    totalTokens: totalEstTokens,
+                    totalTokens: realUsage?.totalTokens ?? totalEstTokens,
                     durationMs: batchDuration,
-                    estimated: true,
+                    estimated: realUsage === null,
                     scope: 'initialization',
                     detail: 'tools',
                   });

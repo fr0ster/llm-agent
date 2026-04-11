@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IEmbedder } from '../../interfaces/rag.js';
+import type { IEmbedder, IEmbedResult } from '../../interfaces/rag.js';
 import type { CallOptions, RagResult } from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
@@ -181,7 +181,7 @@ class TfEmbedder implements IEmbedder {
     this.vocabulary = [...allTokens].sort();
   }
 
-  async embed(_text: string, _options?: CallOptions): Promise<number[]> {
+  async embed(_text: string, _options?: CallOptions): Promise<IEmbedResult> {
     const tokens = this.tokenize(_text);
     const freq = new Map<string, number>();
     for (const t of tokens) freq.set(t, (freq.get(t) ?? 0) + 1);
@@ -194,7 +194,7 @@ class TfEmbedder implements IEmbedder {
       for (let i = 0; i < vec.length; i++) vec[i] /= norm;
     }
 
-    return vec;
+    return { vector: vec };
   }
 
   private tokenize(text: string): string[] {

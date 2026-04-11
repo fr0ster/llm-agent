@@ -10,11 +10,16 @@ import { QueryEmbedding } from '../query-embedding.js';
 // ---------------------------------------------------------------------------
 function makeEmbedder(dim = 3): IEmbedder {
   return {
-    async embed(text: string): Promise<number[]> {
+    async embed(text: string) {
       // Deterministic hash-based embedding
       let hash = 0;
       for (const ch of text) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
-      return Array.from({ length: dim }, (_, i) => ((hash >> i) & 0xff) / 255);
+      return {
+        vector: Array.from(
+          { length: dim },
+          (_, i) => ((hash >> i) & 0xff) / 255,
+        ),
+      };
     },
   };
 }

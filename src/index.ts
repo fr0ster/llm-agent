@@ -145,6 +145,7 @@ export type {
   EmbedderFactoryConfig,
   IEmbedder,
   IEmbedderBatch,
+  IEmbedResult,
   IPrecomputedVectorRag,
   IRag,
 } from './smart-agent/interfaces/rag.js';
