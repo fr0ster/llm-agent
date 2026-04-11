@@ -142,6 +142,13 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     );
   }
 
+  async getEmbeddingModels(): Promise<IModelInfo[]> {
+    const response = await this.client.get('/models');
+    return (response.data.data as Array<{ id: string; owned_by?: string }>)
+      .filter((m) => /embed/i.test(m.id))
+      .map((m) => ({ id: m.id, owned_by: m.owned_by }));
+  }
+
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */

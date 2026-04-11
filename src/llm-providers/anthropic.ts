@@ -84,6 +84,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     );
   }
 
+  async getEmbeddingModels(): Promise<IModelInfo[]> {
+    return [];
+  }
+
   /**
    * Format messages for Anthropic API
    */

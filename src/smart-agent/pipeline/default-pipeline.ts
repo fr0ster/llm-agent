@@ -5,11 +5,13 @@
  * configured. It runs a fixed stage sequence:
  *
  * ```text
- * classify → summarize → parallel(rag-query tools, rag-query history) →
+ * classify → summarize → parallel(rag-query tools, rag-query history, rag-query <custom>…) →
  * rerank → skill-select → tool-select → assemble → tool-loop → history-upsert
  * ```
  *
- * Only two RAG stores are supported: `tools` and `history`.
+ * Built-in RAG stores (`tools`, `history`) are wired from `toolsRag`/`historyRag` deps.
+ * Additional custom stores can be passed via `ragStores` and are queried in parallel
+ * with built-ins. Stores can be added/removed at runtime via `rebuildStages()`.
  */
 
 import type { Message } from '../../types.js';
@@ -143,6 +145,10 @@ export class DefaultPipeline implements IPipeline {
     };
   }
 
+  rebuildStages(): void {
+    this.stages = this._buildStages();
+  }
+
   // -------------------------------------------------------------------------
   // Internals
   // -------------------------------------------------------------------------
@@ -166,6 +172,18 @@ export class DefaultPipeline implements IPipeline {
         type: 'rag-query',
         config: { store: 'history', scope: 'session' },
       });
+    }
+
+    // Custom stores — appended after built-in, same parallel block
+    if (this.deps.ragStores) {
+      for (const name of Object.keys(this.deps.ragStores)) {
+        if (name === 'tools' || name === 'history') continue;
+        ragChildren.push({
+          id: `rag-${name}`,
+          type: 'rag-query',
+          config: { store: name },
+        });
+      }
     }
 
     const stages: StageDefinition[] = [
@@ -209,8 +227,10 @@ export class DefaultPipeline implements IPipeline {
         ? input
         : (input.filter((m) => m.role === 'user').slice(-1)[0]?.content ?? '');
 
-    // Build ragStores record from DI deps
-    const ragStores: SmartAgentRagStores = {};
+    // Build ragStores record — custom stores first, built-ins override by name
+    const ragStores: SmartAgentRagStores = {
+      ...(this.deps.ragStores ?? {}),
+    };
     if (this.deps.toolsRag) ragStores.tools = this.deps.toolsRag;
     if (this.deps.historyRag) ragStores.history = this.deps.historyRag;
 

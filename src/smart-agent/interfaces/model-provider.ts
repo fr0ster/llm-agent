@@ -15,10 +15,22 @@ export interface IModelInfo {
   deprecated?: boolean;
 }
 
+export interface IModelFilter {
+  /** When true, exclude embedding models from the result. */
+  excludeEmbedding?: boolean;
+}
+
 export interface IModelProvider {
   /** Currently configured (default) model name. */
   getModel(): string;
 
   /** Fetch available models from the provider. Called on demand. */
-  getModels(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
+  getModels(
+    options?: CallOptions & IModelFilter,
+  ): Promise<Result<IModelInfo[], LlmError>>;
+
+  /** Fetch embedding models from the provider. Best-effort; may return empty array. */
+  getEmbeddingModels?(
+    options?: CallOptions,
+  ): Promise<Result<IModelInfo[], LlmError>>;
 }

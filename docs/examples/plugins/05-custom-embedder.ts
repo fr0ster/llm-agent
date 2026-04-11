@@ -20,6 +20,7 @@ import type {
   EmbedderFactory,
   EmbedderFactoryConfig,
   IEmbedder,
+  IEmbedResult,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
@@ -37,7 +38,7 @@ class CohereEmbedder implements IEmbedder {
     this.baseUrl = cfg.url ?? 'https://api.cohere.com';
   }
 
-  async embed(text: string): Promise<number[]> {
+  async embed(text: string): Promise<IEmbedResult> {
     const response = await fetch(`${this.baseUrl}/v1/embed`, {
       method: 'POST',
       headers: {
@@ -57,7 +58,7 @@ class CohereEmbedder implements IEmbedder {
     }
 
     const data = (await response.json()) as { embeddings: number[][] };
-    return data.embeddings[0];
+    return { vector: data.embeddings[0] };
   }
 }
 

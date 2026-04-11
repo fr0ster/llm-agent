@@ -167,7 +167,7 @@ export class VectorRag implements IPrecomputedVectorRag {
     }
 
     try {
-      const vector = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embed(text, options);
       return this.upsertKnownVector(text, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };

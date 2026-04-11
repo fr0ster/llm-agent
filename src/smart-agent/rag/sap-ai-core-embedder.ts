@@ -5,7 +5,7 @@
  * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
  */
 
-import type { IEmbedderBatch } from '../interfaces/rag.js';
+import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 
 export interface SapAiCoreEmbedderConfig {
@@ -24,7 +24,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
     this.resourceGroup = config.resourceGroup;
   }
 
-  async embed(text: string, _options?: CallOptions): Promise<number[]> {
+  async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
     const { OrchestrationEmbeddingClient } = await import(
       '@sap-ai-sdk/orchestration'
     );
@@ -53,16 +53,16 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
         buffer.byteOffset,
         buffer.length / 4,
       );
-      return Array.from(float32);
+      return { vector: Array.from(float32) };
     }
 
-    return embedding;
+    return { vector: embedding };
   }
 
   async embedBatch(
     texts: string[],
     _options?: CallOptions,
-  ): Promise<number[][]> {
+  ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
 
     const { OrchestrationEmbeddingClient } = await import(
@@ -92,9 +92,9 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
           buffer.byteOffset,
           buffer.length / 4,
         );
-        return Array.from(float32);
+        return { vector: Array.from(float32) };
       }
-      return e.embedding;
+      return { vector: e.embedding };
     });
   }
 }

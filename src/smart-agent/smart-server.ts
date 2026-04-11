@@ -622,11 +622,41 @@ export class SmartServer {
       req.method === 'GET' &&
       (urlPath === '/v1/models' || urlPath === '/models')
     ) {
+      const queryString = rawUrl.includes('?') ? rawUrl.split('?')[1] : '';
+      const queryParams = new URLSearchParams(queryString);
+      const excludeEmbedding = queryParams.get('exclude_embedding') === 'true';
       let data: Array<Record<string, unknown>> = [
         { id: 'smart-agent', object: 'model', owned_by: 'smart-agent' },
       ];
       if (modelProvider) {
-        const result = await modelProvider.getModels();
+        const result = await modelProvider.getModels({ excludeEmbedding });
+        if (result.ok) {
+          data = result.value.map((m) => ({
+            id: m.id,
+            object: 'model',
+            owned_by: m.owned_by ?? 'unknown',
+            ...(m.displayName ? { display_name: m.displayName } : {}),
+            ...(m.provider ? { provider: m.provider } : {}),
+            ...(m.capabilities ? { capabilities: m.capabilities } : {}),
+            ...(m.contextLength ? { context_length: m.contextLength } : {}),
+            ...(m.streamingSupported !== undefined
+              ? { streaming_supported: m.streamingSupported }
+              : {}),
+            ...(m.deprecated !== undefined ? { deprecated: m.deprecated } : {}),
+          }));
+        }
+      }
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ object: 'list', data }));
+      return;
+    }
+    if (
+      req.method === 'GET' &&
+      (urlPath === '/v1/embedding-models' || urlPath === '/embedding-models')
+    ) {
+      let data: Array<Record<string, unknown>> = [];
+      if (modelProvider?.getEmbeddingModels) {
+        const result = await modelProvider.getEmbeddingModels();
         if (result.ok) {
           data = result.value.map((m) => ({
             id: m.id,
