@@ -144,7 +144,12 @@ export interface SmartAgentConfig {
 
   // -- Pipeline stage toggles -----------------------------------------------
 
-  /** Whether classification stage runs. Default: true. When false, input is treated as a single action. */
+  /**
+   * Whether classification stage runs. Default: false.
+   * When false, input is treated as a single action — LLM handles
+   * multi-step requests via the tool loop.
+   * Enable when using custom pipeline with multi-store routing.
+   */
   classificationEnabled?: boolean;
   /** Whether to inject matched skills into the system prompt. Default: true (when skillManager is configured). */
   skillInjectionEnabled?: boolean;

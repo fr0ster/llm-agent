@@ -52,7 +52,7 @@ import type { StageDefinition } from './types.js';
 
 const DEFAULT_CONFIG: SmartAgentConfig = {
   maxIterations: 10,
-  classificationEnabled: true,
+  classificationEnabled: false,
   skillInjectionEnabled: true,
   mode: 'smart',
   ragQueryK: 5,
