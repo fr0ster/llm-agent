@@ -126,6 +126,10 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
     );
   }
 
+  async getEmbeddingModels(): Promise<IModelInfo[]> {
+    return [];
+  }
+
   /**
    * Format messages with strict protocol enforcement.
    * Drops orphaned tool messages and ensures correct content types.
