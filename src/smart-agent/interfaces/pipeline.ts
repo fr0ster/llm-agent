@@ -95,6 +95,8 @@ export interface PipelineDeps {
   toolsRag?: IRag;
   /** RAG store used for history retrieval. */
   historyRag?: IRag;
+  /** Full record of RAG stores (tools, history, and any custom stores). */
+  ragStores?: Record<string, IRag>;
 }
 
 // ---------------------------------------------------------------------------
@@ -146,4 +148,10 @@ export interface IPipeline {
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
   ): Promise<PipelineResult>;
+
+  /**
+   * Rebuild internal stage definitions.
+   * Called when RAG stores are added/removed at runtime.
+   */
+  rebuildStages?(): void;
 }
