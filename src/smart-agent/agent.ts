@@ -300,6 +300,34 @@ export class SmartAgent {
     }
   }
 
+  /**
+   * Add a custom RAG store at runtime. Takes effect on the next request.
+   * Built-in store names ('tools', 'history') cannot be overwritten.
+   */
+  addRagStore(name: string, store: IRag): void {
+    if (name === 'tools' || name === 'history') {
+      throw new Error(
+        `Cannot overwrite built-in RAG store "${name}" via addRagStore()`,
+      );
+    }
+    this.deps.ragStores[name] = store;
+    this.deps.pipeline?.rebuildStages?.();
+  }
+
+  /**
+   * Remove a custom RAG store at runtime. Takes effect on the next request.
+   * Built-in store names ('tools', 'history') cannot be removed.
+   */
+  removeRagStore(name: string): void {
+    if (name === 'tools' || name === 'history') {
+      throw new Error(
+        `Cannot remove built-in RAG store "${name}" via removeRagStore()`,
+      );
+    }
+    delete this.deps.ragStores[name];
+    this.deps.pipeline?.rebuildStages?.();
+  }
+
   /** Returns the model identifiers of the currently active LLM instances. */
   getActiveConfig(): {
     mainModel?: string;
