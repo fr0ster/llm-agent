@@ -9,6 +9,7 @@ import type {
 } from '../../types.js';
 import type { ILlm } from '../interfaces/llm.js';
 import type {
+  IModelFilter,
   IModelInfo,
   IModelProvider,
 } from '../interfaces/model-provider.js';
@@ -260,6 +261,7 @@ function parseStreamChunk(
 export interface LlmAdapterProviderInfo {
   model: string;
   getModels?(): Promise<string[] | IModelInfo[]>;
+  getEmbeddingModels?(): Promise<string[] | IModelInfo[]>;
 }
 
 function normalizeModelEntry(entry: string | IModelInfo): IModelInfo {
@@ -281,7 +283,7 @@ export class LlmAdapter implements ILlm, IModelProvider {
   }
 
   async getModels(
-    options?: CallOptions,
+    options?: CallOptions & IModelFilter,
   ): Promise<Result<IModelInfo[], LlmError>> {
     if (!this.provider?.getModels) {
       return {
@@ -291,6 +293,41 @@ export class LlmAdapter implements ILlm, IModelProvider {
     }
     try {
       const modelsPromise = this.provider.getModels();
+      const raw = options?.signal
+        ? await withAbort(
+            modelsPromise,
+            options.signal,
+            () => new LlmError('Aborted', 'ABORTED'),
+          )
+        : await modelsPromise;
+      let models = raw.map(normalizeModelEntry);
+
+      if (options?.excludeEmbedding && this.provider.getEmbeddingModels) {
+        const embeddingModels = await this.provider.getEmbeddingModels();
+        const embeddingIds = new Set(
+          embeddingModels.map((m) => (typeof m === 'string' ? m : m.id)),
+        );
+        models = models.filter((m) => !embeddingIds.has(m.id));
+      }
+
+      return { ok: true, value: models };
+    } catch (err) {
+      if (err instanceof LlmError) return { ok: false, error: err };
+      return {
+        ok: false,
+        error: new LlmError(String(err), 'MODEL_LIST_FAILED'),
+      };
+    }
+  }
+
+  async getEmbeddingModels(
+    options?: CallOptions,
+  ): Promise<Result<IModelInfo[], LlmError>> {
+    if (!this.provider?.getEmbeddingModels) {
+      return { ok: true, value: [] };
+    }
+    try {
+      const modelsPromise = this.provider.getEmbeddingModels();
       const raw = options?.signal
         ? await withAbort(
             modelsPromise,
