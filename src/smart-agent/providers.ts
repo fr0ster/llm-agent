@@ -27,6 +27,7 @@ import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
 import { QdrantRag } from './rag/qdrant-rag.js';
+import type { ISearchStrategy } from './rag/search-strategy.js';
 import { VectorRag } from './rag/vector-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -261,6 +262,8 @@ export interface RagResolutionConfig {
   vectorWeight?: number;
   keywordWeight?: number;
   timeoutMs?: number;
+  /** Search scoring strategy for hybrid RAG stores (VectorRag). */
+  strategy?: ISearchStrategy;
 }
 
 export interface RagResolutionOptions {
@@ -286,6 +289,7 @@ export function makeRag(
         dedupThreshold: cfg.dedupThreshold,
         vectorWeight: cfg.vectorWeight,
         keywordWeight: cfg.keywordWeight,
+        strategy: cfg.strategy,
       });
     }
     return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
@@ -314,6 +318,7 @@ export function makeRag(
       dedupThreshold: cfg.dedupThreshold,
       vectorWeight: cfg.vectorWeight,
       keywordWeight: cfg.keywordWeight,
+      strategy: cfg.strategy,
     });
   }
 
@@ -327,6 +332,7 @@ export function makeRag(
       dedupThreshold: cfg.dedupThreshold,
       vectorWeight: cfg.vectorWeight,
       keywordWeight: cfg.keywordWeight,
+      strategy: cfg.strategy,
     });
   }
 
@@ -338,5 +344,6 @@ export function makeRag(
     dedupThreshold: cfg.dedupThreshold,
     vectorWeight: cfg.vectorWeight,
     keywordWeight: cfg.keywordWeight,
+    strategy: cfg.strategy,
   });
 }

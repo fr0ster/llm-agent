@@ -274,6 +274,20 @@ export {
   SapAiCoreEmbedder,
   type SapAiCoreEmbedderConfig,
 } from './smart-agent/rag/sap-ai-core-embedder.js';
+// Search Strategies
+export type {
+  IScoredResult,
+  ISearchCandidate,
+  ISearchContext,
+  ISearchQuery,
+  ISearchStrategy,
+} from './smart-agent/rag/search-strategy.js';
+export {
+  Bm25OnlyStrategy,
+  RrfStrategy,
+  VectorOnlyStrategy,
+  WeightedFusionStrategy,
+} from './smart-agent/rag/search-strategy.js';
 export {
   VectorRag,
   type VectorRagConfig,

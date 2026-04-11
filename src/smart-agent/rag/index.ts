@@ -7,5 +7,18 @@ export type { OpenAiEmbedderConfig } from './openai-embedder.js';
 export { OpenAiEmbedder } from './openai-embedder.js';
 export type { QdrantRagConfig } from './qdrant-rag.js';
 export { QdrantRag } from './qdrant-rag.js';
+export type {
+  IScoredResult,
+  ISearchCandidate,
+  ISearchContext,
+  ISearchQuery,
+  ISearchStrategy,
+} from './search-strategy.js';
+export {
+  Bm25OnlyStrategy,
+  RrfStrategy,
+  VectorOnlyStrategy,
+  WeightedFusionStrategy,
+} from './search-strategy.js';
 export type { VectorRagConfig } from './vector-rag.js';
 export { VectorRag } from './vector-rag.js';
