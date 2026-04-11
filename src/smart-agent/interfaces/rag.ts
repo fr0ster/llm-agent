@@ -7,8 +7,13 @@ import type {
   Result,
 } from './types.js';
 
+export interface IEmbedResult {
+  vector: number[];
+  usage?: { promptTokens: number; totalTokens: number };
+}
+
 export interface IEmbedder {
-  embed(text: string, options?: CallOptions): Promise<number[]>;
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult>;
 }
 
 /** Config subset passed to EmbedderFactory so it can configure the embedder. */
@@ -55,7 +60,7 @@ export interface IRag {
 }
 
 export interface IEmbedderBatch extends IEmbedder {
-  embedBatch(texts: string[], options?: CallOptions): Promise<number[][]>;
+  embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]>;
 }
 
 export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {

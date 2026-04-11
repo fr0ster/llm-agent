@@ -78,6 +78,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
+        getEmbeddingModels: () => provider.getEmbeddingModels(),
       });
       break;
     }
@@ -96,6 +97,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
+        getEmbeddingModels: () => provider.getEmbeddingModels(),
       });
       break;
     }
@@ -114,6 +116,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
+        getEmbeddingModels: () => provider.getEmbeddingModels(),
       });
       break;
     }
@@ -143,6 +146,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       llm = new LlmAdapter(agent, {
         model: provider.model,
         getModels: () => provider.getModels(),
+        getEmbeddingModels: () => provider.getEmbeddingModels(),
       });
       break;
     }

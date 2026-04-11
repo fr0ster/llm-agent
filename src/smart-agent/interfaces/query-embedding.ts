@@ -1,3 +1,5 @@
+import type { IEmbedResult } from './rag.js';
+
 /**
  * A query embedding that lazily computes and caches its vector.
  *
@@ -9,4 +11,6 @@ export interface IQueryEmbedding {
   readonly text: string;
   /** Returns the embedding vector, computing it on first call. */
   toVector(): Promise<number[]>;
+  /** Returns token usage from the embedding call, if available. */
+  getUsage?(): Promise<IEmbedResult['usage']>;
 }

@@ -161,7 +161,7 @@ export class QdrantRag implements IPrecomputedVectorRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
     try {
-      const vector = await this.embedder.embed(text, options);
+      const { vector } = await this.embedder.embed(text, options);
       return this.upsertKnownVector(text, vector, metadata, options);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };

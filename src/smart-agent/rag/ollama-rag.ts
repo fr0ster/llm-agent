@@ -1,4 +1,4 @@
-import type { IEmbedderBatch } from '../interfaces/rag.js';
+import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
 import { type CallOptions, RagError } from '../interfaces/types.js';
 import { VectorRag, type VectorRagConfig } from './vector-rag.js';
 
@@ -22,7 +22,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
     this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
-  async embed(text: string, options?: CallOptions): Promise<number[]> {
+  async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     const url = `${this.ollamaUrl}/api/embeddings`;
 
     let lastError: Error | undefined;
@@ -51,7 +51,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
         }
 
         const json = (await res.json()) as { embedding: number[] };
-        return json.embedding;
+        return { vector: json.embedding };
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (err instanceof Error && err.name === 'AbortError') throw err;
@@ -71,7 +71,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
   async embedBatch(
     texts: string[],
     options?: CallOptions,
-  ): Promise<number[][]> {
+  ): Promise<IEmbedResult[]> {
     if (texts.length === 0) return [];
 
     const url = `${this.ollamaUrl}/api/embed`;
@@ -101,7 +101,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
         }
 
         const json = (await res.json()) as { embeddings: number[][] };
-        return json.embeddings;
+        return json.embeddings.map((vector) => ({ vector }));
       } catch (err: unknown) {
         lastError = err instanceof Error ? err : new Error(String(err));
         if (err instanceof Error && err.name === 'AbortError') throw err;

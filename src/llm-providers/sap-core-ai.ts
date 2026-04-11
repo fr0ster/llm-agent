@@ -360,7 +360,11 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
     }
   }
 
-  async getModels(): Promise<IModelInfo[]> {
+  /**
+   * Fetch all models from SAP AI Core, caching the result for MODELS_CACHE_TTL_MS.
+   * Returns ALL models regardless of capability — callers filter as needed.
+   */
+  private async _fetchAllModels(): Promise<IModelInfo[]> {
     if (this.modelsCache && Date.now() < this.modelsCacheExpiry) {
       return this.modelsCache;
     }
@@ -387,7 +391,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       const models: IModelInfo[] = [];
       for (const r of result.resources as AiModel[]) {
         const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
-        if (!latest?.capabilities?.includes('text-generation')) continue;
+        if (!latest) continue;
         models.push({
           id: r.model,
           displayName: r.displayName,
@@ -408,6 +412,15 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
       // Fallback to configured model if AI API is not available
       return [{ id: this.model }];
     }
+  }
+
+  async getModels(): Promise<IModelInfo[]> {
+    return this._fetchAllModels();
+  }
+
+  async getEmbeddingModels(): Promise<IModelInfo[]> {
+    const all = await this._fetchAllModels();
+    return all.filter((m) => m.capabilities?.includes('embeddings'));
   }
 
   /**

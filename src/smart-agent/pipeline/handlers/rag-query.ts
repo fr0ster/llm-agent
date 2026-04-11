@@ -77,6 +77,23 @@ export class RagQueryHandler implements IStageHandler {
       durationMs: Date.now() - ragStart,
     });
 
+    // Log embedding usage once (first rag-query stage that uses the embedding)
+    if (!ctx.embeddingUsageLogged && ctx.queryEmbedding?.getUsage) {
+      const usage = await ctx.queryEmbedding.getUsage();
+      if (usage) {
+        ctx.requestLogger.logLlmCall({
+          component: 'embedding',
+          model: 'embedder',
+          promptTokens: usage.promptTokens,
+          completionTokens: 0,
+          totalTokens: usage.totalTokens,
+          durationMs: 0, // embed completed before store.query(); not separately measurable here
+          scope: 'request',
+        });
+        ctx.embeddingUsageLogged = true;
+      }
+    }
+
     ctx.metrics.ragQueryCount.add(1, {
       store: storeName,
       hit: String(result.ok && result.value.length > 0),
