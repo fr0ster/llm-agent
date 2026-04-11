@@ -23,6 +23,11 @@ export interface LLMProvider {
    * Get available models
    */
   getModels?(): Promise<string[] | IModelInfo[]>;
+
+  /**
+   * Get embedding models. Best-effort; may return empty array.
+   */
+  getEmbeddingModels?(): Promise<string[] | IModelInfo[]>;
 }
 
 export abstract class BaseLLMProvider<
