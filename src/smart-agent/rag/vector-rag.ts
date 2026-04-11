@@ -9,6 +9,13 @@ import {
 } from '../interfaces/types.js';
 import { InvertedIndex } from './inverted-index.js';
 import { FallbackQueryEmbedding } from './query-embedding.js';
+import type {
+  ISearchCandidate,
+  ISearchContext,
+  ISearchQuery,
+  ISearchStrategy,
+} from './search-strategy.js';
+import { WeightedFusionStrategy } from './search-strategy.js';
 
 interface StoredRecord {
   text: string;
@@ -25,6 +32,8 @@ export interface VectorRagConfig {
   vectorWeight?: number;
   /** Weight for keyword search (0..1). Default: 0.3 */
   keywordWeight?: number;
+  /** Search scoring strategy. Default: WeightedFusionStrategy with the configured weights. */
+  strategy?: ISearchStrategy;
 }
 
 export class VectorRag implements IPrecomputedVectorRag {
@@ -34,6 +43,7 @@ export class VectorRag implements IPrecomputedVectorRag {
   private readonly namespace?: string;
   private vectorWeight: number;
   private keywordWeight: number;
+  private strategy: ISearchStrategy;
 
   constructor(
     private readonly embedder: IEmbedder,
@@ -43,6 +53,12 @@ export class VectorRag implements IPrecomputedVectorRag {
     this.namespace = config.namespace;
     this.vectorWeight = config.vectorWeight ?? 0.7;
     this.keywordWeight = config.keywordWeight ?? 0.3;
+    this.strategy =
+      config.strategy ??
+      new WeightedFusionStrategy({
+        vectorWeight: this.vectorWeight,
+        keywordWeight: this.keywordWeight,
+      });
   }
 
   /** Update hybrid search weights at runtime (hot-reload). */
@@ -54,6 +70,12 @@ export class VectorRag implements IPrecomputedVectorRag {
       this.vectorWeight = config.vectorWeight;
     if (config.keywordWeight !== undefined)
       this.keywordWeight = config.keywordWeight;
+    if (this.strategy.name === 'weighted-fusion') {
+      this.strategy = new WeightedFusionStrategy({
+        vectorWeight: this.vectorWeight,
+        keywordWeight: this.keywordWeight,
+      });
+    }
   }
 
   private tokenize(s: string): string[] {
@@ -73,38 +95,6 @@ export class VectorRag implements IPrecomputedVectorRag {
       nb += b[i] ** 2;
     }
     return dot / (Math.sqrt(na) * Math.sqrt(nb) || 1);
-  }
-
-  /**
-   * BM25 Lexical Scorer.
-   * Uses pre-built InvertedIndex for O(1) DF lookups.
-   */
-  private bm25Score(query: string, text: string): number {
-    const queryTokens = this.tokenize(query);
-    const docTokens = this.tokenize(text);
-
-    if (queryTokens.length === 0 || docTokens.length === 0) return 0;
-
-    const avgDocLength = this.index.avgDocLength || 1;
-    const n = this.index.docCount || 1;
-    const k1 = 1.2;
-    const b = 0.75;
-
-    let score = 0;
-    for (const token of new Set(queryTokens)) {
-      const df = this.index.getDocFrequency(token);
-      const idf = Math.log((n - df + 0.5) / (df + 0.5) + 1);
-
-      const tf = docTokens.filter((t) => t === token).length;
-
-      const tfScored =
-        (tf * (k1 + 1)) /
-        (tf + k1 * (1 - b + b * (docTokens.length / avgDocLength)));
-      score += idf * tfScored;
-    }
-
-    // Normalize to [0, 1] range (rough approximation for fusion)
-    return Math.min(score / 5, 1.0);
   }
 
   private upsertKnownVector(
@@ -205,41 +195,37 @@ export class VectorRag implements IPrecomputedVectorRag {
       const queryVector = await safe.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
 
-      const scored = this.records
-        .filter((r) => {
-          if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
-            return false;
+      const filtered = this.records.filter((r) => {
+        if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
+          return false;
+        if (
+          targetNamespace !== undefined &&
+          r.metadata.namespace !== targetNamespace
+        )
+          return false;
+        if (
+          this.namespace !== undefined &&
+          r.metadata.namespace !== undefined &&
+          r.metadata.namespace !== this.namespace
+        )
+          return false;
+        return true;
+      });
 
-          // Apply dynamic filter from CallOptions
-          if (
-            targetNamespace !== undefined &&
-            r.metadata.namespace !== targetNamespace
-          )
-            return false;
+      const candidates: ISearchCandidate[] = filtered.map((r) => ({
+        text: r.text,
+        vector: r.vector,
+        metadata: r.metadata,
+      }));
 
-          if (
-            this.namespace !== undefined &&
-            r.metadata.namespace !== undefined &&
-            r.metadata.namespace !== this.namespace
-          )
-            return false;
-          return true;
-        })
-        .map((r) => {
-          const vScore = this.cosine(queryVector, r.vector);
-          const lScore = this.bm25Score(text, r.text);
+      const searchQuery: ISearchQuery = { text, vector: queryVector };
+      const context: ISearchContext = {
+        index: this.index,
+        tokenize: this.tokenize.bind(this),
+      };
 
-          // Hybrid Fusion: Weighted Sum
-          const combinedScore =
-            vScore * this.vectorWeight + lScore * this.keywordWeight;
-
-          return {
-            text: r.text,
-            metadata: r.metadata,
-            score: combinedScore,
-          };
-        })
-        .sort((a, b) => b.score - a.score)
+      const scored = this.strategy
+        .score(searchQuery, candidates, context)
         .slice(0, k);
 
       return { ok: true, value: scored };
