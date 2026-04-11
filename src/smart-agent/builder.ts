@@ -596,6 +596,8 @@ export class SmartAgentBuilder {
     const ragStores: SmartAgentRagStores = {};
     if (toolsRag) ragStores.tools = toolsRag;
     if (historyRag) ragStores.history = historyRag;
+    const translateQueryStores = new Set<string>();
+    if (toolsRag) translateQueryStores.add('tools');
 
     // ---- Circuit breaker wrapping ----------------------------------------
     const circuitBreakers: CircuitBreaker[] = [];
@@ -1028,6 +1030,7 @@ export class SmartAgentBuilder {
         ...(this._llmCallStrategy
           ? { llmCallStrategy: this._llmCallStrategy }
           : {}),
+        ...(translateQueryStores.size > 0 ? { translateQueryStores } : {}),
         requestLogger,
       },
       agentCfg,
