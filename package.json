@@ -43,6 +43,7 @@
     "test:regression": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/regression.test.ts",
     "test:tracer": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/tracer/__tests__/tracer.test.ts",
     "test:rag-eval": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/rag/__tests__/rag-evaluation.test.ts",
+    "test:mcp-eval": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/rag/__tests__/mcp-tools-evaluation.test.ts",
     "test:metrics": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/metrics/__tests__/metrics.test.ts",
     "test:resilience": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/resilience/__tests__/circuit-breaker.test.ts src/smart-agent/resilience/__tests__/circuit-breaker-llm.test.ts src/smart-agent/resilience/__tests__/fallback-rag.test.ts",
     "test:health": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/health/__tests__/health-checker.test.ts",
