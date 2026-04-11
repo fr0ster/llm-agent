@@ -103,3 +103,118 @@ export class WeightedFusionStrategy implements ISearchStrategy {
       .sort((a, b) => b.score - a.score);
   }
 }
+
+// ---------------------------------------------------------------------------
+// RrfStrategy
+// ---------------------------------------------------------------------------
+
+/**
+ * Reciprocal Rank Fusion: combines vector and BM25 rankings using
+ * `score(doc) = 1/(k + rank_vector) + 1/(k + rank_bm25)`.
+ *
+ * RRF is rank-based — it doesn't depend on raw score magnitudes,
+ * which makes it more stable than weighted sum when vector and BM25
+ * score distributions differ.
+ */
+export class RrfStrategy implements ISearchStrategy {
+  readonly name = 'rrf';
+  private readonly k: number;
+
+  constructor(config?: { k?: number }) {
+    this.k = config?.k ?? 60;
+  }
+
+  score(
+    query: ISearchQuery,
+    candidates: ISearchCandidate[],
+    context: ISearchContext,
+  ): IScoredResult[] {
+    const queryTokens = context.tokenize(query.text);
+
+    // Score by each method independently
+    const vectorScores = candidates.map((c, i) => ({
+      idx: i,
+      score: cosine(query.vector, c.vector),
+    }));
+    const bm25Scores = candidates.map((c, i) => ({
+      idx: i,
+      score: bm25(queryTokens, c.text, context),
+    }));
+
+    // Sort each list desc to get ranks
+    vectorScores.sort((a, b) => b.score - a.score);
+    bm25Scores.sort((a, b) => b.score - a.score);
+
+    // Build rank maps (0-indexed rank)
+    const vectorRank = new Map<number, number>();
+    const bm25Rank = new Map<number, number>();
+    for (let i = 0; i < vectorScores.length; i++)
+      vectorRank.set(vectorScores[i].idx, i);
+    for (let i = 0; i < bm25Scores.length; i++)
+      bm25Rank.set(bm25Scores[i].idx, i);
+
+    // Compute RRF score
+    return candidates
+      .map((c, i) => ({
+        text: c.text,
+        metadata: c.metadata,
+        score:
+          1 / (this.k + (vectorRank.get(i) ?? candidates.length)) +
+          1 / (this.k + (bm25Rank.get(i) ?? candidates.length)),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VectorOnlyStrategy
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure vector cosine similarity. No keyword component.
+ * Useful as a baseline or when BM25 tokenization doesn't match the domain.
+ */
+export class VectorOnlyStrategy implements ISearchStrategy {
+  readonly name = 'vector-only';
+
+  score(
+    query: ISearchQuery,
+    candidates: ISearchCandidate[],
+    _context: ISearchContext,
+  ): IScoredResult[] {
+    return candidates
+      .map((c) => ({
+        text: c.text,
+        metadata: c.metadata,
+        score: cosine(query.vector, c.vector),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Bm25OnlyStrategy
+// ---------------------------------------------------------------------------
+
+/**
+ * Pure BM25 lexical scoring. No vector component.
+ * Useful when embedder is unavailable or for exact-match-heavy domains.
+ */
+export class Bm25OnlyStrategy implements ISearchStrategy {
+  readonly name = 'bm25-only';
+
+  score(
+    query: ISearchQuery,
+    candidates: ISearchCandidate[],
+    context: ISearchContext,
+  ): IScoredResult[] {
+    const queryTokens = context.tokenize(query.text);
+    return candidates
+      .map((c) => ({
+        text: c.text,
+        metadata: c.metadata,
+        score: bm25(queryTokens, c.text, context),
+      }))
+      .sort((a, b) => b.score - a.score);
+  }
+}
