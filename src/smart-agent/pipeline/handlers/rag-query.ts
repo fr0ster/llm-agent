@@ -83,11 +83,11 @@ export class RagQueryHandler implements IStageHandler {
       if (usage) {
         ctx.requestLogger.logLlmCall({
           component: 'embedding',
-          model: ctx.embedder?.constructor?.name ?? 'embedder',
+          model: 'embedder',
           promptTokens: usage.promptTokens,
           completionTokens: 0,
           totalTokens: usage.totalTokens,
-          durationMs: Date.now() - ragStart,
+          durationMs: 0, // embed completed before store.query(); not separately measurable here
           scope: 'request',
         });
         ctx.embeddingUsageLogged = true;
