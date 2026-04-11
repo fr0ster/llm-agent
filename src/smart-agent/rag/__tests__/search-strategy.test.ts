@@ -277,3 +277,116 @@ describe('RrfStrategy', () => {
     }
   });
 });
+
+describe('VectorOnlyStrategy', () => {
+  it('name equals vector-only', () => {
+    const strategy = new VectorOnlyStrategy();
+    assert.equal(strategy.name, 'vector-only');
+  });
+
+  it('scores using cosine similarity only, returns sorted desc, top result correct', () => {
+    const strategy = new VectorOnlyStrategy();
+    const context = makeContext(CANDIDATES);
+    const queryText = 'machine learning neural';
+    const results = strategy.score(
+      { text: queryText, vector: tfVector(queryText, VOCAB) },
+      CANDIDATES,
+      context,
+    );
+
+    assert.equal(results.length, CANDIDATES.length);
+    for (let i = 0; i < results.length - 1; i++) {
+      assert.ok(
+        results[i].score >= results[i + 1].score,
+        `Result ${i} score (${results[i].score}) should be >= result ${i + 1} score (${results[i + 1].score})`,
+      );
+    }
+    // The ML candidate has the highest cosine similarity for this query
+    assert.equal(results[0].metadata.id, 'ml');
+  });
+
+  it('ignores BM25: when query text says "create transport" but vector points to source code, vector wins', () => {
+    const strategy = new VectorOnlyStrategy();
+
+    // source_code has a vector closely aligned to [1, 0, 0]
+    const sourceCode: ISearchCandidate = {
+      text: 'source code implementation details',
+      vector: [1, 0, 0],
+      metadata: { id: 'source_code' },
+    };
+    // transport_release has many keyword matches for "create transport" but a distant vector
+    const transportRelease: ISearchCandidate = {
+      text: 'create transport release',
+      vector: [0, 0, 1],
+      metadata: { id: 'transport_release' },
+    };
+
+    const localCandidates = [sourceCode, transportRelease];
+    const localContext = makeContext(localCandidates);
+
+    // Query text says "create transport" but vector points toward sourceCode
+    const results = strategy.score(
+      { text: 'create transport', vector: [1, 0, 0] },
+      localCandidates,
+      localContext,
+    );
+
+    // Vector wins: sourceCode should rank first despite keyword mismatch
+    assert.equal(results[0].metadata.id, 'source_code');
+  });
+});
+
+describe('Bm25OnlyStrategy', () => {
+  it('name equals bm25-only', () => {
+    const strategy = new Bm25OnlyStrategy();
+    assert.equal(strategy.name, 'bm25-only');
+  });
+
+  it('scores using BM25 only; for query "transport release" the release_transport tool ranks first', () => {
+    const strategy = new Bm25OnlyStrategy();
+
+    const transportRelease: ISearchCandidate = {
+      text: 'release transport request',
+      vector: [0, 0, 1],
+      metadata: { id: 'release_transport' },
+    };
+    const machineDoc: ISearchCandidate = {
+      text: 'machine learning integration',
+      vector: [1, 0, 0],
+      metadata: { id: 'machine_doc' },
+    };
+
+    const localCandidates = [machineDoc, transportRelease];
+    const localContext = makeContext(localCandidates);
+
+    // "transport release" keywords match transportRelease, not machineDoc
+    const results = strategy.score(
+      { text: 'transport release', vector: [] },
+      localCandidates,
+      localContext,
+    );
+
+    assert.equal(results[0].metadata.id, 'release_transport');
+  });
+
+  it('works with empty vector (vector field = [])', () => {
+    const strategy = new Bm25OnlyStrategy();
+    const context = makeContext(CANDIDATES);
+    const queryText = 'machine learning';
+
+    // empty vector should not throw
+    const results = strategy.score(
+      { text: queryText, vector: [] },
+      CANDIDATES,
+      context,
+    );
+
+    assert.equal(results.length, CANDIDATES.length);
+    for (let i = 0; i < results.length - 1; i++) {
+      assert.ok(
+        results[i].score >= results[i + 1].score,
+        `Result ${i} score (${results[i].score}) should be >= result ${i + 1} score (${results[i + 1].score})`,
+      );
+    }
+  });
+});
