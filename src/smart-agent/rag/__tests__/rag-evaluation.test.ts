@@ -4,6 +4,11 @@ import type { IEmbedder, IEmbedResult } from '../../interfaces/rag.js';
 import type { CallOptions, RagResult } from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
 import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
+import {
+  Bm25OnlyStrategy,
+  RrfStrategy,
+  VectorOnlyStrategy,
+} from '../search-strategy.js';
 import { VectorRag } from '../vector-rag.js';
 
 // ---------------------------------------------------------------------------
@@ -383,6 +388,159 @@ describe('RAG Evaluation — VectorRag (hybrid)', () => {
     assert.ok(
       exactScore > synonymScore,
       `Exact-term score (${exactScore.toFixed(3)}) should exceed synonym score (${synonymScore.toFixed(3)})`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — VectorRag (RRF)
+// ---------------------------------------------------------------------------
+
+describe('RAG Evaluation — VectorRag (RRF)', () => {
+  function createVectorRag(): { rag: VectorRag; embedder: TfEmbedder } {
+    const embedder = new TfEmbedder();
+    const allTexts = [
+      ...GOLDEN_CORPUS.map((e) => e.text),
+      ...GOLDEN_QUERIES.map((q) => q.query),
+    ];
+    embedder.buildVocabulary(allTexts);
+    const rag = new VectorRag(embedder, {
+      dedupThreshold: 0.99,
+      strategy: new RrfStrategy(),
+    });
+    return { rag, embedder };
+  }
+
+  it('all golden queries return expected tool in top-k', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      const topIds = results.map((r) => r.metadata.id);
+      for (const expectedId of gq.expectedTopIds) {
+        assert.ok(
+          topIds.includes(expectedId),
+          `[RRF] Query "${gq.query}": expected "${expectedId}" in top-${gq.k}, got [${topIds.join(', ')}]`,
+        );
+      }
+    }
+  });
+
+  it('MRR >= 0.7 across all golden queries', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    let totalRR = 0;
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      totalRR += reciprocalRank(results, gq.expectedTopIds);
+    }
+    const mrr = totalRR / GOLDEN_QUERIES.length;
+    assert.ok(mrr >= 0.7, `[RRF] MRR = ${mrr.toFixed(3)}, expected >= 0.7`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — VectorRag (vector-only)
+// ---------------------------------------------------------------------------
+
+describe('RAG Evaluation — VectorRag (vector-only)', () => {
+  function createVectorRag(): { rag: VectorRag; embedder: TfEmbedder } {
+    const embedder = new TfEmbedder();
+    const allTexts = [
+      ...GOLDEN_CORPUS.map((e) => e.text),
+      ...GOLDEN_QUERIES.map((q) => q.query),
+    ];
+    embedder.buildVocabulary(allTexts);
+    const rag = new VectorRag(embedder, {
+      dedupThreshold: 0.99,
+      strategy: new VectorOnlyStrategy(),
+    });
+    return { rag, embedder };
+  }
+
+  it('all golden queries return expected tool in top-k', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      const topIds = results.map((r) => r.metadata.id);
+      for (const expectedId of gq.expectedTopIds) {
+        assert.ok(
+          topIds.includes(expectedId),
+          `[Vector-only] Query "${gq.query}": expected "${expectedId}" in top-${gq.k}, got [${topIds.join(', ')}]`,
+        );
+      }
+    }
+  });
+
+  it('MRR >= 0.5 across all golden queries', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    let totalRR = 0;
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      totalRR += reciprocalRank(results, gq.expectedTopIds);
+    }
+    const mrr = totalRR / GOLDEN_QUERIES.length;
+    assert.ok(
+      mrr >= 0.5,
+      `[Vector-only] MRR = ${mrr.toFixed(3)}, expected >= 0.5`,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Tests — VectorRag (BM25-only)
+// ---------------------------------------------------------------------------
+
+describe('RAG Evaluation — VectorRag (BM25-only)', () => {
+  function createVectorRag(): { rag: VectorRag; embedder: TfEmbedder } {
+    const embedder = new TfEmbedder();
+    const allTexts = [
+      ...GOLDEN_CORPUS.map((e) => e.text),
+      ...GOLDEN_QUERIES.map((q) => q.query),
+    ];
+    embedder.buildVocabulary(allTexts);
+    const rag = new VectorRag(embedder, {
+      dedupThreshold: 0.99,
+      strategy: new Bm25OnlyStrategy(),
+    });
+    return { rag, embedder };
+  }
+
+  it('all golden queries return expected tool in top-k', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      const topIds = results.map((r) => r.metadata.id);
+      for (const expectedId of gq.expectedTopIds) {
+        assert.ok(
+          topIds.includes(expectedId),
+          `[BM25-only] Query "${gq.query}": expected "${expectedId}" in top-${gq.k}, got [${topIds.join(', ')}]`,
+        );
+      }
+    }
+  });
+
+  it('MRR >= 0.5 across all golden queries', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, GOLDEN_CORPUS);
+
+    let totalRR = 0;
+    for (const gq of GOLDEN_QUERIES) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      totalRR += reciprocalRank(results, gq.expectedTopIds);
+    }
+    const mrr = totalRR / GOLDEN_QUERIES.length;
+    assert.ok(
+      mrr >= 0.5,
+      `[BM25-only] MRR = ${mrr.toFixed(3)}, expected >= 0.5`,
     );
   });
 });
