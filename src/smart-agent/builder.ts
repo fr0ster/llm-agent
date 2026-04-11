@@ -971,6 +971,7 @@ export class SmartAgentBuilder {
       mcpClients,
       toolsRag,
       historyRag,
+      ragStores,
       embedder: this._embedder,
       reranker: this._reranker,
       queryExpander: this._queryExpander,
