@@ -126,7 +126,8 @@ Endpoints exposed by the server:
 | Endpoint                    | Description                           |
 |-----------------------------|---------------------------------------|
 | `POST /v1/chat/completions` | Main endpoint (streaming + non-streaming) |
-| `GET  /v1/models`           | Returns `smart-agent` model entry     |
+| `GET  /v1/models`           | Returns `smart-agent` model entry; supports `?exclude_embedding=true` to omit embedding models |
+| `GET  /v1/embedding-models` | List available embedding models (best-effort) |
 | `GET  /v1/config`           | Active runtime configuration          |
 | `PUT  /v1/config`           | Partial runtime reconfiguration       |
 | `GET  /v1/usage`            | Accumulated LLM token usage stats     |

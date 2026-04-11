@@ -42,8 +42,10 @@ PER REQUEST (DefaultPipeline)
   History Upsert → summarize turn, upsert to history RAG store (if historyRag set)
 ```
 
-> **Consumer-defined RAG**: the DefaultPipeline only uses `tools` and `history` stores.
-> To add domain knowledge, user feedback, or session state stores, implement a custom `IPipeline`.
+> **Consumer-defined RAG**: the DefaultPipeline uses `tools` and `history` stores by default.
+> You can attach additional RAG stores at runtime without a custom `IPipeline` by calling
+> `agent.addRagStore(name, store)` and `agent.removeRagStore(name)` between requests.
+> For full control over pipeline orchestration, implement a custom `IPipeline`.
 
 ## YAML Config Examples
 
@@ -99,6 +101,31 @@ OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 **With custom `IPipeline`** — inject via `.setPipeline(myPipeline)` for full control.
 
 ## Programmatic Examples
+
+### Dynamic RAG stores
+
+`DefaultPipeline` supports adding and removing custom RAG stores between requests without replacing
+the pipeline. Use this to attach domain knowledge bases, user-specific indexes, or session-scoped
+stores on demand:
+
+```typescript
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
+
+const agent = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .setMcpClients([mcp])
+  .setToolsRag(myToolsRag)
+  .build();
+
+// Add a custom knowledge base between requests
+agent.addRagStore('product-kb', myQdrantRag);
+
+// Remove when no longer needed
+agent.removeRagStore('product-kb');
+```
+
+The added store is queried in parallel with `tools` and `history` stores during the RAG retrieval
+stage. Removing it stops it from being queried on subsequent requests.
 
 ### Programmatic embedding (`SmartServer`)
 
@@ -483,7 +510,8 @@ print(response.choices[0].message.content)
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/v1/chat/completions` | POST | Chat completion (JSON or SSE streaming) |
-| `/v1/models` | GET | List available models |
+| `/v1/models` | GET | List available models; supports `?exclude_embedding=true` |
+| `/v1/embedding-models` | GET | List available embedding models (best-effort) |
 | `/v1/config` | GET | Active runtime configuration (models + agent params) |
 | `/v1/config` | PUT | Partial runtime reconfiguration |
 | `/v1/health` | GET | Health check |

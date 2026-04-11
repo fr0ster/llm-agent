@@ -24,12 +24,14 @@ npx llm-agent --config pipelines/deepseek.yaml
 npx llm-agent
 ```
 
-The server listens on `http://0.0.0.0:4004` by default and exposes two inbound API endpoints:
+The server listens on `http://0.0.0.0:4004` by default and exposes the following inbound API endpoints:
 
 - **OpenAI Chat Completions** — `POST /v1/chat/completions` — for Cline, Goose, and OpenAI-compatible clients
 - **Anthropic Messages API** — `POST /v1/messages` — for Claude CLI (Claude Code) and the Anthropic SDK
+- **Model list** — `GET /v1/models` — returns all models available from the configured provider; append `?exclude_embedding=true` to filter out embedding models
+- **Embedding models** — `GET /v1/embedding-models` — returns only embedding models; for SAP AI Core this uses capabilities metadata for reliable filtering
 
-Both endpoints route through the same SmartAgent pipeline. See [CLIENT_SETUP.md](CLIENT_SETUP.md) for client-specific connection instructions.
+Both chat endpoints route through the same SmartAgent pipeline. See [CLIENT_SETUP.md](CLIENT_SETUP.md) for client-specific connection instructions.
 
 ## Docker
 

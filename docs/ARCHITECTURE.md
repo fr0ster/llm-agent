@@ -365,8 +365,8 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 |---|---|---|
 | `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `RetryLlm(CircuitBreakerLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts` |
 | `IRequestLogger` | Per-model, per-component usage tracking | `DefaultRequestLogger` (auto-created by builder) |
-| `IModelProvider` | Model discovery and per-request model selection | `LlmAdapter` (auto-detected from `mainLlm`) |
-| `IEmbedder` | Text → vector embedding | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
+| `IModelProvider` | Model discovery and per-request model selection; exposes `getEmbeddingModels()` served via `GET /v1/embedding-models` | `LlmAdapter` (auto-detected from `mainLlm`) |
+| `IEmbedder` | Text → vector embedding; `embed()` returns `IEmbedResult { vector: number[]; usage?: { promptTokens: number; totalTokens: number } }` | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
 | `IRag` (`tools`/`history` + consumer-defined) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
@@ -569,9 +569,9 @@ interface IPipeline {
 `DefaultPipeline` is the built-in `IPipeline` implementation. It is minimal and non-extensible by design:
 
 - Fixed stage sequence: `classify → summarize → parallel(rag-tools, rag-history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert`
-- Only two RAG stores: `tools` and `history` (both optional)
-- No `facts`, `feedback`, or `state` stores
+- Built-in RAG stores: `tools` and `history` (both optional)
 - No `rag-upsert` stage — the agent does not write to RAG automatically
+- **Custom RAG stores** — beyond `tools` and `history`, consumers can register additional stores at runtime via `SmartAgent.addRagStore(name, store)` and remove them via `SmartAgent.removeRagStore(name)`. Custom stores are queried in parallel with the built-in stores during the RAG retrieval stage.
 
 ### Consumer-defined pipelines
 
