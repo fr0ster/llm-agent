@@ -110,6 +110,11 @@ export interface SmartAgentDeps {
   historySummarizer?: IHistorySummarizer;
   llmCallStrategy?: ILlmCallStrategy;
   pipeline?: IPipeline;
+  /**
+   * Names of RAG stores whose content is English-only (e.g. MCP tool descriptions).
+   * The pipeline translates the query to English before searching these stores.
+   */
+  translateQueryStores?: Set<string>;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -303,14 +308,28 @@ export class SmartAgent {
   /**
    * Add a custom RAG store at runtime. Takes effect on the next request.
    * Built-in store names ('tools', 'history') cannot be overwritten.
+   *
+   * @param options.translateQuery — when true, the pipeline translates the
+   *   query to English before searching this store (useful for stores with
+   *   English-only content like MCP tool descriptions).
    */
-  addRagStore(name: string, store: IRag): void {
+  addRagStore(
+    name: string,
+    store: IRag,
+    options?: { translateQuery?: boolean },
+  ): void {
     if (name === 'tools' || name === 'history') {
       throw new Error(
         `Cannot overwrite built-in RAG store "${name}" via addRagStore()`,
       );
     }
     this.deps.ragStores[name] = store;
+    if (options?.translateQuery) {
+      if (!this.deps.translateQueryStores) {
+        this.deps.translateQueryStores = new Set();
+      }
+      this.deps.translateQueryStores.add(name);
+    }
     this.deps.pipeline?.rebuildStages?.();
   }
 
@@ -325,6 +344,7 @@ export class SmartAgent {
       );
     }
     delete this.deps.ragStores[name];
+    this.deps.translateQueryStores?.delete(name);
     this.deps.pipeline?.rebuildStages?.();
   }
 
@@ -676,24 +696,51 @@ export class SmartAgent {
       if (shouldRetrieve) {
         // Collect all action texts for RAG
         const combinedActionText = actions.map((a) => a.text).join(' ');
-        let ragText = await this._toEnglishForRag(combinedActionText, opts);
-        if (this.config.queryExpansionEnabled) {
-          const expandResult = await this.queryExpander.expand(ragText, opts);
-          if (expandResult.ok) ragText = expandResult.value;
+
+        // Translate + expand once (only used for stores in translateQueryStores)
+        const translateStores = this.deps.translateQueryStores;
+        let translatedText: string | undefined;
+        if (translateStores && translateStores.size > 0) {
+          translatedText = await this._toEnglishForRag(
+            combinedActionText,
+            opts,
+          );
+          if (this.config.queryExpansionEnabled) {
+            const expandResult = await this.queryExpander.expand(
+              translatedText,
+              opts,
+            );
+            if (expandResult.ok) translatedText = expandResult.value;
+          }
         }
+
         const k = this.config.ragQueryK ?? 10;
         const ragSpan = this.tracer.startSpan('smart_agent.rag_query', {
           parent: rootSpan,
           attributes: { 'rag.k': k },
         });
         const storeEntries = Object.entries(this.deps.ragStores);
-        const embedding = this.deps.embedder
-          ? new QueryEmbedding(ragText, this.deps.embedder, opts)
-          : new TextOnlyEmbedding(ragText);
+
+        // Build per-store embedding: translated for translateQuery stores, original for others
+        const mkEmbed = (text: string) =>
+          this.deps.embedder
+            ? new QueryEmbedding(text, this.deps.embedder, opts)
+            : new TextOnlyEmbedding(text);
+        // Cache embeddings to avoid duplicate embed calls
+        const originalEmbedding = mkEmbed(combinedActionText);
+        const translatedEmbedding =
+          translatedText && translatedText !== combinedActionText
+            ? mkEmbed(translatedText)
+            : originalEmbedding;
+
         const ragQueryResults = await Promise.all(
-          storeEntries.map(([name, store]) =>
-            store.query(embedding, k, opts).then((r) => ({ name, result: r })),
-          ),
+          storeEntries.map(([name, store]) => {
+            const emb =
+              translateStores?.has(name) && translatedText
+                ? translatedEmbedding
+                : originalEmbedding;
+            return store.query(emb, k, opts).then((r) => ({ name, result: r }));
+          }),
         );
         ragSpan.end();
         const ragResultsMap: Record<string, RagResult[]> = {};
@@ -706,11 +753,15 @@ export class SmartAgent {
         }
 
         // Rerank results
-        // Rerank all stores in parallel
+        // Rerank all stores in parallel, using matching query text per store
         const rerankedEntries = await Promise.all(
           Object.entries(ragResultsMap).map(async ([name, results]) => {
             if (results.length > 0) {
-              const rr = await this.reranker.rerank(ragText, results, opts);
+              const rerankText =
+                translateStores?.has(name) && translatedText
+                  ? translatedText
+                  : combinedActionText;
+              const rr = await this.reranker.rerank(rerankText, results, opts);
               return { name, results: rr.ok ? rr.value : results };
             }
             return { name, results };
@@ -728,8 +779,12 @@ export class SmartAgent {
 
         // Log RAG results with scores for diagnostics
         for (const [storeName, results] of Object.entries(rerankedMap)) {
+          const logQuery =
+            translateStores?.has(storeName) && translatedText
+              ? translatedText
+              : combinedActionText;
           opts?.sessionLogger?.logStep(`rag_query_${storeName}`, {
-            query: ragText.slice(0, 200),
+            query: logQuery.slice(0, 200),
             k,
             resultCount: results.length,
             results: results.map((r) => ({
@@ -788,15 +843,18 @@ export class SmartAgent {
           // Fallback: dedicated RAG query when no skill:* in existing results
           if (ragSkillNames.size === 0) {
             const k = this.config.ragQueryK ?? 15;
-            const queryText = ragText;
             const storeEntries = Object.entries(this.deps.ragStores);
-            const fallbackEmbedding = this.deps.embedder
-              ? new QueryEmbedding(queryText, this.deps.embedder, opts)
-              : new TextOnlyEmbedding(queryText);
             const fallbackResults = await Promise.all(
-              storeEntries.map(([, store]) =>
-                store.query(fallbackEmbedding, k, opts),
-              ),
+              storeEntries.map(([name, store]) => {
+                const text =
+                  translateStores?.has(name) && translatedText
+                    ? translatedText
+                    : combinedActionText;
+                const emb = this.deps.embedder
+                  ? new QueryEmbedding(text, this.deps.embedder, opts)
+                  : new TextOnlyEmbedding(text);
+                return store.query(emb, k, opts);
+              }),
             );
             for (const result of fallbackResults) {
               if (result.ok) {
@@ -810,7 +868,7 @@ export class SmartAgent {
             }
             if (ragSkillNames.size > 0) {
               opts?.sessionLogger?.logStep('skill_select_rag_fallback', {
-                query: queryText.slice(0, 200),
+                query: combinedActionText.slice(0, 200),
                 k,
                 matchedSkills: [...ragSkillNames],
               });
