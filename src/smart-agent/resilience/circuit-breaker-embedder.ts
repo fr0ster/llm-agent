@@ -5,7 +5,7 @@
  * underlying embedding service.
  */
 
-import type { IEmbedder } from '../interfaces/rag.js';
+import type { IEmbedder, IEmbedResult } from '../interfaces/rag.js';
 import { isBatchEmbedder } from '../interfaces/rag.js';
 import type { CallOptions } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
@@ -17,7 +17,7 @@ export class CircuitBreakerEmbedder implements IEmbedder {
     readonly breaker: CircuitBreaker,
   ) {}
 
-  async embed(text: string, options?: CallOptions): Promise<number[]> {
+  async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
     if (!this.breaker.isCallPermitted) {
       throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
@@ -34,7 +34,7 @@ export class CircuitBreakerEmbedder implements IEmbedder {
   async embedBatch(
     texts: string[],
     options?: CallOptions,
-  ): Promise<number[][]> {
+  ): Promise<IEmbedResult[]> {
     if (!this.breaker.isCallPermitted) {
       throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
     }
