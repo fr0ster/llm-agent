@@ -26,6 +26,10 @@ import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
 import { builtInEmbedderFactories } from './rag/embedder-factories.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
 import { OllamaRag } from './rag/ollama-rag.js';
+import type {
+  IDocumentEnricher,
+  IQueryPreprocessor,
+} from './rag/preprocessor.js';
 import { QdrantRag } from './rag/qdrant-rag.js';
 import type { ISearchStrategy } from './rag/search-strategy.js';
 import { VectorRag } from './rag/vector-rag.js';
@@ -264,6 +268,10 @@ export interface RagResolutionConfig {
   timeoutMs?: number;
   /** Search scoring strategy for hybrid RAG stores (VectorRag). */
   strategy?: ISearchStrategy;
+  /** Query preprocessors for this RAG store. */
+  queryPreprocessors?: IQueryPreprocessor[];
+  /** Document enrichers for this RAG store. */
+  documentEnrichers?: IDocumentEnricher[];
 }
 
 export interface RagResolutionOptions {
@@ -290,9 +298,15 @@ export function makeRag(
         vectorWeight: cfg.vectorWeight,
         keywordWeight: cfg.keywordWeight,
         strategy: cfg.strategy,
+        queryPreprocessors: cfg.queryPreprocessors,
+        documentEnrichers: cfg.documentEnrichers,
       });
     }
-    return new InMemoryRag({ dedupThreshold: cfg.dedupThreshold });
+    return new InMemoryRag({
+      dedupThreshold: cfg.dedupThreshold,
+      queryPreprocessors: cfg.queryPreprocessors,
+      documentEnrichers: cfg.documentEnrichers,
+    });
   }
 
   if (cfg.type === 'qdrant') {
@@ -319,6 +333,8 @@ export function makeRag(
       vectorWeight: cfg.vectorWeight,
       keywordWeight: cfg.keywordWeight,
       strategy: cfg.strategy,
+      queryPreprocessors: cfg.queryPreprocessors,
+      documentEnrichers: cfg.documentEnrichers,
     });
   }
 
@@ -333,6 +349,8 @@ export function makeRag(
       vectorWeight: cfg.vectorWeight,
       keywordWeight: cfg.keywordWeight,
       strategy: cfg.strategy,
+      queryPreprocessors: cfg.queryPreprocessors,
+      documentEnrichers: cfg.documentEnrichers,
     });
   }
 
@@ -345,5 +363,7 @@ export function makeRag(
     vectorWeight: cfg.vectorWeight,
     keywordWeight: cfg.keywordWeight,
     strategy: cfg.strategy,
+    queryPreprocessors: cfg.queryPreprocessors,
+    documentEnrichers: cfg.documentEnrichers,
   });
 }
