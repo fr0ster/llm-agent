@@ -593,25 +593,12 @@ export class SmartAgent {
       }
     }
     const sessionId = options?.sessionId ?? 'default';
-    const normalizedExternalTools = normalizeExternalTools(
-      options?.externalTools,
-    );
+    const externalTools = normalizeExternalTools(options?.externalTools);
     opts?.sessionLogger?.logStep('external_tools_normalized', {
       rawCount: options?.externalTools?.length ?? 0,
-      normalizedCount: normalizedExternalTools.length,
-      normalizedNames: normalizedExternalTools.map((t) => t.name),
+      normalizedCount: externalTools.length,
+      normalizedNames: externalTools.map((t) => t.name),
     });
-
-    const { allowed: externalTools, blocked: blockedExternalTools } =
-      this.toolAvailabilityRegistry.filterTools(
-        sessionId,
-        normalizedExternalTools,
-      );
-    if (blockedExternalTools.length > 0) {
-      opts?.sessionLogger?.logStep('external_tools_filtered_by_registry', {
-        blocked: blockedExternalTools,
-      });
-    }
     opts?.sessionLogger?.logStep('pipeline_start', { mode, textOrMessages });
     this.requestLogger.startRequest();
 
@@ -1781,7 +1768,11 @@ export class SmartAgent {
       const toolMessages: Message[] = [];
       for (const { tc, text, res } of results) {
         if (!res) continue;
-        if (!res.ok && isToolContextUnavailableError(text)) {
+        if (
+          !res.ok &&
+          isToolContextUnavailableError(text) &&
+          !externalToolNames.has(tc.name)
+        ) {
           const entry = this.toolAvailabilityRegistry.block(
             sessionId,
             tc.name,
