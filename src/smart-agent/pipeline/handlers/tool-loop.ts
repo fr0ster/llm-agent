@@ -313,7 +313,7 @@ export class ToolLoopHandler implements IStageHandler {
                 ragResult.value
                   .map((r) => (r.metadata?.id as string) || '')
                   .filter((id) => id.startsWith('tool:'))
-                  .map((id) => id.slice(5)),
+                  .map((id) => id.slice(5).replace(/:.*$/, '')),
               );
 
               if (newToolNames.size > 0) {
