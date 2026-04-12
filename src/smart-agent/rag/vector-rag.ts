@@ -8,7 +8,8 @@ import {
   type Result,
 } from '../interfaces/types.js';
 import { InvertedIndex } from './inverted-index.js';
-import { FallbackQueryEmbedding } from './query-embedding.js';
+import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
+import { FallbackQueryEmbedding, QueryEmbedding } from './query-embedding.js';
 import type {
   ISearchCandidate,
   ISearchContext,
@@ -34,6 +35,10 @@ export interface VectorRagConfig {
   keywordWeight?: number;
   /** Search scoring strategy. Default: WeightedFusionStrategy with the configured weights. */
   strategy?: ISearchStrategy;
+  /** Query preprocessors (translate, expand, etc.). Applied in order before embedding. */
+  queryPreprocessors?: IQueryPreprocessor[];
+  /** Document enrichers. Applied in order before embedding on upsert. */
+  documentEnrichers?: IDocumentEnricher[];
 }
 
 export class VectorRag implements IPrecomputedVectorRag {
@@ -44,6 +49,8 @@ export class VectorRag implements IPrecomputedVectorRag {
   private vectorWeight: number;
   private keywordWeight: number;
   private strategy: ISearchStrategy;
+  private readonly queryPreprocessors: IQueryPreprocessor[];
+  private readonly documentEnrichers: IDocumentEnricher[];
 
   constructor(
     private readonly embedder: IEmbedder,
@@ -59,6 +66,8 @@ export class VectorRag implements IPrecomputedVectorRag {
         vectorWeight: this.vectorWeight,
         keywordWeight: this.keywordWeight,
       });
+    this.queryPreprocessors = config.queryPreprocessors ?? [];
+    this.documentEnrichers = config.documentEnrichers ?? [];
   }
 
   /** Update hybrid search weights at runtime (hot-reload). */
@@ -157,8 +166,13 @@ export class VectorRag implements IPrecomputedVectorRag {
     }
 
     try {
-      const { vector } = await this.embedder.embed(text, options);
-      return this.upsertKnownVector(text, vector, metadata);
+      let enrichedText = text;
+      for (const enricher of this.documentEnrichers) {
+        const eResult = await enricher.enrich(enrichedText, options);
+        if (eResult.ok) enrichedText = eResult.value;
+      }
+      const { vector } = await this.embedder.embed(enrichedText, options);
+      return this.upsertKnownVector(enrichedText, vector, metadata);
     } catch (err) {
       if (err instanceof RagError) return { ok: false, error: err };
       return { ok: false, error: new RagError(String(err), 'UPSERT_ERROR') };
@@ -190,9 +204,18 @@ export class VectorRag implements IPrecomputedVectorRag {
 
     try {
       const text = embedding.text;
+      let searchText = text;
+      for (const pp of this.queryPreprocessors) {
+        const ppResult = await pp.process(searchText, options);
+        if (ppResult.ok) searchText = ppResult.value;
+      }
       const nowSecs = Date.now() / 1000;
-      const safe = new FallbackQueryEmbedding(embedding, this.embedder);
-      const queryVector = await safe.toVector();
+      // If preprocessors transformed the text, embed the transformed version
+      const effectiveEmbedding =
+        searchText !== text
+          ? new QueryEmbedding(searchText, this.embedder, options)
+          : new FallbackQueryEmbedding(embedding, this.embedder);
+      const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
 
       const filtered = this.records.filter((r) => {
@@ -218,7 +241,10 @@ export class VectorRag implements IPrecomputedVectorRag {
         metadata: r.metadata,
       }));
 
-      const searchQuery: ISearchQuery = { text, vector: queryVector };
+      const searchQuery: ISearchQuery = {
+        text: searchText,
+        vector: queryVector,
+      };
       const context: ISearchContext = {
         index: this.index,
         tokenize: this.tokenize.bind(this),
