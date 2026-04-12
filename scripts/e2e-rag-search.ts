@@ -1,7 +1,6 @@
 #!/usr/bin/env node
 /**
- * E2E RAG search: TranslatePreprocessor + Ollama embeddings + RRF.
- * Direct RAG test — no agent pipeline, no MCP client wrapper.
+ * E2E RAG search comparison: baseline vs translate vs translate+intent enrichment.
  *
  * Run:
  *   node --import tsx/esm scripts/e2e-rag-search.ts
@@ -13,7 +12,10 @@ configDotenv();
 import { OllamaEmbedder } from '../src/smart-agent/rag/ollama-rag.js';
 import { VectorRag } from '../src/smart-agent/rag/vector-rag.js';
 import { RrfStrategy } from '../src/smart-agent/rag/search-strategy.js';
-import { TranslatePreprocessor } from '../src/smart-agent/rag/preprocessor.js';
+import {
+  TranslatePreprocessor,
+  IntentEnricher,
+} from '../src/smart-agent/rag/preprocessor.js';
 import { QueryEmbedding } from '../src/smart-agent/rag/query-embedding.js';
 import { makeDefaultLlm } from '../src/smart-agent/providers.js';
 
@@ -25,10 +27,6 @@ if (!DEEPSEEK_API_KEY) {
 
 const MCP_URL = 'http://localhost:3001/mcp/stream/http';
 const OLLAMA_URL = 'http://localhost:11434';
-
-// ---------------------------------------------------------------------------
-// Fetch tools from MCP directly via HTTP
-// ---------------------------------------------------------------------------
 
 async function fetchMcpTools(): Promise<
   Array<{ name: string; description: string }>
@@ -52,10 +50,6 @@ async function fetchMcpTools(): Promise<
   return json.result.tools;
 }
 
-// ---------------------------------------------------------------------------
-// Test cases
-// ---------------------------------------------------------------------------
-
 interface TestCase {
   query: string;
   expectAny: string[];
@@ -63,7 +57,6 @@ interface TestCase {
 }
 
 const CASES: TestCase[] = [
-  // Ukrainian — need translation
   { query: 'Прочитай дампи через фіди', expectAny: ['RuntimeListFeeds', 'RuntimeListDumps'], note: 'UA: dumps via feeds' },
   { query: 'Прочитай структуру таблиці T100', expectAny: ['ReadTable', 'GetTable', 'GetTableContents'], note: 'UA: table structure' },
   { query: 'Які фіди можемо прочитати?', expectAny: ['RuntimeListFeeds', 'HandlerFeedList'], note: 'UA: available feeds' },
@@ -75,8 +68,6 @@ const CASES: TestCase[] = [
   { query: 'Створи нову CDS вʼюху', expectAny: ['CreateView'], note: 'UA: create CDS view' },
   { query: 'Перевір синтаксис програми', expectAny: ['HandlerCheckRun'], note: 'UA: syntax check' },
   { query: 'Прочитай клас ZCL_ORDER і покажи його транспорти', expectAny: ['ReadClass', 'GetClass', 'ListTransports', 'GetTransport'], note: 'UA: multi-step' },
-
-  // English — should work without translation
   { query: 'SM02 system messages', expectAny: ['RuntimeListSystemMessages', 'HandlerSystemMessageList'], note: 'EN: SAP t-code' },
   { query: 'get table data like SE16', expectAny: ['GetTableContents'], note: 'EN: data preview' },
   { query: 'expose CDS view as OData service', expectAny: ['CreateServiceDefinition', 'CreateServiceBinding'], note: 'EN: RAP service' },
@@ -84,91 +75,100 @@ const CASES: TestCase[] = [
   { query: 'run unit tests', expectAny: ['RunUnitTest', 'HandlerUnitTestRun'], note: 'EN: unit tests' },
 ];
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
 async function main() {
-  console.log('=== E2E RAG Search: TranslatePreprocessor + Ollama + RRF ===\n');
+  console.log('=== E2E RAG: baseline vs translate vs translate+intent ===\n');
 
-  // 1. Fetch MCP tools
-  console.log('Fetching MCP tools...');
   const tools = await fetchMcpTools();
-  console.log(`  ${tools.length} tools loaded\n`);
+  console.log(`${tools.length} MCP tools loaded`);
 
-  // 2. Create shared embedder + two RAG stores
-  const embedder = new OllamaEmbedder({
-    url: OLLAMA_URL,
-    model: 'nomic-embed-text',
-  });
+  const embedder = new OllamaEmbedder({ url: OLLAMA_URL, model: 'nomic-embed-text' });
   const helperLlm = makeDefaultLlm(DEEPSEEK_API_KEY!, 'deepseek-chat', 0.1);
 
+  // 3 RAG stores
+  const ragBaseline = new VectorRag(embedder, { strategy: new RrfStrategy() });
   const ragTranslate = new VectorRag(embedder, {
     strategy: new RrfStrategy(),
     queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
   });
-  const ragBaseline = new VectorRag(embedder, {
+  const ragIntent = new VectorRag(embedder, {
     strategy: new RrfStrategy(),
+    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+    documentEnrichers: [new IntentEnricher(helperLlm)],
   });
 
-  // 3. Index tools (shared embedder = same vectors, but separate stores)
-  console.log('Indexing tools...');
-  const start = Date.now();
+  // Index: baseline + translate share same vectors; intent gets enriched text
+  console.log('Indexing baseline + translate (shared vectors)...');
+  let t0 = Date.now();
+  for (const t of tools) {
+    const text = `${t.name}: ${t.description}`;
+    const { vector } = await embedder.embed(text);
+    await ragBaseline.upsertPrecomputed(text, vector, { id: `tool:${t.name}` });
+    await ragTranslate.upsertPrecomputed(text, vector, { id: `tool:${t.name}` });
+  }
+  console.log(`  Done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+
+  console.log('Indexing intent-enriched (LLM per tool)...');
+  t0 = Date.now();
+  const batchSize = 10;
+  const batchDelayMs = 1000;
   for (let i = 0; i < tools.length; i++) {
     const t = tools[i];
     const text = `${t.name}: ${t.description}`;
-    const meta = { id: `tool:${t.name}` };
-
-    // Only embed once — use upsertPrecomputed for second store
-    const { vector } = await embedder.embed(text);
-    await ragTranslate.upsertPrecomputed(text, vector, meta);
-    await ragBaseline.upsertPrecomputed(text, vector, meta);
-
-    if ((i + 1) % 50 === 0) process.stdout.write(`  ${i + 1}/${tools.length}\n`);
+    await ragIntent.upsert(text, { id: `tool:${t.name}` });
+    if ((i + 1) % batchSize === 0) {
+      process.stdout.write(`  ${i + 1}/${tools.length}\r`);
+      await new Promise((r) => setTimeout(r, batchDelayMs));
+    }
   }
-  console.log(`  Done: ${tools.length} tools in ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
+  console.log(`  Done: ${tools.length} tools in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
 
-  // 4. Run queries
-  let passT = 0;
-  let passB = 0;
+  // Run queries
+  const scores = { baseline: 0, translate: 0, intent: 0 };
 
   for (const tc of CASES) {
     const label = `[${tc.note}]`.padEnd(28);
-    process.stdout.write(`${label} "${tc.query}"\n`);
+    console.log(`${label} "${tc.query}"`);
 
-    const emb = new QueryEmbedding(tc.query, embedder);
-
-    const [rT, rB] = await Promise.all([
-      ragTranslate.query(emb, 5),
+    const [rB, rT, rI] = await Promise.all([
       ragBaseline.query(new QueryEmbedding(tc.query, embedder), 5),
+      ragTranslate.query(new QueryEmbedding(tc.query, embedder), 5),
+      ragIntent.query(new QueryEmbedding(tc.query, embedder), 5),
     ]);
 
-    const tRes = rT.ok ? rT.value : [];
-    const bRes = rB.ok ? rB.value : [];
+    const check = (res: typeof rB) => {
+      if (!res.ok) return { hit: false, ids: [] as string[] };
+      const ids = res.value.map((r) => (r.metadata.id as string).replace('tool:', ''));
+      return { hit: tc.expectAny.some((e) => ids.includes(e)), ids };
+    };
 
-    const tIds = tRes.map((r) => (r.metadata.id as string).replace('tool:', ''));
-    const bIds = bRes.map((r) => (r.metadata.id as string).replace('tool:', ''));
+    const fmt = (res: typeof rB) => {
+      if (!res.ok) return 'ERROR';
+      return res.value
+        .slice(0, 3)
+        .map((r) => `${(r.metadata.id as string).replace('tool:', '')}(${r.score.toFixed(3)})`)
+        .join(', ');
+    };
 
-    const tHit = tc.expectAny.some((e) => tIds.includes(e));
-    const bHit = tc.expectAny.some((e) => bIds.includes(e));
+    const b = check(rB);
+    const t = check(rT);
+    const i = check(rI);
 
-    if (tHit) passT++;
-    if (bHit) passB++;
+    if (b.hit) scores.baseline++;
+    if (t.hit) scores.translate++;
+    if (i.hit) scores.intent++;
 
-    const fmt = (ids: string[], scores: typeof tRes) =>
-      ids.slice(0, 3).map((id, i) => `${id}(${scores[i]?.score.toFixed(3)})`).join(', ');
-
-    console.log(`  translate ${tHit ? '✓' : '✗'}: [${fmt(tIds, tRes)}]`);
-    console.log(`  baseline  ${bHit ? '✓' : '✗'}: [${fmt(bIds, bRes)}]`);
+    console.log(`  baseline  ${b.hit ? '✓' : '✗'}: [${fmt(rB)}]`);
+    console.log(`  translate ${t.hit ? '✓' : '✗'}: [${fmt(rT)}]`);
+    console.log(`  intent    ${i.hit ? '✓' : '✗'}: [${fmt(rI)}]`);
     console.log();
   }
 
-  // Summary
-  console.log('='.repeat(60));
-  console.log(`  With TranslatePreprocessor: ${passT}/${CASES.length} (${((passT / CASES.length) * 100).toFixed(0)}%)`);
-  console.log(`  Baseline (no translation):  ${passB}/${CASES.length} (${((passB / CASES.length) * 100).toFixed(0)}%)`);
-  console.log(`  Improvement:                +${passT - passB} queries`);
-  console.log('='.repeat(60));
+  const total = CASES.length;
+  console.log('='.repeat(65));
+  console.log(`  Baseline (no preprocess):    ${scores.baseline}/${total} (${((scores.baseline / total) * 100).toFixed(0)}%)`);
+  console.log(`  + TranslatePreprocessor:     ${scores.translate}/${total} (${((scores.translate / total) * 100).toFixed(0)}%)`);
+  console.log(`  + Translate + IntentEnricher: ${scores.intent}/${total} (${((scores.intent / total) * 100).toFixed(0)}%)`);
+  console.log('='.repeat(65));
 }
 
 main().catch((err) => {

@@ -161,6 +161,84 @@ export class ExpandPreprocessor implements IQueryPreprocessor {
   }
 }
 
+const INTENT_ENRICHER_SYSTEM_PROMPT = `You receive a tool description with its name and parameters.
+Extract the core INTENT in 3-5 short keyword phrases that a user would type when needing this tool.
+Focus on WHAT the tool does, not HOW. Use simple action words.
+
+Format: return ONLY the keyword phrases separated by commas, no explanation.
+
+Examples:
+- Input: "GetTableContents: Retrieve contents (data preview) of an ABAP database table or CDS view. Returns rows of data like SE16/SE16N."
+  Output: table data preview, read table contents, SE16 data, select from table, show table rows
+
+- Input: "SearchObject: Find, search, locate, or check if an ABAP repository object exists by name or wildcard pattern."
+  Output: search object by name, find ABAP object, locate program class table, does object exist, wildcard search
+
+- Input: "GetWhereUsed: Find where-used references for ABAP objects — classes, interfaces, function modules."
+  Output: where used references, who uses this object, cross references, find usages, show dependencies`;
+
+/**
+ * Generates concise intent-based descriptions via LLM.
+ * Replaces verbose tool descriptions with short keyword phrases
+ * that match how users actually search.
+ *
+ * Output format: "ToolName: original_description\nIntent: keyword1, keyword2, ..."
+ * Both original and intent are stored — BM25 matches keywords, vector matches semantics.
+ */
+export class IntentEnricher implements IDocumentEnricher {
+  readonly name = 'intent';
+
+  constructor(
+    private readonly llm: ILlm,
+    private readonly requestLogger?: IRequestLogger,
+    private readonly systemPrompt?: string,
+  ) {}
+
+  async enrich(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>> {
+    try {
+      const chatStart = Date.now();
+      const res = await this.llm.chat(
+        [
+          {
+            role: 'system' as const,
+            content: this.systemPrompt ?? INTENT_ENRICHER_SYSTEM_PROMPT,
+          },
+          { role: 'user' as const, content: text },
+        ],
+        [],
+        options,
+      );
+      if (this.requestLogger) {
+        this.requestLogger.logLlmCall({
+          component: 'helper',
+          model: this.llm.model ?? 'unknown',
+          promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+          completionTokens: res.ok
+            ? (res.value.usage?.completionTokens ?? 0)
+            : 0,
+          totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+          durationMs: Date.now() - chatStart,
+        });
+      }
+
+      if (!res.ok || !res.value.content.trim()) {
+        return { ok: true, value: text };
+      }
+
+      // Append intent keywords to original text — both get embedded together
+      return {
+        ok: true,
+        value: `${text}\nIntent: ${res.value.content.trim()}`,
+      };
+    } catch {
+      return { ok: true, value: text };
+    }
+  }
+}
+
 /**
  * Runs multiple preprocessors in sequence.
  * Output of each becomes input of the next.
