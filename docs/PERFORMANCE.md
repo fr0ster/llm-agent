@@ -55,6 +55,121 @@ rag:
 - **Lower (0.85–0.90):** Aggressively deduplicates, smaller index, faster queries.
 - Applied during `upsert()` — if a new document is >= threshold similar to an existing one, it is skipped.
 
+## Search Strategies
+
+`VectorRag` delegates scoring to a pluggable `ISearchStrategy`. The strategy receives query + candidates and returns scored results. Choose one, or combine with `CompositeStrategy`.
+
+### Built-in strategies
+
+| Strategy | Description | Best for |
+|----------|-------------|----------|
+| `WeightedFusionStrategy` | `score = vectorScore × w1 + bm25Score × w2` (default 0.7/0.3) | General-purpose, configurable weights |
+| `RrfStrategy` | Reciprocal Rank Fusion — rank-based, magnitude-independent | Stable ranking when score distributions differ |
+| `VectorOnlyStrategy` | Pure cosine similarity | When BM25 tokenization doesn't match the domain |
+| `Bm25OnlyStrategy` | Pure BM25 keyword matching | Exact terms, no embedder available |
+| `CompositeStrategy` | Weighted RRF across multiple child strategies | Combining approaches with different weights |
+
+### Configuration
+
+```typescript
+import { VectorRag, RrfStrategy, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
+
+// Single strategy
+const rag = new VectorRag(embedder, { strategy: new RrfStrategy() });
+
+// Composite — consumer controls weights
+const rag = new VectorRag(embedder, {
+  strategy: new CompositeStrategy([
+    { strategy: new RrfStrategy(), weight: 1.0 },
+    { strategy: new VectorOnlyStrategy(), weight: 0.7 },
+    { strategy: new Bm25OnlyStrategy(), weight: 0.3 },
+  ]),
+});
+```
+
+### Benchmarks (159 ABAP MCP tools, Ollama nomic-embed-text)
+
+| Strategy | MRR | Notes |
+|----------|-----|-------|
+| RRF | **0.865** | Best overall |
+| BM25-only | 0.808 | Strong on technical terms |
+| Weighted 0.7/0.3 | 0.788 | Default |
+| Vector-only | 0.712 | Baseline |
+
+## Query Preprocessors
+
+`IQueryPreprocessor` transforms query text before embedding. Configured per RAG store — each store can have its own preprocessing chain.
+
+### Built-in preprocessors
+
+| Preprocessor | Description | Cost |
+|-------------|-------------|------|
+| `TranslatePreprocessor` | Translates non-ASCII queries to English via LLM | 1 LLM call per non-ASCII query |
+| `ExpandPreprocessor` | Adds LLM-generated synonyms to query | 1 LLM call per query |
+| `PreprocessorChain` | Composes multiple preprocessors in sequence | Sum of child costs |
+
+### Configuration
+
+```typescript
+import { VectorRag, RrfStrategy, TranslatePreprocessor, PreprocessorChain, ExpandPreprocessor } from '@mcp-abap-adt/llm-agent';
+
+// Translate only (recommended for multilingual)
+const rag = new VectorRag(embedder, {
+  strategy: new RrfStrategy(),
+  queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+});
+
+// Chain: translate → expand
+const rag = new VectorRag(embedder, {
+  queryPreprocessors: [
+    new TranslatePreprocessor(helperLlm),
+    new ExpandPreprocessor(helperLlm),
+  ],
+});
+```
+
+### Benchmarks (159 ABAP MCP tools, Ukrainian + English queries)
+
+| Approach | Hit rate (top-5) |
+|----------|-----------------|
+| No preprocessing | 44% (7/16) |
+| **TranslatePreprocessor** | **94% (15/16)** |
+| Translate + IntentEnricher (dual index) | 88% (14/16) |
+
+`TranslatePreprocessor` alone gives the best cost/quality ratio. Dual indexing adds noise that can hurt RRF ranking.
+
+## Tool Indexing Strategies
+
+`IToolIndexingStrategy` generates text variants for tool descriptions at indexing time. The builder indexes tools into the RAG store — strategies control what text gets embedded.
+
+### Built-in strategies
+
+| Strategy | Description | Cost |
+|----------|-------------|------|
+| `OriginalToolIndexing` | Raw `"name: description"` (default) | Free |
+| `SynonymToolIndexing` | Adds action verb synonyms (Read→Show/Display/View) | Free (deterministic) |
+| `IntentToolIndexing` | LLM generates concise intent keywords | 1 LLM call per tool |
+
+### Dual/multi indexing
+
+Index each tool multiple times with different representations. Use distinct IDs to avoid dedup:
+
+```typescript
+const original = new OriginalToolIndexing();
+const synonym = new SynonymToolIndexing();
+
+for (const tool of tools) {
+  const entries = [
+    ...(await original.prepare(tool)),
+    ...(await synonym.prepare(tool)),
+  ];
+  for (const entry of entries) {
+    await rag.upsert(entry.text, { id: entry.id });
+  }
+}
+// Result: tool:ReadClass (original) + tool:ReadClass:synonym (synonyms)
+```
+
 ## BM25 Index
 
 ### How InvertedIndex works
@@ -180,24 +295,18 @@ agent:
 
 Set to `0` to disable caching entirely. The cache uses SHA-256 hashing of `(toolName, JSON.stringify(args))` for keys.
 
-## Query Expansion
+## Query Expansion (Legacy)
 
 ### queryExpansionEnabled
 
-Before RAG query, optionally expand the user query with synonyms and related terms via the helper LLM:
+Pipeline-level query expansion via the helper LLM. Superseded by `ExpandPreprocessor` (configured per RAG store), but still available for backward compatibility.
 
 ```yaml
 agent:
   queryExpansionEnabled: false   # Default: false
 ```
 
-**When to enable:**
-
-- Users phrase queries differently from how tools/facts are described.
-- Domain-specific terminology has multiple synonyms.
-- Recall is more important than latency.
-
-**Trade-off:** Adds ~1 extra LLM call per pipeline invocation. Skip for latency-sensitive use cases where queries closely match indexed content.
+**Prefer `ExpandPreprocessor`** for new code — it's per-store, composable with `TranslatePreprocessor`, and configured declaratively via `VectorRagConfig.queryPreprocessors`.
 
 ## Circuit Breaker
 
@@ -239,10 +348,21 @@ When the embedder circuit opens, RAG stores automatically fall back to `InMemory
 Run the golden corpus evaluation to measure retrieval quality:
 
 ```bash
-npm run test:rag-eval
+npm run test:rag-eval    # Golden corpus (16 entries, 8 queries, all strategies)
+npm run test:mcp-eval    # MCP tools benchmark (40 tools, 15+ queries, all strategies)
 ```
 
-Metrics: MRR (Mean Reciprocal Rank), precision@1, recall@k across 16 corpus entries and 8 golden queries.
+Metrics: MRR (Mean Reciprocal Rank), precision@1, recall@k.
+
+### E2E search benchmark
+
+Test with real LLM translation + real embeddings against live MCP server:
+
+```bash
+node --import tsx/esm scripts/e2e-rag-search.ts
+```
+
+Requires: DeepSeek API key, Ollama with `nomic-embed-text`, MCP server on localhost:3001.
 
 ### Classifier benchmark
 

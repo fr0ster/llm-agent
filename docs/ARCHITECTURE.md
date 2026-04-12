@@ -275,14 +275,32 @@ Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`) are defi
 
 Core contracts:
 - `src/smart-agent/interfaces/rag.ts` — `IEmbedder`, `IRag`, `EmbedderFactory`
+- `src/smart-agent/rag/search-strategy.ts` — `ISearchStrategy` (pluggable scoring algorithms)
+- `src/smart-agent/rag/preprocessor.ts` — `IQueryPreprocessor`, `IDocumentEnricher` (query/document transformation)
+- `src/smart-agent/rag/tool-indexing-strategy.ts` — `IToolIndexingStrategy` (tool description variants for indexing)
 
-Implementations:
-- `src/smart-agent/rag/vector-rag.ts`
-- `src/smart-agent/rag/in-memory-rag.ts`
-- `src/smart-agent/rag/ollama-rag.ts`
-- `src/smart-agent/rag/openai-embedder.ts`
-- `src/smart-agent/rag/qdrant-rag.ts`
-- `src/smart-agent/rag/embedder-factories.ts` — built-in embedder factories (`ollama`, `openai`)
+RAG store implementations:
+- `src/smart-agent/rag/vector-rag.ts` — hybrid search (vector + BM25), accepts strategy/preprocessors
+- `src/smart-agent/rag/in-memory-rag.ts` — text-only (token frequency), accepts preprocessors
+- `src/smart-agent/rag/ollama-rag.ts` — VectorRag + Ollama embedder convenience wrapper
+- `src/smart-agent/rag/qdrant-rag.ts` — external Qdrant vector database
+- `src/smart-agent/rag/openai-embedder.ts`, `src/smart-agent/rag/embedder-factories.ts`
+
+Search strategies (`ISearchStrategy`):
+- `WeightedFusionStrategy` — weighted sum of vector + BM25 scores (default)
+- `RrfStrategy` — Reciprocal Rank Fusion (rank-based, score-magnitude-independent)
+- `VectorOnlyStrategy`, `Bm25OnlyStrategy` — single-method baselines
+- `CompositeStrategy` — combines multiple child strategies via weighted RRF
+
+Query preprocessors (`IQueryPreprocessor`):
+- `TranslatePreprocessor` — LLM-based query translation to English
+- `ExpandPreprocessor` — LLM-based synonym expansion
+- `PreprocessorChain` — sequential composition
+
+Tool indexing strategies (`IToolIndexingStrategy`):
+- `OriginalToolIndexing` — raw description (default)
+- `IntentToolIndexing` — LLM-generated intent keywords
+- `SynonymToolIndexing` — deterministic action verb synonyms
 
 Embedders are injectable via DI:
 - Programmatic: `SmartServer({ embedder: myEmbedder })`
