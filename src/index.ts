@@ -261,6 +261,7 @@ export type {
 } from './smart-agent/rag/preprocessor.js';
 export {
   ExpandPreprocessor,
+  IntentEnricher,
   NoopDocumentEnricher,
   NoopQueryPreprocessor,
   PreprocessorChain,

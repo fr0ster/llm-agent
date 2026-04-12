@@ -8,6 +8,7 @@ export { OpenAiEmbedder } from './openai-embedder.js';
 export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 export {
   ExpandPreprocessor,
+  IntentEnricher,
   NoopDocumentEnricher,
   NoopQueryPreprocessor,
   PreprocessorChain,
