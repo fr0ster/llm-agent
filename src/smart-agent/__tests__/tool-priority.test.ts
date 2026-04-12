@@ -53,12 +53,59 @@ describe('External tools — [client-provided] description prefix', () => {
     const first = normalizeExternalTools([
       { name: 'tool', description: 'desc', inputSchema: { type: 'object' } },
     ]);
+    assert.equal(first[0].description, '[client-provided] desc');
     // SmartServer normalizes once, then streamProcess normalizes again
     const second = normalizeExternalTools(first);
-    // First normalization: "[client-provided] desc"
-    // Second: picks up name directly, re-prefixes description
-    // This is acceptable — the prefix appears in the description field
-    assert.ok(second[0].description.includes('[client-provided]'));
+    assert.equal(second.length, 1);
+    assert.equal(
+      second[0].description,
+      '[client-provided] desc',
+      'second normalization must not add another prefix',
+    );
+  });
+
+  it('preserves all fields on re-normalization', () => {
+    const schema = { type: 'object', properties: { path: { type: 'string' } } };
+    const first = normalizeExternalTools([
+      {
+        name: 'GenerateFile',
+        description: 'Generate a file',
+        inputSchema: schema,
+      },
+    ]);
+    const second = normalizeExternalTools(first);
+    assert.equal(second[0].name, 'GenerateFile');
+    assert.equal(second[0].description, '[client-provided] Generate a file');
+    assert.deepEqual(second[0].inputSchema, schema);
+  });
+
+  it('re-normalization of OpenAI function format is idempotent', () => {
+    const first = normalizeExternalTools([
+      {
+        type: 'function',
+        function: {
+          name: 'RunQuery',
+          description: 'Execute a query',
+          parameters: { type: 'object' },
+        },
+      },
+    ]);
+    const second = normalizeExternalTools(first);
+    const third = normalizeExternalTools(second);
+    assert.equal(first[0].description, '[client-provided] Execute a query');
+    assert.equal(second[0].description, first[0].description);
+    assert.equal(third[0].description, first[0].description);
+  });
+
+  it('still normalizes tools without [client-provided] prefix', () => {
+    const tools = normalizeExternalTools([
+      {
+        name: 'fresh_tool',
+        description: 'Brand new',
+        inputSchema: { type: 'object' },
+      },
+    ]);
+    assert.equal(tools[0].description, '[client-provided] Brand new');
   });
 });
 

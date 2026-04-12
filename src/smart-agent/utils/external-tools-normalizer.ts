@@ -41,6 +41,17 @@ function validateDescription(
   };
 }
 
+export const CLIENT_PROVIDED_PREFIX = '[client-provided] ';
+
+function isAlreadyNormalized(raw: Record<string, unknown>): boolean {
+  return (
+    typeof raw.name === 'string' &&
+    raw.name.length > 0 &&
+    typeof raw.description === 'string' &&
+    raw.description.startsWith(CLIENT_PROVIDED_PREFIX)
+  );
+}
+
 function normalizeExternalTool(
   raw: unknown,
   toolIndex: number,
@@ -55,6 +66,11 @@ function normalizeExternalTool(
         toolIndex,
       },
     };
+  }
+
+  // Idempotent: already-normalized LlmTool passes through unchanged
+  if (isAlreadyNormalized(raw)) {
+    return { tool: raw as unknown as LlmTool, error: null };
   }
 
   const directDescriptionError = validateDescription(
@@ -80,7 +96,7 @@ function normalizeExternalTool(
     return {
       tool: {
         name,
-        description: `[client-provided] ${asString(raw.description) ?? ''}`,
+        description: `${CLIENT_PROVIDED_PREFIX}${asString(raw.description) ?? ''}`,
         inputSchema: asSchema(raw.inputSchema),
       },
       error: null,
@@ -147,7 +163,7 @@ function normalizeExternalTool(
   return {
     tool: {
       name: functionName,
-      description: `[client-provided] ${asString(fn?.description) ?? ''}`,
+      description: `${CLIENT_PROVIDED_PREFIX}${asString(fn?.description) ?? ''}`,
       inputSchema: asSchema(fn?.parameters),
     },
     error: null,
