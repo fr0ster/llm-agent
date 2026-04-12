@@ -27,6 +27,7 @@ import type {
   CallOptions,
   IPipeline,
   LlmStreamChunk,
+  LlmTool,
   PipelineDeps,
   PipelineResult,
   Result,
@@ -126,10 +127,17 @@ export class DefaultPipeline implements IPipeline {
     history: Message[],
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
+    externalTools?: LlmTool[],
   ): Promise<PipelineResult> {
     const rootSpan = this.resolvedTracer.startSpan('pipeline.execute');
 
-    const ctx = this._buildContext(input, history, options, yieldChunk);
+    const ctx = this._buildContext(
+      input,
+      history,
+      options,
+      yieldChunk,
+      externalTools,
+    );
 
     try {
       await this.executor.executeStages(this.stages, ctx, rootSpan);
@@ -221,6 +229,7 @@ export class DefaultPipeline implements IPipeline {
     history: Message[],
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
+    externalTools?: LlmTool[],
   ): PipelineContext {
     const text =
       typeof input === 'string'
@@ -279,7 +288,7 @@ export class DefaultPipeline implements IPipeline {
       ),
       mcpTools: [],
       selectedTools: [],
-      externalTools: [],
+      externalTools: externalTools ?? [],
       assembledMessages: [],
       activeTools: [],
       selectedSkills: [],

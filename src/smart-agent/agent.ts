@@ -1891,7 +1891,7 @@ export class SmartAgent {
 
   private async *_runStructuredPipeline(
     textOrMessages: string | Message[],
-    _externalTools: LlmTool[],
+    externalTools: LlmTool[],
     opts: CallOptions | undefined,
     _parentSpan: ISpan,
     _sessionId: string,
@@ -1905,13 +1905,19 @@ export class SmartAgent {
     let done = false;
 
     const executorPromise = this.deps.pipeline
-      .execute(textOrMessages, history, opts, (chunk) => {
-        chunkQueue.push(chunk);
-        if (resolveWait) {
-          resolveWait();
-          resolveWait = null;
-        }
-      })
+      .execute(
+        textOrMessages,
+        history,
+        opts,
+        (chunk) => {
+          chunkQueue.push(chunk);
+          if (resolveWait) {
+            resolveWait();
+            resolveWait = null;
+          }
+        },
+        externalTools,
+      )
       .then(() => {
         done = true;
         if (resolveWait) {
