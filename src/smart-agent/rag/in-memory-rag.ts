@@ -8,6 +8,7 @@ import type {
   Result,
 } from '../interfaces/types.js';
 import { RagError } from '../interfaces/types.js';
+import type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 
 // ---------------------------------------------------------------------------
 // Private helpers
@@ -52,6 +53,10 @@ export interface InMemoryRagConfig {
   dedupThreshold?: number;
   /** Namespace for this store. Records with different namespace are invisible to query. */
   namespace?: string;
+  /** Query preprocessors (translate, expand, etc.). Applied in order before embedding. */
+  queryPreprocessors?: IQueryPreprocessor[];
+  /** Document enrichers. Applied in order before embedding on upsert. */
+  documentEnrichers?: IDocumentEnricher[];
 }
 
 // ---------------------------------------------------------------------------
@@ -73,10 +78,14 @@ export class InMemoryRag implements IRag {
   private records: StoredRecord[] = [];
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
+  private readonly queryPreprocessors: IQueryPreprocessor[];
+  private readonly documentEnrichers: IDocumentEnricher[];
 
   constructor(config?: InMemoryRagConfig) {
     this.dedupThreshold = config?.dedupThreshold ?? 0.92;
     this.namespace = config?.namespace;
+    this.queryPreprocessors = config?.queryPreprocessors ?? [];
+    this.documentEnrichers = config?.documentEnrichers ?? [];
   }
 
   async upsert(
@@ -88,7 +97,13 @@ export class InMemoryRag implements IRag {
       return { ok: false, error: new RagError('Aborted', 'ABORTED') };
     }
 
-    const embedding = embed(text);
+    let enrichedText = text;
+    for (const enricher of this.documentEnrichers) {
+      const eResult = await enricher.enrich(enrichedText, options);
+      if (eResult.ok) enrichedText = eResult.value;
+    }
+
+    const embedding = embed(enrichedText);
     const effectiveNamespace = metadata.namespace ?? this.namespace;
     const resolvedMetadata: RagMetadata = {
       ...metadata,
@@ -99,7 +114,7 @@ export class InMemoryRag implements IRag {
     if (metadata.id) {
       const idx = this.records.findIndex((r) => r.metadata.id === metadata.id);
       if (idx !== -1) {
-        this.records[idx].text = text;
+        this.records[idx].text = enrichedText;
         this.records[idx].embedding = embedding;
         this.records[idx].metadata = {
           ...this.records[idx].metadata,
@@ -126,14 +141,14 @@ export class InMemoryRag implements IRag {
 
     if (dupRecord !== undefined) {
       // Update existing record
-      dupRecord.text = text;
+      dupRecord.text = enrichedText;
       dupRecord.embedding = embedding;
       dupRecord.metadata = { ...dupRecord.metadata, ...resolvedMetadata };
     } else {
       // Push new record
       this.records.push({
         id: randomUUID(),
-        text,
+        text: enrichedText,
         embedding,
         metadata: resolvedMetadata,
       });
@@ -152,7 +167,12 @@ export class InMemoryRag implements IRag {
     }
 
     const text = embedding.text;
-    const queryEmbedding = embed(text);
+    let searchText = text;
+    for (const pp of this.queryPreprocessors) {
+      const ppResult = await pp.process(searchText, options);
+      if (ppResult.ok) searchText = ppResult.value;
+    }
+    const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;
 
     // Filter: namespace match + TTL not expired
