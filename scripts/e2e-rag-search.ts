@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
- * E2E RAG search test: DeepSeek LLM + Ollama embeddings + MCP tools.
- * Tests the LEGACY pipeline (agent.ts hardcoded flow), not DefaultPipeline.
+ * E2E RAG search: TranslatePreprocessor + Ollama embeddings + RRF.
+ * Direct RAG test — no agent pipeline, no MCP client wrapper.
  *
  * Run:
  *   node --import tsx/esm scripts/e2e-rag-search.ts
@@ -10,9 +10,11 @@
 import { configDotenv } from 'dotenv';
 configDotenv();
 
-import { SmartAgentBuilder } from '../src/smart-agent/builder.js';
-import { OllamaEmbedder, OllamaRag } from '../src/smart-agent/rag/ollama-rag.js';
+import { OllamaEmbedder } from '../src/smart-agent/rag/ollama-rag.js';
+import { VectorRag } from '../src/smart-agent/rag/vector-rag.js';
 import { RrfStrategy } from '../src/smart-agent/rag/search-strategy.js';
+import { TranslatePreprocessor } from '../src/smart-agent/rag/preprocessor.js';
+import { QueryEmbedding } from '../src/smart-agent/rag/query-embedding.js';
 import { makeDefaultLlm } from '../src/smart-agent/providers.js';
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
@@ -24,6 +26,36 @@ if (!DEEPSEEK_API_KEY) {
 const MCP_URL = 'http://localhost:3001/mcp/stream/http';
 const OLLAMA_URL = 'http://localhost:11434';
 
+// ---------------------------------------------------------------------------
+// Fetch tools from MCP directly via HTTP
+// ---------------------------------------------------------------------------
+
+async function fetchMcpTools(): Promise<
+  Array<{ name: string; description: string }>
+> {
+  const res = await fetch(MCP_URL, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json, text/event-stream',
+    },
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    }),
+  });
+  const json = (await res.json()) as {
+    result: { tools: Array<{ name: string; description: string }> };
+  };
+  return json.result.tools;
+}
+
+// ---------------------------------------------------------------------------
+// Test cases
+// ---------------------------------------------------------------------------
+
 interface TestCase {
   query: string;
   expectAny: string[];
@@ -31,127 +63,112 @@ interface TestCase {
 }
 
 const CASES: TestCase[] = [
-  {
-    query: 'Прочитай дампи через фіди',
-    expectAny: ['RuntimeListFeeds', 'RuntimeListDumps', 'RuntimeGetDumpById'],
-    note: 'UA: dumps via feeds',
-  },
-  {
-    query: 'Які фіди можемо прочитати?',
-    expectAny: ['RuntimeListFeeds', 'HandlerFeedList'],
-    note: 'UA: available feeds',
-  },
-  {
-    query: 'Покажи код класу ZCL_MY_APP',
-    expectAny: ['ReadClass', 'GetClass'],
-    note: 'UA: class source',
-  },
-  {
-    query: 'Запусти юніт тести для класу',
-    expectAny: ['RunUnitTest', 'CreateUnitTest', 'HandlerUnitTestRun'],
-    note: 'UA: unit tests',
-  },
-  {
-    query: 'SM02 system messages',
-    expectAny: ['RuntimeListSystemMessages'],
-    note: 'SAP t-code',
-  },
+  // Ukrainian — need translation
+  { query: 'Прочитай дампи через фіди', expectAny: ['RuntimeListFeeds', 'RuntimeListDumps'], note: 'UA: dumps via feeds' },
+  { query: 'Прочитай структуру таблиці T100', expectAny: ['ReadTable', 'GetTable', 'GetTableContents'], note: 'UA: table structure' },
+  { query: 'Які фіди можемо прочитати?', expectAny: ['RuntimeListFeeds', 'HandlerFeedList'], note: 'UA: available feeds' },
+  { query: 'Покажи код класу ZCL_MY_APP', expectAny: ['ReadClass', 'GetClass'], note: 'UA: class source' },
+  { query: 'Де використовується інтерфейс IF_LOGGER', expectAny: ['GetWhereUsed'], note: 'UA: where-used' },
+  { query: 'Запусти юніт тести для класу', expectAny: ['RunUnitTest', 'CreateUnitTest', 'HandlerUnitTestRun'], note: 'UA: unit tests' },
+  { query: 'Знайди обʼєкт ZTEST_PROGRAM', expectAny: ['SearchObject'], note: 'UA: find object' },
+  { query: 'Які дампи були сьогодні?', expectAny: ['RuntimeListDumps'], note: 'UA: today dumps' },
+  { query: 'Створи нову CDS вʼюху', expectAny: ['CreateView'], note: 'UA: create CDS view' },
+  { query: 'Перевір синтаксис програми', expectAny: ['HandlerCheckRun'], note: 'UA: syntax check' },
+  { query: 'Прочитай клас ZCL_ORDER і покажи його транспорти', expectAny: ['ReadClass', 'GetClass', 'ListTransports', 'GetTransport'], note: 'UA: multi-step' },
+
+  // English — should work without translation
+  { query: 'SM02 system messages', expectAny: ['RuntimeListSystemMessages', 'HandlerSystemMessageList'], note: 'EN: SAP t-code' },
+  { query: 'get table data like SE16', expectAny: ['GetTableContents'], note: 'EN: data preview' },
+  { query: 'expose CDS view as OData service', expectAny: ['CreateServiceDefinition', 'CreateServiceBinding'], note: 'EN: RAP service' },
+  { query: 'find where class ZCL_UTILS is used', expectAny: ['GetWhereUsed'], note: 'EN: where-used' },
+  { query: 'run unit tests', expectAny: ['RunUnitTest', 'HandlerUnitTestRun'], note: 'EN: unit tests' },
 ];
 
-async function main() {
-  console.log('Building: DeepSeek + Ollama embeddings + MCP ...\n');
+// ---------------------------------------------------------------------------
+// Main
+// ---------------------------------------------------------------------------
 
-  const mainLlm = makeDefaultLlm(DEEPSEEK_API_KEY!, 'deepseek-chat', 0.3);
+async function main() {
+  console.log('=== E2E RAG Search: TranslatePreprocessor + Ollama + RRF ===\n');
+
+  // 1. Fetch MCP tools
+  console.log('Fetching MCP tools...');
+  const tools = await fetchMcpTools();
+  console.log(`  ${tools.length} tools loaded\n`);
+
+  // 2. Create shared embedder + two RAG stores
+  const embedder = new OllamaEmbedder({
+    url: OLLAMA_URL,
+    model: 'nomic-embed-text',
+  });
   const helperLlm = makeDefaultLlm(DEEPSEEK_API_KEY!, 'deepseek-chat', 0.1);
 
-  const embedder = new OllamaEmbedder({ url: OLLAMA_URL, model: 'nomic-embed-text' });
-  const toolsRag = new OllamaRag({
-    ollamaUrl: OLLAMA_URL,
-    model: 'nomic-embed-text',
+  const ragTranslate = new VectorRag(embedder, {
+    strategy: new RrfStrategy(),
+    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+  });
+  const ragBaseline = new VectorRag(embedder, {
     strategy: new RrfStrategy(),
   });
 
-  const handle = await new SmartAgentBuilder({
-    mcp: { type: 'http', url: MCP_URL },
-    agent: {
-      ragQueryK: 10,
-      maxIterations: 1,
-      classificationEnabled: false,
-    },
-  })
-    .withMainLlm(mainLlm)
-    .withHelperLlm(helperLlm)
-    .withEmbedder(embedder)
-    .setToolsRag(toolsRag)
-    .build();
+  // 3. Index tools (shared embedder = same vectors, but separate stores)
+  console.log('Indexing tools...');
+  const start = Date.now();
+  for (let i = 0; i < tools.length; i++) {
+    const t = tools[i];
+    const text = `${t.name}: ${t.description}`;
+    const meta = { id: `tool:${t.name}` };
 
-  const agent = handle.agent;
-  console.log('Agent ready.\n');
+    // Only embed once — use upsertPrecomputed for second store
+    const { vector } = await embedder.embed(text);
+    await ragTranslate.upsertPrecomputed(text, vector, meta);
+    await ragBaseline.upsertPrecomputed(text, vector, meta);
 
-  let passed = 0;
-  let failed = 0;
+    if ((i + 1) % 50 === 0) process.stdout.write(`  ${i + 1}/${tools.length}\n`);
+  }
+  console.log(`  Done: ${tools.length} tools in ${((Date.now() - start) / 1000).toFixed(1)}s\n`);
+
+  // 4. Run queries
+  let passT = 0;
+  let passB = 0;
 
   for (const tc of CASES) {
-    const label = `[${tc.note}]`;
-    process.stdout.write(`${label.padEnd(30)} "${tc.query}" ...\n`);
+    const label = `[${tc.note}]`.padEnd(28);
+    process.stdout.write(`${label} "${tc.query}"\n`);
 
-    try {
-      const logSteps: { name: string; data: unknown }[] = [];
-      const result = await agent.process(tc.query, {
-        sessionLogger: {
-          logStep(name: string, data: unknown) {
-            logSteps.push({ name, data });
-          },
-        },
-      });
+    const emb = new QueryEmbedding(tc.query, embedder);
 
-      // Show pipeline trace
-      for (const step of logSteps) {
-        if (
-          step.name.startsWith('rag_query') ||
-          step.name === 'classification_skipped' ||
-          step.name === 'classifier_response' ||
-          step.name === 'tool_select'
-        ) {
-          const d = step.data as Record<string, unknown>;
-          if (step.name.startsWith('rag_query')) {
-            const results = (d.results as Array<{ id?: string; score?: number }>) || [];
-            const top3 = results.slice(0, 3).map((r) => `${(r.id || '?').toString().replace('tool:', '')}(${(r.score || 0).toFixed(3)})`);
-            console.log(`  ${step.name}: query="${(d.query as string || '').slice(0, 60)}" → [${top3.join(', ')}]`);
-          } else {
-            console.log(`  ${step.name}: ${JSON.stringify(d).slice(0, 200)}`);
-          }
-        }
-      }
+    const [rT, rB] = await Promise.all([
+      ragTranslate.query(emb, 5),
+      ragBaseline.query(new QueryEmbedding(tc.query, embedder), 5),
+    ]);
 
-      // Check
-      const rawStr = JSON.stringify(result.raw || {}).toLowerCase();
-      const msgStr = (result.message || '').toLowerCase();
-      const combined = rawStr + ' ' + msgStr;
+    const tRes = rT.ok ? rT.value : [];
+    const bRes = rB.ok ? rB.value : [];
 
-      const found = tc.expectAny.filter((t) => combined.includes(t.toLowerCase()));
+    const tIds = tRes.map((r) => (r.metadata.id as string).replace('tool:', ''));
+    const bIds = bRes.map((r) => (r.metadata.id as string).replace('tool:', ''));
 
-      if (found.length > 0) {
-        console.log(`  → ✓ found: [${found.join(', ')}]\n`);
-        passed++;
-      } else {
-        console.log(`  → ✗ expected: [${tc.expectAny.join(', ')}]`);
-        console.log(`  llm: ${(result.message || '').slice(0, 120)}\n`);
-        failed++;
-      }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.log(`  → ✗ ERROR: ${msg.slice(0, 120)}\n`);
-      failed++;
-    }
+    const tHit = tc.expectAny.some((e) => tIds.includes(e));
+    const bHit = tc.expectAny.some((e) => bIds.includes(e));
+
+    if (tHit) passT++;
+    if (bHit) passB++;
+
+    const fmt = (ids: string[], scores: typeof tRes) =>
+      ids.slice(0, 3).map((id, i) => `${id}(${scores[i]?.score.toFixed(3)})`).join(', ');
+
+    console.log(`  translate ${tHit ? '✓' : '✗'}: [${fmt(tIds, tRes)}]`);
+    console.log(`  baseline  ${bHit ? '✓' : '✗'}: [${fmt(bIds, bRes)}]`);
+    console.log();
   }
 
-  console.log(`${'='.repeat(60)}`);
-  console.log(`RESULTS: ${passed}/${CASES.length} passed, ${failed} failed`);
+  // Summary
   console.log('='.repeat(60));
-
-  await handle.close();
-  process.exit(failed > 0 ? 1 : 0);
+  console.log(`  With TranslatePreprocessor: ${passT}/${CASES.length} (${((passT / CASES.length) * 100).toFixed(0)}%)`);
+  console.log(`  Baseline (no translation):  ${passB}/${CASES.length} (${((passB / CASES.length) * 100).toFixed(0)}%)`);
+  console.log(`  Improvement:                +${passT - passB} queries`);
+  console.log('='.repeat(60));
 }
 
 main().catch((err) => {
