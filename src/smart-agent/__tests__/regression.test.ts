@@ -21,6 +21,7 @@ import {
   makeLlm,
   makeMcpClient,
   makeMetadataRag,
+  makeRag,
 } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
@@ -345,8 +346,10 @@ describe('helperLlm — RAG translation', () => {
           text: 'Покажи мне информацию о транзакции SE38',
         },
       ]),
+      ragStores: { tools: makeRag() },
     });
     deps.helperLlm = helperLlm;
+    deps.translateQueryStores = new Set(['tools']);
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
     const r = await agent.process('Покажи мне информацию о транзакции SE38');
     assert.ok(r.ok);
@@ -371,7 +374,9 @@ describe('helperLlm — RAG translation', () => {
         },
         { content: 'Here is the info', finishReason: 'stop' },
       ],
+      ragStores: { tools: makeRag() },
     });
+    deps.translateQueryStores = new Set(['tools']);
     const agent = new SmartAgent(deps, { ...DEFAULT_CONFIG, mode: 'hard' });
     const r = await agent.process('Покажи мне информацию о транзакции SE38');
     assert.ok(r.ok);
