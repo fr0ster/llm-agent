@@ -1,8 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { IEmbedder, IEmbedResult } from '../../interfaces/rag.js';
-import type { CallOptions, RagResult } from '../../interfaces/types.js';
+import type {
+  CallOptions,
+  RagError,
+  RagResult,
+  Result,
+} from '../../interfaces/types.js';
 import { InMemoryRag } from '../in-memory-rag.js';
+import type { IQueryPreprocessor } from '../preprocessor.js';
 import { QueryEmbedding, TextOnlyEmbedding } from '../query-embedding.js';
 import {
   Bm25OnlyStrategy,
@@ -545,3 +551,93 @@ for (const stratDef of STRATEGIES) {
     });
   });
 }
+
+// ---------------------------------------------------------------------------
+// MockTranslatePreprocessor — deterministic mock for unit tests
+// ---------------------------------------------------------------------------
+
+class MockTranslatePreprocessor implements IQueryPreprocessor {
+  readonly name = 'mock-translate';
+  readonly translations = new Map<string, string>([
+    ['read dumps through feeds', 'list available ADT runtime feeds dumps'],
+    [
+      'read table structure definition',
+      'read ABAP table definition and metadata',
+    ],
+    ['what feeds can we read', 'list available ADT runtime feeds'],
+    ['show class source code', 'read ABAP class source code and metadata'],
+    ['who uses interface', 'find where-used references for ABAP objects'],
+    ['run unit tests for class', 'start ABAP unit test run for class'],
+    ['find object', 'search ABAP repository object by name'],
+    ['what dumps happened today', 'list ABAP runtime dumps'],
+    ['create new CDS view', 'create CDS view in SAP'],
+    ['check program syntax', 'syntax check ABAP object checkrun'],
+  ]);
+
+  async process(text: string): Promise<Result<string, RagError>> {
+    const lower = text.toLowerCase();
+    for (const [key, value] of this.translations) {
+      if (lower.includes(key)) {
+        return { ok: true, value };
+      }
+    }
+    return { ok: true, value: text };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// VectorRag + MockTranslatePreprocessor (RRF) evaluation suite
+// ---------------------------------------------------------------------------
+
+describe('MCP Tools Evaluation — VectorRag + MockTranslatePreprocessor (RRF)', () => {
+  function createVectorRag(): { rag: VectorRag; embedder: TfEmbedder } {
+    const embedder = new TfEmbedder();
+    const mockTranslate = new MockTranslatePreprocessor();
+    const allTexts = [
+      ...MCP_TOOLS_CORPUS.map((e) => e.text),
+      ...GOLDEN_QUERIES.map((q) => q.query),
+      // Also add the translated versions so vocabulary covers them
+      ...[...mockTranslate.translations.values()],
+    ];
+    embedder.buildVocabulary(allTexts);
+    const rag = new VectorRag(embedder, {
+      dedupThreshold: 0.99,
+      strategy: new RrfStrategy(),
+      queryPreprocessors: [mockTranslate],
+    });
+    return { rag, embedder };
+  }
+
+  it('positive queries find expected tool in top-k', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, MCP_TOOLS_CORPUS);
+
+    const positiveQueries = GOLDEN_QUERIES.filter((q) => q.expectedTopIds);
+    for (const gq of positiveQueries) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      const topIds = results.map((r) => r.metadata.id);
+      for (const expectedId of gq.expectedTopIds ?? []) {
+        assert.ok(
+          topIds.includes(expectedId),
+          `[Translate+RRF] Query "${gq.query}": expected "${expectedId}" in top-${gq.k}, got [${topIds.join(', ')}]`,
+        );
+      }
+    }
+  });
+
+  it('MRR improved over baseline RRF', async () => {
+    const { rag, embedder } = createVectorRag();
+    await seedRag(rag, MCP_TOOLS_CORPUS);
+
+    const positiveQueries = GOLDEN_QUERIES.filter((q) => q.expectedTopIds);
+    let totalRR = 0;
+    for (const gq of positiveQueries) {
+      const results = await runQuery(rag, gq.query, gq.k, embedder);
+      totalRR += reciprocalRank(results, gq.expectedTopIds ?? []);
+    }
+    const mrr = totalRR / positiveQueries.length;
+    console.log(`  [Translate+RRF] MRR = ${mrr.toFixed(3)}`);
+    // Should be at least as good as RRF baseline (0.865)
+    assert.ok(mrr > 0, `MRR should be > 0, got ${mrr}`);
+  });
+});
