@@ -43,7 +43,7 @@ export class NoopDocumentEnricher implements IDocumentEnricher {
 }
 
 const TRANSLATE_SYSTEM_PROMPT =
-  'Translate the user request to English for search purposes. Preserve technical terms, object names, and abbreviations. Reply with only the English text, no explanation.';
+  'Translate the user request to English for tool search. Focus on the ACTION verb — use specific verbs (search, list, create, read, delete, execute, check) rather than generic ones (find, get, show). Preserve technical terms, object names, and abbreviations. Reply with only the English text, no explanation.';
 
 /**
  * Translates non-ASCII queries to English via helper LLM.
