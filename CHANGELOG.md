@@ -7,6 +7,48 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.0.2] — 2026-04-12
+
+### Fixed
+- **Idempotent external tools normalization** — `SmartServer._handleChat` normalizes `body.tools` once, then `SmartAgent.streamProcess` normalized them again, doubling the `[client-provided]` description prefix. `normalizeExternalTool` now detects already-normalized tools and returns them unchanged. Closes #91.
+
+### Added
+- **External tools diagnostic logging** — two new `sessionLogger` steps (`external_tools_normalized`, `external_tools_merge`) trace externalTools through the hardcoded flow. Enabled when `logDir` is configured.
+
+---
+
+## [8.0.0] — 2026-04-12
+
+### Added
+- **`ISearchStrategy` interface** — pluggable scoring strategies for RAG: `WeightedFusionStrategy`, `RrfStrategy`, `VectorOnlyStrategy`, `Bm25OnlyStrategy`, `CompositeStrategy`.
+- **`IQueryPreprocessor` / `IDocumentEnricher` interfaces** — `TranslatePreprocessor`, `ExpandPreprocessor`, `PreprocessorChain` for multilingual query preprocessing and LLM-based document enrichment.
+- **`IToolIndexingStrategy`** — `OriginalStrategy`, `IntentStrategy`, `SynonymStrategy` for tool index document generation.
+- **Per-store query translation** — `translateQueryStores` config for multilingual RAG search per store.
+
+### Changed
+- **Classifier disabled by default** in `DefaultPipeline`.
+
+### Fixed
+- **`ClassifyHandler`** populates `ragText` and `shouldRetrieve` from actions.
+
+---
+
+## [7.0.0] — 2026-04-11
+
+### Added
+- **`IEmbedder` returns `IEmbedResult`** with optional token usage tracking.
+- **Embedding token usage logging** in `RagQueryHandler`.
+- **`getEmbeddingModels()`** across all LLM providers, wired through `LlmAdapter` and REST endpoints.
+- **`IModelFilter`** and `excludeEmbedding` filter for model listing endpoints.
+- **`addRagStore()` / `removeRagStore()`** on `SmartAgent` for dynamic RAG store management.
+- **Custom RAG store support** in `IPipeline` and `DefaultPipeline`.
+
+### Fixed
+- **Session-scoped default history RAG** — prevent cross-session leaks.
+- **Removed dead tests** for removed RAG upsert flow.
+
+---
+
 ## [6.0.0] — 2026-04-09
 
 ### BREAKING CHANGES
