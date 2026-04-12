@@ -218,3 +218,80 @@ export class Bm25OnlyStrategy implements ISearchStrategy {
       .sort((a, b) => b.score - a.score);
   }
 }
+
+// ---------------------------------------------------------------------------
+// CompositeStrategy
+// ---------------------------------------------------------------------------
+
+export interface CompositeStrategyEntry {
+  strategy: ISearchStrategy;
+  weight: number;
+}
+
+/**
+ * Combines multiple strategies via weighted Reciprocal Rank Fusion.
+ *
+ * Each child strategy scores all candidates independently.
+ * Results are merged using: `score(doc) = Σ weight_i / (k + rank_i)`
+ *
+ * All child strategies run synchronously on the same candidates —
+ * no I/O, pure CPU, single event-loop tick.
+ */
+export class CompositeStrategy implements ISearchStrategy {
+  readonly name: string;
+  private readonly entries: CompositeStrategyEntry[];
+  private readonly k: number;
+
+  constructor(entries: CompositeStrategyEntry[], config?: { k?: number }) {
+    this.entries = entries;
+    this.k = config?.k ?? 60;
+    this.name = `composite(${entries.map((e) => e.strategy.name).join('+')})`;
+  }
+
+  score(
+    query: ISearchQuery,
+    candidates: ISearchCandidate[],
+    context: ISearchContext,
+  ): IScoredResult[] {
+    if (candidates.length === 0) return [];
+
+    // Run all strategies on the same candidates
+    const rankedLists = this.entries.map((entry) => {
+      const scored = entry.strategy.score(query, candidates, context);
+      // Build rank map: metadata.id → rank (0-indexed)
+      const rankMap = new Map<string, number>();
+      for (let i = 0; i < scored.length; i++) {
+        const id = scored[i].metadata.id as string;
+        // For dual-index: same tool may appear multiple times.
+        // Keep best rank (first occurrence = highest score).
+        if (!rankMap.has(id)) rankMap.set(id, i);
+      }
+      return { rankMap, weight: entry.weight };
+    });
+
+    // Compute weighted RRF per candidate
+    const scoreMap = new Map<
+      string,
+      { text: string; metadata: RagMetadata; score: number }
+    >();
+
+    for (const c of candidates) {
+      const id = c.metadata.id as string;
+      if (scoreMap.has(id)) continue; // dedup by id — take first occurrence
+
+      let totalScore = 0;
+      for (const { rankMap, weight } of rankedLists) {
+        const rank = rankMap.get(id) ?? candidates.length;
+        totalScore += weight / (this.k + rank);
+      }
+
+      scoreMap.set(id, {
+        text: c.text,
+        metadata: c.metadata,
+        score: totalScore,
+      });
+    }
+
+    return [...scoreMap.values()].sort((a, b) => b.score - a.score);
+  }
+}

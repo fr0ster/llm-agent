@@ -25,6 +25,8 @@ export type {
 } from './search-strategy.js';
 export {
   Bm25OnlyStrategy,
+  CompositeStrategy,
+  type CompositeStrategyEntry,
   RrfStrategy,
   VectorOnlyStrategy,
   WeightedFusionStrategy,

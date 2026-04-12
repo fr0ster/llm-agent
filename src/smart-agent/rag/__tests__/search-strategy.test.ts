@@ -3,6 +3,7 @@ import { describe, it } from 'node:test';
 import { InvertedIndex } from '../inverted-index.js';
 import {
   Bm25OnlyStrategy,
+  CompositeStrategy,
   type ISearchCandidate,
   type ISearchContext,
   RrfStrategy,
@@ -388,5 +389,118 @@ describe('Bm25OnlyStrategy', () => {
         `Result ${i} score (${results[i].score}) should be >= result ${i + 1} score (${results[i + 1].score})`,
       );
     }
+  });
+});
+
+describe('CompositeStrategy', () => {
+  it('name includes child strategy names', () => {
+    const strategy = new CompositeStrategy([
+      { strategy: new VectorOnlyStrategy(), weight: 1.0 },
+      { strategy: new Bm25OnlyStrategy(), weight: 0.5 },
+    ]);
+    assert.equal(strategy.name, 'composite(vector-only+bm25-only)');
+  });
+
+  it('combines child rankings with weighted RRF', () => {
+    const strategy = new CompositeStrategy([
+      { strategy: new VectorOnlyStrategy(), weight: 1.0 },
+      { strategy: new Bm25OnlyStrategy(), weight: 1.0 },
+    ]);
+    const context = makeContext(CANDIDATES);
+    const queryText = 'machine learning';
+    const results = strategy.score(
+      { text: queryText, vector: tfVector(queryText, VOCAB) },
+      CANDIDATES,
+      context,
+    );
+
+    assert.equal(results.length, CANDIDATES.length);
+    for (let i = 0; i < results.length - 1; i++) {
+      assert.ok(results[i].score >= results[i + 1].score);
+    }
+    // All scores > 0
+    for (const r of results) {
+      assert.ok(r.score > 0);
+    }
+  });
+
+  it('higher weight gives more influence', () => {
+    // Isolated candidates where vector and BM25 clearly disagree
+    const cA: ISearchCandidate = {
+      text: 'alpha bravo charlie',
+      vector: [1, 0, 0],
+      metadata: { id: 'a' },
+    };
+    const cB: ISearchCandidate = {
+      text: 'delta echo foxtrot',
+      vector: [0, 0, 1],
+      metadata: { id: 'b' },
+    };
+    const local = [cA, cB];
+    const ctx = makeContext(local);
+
+    // Query: vector points to A, text matches B
+    const query = { text: 'delta echo foxtrot', vector: [1, 0, 0] };
+
+    const vectorHeavy = new CompositeStrategy([
+      { strategy: new VectorOnlyStrategy(), weight: 10.0 },
+      { strategy: new Bm25OnlyStrategy(), weight: 0.1 },
+    ]);
+    const bm25Heavy = new CompositeStrategy([
+      { strategy: new VectorOnlyStrategy(), weight: 0.1 },
+      { strategy: new Bm25OnlyStrategy(), weight: 10.0 },
+    ]);
+
+    const vResults = vectorHeavy.score(query, local, ctx);
+    const bResults = bm25Heavy.score(query, local, ctx);
+
+    // Vector-heavy: A wins (vector match)
+    assert.equal(vResults[0].metadata.id, 'a');
+    // BM25-heavy: B wins (keyword match)
+    assert.equal(bResults[0].metadata.id, 'b');
+  });
+
+  it('handles empty candidates', () => {
+    const strategy = new CompositeStrategy([
+      { strategy: new RrfStrategy(), weight: 1.0 },
+    ]);
+    const context = makeContext([]);
+    const results = strategy.score({ text: 'test', vector: [] }, [], context);
+    assert.deepEqual(results, []);
+  });
+
+  it('deduplicates by id — keeps best score', () => {
+    // Two candidates with same id but different text/vectors
+    const dupes: ISearchCandidate[] = [
+      {
+        text: 'machine learning neural',
+        vector: tfVector('machine learning neural', VOCAB),
+        metadata: { id: 'tool:X' },
+      },
+      {
+        text: 'database sql query',
+        vector: tfVector('database sql query', VOCAB),
+        metadata: { id: 'tool:X' },
+      },
+      {
+        text: 'other tool',
+        vector: tfVector('other tool', VOCAB),
+        metadata: { id: 'tool:Y' },
+      },
+    ];
+    const strategy = new CompositeStrategy([
+      { strategy: new VectorOnlyStrategy(), weight: 1.0 },
+    ]);
+    const context = makeContext(dupes);
+    const results = strategy.score(
+      { text: 'machine learning', vector: tfVector('machine learning', VOCAB) },
+      dupes,
+      context,
+    );
+
+    // Should have 2 results (deduped), not 3
+    const ids = results.map((r) => r.metadata.id);
+    assert.equal(ids.filter((id) => id === 'tool:X').length, 1);
+    assert.equal(results.length, 2);
   });
 });

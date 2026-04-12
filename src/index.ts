@@ -297,6 +297,8 @@ export type {
 } from './smart-agent/rag/search-strategy.js';
 export {
   Bm25OnlyStrategy,
+  CompositeStrategy,
+  type CompositeStrategyEntry,
   RrfStrategy,
   VectorOnlyStrategy,
   WeightedFusionStrategy,
