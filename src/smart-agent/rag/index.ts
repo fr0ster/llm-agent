@@ -5,6 +5,14 @@ export type { OllamaEmbedderConfig } from './ollama-rag.js';
 export { OllamaEmbedder, OllamaRag } from './ollama-rag.js';
 export type { OpenAiEmbedderConfig } from './openai-embedder.js';
 export { OpenAiEmbedder } from './openai-embedder.js';
+export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
+export {
+  ExpandPreprocessor,
+  NoopDocumentEnricher,
+  NoopQueryPreprocessor,
+  PreprocessorChain,
+  TranslatePreprocessor,
+} from './preprocessor.js';
 export type { QdrantRagConfig } from './qdrant-rag.js';
 export { QdrantRag } from './qdrant-rag.js';
 export type {

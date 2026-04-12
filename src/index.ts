@@ -254,6 +254,18 @@ export {
   OpenAiEmbedder,
   type OpenAiEmbedderConfig,
 } from './smart-agent/rag/openai-embedder.js';
+// RAG Preprocessors
+export type {
+  IDocumentEnricher,
+  IQueryPreprocessor,
+} from './smart-agent/rag/preprocessor.js';
+export {
+  ExpandPreprocessor,
+  NoopDocumentEnricher,
+  NoopQueryPreprocessor,
+  PreprocessorChain,
+  TranslatePreprocessor,
+} from './smart-agent/rag/preprocessor.js';
 // Qdrant RAG
 export {
   QdrantRag,
