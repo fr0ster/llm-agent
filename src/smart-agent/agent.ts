@@ -596,6 +596,11 @@ export class SmartAgent {
     const normalizedExternalTools = normalizeExternalTools(
       options?.externalTools,
     );
+    opts?.sessionLogger?.logStep('external_tools_normalized', {
+      rawCount: options?.externalTools?.length ?? 0,
+      normalizedCount: normalizedExternalTools.length,
+      normalizedNames: normalizedExternalTools.map((t) => t.name),
+    });
 
     const { allowed: externalTools, blocked: blockedExternalTools } =
       this.toolAvailabilityRegistry.filterTools(
@@ -832,6 +837,13 @@ export class SmartAgent {
           mode === 'hard'
             ? (selectedMcpTools as LlmTool[])
             : [...(selectedMcpTools as LlmTool[]), ...externalTools];
+        opts?.sessionLogger?.logStep('external_tools_merge', {
+          mode,
+          mcpCount: selectedMcpTools.length,
+          externalCount: externalTools.length,
+          externalNames: externalTools.map((t) => t.name),
+          finalCount: finalTools.length,
+        });
 
         // Skill injection (when enabled and skillManager configured)
         if (
