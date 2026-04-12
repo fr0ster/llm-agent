@@ -842,7 +842,11 @@ export class ToolLoopHandler implements IStageHandler {
       for (const r of results) {
         const { tc, text, res } = r;
         if (!res) continue;
-        if (!res.ok && isToolContextUnavailableError(text)) {
+        if (
+          !res.ok &&
+          isToolContextUnavailableError(text) &&
+          !externalToolNames.has(tc.name)
+        ) {
           const entry = ctx.toolAvailabilityRegistry.block(
             ctx.sessionId,
             tc.name,

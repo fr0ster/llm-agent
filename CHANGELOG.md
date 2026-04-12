@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.0.3] — 2026-04-12
+
+### Fixed
+- **External tools excluded from availability registry blocking** — client-provided tools (e.g. `GenerateFile`) were incorrectly blocked by `ToolAvailabilityRegistry` after MCP execution errors, preventing them from reaching the LLM on subsequent requests within the same session. External tools are now exempt from both registry filtering and blocking, since they are executed client-side, not via MCP. Closes #91.
+
+---
+
 ## [8.0.2] — 2026-04-12
 
 ### Fixed
