@@ -223,7 +223,7 @@ sequenceDiagram
 ### Key decision points
 
 1. **Mode selection** — `pass` skips the entire pipeline and streams directly from LLM. `smart` runs full orchestration. `hard` forces MCP-only tools (no external tools).
-2. **RAG retrieval** — When `tools` or `history` RAG stores are configured, they are queried in parallel. Tool selection uses `tools` store results. History retrieval uses `history` store results. Both are optional.
+2. **RAG retrieval** — When RAG stores are configured, they are queried in parallel. Each store can have its own search strategy (`ISearchStrategy`) and query preprocessors (`IQueryPreprocessor`). The preprocessor chain runs before embedding — e.g. `TranslatePreprocessor` translates non-English queries, `ExpandPreprocessor` adds synonyms. The search strategy scores candidates — `RrfStrategy` (Reciprocal Rank Fusion) is recommended for best results. `CompositeStrategy` allows combining multiple strategies with configurable weights.
 3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
 4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
 5. **onBeforeStream hook** — If an `onBeforeStream` hook is configured, the final response content is passed through it before streaming to the caller (e.g., for reformatting or post-processing).
@@ -253,7 +253,7 @@ SmartAgent delegates request orchestration to the injected `IPipeline`:
 1. Pre-flight and timeout/abort merging.
 2. `pipeline.initialize(deps)` is called once at build time.
 3. Per request: `pipeline.execute(input, history, options, yieldChunk)`.
-4. `DefaultPipeline` (built-in): classify → summarize → RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert.
+4. `DefaultPipeline` (built-in): [classify (off by default)] → summarize → RAG query (tools + history) → rerank → skill-select → tool-select → assemble → tool-loop → history-upsert. Classification is disabled by default — all input is treated as a single action. Enable via `classificationEnabled: true` for custom pipelines with multi-store routing.
 5. Consumer pipelines can replace any or all stages.
 
 See [Pipeline Architecture](#pipeline-architecture) for details.

@@ -371,11 +371,13 @@ interface IEmbedder {
 `SmartAgent` exposes two methods for adding and removing custom RAG stores at runtime, without rebuilding the agent:
 
 ```ts
-agent.addRagStore(name: string, store: IRag): void
+agent.addRagStore(name: string, store: IRag, options?: { translateQuery?: boolean }): void
 agent.removeRagStore(name: string): void
 ```
 
 Custom stores are queried in parallel with the built-in `tools` and `history` RAG stores on every request. Changes take effect on the next request — in-flight requests see the previous store set.
+
+When `translateQuery: true` is set, the pipeline translates the query to English before searching this store. Useful for stores with English-only content (e.g. MCP tool descriptions).
 
 **Constraints:**
 
@@ -646,6 +648,204 @@ class SapTermExpander implements IQueryExpander {
 ```
 
 The library ships `LlmQueryExpander` (LLM-generated expansion) and `NoopQueryExpander` (pass-through).
+
+> **Note:** `IQueryExpander` is a pipeline-level interface (one expander for all stores). For per-store query transformation, prefer `IQueryPreprocessor` configured via `VectorRagConfig.queryPreprocessors`. See the IQueryPreprocessor section below.
+
+## ISearchStrategy
+
+**File:** `src/smart-agent/rag/search-strategy.ts`
+
+Pluggable scoring algorithm for RAG search. The strategy receives a query (text + vector), candidates, and a search context (inverted index + tokenizer). It returns scored and sorted results.
+
+```ts
+interface ISearchStrategy {
+  readonly name: string;
+  score(
+    query: ISearchQuery,
+    candidates: ISearchCandidate[],
+    context: ISearchContext,
+  ): IScoredResult[];
+}
+```
+
+### Built-in strategies
+
+| Strategy | Algorithm | Use case |
+|----------|-----------|----------|
+| `WeightedFusionStrategy` | `vectorScore × w1 + bm25Score × w2` | Default, configurable weights |
+| `RrfStrategy` | Reciprocal Rank Fusion | Best overall quality, rank-based |
+| `VectorOnlyStrategy` | Cosine similarity only | When BM25 tokenization doesn't fit |
+| `Bm25OnlyStrategy` | BM25 keyword matching only | Exact terms, no embedder |
+| `CompositeStrategy` | Weighted RRF across child strategies | Combining approaches |
+
+### Example: CompositeStrategy
+
+```ts
+import { VectorRag, CompositeStrategy, VectorOnlyStrategy, Bm25OnlyStrategy } from '@mcp-abap-adt/llm-agent';
+
+const rag = new VectorRag(embedder, {
+  strategy: new CompositeStrategy([
+    { strategy: new VectorOnlyStrategy(), weight: 1.0 },
+    { strategy: new Bm25OnlyStrategy(), weight: 0.5 },
+  ]),
+});
+```
+
+### Example: Custom strategy
+
+```ts
+import type { ISearchStrategy, ISearchQuery, ISearchCandidate, ISearchContext, IScoredResult }
+  from '@mcp-abap-adt/llm-agent';
+
+class BoostRecentStrategy implements ISearchStrategy {
+  readonly name = 'boost-recent';
+
+  score(query: ISearchQuery, candidates: ISearchCandidate[], context: ISearchContext): IScoredResult[] {
+    const now = Date.now() / 1000;
+    return candidates
+      .map((c) => {
+        const age = c.metadata.ttl ? (c.metadata.ttl - now) : 0;
+        const recencyBoost = Math.max(0, age / 3600); // boost per hour remaining
+        return { text: c.text, metadata: c.metadata, score: recencyBoost };
+      })
+      .sort((a, b) => b.score - a.score);
+  }
+}
+```
+
+## IQueryPreprocessor
+
+**File:** `src/smart-agent/rag/preprocessor.ts`
+
+Transforms query text before embedding and search. Configured per RAG store — each store can have its own preprocessing chain. This replaces pipeline-level translation and expansion.
+
+```ts
+interface IQueryPreprocessor {
+  readonly name: string;
+  process(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+}
+```
+
+### Built-in preprocessors
+
+| Preprocessor | Description |
+|-------------|-------------|
+| `TranslatePreprocessor` | Translates non-ASCII queries to English via LLM |
+| `ExpandPreprocessor` | Adds LLM-generated synonyms to query |
+| `PreprocessorChain` | Composes preprocessors in sequence |
+
+### Example: Multilingual tool search
+
+```ts
+import { VectorRag, RrfStrategy, TranslatePreprocessor } from '@mcp-abap-adt/llm-agent';
+
+const rag = new VectorRag(embedder, {
+  strategy: new RrfStrategy(),
+  queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
+});
+
+// Ukrainian query → translated → embedded → searched
+// "Покажи код класу" → "Read class source code" → finds ReadClass tool
+```
+
+### Example: Custom preprocessor
+
+```ts
+import type { IQueryPreprocessor } from '@mcp-abap-adt/llm-agent';
+
+class SapAbbreviationExpander implements IQueryPreprocessor {
+  readonly name = 'sap-abbreviations';
+  private readonly map = new Map([
+    ['badi', 'business add-in BAdI enhancement'],
+    ['cds', 'core data services CDS view'],
+    ['rfc', 'remote function call RFC function module'],
+  ]);
+
+  async process(text: string): Promise<Result<string, RagError>> {
+    let expanded = text;
+    for (const [abbr, full] of this.map) {
+      if (text.toLowerCase().includes(abbr)) {
+        expanded += ` ${full}`;
+      }
+    }
+    return { ok: true, value: expanded };
+  }
+}
+```
+
+## IDocumentEnricher
+
+**File:** `src/smart-agent/rag/preprocessor.ts`
+
+Enriches document text before embedding and storage. Applied during `upsert()`. Useful for adding translations, synonyms, or intent keywords to indexed content.
+
+```ts
+interface IDocumentEnricher {
+  readonly name: string;
+  enrich(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+}
+```
+
+### Built-in enrichers
+
+| Enricher | Description |
+|----------|-------------|
+| `IntentEnricher` | LLM generates concise intent keywords from verbose description |
+
+### Example: VectorRag with document enricher
+
+```ts
+import { VectorRag, IntentEnricher } from '@mcp-abap-adt/llm-agent';
+
+const rag = new VectorRag(embedder, {
+  documentEnrichers: [new IntentEnricher(helperLlm)],
+});
+
+// On upsert: "SearchObject: Find, search, locate..." 
+// → enriched: "SearchObject: Find...\nIntent: search object by name, find ABAP object, wildcard search"
+```
+
+## IToolIndexingStrategy
+
+**File:** `src/smart-agent/rag/tool-indexing-strategy.ts`
+
+Generates text variants for tool descriptions at indexing time. The builder indexes tools into the RAG store — strategies control what text gets embedded. Multiple strategies can be combined for dual/multi indexing.
+
+```ts
+interface IToolIndexingStrategy {
+  readonly name: string;
+  prepare(tool: IToolDescriptor, options?: CallOptions): Promise<IToolIndexEntry[]>;
+}
+```
+
+### Built-in strategies
+
+| Strategy | Description | Cost |
+|----------|-------------|------|
+| `OriginalToolIndexing` | Raw `"name: description"` | Free |
+| `SynonymToolIndexing` | Action verb synonyms (Read→Show/Display/View) | Free |
+| `IntentToolIndexing` | LLM-generated intent keywords | 1 LLM call/tool |
+
+### Example: Dual indexing
+
+```ts
+import { OriginalToolIndexing, SynonymToolIndexing } from '@mcp-abap-adt/llm-agent';
+
+const original = new OriginalToolIndexing();
+const synonym = new SynonymToolIndexing();
+
+for (const tool of tools) {
+  const entries = [
+    ...(await original.prepare(tool)),
+    ...(await synonym.prepare(tool)),
+  ];
+  for (const entry of entries) {
+    await rag.upsert(entry.text, { id: entry.id });
+  }
+}
+// Each tool indexed twice: tool:ReadClass + tool:ReadClass:synonym
+// RAG search finds either variant; tool name extracted by stripping suffix
+```
 
 ## ISubpromptClassifier
 
