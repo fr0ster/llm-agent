@@ -34,6 +34,7 @@ import type { ISkillManager } from './skill.js';
 import type {
   CallOptions,
   LlmStreamChunk,
+  LlmTool,
   Result,
   TimingEntry,
 } from './types.js';
@@ -136,10 +137,11 @@ export interface IPipeline {
   /**
    * Process a single request end-to-end and stream results to the caller.
    *
-   * @param input      - User input as a string or pre-built message array.
-   * @param history    - Conversation history to include in the request.
-   * @param options    - Per-request call options (session, signal, model, etc.).
-   * @param yieldChunk - Callback invoked for each streamed result chunk.
+   * @param input         - User input as a string or pre-built message array.
+   * @param history       - Conversation history to include in the request.
+   * @param options       - Per-request call options (session, signal, model, etc.).
+   * @param yieldChunk    - Callback invoked for each streamed result chunk.
+   * @param externalTools - Normalized external tools to include alongside MCP tools.
    * @returns Final PipelineResult with timing and optional error.
    */
   execute(
@@ -147,6 +149,7 @@ export interface IPipeline {
     history: Message[],
     options: CallOptions | undefined,
     yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
+    externalTools?: LlmTool[],
   ): Promise<PipelineResult>;
 
   /**

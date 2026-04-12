@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.0.4] — 2026-04-13
+
+### Fixed
+- **External tools not reaching LLM in DefaultPipeline** — `DefaultPipeline.buildContext()` hardcoded `externalTools: []`, ignoring tools passed by the consumer. Normalized external tools are now propagated from `SmartAgent._runStructuredPipeline()` through `IPipeline.execute()` into the pipeline context. Closes #91.
+
+---
+
 ## [8.0.3] — 2026-04-12
 
 ### Fixed
