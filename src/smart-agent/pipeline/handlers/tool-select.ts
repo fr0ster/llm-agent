@@ -91,7 +91,7 @@ export class ToolSelectHandler implements IStageHandler {
       allRagResults
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('tool:'))
-        .map((id) => id.slice(5)),
+        .map((id) => id.slice(5).replace(/:.*$/, '')),
     );
 
     const selectedMcpTools =

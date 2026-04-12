@@ -804,7 +804,7 @@ export class SmartAgent {
           allRagResults
             .map((r) => r.metadata.id as string)
             .filter((id) => id?.startsWith('tool:'))
-            .map((id) => id.slice(5)),
+            .map((id) => id.slice(5).replace(/:.*$/, '')),
         );
         const selectedMcpTools =
           ragToolNames.size > 0
@@ -1272,7 +1272,7 @@ export class SmartAgent {
                 ragResult.value
                   .map((r) => (r.metadata?.id as string) || '')
                   .filter((id) => id.startsWith('tool:'))
-                  .map((id) => id.slice(5)),
+                  .map((id) => id.slice(5).replace(/:.*$/, '')),
               );
 
               if (newToolNames.size > 0) {

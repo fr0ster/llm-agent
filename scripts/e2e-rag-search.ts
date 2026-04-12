@@ -1,6 +1,13 @@
 #!/usr/bin/env node
 /**
- * E2E RAG search comparison: baseline vs translate vs translate+intent enrichment.
+ * E2E RAG search: 4-way comparison of indexing strategies.
+ *
+ * 1. baseline:  original description only
+ * 2. +synonym:  original + synonym variants (deterministic)
+ * 3. +intent:   original + LLM intent keywords
+ * 4. all:       original + synonym + intent (triple index)
+ *
+ * All use TranslatePreprocessor on queries + RRF strategy.
  *
  * Run:
  *   node --import tsx/esm scripts/e2e-rag-search.ts
@@ -12,12 +19,17 @@ configDotenv();
 import { OllamaEmbedder } from '../src/smart-agent/rag/ollama-rag.js';
 import { VectorRag } from '../src/smart-agent/rag/vector-rag.js';
 import { RrfStrategy } from '../src/smart-agent/rag/search-strategy.js';
-import {
-  TranslatePreprocessor,
-  IntentEnricher,
-} from '../src/smart-agent/rag/preprocessor.js';
+import { TranslatePreprocessor } from '../src/smart-agent/rag/preprocessor.js';
 import { QueryEmbedding } from '../src/smart-agent/rag/query-embedding.js';
 import { makeDefaultLlm } from '../src/smart-agent/providers.js';
+import {
+  OriginalToolIndexing,
+  SynonymToolIndexing,
+  IntentToolIndexing,
+  type IToolDescriptor,
+  type IToolIndexEntry,
+  type IToolIndexingStrategy,
+} from '../src/smart-agent/rag/tool-indexing-strategy.js';
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 if (!DEEPSEEK_API_KEY) {
@@ -28,24 +40,17 @@ if (!DEEPSEEK_API_KEY) {
 const MCP_URL = 'http://localhost:3001/mcp/stream/http';
 const OLLAMA_URL = 'http://localhost:11434';
 
-async function fetchMcpTools(): Promise<
-  Array<{ name: string; description: string }>
-> {
+async function fetchMcpTools(): Promise<IToolDescriptor[]> {
   const res = await fetch(MCP_URL, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     },
-    body: JSON.stringify({
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'tools/list',
-      params: {},
-    }),
+    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
   });
   const json = (await res.json()) as {
-    result: { tools: Array<{ name: string; description: string }> };
+    result: { tools: IToolDescriptor[] };
   };
   return json.result.tools;
 }
@@ -75,99 +80,98 @@ const CASES: TestCase[] = [
   { query: 'run unit tests', expectAny: ['RunUnitTest', 'HandlerUnitTestRun'], note: 'EN: unit tests' },
 ];
 
+/** Prepare all index entries for a tool using given strategies. */
+async function prepareEntries(
+  tool: IToolDescriptor,
+  strategies: IToolIndexingStrategy[],
+): Promise<IToolIndexEntry[]> {
+  const results = await Promise.all(strategies.map((s) => s.prepare(tool)));
+  return results.flat();
+}
+
+/** Extract tool name from RAG result id: tool:Name:suffix → Name */
+function extractToolName(id: string): string {
+  return id.replace(/^tool:/, '').replace(/:.*$/, '');
+}
+
 async function main() {
-  console.log('=== E2E RAG: baseline vs translate vs translate+intent ===\n');
+  console.log('=== E2E RAG: Indexing Strategy Comparison ===\n');
 
   const tools = await fetchMcpTools();
   console.log(`${tools.length} MCP tools loaded`);
 
   const embedder = new OllamaEmbedder({ url: OLLAMA_URL, model: 'nomic-embed-text' });
   const helperLlm = makeDefaultLlm(DEEPSEEK_API_KEY!, 'deepseek-chat', 0.1);
+  const translatePP = new TranslatePreprocessor(helperLlm);
 
-  // 3 RAG stores
-  const ragBaseline = new VectorRag(embedder, { strategy: new RrfStrategy() });
-  const ragTranslate = new VectorRag(embedder, {
-    strategy: new RrfStrategy(),
-    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
-  });
-  const ragIntent = new VectorRag(embedder, {
-    strategy: new RrfStrategy(),
-    queryPreprocessors: [new TranslatePreprocessor(helperLlm)],
-    documentEnrichers: [new IntentEnricher(helperLlm)],
-  });
+  // Strategies
+  const original = new OriginalToolIndexing();
+  const synonym = new SynonymToolIndexing();
+  const intent = new IntentToolIndexing(helperLlm);
 
-  // Index: baseline + translate share same vectors; intent gets enriched text
-  console.log('Indexing baseline + translate (shared vectors)...');
-  let t0 = Date.now();
-  for (const t of tools) {
-    const text = `${t.name}: ${t.description}`;
-    const { vector } = await embedder.embed(text);
-    await ragBaseline.upsertPrecomputed(text, vector, { id: `tool:${t.name}` });
-    await ragTranslate.upsertPrecomputed(text, vector, { id: `tool:${t.name}` });
-  }
-  console.log(`  Done in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+  // 4 RAG stores — all use translate + RRF
+  const ragConfig = { strategy: new RrfStrategy(), queryPreprocessors: [translatePP] };
 
-  console.log('Indexing intent-enriched (LLM per tool)...');
-  t0 = Date.now();
-  const batchSize = 10;
-  const batchDelayMs = 1000;
-  for (let i = 0; i < tools.length; i++) {
-    const t = tools[i];
-    const text = `${t.name}: ${t.description}`;
-    await ragIntent.upsert(text, { id: `tool:${t.name}` });
-    if ((i + 1) % batchSize === 0) {
-      process.stdout.write(`  ${i + 1}/${tools.length}\r`);
-      await new Promise((r) => setTimeout(r, batchDelayMs));
+  type StoreConfig = { name: string; strategies: IToolIndexingStrategy[]; rag: VectorRag };
+  const stores: StoreConfig[] = [
+    { name: 'original', strategies: [original], rag: new VectorRag(embedder, { ...ragConfig }) },
+    { name: 'orig+syn', strategies: [original, synonym], rag: new VectorRag(embedder, { ...ragConfig }) },
+    { name: 'orig+intent', strategies: [original, intent], rag: new VectorRag(embedder, { ...ragConfig }) },
+    { name: 'all', strategies: [original, synonym, intent], rag: new VectorRag(embedder, { ...ragConfig }) },
+  ];
+
+  // Index — generate entries then embed
+  for (const sc of stores) {
+    const label = sc.name.padEnd(12);
+    process.stdout.write(`Indexing [${label}]...`);
+    const t0 = Date.now();
+    let entryCount = 0;
+
+    for (let i = 0; i < tools.length; i++) {
+      const entries = await prepareEntries(tools[i], sc.strategies);
+      for (const entry of entries) {
+        await sc.rag.upsert(entry.text, { id: entry.id });
+        entryCount++;
+      }
+      if ((i + 1) % 50 === 0) process.stdout.write(` ${i + 1}`);
     }
+
+    console.log(` → ${entryCount} entries in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
   }
-  console.log(`  Done: ${tools.length} tools in ${((Date.now() - t0) / 1000).toFixed(1)}s\n`);
+  console.log();
 
   // Run queries
-  const scores = { baseline: 0, translate: 0, intent: 0 };
+  const scores: Record<string, number> = {};
+  for (const sc of stores) scores[sc.name] = 0;
 
   for (const tc of CASES) {
     const label = `[${tc.note}]`.padEnd(28);
     console.log(`${label} "${tc.query}"`);
 
-    const [rB, rT, rI] = await Promise.all([
-      ragBaseline.query(new QueryEmbedding(tc.query, embedder), 5),
-      ragTranslate.query(new QueryEmbedding(tc.query, embedder), 5),
-      ragIntent.query(new QueryEmbedding(tc.query, embedder), 5),
-    ]);
+    for (const sc of stores) {
+      const emb = new QueryEmbedding(tc.query, embedder);
+      const res = await sc.rag.query(emb, 5);
+      const results = res.ok ? res.value : [];
+      const ids = results.map((r) => extractToolName(r.metadata.id as string));
+      const hit = tc.expectAny.some((e) => ids.includes(e));
+      if (hit) scores[sc.name]++;
 
-    const check = (res: typeof rB) => {
-      if (!res.ok) return { hit: false, ids: [] as string[] };
-      const ids = res.value.map((r) => (r.metadata.id as string).replace('tool:', ''));
-      return { hit: tc.expectAny.some((e) => ids.includes(e)), ids };
-    };
-
-    const fmt = (res: typeof rB) => {
-      if (!res.ok) return 'ERROR';
-      return res.value
+      const top3 = results
         .slice(0, 3)
-        .map((r) => `${(r.metadata.id as string).replace('tool:', '')}(${r.score.toFixed(3)})`)
+        .map((r) => `${extractToolName(r.metadata.id as string)}(${r.score.toFixed(3)})`)
         .join(', ');
-    };
-
-    const b = check(rB);
-    const t = check(rT);
-    const i = check(rI);
-
-    if (b.hit) scores.baseline++;
-    if (t.hit) scores.translate++;
-    if (i.hit) scores.intent++;
-
-    console.log(`  baseline  ${b.hit ? '✓' : '✗'}: [${fmt(rB)}]`);
-    console.log(`  translate ${t.hit ? '✓' : '✗'}: [${fmt(rT)}]`);
-    console.log(`  intent    ${i.hit ? '✓' : '✗'}: [${fmt(rI)}]`);
+      console.log(`  ${sc.name.padEnd(12)} ${hit ? '✓' : '✗'}: [${top3}]`);
+    }
     console.log();
   }
 
+  // Summary
   const total = CASES.length;
   console.log('='.repeat(65));
-  console.log(`  Baseline (no preprocess):    ${scores.baseline}/${total} (${((scores.baseline / total) * 100).toFixed(0)}%)`);
-  console.log(`  + TranslatePreprocessor:     ${scores.translate}/${total} (${((scores.translate / total) * 100).toFixed(0)}%)`);
-  console.log(`  + Translate + IntentEnricher: ${scores.intent}/${total} (${((scores.intent / total) * 100).toFixed(0)}%)`);
+  for (const sc of stores) {
+    const pct = ((scores[sc.name] / total) * 100).toFixed(0);
+    console.log(`  ${sc.name.padEnd(14)} ${scores[sc.name]}/${total} (${pct}%)`);
+  }
   console.log('='.repeat(65));
 }
 
