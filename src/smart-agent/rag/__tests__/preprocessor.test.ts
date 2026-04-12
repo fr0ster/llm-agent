@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { makeLlm } from '../../testing/index.js';
 import {
+  ExpandPreprocessor,
   NoopDocumentEnricher,
   NoopQueryPreprocessor,
   TranslatePreprocessor,
@@ -70,5 +71,33 @@ describe('TranslatePreprocessor', () => {
     const llm = makeLlm([]);
     const preprocessor = new TranslatePreprocessor(llm);
     assert.equal(preprocessor.name, 'translate');
+  });
+});
+
+describe('ExpandPreprocessor', () => {
+  it('expands query with LLM-generated synonyms', async () => {
+    const llm = makeLlm([
+      { content: 'transport request workbench customizing' },
+    ]);
+    const pp = new ExpandPreprocessor(llm);
+    const result = await pp.process('create transport');
+    assert.ok(result.ok);
+    assert.equal(
+      result.value,
+      'create transport transport request workbench customizing',
+    );
+  });
+
+  it('returns original when LLM fails', async () => {
+    const llm = makeLlm([new Error('LLM unavailable')]);
+    const pp = new ExpandPreprocessor(llm);
+    const result = await pp.process('create transport');
+    assert.ok(result.ok);
+    assert.equal(result.value, 'create transport');
+  });
+
+  it('name is expand', () => {
+    const llm = makeLlm([]);
+    assert.equal(new ExpandPreprocessor(llm).name, 'expand');
   });
 });

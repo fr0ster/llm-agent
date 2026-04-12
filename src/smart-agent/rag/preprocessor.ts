@@ -103,3 +103,86 @@ export class TranslatePreprocessor implements IQueryPreprocessor {
     }
   }
 }
+
+const EXPAND_SYSTEM_PROMPT =
+  'Given the user query, produce expanded search terms with synonyms and related terms. Return ONLY the expanded terms, no explanation.';
+
+/**
+ * Expands queries with LLM-generated synonyms and related terms.
+ * Concatenates original + expansion for broader recall.
+ */
+export class ExpandPreprocessor implements IQueryPreprocessor {
+  readonly name = 'expand';
+
+  constructor(
+    private readonly llm: ILlm,
+    private readonly requestLogger?: IRequestLogger,
+    private readonly systemPrompt?: string,
+  ) {}
+
+  async process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>> {
+    try {
+      const chatStart = Date.now();
+      const res = await this.llm.chat(
+        [
+          {
+            role: 'system' as const,
+            content: this.systemPrompt ?? EXPAND_SYSTEM_PROMPT,
+          },
+          { role: 'user' as const, content: text },
+        ],
+        [],
+        options,
+      );
+      if (this.requestLogger) {
+        this.requestLogger.logLlmCall({
+          component: 'query-expander',
+          model: this.llm.model ?? 'unknown',
+          promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,
+          completionTokens: res.ok
+            ? (res.value.usage?.completionTokens ?? 0)
+            : 0,
+          totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
+          durationMs: Date.now() - chatStart,
+        });
+      }
+
+      if (!res.ok || !res.value.content.trim()) {
+        return { ok: true, value: text };
+      }
+
+      return { ok: true, value: `${text} ${res.value.content.trim()}` };
+    } catch {
+      return { ok: true, value: text };
+    }
+  }
+}
+
+/**
+ * Runs multiple preprocessors in sequence.
+ * Output of each becomes input of the next.
+ * Stops and returns error on first failure.
+ */
+export class PreprocessorChain implements IQueryPreprocessor {
+  readonly name: string;
+
+  constructor(private readonly preprocessors: IQueryPreprocessor[]) {
+    this.name = preprocessors.map((p) => p.name).join('+') || 'empty';
+  }
+
+  async process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>> {
+    let current = text;
+    for (const pp of this.preprocessors) {
+      const result = await pp.process(current, options);
+      if (!result.ok) return result;
+      current = result.value;
+    }
+    return { ok: true, value: current };
+  }
+}
