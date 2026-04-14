@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.0.5] — 2026-04-14
+
+### Fixed
+- **Streaming external tool_call deltas truncated** — the external tool delta filter only forwarded the first streaming delta (carrying the tool name); argument-only continuation deltas were silently dropped because `getStreamToolCallName()` returns `undefined` for them. Non-streaming clients received truncated or empty `tool_call` arguments. Both tool-loop paths (DefaultPipeline and hardcoded) now track external tool call indices on first sight and forward all subsequent deltas. `process()` also correlates continuation deltas by streaming index instead of requiring an `id`. Closes #92.
+
+---
+
 ## [8.0.4] — 2026-04-13
 
 ### Fixed
