@@ -79,6 +79,7 @@ agent:
   queryExpansionEnabled: false        # Expand RAG queries with LLM-generated synonyms
   toolResultCacheTtlMs: 300000       # Tool result cache TTL (ms); 0 to disable
   sessionTokenBudget: 0              # Multi-turn token budget; 0 to disable
+  # ragTranslateEnabled: true        # Translate non-ASCII RAG queries to English (default: true)
   # classificationEnabled: false     # Enable for custom pipelines with multi-store routing
   # toolReselectPerIteration: false  # Re-select tools via RAG on each tool-loop iteration
   # llmCallStrategy: streaming       # streaming | non-streaming | fallback
@@ -386,6 +387,13 @@ export function resolveSmartServerConfig(
         ? {
             toolReselectPerIteration: Boolean(
               get(yaml, 'agent', 'toolReselectPerIteration'),
+            ),
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'ragTranslateEnabled') !== undefined
+        ? {
+            ragTranslateEnabled: Boolean(
+              get(yaml, 'agent', 'ragTranslateEnabled'),
             ),
           }
         : {}),

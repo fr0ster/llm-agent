@@ -160,6 +160,8 @@ export interface SmartAgentConfig {
   refreshToolsPerIteration?: boolean;
   /** Re-select tools via RAG on each tool-loop iteration. Default: false. */
   toolReselectPerIteration?: boolean;
+  /** Whether to translate non-ASCII RAG queries to English before retrieval. Default: true. */
+  ragTranslateEnabled?: boolean;
   /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
   retry?: {
     maxAttempts?: number;

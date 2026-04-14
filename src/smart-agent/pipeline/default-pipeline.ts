@@ -201,6 +201,12 @@ export class DefaultPipeline implements IPipeline {
 
     // Only add rag-retrieval block when there are stores to query
     if (ragChildren.length > 0) {
+      // Translate non-ASCII RAG query before retrieval (enabled by default)
+      stages.push({
+        id: 'translate',
+        type: 'translate',
+        when: 'config.ragTranslateEnabled != false',
+      });
       stages.push({
         id: 'rag-retrieval',
         type: 'parallel',
