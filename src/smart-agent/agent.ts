@@ -500,25 +500,36 @@ export class SmartAgent {
       type: 'function';
       function: { name: string; arguments: string };
     }> = [];
+    // Map streaming index → position in collectedToolCalls for delta correlation
+    const indexToPosition = new Map<number, number>();
     for await (const chunk of this.streamProcess(textOrMessages, options)) {
       if (!chunk.ok) return chunk;
       if (chunk.value.content) content += chunk.value.content;
       if (chunk.value.toolCalls) {
         for (const tc of chunk.value.toolCalls) {
           const delta = toToolCallDelta(tc, collectedToolCalls.length);
-          if (!delta.id) continue;
-          const existing = collectedToolCalls.find((c) => c.id === delta.id);
+          // Try to find existing entry by index first (streaming deltas),
+          // then by id (non-streaming / first delta with id).
+          const posByIndex = indexToPosition.get(delta.index);
+          const existing =
+            posByIndex !== undefined
+              ? collectedToolCalls[posByIndex]
+              : delta.id
+                ? collectedToolCalls.find((c) => c.id === delta.id)
+                : undefined;
           if (existing) {
             if (delta.arguments) existing.function.arguments += delta.arguments;
           } else if (delta.name) {
+            const pos = collectedToolCalls.length;
             collectedToolCalls.push({
-              id: delta.id,
+              id: delta.id || '',
               type: 'function',
               function: {
                 name: delta.name,
                 arguments: delta.arguments || '',
               },
             });
+            indexToPosition.set(delta.index, pos);
           }
         }
       }
@@ -1337,6 +1348,9 @@ export class SmartAgent {
         number,
         { id: string; name: string; arguments: string }
       >();
+      // Track which streaming indices belong to external tools so that
+      // argument-only continuation deltas (no name field) are forwarded too.
+      const externalToolIndices = new Set<number>();
       for await (const chunkResult of stream) {
         if (!chunkResult.ok) {
           llmSpan.setStatus('error', chunkResult.error.message);
@@ -1358,6 +1372,7 @@ export class SmartAgent {
           content = '';
           iterationBuffer = '';
           toolCallsMap.clear();
+          externalToolIndices.clear();
           finishReason = undefined;
           continue;
         }
@@ -1373,9 +1388,18 @@ export class SmartAgent {
           }
         }
         if (chunk.toolCalls) {
-          const externalDeltas = chunk.toolCalls.filter((tc) =>
-            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
-          );
+          // Register newly seen external tool indices
+          for (const tc of chunk.toolCalls) {
+            const name = getStreamToolCallName(tc);
+            if (name && externalToolNames.has(name)) {
+              const delta = toToolCallDelta(tc, 0);
+              externalToolIndices.add(delta.index);
+            }
+          }
+          const externalDeltas = chunk.toolCalls.filter((tc) => {
+            const delta = toToolCallDelta(tc, 0);
+            return externalToolIndices.has(delta.index);
+          });
           if (externalDeltas.length > 0) {
             yield {
               ok: true,

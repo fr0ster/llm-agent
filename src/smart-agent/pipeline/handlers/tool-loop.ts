@@ -400,6 +400,9 @@ export class ToolLoopHandler implements IStageHandler {
         number,
         { id: string; name: string; arguments: string }
       >();
+      // Track which streaming indices belong to external tools so that
+      // argument-only continuation deltas (no name field) are forwarded too.
+      const externalToolIndices = new Set<number>();
 
       // Delegate to ILlmCallStrategy — handles streaming, non-streaming, or fallback
       const llmStream = ctx.llmCallStrategy.call(
@@ -427,6 +430,7 @@ export class ToolLoopHandler implements IStageHandler {
         if (chunk.reset) {
           content = '';
           toolCallsMap.clear();
+          externalToolIndices.clear();
           finishReason = undefined;
           iterPromptTokens = 0;
           iterCompletionTokens = 0;
@@ -438,9 +442,18 @@ export class ToolLoopHandler implements IStageHandler {
           ctx.yield({ ok: true, value: { content: chunk.content } });
         }
         if (chunk.toolCalls) {
-          const externalDeltas = chunk.toolCalls.filter((tc) =>
-            externalToolNames.has(getStreamToolCallName(tc) ?? ''),
-          );
+          // Register newly seen external tool indices
+          for (const tc of chunk.toolCalls) {
+            const name = getStreamToolCallName(tc);
+            if (name && externalToolNames.has(name)) {
+              const delta = toToolCallDelta(tc, 0);
+              externalToolIndices.add(delta.index);
+            }
+          }
+          const externalDeltas = chunk.toolCalls.filter((tc) => {
+            const delta = toToolCallDelta(tc, 0);
+            return externalToolIndices.has(delta.index);
+          });
           if (externalDeltas.length > 0) {
             ctx.yield({
               ok: true,
