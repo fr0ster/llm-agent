@@ -271,6 +271,7 @@ describe('PUT /v1/config', () => {
 
   it('works with /config alias for PUT', async () => {
     const server = new SmartServer({
+      port: 0,
       llm: { apiKey: 'test', model: 'test-model' },
       skipModelValidation: true,
       agent: { maxIterations: 10 },
@@ -366,6 +367,7 @@ describe('PUT /v1/config — models', () => {
       },
     };
     const server = new SmartServer({
+      port: 0,
       llm: { apiKey: 'test', model: 'test-model' },
       skipModelValidation: true,
       modelResolver: resolver,
