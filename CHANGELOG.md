@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.1.0] — 2026-04-14
+
+### Added
+- **RAG query translation in DefaultPipeline** — non-ASCII queries (e.g. Ukrainian, German) are now translated to English before RAG retrieval, so tool names like `ReadTable` are matched correctly. Enabled by default; disable with `ragTranslateEnabled: false` in agent config.
+
+### Fixed
+- **Config endpoint tests fail with EADDRINUSE** — two tests in `config-endpoints.test.ts` did not specify `port: 0`, causing them to bind to the default port 4004 and fail when any server was already running.
+
+---
+
 ## [8.0.5] — 2026-04-14
 
 ### Fixed
