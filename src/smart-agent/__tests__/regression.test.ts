@@ -15,6 +15,7 @@ import type {
   Subprompt,
   ToolCallRecord,
 } from '../interfaces/types.js';
+import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
   makeClassifier,
   makeDefaultDeps,
@@ -536,5 +537,52 @@ describe('Regression — smartAgentEnabled=true behaves identically to undefined
     assert.ok(r2.ok);
     assert.equal(r1.value.content, r2.value.content);
     assert.equal(r1.value.stopReason, r2.value.stopReason);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// DefaultPipeline — ragQueryK propagation
+// ---------------------------------------------------------------------------
+
+describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
+  it('pipeline context uses agentConfig.ragQueryK when provided', async () => {
+    const toolsRag = makeMetadataRag();
+    const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
+    const pipeline = new DefaultPipeline();
+    pipeline.initialize({
+      mainLlm: llm,
+      mcpClients: [],
+      toolsRag,
+      agentConfig: { maxIterations: 10, ragQueryK: 42 },
+    });
+    const chunks: unknown[] = [];
+    await pipeline.execute('test', [], undefined, (chunk) => {
+      chunks.push(chunk);
+    });
+    assert.ok(
+      toolsRag.queryCalls.length > 0,
+      'toolsRag should have been queried',
+    );
+    assert.equal(toolsRag.queryCalls[0].k, 42);
+  });
+
+  it('pipeline falls back to DEFAULT_CONFIG ragQueryK when no agentConfig', async () => {
+    const toolsRag = makeMetadataRag();
+    const llm = makeLlm([{ content: 'done', finishReason: 'stop' }]);
+    const pipeline = new DefaultPipeline();
+    pipeline.initialize({
+      mainLlm: llm,
+      mcpClients: [],
+      toolsRag,
+    });
+    const chunks: unknown[] = [];
+    await pipeline.execute('test', [], undefined, (chunk) => {
+      chunks.push(chunk);
+    });
+    assert.ok(
+      toolsRag.queryCalls.length > 0,
+      'toolsRag should have been queried',
+    );
+    assert.equal(toolsRag.queryCalls[0].k, 5);
   });
 });
