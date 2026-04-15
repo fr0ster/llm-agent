@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.1.1] — 2026-04-16
+
+### Fixed
+- **`ragQueryK` config ignored by DefaultPipeline** — `DefaultPipeline._buildContext()` hardcoded a local `DEFAULT_CONFIG` with `ragQueryK: 5`, ignoring the agent config from `SmartAgentBuilder`. The configured `ragQueryK` value now flows through `PipelineDeps.agentConfig` into the pipeline context. Also aligned the fallback default from `5` to `10` to match the documented default. Closes #93.
+
+---
+
 ## [8.1.0] — 2026-04-14
 
 ### Added
