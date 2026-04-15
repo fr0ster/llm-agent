@@ -990,6 +990,7 @@ export class SmartAgentBuilder {
       historyMemory,
       historySummarizer,
       llmCallStrategy: this._llmCallStrategy,
+      agentConfig: agentCfg,
     });
 
     const agent = new SmartAgent(

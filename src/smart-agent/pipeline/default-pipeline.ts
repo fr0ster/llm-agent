@@ -253,7 +253,7 @@ export class DefaultPipeline implements IPipeline {
       // Immutable input
       textOrMessages: input,
       options,
-      config: DEFAULT_CONFIG,
+      config: { ...DEFAULT_CONFIG, ...this.deps.agentConfig },
       sessionId: options?.sessionId ?? 'default',
 
       // Dependencies (resolved once in initialize)
