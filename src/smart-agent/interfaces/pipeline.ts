@@ -11,7 +11,7 @@
  */
 
 import type { Message } from '../../types.js';
-import type { OrchestratorError } from '../agent.js';
+import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
 import type { IToolCache } from '../cache/types.js';
 import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
@@ -92,6 +92,8 @@ export interface PipelineDeps {
   historySummarizer?: IHistorySummarizer;
   /** Strategy controlling whether to use streaming or non-streaming LLM calls. */
   llmCallStrategy?: ILlmCallStrategy;
+  /** Agent config snapshot — forwarded to pipeline context for stage handlers. */
+  agentConfig?: SmartAgentConfig;
   /** RAG store used for tool retrieval. */
   toolsRag?: IRag;
   /** RAG store used for history retrieval. */
