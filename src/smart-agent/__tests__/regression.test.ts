@@ -583,6 +583,6 @@ describe('Regression — ragQueryK propagated through DefaultPipeline', () => {
       toolsRag.queryCalls.length > 0,
       'toolsRag should have been queried',
     );
-    assert.equal(toolsRag.queryCalls[0].k, 5);
+    assert.equal(toolsRag.queryCalls[0].k, 10);
   });
 });

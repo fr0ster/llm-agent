@@ -56,7 +56,7 @@ const DEFAULT_CONFIG: SmartAgentConfig = {
   classificationEnabled: false,
   skillInjectionEnabled: true,
   mode: 'smart',
-  ragQueryK: 5,
+  ragQueryK: 10,
 };
 
 // ---------------------------------------------------------------------------
