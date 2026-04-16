@@ -253,3 +253,30 @@ describe('AnthropicProvider — streamChat', () => {
     assert.equal(typeof provider.streamChat, 'function');
   });
 });
+
+// ---------------------------------------------------------------------------
+// chat() — usage extraction
+// ---------------------------------------------------------------------------
+
+describe('AnthropicProvider — chat() usage', () => {
+  it('returns usage from response', async () => {
+    const provider = new AnthropicProvider({ apiKey: 'sk-test' });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: {
+        content: [{ type: 'text', text: 'ok' }],
+        stop_reason: 'end_turn',
+        usage: {
+          input_tokens: 15,
+          output_tokens: 25,
+        },
+      },
+    });
+    const result = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.deepEqual(result.usage, {
+      prompt_tokens: 15,
+      completion_tokens: 25,
+      total_tokens: 40,
+    });
+  });
+});

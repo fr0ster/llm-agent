@@ -23,6 +23,7 @@ export interface OpenAIConfig extends LLMProviderConfig {
 export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   readonly client: AxiosInstance;
   readonly model: string;
+  protected readonly providerName: string = 'OpenAI';
 
   constructor(config: OpenAIConfig) {
     super(config);
@@ -75,10 +76,19 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const choice = response.data.choices[0];
 
+      const usage = response.data.usage
+        ? {
+            prompt_tokens: response.data.usage.prompt_tokens,
+            completion_tokens: response.data.usage.completion_tokens,
+            total_tokens: response.data.usage.total_tokens,
+          }
+        : undefined;
+
       return {
         content: choice.message.content || '',
         finishReason: choice.finish_reason,
         raw: response.data,
+        usage,
       };
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
@@ -87,7 +97,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`OpenAI API error: ${message}`);
+      throw new Error(`${this.providerName} API error: ${message}`);
     }
   }
 
@@ -114,6 +124,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
           ...(options?.stop ? { stop: options.stop } : {}),
           stream: true,
+          stream_options: { include_usage: true },
         },
         { responseType: 'stream' },
       );
@@ -135,12 +146,24 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
           try {
             const parsed = JSON.parse(data);
-            const choice = parsed.choices[0];
-            if (choice.delta) {
+            const choice = parsed.choices?.[0];
+            if (choice?.delta) {
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,
                 raw: parsed,
+              };
+            }
+            // Usage-only chunk (stream_options: include_usage)
+            if (parsed.usage && !choice?.delta) {
+              yield {
+                content: '',
+                raw: parsed,
+                usage: {
+                  prompt_tokens: parsed.usage.prompt_tokens,
+                  completion_tokens: parsed.usage.completion_tokens,
+                  total_tokens: parsed.usage.total_tokens,
+                },
               };
             }
           } catch (_e) {
@@ -155,7 +178,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`OpenAI Streaming error: ${message}`);
+      throw new Error(`${this.providerName} Streaming error: ${message}`);
     }
   }
 
@@ -178,7 +201,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * Newer models (o1, o3, gpt-5+) require max_completion_tokens;
    * legacy models use max_tokens.
    */
-  private getTokenLimitParam(
+  protected getTokenLimitParam(
     model: string,
     maxTokens: number,
   ): Record<string, number> {
@@ -192,7 +215,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */
-  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+  protected formatMessages(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     const formatted: Array<Record<string, unknown>> = [];
 
     for (const msg of messages) {

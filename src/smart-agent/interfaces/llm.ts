@@ -1,4 +1,5 @@
 import type { Message } from '../../types.js';
+import type { IModelInfo } from './model-provider.js';
 import type {
   CallOptions,
   LlmError,
@@ -31,4 +32,10 @@ export interface ILlm {
    * Returns `true` when the configured model is available, `false` otherwise.
    */
   healthCheck?(options?: CallOptions): Promise<Result<boolean, LlmError>>;
+
+  /**
+   * Discover available models from the provider.
+   * Optional — not all contexts require model listing.
+   */
+  getModels?(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
 }

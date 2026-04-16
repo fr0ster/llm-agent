@@ -353,3 +353,103 @@ describe('OpenAIProvider — chat() options forwarding', () => {
     assert.equal('stop' in capturedBody, false);
   });
 });
+
+// ---------------------------------------------------------------------------
+// chat() — usage extraction
+// ---------------------------------------------------------------------------
+
+describe('OpenAIProvider — chat() usage', () => {
+  it('returns usage from response', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: {
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        usage: {
+          prompt_tokens: 10,
+          completion_tokens: 20,
+          total_tokens: 30,
+        },
+      },
+    });
+    const result = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.deepEqual(result.usage, {
+      prompt_tokens: 10,
+      completion_tokens: 20,
+      total_tokens: 30,
+    });
+  });
+
+  it('returns undefined usage when not present', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: {
+        choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+      },
+    });
+    const result = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(result.usage, undefined);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamChat() — stream_options and usage chunk
+// ---------------------------------------------------------------------------
+
+describe('OpenAIProvider — streamChat() usage', () => {
+  it('sends stream_options with include_usage: true', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: (async function* () {
+          yield Buffer.from('data: [DONE]\n\n');
+        })(),
+      };
+    };
+    for await (const _chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.stream_options, { include_usage: true });
+  });
+
+  it('yields usage-only chunk at end of stream', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: (async function* () {
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{"content":"Hello"},"finish_reason":null}]}\n\n',
+        );
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}\n\n',
+        );
+        yield Buffer.from(
+          'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":1,"total_tokens":6}}\n\n',
+        );
+        yield Buffer.from('data: [DONE]\n\n');
+      })(),
+    });
+    const chunks: import('../../types.js').LLMResponse[] = [];
+    for await (const chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      chunks.push(chunk);
+    }
+    const usageChunk = chunks.find((c) => c.usage !== undefined);
+    assert.ok(usageChunk, 'expected a chunk with usage');
+    assert.deepEqual(usageChunk.usage, {
+      prompt_tokens: 5,
+      completion_tokens: 1,
+      total_tokens: 6,
+    });
+  });
+});

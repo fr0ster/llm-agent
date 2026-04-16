@@ -76,10 +76,21 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
         if (block.type === 'text') textContent += block.text;
       }
 
+      const rawUsage = response.data.usage;
+      const usage = rawUsage
+        ? {
+            prompt_tokens: rawUsage.input_tokens ?? 0,
+            completion_tokens: rawUsage.output_tokens ?? 0,
+            total_tokens:
+              (rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0),
+          }
+        : undefined;
+
       return {
         content: textContent,
         finishReason: response.data.stop_reason,
         raw: response.data,
+        usage,
       };
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
@@ -170,11 +181,30 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               parsed.delta?.type === 'text_delta'
             ) {
               yield { content: parsed.delta.text || '', raw: parsed };
+            } else if (eventType === 'message_start' && parsed.message?.usage) {
+              const u = parsed.message.usage;
+              yield {
+                content: '',
+                raw: parsed,
+                usage: {
+                  prompt_tokens: u.input_tokens ?? 0,
+                  completion_tokens: u.output_tokens ?? 0,
+                  total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+                },
+              };
             } else if (eventType === 'message_delta') {
+              const u = parsed.usage;
               yield {
                 content: '',
                 finishReason: parsed.delta?.stop_reason,
                 raw: parsed,
+                usage: u
+                  ? {
+                      prompt_tokens: 0,
+                      completion_tokens: u.output_tokens ?? 0,
+                      total_tokens: u.output_tokens ?? 0,
+                    }
+                  : undefined,
               };
             } else if (eventType === 'error') {
               const error = parsed.error as { message?: string } | undefined;
