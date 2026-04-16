@@ -54,7 +54,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         tools: tools && tools.length > 0 ? tools : undefined,
         tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
         temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 4096,
+        ...this.getTokenLimitParam(this.config.maxTokens || 4096),
       });
 
       const choice = response.data.choices[0];
@@ -88,7 +88,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           tools: tools && tools.length > 0 ? tools : undefined,
           tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
           temperature: this.config.temperature || 0.7,
-          max_tokens: this.config.maxTokens || 4096,
+          ...this.getTokenLimitParam(this.config.maxTokens || 4096),
           stream: true,
         },
         { responseType: 'stream' },
@@ -147,6 +147,19 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     return (response.data.data as Array<{ id: string; owned_by?: string }>)
       .filter((m) => /embed/i.test(m.id))
       .map((m) => ({ id: m.id, owned_by: m.owned_by }));
+  }
+
+  /**
+   * Return the appropriate token limit parameter for the model.
+   * Newer models (o1, o3, gpt-5+) require max_completion_tokens;
+   * legacy models use max_tokens.
+   */
+  private getTokenLimitParam(maxTokens: number): Record<string, number> {
+    const model = this.model.toLowerCase();
+    const needsCompletionTokens = /^(o[13]|gpt-5)/.test(model);
+    return needsCompletionTokens
+      ? { max_completion_tokens: maxTokens }
+      : { max_tokens: maxTokens };
   }
 
   /**
