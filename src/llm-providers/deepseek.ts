@@ -1,16 +1,10 @@
 /**
- * DeepSeek LLM Provider
+ * DeepSeek LLM Provider — extends OpenAI (DeepSeek uses OpenAI-compatible API).
  */
 
-import axios, { type AxiosInstance } from 'axios';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type {
-  LLMCallOptions,
-  LLMProviderConfig,
-  LLMResponse,
-  Message,
-} from '../types.js';
-import { BaseLLMProvider } from './base.js';
+import type { LLMProviderConfig, Message } from '../types.js';
+import { type OpenAIConfig, OpenAIProvider } from './openai.js';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
   model?: string;
@@ -18,147 +12,37 @@ export interface DeepSeekConfig extends LLMProviderConfig {
   maxTokens?: number;
 }
 
-export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
-  readonly client: AxiosInstance;
-  readonly model: string;
+export class DeepSeekProvider extends OpenAIProvider {
+  protected override readonly providerName: string = 'DeepSeek';
 
   constructor(config: DeepSeekConfig) {
-    super(config);
-    this.validateConfig();
-    this.model = config.model || 'deepseek-chat';
-    this.client = axios.create({
+    super({
+      ...config,
       baseURL: config.baseURL || 'https://api.deepseek.com/v1',
-      headers: {
-        Authorization: `Bearer ${config.apiKey}`,
-        'Content-Type': 'application/json',
-      },
-    });
+      model: config.model || 'deepseek-chat',
+    } as OpenAIConfig);
   }
 
-  async chat(
-    messages: Message[],
-    tools?: unknown[],
-    options?: LLMCallOptions,
-  ): Promise<LLMResponse> {
-    try {
-      const model = options?.model ?? this.model;
-      const temperature =
-        options?.temperature ?? this.config.temperature ?? 0.7;
-      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
-
-      const response = await this.client.post('/chat/completions', {
-        model,
-        messages: this.formatMessages(messages),
-        tools: tools && tools.length > 0 ? tools : undefined,
-        tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-        temperature,
-        max_tokens: maxTokens,
-        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-        ...(options?.stop ? { stop: options.stop } : {}),
-      });
-      const choice = response.data.choices[0];
-      return {
-        content: choice.message.content || '',
-        finishReason: choice.finish_reason,
-        raw: response.data,
-      };
-    } catch (error: unknown) {
-      const message = axios.isAxiosError(error)
-        ? (error.response?.data as { error?: { message?: string } })?.error
-            ?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      throw new Error(`DeepSeek API error: ${message}`);
-    }
+  /**
+   * DeepSeek always uses max_tokens (no gpt-5/o1/o3 distinction).
+   */
+  protected override getTokenLimitParam(
+    _model: string,
+    maxTokens: number,
+  ): Record<string, number> {
+    return { max_tokens: maxTokens };
   }
 
-  async *streamChat(
-    messages: Message[],
-    tools?: unknown[],
-    options?: LLMCallOptions,
-  ): AsyncIterable<LLMResponse> {
-    try {
-      const model = options?.model ?? this.model;
-      const temperature =
-        options?.temperature ?? this.config.temperature ?? 0.7;
-      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
-
-      const response = await this.client.post(
-        '/chat/completions',
-        {
-          model,
-          messages: this.formatMessages(messages),
-          tools: tools && tools.length > 0 ? tools : undefined,
-          tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature,
-          max_tokens: maxTokens,
-          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
-          ...(options?.stop ? { stop: options.stop } : {}),
-          stream: true,
-          stream_options: { include_usage: true },
-        },
-        { responseType: 'stream' },
-      );
-
-      const stream = response.data;
-      let buffer = '';
-      for await (const chunk of stream) {
-        buffer += chunk.toString();
-        const lines = buffer.split('\n');
-        buffer = lines.pop() || '';
-        for (const line of lines) {
-          const trimmed = line.trim();
-          if (!trimmed?.startsWith('data: ')) continue;
-          const data = trimmed.slice(6);
-          if (data === '[DONE]') break;
-          try {
-            const parsed = JSON.parse(data);
-            const choice = parsed.choices?.[0];
-            if (choice?.delta) {
-              yield {
-                content: choice.delta.content || '',
-                finishReason: choice.finish_reason,
-                raw: parsed,
-              };
-            }
-            // Usage chunk (stream_options: include_usage)
-            if (parsed.usage && !choice) {
-              yield {
-                content: '',
-                raw: parsed,
-              };
-            }
-          } catch (_e) {}
-        }
-      }
-    } catch (error: unknown) {
-      const message = axios.isAxiosError(error)
-        ? (error.response?.data as { error?: { message?: string } })?.error
-            ?.message || error.message
-        : error instanceof Error
-          ? error.message
-          : String(error);
-      throw new Error(`DeepSeek Streaming error: ${message}`);
-    }
-  }
-
-  async getModels(): Promise<IModelInfo[]> {
-    const response = await this.client.get('/models');
-    return (response.data.data as Array<{ id: string; owned_by?: string }>).map(
-      (m) => ({ id: m.id, owned_by: m.owned_by }),
-    );
-  }
-
-  async getEmbeddingModels(): Promise<IModelInfo[]> {
+  override async getEmbeddingModels(): Promise<IModelInfo[]> {
     return [];
   }
 
   /**
-   * Format messages with strict protocol enforcement.
-   * Drops orphaned tool messages and ensures correct content types.
+   * Stricter formatMessages — tracks known tool_call_ids and drops orphans.
    */
-  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+  protected override formatMessages(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     const formatted: Array<Record<string, unknown>> = [];
     const knownToolCallIds = new Set<string>();
 
@@ -174,12 +58,11 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
         msg.tool_calls.length > 0
       ) {
         entry.tool_calls = msg.tool_calls;
-        entry.content = msg.content || null; // Protocol requirement
+        entry.content = msg.content || null;
         for (const tc of msg.tool_calls) if (tc.id) knownToolCallIds.add(tc.id);
       }
 
       if (msg.role === 'tool') {
-        // Drop tool messages that don't have a matching call ID in history
         if (!msg.tool_call_id || !knownToolCallIds.has(msg.tool_call_id))
           continue;
         entry.tool_call_id = msg.tool_call_id;

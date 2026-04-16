@@ -45,6 +45,11 @@ export interface LLMResponse {
   content: string;
   raw?: unknown;
   finishReason?: string;
+  usage?: {
+    prompt_tokens: number;
+    completion_tokens: number;
+    total_tokens: number;
+  };
 }
 
 export interface LLMProviderConfig {

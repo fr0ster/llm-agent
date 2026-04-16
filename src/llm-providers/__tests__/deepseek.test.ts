@@ -204,3 +204,32 @@ describe('chat() options forwarding', () => {
     assert.equal(capturedBody.max_tokens, 100);
   });
 });
+
+// ---------------------------------------------------------------------------
+// streamChat() — inherits stream_options from OpenAI
+// ---------------------------------------------------------------------------
+
+describe('DeepSeekProvider — streamChat() inherits usage', () => {
+  it('sends stream_options with include_usage: true', async () => {
+    const provider = new DeepSeekProvider({ apiKey: 'sk-test' });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: (async function* () {
+          yield Buffer.from('data: [DONE]\n\n');
+        })(),
+      };
+    };
+    for await (const _chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      // drain
+    }
+    assert.deepEqual(capturedBody.stream_options, { include_usage: true });
+  });
+});
