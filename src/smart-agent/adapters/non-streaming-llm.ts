@@ -19,10 +19,14 @@ import type {
 
 export class NonStreamingLlm implements ILlm {
   healthCheck?: ILlm['healthCheck'];
+  getModels?: ILlm['getModels'];
 
   constructor(private readonly inner: ILlm) {
     if (inner.healthCheck) {
       this.healthCheck = inner.healthCheck.bind(inner);
+    }
+    if (inner.getModels) {
+      this.getModels = inner.getModels.bind(inner);
     }
   }
 
