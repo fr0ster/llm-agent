@@ -151,10 +151,10 @@ describe('OpenAIProvider — formatMessages', () => {
 // ---------------------------------------------------------------------------
 
 describe('OpenAIProvider — getTokenLimitParam', () => {
-  // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const param = (model: string) => {
     const p = new OpenAIProvider({ apiKey: 'sk-test', model });
-    return (p as any).getTokenLimitParam(1024);
+    // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
+    return (p as any).getTokenLimitParam(model, 1024);
   };
 
   it('returns max_tokens for gpt-4o', () => {
@@ -241,5 +241,115 @@ describe('OpenAIProvider — streamChat error handling', () => {
         return true;
       },
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// chat() options forwarding
+// ---------------------------------------------------------------------------
+
+describe('OpenAIProvider — chat() options forwarding', () => {
+  it('uses per-request model override', async () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      model: 'gpt-5',
+      temperature: 0.1,
+      maxTokens: 10,
+    });
+    assert.equal(capturedBody.model, 'gpt-5');
+    assert.equal(capturedBody.temperature, 0.1);
+    assert.equal(capturedBody.max_completion_tokens, 10);
+    assert.equal(capturedBody.max_tokens, undefined);
+  });
+
+  it('falls back to config when no options provided', async () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+      temperature: 0.5,
+      maxTokens: 2048,
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedBody.model, 'gpt-4o');
+    assert.equal(capturedBody.temperature, 0.5);
+    assert.equal(capturedBody.max_tokens, 2048);
+  });
+
+  it('forwards topP and stop options', async () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      topP: 0.9,
+      stop: ['\n'],
+    });
+    assert.equal(capturedBody.top_p, 0.9);
+    assert.deepEqual(capturedBody.stop, ['\n']);
+  });
+
+  it('does not include topP/stop when not provided', async () => {
+    const provider = new OpenAIProvider({
+      apiKey: 'test-key',
+      model: 'gpt-4o',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal('top_p' in capturedBody, false);
+    assert.equal('stop' in capturedBody, false);
   });
 });

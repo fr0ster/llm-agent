@@ -56,6 +56,15 @@ export interface LLMProviderConfig {
   maxTokens?: number;
 }
 
+export interface LLMCallOptions {
+  /** Per-request model override. */
+  model?: string;
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  stop?: string[];
+}
+
 // ---------------------------------------------------------------------------
 // Streaming types (used by BaseAgent subclasses)
 // ---------------------------------------------------------------------------

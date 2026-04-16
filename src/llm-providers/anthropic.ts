@@ -4,7 +4,12 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type {
+  LLMCallOptions,
+  LLMProviderConfig,
+  LLMResponse,
+  Message,
+} from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface AnthropicConfig extends LLMProviderConfig {
@@ -33,29 +38,46 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     });
   }
 
-  async chat(messages: Message[]): Promise<LLMResponse> {
+  async chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse> {
     try {
-      // Anthropic API uses different message format
       const systemMessage = messages.find((m) => m.role === 'system');
       const conversationMessages = messages.filter((m) => m.role !== 'system');
 
       const requestBody: Record<string, unknown> = {
-        model: this.model,
+        model: options?.model ?? this.model,
         messages: this.formatMessages(conversationMessages),
-        max_tokens: this.config.maxTokens || 4096,
-        temperature: this.config.temperature || 0.7,
+        max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
+        temperature: options?.temperature ?? this.config.temperature ?? 0.7,
+        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+        ...(options?.stop ? { stop_sequences: options.stop } : {}),
       };
 
       if (systemMessage) {
         requestBody.system = systemMessage.content;
       }
 
+      if (tools && tools.length > 0) {
+        requestBody.tools = tools;
+      }
+
       const response = await this.client.post('/messages', requestBody);
 
-      const content = response.data.content[0];
+      // Handle multi-block response (text + tool_use)
+      const content = response.data.content as Array<{
+        type?: string;
+        text?: string;
+      }>;
+      let textContent = '';
+      for (const block of content) {
+        if (block.type === 'text') textContent += block.text;
+      }
 
       return {
-        content: content.text || '',
+        content: textContent,
         finishReason: response.data.stop_reason,
         raw: response.data,
       };
@@ -70,11 +92,112 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     }
   }
 
-  // biome-ignore lint/correctness/useYield: intentionally unimplemented generator — streaming goes through AnthropicAgent
-  async *streamChat(_messages: Message[]): AsyncIterable<LLMResponse> {
-    throw new Error(
-      'AnthropicProvider.streamChat() is not used directly. Use AnthropicAgent.streamLLMWithTools() for streaming.',
-    );
+  async *streamChat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): AsyncIterable<LLMResponse> {
+    const systemMessage = messages.find((m) => m.role === 'system');
+    const conversationMessages = messages.filter((m) => m.role !== 'system');
+
+    const requestBody: Record<string, unknown> = {
+      model: options?.model ?? this.model,
+      messages: this.formatMessages(conversationMessages),
+      max_tokens: options?.maxTokens ?? this.config.maxTokens ?? 4096,
+      temperature: options?.temperature ?? this.config.temperature ?? 0.7,
+      stream: true,
+      ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+      ...(options?.stop ? { stop_sequences: options.stop } : {}),
+    };
+
+    if (systemMessage) {
+      requestBody.system = systemMessage.content;
+    }
+
+    if (tools && tools.length > 0) {
+      requestBody.tools = tools;
+    }
+
+    const baseURL = this.config.baseURL || 'https://api.anthropic.com/v1';
+    const response = await fetch(`${baseURL}/messages`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-api-key': this.config.apiKey ?? '',
+        'anthropic-version': '2023-06-01',
+      },
+      body: JSON.stringify(requestBody),
+    });
+
+    if (!response.ok || !response.body) {
+      const text = await response.text().catch(() => '');
+      throw new Error(
+        `Anthropic streaming error: HTTP ${response.status} — ${text}`,
+      );
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        let eventType = '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) {
+            eventType = '';
+            continue;
+          }
+          if (trimmed.startsWith('event: ')) {
+            eventType = trimmed.slice(7);
+            continue;
+          }
+          if (!trimmed.startsWith('data: ')) continue;
+
+          const data = trimmed.slice(6);
+          try {
+            const parsed = JSON.parse(data);
+            if (
+              eventType === 'content_block_delta' &&
+              parsed.delta?.type === 'text_delta'
+            ) {
+              yield { content: parsed.delta.text || '', raw: parsed };
+            } else if (eventType === 'message_delta') {
+              yield {
+                content: '',
+                finishReason: parsed.delta?.stop_reason,
+                raw: parsed,
+              };
+            } else if (eventType === 'error') {
+              const error = parsed.error as { message?: string } | undefined;
+              throw new Error(
+                `Anthropic stream error: ${error?.message ?? 'unknown'}`,
+              );
+            } else {
+              yield { content: '', raw: parsed };
+            }
+          } catch (e) {
+            if (
+              e instanceof Error &&
+              e.message.startsWith('Anthropic stream error:')
+            ) {
+              throw e;
+            }
+            /* incomplete JSON — skip */
+          }
+        }
+      }
+    } finally {
+      reader.releaseLock();
+    }
   }
 
   async getModels(): Promise<IModelInfo[]> {

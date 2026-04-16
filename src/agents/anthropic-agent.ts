@@ -33,51 +33,129 @@ export class AnthropicAgent extends BaseAgent {
     tools: unknown[],
     options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
-    // Convert MCP tools to Anthropic tool format
     const anthropicTools = this.convertToolsToAnthropicTools(tools);
 
-    // Format messages for Anthropic
-    const systemMessage = messages.find((m) => m.role === 'system');
-    const conversationMessages = messages.filter((m) => m.role !== 'system');
-    const formattedMessages =
-      this.formatMessagesForAnthropic(conversationMessages);
+    // Pass all messages (including system) — provider handles system message separation
+    const response = await this.llmProvider.chat(
+      messages,
+      anthropicTools.length > 0 ? anthropicTools : undefined,
+      options,
+    );
 
-    const { client, model, config } = this.llmProvider;
-
-    // Call Anthropic API with tools
-    const requestBody: Record<string, unknown> = {
-      model: options?.model ?? model,
-      messages: formattedMessages,
-      max_tokens: config.maxTokens || 4096,
-      temperature: config.temperature || 0.7,
+    return {
+      content: response.content,
+      raw: response.raw,
     };
+  }
 
-    if (systemMessage) {
-      requestBody.system = systemMessage.content;
-    }
+  /**
+   * Stream Anthropic response via real SSE streaming.
+   * Delegates to provider.streamChat() and parses raw chunks for tool calls.
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    const anthropicTools = this.convertToolsToAnthropicTools(tools);
 
-    if (anthropicTools.length > 0) {
-      requestBody.tools = anthropicTools;
-    }
+    const toolCallMap = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+    let blockIndex = 0;
 
-    const response = await client.post('/messages', requestBody);
+    for await (const chunk of this.llmProvider.streamChat(
+      messages,
+      anthropicTools.length > 0 ? anthropicTools : undefined,
+      options,
+    )) {
+      // Yield text deltas
+      if (chunk.content) {
+        yield { type: 'text', delta: chunk.content };
+      }
 
-    const content = response.data.content as Array<{
-      type?: string;
-      text?: string;
-    }>;
-    let textContent = '';
+      if (chunk.raw && typeof chunk.raw === 'object') {
+        const raw = chunk.raw as Record<string, unknown>;
 
-    for (const block of content) {
-      if (block.type === 'text') {
-        textContent += block.text;
+        // content_block_start — detect tool_use blocks
+        if (raw.type === 'content_block_start' && raw.content_block) {
+          const block = raw.content_block as Record<string, unknown>;
+          if (block.type === 'tool_use') {
+            toolCallMap.set(blockIndex, {
+              id: (block.id as string) ?? '',
+              name: (block.name as string) ?? '',
+              arguments: '',
+            });
+          }
+          blockIndex++;
+        }
+
+        // content_block_delta — accumulate tool input JSON
+        if (raw.type === 'content_block_delta' && raw.delta) {
+          const delta = raw.delta as Record<string, unknown>;
+          if (delta.type === 'input_json_delta' && delta.partial_json) {
+            const current = toolCallMap.get(blockIndex - 1);
+            if (current) current.arguments += delta.partial_json as string;
+          }
+        }
+
+        // message_delta — finish reason
+        if (raw.type === 'message_delta' && raw.delta) {
+          const delta = raw.delta as Record<string, unknown>;
+          const reason = delta.stop_reason as string | undefined;
+          if (reason === 'tool_use') finishReason = 'tool_calls';
+          else if (reason === 'max_tokens') finishReason = 'length';
+          else if (reason === 'end_turn' || reason === 'stop_sequence')
+            finishReason = 'stop';
+        }
+
+        // message_start — usage
+        if (raw.type === 'message_start' && raw.message) {
+          const msg = raw.message as Record<string, unknown>;
+          const usage = msg.usage as Record<string, number> | undefined;
+          if (usage) {
+            yield {
+              type: 'usage',
+              promptTokens: usage.input_tokens ?? 0,
+              completionTokens: usage.output_tokens ?? 0,
+            };
+          }
+        }
+      }
+
+      // Track finish reason from provider
+      if (chunk.finishReason) {
+        if (chunk.finishReason === 'tool_use') finishReason = 'tool_calls';
+        else if (chunk.finishReason === 'max_tokens') finishReason = 'length';
+        else finishReason = 'stop';
       }
     }
 
-    return {
-      content: textContent,
-      raw: response.data,
-    };
+    // Emit accumulated tool calls
+    if (toolCallMap.size > 0) {
+      const toolCalls = [...toolCallMap.entries()]
+        .sort(([a], [b]) => a - b)
+        .filter(([, tc]) => tc.name)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try {
+              return JSON.parse(tc.arguments) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })(),
+        }));
+      if (toolCalls.length > 0) {
+        yield { type: 'tool_calls', toolCalls };
+        finishReason = 'tool_calls';
+      }
+    }
+
+    yield { type: 'done', finishReason };
   }
 
   /**
@@ -101,69 +179,5 @@ export class AnthropicAgent extends BaseAgent {
         },
       };
     });
-  }
-
-  /**
-   * Format messages for Anthropic API
-   */
-  private formatMessagesForAnthropic(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    return messages.map((msg) => {
-      return {
-        role: msg.role === 'assistant' ? 'assistant' : 'user',
-        content: msg.content,
-      };
-    });
-  }
-
-  /**
-   * Stream Anthropic response via real SSE streaming.
-   */
-  protected async *streamLLMWithTools(
-    messages: Message[],
-    tools: unknown[],
-    options?: AgentCallOptions,
-  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    const anthropicTools = this.convertToolsToAnthropicTools(tools);
-
-    const systemMessage = messages.find((m) => m.role === 'system');
-    const conversationMessages = messages.filter((m) => m.role !== 'system');
-    const formattedMessages =
-      this.formatMessagesForAnthropic(conversationMessages);
-
-    const { model, config } = this.llmProvider;
-
-    const baseURL = config.baseURL || 'https://api.anthropic.com/v1';
-    const headers: Record<string, string> = {
-      'x-api-key': config.apiKey ?? '',
-      'anthropic-version': '2023-06-01',
-    };
-
-    const requestBody: Record<string, unknown> = {
-      model: options?.model ?? model,
-      messages: formattedMessages,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
-      temperature: options?.temperature ?? config.temperature ?? 0.7,
-      stream: true,
-    };
-
-    if (systemMessage) {
-      requestBody.system = systemMessage.content;
-    }
-
-    if (anthropicTools.length > 0) {
-      requestBody.tools = anthropicTools;
-    }
-
-    if (options?.topP !== undefined) {
-      requestBody.top_p = options.topP;
-    }
-
-    if (options?.stop) {
-      requestBody.stop_sequences = options.stop;
-    }
-
-    yield* this.streamAnthropicSSE(`${baseURL}/messages`, headers, requestBody);
   }
 }

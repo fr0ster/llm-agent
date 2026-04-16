@@ -4,7 +4,12 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type {
+  LLMCallOptions,
+  LLMProviderConfig,
+  LLMResponse,
+  Message,
+} from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
@@ -30,15 +35,26 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
     });
   }
 
-  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
+  async chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse> {
     try {
+      const model = options?.model ?? this.model;
+      const temperature =
+        options?.temperature ?? this.config.temperature ?? 0.7;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+
       const response = await this.client.post('/chat/completions', {
-        model: this.model,
+        model,
         messages: this.formatMessages(messages),
         tools: tools && tools.length > 0 ? tools : undefined,
         tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-        temperature: this.config.temperature || 0.7,
-        max_tokens: this.config.maxTokens || 4096,
+        temperature,
+        max_tokens: maxTokens,
+        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+        ...(options?.stop ? { stop: options.stop } : {}),
       });
       const choice = response.data.choices[0];
       return {
@@ -60,17 +76,25 @@ export class DeepSeekProvider extends BaseLLMProvider<DeepSeekConfig> {
   async *streamChat(
     messages: Message[],
     tools?: unknown[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
     try {
+      const model = options?.model ?? this.model;
+      const temperature =
+        options?.temperature ?? this.config.temperature ?? 0.7;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+
       const response = await this.client.post(
         '/chat/completions',
         {
-          model: this.model,
+          model,
           messages: this.formatMessages(messages),
           tools: tools && tools.length > 0 ? tools : undefined,
           tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature: this.config.temperature || 0.7,
-          max_tokens: this.config.maxTokens || 4096,
+          temperature,
+          max_tokens: maxTokens,
+          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+          ...(options?.stop ? { stop: options.stop } : {}),
           stream: true,
           stream_options: { include_usage: true },
         },

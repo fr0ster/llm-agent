@@ -4,7 +4,12 @@
 
 import axios, { type AxiosInstance } from 'axios';
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type {
+  LLMCallOptions,
+  LLMProviderConfig,
+  LLMResponse,
+  Message,
+} from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
@@ -46,15 +51,26 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     });
   }
 
-  async chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse> {
+  async chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse> {
     try {
+      const model = options?.model ?? this.model;
+      const temperature =
+        options?.temperature ?? this.config.temperature ?? 0.7;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+
       const response = await this.client.post('/chat/completions', {
-        model: this.model,
+        model,
         messages: this.formatMessages(messages),
         tools: tools && tools.length > 0 ? tools : undefined,
         tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-        temperature: this.config.temperature || 0.7,
-        ...this.getTokenLimitParam(this.config.maxTokens || 4096),
+        temperature,
+        ...this.getTokenLimitParam(model, maxTokens),
+        ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+        ...(options?.stop ? { stop: options.stop } : {}),
       });
 
       const choice = response.data.choices[0];
@@ -78,17 +94,25 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   async *streamChat(
     messages: Message[],
     tools?: unknown[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse> {
     try {
+      const model = options?.model ?? this.model;
+      const temperature =
+        options?.temperature ?? this.config.temperature ?? 0.7;
+      const maxTokens = options?.maxTokens ?? this.config.maxTokens ?? 4096;
+
       const response = await this.client.post(
         '/chat/completions',
         {
-          model: this.model,
+          model,
           messages: this.formatMessages(messages),
           tools: tools && tools.length > 0 ? tools : undefined,
           tool_choice: tools && tools.length > 0 ? 'auto' : undefined,
-          temperature: this.config.temperature || 0.7,
-          ...this.getTokenLimitParam(this.config.maxTokens || 4096),
+          temperature,
+          ...this.getTokenLimitParam(model, maxTokens),
+          ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
+          ...(options?.stop ? { stop: options.stop } : {}),
           stream: true,
         },
         { responseType: 'stream' },
@@ -154,9 +178,12 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * Newer models (o1, o3, gpt-5+) require max_completion_tokens;
    * legacy models use max_tokens.
    */
-  private getTokenLimitParam(maxTokens: number): Record<string, number> {
-    const model = this.model.toLowerCase();
-    const needsCompletionTokens = /^(o[13]|gpt-5)/.test(model);
+  private getTokenLimitParam(
+    model: string,
+    maxTokens: number,
+  ): Record<string, number> {
+    const normalized = model.toLowerCase();
+    const needsCompletionTokens = /^(o[13]|gpt-5)/.test(normalized);
     return needsCompletionTokens
       ? { max_completion_tokens: maxTokens }
       : { max_tokens: maxTokens };
