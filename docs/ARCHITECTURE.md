@@ -381,7 +381,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 | Interface | Role | Default implementation |
 |---|---|---|
-| `ILlm` | Chat/stream model abstraction used by `SmartAgent` | `RetryLlm(CircuitBreakerLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts` |
+| `ILlm` | Chat/stream model abstraction used by `SmartAgent`; optional `getModels()` for model discovery | `RetryLlm(CircuitBreakerLlm(LlmAdapter(BaseAgent)))` via `providers.ts` + `builder.ts`; `NonStreamingLlm` decorator proxies `getModels()` and `healthCheck()` |
 | `IRequestLogger` | Per-model, per-component usage tracking | `DefaultRequestLogger` (auto-created by builder) |
 | `IModelProvider` | Model discovery and per-request model selection; exposes `getEmbeddingModels()` served via `GET /v1/embedding-models` | `LlmAdapter` (auto-detected from `mainLlm`) |
 | `IEmbedder` | Text → vector embedding; `embed()` returns `IEmbedResult { vector: number[]; usage?: { promptTokens: number; totalTokens: number } }` | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
