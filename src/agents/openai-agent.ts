@@ -33,34 +33,17 @@ export class OpenAIAgent extends BaseAgent {
     tools: unknown[],
     options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
-    // Convert MCP tools to OpenAI function format
     const functions = this.convertToolsToOpenAIFunctions(tools);
 
-    // Format messages for OpenAI
-    const formattedMessages = this.formatMessagesForOpenAI(messages);
-
-    const { client, model, config } = this.llmProvider;
-
-    // Call OpenAI API with tools
-    const response = await client.post('/chat/completions', {
-      model: options?.model ?? model,
-      messages: formattedMessages,
-      tools: functions.length > 0 ? functions : undefined,
-      tool_choice: functions.length > 0 ? 'auto' : undefined,
-      temperature: options?.temperature ?? config.temperature ?? 0.7,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
-      top_p: options?.topP,
-      stop: options?.stop,
-    });
-
-    const choice = (
-      response.data.choices as Array<Record<string, unknown>>
-    )?.[0];
-    const message = (choice?.message as Record<string, unknown>) ?? {};
+    const response = await this.llmProvider.chat(
+      messages,
+      functions.length > 0 ? functions : undefined,
+      options,
+    );
 
     return {
-      content: (message.content as string) || '',
-      raw: response.data,
+      content: response.content,
+      raw: response.raw,
     };
   }
 
@@ -74,30 +57,101 @@ export class OpenAIAgent extends BaseAgent {
   ): AsyncGenerator<AgentStreamChunk, void, unknown> {
     const functions = this.convertToolsToOpenAIFunctions(tools);
 
-    const { model, config } = this.llmProvider;
-    const baseURL = config.baseURL || 'https://api.openai.com/v1';
-    const headers: Record<string, string> = {
-      Authorization: `Bearer ${config.apiKey}`,
-    };
-    if (config.organization) {
-      headers['OpenAI-Organization'] = config.organization;
-    }
-    if (config.project) {
-      headers['OpenAI-Project'] = config.project;
+    const toolCallMap = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+
+    for await (const chunk of this.llmProvider.streamChat(
+      messages,
+      functions.length > 0 ? functions : undefined,
+      options,
+    )) {
+      // Yield text deltas
+      if (chunk.content) {
+        yield { type: 'text', delta: chunk.content };
+      }
+
+      // Extract usage from raw
+      const raw = chunk.raw as Record<string, unknown> | undefined;
+      if (raw) {
+        const usage = raw.usage as
+          | { prompt_tokens?: number; completion_tokens?: number }
+          | undefined;
+        if (usage) {
+          yield {
+            type: 'usage',
+            promptTokens: usage.prompt_tokens ?? 0,
+            completionTokens: usage.completion_tokens ?? 0,
+          };
+        }
+
+        // Accumulate tool calls from raw delta
+        const choices = raw.choices as
+          | Array<{
+              delta?: {
+                tool_calls?: Array<{
+                  index: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+            }>
+          | undefined;
+        const delta = choices?.[0]?.delta;
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index;
+            if (!toolCallMap.has(index)) {
+              toolCallMap.set(index, {
+                id: tc.id ?? '',
+                name: tc.function?.name ?? '',
+                arguments: '',
+              });
+            }
+            if (tc.function?.arguments) {
+              const accumulated = toolCallMap.get(index);
+              if (accumulated) {
+                accumulated.arguments += tc.function.arguments;
+              }
+            }
+          }
+        }
+      }
+
+      // Track finish reason
+      if (chunk.finishReason) {
+        finishReason =
+          chunk.finishReason === 'tool_calls'
+            ? 'tool_calls'
+            : chunk.finishReason === 'length'
+              ? 'length'
+              : chunk.finishReason === 'error'
+                ? 'error'
+                : 'stop';
+      }
     }
 
-    yield* this.streamOpenAICompatible(`${baseURL}/chat/completions`, headers, {
-      model: options?.model ?? model,
-      messages: this.formatMessagesForOpenAI(messages),
-      tools: functions.length > 0 ? functions : undefined,
-      tool_choice: functions.length > 0 ? 'auto' : undefined,
-      temperature: options?.temperature ?? config.temperature ?? 0.7,
-      max_tokens: options?.maxTokens ?? config.maxTokens ?? 4096,
-      top_p: options?.topP,
-      stop: options?.stop,
-      stream: true,
-      stream_options: { include_usage: true },
-    });
+    // Emit accumulated tool calls
+    if (toolCallMap.size > 0) {
+      const toolCalls = [...toolCallMap.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try {
+              return JSON.parse(tc.arguments) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })(),
+        }));
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
   }
 
   /**
@@ -124,19 +178,5 @@ export class OpenAIAgent extends BaseAgent {
         },
       };
     });
-  }
-
-  /**
-   * Format messages for OpenAI API
-   */
-  private formatMessagesForOpenAI(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    return messages.map((msg) => ({
-      role: msg.role,
-      content: msg.content || null, // OpenAI requires null if empty
-      tool_calls: msg.tool_calls,
-      tool_call_id: msg.tool_call_id,
-    }));
   }
 }
