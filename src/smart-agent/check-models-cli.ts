@@ -245,6 +245,31 @@ if (configPath) {
   modelsToCheck = catalogModels.map((m) => ({ model: m, isEmbedder: false }));
 }
 
+if (configPath) {
+  // Read provider from YAML to warn about non-SAP models
+  const raw = parseYaml(fs.readFileSync(configPath, 'utf8')) as Record<
+    string,
+    unknown
+  >;
+  const pipeline = raw.pipeline as Record<string, unknown> | undefined;
+  const llmConfig = pipeline?.llm as Record<string, unknown> | undefined;
+  const mainProvider = (llmConfig?.main as Record<string, unknown>)?.provider as
+    | string
+    | undefined;
+  const topProvider = (raw.llm as Record<string, unknown>)?.provider as
+    | string
+    | undefined;
+  const provider = mainProvider ?? topProvider;
+
+  if (provider && provider !== 'sap-ai-sdk') {
+    process.stderr.write(
+      `\n  Warning: llm-agent-check uses SAP AI Core OrchestrationClient.\n` +
+        `  Provider "${provider}" models are validated at startup via ILlm.chat() — no CLI check needed.\n\n`,
+    );
+    process.exit(0);
+  }
+}
+
 process.stdout.write(`\n  Checking ${modelsToCheck.length} model(s)...\n`);
 process.stdout.write('  ─────────────────────────────────────────────────\n');
 
