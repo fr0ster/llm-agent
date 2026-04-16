@@ -7,6 +7,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.2.0] — 2026-04-16
+
+### Added
+- **`LLMCallOptions` for per-request provider overrides** — `LLMProvider.chat()` and `streamChat()` now accept an optional `options` parameter for per-request `model`, `temperature`, `maxTokens`, `topP`, and `stop` overrides.
+- **`AnthropicProvider.streamChat()` implementation** — previously threw; now implements real SSE streaming via the Anthropic Messages API.
+
+### Changed
+- **Agents delegate to providers** — `OpenAIAgent`, `DeepSeekAgent`, and `AnthropicAgent` now call `provider.chat()` / `provider.streamChat()` instead of building raw HTTP requests. This matches the pattern `SapCoreAIAgent` already used.
+- **Removed `streamOpenAICompatible()` and `streamAnthropicSSE()` from `BaseAgent`** — dead code after agents were refactored to delegate streaming to providers.
+- **`llm-agent-check` CLI** warns and exits gracefully when used with non-SAP providers.
+
+### Fixed
+- **Startup model check fails for gpt-5+ via `OpenAIAgent`** — the agent bypassed `OpenAIProvider.getTokenLimitParam()` and always sent `max_tokens`, which gpt-5/o1/o3 models reject. Now all code paths use the provider, which correctly selects `max_completion_tokens`. Closes #95.
+
+---
+
 ## [8.1.2] — 2026-04-16
 
 ### Fixed
