@@ -108,18 +108,148 @@ describe('AnthropicProvider — chat error handling', () => {
 });
 
 // ---------------------------------------------------------------------------
-// streamChat — intentionally throws
+// chat() — options forwarding
+// ---------------------------------------------------------------------------
+
+describe('AnthropicProvider — chat() options forwarding', () => {
+  it('uses per-request overrides', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      model: 'claude-4-sonnet',
+      temperature: 0.1,
+      maxTokens: 10,
+    });
+    assert.equal(capturedBody.model, 'claude-4-sonnet');
+    assert.equal(capturedBody.temperature, 0.1);
+    assert.equal(capturedBody.max_tokens, 10);
+  });
+
+  it('forwards tools to the request body', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    const tools = [{ name: 'get_weather', description: 'Get weather' }];
+    await provider.chat([{ role: 'user', content: 'hi' }], tools);
+    assert.deepEqual(capturedBody.tools, tools);
+  });
+
+  it('forwards topP and stop options', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      topP: 0.9,
+      stop: ['END'],
+    });
+    assert.equal(capturedBody.top_p, 0.9);
+    assert.deepEqual(capturedBody.stop_sequences, ['END']);
+  });
+
+  it('handles multi-block response (text + tool_use)', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: {
+        content: [
+          { type: 'text', text: 'Sure, let me ' },
+          { type: 'text', text: 'check that.' },
+          { type: 'tool_use', id: 'call_1', name: 'search', input: {} },
+        ],
+        stop_reason: 'tool_use',
+      },
+    });
+    const result = await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(result.content, 'Sure, let me check that.');
+    assert.equal(result.finishReason, 'tool_use');
+  });
+
+  it('extracts system message from messages array', async () => {
+    const provider = new AnthropicProvider({
+      apiKey: 'test-key',
+      model: 'claude-3-5-sonnet-20241022',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          content: [{ type: 'text', text: 'ok' }],
+          stop_reason: 'end_turn',
+        },
+      };
+    };
+    await provider.chat([
+      { role: 'system', content: 'You are a bot' },
+      { role: 'user', content: 'hi' },
+    ]);
+    assert.equal(capturedBody.system, 'You are a bot');
+    const msgs = capturedBody.messages as Array<{ role: string }>;
+    assert.equal(msgs.length, 1);
+    assert.equal(msgs[0].role, 'user');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// streamChat — is callable (real streaming requires network)
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — streamChat', () => {
-  it('throws "not used directly" error', async () => {
+  it('is a callable function (no longer throws)', () => {
     const provider = new AnthropicProvider({ apiKey: 'sk-test' });
-    await assert.rejects(async () => {
-      for await (const _chunk of provider.streamChat([
-        { role: 'user', content: 'hi' },
-      ])) {
-        // drain
-      }
-    }, /not used directly/);
+    assert.equal(typeof provider.streamChat, 'function');
   });
 });
