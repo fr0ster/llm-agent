@@ -147,6 +147,58 @@ describe('OpenAIProvider — formatMessages', () => {
 });
 
 // ---------------------------------------------------------------------------
+// getTokenLimitParam — max_tokens vs max_completion_tokens
+// ---------------------------------------------------------------------------
+
+describe('OpenAIProvider — getTokenLimitParam', () => {
+  // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
+  const param = (model: string) => {
+    const p = new OpenAIProvider({ apiKey: 'sk-test', model });
+    return (p as any).getTokenLimitParam(1024);
+  };
+
+  it('returns max_tokens for gpt-4o', () => {
+    assert.deepEqual(param('gpt-4o'), { max_tokens: 1024 });
+  });
+
+  it('returns max_tokens for gpt-4o-mini', () => {
+    assert.deepEqual(param('gpt-4o-mini'), { max_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for gpt-5', () => {
+    assert.deepEqual(param('gpt-5'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for gpt-5.2', () => {
+    assert.deepEqual(param('gpt-5.2'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for gpt-5-mini', () => {
+    assert.deepEqual(param('gpt-5-mini'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for o1', () => {
+    assert.deepEqual(param('o1'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for o1-mini', () => {
+    assert.deepEqual(param('o1-mini'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for o3', () => {
+    assert.deepEqual(param('o3'), { max_completion_tokens: 1024 });
+  });
+
+  it('returns max_completion_tokens for o3-mini', () => {
+    assert.deepEqual(param('o3-mini'), { max_completion_tokens: 1024 });
+  });
+
+  it('handles uppercase model names', () => {
+    assert.deepEqual(param('GPT-5.2'), { max_completion_tokens: 1024 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // chat — error handling
 // ---------------------------------------------------------------------------
 
