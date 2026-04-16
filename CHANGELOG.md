@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.1.2] — 2026-04-16
+
+### Fixed
+- **OpenAI provider: 400 error with newer models (gpt-5+, o1, o3)** — newer OpenAI models reject the legacy `max_tokens` parameter and require `max_completion_tokens` instead. `OpenAIProvider` now detects the model name and sends the correct parameter. Closes #94.
+
+---
+
 ## [8.1.1] — 2026-04-16
 
 ### Fixed
