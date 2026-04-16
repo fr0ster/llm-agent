@@ -32,33 +32,125 @@ export class DeepSeekAgent extends BaseAgent {
     tools: unknown[],
     options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
-    // Convert MCP tools to DeepSeek function format (same as OpenAI)
     const functions = this.convertToolsToFunctions(tools);
 
-    // Format messages for DeepSeek
-    const formattedMessages = this.formatMessagesForDeepSeek(messages);
-
-    const { client, model, config } = this.llmProvider;
-
-    // Call DeepSeek API with tools
-    const response = await client.post('/chat/completions', {
-      model: options?.model ?? model,
-      messages: formattedMessages,
-      tools: functions.length > 0 ? functions : undefined,
-      tool_choice: functions.length > 0 ? 'auto' : undefined,
-      temperature: config.temperature || 0.7,
-      max_tokens: config.maxTokens || 4096,
-    });
-
-    const choice = (
-      response.data.choices as Array<Record<string, unknown>>
-    )?.[0];
-    const message = (choice?.message as Record<string, unknown>) ?? {};
+    const response = await this.llmProvider.chat(
+      messages,
+      functions.length > 0 ? functions : undefined,
+      options,
+    );
 
     return {
-      content: (message.content as string) || '',
-      raw: response.data,
+      content: response.content,
+      raw: response.raw,
     };
+  }
+
+  /**
+   * Stream DeepSeek response
+   */
+  protected async *streamLLMWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
+    const functions = this.convertToolsToFunctions(tools);
+
+    const toolCallMap = new Map<
+      number,
+      { id: string; name: string; arguments: string }
+    >();
+    let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
+
+    for await (const chunk of this.llmProvider.streamChat(
+      messages,
+      functions.length > 0 ? functions : undefined,
+      options,
+    )) {
+      // Yield text deltas
+      if (chunk.content) {
+        yield { type: 'text', delta: chunk.content };
+      }
+
+      // Extract usage and tool calls from raw
+      const raw = chunk.raw as Record<string, unknown> | undefined;
+      if (raw) {
+        const usage = raw.usage as
+          | { prompt_tokens?: number; completion_tokens?: number }
+          | undefined;
+        if (usage) {
+          yield {
+            type: 'usage',
+            promptTokens: usage.prompt_tokens ?? 0,
+            completionTokens: usage.completion_tokens ?? 0,
+          };
+        }
+
+        // Accumulate tool calls from raw delta
+        const choices = raw.choices as
+          | Array<{
+              delta?: {
+                tool_calls?: Array<{
+                  index: number;
+                  id?: string;
+                  function?: { name?: string; arguments?: string };
+                }>;
+              };
+            }>
+          | undefined;
+        const delta = choices?.[0]?.delta;
+        if (delta?.tool_calls) {
+          for (const tc of delta.tool_calls) {
+            const index = tc.index;
+            if (!toolCallMap.has(index)) {
+              toolCallMap.set(index, {
+                id: tc.id ?? '',
+                name: tc.function?.name ?? '',
+                arguments: '',
+              });
+            }
+            if (tc.function?.arguments) {
+              const accumulated = toolCallMap.get(index);
+              if (accumulated) {
+                accumulated.arguments += tc.function.arguments;
+              }
+            }
+          }
+        }
+      }
+
+      // Track finish reason
+      if (chunk.finishReason) {
+        finishReason =
+          chunk.finishReason === 'tool_calls'
+            ? 'tool_calls'
+            : chunk.finishReason === 'length'
+              ? 'length'
+              : chunk.finishReason === 'error'
+                ? 'error'
+                : 'stop';
+      }
+    }
+
+    // Emit accumulated tool calls
+    if (toolCallMap.size > 0) {
+      const toolCalls = [...toolCallMap.entries()]
+        .sort(([a], [b]) => a - b)
+        .map(([, tc]) => ({
+          id: tc.id,
+          name: tc.name,
+          arguments: (() => {
+            try {
+              return JSON.parse(tc.arguments) as Record<string, unknown>;
+            } catch {
+              return {};
+            }
+          })(),
+        }));
+      yield { type: 'tool_calls', toolCalls };
+    }
+
+    yield { type: 'done', finishReason };
   }
 
   /**
@@ -85,53 +177,5 @@ export class DeepSeekAgent extends BaseAgent {
         },
       };
     });
-  }
-
-  /**
-   * Format messages for DeepSeek API (same as OpenAI)
-   */
-  private formatMessagesForDeepSeek(
-    messages: Message[],
-  ): Array<Record<string, unknown>> {
-    return messages.map((msg) => {
-      const formatted: Record<string, unknown> = {
-        role: msg.role,
-        // assistant messages with tool_calls must have content=null per OpenAI/DeepSeek protocol
-        content: (msg.tool_calls?.length ? null : msg.content) ?? null,
-      };
-      if (msg.tool_call_id !== undefined)
-        formatted.tool_call_id = msg.tool_call_id;
-      if (msg.tool_calls !== undefined) formatted.tool_calls = msg.tool_calls;
-      return formatted;
-    });
-  }
-
-  /**
-   * Stream DeepSeek response
-   */
-  protected async *streamLLMWithTools(
-    messages: Message[],
-    tools: unknown[],
-    options?: AgentCallOptions,
-  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    const functions = this.convertToolsToFunctions(tools);
-
-    const { model, config } = this.llmProvider;
-    const baseURL = config.baseURL || 'https://api.deepseek.com/v1';
-
-    yield* this.streamOpenAICompatible(
-      `${baseURL}/chat/completions`,
-      { Authorization: `Bearer ${config.apiKey}` },
-      {
-        model: options?.model ?? model,
-        messages: this.formatMessagesForDeepSeek(messages),
-        tools: functions.length > 0 ? functions : undefined,
-        tool_choice: functions.length > 0 ? 'auto' : undefined,
-        temperature: config.temperature || 0.7,
-        max_tokens: config.maxTokens || 4096,
-        stream: true,
-        stream_options: { include_usage: true },
-      },
-    );
   }
 }
