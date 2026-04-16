@@ -170,3 +170,37 @@ describe('DeepSeekProvider — streamChat error handling', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// chat() options forwarding
+// ---------------------------------------------------------------------------
+
+describe('chat() options forwarding', () => {
+  it('uses per-request overrides', async () => {
+    const provider = new DeepSeekProvider({
+      apiKey: 'test-key',
+      model: 'deepseek-chat',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }], undefined, {
+      model: 'deepseek-reasoner',
+      temperature: 0.2,
+      maxTokens: 100,
+    });
+    assert.equal(capturedBody.model, 'deepseek-reasoner');
+    assert.equal(capturedBody.temperature, 0.2);
+    assert.equal(capturedBody.max_tokens, 100);
+  });
+});
