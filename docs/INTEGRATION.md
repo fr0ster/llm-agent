@@ -45,6 +45,8 @@ The core LLM interface for chat and streaming chat:
 
 ```ts
 interface ILlm {
+  readonly model?: string;
+
   chat(
     messages: Message[],
     tools?: LlmTool[],
@@ -56,8 +58,13 @@ interface ILlm {
     tools?: LlmTool[],
     options?: CallOptions,
   ): AsyncIterable<Result<LlmStreamChunk, LlmError>>;
+
+  healthCheck?(options?: CallOptions): Promise<Result<boolean, LlmError>>;
+  getModels?(options?: CallOptions): Promise<Result<IModelInfo[], LlmError>>;
 }
 ```
+
+`LlmResponse.usage` contains token counts (`promptTokens`, `completionTokens`, `totalTokens`) when returned by the provider. All built-in providers populate usage in both `chat()` and `streamChat()` responses.
 
 ### Example: Wrapping a custom provider (Gemini)
 

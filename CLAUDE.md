@@ -51,11 +51,13 @@ Consumer parses raw for tool calls → calls mcpClient.callTool() directly
 ```
 BaseAgent (abstract)
 ├── OpenAIAgent            — native function calling (tools param)
+│   └── DeepSeekAgent      — OpenAI-compatible (extends OpenAIAgent)
 ├── AnthropicAgent         — native tools API (content blocks)
-├── DeepSeekAgent          — OpenAI-compatible function calling
 ├── SapCoreAIAgent     — SAP AI SDK native function calling (@sap-ai-sdk/orchestration)
 └── PromptBasedAgent   — tools described in system prompt
 ```
+
+LLM providers follow the same hierarchy: `DeepSeekProvider extends OpenAIProvider`.
 
 `PromptBasedAgent` is the fallback for providers that don't support native function calling.
 
