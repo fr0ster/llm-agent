@@ -23,6 +23,7 @@ export interface OpenAIConfig extends LLMProviderConfig {
 export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   readonly client: AxiosInstance;
   readonly model: string;
+  protected readonly providerName: string = 'OpenAI';
 
   constructor(config: OpenAIConfig) {
     super(config);
@@ -96,7 +97,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`OpenAI API error: ${message}`);
+      throw new Error(`${this.providerName} API error: ${message}`);
     }
   }
 
@@ -177,7 +178,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
         : error instanceof Error
           ? error.message
           : String(error);
-      throw new Error(`OpenAI Streaming error: ${message}`);
+      throw new Error(`${this.providerName} Streaming error: ${message}`);
     }
   }
 
