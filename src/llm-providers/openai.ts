@@ -200,7 +200,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
    * Newer models (o1, o3, gpt-5+) require max_completion_tokens;
    * legacy models use max_tokens.
    */
-  private getTokenLimitParam(
+  protected getTokenLimitParam(
     model: string,
     maxTokens: number,
   ): Record<string, number> {
@@ -214,7 +214,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
   /**
    * Format messages for OpenAI API with strict protocol enforcement.
    */
-  private formatMessages(messages: Message[]): Array<Record<string, unknown>> {
+  protected formatMessages(
+    messages: Message[],
+  ): Array<Record<string, unknown>> {
     const formatted: Array<Record<string, unknown>> = [];
 
     for (const msg of messages) {
