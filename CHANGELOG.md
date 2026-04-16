@@ -7,6 +7,26 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.3.0] — 2026-04-16
+
+### Added
+- **`LLMResponse.usage` field** — base provider response type now includes optional `usage` with `prompt_tokens`, `completion_tokens`, `total_tokens`.
+- **`ILlm.getModels()` optional method** — consumers using `ILlm` can now discover available models without a separate `IModelProvider` reference.
+- **`NonStreamingLlm` proxies `getModels()`** — model discovery works through the non-streaming decorator.
+
+### Changed
+- **`DeepSeekProvider` extends `OpenAIProvider`** — eliminates ~90% code duplication. DeepSeek inherits `chat()`, `streamChat()`, and `getModels()` from OpenAI; overrides only `getTokenLimitParam()`, `formatMessages()`, and `getEmbeddingModels()`.
+- **`OpenAIProvider` methods now `protected`** — `getTokenLimitParam()` and `formatMessages()` are overridable for subclasses.
+
+### Fixed
+- **OpenAI provider: streaming token usage always 0/0/0** — `streamChat()` was missing `stream_options: { include_usage: true }`, so the API never returned a usage chunk. Closes #98.
+- **OpenAI provider: `chat()` did not return token usage** — usage from the API response was not propagated to `LLMResponse`.
+- **Anthropic provider: streaming token usage missing** — `streamChat()` now yields usage from `message_start` and `message_delta` SSE events.
+- **Anthropic provider: `chat()` did not return token usage** — usage is now mapped from `input_tokens`/`output_tokens` to `LLMResponse.usage`.
+- **SAP AI Core provider: streaming usage field names** — aligned from camelCase to snake_case to match `LLMResponse.usage` type.
+
+---
+
 ## [8.2.0] — 2026-04-16
 
 ### Added
