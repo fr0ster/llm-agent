@@ -3,13 +3,22 @@
  */
 
 import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
+import type {
+  LLMCallOptions,
+  LLMProviderConfig,
+  LLMResponse,
+  Message,
+} from '../types.js';
 
 export interface LLMProvider {
   /**
    * Send a chat message and get response
    */
-  chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse>;
+  chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse>;
 
   /**
    * Stream chat response
@@ -17,6 +26,7 @@ export interface LLMProvider {
   streamChat(
     messages: Message[],
     tools?: unknown[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse>;
 
   /**
@@ -40,11 +50,16 @@ export abstract class BaseLLMProvider<
     this.config = config;
   }
 
-  abstract chat(messages: Message[], tools?: unknown[]): Promise<LLMResponse>;
+  abstract chat(
+    messages: Message[],
+    tools?: unknown[],
+    options?: LLMCallOptions,
+  ): Promise<LLMResponse>;
 
   abstract streamChat(
     messages: Message[],
     tools?: unknown[],
+    options?: LLMCallOptions,
   ): AsyncIterable<LLMResponse>;
 
   /**
