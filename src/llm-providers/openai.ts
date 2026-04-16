@@ -75,10 +75,19 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const choice = response.data.choices[0];
 
+      const usage = response.data.usage
+        ? {
+            prompt_tokens: response.data.usage.prompt_tokens,
+            completion_tokens: response.data.usage.completion_tokens,
+            total_tokens: response.data.usage.total_tokens,
+          }
+        : undefined;
+
       return {
         content: choice.message.content || '',
         finishReason: choice.finish_reason,
         raw: response.data,
+        usage,
       };
     } catch (error: unknown) {
       const message = axios.isAxiosError(error)
@@ -114,6 +123,7 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
           ...(options?.topP !== undefined ? { top_p: options.topP } : {}),
           ...(options?.stop ? { stop: options.stop } : {}),
           stream: true,
+          stream_options: { include_usage: true },
         },
         { responseType: 'stream' },
       );
@@ -135,12 +145,24 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
           try {
             const parsed = JSON.parse(data);
-            const choice = parsed.choices[0];
-            if (choice.delta) {
+            const choice = parsed.choices?.[0];
+            if (choice?.delta) {
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,
                 raw: parsed,
+              };
+            }
+            // Usage-only chunk (stream_options: include_usage)
+            if (parsed.usage && !choice?.delta) {
+              yield {
+                content: '',
+                raw: parsed,
+                usage: {
+                  prompt_tokens: parsed.usage.prompt_tokens,
+                  completion_tokens: parsed.usage.completion_tokens,
+                  total_tokens: parsed.usage.total_tokens,
+                },
               };
             }
           } catch (_e) {
