@@ -327,9 +327,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           ...(tokenUsage
             ? {
                 usage: {
-                  promptTokens: tokenUsage.prompt_tokens || 0,
-                  completionTokens: tokenUsage.completion_tokens || 0,
-                  totalTokens: tokenUsage.total_tokens || 0,
+                  prompt_tokens: tokenUsage.prompt_tokens || 0,
+                  completion_tokens: tokenUsage.completion_tokens || 0,
+                  total_tokens: tokenUsage.total_tokens || 0,
                 },
               }
             : {}),
