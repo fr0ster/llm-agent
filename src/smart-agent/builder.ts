@@ -1064,9 +1064,9 @@ export class SmartAgentBuilder {
     return {
       agent,
       chat: (messages, tools, options) =>
-        wrappedMainLlm.chat(messages, tools, options),
+        agent.currentMainLlm.chat(messages, tools, options),
       streamChat: (messages, tools, options) =>
-        wrappedMainLlm.streamChat(messages, tools, options),
+        agent.currentMainLlm.streamChat(messages, tools, options),
       requestLogger,
       close: async () => {
         await connectionStrategy?.dispose?.();
