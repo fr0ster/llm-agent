@@ -299,6 +299,17 @@ export class SmartAgent {
    * Changes apply to new requests only — in-flight requests continue
    * using the dependency snapshot captured at request start.
    * Reconfigured LLMs do not inherit builder-time wrappers (retry, circuit breaker, rate limiter).
+   *
+   * **Important:** This is the only supported way to hot-swap LLMs.
+   * Direct mutation of `deps` fields has no effect — SmartAgent copies
+   * deps into private fields at construction time.
+   *
+   * @example
+   * ```typescript
+   * const newLlm = makeLlm({ provider: 'openai', model: 'gpt-5.4-pro', ... });
+   * handle.agent.reconfigure({ mainLlm: newLlm });
+   * // handle.chat() and handle.streamChat() now use the new LLM
+   * ```
    */
   reconfigure(update: SmartAgentReconfigureOptions): void {
     if (update.mainLlm) {
