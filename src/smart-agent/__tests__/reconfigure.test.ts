@@ -61,6 +61,20 @@ describe('SmartAgent.reconfigure', () => {
   });
 });
 
+describe('SmartAgent.currentMainLlm', () => {
+  it('currentMainLlm reflects reconfigured LLM', () => {
+    const { deps } = makeDefaultDeps();
+    const agent = new SmartAgent(deps, { maxIterations: 5 });
+
+    const newLlm = makeLlm([{ content: 'new' }]);
+    Object.defineProperty(newLlm, 'model', { value: 'gpt-5.4-pro' });
+    agent.reconfigure({ mainLlm: newLlm });
+
+    assert.equal(agent.currentMainLlm, newLlm);
+    assert.equal(agent.currentMainLlm.model, 'gpt-5.4-pro');
+  });
+});
+
 describe('SmartAgent.getActiveConfig', () => {
   it('returns model names from active LLM instances', () => {
     const { deps } = makeDefaultDeps();
