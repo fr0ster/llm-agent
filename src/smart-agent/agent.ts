@@ -255,6 +255,11 @@ export class SmartAgent {
     this._classifierLlm = deps.classifierLlm;
   }
 
+  /** Current main LLM instance. Use this for direct LLM calls that should respect hot-swap. */
+  get currentMainLlm(): ILlm {
+    return this._mainLlm;
+  }
+
   private async _resolveActiveClients(opts?: CallOptions): Promise<void> {
     if (!this.deps.connectionStrategy) return;
     const result = await this.deps.connectionStrategy.resolve(
