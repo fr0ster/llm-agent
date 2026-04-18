@@ -68,6 +68,7 @@ export type BuiltInStageType =
   | 'rerank'
   | 'tool-select'
   | 'skill-select'
+  | 'build-tool-query'
   | 'assemble'
   | 'tool-loop'
   | 'history-upsert';

@@ -111,6 +111,13 @@ export interface PipelineContext {
   toolClientMap: Map<string, IMcpClient>;
   /** Text used for RAG queries (may be translated/expanded). */
   ragText: string;
+  /**
+   * Enriched query text for tool/skill retrieval, composed by the
+   * `build-tool-query` stage from `ragText` + top-K RAG snippets +
+   * selected skill descriptions. When present, stages configured with
+   * `queryText: 'toolQueryText'` use this instead of `ragText`.
+   */
+  toolQueryText?: string;
   /** Memoized query embedding, shared across all rag-query stages. */
   queryEmbedding: IQueryEmbedding | undefined;
   /** RAG query results per store. */
