@@ -7,6 +7,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.5.0] — 2026-04-18
+
+### Added
+- **Two-phase enriched tool retrieval** — opt-in `SmartAgentConfig.enrichedToolSearch` flag reshapes the default pipeline so MCP tool discovery is driven by a query composed from prior RAG snippets and selected skills, not just the raw user prompt. Lets consumers steer tool selection by seeding domain knowledge into other RAG stores or skills.
+- **`build-tool-query` pipeline stage** — new `BuildToolQueryHandler` composes `ctx.toolQueryText` from `ragText` + top-K non-tool RAG snippets + selected skill descriptions. Config: `topK`, `maxChars`, `includeRagSnippets`, `includeSkills`, `skipStores`.
+- **`RagQueryHandler.queryText` config** — accepts `'toolQueryText'` (reads `ctx.toolQueryText`, falls back to `ragText`) or any literal string. Override builds a one-off embedding without polluting the cached `ctx.queryEmbedding`.
+- **`ToolSelectHandler.queryText` config** — same override semantics for the fallback discovery query; also auto-prefers `ctx.toolQueryText` when populated.
+- **YAML example** — `docs/examples/06-structured-multi-model.yaml` demonstrates the new two-phase flow explicitly.
+
+### Changed
+- **`DefaultPipeline` stage ordering** — when `enrichedToolSearch` is enabled, the tools RAG store is pulled out of the parallel retrieval block and queried sequentially after `skill-select` + `build-tool-query`. Default (flag off) preserves the existing single-phase flow for backward compatibility.
+
+---
+
+## [8.4.0] — 2026-04-17
+
+### Added
+- **`SmartAgent.currentMainLlm` getter** — exposes the currently active main LLM instance so consumers can inspect or reuse it after a hot-swap.
+
+### Fixed
+- **`SmartAgentHandle.chat()` / `streamChat()` delegate through the agent** — calls now route through the active SmartAgent instance so hot-swapped LLMs take effect for the next invocation instead of sticking to the originally captured reference.
+
+### Docs
+- Documented `reconfigure()` as the only supported mechanism for hot-swapping the main LLM at runtime.
+
+---
+
 ## [8.3.0] — 2026-04-16
 
 ### Added
