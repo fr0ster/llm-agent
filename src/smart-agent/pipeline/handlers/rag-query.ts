@@ -11,6 +11,7 @@
  * | `store` | string                         | required | Store key (must exist in `ctx.ragStores`) |
  * | `k`     | number                         | from ctx | Number of results to retrieve        |
  * | `scope` | `global` \| `user` \| `session` | —        | Scope filter: `user` adds userId filter, `session` adds sessionId filter, `global` adds no filter |
+ * | `queryText` | `'toolQueryText'` \| string | —       | Overrides the query text for this call. `'toolQueryText'` reads the enriched text from `ctx.toolQueryText` (falls back to `ragText`). Any other string is used literally. When set, a one-off embedding is built for this call without touching the cached `ctx.queryEmbedding`. |
  *
  * ## Parallel safety
  *
@@ -46,11 +47,31 @@ export class RagQueryHandler implements IStageHandler {
     span.setAttribute('store', storeName);
     span.setAttribute('k', k);
 
-    // Lazily create and cache a shared query embedding for all rag-query stages
-    if (!ctx.queryEmbedding) {
-      ctx.queryEmbedding = ctx.embedder
-        ? new QueryEmbedding(ctx.ragText, ctx.embedder, ctx.options)
-        : new TextOnlyEmbedding(ctx.ragText);
+    // Resolve the query text for this call. Optional `queryText` override
+    // bypasses the shared cache so enriched-context searches don't pollute
+    // subsequent ragText-based queries.
+    const queryTextOverride =
+      typeof config.queryText === 'string'
+        ? config.queryText === 'toolQueryText'
+          ? (ctx.toolQueryText ?? ctx.ragText)
+          : config.queryText
+        : undefined;
+    const queryText = queryTextOverride ?? ctx.ragText;
+
+    let embedding: typeof ctx.queryEmbedding;
+    if (queryTextOverride !== undefined) {
+      embedding = ctx.embedder
+        ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)
+        : new TextOnlyEmbedding(queryText);
+      span.setAttribute('query_text_override', true);
+    } else {
+      // Lazily create and cache a shared query embedding for all rag-query stages
+      if (!ctx.queryEmbedding) {
+        ctx.queryEmbedding = ctx.embedder
+          ? new QueryEmbedding(ctx.ragText, ctx.embedder, ctx.options)
+          : new TextOnlyEmbedding(ctx.ragText);
+      }
+      embedding = ctx.queryEmbedding;
     }
 
     // Build scope filter based on config
@@ -69,17 +90,17 @@ export class RagQueryHandler implements IStageHandler {
     };
 
     const ragStart = Date.now();
-    const result = await store.query(ctx.queryEmbedding, k, queryOptions);
+    const result = await store.query(embedding, k, queryOptions);
     ctx.requestLogger.logRagQuery({
       store: storeName,
-      query: ctx.ragText.slice(0, 200),
+      query: queryText.slice(0, 200),
       resultCount: result.ok ? result.value.length : 0,
       durationMs: Date.now() - ragStart,
     });
 
     // Log embedding usage once (first rag-query stage that uses the embedding)
-    if (!ctx.embeddingUsageLogged && ctx.queryEmbedding?.getUsage) {
-      const usage = await ctx.queryEmbedding.getUsage();
+    if (!ctx.embeddingUsageLogged && embedding?.getUsage) {
+      const usage = await embedding.getUsage();
       if (usage) {
         ctx.requestLogger.logLlmCall({
           component: 'embedding',
@@ -105,7 +126,7 @@ export class RagQueryHandler implements IStageHandler {
 
       // Log RAG results with scores for diagnostics
       ctx.options?.sessionLogger?.logStep(`rag_query_${storeName}`, {
-        query: ctx.ragText.slice(0, 200),
+        query: queryText.slice(0, 200),
         k,
         resultCount: result.value.length,
         results: result.value.map((r) => ({

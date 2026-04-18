@@ -55,7 +55,14 @@ export class ToolSelectHandler implements IStageHandler {
     let allRagResults = Object.values(ctx.ragResults).flat();
     if (allRagResults.length === 0 && ctx.mcpTools.length > 0) {
       const k = (config.k as number) ?? ctx.config.ragQueryK ?? 20;
-      const queryText = ctx.ragText || ctx.inputText;
+      const queryTextSource =
+        typeof config.queryText === 'string'
+          ? config.queryText === 'toolQueryText'
+            ? (ctx.toolQueryText ?? ctx.ragText)
+            : config.queryText
+          : undefined;
+      const queryText =
+        queryTextSource ?? ctx.toolQueryText ?? ctx.ragText ?? ctx.inputText;
       const storeEntries = Object.entries(ctx.ragStores);
       const embedding = ctx.embedder
         ? new QueryEmbedding(queryText, ctx.embedder, ctx.options)

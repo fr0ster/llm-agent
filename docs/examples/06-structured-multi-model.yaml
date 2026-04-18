@@ -46,24 +46,39 @@ pipeline:
       url: http://localhost:3001/mcp/stream/http
 
   version: "1"
+  # Two-phase tool retrieval: first query RAG stores (skills/facts), then
+  # build an enriched query from those results + selected skills, and use
+  # it to hit the tools store. Skills and domain knowledge thus steer
+  # MCP tool discovery instead of the raw user prompt alone.
   stages:
     - id: classify
       type: classify
     - id: summarize
       type: summarize
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 15 }
-      after:
-        - id: rerank
-          type: rerank
-        - id: skill-select
-          type: skill-select
-        - id: tool-select
-          type: tool-select
+    # First phase — non-tool stores. Add rag-query children here for any
+    # dedicated skills/facts stores you have. Example:
+    #   - id: rag-retrieval
+    #     type: parallel
+    #     stages:
+    #       - id: rag-facts
+    #         type: rag-query
+    #         config: { store: facts, k: 10 }
+    #     after:
+    #       - id: rerank
+    #         type: rerank
+    - id: skill-select
+      type: skill-select
+    # Compose enriched query from ragText + prior RAG snippets + skills.
+    - id: build-tool-query
+      type: build-tool-query
+      config: { topK: 5, maxChars: 2000 }
+    # Second phase — drive tools retrieval with the enriched query.
+    - id: rag-tools
+      type: rag-query
+      config: { store: tools, k: 15, queryText: toolQueryText }
+    - id: tool-select
+      type: tool-select
+      config: { queryText: toolQueryText }
     - id: assemble
       type: assemble
     - id: tool-loop

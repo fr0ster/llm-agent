@@ -2,11 +2,21 @@
  * DefaultPipeline — IPipeline implementation backed by PipelineExecutor + stage handlers.
  *
  * This is the standard pipeline used by SmartAgent when no custom pipeline is
- * configured. It runs a fixed stage sequence:
+ * configured. It runs one of two stage sequences, selected by
+ * {@link SmartAgentConfig.enrichedToolSearch}:
  *
+ * **Single-phase (default):**
  * ```text
  * classify → summarize → parallel(rag-query tools, rag-query history, rag-query <custom>…) →
  * rerank → skill-select → tool-select → assemble → tool-loop → history-upsert
+ * ```
+ *
+ * **Enriched (`enrichedToolSearch: true`):** the tools RAG store is queried in
+ * a second phase driven by context from prior retrieval + selected skills:
+ * ```text
+ * classify → summarize → parallel(rag-query history, rag-query <custom>…) →
+ * rerank → skill-select → build-tool-query → rag-query tools (enriched) →
+ * tool-select → assemble → tool-loop → history-upsert
  * ```
  *
  * Built-in RAG stores (`tools`, `history`) are wired from `toolsRag`/`historyRag` deps.
@@ -166,8 +176,13 @@ export class DefaultPipeline implements IPipeline {
    * that were provided in deps.
    */
   private _buildStages(): StageDefinition[] {
+    const enriched = this.deps.agentConfig?.enrichedToolSearch === true;
+    const hasToolsRag = Boolean(this.deps.toolsRag);
+
     const ragChildren: StageDefinition[] = [];
-    if (this.deps.toolsRag) {
+    // In enriched mode, the tools store is queried separately AFTER
+    // build-tool-query so the enriched query can drive tool discovery.
+    if (hasToolsRag && !enriched) {
       ragChildren.push({
         id: 'rag-tools',
         type: 'rag-query',
@@ -199,14 +214,18 @@ export class DefaultPipeline implements IPipeline {
       { id: 'summarize', type: 'summarize' },
     ];
 
-    // Only add rag-retrieval block when there are stores to query
-    if (ragChildren.length > 0) {
+    const needsTranslate = ragChildren.length > 0 || (enriched && hasToolsRag);
+    if (needsTranslate) {
       // Translate non-ASCII RAG query before retrieval (enabled by default)
       stages.push({
         id: 'translate',
         type: 'translate',
         when: 'config.ragTranslateEnabled != false',
       });
+    }
+
+    // First-phase retrieval: non-tool stores (enriched mode) or all stores (default).
+    if (ragChildren.length > 0) {
       stages.push({
         id: 'rag-retrieval',
         type: 'parallel',
@@ -215,8 +234,20 @@ export class DefaultPipeline implements IPipeline {
       });
     }
 
+    stages.push({ id: 'skill-select', type: 'skill-select' });
+
+    // Second-phase retrieval (enriched mode only): build the enriched
+    // query, then hit the tools RAG store with it.
+    if (enriched && hasToolsRag) {
+      stages.push({ id: 'build-tool-query', type: 'build-tool-query' });
+      stages.push({
+        id: 'rag-tools',
+        type: 'rag-query',
+        config: { store: 'tools', queryText: 'toolQueryText' },
+      });
+    }
+
     stages.push(
-      { id: 'skill-select', type: 'skill-select' },
       { id: 'tool-select', type: 'tool-select' },
       { id: 'assemble', type: 'assemble' },
       { id: 'tool-loop', type: 'tool-loop' },

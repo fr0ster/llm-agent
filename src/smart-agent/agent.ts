@@ -162,6 +162,14 @@ export interface SmartAgentConfig {
   toolReselectPerIteration?: boolean;
   /** Whether to translate non-ASCII RAG queries to English before retrieval. Default: true. */
   ragTranslateEnabled?: boolean;
+  /**
+   * Enable two-phase tool retrieval: other RAG stores are queried first, then
+   * `build-tool-query` composes an enriched query from RAG snippets and
+   * selected skills, which drives a second `rag-query` against the tools
+   * store (and the `tool-select` fallback). Lets skills and domain facts
+   * steer MCP tool discovery. Default: false (single-phase tool retrieval).
+   */
+  enrichedToolSearch?: boolean;
   /** Retry options for transient LLM failures (429, 5xx). When set, wraps LLM with RetryLlm. */
   retry?: {
     maxAttempts?: number;
