@@ -105,3 +105,7 @@ Copy `.env.template` to `.env`. Key variables:
 - `examples/docker-ollama/` — Docker Compose, fully local (Ollama LLM + embeddings, no API keys)
 - `examples/docker-deepseek/` — Docker Compose, DeepSeek LLM + Ollama embeddings
 - `examples/docker-sap-ai-core/` — Docker Compose, SAP AI Core (LLM + embeddings + Qdrant + compat layer)
+
+## Plans and Specs
+
+After a plan under `docs/superpowers/plans/` or spec under `docs/superpowers/specs/` has been fully implemented, delete the file. Keep only active (not yet implemented) plans and specs in the tree — implementation history lives in git, not in these directories.
