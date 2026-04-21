@@ -32,9 +32,6 @@ Thumbs.db
 .claude/skills/
 .agents/skills/
 
-# Superpowers plans/specs (generated, session-local)
-docs/superpowers/
-
 # Logs
 *.log
 *.log.bak*
