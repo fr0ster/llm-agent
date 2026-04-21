@@ -101,12 +101,16 @@ export interface IRagRegistry {
 
 ```
 src/smart-agent/rag/
+  overlays/
+    overlay-rag.ts               OverlayRag (implements IRag)
+    session-scoped-rag.ts        SessionScopedRag (implements IRag)
+    index.ts
   strategies/
     edit/
       direct.ts                  DirectEditStrategy
       immutable.ts               ImmutableEditStrategy
-      overlay.ts                 OverlayEditStrategy
-      session-scoped.ts          SessionScopedEditStrategy
+      overlay.ts                 OverlayEditStrategy (write-only)
+      session-scoped.ts          SessionScopedEditStrategy (write-only)
       index.ts
     id/
       caller-provided.ts         CallerProvidedIdStrategy
@@ -129,14 +133,25 @@ src/smart-agent/rag/
     (existing + one test file per new module)
 ```
 
-## Edit strategies
+## Read-side: overlay RAGs
+
+Read behavior of layered collections lives in `IRag` implementations, not in edit strategies. Registered as the `rag` argument to `registry.register(...)`, paired with a matching write-only edit strategy.
 
 | Class | Semantics |
 |---|---|
-| `DirectEditStrategy(rag, idStrategy)` | Forwards `upsert`/`deleteById` to a single backing `IRag` that also exposes a private write path. Used for editable stores (memory, Qdrant). |
+| `OverlayRag(base, overlay)` | Implements `IRag`. `query` calls both and merges with **overlay wins** on matching `canonicalKey` (base hit dropped regardless of score). `getById` tries `overlay` first, then `base`. `healthCheck` requires both healthy. |
+| `SessionScopedRag(base, overlay, sessionId, ttlMs?)` | Extends overlay semantics with session-scoped filtering: overlay hits are included only when their `metadata.sessionId === sessionId` and (if TTL is set) within the TTL window. `clear` on the overlay-writer flushes just that session. |
+
+## Edit strategies
+
+All edit strategies are **write-only** — they implement `IRagEditor` and have no `query` / `getById` responsibility.
+
+| Class | Semantics |
+|---|---|
+| `DirectEditStrategy(writer, idStrategy)` | Forwards `upsert`/`deleteById` to a single `IRagBackendWriter`. Used for editable stores (memory, Qdrant). |
 | `ImmutableEditStrategy()` | All mutating calls return `Err(new ReadOnlyError(collectionName))`. No state. Used for managed/ops-owned KBs. |
-| `OverlayEditStrategy(base, overlay, idStrategy)` | Writes go to `overlay` only. `query` runs on both; **overlay wins** on matching `canonicalKey` (base hit dropped regardless of score). `getById` tries overlay first, then base. |
-| `SessionScopedEditStrategy(base, sessionRag, sessionId, idStrategy, ttlMs?)` | Wraps `OverlayEditStrategy` with a session id. Overlay is scoped to that session; `clear()` flushes only session records. Optional TTL for auto-expiry. |
+| `OverlayEditStrategy(overlayWriter, idStrategy)` | Writes go to the overlay writer only. Does not know about the base. Intended to be paired with `OverlayRag` in the registry. |
+| `SessionScopedEditStrategy(overlayWriter, sessionId, idStrategy, ttlMs?)` | Same as `OverlayEditStrategy` but stamps `metadata.sessionId` on every write and passes `sessionId` to the id strategy. Paired with `SessionScopedRag`. `clear()` removes only records matching `sessionId`. |
 
 ## Id strategies
 
@@ -244,9 +259,17 @@ const registry: IRagRegistry = getBtpRagRegistry();
 registry.register('corp-facts', corpQdrant, new ImmutableEditStrategy());
 registry.register('user-kb', userQdrant,
   new DirectEditStrategy(userQdrantWriter, new CallerProvidedIdStrategy()));
-registry.register('session', overlayRag,
-  new OverlayEditStrategy(corpQdrant, new InMemoryRagWriter(),
-    new SessionScopedIdStrategy(sessionId)));
+
+const sessionOverlay = new InMemoryRag();  // IRag with a companion writer
+registry.register(
+  'session',
+  new SessionScopedRag(corpQdrant, sessionOverlay, sessionId),
+  new SessionScopedEditStrategy(
+    sessionOverlay.writer(),
+    sessionId,
+    new SessionScopedIdStrategy(sessionId),
+  ),
+);
 
 const entries = [...coreEntries, ...buildRagCollectionToolEntries({ registry })];
 ```
@@ -279,3 +302,4 @@ Existing backend tests updated for the new read/write split.
 - Concrete shape of `IRagBackendWriter` per backend (may be identical or diverge).
 - Whether `rag_create_collection` ships in the first version or is deferred — design allows either without breaking.
 - Registry listing order (insertion vs alphabetical vs meta-tag-grouped) — defaulting to insertion order.
+- Shape of the companion writer exposed by `InMemoryRag` / `QdrantRag` / `OllamaRag` (`rag.writer()` accessor vs separate writer class). Resolve in the implementation plan.
