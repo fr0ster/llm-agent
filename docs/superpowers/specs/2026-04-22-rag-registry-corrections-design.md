@@ -21,7 +21,7 @@ Upstreaming with an explicit interface split also unlocks heterogeneous collecti
 - Ship four edit strategies and four id strategies as first-class, composable classes.
 - Ship a pure-logic corrections module and `ActiveFilteringRag` wrapper.
 - Ship one MCP tool factory that produces `rag_*` entries bound to the registry.
-- Migrate existing backends (`VectorRag`, `InMemoryRag`, `QdrantRag`, `OllamaRag`) to the new split.
+- Migrate existing backends (`VectorRag`, `QdrantRag`, `InMemoryRag`) to the new split. Convenience subclasses like `OllamaRag` (which just wires `OllamaEmbedder` into `VectorRag`) inherit the migration automatically.
 - **Breaking:** drop `IRag.upsert`; `getById` becomes required. Major version bump.
 
 Out of scope: persistence of registry state, XSUAA/auth scoping (consumers subclass `SimpleRagRegistry`), endpoint/completions fallback (#100), prompt-injected tools (#102).
@@ -232,10 +232,10 @@ All four check `registry.getEditor(name) !== undefined` before any mutation.
 
 ### Existing backends
 
-`VectorRag`, `InMemoryRag`, `QdrantRag`, `OllamaRag` today implement a unified `IRag` with `upsert`. After the split:
+The three real backends — `VectorRag` (and any `*Embedder + VectorRag` subclass like `OllamaRag`), `QdrantRag`, `InMemoryRag` — today implement a unified `IRag` with `upsert`. After the split:
 
-- They implement the new `IRag` (read-only surface + `getById`). `getById` must be implemented natively (`InMemoryRag`: Map lookup; `QdrantRag`: point retrieve by id; `OllamaRag`: delegate to underlying store).
-- Their write methods (`upsertInternal`, `deleteByIdInternal`) become the primitives used by `DirectEditStrategy`. `DirectEditStrategy` holds a reference to the concrete backend's writable surface via a narrow `IRagBackendWriter` interface exported alongside each backend.
+- They implement the new `IRag` (read surface + `getById`). `getById` is implemented natively (`InMemoryRag`: Map lookup; `VectorRag`: metadata index lookup; `QdrantRag`: point retrieve by id).
+- Their write methods become the primitives used by `DirectEditStrategy`. `DirectEditStrategy` holds a reference to the backend's writable surface via a narrow `IRagBackendWriter` interface exported alongside each backend.
 - `IPrecomputedVectorRag.upsertPrecomputed` moves to the backend-writer surface for the same reason.
 
 ### Call sites
