@@ -22,7 +22,11 @@ import type { ILlm } from '../interfaces/llm.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IRag } from '../interfaces/rag.js';
+import type {
+  IRag,
+  IRagProviderRegistry,
+  IRagRegistry,
+} from '../interfaces/rag.js';
 import {
   AssemblerError,
   type CallOptions,
@@ -494,6 +498,8 @@ export function makeDefaultDeps(overrides?: {
   assembler?: IContextAssembler;
   mcpClients?: IMcpClient[];
   ragStores?: Record<string, IRag>;
+  ragRegistry?: IRagRegistry;
+  ragProviderRegistry?: IRagProviderRegistry;
   reranker?: IReranker;
   queryExpander?: IQueryExpander;
   logger?: ILogger;
@@ -518,6 +524,8 @@ export function makeDefaultDeps(overrides?: {
       mainLlm: llm,
       mcpClients: overrides?.mcpClients ?? [],
       ragStores: overrides?.ragStores ?? {},
+      ragRegistry: overrides?.ragRegistry,
+      ragProviderRegistry: overrides?.ragProviderRegistry,
       classifier:
         overrides?.classifier ??
         makeClassifier([{ type: 'action', text: 'do something' }]),
