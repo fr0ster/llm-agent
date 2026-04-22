@@ -43,7 +43,7 @@ v11.0.0 does the complete extraction in one release, accepting the breaking chan
 
 ### Refactored in server
 
-- `cli.ts` — rewritten to use `SmartAgentBuilder` as the only code path. LLM-only mode preserved by building a SmartAgent without MCP (or with `mcp: { disabled: true }`).
+- `cli.ts` — rewritten to use `SmartAgentBuilder` as the only code path. LLM-only mode preserved through the existing `mcp.type: 'none'` contract at the config-resolution / `SmartServer` composition layer; `SmartAgentBuilder` itself sees the absence of an MCP config argument.
 - `smart-agent/providers.ts` — simplified to construct concrete `ILlm` from provider classes directly. No `LlmAdapter` / Agent wrapping.
 - `smoke-adapters.ts` — adapted to the new provider construction path.
 
@@ -246,7 +246,7 @@ Order: core first, then provider/embedder/qdrant packages (all depend only on co
 ### `@mcp-abap-adt/llm-agent` (core)
 
 - Delete `src/rag/openai-embedder.ts`, `src/rag/ollama-embedder.ts`, `src/rag/ollama-rag.ts`, `src/rag/qdrant-rag.ts`, `src/rag/qdrant-rag-provider.ts`, `src/rag/sap-ai-core-embedder.ts`.
-- **Move `src/rag/embedder-factories.ts` to server** at `packages/llm-agent-server/src/smart-agent/embedder-factories.ts`. The factory registry is a declarative wiring layer, not a core abstraction — each factory imports the concrete class from the corresponding new package, so the registry must live in a package that depends on all provider packages. Server is the only package that does.
+- **Move `src/rag/embedder-factories.ts` to server** at `packages/llm-agent-server/src/smart-agent/embedder-factories.ts`. The factory registry is a declarative wiring layer, not a core abstraction. Each factory dynamic-imports the concrete class from the corresponding optional peer package; if the peer is not installed, the registry throws `MissingProviderError`. Server is the only package that declares those peers, so the registry belongs there.
 - Update `src/rag/index.ts` barrel — no more re-exports of moved classes.
 - Update `src/index.ts` — no more re-exports of moved symbols or factories.
 - Drop dependencies on `axios` and `@sap-ai-sdk/orchestration`.
@@ -261,7 +261,7 @@ Order: core first, then provider/embedder/qdrant packages (all depend only on co
 - Update `src/index.ts` — no more re-exports of LLM providers.
 - Update `src/smart-agent/__tests__/` and other tests — replace any `new OpenAIAgent(...)` with `new OpenAIProvider(...)` (for LLM-only tests) or SmartAgent patterns.
 - Update `smoke-adapters.ts` — same refactor.
-- Add dependencies on the LLM provider packages that the default CLI/HTTP server needs out of the box. See Q5 below.
+- Declare every provider/embedder/qdrant package as an **optional peer dependency** (see "Server package after v11.0.0"). Do NOT add them as hard `dependencies`. Consumers install the peers their `smart-server.yaml` names; missing peer = typed error at resolve time.
 
 ## Changesets configuration
 
@@ -356,7 +356,7 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 - **`smoke-adapters.ts`:** rewrite to exercise the new provider path. May become trivial or obsolete.
 - **SAP AI Core package split:** if `sap-aicore-llm` and `sap-aicore-embedder` share common credentials/config utilities, decide whether to hoist those to a fourth package `sap-aicore-common` or duplicate into both. Lean: duplicate for simplicity; deduplicate in a future minor if repetition becomes painful.
 - **Embedder factory registry location:** moves to server (see "Changes to existing packages → core" above). Each factory entry imports the concrete embedder class from its new package. Server's `resolveEmbedder()` continues to work with names like `ollama`, `openai`, `sap-ai-core` via the relocated registry.
-- **Config-template defaults align with server deps:** because server now depends on all provider and embedder packages, the generated `smart-server.yaml` template can continue to default to `llm: deepseek`, `rag: ollama`, etc., without a broken fresh-install experience. Plan task includes a dedicated check that `smart-server.yaml`'s defaults resolve against server's dependency list.
+- **Config-template defaults align with documented install steps:** the generated `smart-server.yaml` template defaults (e.g. `llm: deepseek`, `rag: ollama`) only work when the consumer installs the corresponding peer packages alongside `llm-agent-server`. The template's header comment, QUICK_START install snippet, Dockerfiles, and `MIGRATION-v11.md` install-modes section must all name the same peers. Plan task includes a dedicated consistency check across those four surfaces.
 
 ## Required end-to-end validation tasks
 
@@ -385,3 +385,5 @@ Earlier review iterations surfaced these concerns. All are now addressed in the 
 - Library-only composition test originally mixed a no-server install with `SmartAgentBuilder`, which actually lives in `@mcp-abap-adt/llm-agent-server` → **resolved** by splitting into two validation tasks: (2) minimal-install (core + server + peers), and (3) true core-only (no server, consumer-written stub ILlm). Also prompted the server-deps rework: optional peer deps instead of unconditional transitive pulls.
 - Post-peer-deps rework, "batteries-included" claims still lingered in install-mode descriptions and validation task wording → **resolved** by removing the "batteries-included" terminology entirely, stating the single contract (server + exactly the peers your config names), and relabeling validation task 1 as "declarative-server boot test".
 - Library-only mode's SmartAgent usage without server install was logically impossible → **resolved** by splitting migration install modes into three: (a) server-managed declarative config, (b) programmatic server composition, (c) true core-only with no SmartAgent. Each clearly states required packages.
+- Lower sections retained transitive-dependency wording after the peer-dependency rewrite → **resolved** by rewriting `Changes to existing packages → server` (embedder-factories move + optional peer dep declaration) and `Known items` (config-template defaults align with documented install steps) to match the optional-peer model.
+- The top-level `Refactored in server → cli.ts` summary still referenced `mcp: { disabled: true }` → **resolved** by replacing it with the canonical `mcp.type: 'none'` wording consistent with later sections.
