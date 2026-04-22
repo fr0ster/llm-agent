@@ -46,7 +46,13 @@ import type { IPipeline } from './interfaces/pipeline.js';
 import {
   type IEmbedder,
   type IRag,
+  type IRagEditor,
+  type IRagProvider,
+  type IRagProviderRegistry,
+  type IRagRegistry,
   isBatchEmbedder,
+  type RagCollectionMeta,
+  type RagCollectionScope,
 } from './interfaces/rag.js';
 import type { ILlmRateLimiter } from './interfaces/rate-limiter.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
@@ -62,7 +68,9 @@ import type {
   SessionPolicy,
 } from './policy/types.js';
 import { InMemoryRag } from './rag/in-memory-rag.js';
+import { SimpleRagProviderRegistry } from './rag/providers/simple-provider-registry.js';
 import type { IQueryExpander } from './rag/query-expander.js';
+import { SimpleRagRegistry } from './rag/registry/simple-rag-registry.js';
 import type { IReranker } from './reranker/types.js';
 import {
   CircuitBreaker,
@@ -199,6 +207,25 @@ export class SmartAgentBuilder {
   private _historyMemory?: IHistoryMemory;
   private _llmCallStrategy?: ILlmCallStrategy;
   private _rateLimiter?: ILlmRateLimiter;
+  private _providers: IRagProvider[] = [];
+  private _staticCollections: Array<{
+    name: string;
+    rag: IRag;
+    editor?: IRagEditor;
+    meta?: Omit<RagCollectionMeta, 'name' | 'editable'>;
+  }> = [];
+  private _pendingDynamicCollections: Array<{
+    providerName: string;
+    collectionName: string;
+    scope: RagCollectionScope;
+    sessionId?: string;
+    userId?: string;
+    displayName?: string;
+    description?: string;
+    tags?: readonly string[];
+  }> = [];
+  private _ragRegistry?: IRagRegistry;
+  private _ragProviderRegistry?: IRagProviderRegistry;
 
   constructor(cfg: SmartAgentBuilderConfig = {}) {
     this.cfg = cfg;
@@ -247,6 +274,50 @@ export class SmartAgentBuilder {
   /** Inject a custom RAG store for conversation history. Overrides auto-created in-memory store. */
   setHistoryRag(rag: IRag): this {
     this._historyRag = rag;
+    return this;
+  }
+
+  /** Register an IRagProvider for dynamic collection creation. */
+  addRagProvider(provider: IRagProvider): this {
+    this._providers.push(provider);
+    return this;
+  }
+
+  /** Register a static (pre-built) RAG collection by name. */
+  addRagCollection(params: {
+    name: string;
+    rag: IRag;
+    editor?: IRagEditor;
+    meta?: Omit<RagCollectionMeta, 'name' | 'editable'>;
+  }): this {
+    this._staticCollections.push(params);
+    return this;
+  }
+
+  /** Queue a dynamic collection to be created via a provider during build(). */
+  createRagCollection(params: {
+    providerName: string;
+    collectionName: string;
+    scope: RagCollectionScope;
+    sessionId?: string;
+    userId?: string;
+    displayName?: string;
+    description?: string;
+    tags?: readonly string[];
+  }): this {
+    this._pendingDynamicCollections.push(params);
+    return this;
+  }
+
+  /** Provide a custom IRagRegistry. Defaults to SimpleRagRegistry if not set. */
+  setRagRegistry(registry: IRagRegistry): this {
+    this._ragRegistry = registry;
+    return this;
+  }
+
+  /** Provide a custom IRagProviderRegistry. Defaults to SimpleRagProviderRegistry if not set. */
+  setRagProviderRegistry(registry: IRagProviderRegistry): this {
+    this._ragProviderRegistry = registry;
     return this;
   }
 
@@ -591,10 +662,74 @@ export class SmartAgentBuilder {
         ? new InMemoryRag()
         : undefined);
 
-    // Build ragStores record for SmartAgent (backward compat for revectorization)
+    // Build provider registry and collection registry (v9.1 wiring).
+    const ragProviderRegistry: IRagProviderRegistry =
+      this._ragProviderRegistry ?? new SimpleRagProviderRegistry();
+    for (const p of this._providers) ragProviderRegistry.registerProvider(p);
+
+    const ragRegistry: IRagRegistry =
+      this._ragRegistry ?? new SimpleRagRegistry();
+    // Wire providers into registry when the registry supports it (SimpleRagRegistry does).
+    if (
+      ragRegistry instanceof SimpleRagRegistry ||
+      typeof (ragRegistry as { setProviderRegistry?: unknown })
+        .setProviderRegistry === 'function'
+    ) {
+      (ragRegistry as SimpleRagRegistry).setProviderRegistry(
+        ragProviderRegistry,
+      );
+    }
+
+    // Register user-supplied static collections (from addRagCollection fluent calls).
+    for (const c of this._staticCollections) {
+      ragRegistry.register(c.name, c.rag, c.editor, c.meta);
+    }
+
+    // Mirror the built-in toolsRag / historyRag into the registry so the projection preserves
+    // ragStores.tools / ragStores.history behavior that existing handlers rely on.
+    if (toolsRag && !ragRegistry.get('tools')) {
+      ragRegistry.register('tools', toolsRag, undefined, {
+        displayName: 'tools',
+        scope: 'global',
+      });
+    }
+    if (historyRag && !ragRegistry.get('history')) {
+      ragRegistry.register('history', historyRag, undefined, {
+        displayName: 'history',
+        scope: 'global',
+      });
+    }
+
+    // Create any queued dynamic collections at startup.
+    for (const c of this._pendingDynamicCollections) {
+      const res = await ragRegistry.createCollection(c);
+      if (!res.ok) {
+        throw new Error(
+          `Failed to create collection '${c.collectionName}': ${res.error.message}`,
+        );
+      }
+    }
+
+    // Derive ragStores as a live projection of the registry; keep it in sync via the
+    // registry's mutation listener so existing code paths (assembler, handlers,
+    // addRagStore/removeRagStore) see the same shape.
     const ragStores: SmartAgentRagStores = {};
-    if (toolsRag) ragStores.tools = toolsRag;
-    if (historyRag) ragStores.history = historyRag;
+    const rebuildProjection = () => {
+      for (const k of Object.keys(ragStores)) delete ragStores[k];
+      for (const m of ragRegistry.list()) {
+        const r = ragRegistry.get(m.name);
+        if (r) ragStores[m.name] = r;
+      }
+    };
+    rebuildProjection();
+    if (
+      ragRegistry instanceof SimpleRagRegistry ||
+      typeof (ragRegistry as { setMutationListener?: unknown })
+        .setMutationListener === 'function'
+    ) {
+      (ragRegistry as SimpleRagRegistry).setMutationListener(rebuildProjection);
+    }
+
     const translateQueryStores = new Set<string>();
     if (toolsRag) translateQueryStores.add('tools');
 
@@ -623,11 +758,20 @@ export class SmartAgentBuilder {
       });
       circuitBreakers.push(embedderBreaker);
       for (const [key, store] of Object.entries(ragStores)) {
-        ragStores[key] = new FallbackRag(
+        const wrapped = new FallbackRag(
           store,
           new InMemoryRag(),
           embedderBreaker,
         );
+        // Update both registry and projection so later lookups (and the mutation-listener
+        // rebuild) see the wrapped store.
+        const existingMeta = ragRegistry.list().find((m) => m.name === key);
+        ragRegistry.unregister(key);
+        ragRegistry.register(key, wrapped, undefined, {
+          displayName: existingMeta?.displayName ?? key,
+          scope: existingMeta?.scope ?? 'global',
+        });
+        // Projection gets rebuilt by the mutation listener; no direct write to ragStores needed.
       }
     }
 
@@ -911,8 +1055,12 @@ export class SmartAgentBuilder {
             : undefined,
         );
 
-      if (historyRag && !ragStores.history) {
-        ragStores.history = historyRag;
+      if (historyRag && !ragRegistry.get('history')) {
+        ragRegistry.register('history', historyRag, undefined, {
+          displayName: 'history',
+          scope: 'global',
+        });
+        // ragStores projection updates via mutation listener.
       }
     }
 
@@ -983,6 +1131,8 @@ export class SmartAgentBuilder {
       toolsRag,
       historyRag,
       ragStores,
+      ragRegistry,
+      ragProviderRegistry,
       embedder: this._embedder,
       reranker: this._reranker,
       queryExpander: this._queryExpander,
@@ -1008,6 +1158,8 @@ export class SmartAgentBuilder {
         helperLlm: this._helperLlm,
         mcpClients,
         ragStores,
+        ragRegistry,
+        ragProviderRegistry,
         classifier,
         classifierLlm,
         classifierConfig: classifierCfg,
