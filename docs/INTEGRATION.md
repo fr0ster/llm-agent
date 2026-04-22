@@ -1,6 +1,6 @@
 # Integration Guide
 
-This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent`. Each interface has a description, method signatures, and a working code example.
+This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/llm-agent-server`. Each interface has a description, method signatures, and a working code example.
 
 ## Architecture Overview
 
@@ -242,7 +242,7 @@ interface IModelResolver {
 Wraps `makeLlm()` with provider settings. Pass the same provider config used at startup:
 
 ```ts
-import { DefaultModelResolver, SmartServer } from '@mcp-abap-adt/llm-agent';
+import { DefaultModelResolver, SmartServer } from '@mcp-abap-adt/llm-agent-server';
 
 const server = new SmartServer({
   llm: { apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
@@ -430,7 +430,8 @@ When `translateQuery: true` is set, the pipeline translates the query to English
 **Example:**
 
 ```ts
-import { SmartAgentBuilder, QdrantRag } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { QdrantRag } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
   .withMainLlm(myLlm)
@@ -546,11 +547,8 @@ class MyDbRagProvider extends AbstractRagProvider {
 ### Builder integration
 
 ```ts
-import {
-  SmartAgentBuilder,
-  QdrantRagProvider,
-  ImmutableEditStrategy,
-} from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { QdrantRagProvider, ImmutableEditStrategy } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)
@@ -1075,7 +1073,7 @@ Subprompt types: `action`, `fact`, `chat`, `state`, `feedback`.
 ### Example: Rule-based classifier for simple use cases
 
 ```ts
-import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent-server/smart-server';
 import type { Subprompt, ClassifierError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1119,7 +1117,7 @@ interface IContextAssembler {
 ### Example: Custom context window packing strategy
 
 ```ts
-import type { IContextAssembler } from '@mcp-abap-adt/llm-agent/smart-server';
+import type { IContextAssembler } from '@mcp-abap-adt/llm-agent-server/smart-server';
 import type { Message, Subprompt, RagResult, McpTool, AssemblerError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1238,7 +1236,7 @@ class DatabaseSkillManager implements ISkillManager {
 ### Wiring via builder
 
 ```ts
-import { SmartAgentBuilder, ClaudeSkillManager } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, ClaudeSkillManager } from '@mcp-abap-adt/llm-agent-server';
 
 const handle = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
   .withMainLlm(myLlm)
@@ -1262,7 +1260,7 @@ skills:
 
 ```ts
 // In a plugin file:
-import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent';
+import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent-server';
 
 export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
 ```
@@ -1337,9 +1335,9 @@ class AdapterValidationError extends Error {
 ### Example: custom adapter skeleton
 
 ```ts
-import type { ILlmApiAdapter, ApiRequestContext, ApiSseEvent, NormalizedRequest } from '@mcp-abap-adt/llm-agent';
-import type { SmartAgentResponse, OrchestratorError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
-import { AdapterValidationError } from '@mcp-abap-adt/llm-agent';
+import type { ILlmApiAdapter, ApiRequestContext, ApiSseEvent, NormalizedRequest } from '@mcp-abap-adt/llm-agent-server';
+import type { SmartAgentResponse, OrchestratorError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent-server';
+import { AdapterValidationError } from '@mcp-abap-adt/llm-agent-server';
 
 class MyProtocolAdapter implements ILlmApiAdapter {
   readonly name = 'my-protocol';
@@ -1411,7 +1409,7 @@ MCP clients can be injected via three paths (precedence: config > plugin > YAML)
 ### Via SmartServer config
 
 ```ts
-import { SmartServer, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent';
+import { SmartServer, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-server';
 
 const wrapper = new MCPClientWrapper({ transport: 'auto', url: 'http://localhost:3001/mcp' });
 await wrapper.connect();
@@ -1427,7 +1425,7 @@ const server = new SmartServer({
 
 ```ts
 // plugins/lazy-mcp.mjs
-import { lazy, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent';
+import { lazy, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-server';
 
 const url = process.env.MCP_SERVER_URL;
 
@@ -1482,7 +1480,7 @@ interface IMcpConnectionStrategy {
 import {
   LazyConnectionStrategy,
   SmartAgentBuilder,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
 
 const mcpConfigs = [
   { type: 'http' as const, url: 'http://localhost:3001/mcp/stream/http' },
@@ -1507,14 +1505,14 @@ Controls how the tool-loop calls the LLM. Three built-in strategies:
 **1. `StreamingLlmCallStrategy`** (default) — uses `streamChat()`. Chunks streamed to client in real-time.
 
 ```ts
-import { StreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+import { StreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
 builder.withLlmCallStrategy(new StreamingLlmCallStrategy());
 ```
 
 **2. `NonStreamingLlmCallStrategy`** — uses `chat()`. Full response yielded as a single chunk. Use when streaming is unreliable.
 
 ```ts
-import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
 builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy());
 ```
 
@@ -1523,7 +1521,7 @@ For `sap-ai-sdk`, this is the recommended production strategy when SAP AI Core s
 **3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause.
 
 ```ts
-import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
+import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
 builder.withLlmCallStrategy(new FallbackLlmCallStrategy(logger));
 ```
 
@@ -1629,7 +1627,7 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 Swap LLM instances at runtime without restarting the server:
 
 ```typescript
-import { makeLlm } from '@mcp-abap-adt/llm-agent';
+import { makeLlm } from '@mcp-abap-adt/llm-agent-server';
 
 // Create a new classifier LLM
 const newClassifier = makeLlm(
@@ -1657,7 +1655,7 @@ console.log(agent.getActiveConfig());
 Throttle outbound LLM requests to stay within provider rate limits.
 
 ```ts
-import { TokenBucketRateLimiter } from '@mcp-abap-adt/llm-agent';
+import { TokenBucketRateLimiter } from '@mcp-abap-adt/llm-agent-server';
 
 builder.withRateLimiter(new TokenBucketRateLimiter({
   maxRequests: 10,     // max requests per window
@@ -1701,7 +1699,7 @@ interface ITracer {
 }
 ```
 
-Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent/otel`).
+Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent-server/otel`).
 
 ### ISessionManager
 
@@ -1793,11 +1791,8 @@ When set, only the last N non-system messages from client history are passed to 
 ### Full example
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
-import {
-  ToolCache, SessionManager, InMemoryMetrics,
-  OllamaEmbedder, QdrantRag,
-} from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, ToolCache, SessionManager, InMemoryMetrics, OllamaEmbedder } from '@mcp-abap-adt/llm-agent-server';
+import { QdrantRag } from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
 
@@ -1862,7 +1857,7 @@ await handle.close();
 For YAML-driven configs, inject a custom `IEmbedder` or register embedder factories:
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
 
 const server = new SmartServer({
   llm: { apiKey: process.env.API_KEY! },
@@ -1925,7 +1920,7 @@ import {
   SmartAgentBuilder,
   type StructuredPipelineDefinition,
   getDefaultStages,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
 
 const pipeline: StructuredPipelineDefinition = {
   version: '1',
@@ -1981,8 +1976,8 @@ Supported operators: `!`, `&&`, `||`, `>`, `<`, `>=`, `<=`, `==`, `!=`
 Register custom handlers for domain-specific pipeline stages:
 
 ```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
+import type { ISpan } from '@mcp-abap-adt/llm-agent-server';
 
 class ContentFilterHandler implements IStageHandler {
   async execute(
@@ -2072,7 +2067,7 @@ pipeline:
 ### Using Default Stages as Base
 
 ```ts
-import { getDefaultStages } from '@mcp-abap-adt/llm-agent';
+import { getDefaultStages } from '@mcp-abap-adt/llm-agent-server';
 
 // Get default stages and insert a custom stage before tool-loop
 const stages = getDefaultStages();
@@ -2127,7 +2122,7 @@ Drop plugin files into a directory. SmartServer scans and loads them at startup.
 **Example plugin file** (`~/.config/llm-agent/plugins/audit-log.ts`):
 
 ```ts
-import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent';
+import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent-server';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan) {
@@ -2159,7 +2154,7 @@ pipeline:
 **Programmatic usage:**
 
 ```ts
-import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent';
+import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent-server';
 
 const loader = new FileSystemPluginLoader({
   dirs: [...getDefaultPluginDirs(), './my-extra-plugins'],
@@ -2179,7 +2174,7 @@ import {
   LoadedPlugins,
   emptyLoadedPlugins,
   mergePluginExports,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
 
 class NpmPluginLoader implements IPluginLoader {
   constructor(private packages: string[]) {}
@@ -2272,7 +2267,7 @@ See [`docs/examples/plugins/`](examples/plugins/) for 6 complete plugin examples
 
 ## Test Doubles
 
-The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent/testing`:
+The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent-server/testing`:
 
 ```ts
 import {
@@ -2290,7 +2285,7 @@ import {
   makeOutputValidator,
   makeSessionManager,
   makeDefaultDeps,
-} from '@mcp-abap-adt/llm-agent/testing';
+} from '@mcp-abap-adt/llm-agent-server/testing';
 ```
 
 ### Example: Testing a custom validator
@@ -2298,7 +2293,7 @@ import {
 ```ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent/testing';
+import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent-server/testing';
 
 describe('JsonSchemaValidator', () => {
   it('rejects invalid JSON', async () => {

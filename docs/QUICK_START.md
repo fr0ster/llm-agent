@@ -11,7 +11,7 @@ OpenAI-compatible client (Cline, Cursor, Continue) to it and use it as a drop-in
 ## Install
 
 ```bash
-npm install -g @mcp-abap-adt/llm-agent
+npm install -g @mcp-abap-adt/llm-agent-server
 ```
 
 Or run from source:
@@ -225,7 +225,8 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full pipeline and programma
 Let the LLM create temporary collections scoped to a session:
 
 ```ts
-import { SmartAgentBuilder, InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
   .withMainLlm(myLlm)

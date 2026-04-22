@@ -2,7 +2,7 @@
 
 ## Scope
 
-`@mcp-abap-adt/llm-agent` currently contains two layers:
+`@mcp-abap-adt/llm-agent-server` currently contains two layers:
 
 1. **Legacy core (`src/agents`, `src/llm-providers`, `src/mcp`)**
 - Provider-specific agent implementations and direct MCP integration.
@@ -105,13 +105,13 @@ Files:
 For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
 
 Primary embeddable surfaces:
-- package export `@mcp-abap-adt/llm-agent/smart-server` -> `SmartServer`
-- package export `@mcp-abap-adt/llm-agent/testing` -> deterministic test doubles for consumer integration tests
+- package export `@mcp-abap-adt/llm-agent-server/smart-server` -> `SmartServer`
+- package export `@mcp-abap-adt/llm-agent-server/testing` -> deterministic test doubles for consumer integration tests
 
 Minimal programmatic integration:
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
 
 const server = new SmartServer({
   llm: {
@@ -651,7 +651,7 @@ classify → summarize
 A consumer can implement `IPipeline` to add stores and stages not present in `DefaultPipeline`:
 
 ```ts
-import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent-server';
 
 class MyPipeline implements IPipeline {
   initialize(deps: PipelineDeps): void { /* wire deps */ }
@@ -674,7 +674,7 @@ builder
 Consumers can register custom stage handlers via the builder:
 
 ```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {

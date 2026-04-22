@@ -21,15 +21,8 @@
  *       - { id: timing-end, type: request-timer-end }
  */
 
-import type {
-  CallOptions,
-  IQueryExpander,
-  ISpan,
-  IStageHandler,
-  PipelineContext,
-  RagError,
-  Result,
-} from '@mcp-abap-adt/llm-agent';
+import type { ISpan, IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
+import type { CallOptions, IQueryExpander, RagError, Result } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Stage handler 1: request-timer-start — records pipeline start time
