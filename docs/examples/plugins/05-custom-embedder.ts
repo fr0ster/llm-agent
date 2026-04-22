@@ -54,7 +54,9 @@ class CohereEmbedder implements IEmbedder {
     });
 
     if (!response.ok) {
-      throw new Error(`Cohere embed failed: ${response.status} ${response.statusText}`);
+      throw new Error(
+        `Cohere embed failed: ${response.status} ${response.statusText}`,
+      );
     }
 
     const data = (await response.json()) as { embeddings: number[][] };

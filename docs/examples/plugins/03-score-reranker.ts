@@ -26,7 +26,7 @@ import type {
 const PREFIX_BOOST: Record<string, number> = {
   'tool:': 0.15,
   'state:': 0.05,
-  'feedback:': 0.10,
+  'feedback:': 0.1,
 };
 
 class ScoreBoostReranker implements IReranker {

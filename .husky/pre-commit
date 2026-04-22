@@ -1,1 +1,2 @@
-npx biome check --config-path . src
+npx biome check --write packages
+git add -A
