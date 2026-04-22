@@ -273,15 +273,16 @@ Short doc (≤ 40 lines). Contents:
 
 `tsc -b packages/llm-agent packages/llm-agent-server` (current root `build` script) does not know about the new packages. Update:
 
-1. Root `package.json` `build`/`clean` scripts — extend the list:
+1. Root `package.json` `build`/`clean` scripts — extend the list, with explicit order:
    ```
-   "build": "tsc -b packages/llm-agent packages/openai-embedder packages/openai-llm packages/llm-agent-server"
+   "build": "tsc -b packages/openai-embedder packages/llm-agent packages/openai-llm packages/llm-agent-server"
    ```
-   Order matters: core first, then embedder and openai-llm (they depend only on core), then server (depends on openai-llm).
-2. `packages/llm-agent/tsconfig.json` — add `{ "path": "../openai-embedder" }` to `references` (core's re-export of OpenAiEmbedder is a type-only import of the new package's `.d.ts`).
-3. `packages/llm-agent-server/tsconfig.json` — add `{ "path": "../openai-llm" }` to `references`.
+   `openai-embedder` builds **before** `llm-agent` because core's back-compat re-export needs openai-embedder's `.d.ts` available via node_modules. Then `llm-agent`, then `openai-llm` (depends on core), then `llm-agent-server` (depends on openai-llm and core).
+2. `packages/llm-agent-server/tsconfig.json` — add `{ "path": "../openai-llm" }` to `references`. Server depends on openai-llm (one-directional).
+3. **Do NOT add `{ "path": "../openai-embedder" }` to `packages/llm-agent/tsconfig.json` `references`.** `openai-embedder` already references `llm-agent` (it implements `IEmbedderBatch` from core), so adding the reverse edge creates a cycle in the TypeScript project graph. The back-compat re-export in core resolves openai-embedder's `.d.ts` via npm workspace symlinks (`node_modules/@mcp-abap-adt/openai-embedder/dist/index.d.ts`) at type-check time; no project reference is needed for correctness. The build-order constraint is enforced by the root script (step 1), not by `tsc -b`'s dependency graph.
+4. **openai-llm has the same one-directional relationship** with core (it imports `ILlm`, `Message`, etc.), but no re-export from core back to openai-llm — so no cycle risk on that side. Reference is clean.
 
-Without these, the root build may report success while the new packages' `dist/` stays stale, and downstream re-exports fail at runtime.
+Trade-off of skipping the project reference between core and openai-embedder: `tsc -b` incremental rebuilds don't cascade from openai-embedder changes into core automatically. CI always runs clean builds; local dev can `npm run clean && npm run build` after cross-package edits. Acceptable cost to avoid the cycle.
 
 ## Open items for implementation plan
 
@@ -294,3 +295,4 @@ Without these, the root build may report success while the new packages' `dist/`
 - **Observation:** the `openai-embedder` package draft lists `axios` as a dependency, and the known-debt section says core still pulls `axios` transitively through that package. **Proposal:** remove that claim unless the implementation is intentionally rewritten; the current `OpenAiEmbedder` uses native `fetch`, so the package should not add `axios` without a deliberate design change.
 - **Observation:** the spec says `OpenAiEmbedder` implements `IEmbedder`, while the current class implements `IEmbedderBatch`. **Proposal:** use the more precise contract name in the spec so the extraction preserves the existing batch-capable API surface explicitly.
 - **Observation:** one "open item" is already resolved in the current codebase: `embedder-factories.ts` already registers the `openai` embedder factory. **Proposal:** replace that open question with a concrete task to update the import path only, and keep the remaining open item focused on package exports validation.
+- **Observation:** adding `packages/openai-embedder` to `packages/llm-agent/tsconfig.json` `references` would create a circular TypeScript project graph, because the spec already makes `openai-embedder` reference `llm-agent`. **Proposal:** do not model the back-compat re-export via a new reverse project reference. Either keep the packages acyclic by moving shared RAG interfaces lower in the graph, or choose a different compatibility mechanism that does not require `llm-agent -> openai-embedder -> llm-agent`.
