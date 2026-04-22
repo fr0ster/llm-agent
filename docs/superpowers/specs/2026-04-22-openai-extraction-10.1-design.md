@@ -18,7 +18,7 @@ Two separate packages are created (`openai-llm` + `openai-embedder`) rather than
 ### In scope
 
 - Create `packages/openai-llm/` with `OpenAIProvider` (implements `ILlm`).
-- Create `packages/openai-embedder/` with `OpenAiEmbedder` (implements `IEmbedder`).
+- Create `packages/openai-embedder/` with `OpenAiEmbedder` (implements `IEmbedderBatch`, which extends `IEmbedder`).
 - Move the two source files into the new packages via `git mv`.
 - Add the new packages as dependencies to `@mcp-abap-adt/llm-agent-server` (openai-llm) and `@mcp-abap-adt/llm-agent` (openai-embedder).
 - Re-export `OpenAIProvider` from `@mcp-abap-adt/llm-agent-server`'s public surface for back-compat.
@@ -151,8 +151,7 @@ packages/openai-embedder/
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "*",
-    "axios": "^1.14.0"
+    "@mcp-abap-adt/llm-agent": "*"
   },
   "license": "MIT",
   "repository": {
@@ -162,6 +161,8 @@ packages/openai-embedder/
   "publishConfig": { "access": "public" }
 }
 ```
+
+`OpenAiEmbedder` uses native `fetch` (not `axios`), so no HTTP client runtime dependency is needed. The class implements `IEmbedderBatch` (the batch-capable extension of `IEmbedder`) — the package must export both the class and its `OpenAiEmbedderConfig` type so consumers get the batch API surface.
 
 `tsconfig.json`: same shape as `openai-llm`.
 
@@ -178,10 +179,15 @@ packages/openai-embedder/
 ### `@mcp-abap-adt/llm-agent-server` (server)
 
 - Add `@mcp-abap-adt/openai-llm: "*"` to `dependencies`.
-- Update `src/llm-providers/deepseek.ts` — replace `import { OpenAIProvider } from './openai.js'` with `import { OpenAIProvider } from '@mcp-abap-adt/openai-llm'`.
-- Update `src/llm-providers/index.ts` — replace re-export of local `openai.ts` with `export { OpenAIProvider, type OpenAIConfig } from '@mcp-abap-adt/openai-llm'`.
-- Remove `src/llm-providers/openai.ts` (it's `git mv`-ed out).
-- Update `src/index.ts` — `OpenAIProvider` and `OpenAIConfig` continue to appear in the public surface via the llm-providers barrel (no direct change needed if the barrel is re-exported as a whole). Verify by diffing the exported symbol list before/after.
+- Every import of the local `./llm-providers/openai.js` path must change to `'@mcp-abap-adt/openai-llm'`. Confirmed import sites (grep of the current tree):
+  - `packages/llm-agent-server/src/llm-providers/deepseek.ts` — `DeepSeekProvider extends OpenAIProvider`.
+  - `packages/llm-agent-server/src/llm-providers/index.ts` — barrel.
+  - `packages/llm-agent-server/src/index.ts` — public re-export.
+  - `packages/llm-agent-server/src/smart-agent/providers.ts` — composition root that wires LLM providers by name.
+  - `packages/llm-agent-server/src/agents/openai-agent.ts` — agent-hierarchy class that depends on the provider.
+  - `packages/llm-agent-server/src/llm-providers/__tests__/**` — any OpenAI provider tests move with the file.
+- After updates, `src/index.ts` continues to export `OpenAIProvider` and `OpenAIConfig` via the llm-providers barrel; the public symbol list is unchanged. Verify by `grep OpenAIProvider` on the built `dist/index.d.ts` before/after.
+- Remove `src/llm-providers/openai.ts` via `git mv` into the new package (preserves blame). Do NOT leave a re-export stub at the old path — the llm-providers barrel handles back-compat.
 
 ## Changesets configuration
 
@@ -259,10 +265,32 @@ Short doc (≤ 40 lines). Contents:
 
 ## Known debt
 
-- `@mcp-abap-adt/llm-agent` still carries `axios` transitively through `@mcp-abap-adt/openai-embedder` (because core re-exports OpenAiEmbedder). That's not meaningful progress on "lightweight core" for consumers who install core alone. Real dep shrinkage happens when `openai-embedder` becomes optional (consumers pick only providers they need) — which is a v11 breaking change to remove the re-exports.
+- `@mcp-abap-adt/llm-agent` still transitively lists `@mcp-abap-adt/openai-embedder` as a direct dependency (so the back-compat re-export resolves). That's not meaningful progress on "lightweight core" for consumers who only install core. Real dep shrinkage happens when the re-exports are removed so consumers opt into the providers they actually need — a v11 breaking change.
+- `axios` remains in core because `QdrantRag` depends on it. Resolved by the planned 10.6.0 release that extracts `QdrantRag` into its own package.
 - Workspace publish order depends on `changeset publish` reading the `dependencies` graph correctly. If it doesn't, manual ordering: `openai-llm` and `openai-embedder` first, then core, then server.
+
+## Root build / project-reference updates
+
+`tsc -b packages/llm-agent packages/llm-agent-server` (current root `build` script) does not know about the new packages. Update:
+
+1. Root `package.json` `build`/`clean` scripts — extend the list:
+   ```
+   "build": "tsc -b packages/llm-agent packages/openai-embedder packages/openai-llm packages/llm-agent-server"
+   ```
+   Order matters: core first, then embedder and openai-llm (they depend only on core), then server (depends on openai-llm).
+2. `packages/llm-agent/tsconfig.json` — add `{ "path": "../openai-embedder" }` to `references` (core's re-export of OpenAiEmbedder is a type-only import of the new package's `.d.ts`).
+3. `packages/llm-agent-server/tsconfig.json` — add `{ "path": "../openai-llm" }` to `references`.
+
+Without these, the root build may report success while the new packages' `dist/` stays stale, and downstream re-exports fail at runtime.
 
 ## Open items for implementation plan
 
-- Whether `embedder-factories.ts` registers OpenAiEmbedder explicitly. Task 3 inspects the file to confirm the exact code path.
-- `exports` field of `@mcp-abap-adt/llm-agent` — if it had any deep-path exports referencing `openai-embedder` internals, they need updating or removal.
+- `exports` field of `@mcp-abap-adt/llm-agent` — verify no deep-path exports reference `openai-embedder` internals. If any exist, they either update to re-export from the new package or are removed.
+
+## Review notes and proposals
+
+- **Observation:** the release flow assumes root `npm run build` validates all four packages. **Proposal:** extend the root TypeScript build/clean orchestration and project references to include `packages/openai-llm` and `packages/openai-embedder`, otherwise root verification may stay green while the new packages are not built.
+- **Observation:** the server impact list is incomplete. Beyond `deepseek.ts` and `llm-providers/index.ts`, current imports also exist in `src/index.ts`, `src/smart-agent/providers.ts`, `src/agents/openai-agent.ts`, CLI wiring, and OpenAI provider tests. **Proposal:** expand the implementation scope to enumerate every server import site that currently points to `./llm-providers/openai.js`.
+- **Observation:** the `openai-embedder` package draft lists `axios` as a dependency, and the known-debt section says core still pulls `axios` transitively through that package. **Proposal:** remove that claim unless the implementation is intentionally rewritten; the current `OpenAiEmbedder` uses native `fetch`, so the package should not add `axios` without a deliberate design change.
+- **Observation:** the spec says `OpenAiEmbedder` implements `IEmbedder`, while the current class implements `IEmbedderBatch`. **Proposal:** use the more precise contract name in the spec so the extraction preserves the existing batch-capable API surface explicitly.
+- **Observation:** one "open item" is already resolved in the current codebase: `embedder-factories.ts` already registers the `openai` embedder factory. **Proposal:** replace that open question with a concrete task to update the import path only, and keep the remaining open item focused on package exports validation.
