@@ -32,7 +32,7 @@
 - `anthropic.ts` → `packages/anthropic-llm/src/anthropic-provider.ts`
 - `deepseek.ts` → `packages/deepseek-llm/src/deepseek-provider.ts`
 - `sap-core-ai.ts` → `packages/sap-aicore-llm/src/sap-core-ai-provider.ts`
-- `base.ts` → stays in server (used by other server code) OR moves to core if it's pure interface. Task 4 inspects.
+- `base.ts` (`BaseLLMProvider`) → moves to `packages/llm-agent/src/llm/base-llm-provider.ts`. Task 2 verifies it has no server-only deps (types-from-core only) and performs the `git mv`. Fallback: if inspection shows server-only imports, Task 2 falls back to duplicating the class locally inside each LLM package instead.
 
 **Deletions:**
 - `packages/llm-agent-server/src/agents/` (entire directory — BaseAgent, OpenAIAgent, AnthropicAgent, DeepSeekAgent, SapCoreAIAgent, PromptBasedAgent, index.ts, __tests__). Removed after CLI refactor.
@@ -1052,33 +1052,52 @@ Expected: `deepseek-llm/`, `llm-agent/`, `llm-agent-server/`, `ollama-embedder/`
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
+import { InMemoryRag } from '@mcp-abap-adt/llm-agent';
 
 const llm = new DeepSeekProvider({ apiKey: process.env.DEEPSEEK_API_KEY, model: 'deepseek-chat' });
-const embedder = new OllamaEmbedder({ baseUrl: 'http://localhost:11434', model: 'nomic-embed-text' });
+const embedder = new OllamaEmbedder({ ollamaUrl: 'http://localhost:11434', model: 'nomic-embed-text' });
+// SmartAgentBuilder does not take an embedder directly; it takes RAG stores.
+// For a minimal test, wire a VectorRag or InMemoryRag backed by the embedder.
+const toolsRag = new InMemoryRag();
 
 const agent = await new SmartAgentBuilder()
-  .setMainLlm(llm)
-  .setEmbedder(embedder)
+  .withMainLlm(llm)
+  .setToolsRag(toolsRag)
   .build();
 
 const reply = await agent.chat([{ role: 'user', content: 'Hello' }]);
 console.log(reply);
 ```
 
+**Note:** the actual builder API is `withMainLlm`, not `setMainLlm`. Embedders are not a first-class builder dependency — they're wired through RAG stores. For a full test, import `VectorRag` from core and pass the embedder to its constructor, then `setToolsRag(vectorRag)`. Grep `packages/llm-agent-server/src/smart-agent/builder.ts` for the exact `with*`/`set*` methods available before calling.
+
 Run: `node --experimental-vm-modules script.js` (or equivalent for ESM).
 
 Expected: agent responds. (If DeepSeek key isn't set, expect auth error — still validates the composition path; record as expected.)
 
-- [ ] **Step 4: Negative test: resolveEmbedder for uninstalled peer**
+- [ ] **Step 4: Negative test: missing peer via MissingProviderError**
 
-Add to `script.js`:
+This test asserts that `MissingProviderError` is thrown when a config names an uninstalled peer. The public entry for triggering this is the server's config-driven startup — not a direct `resolveEmbedder` import (which is a server-internal symbol, not a documented public API).
+
+Two options to test it:
+
+**Option A (recommended) — exercise via the public server startup path:**
 
 ```js
-import { resolveEmbedder } from '@mcp-abap-adt/llm-agent-server/embedder-factories';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 
+const configYaml = `
+llm:
+  type: deepseek
+  apiKey: test
+rag:
+  type: sap-ai-core    # peer @mcp-abap-adt/sap-aicore-embedder is NOT installed in this test
+`;
+
 try {
-  await resolveEmbedder('sap-ai-core', {});
+  const server = await SmartServer.fromYaml(configYaml);
+  await server.start();
   console.log('FAIL: expected MissingProviderError');
 } catch (err) {
   if (err instanceof MissingProviderError) {
@@ -1088,6 +1107,8 @@ try {
   }
 }
 ```
+
+**Option B (if `SmartServer.fromYaml` is not a stable public API)** — add a public export for the `prefetchEmbedderFactories(names)` function (Task 12), call it with `['sap-ai-core']`, and assert the error. This requires server to declare the export explicitly (e.g. `"./factories": "./dist/smart-agent/embedder-factories.js"` in the package `exports`) and Task 12 must add that export. Prefer Option A; fall back to B only if the validation script can't easily construct a SmartServer.
 
 Expected: `OK: MissingProviderError thrown`.
 
@@ -1237,3 +1258,6 @@ gh pr merge --merge --delete-branch
 - Task 11 used non-existent builder methods (`setMainLlm`/`setMcp`) → **resolved** by rewriting against the actual API (`withMainLlm`, `withMcpClients`) with an explicit instruction to grep builder.ts before each call.
 - Task 2 package skeleton had `"version": "10.0.0"` → **resolved** by updating Tasks 2-9 template to `"version": "11.0.0"` matching the release line.
 - `BaseLLMProvider` location was forced as a mid-Task-2 decision without spec support → **resolved** by adding an explicit decision sub-task in Task 2 with three options and fallback guidance.
+- Validation Task 19 used stale builder calls `setMainLlm`/`setEmbedder` → **resolved** by rewriting the snippet with `withMainLlm` + `setToolsRag`, noting that embedders aren't a first-class builder dependency and must be wired through a RAG store.
+- Validation Task 19 imported `resolveEmbedder` from an undocumented subpath → **resolved** by rewriting the negative test around `SmartServer.fromYaml` (public API) with a fallback option B that documents how to add an explicit subpath export if needed.
+- File map described `base.ts` as ambiguous ("stays in server OR moves") after Task 2 made it a concrete decision → **resolved** by updating the file map to state the move explicitly with the fallback noted.
