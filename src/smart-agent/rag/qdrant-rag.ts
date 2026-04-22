@@ -1,9 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type {
-  IEmbedder,
-  IPrecomputedVectorRag,
-  IRagBackendWriter,
-} from '../interfaces/rag.js';
+import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -34,7 +30,7 @@ export interface QdrantRagConfig {
   timeoutMs?: number;
 }
 
-export class QdrantRag implements IPrecomputedVectorRag {
+export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
@@ -398,6 +394,14 @@ export class QdrantRag implements IPrecomputedVectorRag {
           if (err instanceof RagError) return { ok: false, error: err };
           return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
         }
+      },
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        return this.upsertPrecomputed(
+          text,
+          vector,
+          { ...metadata, id },
+          options,
+        );
       },
     };
   }

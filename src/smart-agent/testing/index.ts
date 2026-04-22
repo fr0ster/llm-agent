@@ -144,12 +144,8 @@ export function makeRag(
   queryResults: RagResult[] = [],
 ): IRag & { upsertCalls: string[] } {
   const upsertCalls: string[] = [];
-  return {
+  const stub: IRag & { upsertCalls: string[] } = {
     upsertCalls,
-    async upsert(text: string): Promise<Result<void, RagError>> {
-      upsertCalls.push(text);
-      return { ok: true, value: undefined };
-    },
     async query(
       _embedding: IQueryEmbedding,
     ): Promise<Result<RagResult[], RagError>> {
@@ -158,17 +154,33 @@ export function makeRag(
     async healthCheck(): Promise<Result<void, RagError>> {
       return { ok: true, value: undefined };
     },
+    async getById(_id: string): Promise<Result<RagResult | null, RagError>> {
+      return { ok: true, value: null };
+    },
+    writer() {
+      return {
+        upsertRaw: async (
+          _id: string,
+          text: string,
+        ): Promise<Result<void, RagError>> => {
+          upsertCalls.push(text);
+          return { ok: true, value: undefined };
+        },
+        deleteByIdRaw: async (
+          _id: string,
+        ): Promise<Result<boolean, RagError>> => {
+          return { ok: true, value: false };
+        },
+      };
+    },
   };
+  return stub;
 }
 
 export function makeFailingRag(): IRag & { upsertCalls: string[] } {
   const upsertCalls: string[] = [];
-  return {
+  const stub: IRag & { upsertCalls: string[] } = {
     upsertCalls,
-    async upsert(text: string): Promise<Result<void, RagError>> {
-      upsertCalls.push(text);
-      return { ok: false, error: new RagError('Upsert failed') };
-    },
     async query(
       _embedding: IQueryEmbedding,
     ): Promise<Result<RagResult[], RagError>> {
@@ -177,10 +189,14 @@ export function makeFailingRag(): IRag & { upsertCalls: string[] } {
     async healthCheck(): Promise<Result<void, RagError>> {
       return { ok: false, error: new RagError('Health check failed') };
     },
+    async getById(_id: string): Promise<Result<RagResult | null, RagError>> {
+      return { ok: false, error: new RagError('getById failed') };
+    },
   };
+  return stub;
 }
 
-/** RAG stub that records metadata passed to upsert (for session-policy tests). */
+/** RAG stub that records metadata passed to writer().upsertRaw (for session-policy tests). */
 export function makeMetadataRag(queryResults: RagResult[] = []): IRag & {
   upsertCalls: string[];
   upsertMetadata: RagMetadata[];
@@ -189,18 +205,14 @@ export function makeMetadataRag(queryResults: RagResult[] = []): IRag & {
   const upsertCalls: string[] = [];
   const upsertMetadata: RagMetadata[] = [];
   const queryCalls: Array<{ text: string; k: number }> = [];
-  return {
+  const stub: IRag & {
+    upsertCalls: string[];
+    upsertMetadata: RagMetadata[];
+    queryCalls: Array<{ text: string; k: number }>;
+  } = {
     upsertCalls,
     upsertMetadata,
     queryCalls,
-    async upsert(
-      text: string,
-      metadata: RagMetadata,
-    ): Promise<Result<void, RagError>> {
-      upsertCalls.push(text);
-      upsertMetadata.push(metadata);
-      return { ok: true, value: undefined };
-    },
     async query(
       embedding: IQueryEmbedding,
       k: number,
@@ -211,7 +223,29 @@ export function makeMetadataRag(queryResults: RagResult[] = []): IRag & {
     async healthCheck(): Promise<Result<void, RagError>> {
       return { ok: true, value: undefined };
     },
+    async getById(_id: string): Promise<Result<RagResult | null, RagError>> {
+      return { ok: true, value: null };
+    },
+    writer() {
+      return {
+        upsertRaw: async (
+          id: string,
+          text: string,
+          metadata: RagMetadata,
+        ): Promise<Result<void, RagError>> => {
+          upsertCalls.push(text);
+          upsertMetadata.push({ ...metadata, id });
+          return { ok: true, value: undefined };
+        },
+        deleteByIdRaw: async (
+          _id: string,
+        ): Promise<Result<boolean, RagError>> => {
+          return { ok: true, value: false };
+        },
+      };
+    },
   };
+  return stub;
 }
 
 // ---------------------------------------------------------------------------

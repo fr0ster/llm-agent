@@ -35,19 +35,6 @@ export interface EmbedderFactoryConfig {
 export type EmbedderFactory = (cfg: EmbedderFactoryConfig) => IEmbedder;
 
 export interface IRag {
-  /**
-   * Store a text chunk with its metadata.
-   *
-   * If `metadata.id` is provided, implementations MUST treat it as an
-   * idempotent key — repeated upserts with the same id replace the
-   * previous record instead of creating duplicates.
-   */
-  upsert(
-    text: string,
-    metadata: RagMetadata,
-    options?: CallOptions,
-  ): Promise<Result<void, RagError>>;
-
   query(
     embedding: IQueryEmbedding,
     k: number,
@@ -55,13 +42,15 @@ export interface IRag {
   ): Promise<Result<RagResult[], RagError>>;
 
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
-  /** Clear all records. Used for session-scoped store cleanup. Optional — not all backends support it. */
-  clear?(): void;
+
   /** Fetch a single document by its metadata id. Returns null if not found. */
-  getById?(
+  getById(
     id: string,
     options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>>;
+
+  /** Returns a backend writer if this implementation supports writes. */
+  writer?(): IRagBackendWriter | undefined;
 }
 
 export interface IEmbedderBatch extends IEmbedder {
@@ -73,19 +62,6 @@ export function isBatchEmbedder(e: IEmbedder): e is IEmbedderBatch {
     'embedBatch' in e &&
     typeof (e as { embedBatch?: unknown }).embedBatch === 'function'
   );
-}
-
-export interface IPrecomputedVectorRag extends IRag {
-  upsertPrecomputed(
-    text: string,
-    vector: number[],
-    metadata: RagMetadata,
-    options?: CallOptions,
-  ): Promise<Result<void, RagError>>;
-}
-
-export function supportsPrecomputed(rag: IRag): rag is IPrecomputedVectorRag {
-  return 'upsertPrecomputed' in rag;
 }
 
 // Added in 9.0 refactor — see docs/superpowers/specs/2026-04-22-rag-registry-corrections-design.md
@@ -120,6 +96,13 @@ export interface IRagBackendWriter {
     options?: CallOptions,
   ): Promise<Result<boolean, RagError>>;
   clearAll?(): Promise<Result<void, RagError>>;
+  upsertPrecomputedRaw?(
+    id: string,
+    text: string,
+    vector: number[],
+    metadata: RagMetadata,
+    options?: CallOptions,
+  ): Promise<Result<void, RagError>>;
 }
 
 export interface RagCollectionMeta {

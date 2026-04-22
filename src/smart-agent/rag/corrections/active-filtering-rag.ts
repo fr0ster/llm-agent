@@ -27,7 +27,7 @@ export class ActiveFilteringRag implements IRag {
     if (!res.ok) return res;
     const filtered = filterActive(
       res.value,
-      (r) => r.metadata as CorrectionMetadata,
+      (r) => r.metadata as unknown as CorrectionMetadata,
       { includeInactive: includeInactive(options) },
     );
     return { ok: true, value: filtered };
@@ -37,12 +37,10 @@ export class ActiveFilteringRag implements IRag {
     id: string,
     options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
-    if (!this.inner.getById) {
-      return { ok: true, value: null };
-    }
     const res = await this.inner.getById(id, options);
     if (!res.ok || res.value === null) return res;
-    const tags = (res.value.metadata as CorrectionMetadata).tags ?? [];
+    const tags =
+      (res.value.metadata as unknown as CorrectionMetadata).tags ?? [];
     const inactive = tags.includes('deprecated') || tags.includes('superseded');
     if (inactive && !includeInactive(options)) {
       return { ok: true, value: null };

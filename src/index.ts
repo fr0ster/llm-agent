@@ -147,13 +147,9 @@ export type {
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
-  IPrecomputedVectorRag,
   IRag,
 } from './smart-agent/interfaces/rag.js';
-export {
-  isBatchEmbedder,
-  supportsPrecomputed,
-} from './smart-agent/interfaces/rag.js';
+export { isBatchEmbedder } from './smart-agent/interfaces/rag.js';
 export type { ILlmRateLimiter } from './smart-agent/interfaces/rate-limiter.js';
 // Request Logger
 export type {
