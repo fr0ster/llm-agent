@@ -317,7 +317,7 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 
 ## Known items for the implementation plan
 
-- **CLI LLM-only mode implementation:** uses the existing `mcp.type: 'none'` config branch (confirmed present in v10 builder code). No new flag. Builder + `cli.ts` rewrite preserve this contract. Plan task includes verifying the `none` path is wired all the way through pipeline construction.
+- **CLI LLM-only mode implementation:** `mcp.type: 'none'` is interpreted at the config-resolution / `SmartServer` composition layer — `SmartServer` simply omits the MCP config argument to `SmartAgentBuilder`. `SmartAgentBuilderConfig` itself never sees `'none'`. Plan task confirms this chain remains intact after the `cli.ts` rewrite.
 - **`LlmAdapter`:** audit whether it's used only for wrapping Agents, or also for other shims. Preserve non-Agent uses. If it only wraps Agents, delete along with the Agent hierarchy.
 - **`smoke-adapters.ts`:** rewrite to exercise the new provider path. May become trivial or obsolete.
 - **SAP AI Core package split:** if `sap-aicore-llm` and `sap-aicore-embedder` share common credentials/config utilities, decide whether to hoist those to a fourth package `sap-aicore-common` or duplicate into both. Lean: duplicate for simplicity; deduplicate in a future minor if repetition becomes painful.
@@ -330,10 +330,11 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 - `@mcp-abap-adt/hana-vector-provider` — SAP HANA Cloud Vector Engine. Separate project; may live in a different repo given its SAP-specific dependencies.
 - Formal "recipes" as meta-packages (e.g. `@mcp-abap-adt/deepseek-ollama-stack` that depends on the right packages). Low priority — consumers install directly.
 
-## Review notes and proposals
+## Review history (resolved)
 
-- **Observation:** the current "lean: none" decision for provider packages shipped by `@mcp-abap-adt/llm-agent-server` conflicts with the documented default CLI/server experience. The generated config template still defaults to DeepSeek for `llm` and Ollama for `rag`, and `SmartServer` currently resolves those defaults automatically. **Proposal:** either keep a minimal default provider/embedder set as runtime dependencies of `llm-agent-server`, or redesign the generated config/template so a fresh install never references providers the server package does not ship.
-- **Observation:** removing built-in embedder factories from core without naming a new owner creates a gap in declarative YAML-driven RAG resolution. Today `resolveEmbedder()` in server depends on `builtInEmbedderFactories`, and configs use names like `ollama`, `openai`, and `sap-ai-core`. **Proposal:** explicitly move the built-in factory registry to `llm-agent-server` (or to a dedicated defaults package) together with the runtime dependencies needed to instantiate those embedders.
-- **Observation:** the proposed "SmartAgent without MCP (or with `mcp: { disabled: true }`)" path is not aligned with the current builder/config contract. The builder currently models MCP as `http | stdio`, while config disabling is represented as `mcp.type: none`. **Proposal:** either keep `mcp.type: none` as the v11 mechanism, or specify `disabled: true` as an intentional config/API change with matching builder and config updates.
-- **Observation:** the corrected spec now says LLM-only mode uses the existing `mcp.type: 'none'` path and that this is "already supported by the builder", but in the current code `none` is handled in config resolution and SmartServer composition, not in `SmartAgentBuilderConfig` itself. **Proposal:** reword that section to say v11 preserves the existing `config -> SmartServer -> omitted builder MCP config` contract, instead of claiming direct builder support for `none`.
-- **Observation:** the migration "light-install recipes" are now inconsistent with the updated server dependency model. If `llm-agent-server` depends on all provider/embedder packages needed by named declarative config, then recipes like `llm-agent-server + deepseek-llm + ollama-embedder` are not actually minimal for server users. **Proposal:** split migration guidance into two explicit modes: `llm-agent-server` as a batteries-included install, and library-only usage where consumers install only the specific provider/embedder packages they instantiate directly.
+Earlier review iterations surfaced these concerns. All are now addressed in the main sections above. Kept here as an audit trail:
+
+- Server must depend on all provider/embedder packages so declarative YAML resolution works out of the box → **resolved** by the "Server package after v11.0.0" dependency list.
+- `builtInEmbedderFactories` must move out of core → **resolved** by the "Changes to existing packages → core" bullet that relocates it to server.
+- `mcp.type: 'none'` is handled at config-resolution / SmartServer composition, not inside `SmartAgentBuilderConfig` → **resolved** by the reworded `cli.ts` section and aligned implementation-plan bullet.
+- Install recipes need to distinguish batteries-included server install from library-only minimal install → **resolved** by the two-mode install section in the migration guide.
