@@ -10,10 +10,10 @@
 Today the single `@mcp-abap-adt/llm-agent` package ships everything: interfaces, lightweight helpers, the full `SmartAgent` implementation, LLM providers with heavy SDK dependencies (`@sap-ai-sdk/*`, `@modelcontextprotocol/sdk`, `axios`), the MCP transport layer, the HTTP server, the CLI. A consumer who writes their own agent on top of our interfaces still pulls in every concrete default and every SDK. The roadmap for lightweight consumers ("I just want the interfaces and one backend") and lightweight deployments ("my backend is tiny; I don't want the full SAP stack") requires splitting the package.
 
 v10.0.0 does the **infrastructure step**: turn the repo into an npm workspace monorepo and split the code into two packages:
-- `@mcp-abap-adt/llm-agent` — interfaces, types, lightweight default implementations, zero heavy dependencies.
+- `@mcp-abap-adt/llm-agent` — interfaces, types, and reusable default building blocks with a smaller public surface than today's all-in-one package.
 - `@mcp-abap-adt/llm-agent-server` — the full default agent implementation, LLM providers, MCP client, HTTP server, CLI.
 
-Future releases (10.1.0+) can incrementally extract individual LLM providers and any other environment-specific code into their own packages without another major bump.
+v10.0.0 is only the start of that separation. Future releases (10.1.0+) can incrementally extract individual LLM providers and other environment-specific implementations into their own packages without another major bump. The target end state is a lightweight `@mcp-abap-adt/llm-agent` core package with minimal runtime dependencies.
 
 ## Scope
 
@@ -43,7 +43,7 @@ Future releases (10.1.0+) can incrementally extract individual LLM providers and
 | 2 | Which package owns `VectorRag` / `QdrantRag` / providers? | All in core, because they add no SDK dependencies. |
 | 3 | Migration strategy | In-place restructure with `git mv` to preserve blame. |
 | 4 | Versioning | Fixed lock-step via Changesets: `{ "fixed": [["@mcp-abap-adt/llm-agent", "@mcp-abap-adt/llm-agent-server"]] }`. |
-| 5 | CLI bin ownership | Moves to `@mcp-abap-adt/llm-agent-server` with name `llm-agent` preserved. Core ships without a bin. |
+| 5 | CLI bin ownership | Server owns all three runtime bins: `llm-agent` (primary), `llm-agent-check` (diagnostics), `claude-via-agent` (dev wrapper to Claude CLI via SmartServer). No bin is dropped. |
 
 ## Package split
 
@@ -66,6 +66,8 @@ Future releases (10.1.0+) can incrementally extract individual LLM providers and
 
 **Dependencies:** `zod`, and for now `axios` (Qdrant HTTP client) + `@sap-ai-sdk/*` (SAP embedder). After provider extraction in 10.1.0+ these will move out.
 
+**Positioning note:** despite the split, v10.0.0 core is **not yet "zero heavy dependencies"**. The benefit of v10.0.0 is that it establishes the package boundaries needed for incremental extraction. Dependency minimization happens in follow-up releases as concrete implementations move into dedicated packages.
+
 ### `@mcp-abap-adt/llm-agent-server` (default implementation)
 
 **Content:**
@@ -85,12 +87,15 @@ Future releases (10.1.0+) can incrementally extract individual LLM providers and
 - `src/llm-providers/` — `OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `SapCoreAIProvider`, `BaseLLMProvider`.
 - `src/agents/` — the non-SmartAgent agent hierarchy (`BaseAgent`, `OpenAIAgent`, `AnthropicAgent`, `DeepSeekAgent`, `SapCoreAIAgent`, `PromptBasedAgent`) if it still exists in the repo at migration time.
 - `src/mcp/` — MCP client wrapper and transports (stdio, SSE, stream-http, embedded, auto).
-- `bin/llm-agent` — CLI shebang entry.
+- `bin/llm-agent` — primary CLI shebang entry.
+- `bin/llm-agent-check` — diagnostics CLI shebang entry.
+- `bin/claude-via-agent` — dev convenience wrapper that launches the Claude CLI through a SmartServer. Script lives at `packages/llm-agent-server/tools/claude-via-agent.{sh,ps1}` and is included in `files` for publish.
 - `scripts/generate-version.js` — build-time version-injection script.
 
 **Dependencies:**
 - Internal: `@mcp-abap-adt/llm-agent@workspace:*`
 - Runtime: `axios`, `@modelcontextprotocol/sdk`, `@sap-ai-sdk/orchestration`, `@sap-ai-sdk/foundation-models`, `yaml`, `zod`.
+- Peer / optional peer deps carried forward from v9 where still applicable: `@opentelemetry/api`, `@sap-ai-sdk/ai-api`.
 
 ## Repository layout (after migration)
 
@@ -123,7 +128,8 @@ llm-agent/
 │       ├── README.md
 │       ├── CHANGELOG.md
 │       ├── bin/
-│       │   └── llm-agent                ← shebang → ./dist/smart-agent/cli.js
+│       │   ├── llm-agent                ← shebang → ./dist/smart-agent/cli.js
+│       │   └── llm-agent-check          ← shebang → ./dist/smart-agent/check-models-cli.js
 │       └── src/
 │           ├── smart-agent/
 │           ├── llm-providers/
@@ -147,11 +153,11 @@ llm-agent/
   "private": true,
   "workspaces": ["packages/*"],
   "scripts": {
-    "build": "npm run build --workspaces --if-present",
+    "build": "tsc -b packages/llm-agent packages/llm-agent-server",
     "clean": "npm run clean --workspaces --if-present",
-    "lint": "biome check --write src packages",
-    "lint:check": "biome check src packages",
-    "format": "biome format --write packages",
+    "lint": "biome check --write packages scripts docs examples",
+    "lint:check": "biome check packages scripts docs examples",
+    "format": "biome format --write packages scripts docs examples",
     "test": "npm run test --workspaces --if-present",
     "changeset": "changeset",
     "version": "changeset version",
@@ -237,7 +243,11 @@ The `fixed` array enforces lock-step versioning: any changeset that bumps one al
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
-  "bin": { "llm-agent": "bin/llm-agent" },
+  "bin": {
+    "llm-agent": "bin/llm-agent",
+    "llm-agent-check": "bin/llm-agent-check",
+    "claude-via-agent": "tools/claude-via-agent.sh"
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
@@ -260,7 +270,7 @@ The `fixed` array enforces lock-step versioning: any changeset that bumps one al
       "default": "./dist/smart-agent/otel/index.js"
     }
   },
-  "files": ["dist", "bin", "README.md", "LICENSE"],
+  "files": ["dist", "bin", "tools", "README.md", "LICENSE"],
   "scripts": {
     "prebuild": "node scripts/generate-version.js",
     "build": "tsc -p tsconfig.json",
@@ -274,11 +284,34 @@ The `fixed` array enforces lock-step versioning: any changeset that bumps one al
     "yaml": "^2.x",
     "zod": "^3.x"
   },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.x",
+    "@sap-ai-sdk/ai-api": "^2.x"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": { "optional": true },
+    "@sap-ai-sdk/ai-api": { "optional": true }
+  },
   "publishConfig": { "access": "public" }
 }
 ```
 
 Sub-exports (`./testing`, `./smart-server`, `./otel`) preserve the current 9.x shape so consumers' deep imports keep working after updating the package name.
+
+## Published surface compatibility
+
+v10.0.0 is a package split, but it still changes the published surface. We should enumerate those changes explicitly rather than let them emerge accidentally during file moves.
+
+**Exports and bins to preserve intentionally:**
+- `@mcp-abap-adt/llm-agent-server` continues to expose `./testing`, `./smart-server`, and `./otel`.
+- `@mcp-abap-adt/llm-agent-server` owns the runtime CLIs: `llm-agent` and `llm-agent-check`.
+- `@mcp-abap-adt/llm-agent` has no bin entries.
+
+**Surface intentionally preserved:**
+- All three v9 bins — `llm-agent`, `llm-agent-check`, `claude-via-agent` — remain available after the split and are owned by `@mcp-abap-adt/llm-agent-server`.
+
+**Migration doc requirement:**
+- `docs/MIGRATION-v10.md` must call out every removed, renamed, or moved `bin` and every moved deep-import entrypoint.
 
 ## TypeScript project references
 
@@ -336,7 +369,7 @@ Sub-exports (`./testing`, `./smart-server`, `./otel`) preserve the current 9.x s
 }
 ```
 
-With `composite: true` and `references`, `tsc --build packages/llm-agent-server` builds core first, then the server. Our root `npm run build --workspaces` respects package dependency order and achieves the same.
+With `composite: true` and `references`, `tsc --build packages/llm-agent-server` builds core first, then the server. The root build should use `tsc -b` explicitly rather than rely on npm workspace execution order as a build guarantee.
 
 ## Import rewrites
 
@@ -370,6 +403,8 @@ import('../dist/smart-agent/cli.js');
 
 With `bin: { "llm-agent": "bin/llm-agent" }` in `package.json`, consumers installing `@mcp-abap-adt/llm-agent-server` get the `llm-agent` command on `PATH` (or via `npx`). Globally installed or local workspace — the ergonomics match today's behavior.
 
+`packages/llm-agent-server/bin/llm-agent-check` follows the same pattern and points to `./dist/smart-agent/check-models-cli.js`.
+
 ## Examples and docs
 
 - `examples/docker-*` stays at repo root and remains out of npm publish scope (they are docs artifacts, not importable code).
@@ -380,7 +415,7 @@ With `bin: { "llm-agent": "bin/llm-agent" }` in `package.json`, consumers instal
 
 ### `ci.yml` (existing)
 
-Replace any `npm run build` / `npm run test` / `npm run lint` that operate on single-package `src/` with workspace-aware equivalents:
+Replace any `npm run build` / `npm run test` / `npm run lint` that operate on the old single-package `src/` tree with monorepo-aware equivalents:
 
 ```yaml
 - run: npm ci
@@ -389,7 +424,7 @@ Replace any `npm run build` / `npm run test` / `npm run lint` that operate on si
 - run: npm run test
 ```
 
-Root scripts already fan out via `--workspaces`. Individual test runner lines that hard-code `src/smart-agent/...` paths must be updated or removed; each package owns its own test runner config.
+The key point is that CI must stop referencing root `src/` once the move is complete. Individual test runner lines that hard-code `src/smart-agent/...` paths must be updated or removed; each package owns its own test runner config.
 
 ### `release.yml` (existing)
 
@@ -410,6 +445,9 @@ A new doc that lists, as a table:
 | `buildRagCollectionToolEntries` | same name | `@mcp-abap-adt/llm-agent` |
 | `DefaultPipeline`, pipeline handlers | same names | `@mcp-abap-adt/llm-agent-server` |
 | `MCPClientWrapper`, transports | same names | `@mcp-abap-adt/llm-agent-server` |
+| `llm-agent` CLI | same command | `@mcp-abap-adt/llm-agent-server` |
+| `llm-agent-check` CLI | same command | `@mcp-abap-adt/llm-agent-server` |
+| `claude-via-agent` CLI | same command | `@mcp-abap-adt/llm-agent-server` |
 
 **Install changes:**
 ```bash
@@ -432,6 +470,9 @@ npx @mcp-abap-adt/llm-agent --config smart-server.yaml
 # After
 npx @mcp-abap-adt/llm-agent-server --config smart-server.yaml
 # Global install still exposes `llm-agent` binary.
+
+# Diagnostics CLI after
+npx @mcp-abap-adt/llm-agent-server llm-agent-check
 ```
 
 ## Known debt
