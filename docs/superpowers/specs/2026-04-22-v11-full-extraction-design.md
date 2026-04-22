@@ -228,7 +228,7 @@ Order: core first, then provider/embedder/qdrant packages (all depend only on co
 
 - Delete `src/llm-providers/` directory (LLM providers moved out).
 - Delete `src/agents/` directory (Agent hierarchy removed).
-- Rewrite `src/smart-agent/cli.ts` — single path: parse args, build `SmartAgent`, run. No Agent instantiation. **LLM-only mode uses the existing `mcp.type: 'none'` config value** (already supported by the builder), NOT a new `disabled: true` flag. The v11 refactor preserves the current MCP config contract.
+- Rewrite `src/smart-agent/cli.ts` — single path: parse args, build `SmartAgent`, run. No Agent instantiation. **LLM-only mode preserves the existing contract:** `smart-server.yaml` sets `mcp.type: 'none'`; config resolution and `SmartServer` composition interpret that as "build `SmartAgentBuilder` without MCP" (i.e., omit the MCP config argument the builder would otherwise receive). `SmartAgentBuilderConfig` itself is not changed. The v11 refactor touches neither config schema nor builder MCP type.
 - Rewrite `src/smart-agent/providers.ts` — construct concrete `ILlm` by constructing the provider directly (import from `@mcp-abap-adt/openai-llm` etc. based on `LLM_PROVIDER` env). No wrapping.
 - Remove `LlmAdapter` if only used for Agent wrapping.
 - Update `src/index.ts` — no more re-exports of LLM providers.
@@ -269,10 +269,22 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 4. **Agent hierarchy removal:** before/after code snippets showing `new OpenAIAgent(...)` → `new OpenAIProvider(...)` + SmartAgent pattern.
 5. **CLI changes:** `llm-agent --llm-only` still works; internally backed by SmartAgent without MCP rather than the old Agent classes.
 6. **Docker examples:** `Dockerfile` in `examples/docker-*` updated to install the needed provider packages explicitly.
-7. **Light-install recipes:**
-   - "DeepSeek + Ollama" minimal set: `llm-agent-server`, `deepseek-llm`, `ollama-embedder`.
-   - "OpenAI + Qdrant": `llm-agent-server`, `openai-llm`, `openai-embedder`, `qdrant-rag`.
-   - "SAP AI Core everywhere": `llm-agent-server`, `sap-aicore-llm`, `sap-aicore-embedder`, `qdrant-rag` (SAP AI Core doesn't own a vector store).
+7. **Install modes — choose one:**
+
+   **a) Batteries-included (server as runtime):**
+   ```bash
+   npm install @mcp-abap-adt/llm-agent-server
+   ```
+   Pulls every provider/embedder/qdrant package transitively. `smart-server.yaml` declarative config (`llm: deepseek`, `rag: ollama`, etc.) resolves any name out of the box. Recommended for most deployments that just run the CLI / HTTP server.
+
+   **b) Library-only (minimal footprint):**
+   Install core plus ONLY the specific provider packages your code imports directly. You build `SmartAgent` programmatically with `SmartAgentBuilder`, supplying provider instances to fluent setters. Example "DeepSeek LLM + Ollama embeddings":
+   ```bash
+   npm install @mcp-abap-adt/llm-agent @mcp-abap-adt/deepseek-llm @mcp-abap-adt/ollama-embedder
+   ```
+   No SAP SDK, no OpenAI packages (DeepSeek transitively pulls `openai-llm` because it extends OpenAIProvider, which is the only exception).
+
+   Library-only consumers write their own composition code; they don't get the declarative `smart-server.yaml` factory resolution — they pass provider instances directly to the builder.
 
 ## Testing
 
@@ -323,3 +335,5 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 - **Observation:** the current "lean: none" decision for provider packages shipped by `@mcp-abap-adt/llm-agent-server` conflicts with the documented default CLI/server experience. The generated config template still defaults to DeepSeek for `llm` and Ollama for `rag`, and `SmartServer` currently resolves those defaults automatically. **Proposal:** either keep a minimal default provider/embedder set as runtime dependencies of `llm-agent-server`, or redesign the generated config/template so a fresh install never references providers the server package does not ship.
 - **Observation:** removing built-in embedder factories from core without naming a new owner creates a gap in declarative YAML-driven RAG resolution. Today `resolveEmbedder()` in server depends on `builtInEmbedderFactories`, and configs use names like `ollama`, `openai`, and `sap-ai-core`. **Proposal:** explicitly move the built-in factory registry to `llm-agent-server` (or to a dedicated defaults package) together with the runtime dependencies needed to instantiate those embedders.
 - **Observation:** the proposed "SmartAgent without MCP (or with `mcp: { disabled: true }`)" path is not aligned with the current builder/config contract. The builder currently models MCP as `http | stdio`, while config disabling is represented as `mcp.type: none`. **Proposal:** either keep `mcp.type: none` as the v11 mechanism, or specify `disabled: true` as an intentional config/API change with matching builder and config updates.
+- **Observation:** the corrected spec now says LLM-only mode uses the existing `mcp.type: 'none'` path and that this is "already supported by the builder", but in the current code `none` is handled in config resolution and SmartServer composition, not in `SmartAgentBuilderConfig` itself. **Proposal:** reword that section to say v11 preserves the existing `config -> SmartServer -> omitted builder MCP config` contract, instead of claiming direct builder support for `none`.
+- **Observation:** the migration "light-install recipes" are now inconsistent with the updated server dependency model. If `llm-agent-server` depends on all provider/embedder packages needed by named declarative config, then recipes like `llm-agent-server + deepseek-llm + ollama-embedder` are not actually minimal for server users. **Proposal:** split migration guidance into two explicit modes: `llm-agent-server` as a batteries-included install, and library-only usage where consumers install only the specific provider/embedder packages they instantiate directly.
