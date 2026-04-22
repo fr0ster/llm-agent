@@ -87,6 +87,51 @@ function createStubServer(state: StubState): http.Server {
         return;
       }
 
+      // POST /collections/:name/points (retrieve by ids)
+      const retrieveMatch = url.match(/^\/collections\/([^/]+)\/points$/);
+      if (retrieveMatch && req.method === 'POST') {
+        const name = retrieveMatch[1];
+        const data = JSON.parse(body);
+        const coll = state.collections.get(name);
+        if (!coll) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        const ids: string[] = data.ids ?? [];
+        const result = coll
+          .filter((p) => ids.includes(p.id))
+          .map((p) => ({ id: p.id, payload: p.payload }));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result }));
+        return;
+      }
+
+      // POST /collections/:name/points/delete
+      const deleteMatch = url.match(/^\/collections\/([^/]+)\/points\/delete$/);
+      if (deleteMatch && req.method === 'POST') {
+        const name = deleteMatch[1];
+        const data = JSON.parse(body);
+        const coll = state.collections.get(name);
+        if (!coll) {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+        if (data.filter && Object.keys(data.filter).length === 0) {
+          coll.length = 0;
+        } else if (Array.isArray(data.points)) {
+          const ids = new Set<string>(data.points);
+          state.collections.set(
+            name,
+            coll.filter((p) => !ids.has(p.id)),
+          );
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result: { status: 'completed' } }));
+        return;
+      }
+
       // POST /collections/:name/points/search
       const searchMatch = url.match(/^\/collections\/([^/]+)\/points\/search$/);
       if (searchMatch && req.method === 'POST') {
@@ -224,5 +269,61 @@ describe('QdrantRag', () => {
     });
     const result = await rag.healthCheck();
     assert.ok(result.ok);
+  });
+
+  it('getById returns the stored record via deterministic UUID', async () => {
+    state.collections.set('test-get', []);
+    const rag = new QdrantRag({
+      url: baseUrl,
+      collectionName: 'test-get',
+      embedder: makeEmbedder(),
+    });
+    await rag.upsert('hello', { id: 'r1' });
+    const got = await rag.getById?.('r1');
+    assert.ok(got.ok);
+    assert.ok(got.value);
+    assert.equal(got.value?.text, 'hello');
+  });
+
+  it('getById returns null for unknown id', async () => {
+    state.collections.set('test-get-miss', []);
+    const rag = new QdrantRag({
+      url: baseUrl,
+      collectionName: 'test-get-miss',
+      embedder: makeEmbedder(),
+    });
+    const got = await rag.getById?.('nope');
+    assert.ok(got.ok);
+    assert.equal(got.value, null);
+  });
+
+  it('writer().deleteByIdRaw removes the point', async () => {
+    state.collections.set('test-del', []);
+    const rag = new QdrantRag({
+      url: baseUrl,
+      collectionName: 'test-del',
+      embedder: makeEmbedder(),
+    });
+    const w = rag.writer();
+    await w.upsertRaw('r1', 'hi', {});
+    assert.equal(state.collections.get('test-del')?.length, 1);
+    const del = await w.deleteByIdRaw('r1');
+    assert.ok(del.ok);
+    assert.equal(state.collections.get('test-del')?.length, 0);
+  });
+
+  it('writer().clearAll empties the collection', async () => {
+    state.collections.set('test-clear', []);
+    const rag = new QdrantRag({
+      url: baseUrl,
+      collectionName: 'test-clear',
+      embedder: makeEmbedder(),
+    });
+    const w = rag.writer();
+    await w.upsertRaw('a', 't', {});
+    await w.upsertRaw('b', 't', {});
+    const cleared = await w.clearAll?.();
+    assert.ok(cleared.ok);
+    assert.equal(state.collections.get('test-clear')?.length, 0);
   });
 });
