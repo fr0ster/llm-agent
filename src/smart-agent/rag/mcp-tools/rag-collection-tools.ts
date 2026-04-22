@@ -1,9 +1,18 @@
 import { z } from 'zod';
-import type { IRagRegistry } from '../../interfaces/rag.js';
+import type {
+  IRagProviderRegistry,
+  IRagRegistry,
+} from '../../interfaces/rag.js';
 import {
   buildCorrectionMetadata,
   deprecateMetadata,
 } from '../corrections/metadata.js';
+
+export interface RagToolContext {
+  sessionId?: string;
+  userId?: string;
+  [key: string]: unknown;
+}
 
 export interface RagToolEntry {
   toolDefinition: {
@@ -11,11 +20,15 @@ export interface RagToolEntry {
     description: string;
     inputSchema: z.ZodRawShape;
   };
-  handler: (context: object, args: Record<string, unknown>) => Promise<unknown>;
+  handler: (
+    context: RagToolContext,
+    args: Record<string, unknown>,
+  ) => Promise<unknown>;
 }
 
 export function buildRagCollectionToolEntries(opts: {
   registry: IRagRegistry;
+  providerRegistry?: IRagProviderRegistry;
 }): RagToolEntry[] {
   const { registry } = opts;
 
@@ -128,5 +141,131 @@ export function buildRagCollectionToolEntries(opts: {
     },
   };
 
-  return [addTool, correctTool, deprecateTool];
+  const listTool: RagToolEntry = {
+    toolDefinition: {
+      name: 'rag_list_collections',
+      description:
+        'List known RAG collections with optional scope/provider filters.',
+      inputSchema: {
+        scope: z.enum(['session', 'user', 'global']).optional(),
+        provider: z.string().optional(),
+      },
+    },
+    handler: async (_ctx, args) => {
+      const metas = registry.list().filter((m) => {
+        if (args.scope && m.scope !== args.scope) return false;
+        if (args.provider && m.providerName !== args.provider) return false;
+        return true;
+      });
+      return { ok: true, collections: metas };
+    },
+  };
+
+  const describeTool: RagToolEntry = {
+    toolDefinition: {
+      name: 'rag_describe_collection',
+      description: 'Return the metadata of a RAG collection by name.',
+      inputSchema: { name: z.string() },
+    },
+    handler: async (_ctx, args) => {
+      const name = String(args.name);
+      const meta = registry.list().find((m) => m.name === name);
+      if (!meta) {
+        return { ok: false, error: `Collection '${name}' not found` };
+      }
+      return { ok: true, meta };
+    },
+  };
+
+  const deleteTool: RagToolEntry = {
+    toolDefinition: {
+      name: 'rag_delete_collection',
+      description: 'Delete a RAG collection you own (session or user scope).',
+      inputSchema: { name: z.string() },
+    },
+    handler: async (ctx, args) => {
+      const name = String(args.name);
+      const meta = registry.list().find((m) => m.name === name);
+      if (!meta) {
+        return { ok: false, error: `Collection '${name}' not found` };
+      }
+      if (meta.scope === 'global' || !meta.scope) {
+        return {
+          ok: false,
+          error: `Global collections cannot be deleted via MCP`,
+        };
+      }
+      if (meta.scope === 'session') {
+        if (!ctx.sessionId || ctx.sessionId !== meta.sessionId) {
+          return {
+            ok: false,
+            error: `sessionId mismatch for collection '${name}'`,
+          };
+        }
+      }
+      if (meta.scope === 'user') {
+        if (!ctx.userId || ctx.userId !== meta.userId) {
+          return {
+            ok: false,
+            error: `userId mismatch for collection '${name}'`,
+          };
+        }
+      }
+      const res = await registry.deleteCollection(name);
+      return res.ok ? { ok: true } : { ok: false, error: res.error.message };
+    },
+  };
+
+  const tools: RagToolEntry[] = [
+    addTool,
+    correctTool,
+    deprecateTool,
+    listTool,
+    describeTool,
+    deleteTool,
+  ];
+
+  if (opts.providerRegistry) {
+    const providerRegistry = opts.providerRegistry;
+    const createTool: RagToolEntry = {
+      toolDefinition: {
+        name: 'rag_create_collection',
+        description: 'Create a new RAG collection via a provider.',
+        inputSchema: {
+          provider: z.string(),
+          name: z.string(),
+          scope: z.enum(['session', 'user', 'global']),
+          displayName: z.string().optional(),
+          description: z.string().optional(),
+          tags: z.array(z.string()).optional(),
+        },
+      },
+      handler: async (ctx, args) => {
+        const providerName = String(args.provider);
+        const provider = providerRegistry.getProvider(providerName);
+        if (!provider) {
+          return {
+            ok: false,
+            error: `RAG provider '${providerName}' is not registered`,
+          };
+        }
+        const res = await registry.createCollection({
+          providerName,
+          collectionName: String(args.name),
+          scope: args.scope as 'session' | 'user' | 'global',
+          sessionId: ctx.sessionId,
+          userId: ctx.userId,
+          displayName: args.displayName as string | undefined,
+          description: args.description as string | undefined,
+          tags: args.tags as string[] | undefined,
+        });
+        return res.ok
+          ? { ok: true, meta: res.value }
+          : { ok: false, error: res.error.message };
+      },
+    };
+    tools.push(createTool);
+  }
+
+  return tools;
 }
