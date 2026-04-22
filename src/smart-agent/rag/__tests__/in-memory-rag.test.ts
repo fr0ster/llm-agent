@@ -196,3 +196,46 @@ describe('InMemoryRag', () => {
     });
   });
 });
+
+describe('InMemoryRag.getById', () => {
+  it('returns stored record by metadata.id', async () => {
+    const rag = new InMemoryRag();
+    await rag.upsert('hello world', { id: 'r1' });
+    const got = await rag.getById?.('r1');
+    assert.ok(got?.ok);
+    assert.ok(got?.value);
+    assert.equal(got?.value?.text, 'hello world');
+  });
+  it('returns null for unknown id', async () => {
+    const rag = new InMemoryRag();
+    const got = await rag.getById?.('missing');
+    assert.ok(got?.ok);
+    assert.equal(got?.value, null);
+  });
+});
+
+describe('InMemoryRag backend writer', () => {
+  it('exposes IRagBackendWriter via writer()', async () => {
+    const rag = new InMemoryRag();
+    const w = rag.writer();
+    const up = await w.upsertRaw('id-1', 'hi', {});
+    assert.ok(up.ok);
+    const got = await rag.getById?.('id-1');
+    assert.ok(got?.ok && got?.value?.text === 'hi');
+    const del = await w.deleteByIdRaw('id-1');
+    assert.ok(del.ok && del.value === true);
+    const delAgain = await w.deleteByIdRaw('id-1');
+    assert.ok(delAgain.ok && delAgain.value === false);
+  });
+  it('clearAll empties the store', async () => {
+    const rag = new InMemoryRag();
+    const w = rag.writer();
+    await w.upsertRaw('x', 'text', {});
+    const cleared = await w.clearAll?.();
+    assert.ok(cleared?.ok);
+    assert.equal(
+      (await rag.getById?.('x'))?.ok && (await rag.getById?.('x'))?.value,
+      null,
+    );
+  });
+});

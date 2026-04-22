@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IPrecomputedVectorRag } from '../interfaces/rag.js';
+import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -30,7 +30,7 @@ export interface QdrantRagConfig {
   timeoutMs?: number;
 }
 
-export class QdrantRag implements IPrecomputedVectorRag {
+export class QdrantRag implements IRag {
   private readonly url: string;
   private readonly collectionName: string;
   private readonly embedder: IEmbedder;
@@ -262,6 +262,50 @@ export class QdrantRag implements IPrecomputedVectorRag {
     }
   }
 
+  async getById(
+    id: string,
+    options?: CallOptions,
+  ): Promise<Result<RagResult | null, RagError>> {
+    if (options?.signal?.aborted) {
+      return { ok: false, error: new RagError('Aborted', 'ABORTED') };
+    }
+    try {
+      const pointId = await deterministicUUID(id);
+      const res = await this._fetch(
+        `/collections/${this.collectionName}/points`,
+        {
+          method: 'POST',
+          body: JSON.stringify({ ids: [pointId], with_payload: true }),
+        },
+        options?.signal,
+      );
+      if (!res.ok) {
+        const body = await res.text();
+        return {
+          ok: false,
+          error: new RagError(`Qdrant retrieve failed: ${body}`, 'QUERY_ERROR'),
+        };
+      }
+      const json = (await res.json()) as {
+        result: Array<{ id: string; payload: Record<string, unknown> }>;
+      };
+      const hit = json.result?.[0];
+      if (!hit) return { ok: true, value: null };
+      const { text: hitText, ...rest } = hit.payload;
+      return {
+        ok: true,
+        value: {
+          text: String(hitText ?? ''),
+          metadata: rest as RagMetadata,
+          score: 1,
+        },
+      };
+    } catch (err) {
+      if (err instanceof RagError) return { ok: false, error: err };
+      return { ok: false, error: new RagError(String(err), 'QUERY_ERROR') };
+    }
+  }
+
   async healthCheck(options?: CallOptions): Promise<Result<void, RagError>> {
     try {
       const res = await this._fetch(
@@ -288,5 +332,77 @@ export class QdrantRag implements IPrecomputedVectorRag {
         ),
       };
     }
+  }
+
+  writer(): IRagBackendWriter {
+    return {
+      upsertRaw: async (id, text, metadata, options) => {
+        const res = await this.upsert(text, { ...metadata, id }, options);
+        return res.ok ? { ok: true, value: undefined } : res;
+      },
+      deleteByIdRaw: async (id, options) => {
+        try {
+          const pointId = await deterministicUUID(id);
+          const res = await this._fetch(
+            `/collections/${this.collectionName}/points/delete`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ points: [pointId] }),
+            },
+            options?.signal,
+          );
+          if (!res.ok) {
+            const body = await res.text();
+            return {
+              ok: false,
+              error: new RagError(
+                `Qdrant delete failed: ${body}`,
+                'DELETE_ERROR',
+              ),
+            };
+          }
+          return { ok: true, value: true };
+        } catch (err) {
+          if (err instanceof RagError) return { ok: false, error: err };
+          return {
+            ok: false,
+            error: new RagError(String(err), 'DELETE_ERROR'),
+          };
+        }
+      },
+      clearAll: async () => {
+        try {
+          const res = await this._fetch(
+            `/collections/${this.collectionName}/points/delete`,
+            {
+              method: 'POST',
+              body: JSON.stringify({ filter: {} }),
+            },
+          );
+          if (!res.ok) {
+            const body = await res.text();
+            return {
+              ok: false,
+              error: new RagError(
+                `Qdrant clear failed: ${body}`,
+                'CLEAR_ERROR',
+              ),
+            };
+          }
+          return { ok: true, value: undefined };
+        } catch (err) {
+          if (err instanceof RagError) return { ok: false, error: err };
+          return { ok: false, error: new RagError(String(err), 'CLEAR_ERROR') };
+        }
+      },
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        return this.upsertPrecomputed(
+          text,
+          vector,
+          { ...metadata, id },
+          options,
+        );
+      },
+    };
   }
 }

@@ -50,6 +50,23 @@ export class InvertedIndex {
     }
   }
 
+  /** Remove a document's contribution from the index. */
+  remove(docId: number, tokens: string[]): void {
+    const oldLength = this.docLengths.get(docId) ?? 0;
+    this.totalTokens -= oldLength;
+    this.docLengths.delete(docId);
+
+    const oldUnique = new Set(tokens);
+    for (const term of oldUnique) {
+      const current = this.termDf.get(term) ?? 0;
+      if (current <= 1) {
+        this.termDf.delete(term);
+      } else {
+        this.termDf.set(term, current - 1);
+      }
+    }
+  }
+
   /** O(1) document frequency lookup for a term. */
   getDocFrequency(term: string): number {
     return this.termDf.get(term) ?? 0;
