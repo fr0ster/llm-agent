@@ -1,5 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IPrecomputedVectorRag } from '../interfaces/rag.js';
+import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -41,8 +41,8 @@ export interface VectorRagConfig {
   documentEnrichers?: IDocumentEnricher[];
 }
 
-export class VectorRag implements IPrecomputedVectorRag {
-  private records: StoredRecord[] = [];
+export class VectorRag implements IRag {
+  private records: (StoredRecord | null)[] = [];
   private readonly index = new InvertedIndex();
   private readonly dedupThreshold: number;
   private readonly namespace?: string;
@@ -116,14 +116,13 @@ export class VectorRag implements IPrecomputedVectorRag {
     // Idempotent upsert: if metadata.id matches, replace in-place
     if (metadata.id) {
       for (let i = 0; i < this.records.length; i++) {
-        if (this.records[i].metadata.id === metadata.id) {
-          const oldTokens = this.tokenize(this.records[i].text);
-          this.records[i].text = text;
-          this.records[i].vector = vector;
-          this.records[i].metadata = {
-            ...this.records[i].metadata,
-            ...metadata,
-          };
+        const slot = this.records[i];
+        if (slot === null) continue;
+        if (slot.metadata.id === metadata.id) {
+          const oldTokens = this.tokenize(slot.text);
+          slot.text = text;
+          slot.vector = vector;
+          slot.metadata = { ...slot.metadata, ...metadata };
           this.index.update(i, oldTokens, newTokens);
           return { ok: true, value: undefined };
         }
@@ -131,20 +130,28 @@ export class VectorRag implements IPrecomputedVectorRag {
     }
 
     for (let i = 0; i < this.records.length; i++) {
-      const rec = this.records[i];
-      if (this.cosine(rec.vector, vector) >= this.dedupThreshold) {
-        const oldTokens = this.tokenize(rec.text);
-        rec.text = text;
-        rec.vector = vector;
-        rec.metadata = { ...rec.metadata, ...metadata };
+      const slot = this.records[i];
+      if (slot === null) continue;
+      if (this.cosine(slot.vector, vector) >= this.dedupThreshold) {
+        const oldTokens = this.tokenize(slot.text);
+        slot.text = text;
+        slot.vector = vector;
+        slot.metadata = { ...slot.metadata, ...metadata };
         this.index.update(i, oldTokens, newTokens);
         return { ok: true, value: undefined };
       }
     }
 
-    const docIdx = this.records.length;
-    this.records.push({ text, vector, metadata });
-    this.index.add(docIdx, newTokens);
+    // Reuse a tombstone slot if available
+    const freeIdx = this.records.indexOf(null);
+    if (freeIdx !== -1) {
+      this.records[freeIdx] = { text, vector, metadata };
+      this.index.add(freeIdx, newTokens);
+    } else {
+      const docIdx = this.records.length;
+      this.records.push({ text, vector, metadata });
+      this.index.add(docIdx, newTokens);
+    }
     return { ok: true, value: undefined };
   }
 
@@ -218,22 +225,20 @@ export class VectorRag implements IPrecomputedVectorRag {
       const queryVector = await effectiveEmbedding.toVector();
       const targetNamespace = options?.ragFilter?.namespace;
 
-      const filtered = this.records.filter((r) => {
-        if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
-          return false;
-        if (
-          targetNamespace !== undefined &&
-          r.metadata.namespace !== targetNamespace
-        )
-          return false;
-        if (
-          this.namespace !== undefined &&
-          r.metadata.namespace !== undefined &&
-          r.metadata.namespace !== this.namespace
-        )
-          return false;
-        return true;
-      });
+      const filtered = this.records.filter(
+        (r): r is StoredRecord =>
+          r !== null &&
+          !(r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs) &&
+          !(
+            targetNamespace !== undefined &&
+            r.metadata.namespace !== targetNamespace
+          ) &&
+          !(
+            this.namespace !== undefined &&
+            r.metadata.namespace !== undefined &&
+            r.metadata.namespace !== this.namespace
+          ),
+      );
 
       const candidates: ISearchCandidate[] = filtered.map((r) => ({
         text: r.text,
@@ -274,6 +279,54 @@ export class VectorRag implements IPrecomputedVectorRag {
         ),
       };
     }
+  }
+
+  async getById(
+    id: string,
+    _options?: CallOptions,
+  ): Promise<Result<RagResult | null, RagError>> {
+    for (const r of this.records) {
+      if (r !== null && r.metadata.id === id) {
+        return {
+          ok: true,
+          value: { text: r.text, metadata: r.metadata, score: 1 },
+        };
+      }
+    }
+    return { ok: true, value: null };
+  }
+
+  writer(): IRagBackendWriter {
+    return {
+      upsertRaw: async (id, text, metadata, options) => {
+        const res = await this.upsert(text, { ...metadata, id }, options);
+        return res.ok ? { ok: true, value: undefined } : res;
+      },
+      deleteByIdRaw: async (id) => {
+        for (let i = 0; i < this.records.length; i++) {
+          const r = this.records[i];
+          if (r !== null && r.metadata.id === id) {
+            this.index.remove(i, this.tokenize(r.text));
+            this.records[i] = null;
+            return { ok: true, value: true };
+          }
+        }
+        return { ok: true, value: false };
+      },
+      clearAll: async () => {
+        this.records.length = 0;
+        this.index.clear();
+        return { ok: true, value: undefined };
+      },
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        return this.upsertPrecomputed(
+          text,
+          vector,
+          { ...metadata, id },
+          options,
+        );
+      },
+    };
   }
 
   clear(): void {

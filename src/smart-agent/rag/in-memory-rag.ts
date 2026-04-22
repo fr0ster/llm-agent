@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IRag } from '../interfaces/rag.js';
+import type { IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import type {
   CallOptions,
   RagMetadata,
@@ -201,11 +201,42 @@ export class InMemoryRag implements IRag {
     return { ok: true, value: results };
   }
 
+  async getById(
+    id: string,
+    _options?: CallOptions,
+  ): Promise<Result<RagResult | null, RagError>> {
+    const record = this.records.find((r) => r.metadata.id === id);
+    if (!record) return { ok: true, value: null };
+    return {
+      ok: true,
+      value: { text: record.text, metadata: record.metadata, score: 1 },
+    };
+  }
+
   async healthCheck(): Promise<Result<void, RagError>> {
     return { ok: true, value: undefined };
   }
 
   clear(): void {
     this.records.length = 0;
+  }
+
+  writer(): IRagBackendWriter {
+    return {
+      upsertRaw: async (id, text, metadata, options) => {
+        const res = await this.upsert(text, { ...metadata, id }, options);
+        return res.ok ? { ok: true, value: undefined } : res;
+      },
+      deleteByIdRaw: async (id) => {
+        const idx = this.records.findIndex((r) => r.metadata.id === id);
+        if (idx === -1) return { ok: true, value: false };
+        this.records.splice(idx, 1);
+        return { ok: true, value: true };
+      },
+      clearAll: async () => {
+        this.records.length = 0;
+        return { ok: true, value: undefined };
+      },
+    };
   }
 }

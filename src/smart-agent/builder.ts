@@ -47,7 +47,6 @@ import {
   type IEmbedder,
   type IRag,
   isBatchEmbedder,
-  supportsPrecomputed,
 } from './interfaces/rag.js';
 import type { ILlmRateLimiter } from './interfaces/rate-limiter.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
@@ -692,7 +691,7 @@ export class SmartAgentBuilder {
               if (
                 storeEmbedder &&
                 isBatchEmbedder(storeEmbedder) &&
-                supportsPrecomputed(toolsRag)
+                toolsRag.writer?.()?.upsertPrecomputedRaw !== undefined
               ) {
                 // Batch path: single HTTP call for all tools
                 const texts = tools.map(
@@ -703,11 +702,21 @@ export class SmartAgentBuilder {
                   const embedResults = await storeEmbedder.embedBatch(texts);
                   const batchDuration = Date.now() - batchStart;
                   for (let i = 0; i < tools.length; i++) {
-                    const result = await toolsRag.upsertPrecomputed(
-                      texts[i],
-                      embedResults[i].vector,
-                      { id: `tool:${tools[i].name}` },
-                    );
+                    const toolWriter = toolsRag.writer?.();
+                    const result = toolWriter?.upsertPrecomputedRaw
+                      ? await toolWriter.upsertPrecomputedRaw(
+                          `tool:${tools[i].name}`,
+                          texts[i],
+                          embedResults[i].vector,
+                          {},
+                        )
+                      : toolWriter
+                        ? await toolWriter.upsertRaw(
+                            `tool:${tools[i].name}`,
+                            texts[i],
+                            {},
+                          )
+                        : ({ ok: true, value: undefined } as const);
                     if (!result.ok) {
                       log?.log({
                         type: 'warning',
@@ -756,10 +765,10 @@ export class SmartAgentBuilder {
                     const t = tools[i];
                     const text = `Tool: ${t.name} — ${t.description}`;
                     const embedStart = Date.now();
-                    const result = await toolsRag.upsert(text, {
-                      id: `tool:${t.name}`,
-                    });
-                    if (!result.ok) {
+                    const result = await toolsRag
+                      .writer?.()
+                      ?.upsertRaw(`tool:${t.name}`, text, {});
+                    if (result && !result.ok) {
                       log?.log({
                         type: 'warning',
                         traceId: 'builder',
@@ -791,10 +800,10 @@ export class SmartAgentBuilder {
                   const t = tools[i];
                   const text = `Tool: ${t.name} — ${t.description}`;
                   const embedStart = Date.now();
-                  const result = await toolsRag.upsert(text, {
-                    id: `tool:${t.name}`,
-                  });
-                  if (!result.ok) {
+                  const result = await toolsRag
+                    .writer?.()
+                    ?.upsertRaw(`tool:${t.name}`, text, {});
+                  if (result && !result.ok) {
                     log?.log({
                       type: 'warning',
                       traceId: 'builder',
@@ -936,10 +945,10 @@ export class SmartAgentBuilder {
         for (const s of skillsResult.value) {
           const text = `Skill: ${s.name}\n${s.description}`;
           const embedStart = Date.now();
-          const result = await toolsRag.upsert(text, {
-            id: `skill:${s.name}`,
-          });
-          if (!result.ok) {
+          const result = await toolsRag
+            .writer?.()
+            ?.upsertRaw(`skill:${s.name}`, text, {});
+          if (result && !result.ok) {
             log?.log({
               type: 'warning',
               traceId: 'builder',
