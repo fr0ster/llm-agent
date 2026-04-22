@@ -5,7 +5,8 @@ import type {
   HistoryTurn,
   IHistorySummarizer,
 } from '../../../interfaces/history-summarizer.js';
-import type { LlmError, Result } from '../../../interfaces/types.js';
+import type { IRag } from '../../../interfaces/rag.js';
+import type { LlmError, RagError, Result } from '../../../interfaces/types.js';
 
 import { summarizeAndStore } from '../history-upsert.js';
 
@@ -33,18 +34,36 @@ function makeFakeSummarizer(response: string): IHistorySummarizer {
   };
 }
 
-function makeFakeRag(): { upserted: Array<{ text: string; meta: unknown }> } & {
-  upsert: (
-    text: string,
-    meta: unknown,
-  ) => Promise<Result<void, { message: string }>>;
+function makeFakeRag(): IRag & {
+  upserted: Array<{ id: string; text: string; meta: unknown }>;
 } {
-  const upserted: Array<{ text: string; meta: unknown }> = [];
+  const upserted: Array<{ id: string; text: string; meta: unknown }> = [];
   return {
     upserted,
-    upsert: async (text: string, meta: unknown) => {
-      upserted.push({ text, meta });
+    async query(): Promise<Result<[], RagError>> {
+      return { ok: true, value: [] };
+    },
+    async healthCheck(): Promise<Result<void, RagError>> {
       return { ok: true, value: undefined };
+    },
+    async getById(): Promise<Result<null, RagError>> {
+      return { ok: true, value: null };
+    },
+    writer() {
+      return {
+        upsertRaw: async (
+          id: string,
+          text: string,
+          meta: unknown,
+        ): Promise<Result<void, RagError>> => {
+          upserted.push({ id, text, meta });
+          return { ok: true, value: undefined };
+        },
+        deleteByIdRaw: async (): Promise<Result<boolean, RagError>> => ({
+          ok: true,
+          value: false,
+        }),
+      };
     },
   };
 }
@@ -69,22 +88,32 @@ describe('history-upsert: summarizeAndStore', () => {
       turn,
       summarizer,
       memory,
-      rag: rag as never,
+      rag,
       sessionId: 's1',
     });
 
     assert.equal(rag.upserted.length, 1);
     assert.equal(rag.upserted[0].text, 'Created class ZCL_TEST in ZDEV');
+    assert.equal(rag.upserted[0].id, 'turn:s1:0');
     assert.deepEqual(memory.getRecent('s1', 10), [
       'Created class ZCL_TEST in ZDEV',
     ]);
   });
 
-  it('still pushes to memory when RAG upsert fails (best-effort)', async () => {
+  it('still pushes to memory when RAG writer is absent (best-effort)', async () => {
     const memory = makeFakeMemory();
     const summarizer = makeFakeSummarizer('summary text');
-    const rag = {
-      upsert: async () => ({ ok: false, error: { message: 'RAG down' } }),
+    // RAG with no writer
+    const rag: IRag = {
+      async query() {
+        return { ok: true, value: [] };
+      },
+      async healthCheck() {
+        return { ok: true, value: undefined };
+      },
+      async getById() {
+        return { ok: true, value: null };
+      },
     };
 
     const turn: HistoryTurn = {
@@ -101,7 +130,51 @@ describe('history-upsert: summarizeAndStore', () => {
       turn,
       summarizer,
       memory,
-      rag: rag as never,
+      rag,
+      sessionId: 's1',
+    });
+    assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
+  });
+
+  it('still pushes to memory when RAG upsertRaw fails (best-effort)', async () => {
+    const memory = makeFakeMemory();
+    const summarizer = makeFakeSummarizer('summary text');
+    const rag: IRag = {
+      async query() {
+        return { ok: true, value: [] };
+      },
+      async healthCheck() {
+        return { ok: true, value: undefined };
+      },
+      async getById() {
+        return { ok: true, value: null };
+      },
+      writer() {
+        return {
+          upsertRaw: async () => ({
+            ok: false as const,
+            error: { message: 'RAG down' } as RagError,
+          }),
+          deleteByIdRaw: async () => ({ ok: true as const, value: false }),
+        };
+      },
+    };
+
+    const turn: HistoryTurn = {
+      sessionId: 's1',
+      turnIndex: 0,
+      userText: 'x',
+      assistantText: 'y',
+      toolCalls: [],
+      toolResults: [],
+      timestamp: 1000,
+    };
+
+    await summarizeAndStore({
+      turn,
+      summarizer,
+      memory,
+      rag,
       sessionId: 's1',
     });
     assert.deepEqual(memory.getRecent('s1', 10), ['summary text']);
@@ -132,7 +205,7 @@ describe('history-upsert: summarizeAndStore', () => {
       turn,
       summarizer,
       memory,
-      rag: rag as never,
+      rag,
       sessionId: 's1',
     });
     assert.deepEqual(memory.getRecent('s1', 10), ['do something → done it']);

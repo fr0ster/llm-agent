@@ -1,9 +1,5 @@
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type {
-  IEmbedder,
-  IPrecomputedVectorRag,
-  IRagBackendWriter,
-} from '../interfaces/rag.js';
+import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import {
   type CallOptions,
   RagError,
@@ -45,7 +41,7 @@ export interface VectorRagConfig {
   documentEnrichers?: IDocumentEnricher[];
 }
 
-export class VectorRag implements IPrecomputedVectorRag {
+export class VectorRag implements IRag {
   private records: (StoredRecord | null)[] = [];
   private readonly index = new InvertedIndex();
   private readonly dedupThreshold: number;
@@ -321,6 +317,14 @@ export class VectorRag implements IPrecomputedVectorRag {
         this.records.length = 0;
         this.index.clear();
         return { ok: true, value: undefined };
+      },
+      upsertPrecomputedRaw: async (id, text, vector, metadata, options) => {
+        return this.upsertPrecomputed(
+          text,
+          vector,
+          { ...metadata, id },
+          options,
+        );
       },
     };
   }

@@ -3,7 +3,6 @@ import type { IRag } from '../../interfaces/rag.js';
 import type {
   CallOptions,
   RagError,
-  RagMetadata,
   RagResult,
   Result,
 } from '../../interfaces/types.js';
@@ -46,12 +45,9 @@ export class OverlayRag implements IRag {
     id: string,
     options?: CallOptions,
   ): Promise<Result<RagResult | null, RagError>> {
-    if (this.overlay.getById) {
-      const o = await this.overlay.getById(id, options);
-      if (!o.ok) return o;
-      if (o.value !== null && this.overlayAllows(o.value)) return o;
-    }
-    if (!this.base.getById) return { ok: true, value: null };
+    const o = await this.overlay.getById(id, options);
+    if (!o.ok) return o;
+    if (o.value !== null && this.overlayAllows(o.value)) return o;
     return this.base.getById(id, options);
   }
 
@@ -62,16 +58,6 @@ export class OverlayRag implements IRag {
     ]);
     if (!a.ok) return a;
     return b;
-  }
-
-  // Required by IRag but not meaningful for a read-only overlay wrapper.
-  // Delegates to base to satisfy the interface.
-  async upsert(
-    text: string,
-    metadata: RagMetadata,
-    options?: CallOptions,
-  ): Promise<Result<void, RagError>> {
-    return this.base.upsert(text, metadata, options);
   }
 
   /** Hook for subclasses to drop overlay rows (e.g. by sessionId). */

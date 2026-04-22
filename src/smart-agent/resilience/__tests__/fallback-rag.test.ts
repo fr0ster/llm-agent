@@ -6,13 +6,15 @@ import { CircuitBreaker } from '../circuit-breaker.js';
 import { FallbackRag } from '../fallback-rag.js';
 
 describe('FallbackRag', () => {
-  it('upserts to both primary and fallback', async () => {
+  it('writer() upserts to both primary and fallback', async () => {
     const primary = makeRag();
     const fallback = makeRag();
     const breaker = new CircuitBreaker();
     const rag = new FallbackRag(primary, fallback, breaker);
 
-    await rag.upsert('test text', { id: 'x' });
+    const w = rag.writer();
+    assert.ok(w, 'writer() should return a writer');
+    await w?.upsertRaw('x', 'test text', {});
     assert.equal(primary.upsertCalls.length, 1);
     assert.equal(fallback.upsertCalls.length, 1);
   });
@@ -62,20 +64,42 @@ describe('FallbackRag', () => {
     assert.ok(result.ok);
   });
 
-  it('upsert returns primary result even if fallback fails', async () => {
+  it('writer() upsertRaw returns primary result even if fallback fails', async () => {
     const primary = makeRag();
-    // Fallback that throws
+    // Fallback whose writer throws
     const fallback = {
       ...makeRag(),
-      async upsert(): Promise<{ ok: true; value: undefined }> {
-        throw new Error('fallback down');
+      writer() {
+        return {
+          upsertRaw: async (): Promise<never> => {
+            throw new Error('fallback down');
+          },
+          deleteByIdRaw: async (): Promise<{ ok: true; value: false }> => ({
+            ok: true,
+            value: false,
+          }),
+        };
       },
     };
     const breaker = new CircuitBreaker();
     const rag = new FallbackRag(primary, fallback, breaker);
 
-    const result = await rag.upsert('text', {});
-    assert.ok(result.ok);
+    const w = rag.writer();
+    assert.ok(w, 'writer() should return a writer');
+    const result = w ? await w.upsertRaw('id1', 'text', {}) : undefined;
+    assert.ok(result?.ok);
     assert.equal(primary.upsertCalls.length, 1);
+  });
+
+  it('writer() returns undefined when neither primary nor fallback has a writer', async () => {
+    // makeRag returns a writer, so strip it to simulate no-writer RAGs
+    const primary = makeRag();
+    const fallback = makeRag();
+    // Override writer to return undefined
+    (primary as { writer?: () => undefined }).writer = () => undefined;
+    (fallback as { writer?: () => undefined }).writer = () => undefined;
+    const breaker = new CircuitBreaker();
+    const rag = new FallbackRag(primary, fallback, breaker);
+    assert.equal(rag.writer(), undefined);
   });
 });

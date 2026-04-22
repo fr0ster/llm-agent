@@ -292,7 +292,7 @@ export class SmartAgent {
       if (!result.ok) continue;
       for (const tool of result.value) {
         const text = `Tool: ${tool.name} — ${tool.description}`;
-        await toolsRag.upsert(text, { id: `tool:${tool.name}` });
+        await toolsRag.writer?.()?.upsertRaw(`tool:${tool.name}`, text, {});
       }
     }
   }

@@ -45,13 +45,19 @@ export async function summarizeAndStore(
     log?.('history_summarize_failed', { error: result.error.message });
   }
 
-  const upsertResult = await rag.upsert(
-    summary,
-    { id: `turn:${sessionId}:${turn.turnIndex}` },
-    options,
-  );
-  if (!upsertResult.ok) {
-    log?.('history_upsert_failed', { error: upsertResult.error.message });
+  const ragWriter = rag.writer?.();
+  if (!ragWriter) {
+    log?.('history_upsert_failed', { error: 'RAG writer not available' });
+  } else {
+    const upsertResult = await ragWriter.upsertRaw(
+      `turn:${sessionId}:${turn.turnIndex}`,
+      summary,
+      {},
+      options,
+    );
+    if (!upsertResult.ok) {
+      log?.('history_upsert_failed', { error: upsertResult.error.message });
+    }
   }
 
   memory.pushRecent(sessionId, summary);
