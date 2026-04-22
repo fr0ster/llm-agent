@@ -1,34 +1,12 @@
-export type { IToolCache } from '../cache/types.js';
-export type { ICounter, IHistogram, IMetrics } from '../metrics/types.js';
 export type { IQueryExpander } from '../rag/query-expander.js';
-export type { IReranker } from '../reranker/types.js';
-export type { ISessionManager } from '../session/types.js';
-export type {
-  ISpan,
-  ITracer,
-  SpanOptions,
-  SpanStatus,
-} from '../tracer/types.js';
-export type {
-  IOutputValidator,
-  ValidationResult,
-} from '../validator/types.js';
 export {
   type AgentCallOptions,
   OrchestratorError,
   type SmartAgentResponse,
   type StopReason,
 } from './agent-contracts.js';
-export {
-  AdapterValidationError,
-  type ApiRequestContext,
-  type ApiSseEvent,
-  type ILlmApiAdapter,
-  type NormalizedRequest,
-} from './api-adapter.js';
 export type { IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
-export type { IClientAdapter } from './client-adapter.js';
 export type { IHistoryMemory } from './history-memory.js';
 export type {
   HistoryTurn,
@@ -38,25 +16,40 @@ export type { ILlm } from './llm.js';
 export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
-  ConnectionStrategyOptions,
-  IMcpConnectionStrategy,
-  McpClientFactory,
-  McpClientFactoryResult,
-  McpConnectionConfig,
-  McpConnectionResult,
-} from './mcp-connection-strategy.js';
-export type {
-  IPipeline,
-  PipelineDeps,
-  PipelineResult,
-} from './pipeline.js';
+  IModelFilter,
+  IModelInfo,
+  IModelProvider,
+} from './model-provider.js';
+export type { ISmartAgentPlugin, IRagStoreConfig, RagScope } from './plugin.js';
+export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
   IEmbedder,
+  IEmbedderBatch,
+  IIdStrategy,
   IRag,
+  IRagBackendWriter,
+  IRagEditor,
+  IRagProvider,
+  IRagProviderRegistry,
+  IRagRegistry,
+  RagCollectionMeta,
+  RagCollectionScope,
+  IEmbedResult,
 } from './rag.js';
-export type { IRequestLogger } from './request-logger.js';
+export { isBatchEmbedder } from './rag.js';
+export type { ILlmRateLimiter } from './rate-limiter.js';
+export type {
+  IRequestLogger,
+  LlmCallEntry,
+  LlmComponent,
+  RagQueryEntry,
+  RequestSummary,
+  TokenBucket,
+  TokenCategory,
+  ToolCallEntry,
+} from './request-logger.js';
 export type {
   ISkill,
   ISkillManager,
@@ -72,12 +65,16 @@ export type {
   LlmStreamChunk,
   LlmTool,
   LlmToolCall,
+  LlmToolCallDelta,
+  LlmUsage,
   McpTool,
   McpToolResult,
+  ModelUsageEntry,
   RagMetadata,
   RagResult,
   Result,
   StreamHookContext,
+  StreamToolCall,
   Subprompt,
   SubpromptType,
   TimingEntry,
