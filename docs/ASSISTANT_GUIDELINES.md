@@ -7,10 +7,10 @@
 
 ## Current Project Snapshot
 
-- Package: `@mcp-abap-adt/llm-agent`
-- Version line: `1.1.x beta`
-- Main runtime: `src/smart-agent` (`SmartServer` + `SmartAgent`)
-- Public exports: `@mcp-abap-adt/llm-agent` (main), `@mcp-abap-adt/llm-agent/smart-server`, `@mcp-abap-adt/llm-agent/testing`, `@mcp-abap-adt/llm-agent/otel`
+- Packages: `@mcp-abap-adt/llm-agent` (core — interfaces, types, RAG impls) and `@mcp-abap-adt/llm-agent-server` (runtime — SmartAgent, LLM providers, MCP client, CLIs)
+- Version line: `10.x`
+- Main runtime: `src/smart-agent` (`SmartServer` + `SmartAgent`) — published as `@mcp-abap-adt/llm-agent-server`
+- Public exports: `@mcp-abap-adt/llm-agent` (core types/interfaces/RAG), `@mcp-abap-adt/llm-agent-server` (runtime), `@mcp-abap-adt/llm-agent-server/smart-server`, `@mcp-abap-adt/llm-agent-server/testing`, `@mcp-abap-adt/llm-agent-server/otel`
 
 Legacy modules under `src/agents`, `src/llm-providers`, and `src/mcp` are still present for compatibility and adapter reuse.
 

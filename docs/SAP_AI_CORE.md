@@ -54,7 +54,7 @@ The `@sap-ai-sdk/orchestration` package reads this variable automatically. No ad
 For environments where you cannot set environment variables (e.g., multi-tenant apps, serverless functions), pass credentials programmatically:
 
 ```typescript
-import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/llm-agent';
+import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/llm-agent-server';
 
 const credentials: SapAICoreCredentials = {
   clientId: 'sb-xxx...',
@@ -112,7 +112,7 @@ npm run dev
 ### Programmatic Usage — Basic
 
 ```typescript
-import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent';
+import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent-server';
 
 const provider = new SapCoreAIProvider({
   model: 'gpt-4o',
@@ -131,7 +131,7 @@ const response = await agent.process('What tools are available?');
 ### Programmatic Usage — With Credentials
 
 ```typescript
-import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent';
+import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent-server';
 
 const provider = new SapCoreAIProvider({
   model: 'claude-3-5-sonnet',
