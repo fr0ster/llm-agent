@@ -3,9 +3,11 @@ node_modules/
 
 # Build output
 dist/
+**/tsconfig.tsbuildinfo
 
 # Generated sources
 src/generated/
+**/src/generated/
 
 # Environment variables
 .env
