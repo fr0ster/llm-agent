@@ -23,3 +23,43 @@ export class CanonicalKeyCollisionError extends RagError {
     this.name = 'CanonicalKeyCollisionError';
   }
 }
+
+export class UnsupportedScopeError extends RagError {
+  constructor(providerName: string, scope: string) {
+    super(
+      `Provider '${providerName}' does not support scope '${scope}'`,
+      'RAG_UNSUPPORTED_SCOPE',
+    );
+    this.name = 'UnsupportedScopeError';
+  }
+}
+
+export class ProviderNotFoundError extends RagError {
+  constructor(providerName: string) {
+    super(
+      `RAG provider '${providerName}' is not registered`,
+      'RAG_PROVIDER_NOT_FOUND',
+    );
+    this.name = 'ProviderNotFoundError';
+  }
+}
+
+export class CollectionNotFoundError extends RagError {
+  constructor(collectionName: string) {
+    super(
+      `Collection '${collectionName}' is not registered`,
+      'RAG_COLLECTION_NOT_FOUND',
+    );
+    this.name = 'CollectionNotFoundError';
+  }
+}
+
+export class ScopeViolationError extends RagError {
+  constructor(collectionName: string, reason: string) {
+    super(
+      `Scope violation on '${collectionName}': ${reason}`,
+      'RAG_SCOPE_VIOLATION',
+    );
+    this.name = 'ScopeViolationError';
+  }
+}
