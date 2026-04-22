@@ -88,19 +88,11 @@ Content:
 
 **Factory registry behavior** (both LLM and embedder): on startup, `resolveEmbedder('ollama')` / `resolveLlm('deepseek')` attempts a dynamic `import('@mcp-abap-adt/ollama-embedder')` etc. If the peer is not installed, the registry throws a typed error like `MissingProviderError('ollama-embedder is declared in config but not installed; run `npm install @mcp-abap-adt/ollama-embedder`')`. Config validation up front can catch this before pipeline boot.
 
-**Consumer install modes** both work:
-- **Batteries-included (Docker / ops-managed deployments):** install `@mcp-abap-adt/llm-agent-server` + every peer they might configure. Or ship a meta-package `@mcp-abap-adt/llm-agent-server-all` in a future minor that has all peers as direct deps. For v11.0.0, the Docker examples install the peers explicitly.
-- **Minimal (library / embedded use):** install `@mcp-abap-adt/llm-agent-server` + only the peers their `smart-server.yaml` actually references. DeepSeek + Ollama: `deepseek-llm + ollama-embedder`. No SAP SDK on disk.
+**Consumer install mental model (single contract — no "batteries-included"):** installing `@mcp-abap-adt/llm-agent-server` alone gives you `SmartAgent`, `SmartAgentBuilder`, the HTTP server, the CLI, MCP client, resilience, skills, and the factory registry — but **no** provider/embedder classes. For anything the config names (`llm: deepseek`, `rag: ollama`, etc.), the consumer must install the corresponding peer package explicitly. Missing peer → `MissingProviderError` at resolve time with a clear install hint.
 
-Content (unchanged from earlier revision):
-- `SmartAgent`, `SmartAgentBuilder`, `DefaultPipeline`, pipeline handlers
-- MCP client (`MCPClientWrapper` + transports)
-- Resilience wrappers (`FallbackRag`, `CircuitBreaker`, `RetryLlm`, `RateLimiterLlm`, `CircuitBreakerLlm`)
-- Skill managers (`ClaudeSkillManager`, `CodexSkillManager`, `FileSystemSkillManager`)
-- CLI + HTTP server + config loading
-- Observability (tracer, metrics, otel)
-- Adapters, API adapters, cache, session, testing helpers
-- Relocated factory registry (`builtInEmbedderFactories` + LLM factory equivalent) with dynamic-import / missing-peer error handling.
+This means the old "batteries-included" promise is gone. In exchange, every consumer's `node_modules` contains exactly what their config uses.
+
+For Docker examples, `Dockerfile`s install server + the specific peers the bundled `smart-server.yaml` names. A future minor may ship a convenience meta-package `@mcp-abap-adt/llm-agent-server-all` whose only purpose is to list all peer packages as direct `dependencies` — opt-in only.
 
 Content:
 - `SmartAgent`, `SmartAgentBuilder`, `DefaultPipeline`, pipeline handlers
@@ -110,6 +102,7 @@ Content:
 - CLI + HTTP server + config loading
 - Observability (tracer, metrics, otel)
 - Adapters, API adapters, cache, session, testing helpers
+- Relocated factory registry (`builtInEmbedderFactories` + LLM factory equivalent) with dynamic-import / missing-peer error handling
 
 ## Dependency graph (final)
 
@@ -305,20 +298,27 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 6. **Docker examples:** `Dockerfile` in `examples/docker-*` updated to install the needed provider packages explicitly.
 7. **Install modes — choose one:**
 
-   **a) Batteries-included (server as runtime):**
+   **a) Server-managed (declarative `smart-server.yaml`):**
    ```bash
-   npm install @mcp-abap-adt/llm-agent-server
+   # Server runtime + only the peers your config names.
+   npm install @mcp-abap-adt/llm-agent-server \
+               @mcp-abap-adt/deepseek-llm \
+               @mcp-abap-adt/ollama-embedder
    ```
-   Pulls every provider/embedder/qdrant package transitively. `smart-server.yaml` declarative config (`llm: deepseek`, `rag: ollama`, etc.) resolves any name out of the box. Recommended for most deployments that just run the CLI / HTTP server.
+   `smart-server.yaml` names like `llm: deepseek`, `rag: ollama` resolve via server's factory registry. Missing peer → `MissingProviderError` at startup with an install hint. Recommended for most deployments.
 
-   **b) Library-only (minimal footprint):**
-   Install core plus ONLY the specific provider packages your code imports directly. You build `SmartAgent` programmatically with `SmartAgentBuilder`, supplying provider instances to fluent setters. Example "DeepSeek LLM + Ollama embeddings":
+   **b) Programmatic server composition (imperative builder):**
+   Same install as (a), but your code constructs `SmartAgent` via `SmartAgentBuilder` directly (no declarative config). Consumer imports `new DeepSeekProvider({...})` from `@mcp-abap-adt/deepseek-llm` and passes the instance to the builder's fluent setters. Factory registry is not involved.
+
+   **c) Core-only (no SmartAgent, no server):**
    ```bash
-   npm install @mcp-abap-adt/llm-agent @mcp-abap-adt/deepseek-llm @mcp-abap-adt/ollama-embedder
+   npm install @mcp-abap-adt/llm-agent
    ```
-   No SAP SDK, no OpenAI packages (DeepSeek transitively pulls `openai-llm` because it extends OpenAIProvider, which is the only exception).
+   You build your own agent against the interfaces exported by core. Useful when writing a specialized runtime that doesn't need SmartAgent/Builder/pipeline. No provider packages required — you supply your own `ILlm` and `IEmbedder` implementations (or construct third-party provider instances directly from their packages).
 
-   Library-only consumers write their own composition code; they don't get the declarative `smart-server.yaml` factory resolution — they pass provider instances directly to the builder.
+   **Install footprint comparison:**
+   - (a) + DeepSeek + Ollama peers only: no SAP SDK, no Anthropic on disk. DeepSeek transitively pulls `openai-llm` because it extends `OpenAIProvider` (the only inheritance edge).
+   - (c) with your own stubs: just `zod`.
 
 ## Testing
 
@@ -362,7 +362,7 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 
 Given the scale of the refactor, drift between design and actual wiring is likely. The implementation plan MUST include these two explicit validation tasks at the end, each producing a concrete go/no-go signal before the release is tagged:
 
-1. **Batteries-included boot test.** From a fresh install of `@mcp-abap-adt/llm-agent-server` (simulated via clean `node_modules` and `npm ci`), the generated `smart-server.yaml` defaults (`llm: deepseek`, `rag: ollama`, etc.) must boot the HTTP server successfully. Verifies that: (a) server's `dependencies` include every package its built-in factory registry can resolve, (b) `builtInEmbedderFactories` (relocated to server) correctly instantiates each declared embedder name, (c) `SmartServer` composition path builds without errors.
+1. **Declarative-server boot test.** Install `@mcp-abap-adt/llm-agent-server` + the exact peers named in the generated `smart-server.yaml` template (e.g. `deepseek-llm`, `ollama-embedder`). The HTTP server boots successfully. Separately: install server WITHOUT one of those peers; starting the server with a config that references it must fail with `MissingProviderError` up front, not a cryptic runtime error mid-pipeline. Verifies: (a) peer-dep resolution contract, (b) `builtInEmbedderFactories` / LLM factory dynamic-import + error handling, (c) `SmartServer` composition.
 
 2. **Minimal-install composition test.** A small consumer script installs `@mcp-abap-adt/llm-agent-server` + one LLM peer + one embedder peer (e.g. `deepseek-llm` + `ollama-embedder`) only. No SAP SDK, no Anthropic, no OpenAI-embedder on disk. The script constructs `SmartAgent` programmatically via `SmartAgentBuilder`, passes instances directly to fluent setters, runs one inference. Separately, the script attempts `resolveEmbedder('sap-ai-core')` and asserts that the factory registry throws `MissingProviderError` because the peer isn't installed. Verifies that: (a) optional peer deps actually stay optional at install time, (b) factory registry has clean missing-peer error handling, (c) programmatic composition works without declarative config.
 
@@ -383,3 +383,5 @@ Earlier review iterations surfaced these concerns. All are now addressed in the 
 - `mcp.type: 'none'` is handled at config-resolution / SmartServer composition, not inside `SmartAgentBuilderConfig` → **resolved** by the reworded `cli.ts` section and aligned implementation-plan bullet.
 - Install recipes need to distinguish batteries-included server install from library-only minimal install → **resolved** by the two-mode install section in the migration guide.
 - Library-only composition test originally mixed a no-server install with `SmartAgentBuilder`, which actually lives in `@mcp-abap-adt/llm-agent-server` → **resolved** by splitting into two validation tasks: (2) minimal-install (core + server + peers), and (3) true core-only (no server, consumer-written stub ILlm). Also prompted the server-deps rework: optional peer deps instead of unconditional transitive pulls.
+- Post-peer-deps rework, "batteries-included" claims still lingered in install-mode descriptions and validation task wording → **resolved** by removing the "batteries-included" terminology entirely, stating the single contract (server + exactly the peers your config names), and relabeling validation task 1 as "declarative-server boot test".
+- Library-only mode's SmartAgent usage without server install was logically impossible → **resolved** by splitting migration install modes into three: (a) server-managed declarative config, (b) programmatic server composition, (c) true core-only with no SmartAgent. Each clearly states required packages.
