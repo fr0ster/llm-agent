@@ -324,6 +324,14 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 - **Embedder factory registry location:** moves to server (see "Changes to existing packages → core" above). Each factory entry imports the concrete embedder class from its new package. Server's `resolveEmbedder()` continues to work with names like `ollama`, `openai`, `sap-ai-core` via the relocated registry.
 - **Config-template defaults align with server deps:** because server now depends on all provider and embedder packages, the generated `smart-server.yaml` template can continue to default to `llm: deepseek`, `rag: ollama`, etc., without a broken fresh-install experience. Plan task includes a dedicated check that `smart-server.yaml`'s defaults resolve against server's dependency list.
 
+## Required end-to-end validation tasks
+
+Given the scale of the refactor, drift between design and actual wiring is likely. The implementation plan MUST include these two explicit validation tasks at the end, each producing a concrete go/no-go signal before the release is tagged:
+
+1. **Batteries-included boot test.** From a fresh install of `@mcp-abap-adt/llm-agent-server` (simulated via clean `node_modules` and `npm ci`), the generated `smart-server.yaml` defaults (`llm: deepseek`, `rag: ollama`, etc.) must boot the HTTP server successfully. Verifies that: (a) server's `dependencies` include every package its built-in factory registry can resolve, (b) `builtInEmbedderFactories` (relocated to server) correctly instantiates each declared embedder name, (c) `SmartServer` composition path builds without errors.
+
+2. **Library-only composition test.** A small consumer script installs `@mcp-abap-adt/llm-agent` + one LLM package + one embedder package (e.g. `deepseek-llm` + `ollama-embedder`) only. The script constructs `SmartAgent` programmatically via `SmartAgentBuilder`, passes instances directly to fluent setters, runs one inference. No server package, no factory registry, no declarative config involved. Verifies that: (a) core's public API is sufficient for library-only consumption, (b) no core code secretly imports from server, (c) the extracted packages compose correctly without server glue.
+
 ## Future follow-ups (not in v11)
 
 - `ollama-llm` if/when we add an Ollama LLM class (currently there isn't one).
@@ -338,3 +346,4 @@ Earlier review iterations surfaced these concerns. All are now addressed in the 
 - `builtInEmbedderFactories` must move out of core → **resolved** by the "Changes to existing packages → core" bullet that relocates it to server.
 - `mcp.type: 'none'` is handled at config-resolution / SmartServer composition, not inside `SmartAgentBuilderConfig` → **resolved** by the reworded `cli.ts` section and aligned implementation-plan bullet.
 - Install recipes need to distinguish batteries-included server install from library-only minimal install → **resolved** by the two-mode install section in the migration guide.
+
