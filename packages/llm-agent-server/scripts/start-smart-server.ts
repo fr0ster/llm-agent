@@ -13,6 +13,7 @@
  */
 
 import { configDotenv } from 'dotenv';
+
 configDotenv({ path: '.env.smart-server' });
 
 import fs from 'node:fs';
@@ -23,16 +24,18 @@ import { SmartServer } from '../src/smart-agent/smart-server.js';
 // Logger — ALL output goes here, never stdout/stderr
 // ---------------------------------------------------------------------------
 
-const logPath = process.env['LOG_FILE'] ?? 'smart-server.log';
+const logPath = process.env.LOG_FILE ?? 'smart-server.log';
 const logStream = fs.createWriteStream(logPath, { flags: 'a' });
 const log = (event: Record<string, unknown>) =>
-  logStream.write(JSON.stringify({ ts: new Date().toISOString(), ...event }) + '\n');
+  logStream.write(
+    `${JSON.stringify({ ts: new Date().toISOString(), ...event })}\n`,
+  );
 
 // ---------------------------------------------------------------------------
 // Config + start
 // ---------------------------------------------------------------------------
 
-let baseConfig;
+let baseConfig: ReturnType<typeof resolveSmartServerConfig>;
 try {
   baseConfig = resolveSmartServerConfig({}, {}, process.env);
 } catch (err) {

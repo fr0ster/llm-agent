@@ -32,7 +32,13 @@
       "default": "./dist/smart-agent/otel/index.js"
     }
   },
-  "files": ["dist", "bin", "tools", "README.md", "LICENSE"],
+  "files": [
+    "dist",
+    "bin",
+    "tools",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "prebuild": "node scripts/generate-version.js",
     "build": "tsc -p tsconfig.json",
@@ -60,13 +66,19 @@
     "@sap-ai-sdk/ai-api": "^2.0.0"
   },
   "peerDependenciesMeta": {
-    "@opentelemetry/api": { "optional": true },
-    "@sap-ai-sdk/ai-api": { "optional": true }
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@sap-ai-sdk/ai-api": {
+      "optional": true
+    }
   },
   "license": "MIT",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/fr0ster/llm-agent.git"
   },
-  "publishConfig": { "access": "public" }
+  "publishConfig": {
+    "access": "public"
+  }
 }
