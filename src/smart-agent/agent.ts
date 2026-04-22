@@ -363,7 +363,20 @@ export class SmartAgent {
         `Cannot overwrite built-in RAG store "${name}" via addRagStore()`,
       );
     }
-    this.deps.ragStores[name] = store;
+    if (this.deps.ragRegistry) {
+      // Route through registry so the ragStores projection (and any listeners)
+      // see the change.
+      if (this.deps.ragRegistry.get(name)) {
+        this.deps.ragRegistry.unregister(name);
+      }
+      this.deps.ragRegistry.register(name, store, undefined, {
+        displayName: name,
+        scope: 'global',
+      });
+    } else {
+      // Fallback for consumers that built SmartAgentDeps without a registry.
+      this.deps.ragStores[name] = store;
+    }
     if (options?.translateQuery) {
       if (!this.deps.translateQueryStores) {
         this.deps.translateQueryStores = new Set();
@@ -383,9 +396,32 @@ export class SmartAgent {
         `Cannot remove built-in RAG store "${name}" via removeRagStore()`,
       );
     }
-    delete this.deps.ragStores[name];
+    if (this.deps.ragRegistry) {
+      this.deps.ragRegistry.unregister(name);
+    } else {
+      delete this.deps.ragStores[name];
+    }
     this.deps.translateQueryStores?.delete(name);
     this.deps.pipeline?.rebuildStages?.();
+  }
+
+  /**
+   * Close a session: remove session-scoped RAG collections for the given
+   * sessionId and flush session-scoped history memory.
+   * Errors from registry cleanup are logged but not thrown — best-effort.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    if (this.deps.ragRegistry) {
+      const res = await this.deps.ragRegistry.closeSession(sessionId);
+      if (!res.ok) {
+        this.deps.logger?.log({
+          type: 'warning',
+          traceId: 'close_session',
+          message: `closeSession(${sessionId}) failed: ${res.error.message}`,
+        });
+      }
+    }
+    this.deps.historyMemory?.clear(sessionId);
   }
 
   /** Returns the model identifiers of the currently active LLM instances. */
