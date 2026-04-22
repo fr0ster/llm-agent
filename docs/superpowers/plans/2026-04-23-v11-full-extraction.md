@@ -103,7 +103,7 @@ mkdir -p packages/openai-llm/src
 ```json
 {
   "name": "@mcp-abap-adt/openai-llm",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "OpenAI LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -407,21 +407,30 @@ Repeat for `OpenAIProvider`, `AnthropicProvider`, `SapCoreAIProvider`. Remove an
 
 - [ ] **Step 3: Rewrite `cli.ts`**
 
-The existing `cli.ts` has two modes: MCP-enabled (uses SmartAgent) and LLM-only (uses Agent classes). Collapse to a single SmartAgentBuilder path:
+The existing `cli.ts` has two modes: MCP-enabled (uses SmartAgent) and LLM-only (uses Agent classes). Collapse to a single `SmartAgentBuilder` path using the **actual** builder API (`withXxx`, `setXxx`, no invented methods):
 
 ```ts
 import { SmartAgentBuilder } from './builder.js';
 
-const mcp = config.mcp.type === 'none' ? undefined : config.mcp;
-// ... compose builder
-const builder = new SmartAgentBuilder();
-builder.setMainLlm(llm);  // llm built via providers.ts path
-if (mcp) builder.setMcp(mcp);
-// ... other config
+// llm is an ILlm built via providers.ts path (concrete provider instance)
+const builder = new SmartAgentBuilder().withMainLlm(llm);
+
+// MCP wiring: if config.mcp.type === 'none', skip withMcpClients entirely.
+// Otherwise construct MCP clients per config and inject.
+if (config.mcp.type !== 'none') {
+  const mcpClients = await constructMcpClientsFromConfig(config.mcp);
+  builder.withMcpClients(mcpClients);
+}
+
+// Other existing config flows (tools RAG, history RAG, classifier, helper LLM, etc.)
+// use their pre-existing builder methods — preserve them as-is.
+
 const agent = await builder.build();
 ```
 
-Key: `mcp.type === 'none'` → `builder.setMcp` NOT called; the agent composes without MCP. This preserves the existing `mcp.type: 'none'` contract per spec.
+Key: `mcp.type === 'none'` → `withMcpClients` NOT called; the agent composes without MCP. `SmartAgentBuilder` itself never sees `'none'` — the config-resolution layer gates the call. This preserves the existing contract per spec.
+
+Do NOT invent builder methods like `setMcp`. Use only methods that exist in `packages/llm-agent-server/src/smart-agent/builder.ts` today — grep the file to confirm the signature before each call in the rewrite.
 
 - [ ] **Step 4: Rewrite `smoke-adapters.ts`**
 
@@ -468,7 +477,14 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-## Task 12: Relocate factory registry with dynamic imports
+## Task 12: Relocate factory registry with startup-prefetch + sync resolve
+
+**Critical design note:** the current `resolveEmbedder()` / `makeRag()` call path is **synchronous**. Switching to `await import()` inside those functions would change their signatures and ripple through SmartServer composition, all config wiring, and every caller. To avoid that ripple, the extracted registry uses a two-phase pattern:
+
+- **Phase 1 (server startup, async):** server reads its config, determines which factory names are referenced (e.g. `llm: deepseek`, `rag: ollama`), and `await import('@mcp-abap-adt/deepseek-llm')` / `await import('@mcp-abap-adt/ollama-embedder')` for each. Successful imports populate a module-level `prefetchedModules` map. Failed imports throw `MissingProviderError` immediately — server does not boot.
+- **Phase 2 (runtime, sync):** `resolveEmbedder(name, opts)` and `resolveLlm(name, opts)` look up the prefetched module from the map and instantiate the class synchronously. Caller signatures unchanged.
+
+This preserves the sync API surface consumers and existing callers rely on, while giving us the optional-peer semantic of dynamic resolution.
 
 **Files:**
 - `git mv`: `packages/llm-agent/src/rag/embedder-factories.ts` → `packages/llm-agent-server/src/smart-agent/embedder-factories.ts`
@@ -510,65 +526,92 @@ git mv packages/llm-agent/src/rag/embedder-factories.ts packages/llm-agent-serve
 
 Remove re-exports of `embedder-factories.ts` from core's `rag/index.ts` and core's `src/index.ts`.
 
-- [ ] **Step 4: Rewrite the file to use dynamic imports**
-
-The new shape:
+- [ ] **Step 4: Rewrite the file to use startup-prefetch + sync resolve**
 
 ```ts
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 
-export interface EmbedderFactoryOpts {
-  [key: string]: unknown;
-}
+export type EmbedderFactoryOpts = Record<string, unknown>;
 
-export interface EmbedderFactory {
-  (opts: EmbedderFactoryOpts): Promise<IEmbedder>;
-}
-
-const FACTORY_PACKAGE: Record<string, string> = {
-  'openai': '@mcp-abap-adt/openai-embedder',
-  'ollama': '@mcp-abap-adt/ollama-embedder',
+const PACKAGE_BY_NAME: Record<string, string> = {
+  openai: '@mcp-abap-adt/openai-embedder',
+  ollama: '@mcp-abap-adt/ollama-embedder',
   'sap-ai-core': '@mcp-abap-adt/sap-aicore-embedder',
 };
 
-const FACTORY_EXPORT_NAME: Record<string, string> = {
-  'openai': 'OpenAiEmbedder',
-  'ollama': 'OllamaEmbedder',
+const EXPORT_BY_NAME: Record<string, string> = {
+  openai: 'OpenAiEmbedder',
+  ollama: 'OllamaEmbedder',
   'sap-ai-core': 'SapAiCoreEmbedder',
 };
 
-export async function resolveEmbedder(name: string, opts: EmbedderFactoryOpts): Promise<IEmbedder> {
-  const packageName = FACTORY_PACKAGE[name];
-  if (!packageName) {
-    throw new MissingProviderError('(unknown)', name);
+const prefetched = new Map<string, Record<string, unknown>>();
+
+/**
+ * Load the peer packages for the factory names given. Call once at server
+ * startup before any synchronous resolve calls. Missing peer → throws
+ * MissingProviderError up front so the server fails fast.
+ */
+export async function prefetchEmbedderFactories(names: readonly string[]): Promise<void> {
+  for (const name of names) {
+    if (prefetched.has(name)) continue;
+    const packageName = PACKAGE_BY_NAME[name];
+    if (!packageName) {
+      throw new MissingProviderError('(unknown)', name);
+    }
+    try {
+      const mod = (await import(packageName)) as Record<string, unknown>;
+      prefetched.set(name, mod);
+    } catch {
+      throw new MissingProviderError(packageName, name);
+    }
   }
-  let mod: Record<string, unknown>;
-  try {
-    mod = await import(packageName);
-  } catch (err) {
+}
+
+/** Synchronous resolve. Call only AFTER prefetchEmbedderFactories has completed. */
+export function resolveEmbedder(name: string, opts: EmbedderFactoryOpts): IEmbedder {
+  const mod = prefetched.get(name);
+  if (!mod) {
+    const packageName = PACKAGE_BY_NAME[name] ?? '(unknown)';
     throw new MissingProviderError(packageName, name);
   }
-  const ClassName = FACTORY_EXPORT_NAME[name];
-  const Cls = mod[ClassName] as new (opts: EmbedderFactoryOpts) => IEmbedder;
+  const className = EXPORT_BY_NAME[name];
+  const Cls = mod[className] as new (opts: EmbedderFactoryOpts) => IEmbedder;
   if (!Cls) {
-    throw new MissingProviderError(packageName, name);
+    throw new MissingProviderError(PACKAGE_BY_NAME[name] ?? '(unknown)', name);
   }
   return new Cls(opts);
 }
 
-export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
+export const builtInEmbedderFactories: Record<string, (opts: EmbedderFactoryOpts) => IEmbedder> = {
   openai: (opts) => resolveEmbedder('openai', opts),
   ollama: (opts) => resolveEmbedder('ollama', opts),
   'sap-ai-core': (opts) => resolveEmbedder('sap-ai-core', opts),
 };
 ```
 
-Export from server's index if it's public API; otherwise keep internal.
+Export from server's index if it's public API; otherwise keep internal. The **public contract preserved** is the sync `resolveEmbedder` signature and the sync callable entries in `builtInEmbedderFactories`. The new piece is `prefetchEmbedderFactories(names)`, which server startup must call before entering any resolve path.
 
-- [ ] **Step 5: Create `llm-factories.ts` with same pattern for LLM providers**
+- [ ] **Step 5: Create `llm-factories.ts` with the same startup-prefetch + sync pattern**
 
-Same shape but for `openai`, `anthropic`, `deepseek`, `sap-ai-core`. Wire `providers.ts` to use it if it previously had a name → class switch statement. If `providers.ts` doesn't use a factory registry (it's just if/else branches), skip this step and keep the if/else branches; just import the classes at the top.
+Same shape but for `openai`, `anthropic`, `deepseek`, `sap-ai-core` and the `ILlm` interface. If the current `providers.ts` has direct if/else branches rather than a factory lookup, keep those branches (they use static imports and don't need the prefetch dance). Only use the factory registry where declarative config (`llm: deepseek`) needs runtime name resolution.
+
+- [ ] **Step 5.5: Wire server startup to call the prefetch functions**
+
+In `SmartServer` composition (or `cli.ts`, wherever config is parsed before pipeline construction), add:
+
+```ts
+import { prefetchEmbedderFactories } from './smart-agent/embedder-factories.js';
+import { prefetchLlmFactories } from './smart-agent/llm-factories.js';
+
+const embedderNames = [config.rag.type].filter((n) => n && n !== 'inmemory');
+const llmNames = [config.llm.type].filter(Boolean);
+await prefetchEmbedderFactories(embedderNames);
+await prefetchLlmFactories(llmNames);
+```
+
+This call happens exactly once, at startup. After it returns, all downstream sync calls to `resolveEmbedder` / `resolveLlm` succeed.
 
 - [ ] **Step 6: Build**
 
@@ -1187,3 +1230,10 @@ gh pr merge --merge --delete-branch
 - **Biome lint scope stays at `packages/`** — nothing in docs/ or examples/ lint-gates.
 - **Pre-merge CI** runs on Node 22 (v10.0 baseline). No Node-version change needed.
 - **If any extraction fails mid-plan**, git reset the specific package's commit and retry — each extraction is one commit, independently revertable.
+
+## Review history (resolved)
+
+- Task 12 originally proposed async `resolveEmbedder`/`resolveLlm` signatures, which would have rippled through SmartServer and every caller → **resolved** by the startup-prefetch + sync-resolve pattern: phase 1 `await import(peer)` at server startup; phase 2 sync lookups. Sync API surface preserved.
+- Task 11 used non-existent builder methods (`setMainLlm`/`setMcp`) → **resolved** by rewriting against the actual API (`withMainLlm`, `withMcpClients`) with an explicit instruction to grep builder.ts before each call.
+- Task 2 package skeleton had `"version": "10.0.0"` → **resolved** by updating Tasks 2-9 template to `"version": "11.0.0"` matching the release line.
+- `BaseLLMProvider` location was forced as a mid-Task-2 decision without spec support → **resolved** by adding an explicit decision sub-task in Task 2 with three options and fallback guidance.
