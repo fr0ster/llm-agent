@@ -35,6 +35,7 @@ See [docs/CLIENT_SETUP.md](docs/CLIENT_SETUP.md) for connection instructions for
 - ✅ **Resilience:** Built-in exponential backoff retries for LLM/Embeddings and auto-reconnect for MCP servers.
 - ✅ **Helper LLM Support:** Offload summarization and translation tasks to cheaper/faster models.
 - ✅ **Startup Health Checks:** Immediate diagnostics for all dependencies (Ollama, MCP, LLM).
+- ✅ **RAG Providers:** Dynamic collection creation with scope-based lifecycle (session / user / global); MCP tools let LLMs create, list, and clean up their own collections at runtime.
 
 ## Installation
 

@@ -155,8 +155,13 @@ const rag = new VectorRag(embedder, {
 Index each tool multiple times with different representations. Use distinct IDs to avoid dedup:
 
 ```typescript
+import { DirectEditStrategy, GlobalUniqueIdStrategy } from '@mcp-abap-adt/llm-agent';
+
 const original = new OriginalToolIndexing();
 const synonym = new SynonymToolIndexing();
+
+// Writes go through IRagEditor — IRag no longer exposes upsert directly
+const editor = new DirectEditStrategy(rag.writer()!, new GlobalUniqueIdStrategy());
 
 for (const tool of tools) {
   const entries = [
@@ -164,7 +169,7 @@ for (const tool of tools) {
     ...(await synonym.prepare(tool)),
   ];
   for (const entry of entries) {
-    await rag.upsert(entry.text, { id: entry.id });
+    await editor.upsert(entry.text, { id: entry.id });
   }
 }
 // Result: tool:ReadClass (original) + tool:ReadClass:synonym (synonyms)

@@ -127,6 +127,45 @@ agent.removeRagStore('product-kb');
 The added store is queried in parallel with `tools` and `history` stores during the RAG retrieval
 stage. Removing it stops it from being queried on subsequent requests.
 
+### Dynamic RAG collections with a provider (v9.1+)
+
+Use `QdrantRagProvider` so the LLM can create session-scoped collections on demand, store phase
+results, correct errors, and let the consumer clean up on disconnect:
+
+```ts
+import {
+  SmartAgentBuilder,
+  QdrantRagProvider,
+  buildRagCollectionToolEntries,
+} from '@mcp-abap-adt/llm-agent';
+
+// 1. Build agent with a Qdrant provider
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withMainLlm(myLlm)
+  .addRagProvider(new QdrantRagProvider({
+    name: 'qdrant-rw',
+    url: 'http://qdrant:6333',
+    apiKey: process.env.QDRANT_API_KEY,
+    embedder: myEmbedder,
+  }))
+  .build();
+
+// 2. Register MCP tool handlers on your own MCP server
+//    (llm-agent does not host an embedded MCP server for RAG editing)
+const entries = buildRagCollectionToolEntries({ registry, providerRegistry });
+myMcpServer.registerTools(entries);
+
+// 3. LLM creates a session-scoped collection via MCP:
+//      rag_create_collection({ provider: 'qdrant-rw', name: 'phase-results', scope: 'session' })
+//    Adds facts during the session:
+//      rag_add({ collection: 'phase-results', text: 'Phase 1 complete: 3 items processed' })
+//    Corrects errors:
+//      rag_correct({ collection: 'phase-results', id: '...', text: 'Corrected: 2 items processed' })
+
+// 4. Consumer closes the session on disconnect — flushes session-scoped collections + history
+await agent.closeSession(sessionId);
+```
+
 ### Programmatic embedding (`SmartServer`)
 
 ```ts
