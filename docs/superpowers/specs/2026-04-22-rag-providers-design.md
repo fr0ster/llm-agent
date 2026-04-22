@@ -20,7 +20,7 @@ Consumer flow after this release: register a few providers at startup (one per e
 - Extend `IRagRegistry` with `createCollection`, `deleteCollection`, `closeSession` methods.
 - Three provider wrappers around existing RAG backends: `InMemoryRagProvider`, `VectorRagProvider`, `QdrantRagProvider`. No new runtime dependencies.
 - Extend `buildRagCollectionToolEntries` with four MCP tools: `rag_create_collection`, `rag_list_collections`, `rag_describe_collection`, `rag_delete_collection`. Keep existing `rag_add`, `rag_correct`, `rag_deprecate`.
-- Refactor pipeline wiring: `ragStores` field in builder/deps/context is replaced by `ragRegistry` and `ragProviderRegistry`.
+- Refactor pipeline wiring: add `ragRegistry` and `ragProviderRegistry` to `SmartAgentDeps`/`PipelineContext`. Keep `ragStores: Record<string, IRag>` as a **live projection** from `ragRegistry` for back-compat (see Migration section).
 - `SmartAgent.closeSession(sessionId)` hook for explicit session cleanup (frees session-scoped collections and history memory).
 - Typed errors for provider lookup, scope constraints, scope violations, collection-not-found.
 
@@ -211,11 +211,12 @@ Config: `{ name, url, apiKey?, embedder, editable?, timeoutMs?, idStrategyFactor
 
 ## Extended `SimpleRagRegistry`
 
-`createCollection`:
+`createCollection` — atomic with explicit preflight:
 1. Look up provider: if missing → `ProviderNotFoundError`.
-2. Call `provider.createCollection(name, opts)`.
-3. On success, call `this.register(name, rag, editor, { scope, sessionId, userId, providerName })`.
-4. Return the registered `RagCollectionMeta`.
+2. **Preflight duplicate-name check:** if `this.entries.has(name)` → `RagError('RAG_DUPLICATE_COLLECTION')`. Reject before touching the backend.
+3. Call `provider.createCollection(name, opts)`. If it fails — return the provider error.
+4. Try `this.register(name, rag, editor, { scope, sessionId, userId, providerName })`. This should not fail because of the preflight, but as defense-in-depth: if registration throws (e.g., race in subclass), best-effort rollback via `provider.deleteCollection?.(name)` and return the registration error.
+5. On success, return the registered `RagCollectionMeta`.
 
 `deleteCollection`:
 1. Look up entry: if missing → `CollectionNotFoundError`.
@@ -276,20 +277,30 @@ Handler:
 
 ## Context propagation
 
-MCP tool handlers need `sessionId` and `userId` from `CallOptions`. Current `RagToolEntry.handler(context, args)` passes `context: object` — insufficient. Change signature to `handler(context: RagToolContext, args: Record<string, unknown>)` where:
+MCP tool handlers need `sessionId` and `userId` from the call context for scope enforcement. Current `RagToolEntry.handler(context: object, args)` accepts `context: object` — any shape. We formalize a typed shape:
 
 ```ts
 export interface RagToolContext {
   sessionId?: string;
   userId?: string;
-  // Extensible: consumers may attach more fields for their own tools.
+  // Consumers may attach more fields (auth claims, trace IDs, etc.).
   [key: string]: unknown;
 }
 ```
 
-Consumer wiring: the consumer's MCP server receives tool calls and must forward its own per-call context (session/user) into the handler. `buildRagCollectionToolEntries` returns handlers that read from `context`. If `sessionId` or `userId` is missing for a scope that requires it — the handler rejects.
+**Propagation path (confirmed from code):** `buildRagCollectionToolEntries` returns handlers that the consumer's MCP server invokes. `llm-agent` itself does NOT run an embedded MCP server for these tools (per the architectural decision in v9.0.0). Therefore, `sessionId` and `userId` must be populated by the **consumer's MCP wiring**:
 
-This is a **non-breaking** change because current `RagToolContext` accepted `object` (anything). Existing consumers that pass `{}` will get the same behavior, just with optional extra fields now typed.
+1. The consumer's MCP server receives a tool call from the LLM (which runs inside llm-agent as an MCP client).
+2. The consumer's MCP server knows the session/user context from its own auth/session layer (e.g., JWT claims in the MCP HTTP request).
+3. The consumer passes that into the handler: `handler({ sessionId, userId, ...extra }, args)`.
+
+**What llm-agent guarantees:** it exports `RagToolContext` as a typed shape; handlers read `sessionId` / `userId` from it; if missing for a scope that requires them, handler returns a typed error (`ScopeViolationError` with reason `'missing sessionId'` or `'missing userId'`).
+
+**Compatibility classification:**
+- **Type-level:** `RagToolContext` is structurally compatible with `object` — any existing `{}` still satisfies the type. No breaking import.
+- **Runtime:** new tools (create/delete) require fields in context that old consumers aren't necessarily providing. For consumers who only use v9.0.0 tools (`rag_add`, `rag_correct`, `rag_deprecate`) — behavior unchanged. For consumers who adopt the new tools — they must wire context in their MCP server. This is an **additive contract** on new tools, not a breaking change to existing ones.
+
+The 9.0.0 existing tools (`rag_add`, `rag_correct`, `rag_deprecate`) do **not** start reading from context in v9.1.0 — they remain context-agnostic. Only the four new tools check context.
 
 ## Builder API
 
@@ -328,25 +339,35 @@ export interface SmartAgentDeps {
   // existing fields…
   ragRegistry: IRagRegistry;
   ragProviderRegistry: IRagProviderRegistry;
-  // ragStores: Record<string, IRag>  — REMOVED
+  ragStores: Record<string, IRag>;  // retained as a LIVE PROJECTION from ragRegistry; see below
+  translateQueryStores?: Set<string>;  // unchanged
 }
 ```
 
-`PipelineContext`: same change.
+`PipelineContext`: same addition; `ragStores` retained.
 
-Code that iterated `ragStores` (`assembler.ts`, `revectorizeTools` in `agent.ts`) now iterates `ragRegistry.list()` and looks up via `ragRegistry.get(name)`.
+`ragStores` is maintained as a **derived view** backed by `ragRegistry`. Two options for implementation:
 
-Back-compat note: `ragStores` never appeared in public API documentation as a consumer-facing contract; it was an internal wiring detail. Removing it is not a breaking public API change.
+- **Eager:** whenever the registry mutates (register/unregister/createCollection/deleteCollection/closeSession), it recomputes `deps.ragStores = Object.fromEntries(registry.list().map(m => [m.name, registry.get(m.name)!]))`. Simple, predictable.
+- **Proxy-based:** `ragStores` becomes a `Proxy` whose `get(key)` delegates to `registry.get(key)` and whose `ownKeys` returns `registry.list().map(m => m.name)`. No sync needed but harder to reason about when debugging.
+
+Lean: **eager**, with the sync hook baked into `SimpleRagRegistry` via a `mutationListener` injected by the builder.
+
+Code that iterates `ragStores` today (`assembler.ts`, `rag-query.ts`, `revectorizeTools` in `agent.ts`, `smart-server.ts` hot-reload) continues to work unchanged because `ragStores` is still there with the same shape. New code written in v9.1.0 should prefer `ragRegistry` — it carries scope and meta info; `ragStores` only has the `IRag` instances.
+
+Public API retained: `SmartAgent.addRagStore(name, store, opts)` delegates to `ragRegistry.register(name, store, undefined, { scope: 'global' })`; `SmartAgent.removeRagStore(name)` delegates to `ragRegistry.unregister(name)`. Built-in name protection ('tools' / 'history') stays.
 
 ## `SmartAgent.closeSession`
 
 ```ts
 async closeSession(sessionId: string): Promise<void> {
   await this.deps.ragRegistry.closeSession(sessionId);
-  this.deps.historyMemory?.flush?.(sessionId);
+  this.deps.historyMemory?.clear(sessionId);
   // Hook for future cleanup (caches, connections, etc.)
 }
 ```
+
+`IHistoryMemory.clear(sessionId): void` is the existing interface — no interface change.
 
 Failures from `closeSession` are logged but not thrown — best-effort cleanup. Consumer can still inspect logs if needed.
 
@@ -373,11 +394,14 @@ Unit tests per new module (as listed in file layout). Key scenarios:
 
 ## Migration for 9.0.0 consumers
 
-Fields renamed and methods added; no breaking changes to public types.
+Fields added; no removals. All v9.0.0 public API stays functional.
 
-- `SmartAgentDeps.ragStores` → removed; use `ragRegistry` / `ragProviderRegistry`. Consumers who built `SmartAgentDeps` manually must switch. Consumers using `SmartAgentBuilder` are transparently migrated — builder exposes the same ergonomics.
-- `buildRagCollectionToolEntries({ registry })` → `buildRagCollectionToolEntries({ registry, providerRegistry })`. Consumers without a provider registry pass an empty `SimpleRagProviderRegistry`; create-tool won't appear in the returned entries, other tools work as before.
-- `RagCollectionMeta.scope` — new required field at interface level but defaulted to `'global'` by `SimpleRagRegistry.register` when not provided, preserving back-compat for code that calls `register(name, rag, editor)` without meta.
+- `SmartAgentDeps.ragStores` — **retained as a live projection** from `ragRegistry`. Consumers who build `SmartAgentDeps` manually OR use the builder get transparent compatibility. `SmartAgent.addRagStore` / `removeRagStore` continue to work and are now thin delegates to `ragRegistry.register` / `unregister`.
+- `buildRagCollectionToolEntries({ registry })` — signature accepts an optional `providerRegistry`. When omitted, the four new tools (`rag_create_collection`, `rag_list_collections`, `rag_describe_collection`, `rag_delete_collection`) are omitted from the returned entries; existing tools work unchanged.
+- `RagCollectionMeta.scope` — new required field on the interface but defaulted to `'global'` by `SimpleRagRegistry.register` when consumer doesn't specify. Code that calls `register(name, rag, editor)` without scope keeps working.
+- `RagToolEntry.handler` — `context` parameter type tightens from `object` to `RagToolContext` (structurally compatible; old `{}` still satisfies). Existing handler bodies unchanged.
+- New public methods on `SmartAgent`: `closeSession(sessionId)`. Additive.
+- New public methods on `SmartAgentBuilder`: `addRagProvider(...)`, `addRagCollection(...)`, `createRagCollection(...)`, `setRagRegistry(...)`, `setRagProviderRegistry(...)`. Additive.
 
 ## Future roadmap (not in v9.1.0)
 
@@ -395,6 +419,6 @@ This directly informs v9.1.0 design: the `IRagProvider` interface and provider i
 
 ## Open items for implementation plan
 
-- Exact shape of `CallOptions` / `RagToolContext` propagation in the MCP handler path: need to confirm whether llm-agent's own MCP integration passes these through from `agent.process(options)`, or consumer supplies them via their MCP server wiring.
-- Whether `rag_create_collection` should default `sessionId` from the handler context (auto) or require the LLM to pass it (explicit). Lean: auto from context, to minimize LLM error surface.
-- Handling of name collisions: `register` already throws on duplicate name; what happens on `createCollection` with an existing name — reject, or treat as "attach"? Lean: reject with `RagError(DUPLICATE)`, force explicit intent.
+- Hot-reload integration in `smart-server.ts`: currently it iterates `Object.values(ragStores)` for reconfigure paths; when registry becomes source of truth and `ragStores` is derived, confirm that rebuild hooks fire in the right order on reconfigure.
+- `rag_create_collection` sessionId source: auto-populate from `context.sessionId` rather than requiring the LLM to pass it — minimizes LLM error surface.
+- Projection sync mechanism for `ragStores` ← `ragRegistry`: eager via `mutationListener` (lean) vs. Proxy. Resolve before coding `SimpleRagRegistry` extensions.
