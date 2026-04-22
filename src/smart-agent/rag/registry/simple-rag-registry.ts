@@ -3,7 +3,10 @@ import type {
   IRagEditor,
   IRagRegistry,
   RagCollectionMeta,
+  RagCollectionScope,
 } from '../../interfaces/rag.js';
+import type { Result } from '../../interfaces/types.js';
+import { RagError } from '../../interfaces/types.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
 
 interface Entry {
@@ -53,5 +56,44 @@ export class SimpleRagRegistry implements IRagRegistry {
 
   list(): readonly RagCollectionMeta[] {
     return Array.from(this.entries.values()).map((e) => e.meta);
+  }
+
+  async createCollection(_params: {
+    providerName: string;
+    collectionName: string;
+    scope: RagCollectionScope;
+    sessionId?: string;
+    userId?: string;
+    displayName?: string;
+    description?: string;
+    tags?: readonly string[];
+  }): Promise<Result<RagCollectionMeta, RagError>> {
+    return {
+      ok: false,
+      error: new RagError(
+        'createCollection not implemented yet',
+        'RAG_NOT_IMPLEMENTED',
+      ),
+    };
+  }
+
+  async deleteCollection(_name: string): Promise<Result<void, RagError>> {
+    return {
+      ok: false,
+      error: new RagError(
+        'deleteCollection not implemented yet',
+        'RAG_NOT_IMPLEMENTED',
+      ),
+    };
+  }
+
+  async closeSession(_sessionId: string): Promise<Result<void, RagError>> {
+    return {
+      ok: false,
+      error: new RagError(
+        'closeSession not implemented yet',
+        'RAG_NOT_IMPLEMENTED',
+      ),
+    };
   }
 }
