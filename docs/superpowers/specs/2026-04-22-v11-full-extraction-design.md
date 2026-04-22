@@ -59,7 +59,18 @@ Content:
 
 ### Server package after v11.0.0
 
-Dependencies: `@mcp-abap-adt/llm-agent`, `@modelcontextprotocol/sdk`, `yaml`, `dotenv`, `zod`. Plus any "default" LLM provider packages that its built-in CLI/HTTP-server needs out of the box (see Q5 below in open items).
+Dependencies: `@mcp-abap-adt/llm-agent`, `@modelcontextprotocol/sdk`, `yaml`, `dotenv`, `zod`, plus the provider packages that the built-in declarative config path needs to resolve by name. Specifically, server's `builtInEmbedderFactories` and LLM provider factory registry accept names like `openai`, `ollama`, `sap-ai-core`, `deepseek` and must instantiate the corresponding classes. Since those factories now live on `llm-agent-server`, it must depend on every package it can instantiate:
+
+- `@mcp-abap-adt/openai-llm`
+- `@mcp-abap-adt/anthropic-llm`
+- `@mcp-abap-adt/deepseek-llm`
+- `@mcp-abap-adt/sap-aicore-llm`
+- `@mcp-abap-adt/openai-embedder`
+- `@mcp-abap-adt/ollama-embedder`
+- `@mcp-abap-adt/sap-aicore-embedder`
+- `@mcp-abap-adt/qdrant-rag`
+
+This keeps the "install `llm-agent-server` and everything in `smart-server.yaml` just works" promise. Consumers who write their own code against the interfaces and skip the server package are free to install only the provider packages they actually use.
 
 Content:
 - `SmartAgent`, `SmartAgentBuilder`, `DefaultPipeline`, pipeline handlers
@@ -207,17 +218,17 @@ Order: core first, then provider/embedder/qdrant packages (all depend only on co
 
 ### `@mcp-abap-adt/llm-agent` (core)
 
-- Delete `src/rag/openai-embedder.ts`, `src/rag/ollama-rag.ts`, `src/rag/qdrant-rag.ts`, `src/rag/qdrant-rag-provider.ts`.
-- Update `src/rag/embedder-factories.ts` — remove imports of moved embedders. Consumer-side factories register what they need.
-- Update `src/rag/index.ts` barrel — no more re-exports of moved classes. Wildcard barrels that covered `openai-embedder.ts` etc. must be trimmed.
-- Update `src/index.ts` — no more re-exports of moved symbols.
+- Delete `src/rag/openai-embedder.ts`, `src/rag/ollama-embedder.ts`, `src/rag/ollama-rag.ts`, `src/rag/qdrant-rag.ts`, `src/rag/qdrant-rag-provider.ts`, `src/rag/sap-ai-core-embedder.ts`.
+- **Move `src/rag/embedder-factories.ts` to server** at `packages/llm-agent-server/src/smart-agent/embedder-factories.ts`. The factory registry is a declarative wiring layer, not a core abstraction — each factory imports the concrete class from the corresponding new package, so the registry must live in a package that depends on all provider packages. Server is the only package that does.
+- Update `src/rag/index.ts` barrel — no more re-exports of moved classes.
+- Update `src/index.ts` — no more re-exports of moved symbols or factories.
 - Drop dependencies on `axios` and `@sap-ai-sdk/orchestration`.
 
 ### `@mcp-abap-adt/llm-agent-server` (server)
 
 - Delete `src/llm-providers/` directory (LLM providers moved out).
 - Delete `src/agents/` directory (Agent hierarchy removed).
-- Rewrite `src/smart-agent/cli.ts` — single path: parse args, build `SmartAgent`, run. No Agent instantiation.
+- Rewrite `src/smart-agent/cli.ts` — single path: parse args, build `SmartAgent`, run. No Agent instantiation. **LLM-only mode uses the existing `mcp.type: 'none'` config value** (already supported by the builder), NOT a new `disabled: true` flag. The v11 refactor preserves the current MCP config contract.
 - Rewrite `src/smart-agent/providers.ts` — construct concrete `ILlm` by constructing the provider directly (import from `@mcp-abap-adt/openai-llm` etc. based on `LLM_PROVIDER` env). No wrapping.
 - Remove `LlmAdapter` if only used for Agent wrapping.
 - Update `src/index.ts` — no more re-exports of LLM providers.
@@ -294,15 +305,21 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 
 ## Known items for the implementation plan
 
-- **CLI LLM-only mode implementation:** current `cli.ts` uses Agent classes for LLM-only. After refactor, it must build a `SmartAgent` with MCP disabled. Confirm that pipeline handles "no MCP" gracefully (it should, since MCP was optional in v10). If not, pipeline config gains an explicit `mcp: { disabled: true }` branch.
-- **`LlmAdapter`:** audit whether it's used only for wrapping Agents, or also for other shims. Preserve non-Agent uses.
+- **CLI LLM-only mode implementation:** uses the existing `mcp.type: 'none'` config branch (confirmed present in v10 builder code). No new flag. Builder + `cli.ts` rewrite preserve this contract. Plan task includes verifying the `none` path is wired all the way through pipeline construction.
+- **`LlmAdapter`:** audit whether it's used only for wrapping Agents, or also for other shims. Preserve non-Agent uses. If it only wraps Agents, delete along with the Agent hierarchy.
 - **`smoke-adapters.ts`:** rewrite to exercise the new provider path. May become trivial or obsolete.
 - **SAP AI Core package split:** if `sap-aicore-llm` and `sap-aicore-embedder` share common credentials/config utilities, decide whether to hoist those to a fourth package `sap-aicore-common` or duplicate into both. Lean: duplicate for simplicity; deduplicate in a future minor if repetition becomes painful.
-- **Package naming for embedders inherited via VectorRag config:** `VectorRag` in core accepts any `IEmbedder` via its constructor — no hard-coded dependency on a specific embedder package. Verify that consumer recipes pass embedder instances rather than relying on factory lookup in core.
-- **Default LLM package shipped by server:** does `@mcp-abap-adt/llm-agent-server` list any LLM provider package as a runtime dependency so that `smart-server.yaml`'s default config works out of the box? If yes, which one? Options: none (consumer must install + configure explicitly), or `openai-llm` as the widest-default. Lean: **none** — server's package.json lists only the MCP/yaml/dotenv deps it needs; consumer installs providers for their stack. `docs/MIGRATION-v11.md` calls this out explicitly.
+- **Embedder factory registry location:** moves to server (see "Changes to existing packages → core" above). Each factory entry imports the concrete embedder class from its new package. Server's `resolveEmbedder()` continues to work with names like `ollama`, `openai`, `sap-ai-core` via the relocated registry.
+- **Config-template defaults align with server deps:** because server now depends on all provider and embedder packages, the generated `smart-server.yaml` template can continue to default to `llm: deepseek`, `rag: ollama`, etc., without a broken fresh-install experience. Plan task includes a dedicated check that `smart-server.yaml`'s defaults resolve against server's dependency list.
 
 ## Future follow-ups (not in v11)
 
 - `ollama-llm` if/when we add an Ollama LLM class (currently there isn't one).
 - `@mcp-abap-adt/hana-vector-provider` — SAP HANA Cloud Vector Engine. Separate project; may live in a different repo given its SAP-specific dependencies.
 - Formal "recipes" as meta-packages (e.g. `@mcp-abap-adt/deepseek-ollama-stack` that depends on the right packages). Low priority — consumers install directly.
+
+## Review notes and proposals
+
+- **Observation:** the current "lean: none" decision for provider packages shipped by `@mcp-abap-adt/llm-agent-server` conflicts with the documented default CLI/server experience. The generated config template still defaults to DeepSeek for `llm` and Ollama for `rag`, and `SmartServer` currently resolves those defaults automatically. **Proposal:** either keep a minimal default provider/embedder set as runtime dependencies of `llm-agent-server`, or redesign the generated config/template so a fresh install never references providers the server package does not ship.
+- **Observation:** removing built-in embedder factories from core without naming a new owner creates a gap in declarative YAML-driven RAG resolution. Today `resolveEmbedder()` in server depends on `builtInEmbedderFactories`, and configs use names like `ollama`, `openai`, and `sap-ai-core`. **Proposal:** explicitly move the built-in factory registry to `llm-agent-server` (or to a dedicated defaults package) together with the runtime dependencies needed to instantiate those embedders.
+- **Observation:** the proposed "SmartAgent without MCP (or with `mcp: { disabled: true }`)" path is not aligned with the current builder/config contract. The builder currently models MCP as `http | stdio`, while config disabling is represented as `mcp.type: none`. **Proposal:** either keep `mcp.type: none` as the v11 mechanism, or specify `disabled: true` as an intentional config/API change with matching builder and config updates.
