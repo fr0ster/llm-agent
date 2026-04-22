@@ -2,17 +2,14 @@
  * LlmAdapter — wraps BaseAgent as ILlm.
  */
 
-import type { BaseAgentLlmBridge } from '../../agents/base.js';
 import type {
   AgentStreamChunk as CoreAgentStreamChunk,
-  Message,
-} from '../../types.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type {
+  ILlm,
   IModelFilter,
   IModelInfo,
   IModelProvider,
-} from '../interfaces/model-provider.js';
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   LlmError,
@@ -23,7 +20,8 @@ import {
   type LlmToolCallDelta,
   type Result,
   type SmartAgentError,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import type { BaseAgentLlmBridge } from '../../agents/base.js';
 
 type ParseStage = 'response' | 'stream';
 type ParseDiagnostic = {

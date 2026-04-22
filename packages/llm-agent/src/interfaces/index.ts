@@ -5,7 +5,7 @@ export {
   type SmartAgentResponse,
   type StopReason,
 } from './agent-contracts.js';
-export type { IContextAssembler } from './assembler.js';
+export type { HistoryEntry, IContextAssembler } from './assembler.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type { IHistoryMemory } from './history-memory.js';
 export type {

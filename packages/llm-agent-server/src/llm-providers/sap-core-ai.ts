@@ -9,12 +9,16 @@
  */
 
 import https from 'node:https';
+import type {
+  IModelInfo,
+  LLMProviderConfig,
+  LLMResponse,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type ChatMessage,
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
-import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, LLMResponse, Message } from '../types.js';
 import { BaseLLMProvider } from './base.js';
 
 /**

@@ -1,14 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SmartAgent } from '../../agent.js';
-import type { ILlm } from '../../interfaces/llm.js';
 import type {
   CallOptions,
+  ILlm,
   LlmResponse,
   LlmStreamChunk,
   Result,
-} from '../../interfaces/types.js';
-import { LlmError } from '../../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../../agent.js';
 import { makeDefaultDeps } from '../../testing/index.js';
 
 function makeSlowLlm(delayMs: number): ILlm {

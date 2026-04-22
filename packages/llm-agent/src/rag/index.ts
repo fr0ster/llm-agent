@@ -20,7 +20,17 @@ export {
 export * from './providers/index.js';
 export type { QdrantRagConfig } from './qdrant-rag.js';
 export { QdrantRag } from './qdrant-rag.js';
+export {
+  FallbackQueryEmbedding,
+  QueryEmbedding,
+  TextOnlyEmbedding,
+} from './query-embedding.js';
+export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
 export * from './registry/index.js';
+export {
+  SapAiCoreEmbedder,
+  type SapAiCoreEmbedderConfig,
+} from './sap-ai-core-embedder.js';
 export type {
   IScoredResult,
   ISearchCandidate,

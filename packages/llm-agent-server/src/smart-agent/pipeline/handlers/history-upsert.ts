@@ -10,13 +10,13 @@
  * response. The `summarizeAndStore` helper is exported for unit testing.
  */
 
-import type { IHistoryMemory } from '../../interfaces/history-memory.js';
 import type {
+  CallOptions,
   HistoryTurn,
+  IHistoryMemory,
   IHistorySummarizer,
-} from '../../interfaces/history-summarizer.js';
-import type { IRag } from '../../interfaces/rag.js';
-import type { CallOptions } from '../../interfaces/types.js';
+  IRag,
+} from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';

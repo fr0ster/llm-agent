@@ -19,12 +19,8 @@
  * multiple rag-query stages can safely run in parallel.
  */
 
-import type { RagScope } from '../../interfaces/plugin.js';
-import type { CallOptions } from '../../interfaces/types.js';
-import {
-  QueryEmbedding,
-  TextOnlyEmbedding,
-} from '../../rag/query-embedding.js';
+import type { CallOptions, RagScope } from '@mcp-abap-adt/llm-agent';
+import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';

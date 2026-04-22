@@ -4,7 +4,7 @@
 
 import { readdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { ISkill, ISkillMeta } from '../interfaces/skill.js';
+import type { ISkill, ISkillMeta } from '@mcp-abap-adt/llm-agent';
 import { type FileSystemSkill, loadSkillFromDir } from './filesystem-skill.js';
 
 /**

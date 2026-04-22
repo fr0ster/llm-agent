@@ -11,10 +11,14 @@
 import { readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import type {
+  CallOptions,
+  ISkill,
+  ISkillManager,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { SkillError } from '@mcp-abap-adt/llm-agent';
 import { parse as parseYaml } from 'yaml';
-import type { ISkill, ISkillManager } from '../interfaces/skill.js';
-import type { CallOptions, Result } from '../interfaces/types.js';
-import { SkillError } from '../interfaces/types.js';
 import type { FileSystemSkill } from './filesystem-skill.js';
 import { scanDirsForSkills } from './skill-utils.js';
 

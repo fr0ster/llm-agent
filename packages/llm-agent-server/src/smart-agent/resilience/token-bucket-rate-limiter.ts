@@ -1,4 +1,4 @@
-import type { ILlmRateLimiter } from '../interfaces/rate-limiter.js';
+import type { ILlmRateLimiter } from '@mcp-abap-adt/llm-agent';
 
 export interface TokenBucketConfig {
   /** Maximum requests allowed per window. */

@@ -1,4 +1,4 @@
-import type { Message } from '../../types.js';
+import type { Message } from '@mcp-abap-adt/llm-agent';
 
 export interface PendingToolResult {
   toolCallId: string;

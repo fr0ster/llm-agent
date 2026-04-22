@@ -5,8 +5,8 @@
  * The agent returns the raw response to the consumer for any downstream tool handling.
  */
 
+import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
 import type { LLMProvider } from '../llm-providers/base.js';
-import type { AgentStreamChunk, Message } from '../types.js';
 import {
   type AgentCallOptions,
   BaseAgent,

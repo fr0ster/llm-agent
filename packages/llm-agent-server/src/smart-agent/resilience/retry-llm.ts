@@ -6,8 +6,7 @@
  * counted as separate failures.
  */
 
-import type { Message } from '../../types.js';
-import type { ILlm } from '../interfaces/llm.js';
+import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   LlmError,
@@ -15,7 +14,7 @@ import {
   type LlmStreamChunk,
   type LlmTool,
   type Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export interface RetryOptions {
   /** Maximum number of retry attempts (total calls = maxAttempts + 1). Default: 3. */

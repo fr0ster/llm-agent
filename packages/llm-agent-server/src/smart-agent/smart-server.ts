@@ -5,8 +5,17 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
+import type {
+  EmbedderFactory,
+  IEmbedder,
+  IMcpClient,
+  IModelProvider,
+  IRequestLogger,
+  ISkillManager,
+  Message,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import { PACKAGE_VERSION } from '../generated/version.js';
-import type { Message } from '../types.js';
 import type {
   SmartAgent,
   SmartAgentReconfigureOptions,
@@ -24,12 +33,7 @@ import type {
 } from './interfaces/api-adapter.js';
 import { AdapterValidationError } from './interfaces/api-adapter.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
-import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { IModelProvider } from './interfaces/model-provider.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
-import type { EmbedderFactory, IEmbedder } from './interfaces/rag.js';
-import type { IRequestLogger } from './interfaces/request-logger.js';
-import type { ISkillManager } from './interfaces/skill.js';
 import { SessionLogger } from './logger/session-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
@@ -39,7 +43,6 @@ import {
 } from './plugins/index.js';
 import type { IPluginLoader } from './plugins/types.js';
 import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
-import type { VectorRag } from './rag/vector-rag.js';
 import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
 import { CodexSkillManager } from './skills/codex-skill-manager.js';
 import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';

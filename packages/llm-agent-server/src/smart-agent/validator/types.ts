@@ -1,6 +1,10 @@
-import type { Message } from '../../types.js';
-import type { CallOptions, LlmTool, Result } from '../interfaces/types.js';
-import { SmartAgentError } from '../interfaces/types.js';
+import type {
+  CallOptions,
+  LlmTool,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 
 export interface ValidationResult {
   valid: boolean;

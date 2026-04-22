@@ -4,7 +4,7 @@ import type {
   RagQueryEntry,
   RequestSummary,
   ToolCallEntry,
-} from '../interfaces/request-logger.js';
+} from '@mcp-abap-adt/llm-agent';
 
 const EMPTY_SUMMARY: RequestSummary = {
   byModel: {},

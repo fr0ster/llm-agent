@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../../types.js';
-import type { ILlm } from '../../interfaces/llm.js';
+import type { ILlm, Message } from '@mcp-abap-adt/llm-agent';
 import {
   LlmError,
   type LlmResponse,
   type Result,
-} from '../../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import { LlmClassifier } from '../llm-classifier.js';
 
 // ---------------------------------------------------------------------------

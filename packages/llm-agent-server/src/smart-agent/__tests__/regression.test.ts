@@ -1,20 +1,20 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../types.js';
-import { SmartAgent } from '../agent.js';
-import type { IContextAssembler } from '../interfaces/assembler.js';
 import type {
   AssemblerError,
   CallOptions,
+  IContextAssembler,
   LlmError,
   LlmResponse,
   LlmStreamChunk,
   McpTool,
+  Message,
   RagResult,
   Result,
   Subprompt,
   ToolCallRecord,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../agent.js';
 import { DefaultPipeline } from '../pipeline/default-pipeline.js';
 import {
   makeClassifier,

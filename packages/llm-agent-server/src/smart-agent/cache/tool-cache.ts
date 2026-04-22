@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { McpToolResult } from '../interfaces/types.js';
+import type { McpToolResult } from '@mcp-abap-adt/llm-agent';
 import type { IToolCache } from './types.js';
 
 interface CacheEntry {

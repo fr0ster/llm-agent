@@ -1,10 +1,10 @@
-import type { ILlm } from '../interfaces/llm.js';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   RagError,
   type RagResult,
   type Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import type { IReranker } from './types.js';
 
 const RERANK_SYSTEM_PROMPT = `You are a relevance scoring engine. Given a query and a list of text passages, rate the relevance of each passage to the query on a scale of 0 to 10.

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IModelInfo } from '../../interfaces/model-provider.js';
-import { LlmError } from '../../interfaces/types.js';
+import type { IModelInfo } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { LlmAdapter, type LlmAdapterProviderInfo } from '../llm-adapter.js';
 
 // ---------------------------------------------------------------------------

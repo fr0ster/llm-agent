@@ -1,4 +1,4 @@
-import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,

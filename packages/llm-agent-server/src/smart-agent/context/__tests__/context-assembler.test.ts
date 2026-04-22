@@ -4,7 +4,7 @@ import type {
   McpTool,
   RagResult,
   ToolCallRecord,
-} from '../../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import { ContextAssembler } from '../context-assembler.js';
 
 // ---------------------------------------------------------------------------

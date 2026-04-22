@@ -5,9 +5,13 @@
  * Takes an array of directories to scan for skill subdirectories.
  */
 
-import type { ISkill, ISkillManager } from '../interfaces/skill.js';
-import type { CallOptions, Result } from '../interfaces/types.js';
-import { SkillError } from '../interfaces/types.js';
+import type {
+  CallOptions,
+  ISkill,
+  ISkillManager,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { SkillError } from '@mcp-abap-adt/llm-agent';
 import { scanDirsForSkills } from './skill-utils.js';
 
 export class FileSystemSkillManager implements ISkillManager {

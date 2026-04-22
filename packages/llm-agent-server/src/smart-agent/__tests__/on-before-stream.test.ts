@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { StreamHookContext } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import type { StreamHookContext } from '../interfaces/types.js';
 import { makeDefaultDeps } from '../testing/index.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };

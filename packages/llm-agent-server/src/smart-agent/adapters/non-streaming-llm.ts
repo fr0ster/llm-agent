@@ -6,16 +6,16 @@
  * as a single chunk.
  */
 
-import type { Message } from '../../types.js';
-import type { ILlm } from '../interfaces/llm.js';
 import type {
   CallOptions,
+  ILlm,
   LlmError,
   LlmResponse,
   LlmStreamChunk,
   LlmTool,
+  Message,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export class NonStreamingLlm implements ILlm {
   healthCheck?: ILlm['healthCheck'];

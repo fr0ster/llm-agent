@@ -7,14 +7,15 @@
  * - **healthCheck** — delegates to primary.
  */
 
-import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IRag, IRagBackendWriter } from '../interfaces/rag.js';
 import type {
   CallOptions,
+  IQueryEmbedding,
+  IRag,
+  IRagBackendWriter,
   RagError,
   RagResult,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import type { CircuitBreaker } from './circuit-breaker.js';
 
 export class FallbackRag implements IRag {

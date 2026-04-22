@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IHistoryMemory } from '../../../interfaces/history-memory.js';
 import type {
   HistoryTurn,
+  IHistoryMemory,
   IHistorySummarizer,
-} from '../../../interfaces/history-summarizer.js';
-import type { IRag } from '../../../interfaces/rag.js';
-import type { LlmError, RagError, Result } from '../../../interfaces/types.js';
+  IRag,
+  LlmError,
+  RagError,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 
 import { summarizeAndStore } from '../history-upsert.js';
 

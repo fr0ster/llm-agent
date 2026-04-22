@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { TextOnlyEmbedding } from '../../rag/query-embedding.js';
+import { TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import { makeRag } from '../../testing/index.js';
 import { CircuitBreaker } from '../circuit-breaker.js';
 import { FallbackRag } from '../fallback-rag.js';

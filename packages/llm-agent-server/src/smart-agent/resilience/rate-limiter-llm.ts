@@ -5,17 +5,17 @@
  * Rate limiter sits outermost so that retry attempts also respect the limit.
  */
 
-import type { Message } from '../../types.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { ILlmRateLimiter } from '../interfaces/rate-limiter.js';
 import type {
   CallOptions,
+  ILlm,
+  ILlmRateLimiter,
   LlmError,
   LlmResponse,
   LlmStreamChunk,
   LlmTool,
+  Message,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export class RateLimiterLlm implements ILlm {
   healthCheck?: ILlm['healthCheck'];

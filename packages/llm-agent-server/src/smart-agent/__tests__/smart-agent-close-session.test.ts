@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import {
+  InMemoryRag,
+  InMemoryRagProvider,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import { InMemoryRag } from '../rag/in-memory-rag.js';
-import { InMemoryRagProvider } from '../rag/providers/in-memory-rag-provider.js';
-import { SimpleRagProviderRegistry } from '../rag/providers/simple-provider-registry.js';
-import { SimpleRagRegistry } from '../rag/registry/simple-rag-registry.js';
 import { makeDefaultDeps } from '../testing/index.js';
 
 function makeAgentWithRegistry() {

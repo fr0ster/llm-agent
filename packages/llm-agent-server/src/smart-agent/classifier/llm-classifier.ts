@@ -1,14 +1,16 @@
-import type { Message } from '../../types.js';
-import type { ISubpromptClassifier } from '../interfaces/classifier.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { IRequestLogger } from '../interfaces/request-logger.js';
+import type {
+  ILlm,
+  IRequestLogger,
+  ISubpromptClassifier,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   ClassifierError,
   type Result,
   type SmartAgentError,
   type Subprompt,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
 For each task, identify:

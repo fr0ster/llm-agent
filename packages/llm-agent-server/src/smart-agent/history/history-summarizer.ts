@@ -1,10 +1,12 @@
-import type { Message } from '../../types.js';
 import type {
+  CallOptions,
   HistoryTurn,
   IHistorySummarizer,
-} from '../interfaces/history-summarizer.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { CallOptions, LlmError, Result } from '../interfaces/types.js';
+  ILlm,
+  LlmError,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 
 const DEFAULT_PROMPT =
   'Summarize in one sentence: what the user requested and what was done. Include key identifiers (class names, table names, etc). Do not include greetings or filler.';

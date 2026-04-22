@@ -24,7 +24,14 @@
  * with built-ins. Stores can be added/removed at runtime via `rebuildStages()`.
  */
 
-import type { Message } from '../../types.js';
+import type {
+  CallOptions,
+  LlmStreamChunk,
+  LlmTool,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent';
 import type {
   OrchestratorError,
   SmartAgentConfig,
@@ -34,20 +41,15 @@ import { NoopToolCache } from '../cache/noop-tool-cache.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import type {
-  CallOptions,
   IPipeline,
-  LlmStreamChunk,
-  LlmTool,
   PipelineDeps,
   PipelineResult,
-  Result,
-} from '../interfaces/index.js';
+} from '../interfaces/pipeline.js';
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import { StreamingLlmCallStrategy } from '../policy/streaming-llm-call-strategy.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
-import { NoopQueryExpander } from '../rag/query-expander.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
 import { NoopTracer } from '../tracer/noop-tracer.js';

@@ -1,6 +1,5 @@
+import type { CallOptions, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type { ILogger } from '../logger/types.js';
-import type { IMcpClient } from './mcp-client.js';
-import type { CallOptions } from './types.js';
 
 export interface McpConnectionResult {
   clients: IMcpClient[];

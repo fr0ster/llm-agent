@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../types.js';
+import type {
+  LlmError,
+  LlmStreamChunk,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import type { LlmError, LlmStreamChunk, Result } from '../interfaces/types.js';
 import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
 import { normalizeExternalTools } from '../utils/external-tools-normalizer.js';
 

@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ISkill } from '../../../interfaces/skill.js';
-import type { RagResult } from '../../../interfaces/types.js';
+import type { ISkill, RagResult } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { BuildToolQueryHandler } from '../build-tool-query.js';

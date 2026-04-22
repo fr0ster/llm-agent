@@ -10,39 +10,37 @@
  *   - IPipeline — per-request orchestration
  */
 
-import type { Message } from '../../types.js';
+import type {
+  CallOptions,
+  IContextAssembler,
+  IEmbedder,
+  IHistoryMemory,
+  IHistorySummarizer,
+  ILlm,
+  ILlmCallStrategy,
+  IMcpClient,
+  IQueryExpander,
+  IRag,
+  IRagProviderRegistry,
+  IRagRegistry,
+  IRequestLogger,
+  ISkillManager,
+  ISubpromptClassifier,
+  LlmStreamChunk,
+  LlmTool,
+  Message,
+  Result,
+  TimingEntry,
+} from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
 import type { IToolCache } from '../cache/types.js';
 import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import type { IQueryExpander } from '../rag/query-expander.js';
 import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';
 import type { IOutputValidator } from '../validator/types.js';
-import type { IContextAssembler } from './assembler.js';
-import type { ISubpromptClassifier } from './classifier.js';
-import type { IHistoryMemory } from './history-memory.js';
-import type { IHistorySummarizer } from './history-summarizer.js';
-import type { ILlm } from './llm.js';
-import type { ILlmCallStrategy } from './llm-call-strategy.js';
-import type { IMcpClient } from './mcp-client.js';
-import type {
-  IEmbedder,
-  IRag,
-  IRagProviderRegistry,
-  IRagRegistry,
-} from './rag.js';
-import type { IRequestLogger } from './request-logger.js';
-import type { ISkillManager } from './skill.js';
-import type {
-  CallOptions,
-  LlmStreamChunk,
-  LlmTool,
-  Result,
-  TimingEntry,
-} from './types.js';
 
 // ---------------------------------------------------------------------------
 // Pipeline dependencies

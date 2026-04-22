@@ -11,26 +11,22 @@
  * ```
  */
 
-import type { Message } from '../../types.js';
-import type { SmartAgent } from '../agent.js';
-import { NoopToolCache } from '../cache/noop-tool-cache.js';
-import { ToolCache } from '../cache/tool-cache.js';
-import type { IToolCache } from '../cache/types.js';
-import type { IContextAssembler } from '../interfaces/assembler.js';
-import type { ISubpromptClassifier } from '../interfaces/classifier.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
-import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
-import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
 import type {
+  IContextAssembler,
+  ILlm,
+  IMcpClient,
+  IQueryEmbedding,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
-} from '../interfaces/rag.js';
+  ISubpromptClassifier,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import {
   AssemblerError,
   type CallOptions,
   ClassifierError,
+  type IQueryExpander,
   LlmError,
   type LlmFinishReason,
   type LlmResponse,
@@ -39,20 +35,22 @@ import {
   McpError,
   type McpTool,
   type McpToolResult,
+  NoopQueryExpander,
   RagError,
   type RagMetadata,
   type RagResult,
   type Result,
   type Subprompt,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import type { SmartAgent } from '../agent.js';
+import { NoopToolCache } from '../cache/noop-tool-cache.js';
+import { ToolCache } from '../cache/tool-cache.js';
+import type { IToolCache } from '../cache/types.js';
+import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
 import type { ILogger, LogEvent } from '../logger/types.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import {
-  type IQueryExpander,
-  NoopQueryExpander,
-} from '../rag/query-expander.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
 import type { IReranker } from '../reranker/types.js';
 import {

@@ -1,4 +1,4 @@
-import type { ILlm } from './llm.js';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
 
 /**
  * Resolves a model name + role into a ready-to-use ILlm instance.

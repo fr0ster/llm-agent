@@ -1,13 +1,13 @@
-import type { Message } from '../../types.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { ILlmCallStrategy } from '../interfaces/llm-call-strategy.js';
 import type {
   CallOptions,
+  ILlm,
+  ILlmCallStrategy,
   LlmError,
   LlmStreamChunk,
   LlmTool,
+  Message,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 /** Always uses streamChat(). Errors propagate as-is. */
 export class StreamingLlmCallStrategy implements ILlmCallStrategy {

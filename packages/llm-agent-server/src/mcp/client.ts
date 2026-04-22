@@ -4,10 +4,10 @@
  * Wraps the MCP SDK client to provide a simpler interface for the agent
  */
 
+import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import type { ToolCall, ToolResult } from '../types.js';
 
 type McpToolDef = {
   name: string;

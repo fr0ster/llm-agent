@@ -2,7 +2,7 @@ import type {
   LlmToolCall,
   LlmToolCallDelta,
   StreamToolCall,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 function isLlmToolCall(call: StreamToolCall): call is LlmToolCall {
   return !('index' in call);

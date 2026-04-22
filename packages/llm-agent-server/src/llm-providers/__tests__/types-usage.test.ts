@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { LLMResponse } from '../../types.js';
+import type { LLMResponse } from '@mcp-abap-adt/llm-agent';
 
 describe('LLMResponse — usage field', () => {
   it('accepts response with usage', () => {

@@ -1,8 +1,8 @@
-import type { Message } from '../../types.js';
 import type {
   HistoryEntry,
   IContextAssembler,
-} from '../interfaces/assembler.js';
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import {
   AssemblerError,
   type CallOptions,
@@ -11,7 +11,7 @@ import {
   type Result,
   type Subprompt,
   type ToolCallRecord,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Config

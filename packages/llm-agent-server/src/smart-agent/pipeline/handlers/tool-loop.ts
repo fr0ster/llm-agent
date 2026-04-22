@@ -24,14 +24,14 @@
  * - Tool availability tracking (temporary blacklist)
  */
 
-import type { Message } from '../../../types.js';
-import { OrchestratorError } from '../../agent.js';
 import type {
   LlmFinishReason,
   LlmTool,
+  Message,
   Result,
   TimingEntry,
-} from '../../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { OrchestratorError } from '../../agent.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -288,7 +288,7 @@ export class ToolLoopHandler implements IStageHandler {
 
             // Query tools RAG
             const { QueryEmbedding, TextOnlyEmbedding } = await import(
-              '../../rag/query-embedding.js'
+              '@mcp-abap-adt/llm-agent'
             );
             const embedding = ctx.embedder
               ? new QueryEmbedding(reSelectQuery, ctx.embedder, ctx.options)

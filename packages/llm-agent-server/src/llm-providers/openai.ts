@@ -2,14 +2,14 @@
  * OpenAI LLM Provider
  */
 
-import axios, { type AxiosInstance } from 'axios';
-import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
 import type {
+  IModelInfo,
   LLMCallOptions,
   LLMProviderConfig,
   LLMResponse,
   Message,
-} from '../types.js';
+} from '@mcp-abap-adt/llm-agent';
+import axios, { type AxiosInstance } from 'axios';
 import { BaseLLMProvider } from './base.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
