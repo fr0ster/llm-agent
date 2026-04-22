@@ -7,6 +7,70 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [9.1.0] — 2026-04-22
+
+### Added
+- **`IRagProvider` layer for dynamic collection creation** — providers are registered at agent construction time (static), collections are created at runtime through `registry.createCollection(...)` or the LLM via MCP tools. Separates backend configuration (URL, credentials, embedder, editability) from collection instances.
+- **Three shipped providers** — `InMemoryRagProvider` (session scope only), `VectorRagProvider` (session only, takes any `IEmbedder`), `QdrantRagProvider` (session/user/global with `deleteCollection` + `listCollections`). Thin wrappers around existing backend classes — no new runtime dependencies.
+- **`AbstractRagProvider` base class** with `checkScope` / `pickIdStrategy` / `buildEditor` helpers. Custom providers only implement `createCollection` and optionally `deleteCollection` / `listCollections`.
+- **`IRagProviderRegistry`** + `SimpleRagProviderRegistry` default implementation for managing the set of available providers.
+- **Scope semantics on `RagCollectionMeta`** — `scope: 'session' | 'user' | 'global'` plus `sessionId`, `userId`, `providerName` fields. Providers declare `supportedScopes`; `rag_delete_collection` enforces scope-matching for deletion (global collections not deletable via MCP).
+- **Four new MCP tools** via `buildRagCollectionToolEntries` — `rag_create_collection` (when `providerRegistry` supplied), `rag_list_collections`, `rag_describe_collection`, `rag_delete_collection`. Context-aware handlers via `RagToolContext { sessionId?, userId? }` populated by the consumer's MCP server.
+- **`SmartAgent.closeSession(sessionId)` hook** — best-effort cleanup that removes session-scoped collections matching `sessionId` and calls `historyMemory.clear(sessionId)`.
+- **`IRagRegistry` extended** with `createCollection`, `deleteCollection`, `closeSession`, `setProviderRegistry`, `setMutationListener`.
+- **Builder methods** — `addRagProvider`, `addRagCollection`, `createRagCollection`, `setRagRegistry`, `setRagProviderRegistry`.
+- **Four typed errors** — `UnsupportedScopeError`, `ProviderNotFoundError`, `CollectionNotFoundError`, `ScopeViolationError`.
+- **Docs** — new `IRagProvider` section in `INTEGRATION.md` with a custom-provider example; new "Dynamic RAG collections" block in `QUICK_START.md`; phase-workflow example in `EXAMPLES.md`; light updates in `README.md` and `ARCHITECTURE.md`.
+
+### Changed
+- **Pipeline deps threaded with registries** — `SmartAgentDeps` and `PipelineContext` now carry optional `ragRegistry` and `ragProviderRegistry`. `ragStores: Record<string, IRag>` remains as a **live projection** from `ragRegistry`, synchronized via a mutation listener installed by the builder. Existing code paths that iterate `ragStores` see no change in shape.
+- **`SmartAgent.addRagStore` / `removeRagStore` route through `ragRegistry`** when present (falls back to direct `ragStores` mutation otherwise). All prior side effects preserved: built-in name protection for `tools` / `history`, `translateQueryStores` synchronization, `pipeline.rebuildStages()` trigger.
+- **`FallbackRag` wrapping respects registry** — when a circuit breaker wraps each store in `FallbackRag`, the wrapped version replaces the registry entry so the projection reflects it.
+
+### Docs
+- Fixed stale references to `IRag.upsert` from the v9.0.0 interface split — `INTEGRATION.md` and `PERFORMANCE.md` now correctly describe writes going through `IRagEditor` via `rag.writer()`.
+
+### Migration
+- All v9.0.0 public API stays functional. New provider layer is opt-in: consumers who don't call `addRagProvider` see no change.
+- `RagCollectionMeta.scope` is optional on the public interface; `SimpleRagRegistry.register` normalizes missing values to `'global'`.
+- **Source-breaking edge case:** consumers who implement `IRagRegistry` directly (instead of extending `SimpleRagRegistry`) must add the three new methods.
+
+---
+
+## [9.0.0] — 2026-04-22
+
+### Breaking
+- **`IRag.upsert` and `IRag.clear` removed from the public interface.** Writes now flow through `IRagEditor` obtained via `rag.writer()` + an edit strategy. Concrete backend classes (`InMemoryRag`, `VectorRag`, `QdrantRag`) retain `upsert` / `clear` as class-level helpers for internal use and tests, but they are no longer part of the shared `IRag` contract.
+- **`IRag.getById(id)` is now required** — all `IRag` implementations must support lookup by `metadata.id`. Native implementations shipped for `InMemoryRag` (Map lookup), `VectorRag` (tombstone-aware scan), `QdrantRag` (points retrieve API).
+- **`IPrecomputedVectorRag` interface removed.** Precomputed-vector writes move to `IRagBackendWriter.upsertPrecomputedRaw` (optional).
+
+### Added
+- **`IRagEditor` interface** — write-side abstraction. `upsert(text, metadata, options?)` returns `Result<{ id: string }, RagError>`; id is always resolved by an `IIdStrategy` (never anonymous).
+- **`IRagRegistry` + `SimpleRagRegistry`** — binds collection names to `IRag` + `IRagEditor` pairs with `RagCollectionMeta`. Consumers can subclass to add auth, scoping, and persistence.
+- **Four edit strategies** — `DirectEditStrategy` (forwards writes to a single backing writer), `ImmutableEditStrategy` (returns `ReadOnlyError` for all mutations), `OverlayEditStrategy` (writes to overlay only; paired with `OverlayRag` on the read side), `SessionScopedEditStrategy` (stamps `sessionId` / `createdAt`; paired with `SessionScopedRag`).
+- **Four id strategies** — `CallerProvidedIdStrategy` (requires `metadata.id`), `GlobalUniqueIdStrategy` (uuid fallback), `SessionScopedIdStrategy(sessionId)` (prefixes with session id), `CanonicalKeyIdStrategy` (detenterministic `${canonicalKey}:v${version}`).
+- **Read-side overlay layers** — `OverlayRag(base, overlay)` merges results with **overlay wins** on `canonicalKey` collisions; `SessionScopedRag(base, overlay, sessionId, ttlMs?)` extends overlay with session + TTL filtering.
+- **Corrections module** (pure logic) — `CorrectionTag`, `CorrectionMetadata`, `validateCorrectionMetadata`, `deprecateMetadata`, `buildCorrectionMetadata`, `filterActive`.
+- **`ActiveFilteringRag(inner)`** — wraps any `IRag` to hide records tagged `deprecated` / `superseded` by default; opt-in `{ ragFilter: { includeInactive: true } }`.
+- **`IRagBackendWriter` interface** + concrete writers on backends — `upsertRaw`, `deleteByIdRaw`, optional `clearAll` and `upsertPrecomputedRaw`. Enables backend-agnostic edit strategies.
+- **MCP tool factory** — `buildRagCollectionToolEntries({ registry })` returns `rag_add`, `rag_correct`, `rag_deprecate` handlers for consumers to wire into their own MCP server.
+- **Three new error types** — `ReadOnlyError`, `MissingIdError`, `CanonicalKeyCollisionError`.
+- **`InvertedIndex.remove(docId, tokens)`** — supports tombstone-pattern deletes in `VectorRag`.
+- **`FallbackRag.writer()`** — fans out writes to primary + fallback backend writers; `FallbackRag.getById` tries primary then fallback.
+
+### Changed
+- **Production callers migrated** to editor/writer — `builder.ts` tool vectorization, `agent.ts` revectorizeTools, `pipeline/handlers/history-upsert.ts`.
+- **`RagResult.metadata`** — unchanged type; consumers writing correction-aware metadata should follow the `CorrectionMetadata` shape.
+
+### Migration
+- Consumers using `SmartAgentBuilder` get transparent migration via the builder; `ragStores` is still populated with `tools` and `history` after `buildAgent()`.
+- Consumers who called `rag.upsert(...)` directly must switch to `editor.upsert(...)` through a registered editor, or use `rag.writer()!.upsertRaw(id, text, metadata)` for lower-level writes.
+
+### Closes
+- #103 — upstream RAG registry, corrections layer, edit strategies, and MCP tool factory.
+
+---
+
 ## [8.5.0] — 2026-04-18
 
 ### Added
