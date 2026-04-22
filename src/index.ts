@@ -268,6 +268,7 @@ export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.j
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
 export {
   buildRagCollectionToolEntries,
+  type RagToolContext,
   type RagToolEntry,
 } from './smart-agent/rag/mcp-tools/index.js';
 export {
