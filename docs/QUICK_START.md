@@ -220,6 +220,29 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full pipeline and programma
 
 ---
 
+### Dynamic RAG collections (v9.1+)
+
+Let the LLM create temporary collections scoped to a session:
+
+```ts
+import { SmartAgentBuilder, InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
+
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withMainLlm(myLlm)
+  .addRagProvider(new InMemoryRagProvider({ name: 'scratch' }))
+  .build();
+
+// LLM can call rag_create_collection via MCP:
+//   rag_create_collection({ provider: 'scratch', name: 'phase-results', scope: 'session' })
+// Later:
+await agent.closeSession('session-id');  // clears all session-scoped collections
+```
+
+See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full provider setup,
+scope semantics, and the MCP tool factory.
+
+---
+
 ## Troubleshooting
 
 ### "LLM API key is required"

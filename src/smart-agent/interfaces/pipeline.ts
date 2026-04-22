@@ -28,7 +28,12 @@ import type { IHistorySummarizer } from './history-summarizer.js';
 import type { ILlm } from './llm.js';
 import type { ILlmCallStrategy } from './llm-call-strategy.js';
 import type { IMcpClient } from './mcp-client.js';
-import type { IEmbedder, IRag } from './rag.js';
+import type {
+  IEmbedder,
+  IRag,
+  IRagProviderRegistry,
+  IRagRegistry,
+} from './rag.js';
 import type { IRequestLogger } from './request-logger.js';
 import type { ISkillManager } from './skill.js';
 import type {
@@ -100,6 +105,10 @@ export interface PipelineDeps {
   historyRag?: IRag;
   /** Full record of RAG stores (tools, history, and any custom stores). */
   ragStores?: Record<string, IRag>;
+  /** Registry of RAG collections (v9.1+). When present, ragStores is a live projection. */
+  ragRegistry?: IRagRegistry;
+  /** Registry of RAG providers for dynamic collection creation (v9.1+). */
+  ragProviderRegistry?: IRagProviderRegistry;
 }
 
 // ---------------------------------------------------------------------------

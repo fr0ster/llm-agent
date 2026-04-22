@@ -17,6 +17,7 @@ export {
   PreprocessorChain,
   TranslatePreprocessor,
 } from './preprocessor.js';
+export * from './providers/index.js';
 export type { QdrantRagConfig } from './qdrant-rag.js';
 export { QdrantRag } from './qdrant-rag.js';
 export * from './registry/index.js';
