@@ -147,7 +147,12 @@ export type {
   IEmbedder,
   IEmbedderBatch,
   IEmbedResult,
+  IIdStrategy,
   IRag,
+  IRagBackendWriter,
+  IRagEditor,
+  IRagRegistry,
+  RagCollectionMeta,
 } from './smart-agent/interfaces/rag.js';
 export { isBatchEmbedder } from './smart-agent/interfaces/rag.js';
 export type { ILlmRateLimiter } from './smart-agent/interfaces/rate-limiter.js';
@@ -239,8 +244,25 @@ export {
   type RagResolutionOptions,
   resolveEmbedder,
 } from './smart-agent/providers.js';
+// RAG Corrections, Registry, Overlays, and Strategies
+export {
+  ActiveFilteringRag,
+  buildCorrectionMetadata,
+  CanonicalKeyCollisionError,
+  type CorrectionMetadata,
+  CorrectionTag,
+  deprecateMetadata,
+  filterActive,
+  MissingIdError,
+  ReadOnlyError,
+  validateCorrectionMetadata,
+} from './smart-agent/rag/corrections/index.js';
 export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
+export {
+  buildRagCollectionToolEntries,
+  type RagToolEntry,
+} from './smart-agent/rag/mcp-tools/index.js';
 export {
   OllamaEmbedder,
   type OllamaEmbedderConfig,
@@ -250,6 +272,10 @@ export {
   OpenAiEmbedder,
   type OpenAiEmbedderConfig,
 } from './smart-agent/rag/openai-embedder.js';
+export {
+  OverlayRag,
+  SessionScopedRag,
+} from './smart-agent/rag/overlays/index.js';
 // RAG Preprocessors
 export type {
   IDocumentEnricher,
@@ -279,6 +305,7 @@ export {
   LlmQueryExpander,
   NoopQueryExpander,
 } from './smart-agent/rag/query-expander.js';
+export { SimpleRagRegistry } from './smart-agent/rag/registry/index.js';
 export {
   SapAiCoreEmbedder,
   type SapAiCoreEmbedderConfig,
@@ -299,6 +326,18 @@ export {
   VectorOnlyStrategy,
   WeightedFusionStrategy,
 } from './smart-agent/rag/search-strategy.js';
+export {
+  DirectEditStrategy,
+  ImmutableEditStrategy,
+  OverlayEditStrategy,
+  SessionScopedEditStrategy,
+} from './smart-agent/rag/strategies/edit/index.js';
+export {
+  CallerProvidedIdStrategy,
+  CanonicalKeyIdStrategy,
+  GlobalUniqueIdStrategy,
+  SessionScopedIdStrategy,
+} from './smart-agent/rag/strategies/id/index.js';
 export {
   VectorRag,
   type VectorRagConfig,
