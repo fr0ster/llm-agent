@@ -4,6 +4,7 @@
   "version": "0.0.0",
   "workspaces": ["packages/*"],
   "scripts": {
+    "prebuild": "npm run --workspace @mcp-abap-adt/llm-agent-server prebuild",
     "build": "tsc -b packages/llm-agent packages/llm-agent-server",
     "clean": "tsc -b --clean packages/llm-agent packages/llm-agent-server",
     "lint": "biome check --write packages",
