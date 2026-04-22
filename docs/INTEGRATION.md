@@ -278,27 +278,40 @@ Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are va
 
 **File:** `src/smart-agent/interfaces/rag.ts`
 
-RAG store for document upsert, query, and health checks:
+Read-only RAG store interface. Writing is handled by a separate writer object returned from the optional `writer()` method:
 
 ```ts
 interface IRag {
-  /**
-   * If metadata.id is provided, implementations MUST treat it as an
-   * idempotent key — repeated upserts with the same id replace the
-   * previous record instead of creating duplicates.
-   */
-  upsert(text: string, metadata: RagMetadata, options?: CallOptions): Promise<Result<void, RagError>>;
-  query(text: string, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>>;
+  query(embedding: IQueryEmbedding, k: number, options?: CallOptions): Promise<Result<RagResult[], RagError>>;
+  getById(id: string, options?: CallOptions): Promise<Result<RagResult | null, RagError>>;
   healthCheck(options?: CallOptions): Promise<Result<void, RagError>>;
+  writer?(): IRagBackendWriter | undefined;  // optional — absent on read-only stores
+}
+
+interface IRagEditor {
+  upsert(text: string, metadata: RagMetadata, options?: CallOptions): Promise<Result<{ id: string }, RagError>>;
+  deleteById(id: string, options?: CallOptions): Promise<Result<boolean, RagError>>;
+  clear?(): Promise<Result<void, RagError>>;
+}
+
+interface IRagBackendWriter {
+  upsertRaw(id: string, text: string, metadata: RagMetadata, options?: CallOptions): Promise<Result<void, RagError>>;
+  deleteByIdRaw(id: string, options?: CallOptions): Promise<Result<boolean, RagError>>;
+  clearAll?(): Promise<Result<void, RagError>>;
+  upsertPrecomputedRaw?(id: string, text: string, vector: number[], metadata: RagMetadata, options?: CallOptions): Promise<Result<void, RagError>>;
 }
 ```
+
+`IRag` is the read path (query + health). `IRagBackendWriter` is the raw storage write path (no embeddings). `IRagEditor` is the consumer-facing write API — it handles embedding and ID assignment before delegating to `IRagBackendWriter`. Use `DirectEditStrategy` to wrap a backend writer into an `IRagEditor`.
 
 ### Example: Wrapping Pinecone
 
 ```ts
-import type { IRag } from '@mcp-abap-adt/llm-agent';
-import type { RagMetadata, RagResult, RagError, Result, CallOptions }
-  from '@mcp-abap-adt/llm-agent';
+import type {
+  IRag, IRagBackendWriter, IRagEditor, IEmbedder,
+  IQueryEmbedding, RagMetadata, RagResult, RagError, Result, CallOptions,
+} from '@mcp-abap-adt/llm-agent';
+import { DirectEditStrategy, GlobalUniqueIdStrategy } from '@mcp-abap-adt/llm-agent';
 
 class PineconeRag implements IRag {
   constructor(
@@ -306,32 +319,13 @@ class PineconeRag implements IRag {
     private readonly embedder: IEmbedder,
   ) {}
 
-  async upsert(
-    text: string,
-    metadata: RagMetadata,
-    options?: CallOptions,
-  ): Promise<Result<void, RagError>> {
-    try {
-      const { vector } = await this.embedder.embed(text, options);
-      await this.index.upsert([{
-        id: metadata.id ?? crypto.randomUUID(),
-        values: vector,
-        metadata: { text, ...metadata },
-      }]);
-      return { ok: true, value: undefined };
-    } catch (err) {
-      return { ok: false, error: new RagError(String(err)) };
-    }
-  }
-
   async query(
-    text: string,
+    embedding: IQueryEmbedding,
     k: number,
     options?: CallOptions,
   ): Promise<Result<RagResult[], RagError>> {
     try {
-      const { vector } = await this.embedder.embed(text, options);
-      const results = await this.index.query({ vector, topK: k, includeMetadata: true });
+      const results = await this.index.query({ vector: embedding.vector, topK: k, includeMetadata: true });
       return {
         ok: true,
         value: results.matches.map((m: any) => ({
@@ -345,6 +339,17 @@ class PineconeRag implements IRag {
     }
   }
 
+  async getById(id: string): Promise<Result<RagResult | null, RagError>> {
+    try {
+      const result = await this.index.fetch([id]);
+      const vec = result.vectors?.[id];
+      if (!vec) return { ok: true, value: null };
+      return { ok: true, value: { text: vec.metadata.text, metadata: vec.metadata, score: 1 } };
+    } catch (err) {
+      return { ok: false, error: new RagError(String(err)) };
+    }
+  }
+
   async healthCheck(): Promise<Result<void, RagError>> {
     try {
       await this.index.describeIndexStats();
@@ -353,7 +358,38 @@ class PineconeRag implements IRag {
       return { ok: false, error: new RagError(String(err)) };
     }
   }
+
+  writer(): IRagBackendWriter {
+    const index = this.index;
+    const embedder = this.embedder;
+    return {
+      async upsertRaw(id, text, metadata, options) {
+        try {
+          const { vector } = await embedder.embed(text, options);
+          await index.upsert([{ id, values: vector, metadata: { text, ...metadata } }]);
+          return { ok: true, value: undefined };
+        } catch (err) {
+          return { ok: false, error: new RagError(String(err)) };
+        }
+      },
+      async deleteByIdRaw(id) {
+        try {
+          await index.deleteOne(id);
+          return { ok: true, value: true };
+        } catch (err) {
+          return { ok: false, error: new RagError(String(err)) };
+        }
+      },
+    };
+  }
 }
+
+// Wrap the backend writer in DirectEditStrategy to get an IRagEditor:
+const pineconeRag = new PineconeRag(myPineconeIndex, myEmbedder);
+const editor: IRagEditor = new DirectEditStrategy(pineconeRag.writer()!, new GlobalUniqueIdStrategy());
+
+// Now use editor for writes and pineconeRag for reads:
+await editor.upsert('Some document text', { source: 'manual' });
 ```
 
 ### IEmbedder
@@ -411,6 +447,166 @@ agent.addRagStore('tenant-42', tenantRag);
 // Remove it when the tenant disconnects
 agent.removeRagStore('tenant-42');
 ```
+
+## IRagProvider
+
+**File:** `src/smart-agent/interfaces/rag.ts`
+
+`IRagProvider` lets the LLM create and delete RAG collections at runtime through MCP tools, rather than registering all stores statically at startup. Providers are registered with the builder and exposed through `IRagProviderRegistry`.
+
+### Interface
+
+```ts
+type RagCollectionScope = 'session' | 'user' | 'global';
+
+interface IRagProvider {
+  readonly name: string;
+  readonly kind: string;
+  readonly editable: boolean;
+  readonly supportedScopes: readonly RagCollectionScope[];
+  createCollection(
+    name: string,
+    opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
+  deleteCollection?(name: string): Promise<Result<void, RagError>>;
+  listCollections?(): Promise<Result<string[], RagError>>;
+}
+```
+
+### Scope semantics
+
+| Scope | Lifetime | Who can delete via MCP | Typical use case |
+|-------|----------|------------------------|------------------|
+| `session` | Until `SmartAgent.closeSession()` is called | Session owner only | Scratch pads, phase results, temporary analysis |
+| `user` | Persistent across sessions for that user | Same user only | Personal notes, user preferences |
+| `global` | Permanent until explicitly deleted | Any caller (admin-level) | Shared knowledge bases, team fact stores |
+
+### Shipped providers
+
+| Provider | Supported scopes | Remarks |
+|----------|-----------------|---------|
+| `InMemoryRagProvider` | `session` | Ephemeral; data lost on process restart |
+| `VectorRagProvider` | `session` | In-process hybrid vector + BM25; persists only in memory |
+| `QdrantRagProvider` | `session`, `user`, `global` | Backed by Qdrant; supports `deleteCollection` and `listCollections` |
+
+### AbstractRagProvider
+
+`AbstractRagProvider` is a base class with helpers for scope validation and editor construction:
+- `checkScope(scope, opts)` — validates `sessionId`/`userId` are present for the requested scope
+- `pickIdStrategy(scope, opts)` — returns a suitable `IIdStrategy` (`SessionScopedIdStrategy`, `UserScopedIdStrategy`, or `GlobalUniqueIdStrategy`)
+- `buildEditor(writer, idStrategy)` — wraps an `IRagBackendWriter` into `DirectEditStrategy`
+
+Minimal custom provider example:
+
+```ts
+import {
+  AbstractRagProvider,
+  type IRag,
+  type IRagEditor,
+  type RagCollectionScope,
+  type RagError,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
+
+class MyDbRagProvider extends AbstractRagProvider {
+  readonly name = 'my-db';
+  readonly kind = 'custom';
+  readonly editable = true;
+  readonly supportedScopes: readonly RagCollectionScope[] = ['session', 'global'];
+
+  async createCollection(
+    collectionName: string,
+    opts: { scope: RagCollectionScope; sessionId?: string; userId?: string },
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
+    this.checkScope(opts.scope, opts);  // throws RagError on missing sessionId/userId
+
+    try {
+      // Create / ensure the collection exists in your DB
+      const dbCollection = await myDb.ensureCollection(collectionName);
+      const rag = new MyDbRag(dbCollection, this.embedder);
+      const idStrategy = this.pickIdStrategy(opts.scope, opts);
+      const editor = this.buildEditor(rag.writer()!, idStrategy);
+      return { ok: true, value: { rag, editor } };
+    } catch (err) {
+      return { ok: false, error: new RagError(String(err)) };
+    }
+  }
+
+  async deleteCollection(name: string): Promise<Result<void, RagError>> {
+    try {
+      await myDb.dropCollection(name);
+      return { ok: true, value: undefined };
+    } catch (err) {
+      return { ok: false, error: new RagError(String(err)) };
+    }
+  }
+}
+```
+
+### Builder integration
+
+```ts
+import {
+  SmartAgentBuilder,
+  QdrantRagProvider,
+  ImmutableEditStrategy,
+} from '@mcp-abap-adt/llm-agent';
+
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withMainLlm(myLlm)
+  // Register a provider — the LLM can create collections on demand via MCP tools:
+  .addRagProvider(new QdrantRagProvider({ name: 'qdrant-rw', url, apiKey, embedder }))
+  // Register a static collection (read-only from the LLM's perspective):
+  .addRagCollection({
+    name: 'corp-facts',
+    rag: corpFacts,
+    editor: new ImmutableEditStrategy('corp-facts'),
+    meta: { displayName: 'Corporate Facts', scope: 'global' },
+  })
+  // Pre-create a user-scoped collection at startup:
+  .createRagCollection({
+    providerName: 'qdrant-rw',
+    collectionName: 'user-scratch',
+    scope: 'user',
+    userId: 'alice',
+  })
+  .build();
+```
+
+### MCP tool factory
+
+```ts
+import { buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
+
+const entries = buildRagCollectionToolEntries({ registry, providerRegistry });
+// Returns RagToolEntry[]:
+//   Content tools:    rag_add, rag_correct, rag_deprecate
+//   Collection mgmt:  rag_list_collections, rag_describe_collection, rag_delete_collection
+//   Creation:         rag_create_collection  (only when providerRegistry is supplied)
+```
+
+The consumer hosts their own MCP server and registers these handlers there. `llm-agent` does not run an embedded MCP server for RAG editing.
+
+### RagToolContext
+
+Each MCP tool call must supply a typed context so scope enforcement can resolve session/user identity:
+
+```ts
+interface RagToolContext {
+  sessionId?: string;
+  userId?: string;
+}
+```
+
+The consumer's MCP server populates this from its own session state (e.g. HTTP request headers, WebSocket metadata) before forwarding the call. Collections scoped to `session` or `user` are rejected if the matching field is absent.
+
+### Session cleanup
+
+```ts
+await agent.closeSession(sessionId);
+```
+
+Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory.
 
 ## IMcpClient
 
@@ -836,10 +1032,18 @@ interface IToolIndexingStrategy {
 ### Example: Dual indexing
 
 ```ts
-import { OriginalToolIndexing, SynonymToolIndexing } from '@mcp-abap-adt/llm-agent';
+import {
+  OriginalToolIndexing,
+  SynonymToolIndexing,
+  DirectEditStrategy,
+  GlobalUniqueIdStrategy,
+} from '@mcp-abap-adt/llm-agent';
 
 const original = new OriginalToolIndexing();
 const synonym = new SynonymToolIndexing();
+
+// Writes go through IRagEditor, not IRag directly
+const editor = new DirectEditStrategy(rag.writer()!, new GlobalUniqueIdStrategy());
 
 for (const tool of tools) {
   const entries = [
@@ -847,7 +1051,7 @@ for (const tool of tools) {
     ...(await synonym.prepare(tool)),
   ];
   for (const entry of entries) {
-    await rag.upsert(entry.text, { id: entry.id });
+    await editor.upsert(entry.text, { id: entry.id });
   }
 }
 // Each tool indexed twice: tool:ReadClass + tool:ReadClass:synonym
