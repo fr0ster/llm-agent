@@ -27,23 +27,5 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test adapters
-        run: npm run test:adapters
-
-      - name: Test server
-        run: npm run test:server
-
-      - name: Test logger
-        run: npm run test:logger
-
-      - name: Test policy
-        run: npm run test:policy
-
-      - name: Test regression
-        run: npm run test:regression
-
-      - name: Test tracer
-        run: npm run test:tracer
-
-      - name: Test RAG evaluation
-        run: npm run test:rag-eval
+      - name: Test
+        run: npm run test
