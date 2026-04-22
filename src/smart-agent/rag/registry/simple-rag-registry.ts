@@ -1,12 +1,16 @@
 import type {
   IRag,
   IRagEditor,
+  IRagProviderRegistry,
   IRagRegistry,
   RagCollectionMeta,
   RagCollectionScope,
 } from '../../interfaces/rag.js';
-import type { Result } from '../../interfaces/types.js';
-import { RagError } from '../../interfaces/types.js';
+import { RagError, type Result } from '../../interfaces/types.js';
+import {
+  CollectionNotFoundError,
+  ProviderNotFoundError,
+} from '../corrections/errors.js';
 import { ImmutableEditStrategy } from '../strategies/edit/immutable.js';
 
 interface Entry {
@@ -17,6 +21,20 @@ interface Entry {
 
 export class SimpleRagRegistry implements IRagRegistry {
   protected readonly entries = new Map<string, Entry>();
+  protected providerRegistry?: IRagProviderRegistry;
+  protected mutationListener?: () => void;
+
+  setProviderRegistry(providerRegistry: IRagProviderRegistry): void {
+    this.providerRegistry = providerRegistry;
+  }
+
+  setMutationListener(listener: () => void): void {
+    this.mutationListener = listener;
+  }
+
+  private fireMutation(): void {
+    this.mutationListener?.();
+  }
 
   register(
     name: string,
@@ -36,14 +54,21 @@ export class SimpleRagRegistry implements IRagRegistry {
         name,
         displayName: meta?.displayName ?? name,
         description: meta?.description,
-        tags: meta?.tags,
         editable,
+        scope: meta?.scope ?? 'global',
+        sessionId: meta?.sessionId,
+        userId: meta?.userId,
+        providerName: meta?.providerName,
+        tags: meta?.tags,
       },
     });
+    this.fireMutation();
   }
 
   unregister(name: string): boolean {
-    return this.entries.delete(name);
+    const existed = this.entries.delete(name);
+    if (existed) this.fireMutation();
+    return existed;
   }
 
   get(name: string): IRag | undefined {
@@ -58,7 +83,7 @@ export class SimpleRagRegistry implements IRagRegistry {
     return Array.from(this.entries.values()).map((e) => e.meta);
   }
 
-  async createCollection(_params: {
+  async createCollection(params: {
     providerName: string;
     collectionName: string;
     scope: RagCollectionScope;
@@ -68,32 +93,112 @@ export class SimpleRagRegistry implements IRagRegistry {
     description?: string;
     tags?: readonly string[];
   }): Promise<Result<RagCollectionMeta, RagError>> {
-    return {
-      ok: false,
-      error: new RagError(
-        'createCollection not implemented yet',
-        'RAG_NOT_IMPLEMENTED',
-      ),
-    };
+    if (!this.providerRegistry) {
+      return {
+        ok: false,
+        error: new RagError(
+          'No IRagProviderRegistry configured on SimpleRagRegistry',
+          'RAG_NO_PROVIDER_REGISTRY',
+        ),
+      };
+    }
+    const provider = this.providerRegistry.getProvider(params.providerName);
+    if (!provider) {
+      return {
+        ok: false,
+        error: new ProviderNotFoundError(params.providerName),
+      };
+    }
+
+    // Preflight duplicate-name check.
+    if (this.entries.has(params.collectionName)) {
+      return {
+        ok: false,
+        error: new RagError(
+          `Collection '${params.collectionName}' already exists`,
+          'RAG_DUPLICATE_COLLECTION',
+        ),
+      };
+    }
+
+    const created = await provider.createCollection(params.collectionName, {
+      scope: params.scope,
+      sessionId: params.sessionId,
+      userId: params.userId,
+    });
+    if (!created.ok) return created;
+
+    try {
+      this.register(
+        params.collectionName,
+        created.value.rag,
+        created.value.editor,
+        {
+          displayName: params.displayName ?? params.collectionName,
+          description: params.description,
+          scope: params.scope,
+          sessionId: params.sessionId,
+          userId: params.userId,
+          providerName: params.providerName,
+          tags: params.tags,
+        },
+      );
+    } catch (err) {
+      // Defense-in-depth rollback: the preflight check should prevent this,
+      // but if register throws anyway (subclass or race), roll the backend back.
+      if (provider.deleteCollection) {
+        await provider.deleteCollection(params.collectionName).catch(() => {});
+      }
+      return {
+        ok: false,
+        error:
+          err instanceof RagError
+            ? err
+            : new RagError(String(err), 'RAG_REGISTER_FAILED'),
+      };
+    }
+
+    const registered = this.entries.get(params.collectionName);
+    if (!registered) {
+      return {
+        ok: false,
+        error: new RagError(
+          `Collection '${params.collectionName}' vanished after registration`,
+          'RAG_REGISTER_FAILED',
+        ),
+      };
+    }
+    return { ok: true, value: registered.meta };
   }
 
-  async deleteCollection(_name: string): Promise<Result<void, RagError>> {
-    return {
-      ok: false,
-      error: new RagError(
-        'deleteCollection not implemented yet',
-        'RAG_NOT_IMPLEMENTED',
-      ),
-    };
+  async deleteCollection(name: string): Promise<Result<void, RagError>> {
+    const entry = this.entries.get(name);
+    if (!entry) {
+      return { ok: false, error: new CollectionNotFoundError(name) };
+    }
+    if (entry.meta.providerName && this.providerRegistry) {
+      const provider = this.providerRegistry.getProvider(
+        entry.meta.providerName,
+      );
+      if (provider?.deleteCollection) {
+        const res = await provider.deleteCollection(name);
+        if (!res.ok) return res;
+      }
+    }
+    this.unregister(name);
+    return { ok: true, value: undefined };
   }
 
-  async closeSession(_sessionId: string): Promise<Result<void, RagError>> {
-    return {
-      ok: false,
-      error: new RagError(
-        'closeSession not implemented yet',
-        'RAG_NOT_IMPLEMENTED',
-      ),
-    };
+  async closeSession(sessionId: string): Promise<Result<void, RagError>> {
+    const victims = Array.from(this.entries.values())
+      .filter(
+        (e) => e.meta.scope === 'session' && e.meta.sessionId === sessionId,
+      )
+      .map((e) => e.meta.name);
+    for (const name of victims) {
+      const res = await this.deleteCollection(name);
+      if (!res.ok) return res;
+    }
+    return { ok: true, value: undefined };
   }
 }
