@@ -140,7 +140,7 @@ Every arrow goes UP to core. No back-pointers. No cycles. Server's provider-pack
 | 6 | Default in-process backends (InMemoryRag, VectorRag) | **Stay in core.** No external SDKs. |
 | 7 | OllamaRag convenience wrapper | **Moves to ollama-embedder package.** Purely Ollama-specific. |
 | 8 | Publish mechanics | `npx changeset publish` — all packages in dependency order from one command. |
-| 9 | Changesets `fixed` group | All nine packages (core, server, 4 LLMs, 3 embedders, qdrant-rag) in lock-step for the 11.x lifecycle. |
+| 9 | Changesets `fixed` group | All ten packages (core, server, 4 LLMs, 3 embedders, qdrant-rag) in lock-step for the 11.x lifecycle. |
 
 ## Package layouts
 
@@ -360,7 +360,7 @@ Comprehensive table of every moved / renamed / removed symbol. High-level sectio
 
 ## Required end-to-end validation tasks
 
-Given the scale of the refactor, drift between design and actual wiring is likely. The implementation plan MUST include these two explicit validation tasks at the end, each producing a concrete go/no-go signal before the release is tagged:
+Given the scale of the refactor, drift between design and actual wiring is likely. The implementation plan MUST include these three explicit validation tasks at the end, each producing a concrete go/no-go signal before the release is tagged:
 
 1. **Declarative-server boot test.** Install `@mcp-abap-adt/llm-agent-server` + the exact peers named in the generated `smart-server.yaml` template (e.g. `deepseek-llm`, `ollama-embedder`). The HTTP server boots successfully. Separately: install server WITHOUT one of those peers; starting the server with a config that references it must fail with `MissingProviderError` up front, not a cryptic runtime error mid-pipeline. Verifies: (a) peer-dep resolution contract, (b) `builtInEmbedderFactories` / LLM factory dynamic-import + error handling, (c) `SmartServer` composition.
 
@@ -378,7 +378,7 @@ Given the scale of the refactor, drift between design and actual wiring is likel
 
 Earlier review iterations surfaced these concerns. All are now addressed in the main sections above. Kept here as an audit trail:
 
-- Server must depend on all provider/embedder packages so declarative YAML resolution works out of the box → **resolved** by the "Server package after v11.0.0" dependency list.
+- Initial design had server hard-depend on all provider/embedder packages so declarative YAML resolution would work out of the box → **superseded** by the optional peer-dependency model: server declares every provider package as an optional peer, the factory registry dynamic-imports them at resolve time, and missing peers throw `MissingProviderError` up front. Consumers install only what their config actually names.
 - `builtInEmbedderFactories` must move out of core → **resolved** by the "Changes to existing packages → core" bullet that relocates it to server.
 - `mcp.type: 'none'` is handled at config-resolution / SmartServer composition, not inside `SmartAgentBuilderConfig` → **resolved** by the reworded `cli.ts` section and aligned implementation-plan bullet.
 - Install recipes need to distinguish batteries-included server install from library-only minimal install → **resolved** by the two-mode install section in the migration guide.
@@ -387,3 +387,6 @@ Earlier review iterations surfaced these concerns. All are now addressed in the 
 - Library-only mode's SmartAgent usage without server install was logically impossible → **resolved** by splitting migration install modes into three: (a) server-managed declarative config, (b) programmatic server composition, (c) true core-only with no SmartAgent. Each clearly states required packages.
 - Lower sections retained transitive-dependency wording after the peer-dependency rewrite → **resolved** by rewriting `Changes to existing packages → server` (embedder-factories move + optional peer dep declaration) and `Known items` (config-template defaults align with documented install steps) to match the optional-peer model.
 - The top-level `Refactored in server → cli.ts` summary still referenced `mcp: { disabled: true }` → **resolved** by replacing it with the canonical `mcp.type: 'none'` wording consistent with later sections.
+- Validation-task intro said "two" while the list had three items → **resolved** by updating the intro to "three".
+- `Resolved questions` #9 said "All nine packages" while the set stabilized at ten → **resolved** by correcting to "All ten packages".
+- Audit trail's first bullet said "resolved by the server dependency list" despite the later optional-peer design → **resolved** by rewording the bullet as `superseded by the optional peer-dependency model + dynamic-import validation`.
