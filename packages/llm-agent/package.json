@@ -1,0 +1,32 @@
+{
+  "name": "@mcp-abap-adt/llm-agent",
+  "version": "9.1.0",
+  "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "LICENSE"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -p tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "axios": "^1.14.0",
+    "zod": "^3.25.0",
+    "@sap-ai-sdk/orchestration": "^2.9.0"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
+  },
+  "publishConfig": { "access": "public" }
+}
