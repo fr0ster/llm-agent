@@ -1,14 +1,15 @@
 // src/smart-agent/api-adapters/anthropic-adapter.ts
 
 import { randomUUID } from 'node:crypto';
-
-import type { Message } from '../../types.js';
 import type {
   AgentCallOptions,
+  LlmStreamChunk,
+  Message,
   OrchestratorError,
+  Result,
   SmartAgentResponse,
   StopReason,
-} from '../interfaces/agent-contracts.js';
+} from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
   type ApiRequestContext,
@@ -16,7 +17,6 @@ import {
   type ILlmApiAdapter,
   type NormalizedRequest,
 } from '../interfaces/api-adapter.js';
-import type { LlmStreamChunk, Result } from '../interfaces/types.js';
 import { toToolCallDelta } from '../utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------

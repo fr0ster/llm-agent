@@ -3,7 +3,7 @@ import type {
   RagError,
   RagResult,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export interface IReranker {
   rerank(

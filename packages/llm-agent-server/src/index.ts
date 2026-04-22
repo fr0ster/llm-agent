@@ -2,6 +2,151 @@
  * Main exports for LLM Proxy
  */
 
+// Smart Agent interfaces
+// Query Embedding
+// Embedder & RAG
+// Request Logger
+// Skills
+// Smart Agent shared types (needed by plugin authors)
+// RAG Preprocessors
+// Search Strategies
+export type {
+  AgentCallOptions,
+  AgentResponse,
+  CallOptions,
+  EmbedderFactory,
+  EmbedderFactoryConfig,
+  HistoryTurn,
+  IDocumentEnricher,
+  IEmbedder,
+  IEmbedderBatch,
+  IEmbedResult,
+  IHistoryMemory,
+  IHistorySummarizer,
+  IIdStrategy,
+  ILlm,
+  ILlmCallStrategy,
+  ILlmRateLimiter,
+  IMcpClient,
+  IModelFilter,
+  IModelInfo,
+  IModelProvider,
+  IQueryEmbedding,
+  IQueryPreprocessor,
+  IRag,
+  IRagBackendWriter,
+  IRagEditor,
+  IRagProvider,
+  IRagProviderRegistry,
+  IRagRegistry,
+  IRagStoreConfig,
+  IRequestLogger,
+  IScoredResult,
+  ISearchCandidate,
+  ISearchContext,
+  ISearchQuery,
+  ISearchStrategy,
+  ISkill,
+  ISkillManager,
+  ISkillMeta,
+  ISkillResource,
+  ISmartAgentPlugin,
+  LLMProviderConfig,
+  LLMResponse,
+  LlmCallEntry,
+  LlmComponent,
+  LlmTool,
+  Message,
+  RagCollectionMeta,
+  RagCollectionScope,
+  RagError,
+  RagQueryEntry,
+  RagResult,
+  RagScope,
+  RequestSummary,
+  Result,
+  StreamHookContext,
+  TokenBucket,
+  TokenCategory,
+  ToolCall,
+  ToolCallEntry,
+  ToolResult,
+} from '@mcp-abap-adt/llm-agent';
+// RAG Corrections, Registry, Overlays, and Strategies
+// RAG Providers (v9.1)
+// Qdrant RAG
+// Query Expander
+export {
+  AbstractRagProvider,
+  ActiveFilteringRag,
+  Bm25OnlyStrategy,
+  buildCorrectionMetadata,
+  buildRagCollectionToolEntries,
+  builtInEmbedderFactories,
+  CallerProvidedIdStrategy,
+  CanonicalKeyCollisionError,
+  CanonicalKeyIdStrategy,
+  CollectionNotFoundError,
+  CompositeStrategy,
+  type CompositeStrategyEntry,
+  type CorrectionMetadata,
+  CorrectionTag,
+  DirectEditStrategy,
+  deprecateMetadata,
+  ExpandPreprocessor,
+  FallbackQueryEmbedding,
+  filterActive,
+  GlobalUniqueIdStrategy,
+  ImmutableEditStrategy,
+  InMemoryRag,
+  InMemoryRagProvider,
+  type InMemoryRagProviderConfig,
+  IntentEnricher,
+  type IQueryExpander,
+  isBatchEmbedder,
+  LlmQueryExpander,
+  MissingIdError,
+  NoopDocumentEnricher,
+  NoopQueryExpander,
+  NoopQueryPreprocessor,
+  OllamaEmbedder,
+  type OllamaEmbedderConfig,
+  OllamaRag,
+  OpenAiEmbedder,
+  type OpenAiEmbedderConfig,
+  OverlayEditStrategy,
+  OverlayRag,
+  PreprocessorChain,
+  ProviderNotFoundError,
+  QdrantRag,
+  type QdrantRagConfig,
+  QdrantRagProvider,
+  type QdrantRagProviderConfig,
+  QueryEmbedding,
+  type RagToolContext,
+  type RagToolEntry,
+  ReadOnlyError,
+  RrfStrategy,
+  SapAiCoreEmbedder,
+  type SapAiCoreEmbedderConfig,
+  ScopeViolationError,
+  SessionScopedEditStrategy,
+  SessionScopedIdStrategy,
+  SessionScopedRag,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+  SkillError,
+  TextOnlyEmbedding,
+  TranslatePreprocessor,
+  UnsupportedScopeError,
+  VectorOnlyStrategy,
+  VectorRag,
+  type VectorRagConfig,
+  VectorRagProvider,
+  type VectorRagProviderConfig,
+  validateCorrectionMetadata,
+  WeightedFusionStrategy,
+} from '@mcp-abap-adt/llm-agent';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 export {
@@ -42,7 +187,6 @@ export {
   type SapCoreAIConfig,
   SapCoreAIProvider,
 } from './llm-providers/sap-core-ai.js';
-
 // MCP Client
 export {
   type MCPClientConfig,
@@ -96,8 +240,6 @@ export type {
 // History
 export { HistoryMemory } from './smart-agent/history/history-memory.js';
 export { HistorySummarizer } from './smart-agent/history/history-summarizer.js';
-// Smart Agent interfaces
-export type { AgentCallOptions } from './smart-agent/interfaces/agent-contracts.js';
 export {
   AdapterValidationError,
   type ApiRequestContext,
@@ -106,14 +248,6 @@ export {
   type NormalizedRequest,
 } from './smart-agent/interfaces/api-adapter.js';
 export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
-export type { IHistoryMemory } from './smart-agent/interfaces/history-memory.js';
-export type {
-  HistoryTurn,
-  IHistorySummarizer,
-} from './smart-agent/interfaces/history-summarizer.js';
-export type { ILlm } from './smart-agent/interfaces/llm.js';
-export type { ILlmCallStrategy } from './smart-agent/interfaces/llm-call-strategy.js';
-export type { IMcpClient } from './smart-agent/interfaces/mcp-client.js';
 export type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,
@@ -122,71 +256,12 @@ export type {
   McpConnectionConfig,
   McpConnectionResult,
 } from './smart-agent/interfaces/mcp-connection-strategy.js';
-export type {
-  IModelFilter,
-  IModelInfo,
-  IModelProvider,
-} from './smart-agent/interfaces/model-provider.js';
 export type { IModelResolver } from './smart-agent/interfaces/model-resolver.js';
 export type {
   IPipeline,
   PipelineDeps,
   PipelineResult,
 } from './smart-agent/interfaces/pipeline.js';
-export type {
-  IRagStoreConfig,
-  ISmartAgentPlugin,
-  RagScope,
-} from './smart-agent/interfaces/plugin.js';
-// Query Embedding
-export type { IQueryEmbedding } from './smart-agent/interfaces/query-embedding.js';
-// Embedder & RAG
-export type {
-  EmbedderFactory,
-  EmbedderFactoryConfig,
-  IEmbedder,
-  IEmbedderBatch,
-  IEmbedResult,
-  IIdStrategy,
-  IRag,
-  IRagBackendWriter,
-  IRagEditor,
-  IRagProvider,
-  IRagProviderRegistry,
-  IRagRegistry,
-  RagCollectionMeta,
-  RagCollectionScope,
-} from './smart-agent/interfaces/rag.js';
-export { isBatchEmbedder } from './smart-agent/interfaces/rag.js';
-export type { ILlmRateLimiter } from './smart-agent/interfaces/rate-limiter.js';
-// Request Logger
-export type {
-  IRequestLogger,
-  LlmCallEntry,
-  LlmComponent,
-  RagQueryEntry,
-  RequestSummary,
-  TokenBucket,
-  TokenCategory,
-  ToolCallEntry,
-} from './smart-agent/interfaces/request-logger.js';
-// Skills
-export type {
-  ISkill,
-  ISkillManager,
-  ISkillMeta,
-  ISkillResource,
-} from './smart-agent/interfaces/skill.js';
-// Smart Agent shared types (needed by plugin authors)
-export type {
-  CallOptions,
-  LlmTool,
-  RagError,
-  RagResult,
-  Result,
-  StreamHookContext,
-} from './smart-agent/interfaces/types.js';
-export { SkillError } from './smart-agent/interfaces/types.js';
 export { DefaultRequestLogger } from './smart-agent/logger/default-request-logger.js';
 export { NoopRequestLogger } from './smart-agent/logger/noop-request-logger.js';
 export { createDefaultMcpClient } from './smart-agent/mcp-client-factory.js';
@@ -247,124 +322,6 @@ export {
   type RagResolutionOptions,
   resolveEmbedder,
 } from './smart-agent/providers.js';
-// RAG Corrections, Registry, Overlays, and Strategies
-export {
-  ActiveFilteringRag,
-  buildCorrectionMetadata,
-  CanonicalKeyCollisionError,
-  CollectionNotFoundError,
-  type CorrectionMetadata,
-  CorrectionTag,
-  deprecateMetadata,
-  filterActive,
-  MissingIdError,
-  ProviderNotFoundError,
-  ReadOnlyError,
-  ScopeViolationError,
-  UnsupportedScopeError,
-  validateCorrectionMetadata,
-} from './smart-agent/rag/corrections/index.js';
-export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
-export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
-export {
-  buildRagCollectionToolEntries,
-  type RagToolContext,
-  type RagToolEntry,
-} from './smart-agent/rag/mcp-tools/index.js';
-export {
-  OllamaEmbedder,
-  type OllamaEmbedderConfig,
-  OllamaRag,
-} from './smart-agent/rag/ollama-rag.js';
-export {
-  OpenAiEmbedder,
-  type OpenAiEmbedderConfig,
-} from './smart-agent/rag/openai-embedder.js';
-export {
-  OverlayRag,
-  SessionScopedRag,
-} from './smart-agent/rag/overlays/index.js';
-// RAG Preprocessors
-export type {
-  IDocumentEnricher,
-  IQueryPreprocessor,
-} from './smart-agent/rag/preprocessor.js';
-export {
-  ExpandPreprocessor,
-  IntentEnricher,
-  NoopDocumentEnricher,
-  NoopQueryPreprocessor,
-  PreprocessorChain,
-  TranslatePreprocessor,
-} from './smart-agent/rag/preprocessor.js';
-// RAG Providers (v9.1)
-export { AbstractRagProvider } from './smart-agent/rag/providers/base-provider.js';
-export {
-  InMemoryRagProvider,
-  type InMemoryRagProviderConfig,
-} from './smart-agent/rag/providers/in-memory-rag-provider.js';
-export {
-  QdrantRagProvider,
-  type QdrantRagProviderConfig,
-} from './smart-agent/rag/providers/qdrant-rag-provider.js';
-export { SimpleRagProviderRegistry } from './smart-agent/rag/providers/simple-provider-registry.js';
-export {
-  VectorRagProvider,
-  type VectorRagProviderConfig,
-} from './smart-agent/rag/providers/vector-rag-provider.js';
-// Qdrant RAG
-export {
-  QdrantRag,
-  type QdrantRagConfig,
-} from './smart-agent/rag/qdrant-rag.js';
-export {
-  FallbackQueryEmbedding,
-  QueryEmbedding,
-  TextOnlyEmbedding,
-} from './smart-agent/rag/query-embedding.js';
-// Query Expander
-export {
-  type IQueryExpander,
-  LlmQueryExpander,
-  NoopQueryExpander,
-} from './smart-agent/rag/query-expander.js';
-export { SimpleRagRegistry } from './smart-agent/rag/registry/index.js';
-export {
-  SapAiCoreEmbedder,
-  type SapAiCoreEmbedderConfig,
-} from './smart-agent/rag/sap-ai-core-embedder.js';
-// Search Strategies
-export type {
-  IScoredResult,
-  ISearchCandidate,
-  ISearchContext,
-  ISearchQuery,
-  ISearchStrategy,
-} from './smart-agent/rag/search-strategy.js';
-export {
-  Bm25OnlyStrategy,
-  CompositeStrategy,
-  type CompositeStrategyEntry,
-  RrfStrategy,
-  VectorOnlyStrategy,
-  WeightedFusionStrategy,
-} from './smart-agent/rag/search-strategy.js';
-export {
-  DirectEditStrategy,
-  ImmutableEditStrategy,
-  OverlayEditStrategy,
-  SessionScopedEditStrategy,
-} from './smart-agent/rag/strategies/edit/index.js';
-export {
-  CallerProvidedIdStrategy,
-  CanonicalKeyIdStrategy,
-  GlobalUniqueIdStrategy,
-  SessionScopedIdStrategy,
-} from './smart-agent/rag/strategies/id/index.js';
-export {
-  VectorRag,
-  type VectorRagConfig,
-} from './smart-agent/rag/vector-rag.js';
 // Reranker
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';
@@ -433,12 +390,3 @@ export type {
   IOutputValidator,
   ValidationResult,
 } from './smart-agent/validator/types.js';
-
-export type {
-  AgentResponse,
-  LLMProviderConfig,
-  LLMResponse,
-  Message,
-  ToolCall,
-  ToolResult,
-} from './types.js';

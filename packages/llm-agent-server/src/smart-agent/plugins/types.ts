@@ -55,13 +55,15 @@
  * Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
  */
 
+import type {
+  EmbedderFactory,
+  IMcpClient,
+  IQueryExpander,
+  ISkillManager,
+} from '@mcp-abap-adt/llm-agent';
 import type { ILlmApiAdapter } from '../interfaces/api-adapter.js';
 import type { IClientAdapter } from '../interfaces/client-adapter.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
-import type { EmbedderFactory } from '../interfaces/rag.js';
-import type { ISkillManager } from '../interfaces/skill.js';
 import type { IStageHandler } from '../pipeline/stage-handler.js';
-import type { IQueryExpander } from '../rag/query-expander.js';
 import type { IReranker } from '../reranker/types.js';
 import type { IOutputValidator } from '../validator/types.js';
 

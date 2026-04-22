@@ -16,44 +16,43 @@
  * SSE chunks back to the caller. All other stages are batch operations.
  */
 
-import type { Message } from '../../types.js';
+import type {
+  CallOptions,
+  IContextAssembler,
+  IEmbedder,
+  IHistoryMemory,
+  IHistorySummarizer,
+  ILlm,
+  ILlmCallStrategy,
+  IMcpClient,
+  IQueryEmbedding,
+  IQueryExpander,
+  IRagProviderRegistry,
+  IRagRegistry,
+  IRequestLogger,
+  ISkill,
+  ISkillManager,
+  ISubpromptClassifier,
+  LlmStreamChunk,
+  LlmTool,
+  McpTool,
+  Message,
+  RagResult,
+  Result,
+  Subprompt,
+  TimingEntry,
+} from '@mcp-abap-adt/llm-agent';
 import type {
   OrchestratorError,
   SmartAgentConfig,
   SmartAgentRagStores,
 } from '../agent.js';
 import type { IToolCache } from '../cache/types.js';
-import type { IContextAssembler } from '../interfaces/assembler.js';
-import type { ISubpromptClassifier } from '../interfaces/classifier.js';
-import type { IHistoryMemory } from '../interfaces/history-memory.js';
-import type { IHistorySummarizer } from '../interfaces/history-summarizer.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { ILlmCallStrategy } from '../interfaces/llm-call-strategy.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
-import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type {
-  IEmbedder,
-  IRagProviderRegistry,
-  IRagRegistry,
-} from '../interfaces/rag.js';
-import type { IRequestLogger } from '../interfaces/request-logger.js';
-import type { ISkill, ISkillManager } from '../interfaces/skill.js';
-import type {
-  CallOptions,
-  LlmStreamChunk,
-  LlmTool,
-  McpTool,
-  RagResult,
-  Result,
-  Subprompt,
-  TimingEntry,
-} from '../interfaces/types.js';
 import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
-import type { IQueryExpander } from '../rag/query-expander.js';
 import type { IReranker } from '../reranker/types.js';
 import type { ISessionManager } from '../session/types.js';
 import type { ITracer } from '../tracer/types.js';

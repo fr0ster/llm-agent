@@ -1,4 +1,4 @@
-import type { IHistoryMemory } from '../interfaces/history-memory.js';
+import type { IHistoryMemory } from '@mcp-abap-adt/llm-agent';
 
 export class HistoryMemory implements IHistoryMemory {
   private readonly maxSize: number;

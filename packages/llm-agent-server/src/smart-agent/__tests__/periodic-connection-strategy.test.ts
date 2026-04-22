@@ -1,18 +1,18 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type {
+  CallOptions,
+  IMcpClient,
+  McpError,
+  McpTool,
+  McpToolResult,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 import type {
   McpClientFactory,
   McpClientFactoryResult,
   McpConnectionConfig,
 } from '../interfaces/mcp-connection-strategy.js';
-import type {
-  CallOptions,
-  McpError,
-  McpTool,
-  McpToolResult,
-  Result,
-} from '../interfaces/types.js';
 import { PeriodicConnectionStrategy } from '../strategies/periodic-connection-strategy.js';
 
 // ---------------------------------------------------------------------------

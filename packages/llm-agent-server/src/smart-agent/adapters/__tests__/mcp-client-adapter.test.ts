@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from '../../../mcp/client.js';
-import type { ToolCall, ToolResult } from '../../../types.js';
-import { McpError } from '../../interfaces/types.js';
 import { McpClientAdapter } from '../mcp-client-adapter.js';
 
 // ---------------------------------------------------------------------------

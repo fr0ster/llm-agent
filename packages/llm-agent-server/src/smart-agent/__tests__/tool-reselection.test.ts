@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../types.js';
-import { SmartAgent } from '../agent.js';
 import type {
   LlmError,
   LlmStreamChunk,
   LlmTool,
+  Message,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../agent.js';
 import { makeAssembler, makeDefaultDeps, makeRag } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------

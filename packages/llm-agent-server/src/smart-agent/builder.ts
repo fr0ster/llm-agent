@@ -13,6 +13,34 @@
  *     .build();
  */
 
+import type {
+  IContextAssembler,
+  IHistoryMemory,
+  IHistorySummarizer,
+  ILlm,
+  ILlmCallStrategy,
+  ILlmRateLimiter,
+  IMcpClient,
+  IModelProvider,
+  IQueryExpander,
+  IRequestLogger,
+  ISkillManager,
+  ISubpromptClassifier,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  type IEmbedder,
+  InMemoryRag,
+  type IRag,
+  type IRagEditor,
+  type IRagProvider,
+  type IRagProviderRegistry,
+  type IRagRegistry,
+  isBatchEmbedder,
+  type RagCollectionMeta,
+  type RagCollectionScope,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
 import {
@@ -32,31 +60,9 @@ import {
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
 import type { ILlmApiAdapter } from './interfaces/api-adapter.js';
-import type { IContextAssembler } from './interfaces/assembler.js';
-import type { ISubpromptClassifier } from './interfaces/classifier.js';
 import type { IClientAdapter } from './interfaces/client-adapter.js';
-import type { IHistoryMemory } from './interfaces/history-memory.js';
-import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
-import type { ILlm } from './interfaces/llm.js';
-import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
-import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
-import type { IModelProvider } from './interfaces/model-provider.js';
 import type { IPipeline } from './interfaces/pipeline.js';
-import {
-  type IEmbedder,
-  type IRag,
-  type IRagEditor,
-  type IRagProvider,
-  type IRagProviderRegistry,
-  type IRagRegistry,
-  isBatchEmbedder,
-  type RagCollectionMeta,
-  type RagCollectionScope,
-} from './interfaces/rag.js';
-import type { ILlmRateLimiter } from './interfaces/rate-limiter.js';
-import type { IRequestLogger } from './interfaces/request-logger.js';
-import type { ISkillManager } from './interfaces/skill.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
@@ -67,10 +73,6 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
-import { InMemoryRag } from './rag/in-memory-rag.js';
-import { SimpleRagProviderRegistry } from './rag/providers/simple-provider-registry.js';
-import type { IQueryExpander } from './rag/query-expander.js';
-import { SimpleRagRegistry } from './rag/registry/simple-rag-registry.js';
 import type { IReranker } from './reranker/types.js';
 import {
   CircuitBreaker,

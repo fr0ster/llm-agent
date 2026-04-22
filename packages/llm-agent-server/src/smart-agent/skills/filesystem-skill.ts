@@ -8,12 +8,13 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
 import type {
+  CallOptions,
   ISkill,
   ISkillMeta,
   ISkillResource,
-} from '../interfaces/skill.js';
-import type { CallOptions, Result } from '../interfaces/types.js';
-import { SkillError } from '../interfaces/types.js';
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { SkillError } from '@mcp-abap-adt/llm-agent';
 import { parseFrontmatter } from '../utils/parse-frontmatter.js';
 
 export class FileSystemSkill implements ISkill {

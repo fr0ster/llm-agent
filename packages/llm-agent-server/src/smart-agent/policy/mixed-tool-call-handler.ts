@@ -1,7 +1,5 @@
-import type { Message } from '../../types.js';
+import type { CallOptions, IMcpClient, Message } from '@mcp-abap-adt/llm-agent';
 import type { IToolCache } from '../cache/types.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
-import type { CallOptions } from '../interfaces/types.js';
 import type { IMetrics } from '../metrics/types.js';
 import type {
   PendingToolResult,

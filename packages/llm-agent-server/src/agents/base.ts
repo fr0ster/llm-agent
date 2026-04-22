@@ -9,8 +9,12 @@
  * This base class provides common logic, subclasses implement LLM-specific tool handling.
  */
 
+import type {
+  AgentResponse,
+  AgentStreamChunk,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import { type MCPClientConfig, MCPClientWrapper } from '../mcp/client.js';
-import type { AgentResponse, AgentStreamChunk, Message } from '../types.js';
 
 export interface BaseAgentConfig {
   /**

@@ -1,13 +1,12 @@
 import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
-import type { Message } from '../../types.js';
+import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import {
   OrchestratorError,
   type SmartAgent,
   type SmartAgentResponse,
 } from '../agent.js';
-import type { CallOptions } from '../interfaces/types.js';
 import { SmartAgentServer } from '../server.js';
 
 // ---------------------------------------------------------------------------

@@ -32,10 +32,10 @@ if (!existsSync(smokeEnvPath)) {
 }
 config({ path: smokeEnvPath });
 
+import type { Message } from '@mcp-abap-adt/llm-agent';
 import { DeepSeekAgent, DeepSeekProvider, MCPClientWrapper } from './index.js';
 import { LlmAdapter } from './smart-agent/adapters/llm-adapter.js';
 import { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
-import type { Message } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Config validation

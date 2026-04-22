@@ -6,6 +6,22 @@
  * pipeline YAML) delegate here to resolve config into interface instances.
  */
 
+import type {
+  EmbedderFactory,
+  IDocumentEnricher,
+  IEmbedder,
+  ILlm,
+  IQueryPreprocessor,
+  IRag,
+  ISearchStrategy,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  builtInEmbedderFactories,
+  InMemoryRag,
+  OllamaRag,
+  QdrantRag,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
@@ -20,19 +36,7 @@ import {
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-import type { ILlm } from './interfaces/llm.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
-import type { EmbedderFactory, IEmbedder, IRag } from './interfaces/rag.js';
-import { builtInEmbedderFactories } from './rag/embedder-factories.js';
-import { InMemoryRag } from './rag/in-memory-rag.js';
-import { OllamaRag } from './rag/ollama-rag.js';
-import type {
-  IDocumentEnricher,
-  IQueryPreprocessor,
-} from './rag/preprocessor.js';
-import { QdrantRag } from './rag/qdrant-rag.js';
-import type { ISearchStrategy } from './rag/search-strategy.js';
-import { VectorRag } from './rag/vector-rag.js';
 
 // ---------------------------------------------------------------------------
 // LLM provider resolution

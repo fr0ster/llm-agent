@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Result } from '../../interfaces/types.js';
+import type { Result } from '@mcp-abap-adt/llm-agent';
 import { NoopValidator } from '../noop-validator.js';
 import type {
   IOutputValidator,

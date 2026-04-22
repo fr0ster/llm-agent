@@ -1,9 +1,8 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { createServer } from 'node:http';
-import type { Message } from '../types.js';
+import type { CallOptions, Message } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent, StopReason } from './agent.js';
-import type { CallOptions } from './interfaces/types.js';
 import { toToolCallDelta } from './utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
@@ -36,7 +35,7 @@ function mapStopReason(r: StopReason): 'stop' | 'length' | 'tool_calls' {
     case 'tool_call_limit':
       return 'length';
     default: {
-      const _exhaustive: never = r;
+      r satisfies never;
       return 'stop';
     }
   }

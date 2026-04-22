@@ -1,4 +1,4 @@
-import type { Result } from '../interfaces/types.js';
+import type { Result } from '@mcp-abap-adt/llm-agent';
 import type {
   IOutputValidator,
   ValidationResult,

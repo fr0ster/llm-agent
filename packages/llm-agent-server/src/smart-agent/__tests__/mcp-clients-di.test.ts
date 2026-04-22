@@ -7,17 +7,17 @@
  */
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { ILlm } from '../interfaces/llm.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type {
   CallOptions,
+  ILlm,
+  IMcpClient,
   LlmStreamChunk,
   LlmTool,
   McpError,
   McpTool,
   McpToolResult,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import type { LoadedPlugins } from '../plugins/types.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../plugins/types.js';
 

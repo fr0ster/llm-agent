@@ -2,13 +2,13 @@
  * Base interface for LLM providers
  */
 
-import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
 import type {
+  IModelInfo,
   LLMCallOptions,
   LLMProviderConfig,
   LLMResponse,
   Message,
-} from '../types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export interface LLMProvider {
   /**

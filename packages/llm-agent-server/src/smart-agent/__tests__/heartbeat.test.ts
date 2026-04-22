@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { SmartAgent } from '../agent.js';
-import type { ILlm } from '../interfaces/llm.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type {
+  ILlm,
+  IMcpClient,
   LlmError,
   LlmResponse,
   LlmStreamChunk,
@@ -13,7 +12,8 @@ import type {
   Result,
   TimingEntry,
   ToolHeartbeat,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { SmartAgent } from '../agent.js';
 import { makeDefaultDeps } from '../testing/index.js';
 
 // ---------------------------------------------------------------------------

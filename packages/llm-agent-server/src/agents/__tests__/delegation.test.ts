@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it, mock } from 'node:test';
+import type { LLMResponse } from '@mcp-abap-adt/llm-agent';
 import { MCPClientWrapper } from '../../mcp/client.js';
-import type { LLMResponse } from '../../types.js';
 import { AnthropicAgent } from '../anthropic-agent.js';
 import { DeepSeekAgent } from '../deepseek-agent.js';
 import { OpenAIAgent } from '../openai-agent.js';

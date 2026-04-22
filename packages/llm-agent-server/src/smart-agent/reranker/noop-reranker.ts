@@ -3,7 +3,7 @@ import type {
   RagError,
   RagResult,
   Result,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
 import type { IReranker } from './types.js';
 
 export class NoopReranker implements IReranker {

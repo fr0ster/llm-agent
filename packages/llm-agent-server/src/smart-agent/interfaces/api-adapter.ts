@@ -1,11 +1,12 @@
 // src/smart-agent/interfaces/api-adapter.ts
-import type { Message } from '../../types.js';
 import type {
   AgentCallOptions,
+  LlmStreamChunk,
+  Message,
   OrchestratorError,
+  Result,
   SmartAgentResponse,
-} from './agent-contracts.js';
-import type { LlmStreamChunk, Result } from './types.js';
+} from '@mcp-abap-adt/llm-agent';
 
 export interface ApiSseEvent {
   /**

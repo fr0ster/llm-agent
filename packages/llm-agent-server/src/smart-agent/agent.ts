@@ -1,39 +1,37 @@
 import { randomUUID } from 'node:crypto';
-import type { Message } from '../types.js';
-import { NoopToolCache } from './cache/noop-tool-cache.js';
-import type { IToolCache } from './cache/types.js';
-import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
-import { LlmClassifier } from './classifier/llm-classifier.js';
-import type { IContextAssembler } from './interfaces/assembler.js';
-import type { ISubpromptClassifier } from './interfaces/classifier.js';
-import type { IClientAdapter } from './interfaces/client-adapter.js';
-import type { IHistoryMemory } from './interfaces/history-memory.js';
-import type { IHistorySummarizer } from './interfaces/history-summarizer.js';
-import type { ILlm } from './interfaces/llm.js';
-import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
-import type { IMcpClient } from './interfaces/mcp-client.js';
-import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type {
+  CallOptions,
+  IContextAssembler,
   IEmbedder,
+  IHistoryMemory,
+  IHistorySummarizer,
+  ILlm,
+  ILlmCallStrategy,
+  IMcpClient,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
-} from './interfaces/rag.js';
-import type { IRequestLogger } from './interfaces/request-logger.js';
-import type { ISkillManager } from './interfaces/skill.js';
-import type {
-  CallOptions,
+  IRequestLogger,
+  ISkillManager,
+  ISubpromptClassifier,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
   McpTool,
+  Message,
   ModelUsageEntry,
   RagResult,
   Result,
   StreamHookContext,
   Subprompt,
   TimingEntry,
-} from './interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import { NoopToolCache } from './cache/noop-tool-cache.js';
+import type { IToolCache } from './cache/types.js';
+import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
+import { LlmClassifier } from './classifier/llm-classifier.js';
+import type { IClientAdapter } from './interfaces/client-adapter.js';
+import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 
 export {
@@ -41,14 +39,18 @@ export {
   OrchestratorError,
   type SmartAgentResponse,
   type StopReason,
-} from './interfaces/agent-contracts.js';
+} from '@mcp-abap-adt/llm-agent';
 
 import {
   type AgentCallOptions,
+  type IQueryExpander,
+  NoopQueryExpander,
   OrchestratorError,
+  QueryEmbedding,
   type SmartAgentResponse,
   type StopReason,
-} from './interfaces/agent-contracts.js';
+  TextOnlyEmbedding,
+} from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
@@ -65,11 +67,6 @@ import type {
   IToolPolicy,
   SessionPolicy,
 } from './policy/types.js';
-import { QueryEmbedding, TextOnlyEmbedding } from './rag/query-embedding.js';
-import {
-  type IQueryExpander,
-  NoopQueryExpander,
-} from './rag/query-expander.js';
 import { NoopReranker } from './reranker/noop-reranker.js';
 import type { IReranker } from './reranker/types.js';
 import { NoopSessionManager } from './session/noop-session-manager.js';

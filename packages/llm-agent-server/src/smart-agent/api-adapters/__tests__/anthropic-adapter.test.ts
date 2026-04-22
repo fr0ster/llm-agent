@@ -2,17 +2,17 @@
 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-
 import type {
+  LlmStreamChunk,
   OrchestratorError,
+  Result,
   SmartAgentResponse,
-} from '../../interfaces/agent-contracts.js';
+} from '@mcp-abap-adt/llm-agent';
 import type {
   ApiRequestContext,
   ApiSseEvent,
 } from '../../interfaces/api-adapter.js';
 import { AdapterValidationError } from '../../interfaces/api-adapter.js';
-import type { LlmStreamChunk, Result } from '../../interfaces/types.js';
 import { AnthropicApiAdapter } from '../anthropic-adapter.js';
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,4 @@
-import { SmartAgentError } from '../interfaces/types.js';
+import { SmartAgentError } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------
 // Errors

@@ -10,10 +10,7 @@
  * If no `ctx.skillManager` is configured, this handler is a no-op.
  */
 
-import {
-  QueryEmbedding,
-  TextOnlyEmbedding,
-} from '../../rag/query-embedding.js';
+import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';

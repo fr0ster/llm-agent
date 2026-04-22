@@ -1,8 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { Message } from '../../types.js';
+import type { CallOptions, LlmTool, Message } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
-import type { CallOptions, LlmTool } from '../interfaces/types.js';
 import { makeDefaultDeps, makeLlm } from '../testing/index.js';
 
 describe('SmartAgentHandle hot-swap delegation', () => {

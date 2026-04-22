@@ -2,8 +2,7 @@
  * McpClientAdapter — wraps MCPClientWrapper as IMcpClient.
  */
 
-import type { MCPClientWrapper } from '../../mcp/client.js';
-import type { IMcpClient } from '../interfaces/mcp-client.js';
+import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
   McpError,
@@ -11,7 +10,8 @@ import {
   type McpToolResult,
   type Result,
   type SmartAgentError,
-} from '../interfaces/types.js';
+} from '@mcp-abap-adt/llm-agent';
+import type { MCPClientWrapper } from '../../mcp/client.js';
 
 // ---------------------------------------------------------------------------
 // Module-private helper

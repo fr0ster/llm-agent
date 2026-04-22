@@ -5,8 +5,8 @@
  * Tools are passed as JSON schema, and LLM returns function calls in response.
  */
 
+import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
 import type { OpenAIProvider } from '../llm-providers/openai.js';
-import type { AgentStreamChunk, Message } from '../types.js';
 import {
   type AgentCallOptions,
   BaseAgent,

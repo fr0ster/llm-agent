@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
+import { LlmError } from '@mcp-abap-adt/llm-agent';
 import { BaseAgent } from '../../../agents/base.js';
 import type { MCPClientWrapper } from '../../../mcp/client.js';
-import type { AgentStreamChunk, Message } from '../../../types.js';
-import { LlmError } from '../../interfaces/types.js';
 import { LlmAdapter } from '../llm-adapter.js';
 
 // ---------------------------------------------------------------------------

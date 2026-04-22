@@ -1,8 +1,8 @@
 // src/smart-agent/__tests__/builder-api-adapters.test.ts
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { SmartAgentResponse } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../builder.js';
-import type { SmartAgentResponse } from '../interfaces/agent-contracts.js';
 import type {
   ILlmApiAdapter,
   NormalizedRequest,

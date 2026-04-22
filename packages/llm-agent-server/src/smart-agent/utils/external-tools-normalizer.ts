@@ -1,4 +1,4 @@
-import type { LlmTool } from '../interfaces/types.js';
+import type { LlmTool } from '@mcp-abap-adt/llm-agent';
 
 export type ExternalToolValidationCode =
   | 'INVALID_TOOL_SCHEMA'

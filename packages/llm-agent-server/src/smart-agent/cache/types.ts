@@ -1,4 +1,4 @@
-import type { McpToolResult } from '../interfaces/types.js';
+import type { McpToolResult } from '@mcp-abap-adt/llm-agent';
 
 export interface IToolCache {
   get(

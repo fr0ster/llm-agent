@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { IRag } from '@mcp-abap-adt/llm-agent';
 import type { PipelineDeps } from '../../interfaces/pipeline.js';
-import type { IRag } from '../../interfaces/rag.js';
 import { makeDefaultDeps, makeRag } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 

@@ -2,8 +2,11 @@
  * DeepSeek LLM Provider — extends OpenAI (DeepSeek uses OpenAI-compatible API).
  */
 
-import type { IModelInfo } from '../smart-agent/interfaces/model-provider.js';
-import type { LLMProviderConfig, Message } from '../types.js';
+import type {
+  IModelInfo,
+  LLMProviderConfig,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import { type OpenAIConfig, OpenAIProvider } from './openai.js';
 
 export interface DeepSeekConfig extends LLMProviderConfig {

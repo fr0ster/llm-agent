@@ -1,8 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { HistoryTurn } from '../../interfaces/history-summarizer.js';
-import type { ILlm } from '../../interfaces/llm.js';
-import type { LlmError, LlmResponse, Result } from '../../interfaces/types.js';
+import type {
+  HistoryTurn,
+  ILlm,
+  LlmError,
+  LlmResponse,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 import { HistorySummarizer } from '../history-summarizer.js';
 
 function makeFakeLlm(response: string): ILlm {

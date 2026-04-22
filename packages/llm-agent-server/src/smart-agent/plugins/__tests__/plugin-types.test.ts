@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IMcpClient } from '../../interfaces/mcp-client.js';
-import type { ISkillManager } from '../../interfaces/skill.js';
+import type { IMcpClient, ISkillManager } from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../../pipeline/stage-handler.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../types.js';
 
