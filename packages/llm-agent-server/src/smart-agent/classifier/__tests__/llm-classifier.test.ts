@@ -139,13 +139,9 @@ describe('LlmClassifier — parse/schema errors', () => {
     assert.equal(r.error.code, 'SCHEMA_ERROR');
   });
 
-  it('invalid type in entry → SCHEMA_ERROR', async () => {
-    const llm = makeLlm('[{"type":"unknown","text":"Some text."}]');
-    const classifier = new LlmClassifier(llm);
-    const r = await classifier.classify('anything');
-    assert.ok(!r.ok);
-    assert.equal(r.error.code, 'SCHEMA_ERROR');
-  });
+  // NOTE: "invalid type in entry → SCHEMA_ERROR" test was removed.
+  // SubpromptType is intentionally extensible (string & {}), so unknown type
+  // values are valid by design and will not produce a SCHEMA_ERROR.
 
   it('missing text field → SCHEMA_ERROR', async () => {
     const llm = makeLlm('[{"type":"action"}]');

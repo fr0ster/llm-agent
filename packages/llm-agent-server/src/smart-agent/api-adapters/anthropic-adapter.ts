@@ -164,8 +164,7 @@ export class AnthropicApiAdapter implements ILlmApiAdapter {
     if (Array.isArray(body.stop_sequences))
       options.stop = body.stop_sequences as string[];
     if (Array.isArray(body.tools)) options.externalTools = body.tools;
-    // Do NOT pass body.model to options — it would override the pipeline LLM model.
-    // The request model name is stored in context.protocol for response formatting only.
+    if (body.model !== undefined) options.model = body.model as string;
 
     const id = `msg_${randomUUID()}`;
 
