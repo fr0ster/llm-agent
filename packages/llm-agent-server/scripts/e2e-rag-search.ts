@@ -14,22 +14,23 @@
  */
 
 import { configDotenv } from 'dotenv';
+
 configDotenv();
 
+import { makeDefaultLlm } from '../src/smart-agent/providers.js';
 import { OllamaEmbedder } from '../src/smart-agent/rag/ollama-rag.js';
-import { VectorRag } from '../src/smart-agent/rag/vector-rag.js';
-import { RrfStrategy } from '../src/smart-agent/rag/search-strategy.js';
 import { TranslatePreprocessor } from '../src/smart-agent/rag/preprocessor.js';
 import { QueryEmbedding } from '../src/smart-agent/rag/query-embedding.js';
-import { makeDefaultLlm } from '../src/smart-agent/providers.js';
+import { RrfStrategy } from '../src/smart-agent/rag/search-strategy.js';
 import {
-  OriginalToolIndexing,
-  SynonymToolIndexing,
   IntentToolIndexing,
   type IToolDescriptor,
   type IToolIndexEntry,
   type IToolIndexingStrategy,
+  OriginalToolIndexing,
+  SynonymToolIndexing,
 } from '../src/smart-agent/rag/tool-indexing-strategy.js';
+import { VectorRag } from '../src/smart-agent/rag/vector-rag.js';
 
 const DEEPSEEK_API_KEY = process.env.DEEPSEEK_API_KEY;
 if (!DEEPSEEK_API_KEY) {
@@ -47,7 +48,12 @@ async function fetchMcpTools(): Promise<IToolDescriptor[]> {
       'Content-Type': 'application/json',
       Accept: 'application/json, text/event-stream',
     },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'tools/list',
+      params: {},
+    }),
   });
   const json = (await res.json()) as {
     result: { tools: IToolDescriptor[] };
@@ -62,22 +68,86 @@ interface TestCase {
 }
 
 const CASES: TestCase[] = [
-  { query: 'Прочитай дампи через фіди', expectAny: ['RuntimeListFeeds', 'RuntimeListDumps'], note: 'UA: dumps via feeds' },
-  { query: 'Прочитай структуру таблиці T100', expectAny: ['ReadTable', 'GetTable', 'GetTableContents'], note: 'UA: table structure' },
-  { query: 'Які фіди можемо прочитати?', expectAny: ['RuntimeListFeeds', 'HandlerFeedList'], note: 'UA: available feeds' },
-  { query: 'Покажи код класу ZCL_MY_APP', expectAny: ['ReadClass', 'GetClass'], note: 'UA: class source' },
-  { query: 'Де використовується інтерфейс IF_LOGGER', expectAny: ['GetWhereUsed'], note: 'UA: where-used' },
-  { query: 'Запусти юніт тести для класу', expectAny: ['RunUnitTest', 'CreateUnitTest', 'HandlerUnitTestRun'], note: 'UA: unit tests' },
-  { query: 'Знайди обʼєкт ZTEST_PROGRAM', expectAny: ['SearchObject'], note: 'UA: find object' },
-  { query: 'Які дампи були сьогодні?', expectAny: ['RuntimeListDumps'], note: 'UA: today dumps' },
-  { query: 'Створи нову CDS вʼюху', expectAny: ['CreateView'], note: 'UA: create CDS view' },
-  { query: 'Перевір синтаксис програми', expectAny: ['HandlerCheckRun'], note: 'UA: syntax check' },
-  { query: 'Прочитай клас ZCL_ORDER і покажи його транспорти', expectAny: ['ReadClass', 'GetClass', 'ListTransports', 'GetTransport'], note: 'UA: multi-step' },
-  { query: 'SM02 system messages', expectAny: ['RuntimeListSystemMessages', 'HandlerSystemMessageList'], note: 'EN: SAP t-code' },
-  { query: 'get table data like SE16', expectAny: ['GetTableContents'], note: 'EN: data preview' },
-  { query: 'expose CDS view as OData service', expectAny: ['CreateServiceDefinition', 'CreateServiceBinding'], note: 'EN: RAP service' },
-  { query: 'find where class ZCL_UTILS is used', expectAny: ['GetWhereUsed'], note: 'EN: where-used' },
-  { query: 'run unit tests', expectAny: ['RunUnitTest', 'HandlerUnitTestRun'], note: 'EN: unit tests' },
+  {
+    query: 'Прочитай дампи через фіди',
+    expectAny: ['RuntimeListFeeds', 'RuntimeListDumps'],
+    note: 'UA: dumps via feeds',
+  },
+  {
+    query: 'Прочитай структуру таблиці T100',
+    expectAny: ['ReadTable', 'GetTable', 'GetTableContents'],
+    note: 'UA: table structure',
+  },
+  {
+    query: 'Які фіди можемо прочитати?',
+    expectAny: ['RuntimeListFeeds', 'HandlerFeedList'],
+    note: 'UA: available feeds',
+  },
+  {
+    query: 'Покажи код класу ZCL_MY_APP',
+    expectAny: ['ReadClass', 'GetClass'],
+    note: 'UA: class source',
+  },
+  {
+    query: 'Де використовується інтерфейс IF_LOGGER',
+    expectAny: ['GetWhereUsed'],
+    note: 'UA: where-used',
+  },
+  {
+    query: 'Запусти юніт тести для класу',
+    expectAny: ['RunUnitTest', 'CreateUnitTest', 'HandlerUnitTestRun'],
+    note: 'UA: unit tests',
+  },
+  {
+    query: 'Знайди обʼєкт ZTEST_PROGRAM',
+    expectAny: ['SearchObject'],
+    note: 'UA: find object',
+  },
+  {
+    query: 'Які дампи були сьогодні?',
+    expectAny: ['RuntimeListDumps'],
+    note: 'UA: today dumps',
+  },
+  {
+    query: 'Створи нову CDS вʼюху',
+    expectAny: ['CreateView'],
+    note: 'UA: create CDS view',
+  },
+  {
+    query: 'Перевір синтаксис програми',
+    expectAny: ['HandlerCheckRun'],
+    note: 'UA: syntax check',
+  },
+  {
+    query: 'Прочитай клас ZCL_ORDER і покажи його транспорти',
+    expectAny: ['ReadClass', 'GetClass', 'ListTransports', 'GetTransport'],
+    note: 'UA: multi-step',
+  },
+  {
+    query: 'SM02 system messages',
+    expectAny: ['RuntimeListSystemMessages', 'HandlerSystemMessageList'],
+    note: 'EN: SAP t-code',
+  },
+  {
+    query: 'get table data like SE16',
+    expectAny: ['GetTableContents'],
+    note: 'EN: data preview',
+  },
+  {
+    query: 'expose CDS view as OData service',
+    expectAny: ['CreateServiceDefinition', 'CreateServiceBinding'],
+    note: 'EN: RAP service',
+  },
+  {
+    query: 'find where class ZCL_UTILS is used',
+    expectAny: ['GetWhereUsed'],
+    note: 'EN: where-used',
+  },
+  {
+    query: 'run unit tests',
+    expectAny: ['RunUnitTest', 'HandlerUnitTestRun'],
+    note: 'EN: unit tests',
+  },
 ];
 
 /** Prepare all index entries for a tool using given strategies. */
@@ -100,8 +170,15 @@ async function main() {
   const tools = await fetchMcpTools();
   console.log(`${tools.length} MCP tools loaded`);
 
-  const embedder = new OllamaEmbedder({ url: OLLAMA_URL, model: 'nomic-embed-text' });
-  const helperLlm = makeDefaultLlm(DEEPSEEK_API_KEY!, 'deepseek-chat', 0.1);
+  const embedder = new OllamaEmbedder({
+    url: OLLAMA_URL,
+    model: 'nomic-embed-text',
+  });
+  const helperLlm = makeDefaultLlm(
+    DEEPSEEK_API_KEY as string,
+    'deepseek-chat',
+    0.1,
+  );
   const translatePP = new TranslatePreprocessor(helperLlm);
 
   // Strategies
@@ -110,14 +187,37 @@ async function main() {
   const intent = new IntentToolIndexing(helperLlm);
 
   // 4 RAG stores — all use translate + RRF
-  const ragConfig = { strategy: new RrfStrategy(), queryPreprocessors: [translatePP] };
+  const ragConfig = {
+    strategy: new RrfStrategy(),
+    queryPreprocessors: [translatePP],
+  };
 
-  type StoreConfig = { name: string; strategies: IToolIndexingStrategy[]; rag: VectorRag };
+  type StoreConfig = {
+    name: string;
+    strategies: IToolIndexingStrategy[];
+    rag: VectorRag;
+  };
   const stores: StoreConfig[] = [
-    { name: 'original', strategies: [original], rag: new VectorRag(embedder, { ...ragConfig }) },
-    { name: 'orig+syn', strategies: [original, synonym], rag: new VectorRag(embedder, { ...ragConfig }) },
-    { name: 'orig+intent', strategies: [original, intent], rag: new VectorRag(embedder, { ...ragConfig }) },
-    { name: 'all', strategies: [original, synonym, intent], rag: new VectorRag(embedder, { ...ragConfig }) },
+    {
+      name: 'original',
+      strategies: [original],
+      rag: new VectorRag(embedder, { ...ragConfig }),
+    },
+    {
+      name: 'orig+syn',
+      strategies: [original, synonym],
+      rag: new VectorRag(embedder, { ...ragConfig }),
+    },
+    {
+      name: 'orig+intent',
+      strategies: [original, intent],
+      rag: new VectorRag(embedder, { ...ragConfig }),
+    },
+    {
+      name: 'all',
+      strategies: [original, synonym, intent],
+      rag: new VectorRag(embedder, { ...ragConfig }),
+    },
   ];
 
   // Index — generate entries then embed
@@ -136,7 +236,9 @@ async function main() {
       if ((i + 1) % 50 === 0) process.stdout.write(` ${i + 1}`);
     }
 
-    console.log(` → ${entryCount} entries in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+    console.log(
+      ` → ${entryCount} entries in ${((Date.now() - t0) / 1000).toFixed(1)}s`,
+    );
   }
   console.log();
 
@@ -158,7 +260,10 @@ async function main() {
 
       const top3 = results
         .slice(0, 3)
-        .map((r) => `${extractToolName(r.metadata.id as string)}(${r.score.toFixed(3)})`)
+        .map(
+          (r) =>
+            `${extractToolName(r.metadata.id as string)}(${r.score.toFixed(3)})`,
+        )
         .join(', ');
       console.log(`  ${sc.name.padEnd(12)} ${hit ? '✓' : '✗'}: [${top3}]`);
     }
@@ -170,7 +275,9 @@ async function main() {
   console.log('='.repeat(65));
   for (const sc of stores) {
     const pct = ((scores[sc.name] / total) * 100).toFixed(0);
-    console.log(`  ${sc.name.padEnd(14)} ${scores[sc.name]}/${total} (${pct}%)`);
+    console.log(
+      `  ${sc.name.padEnd(14)} ${scores[sc.name]}/${total} (${pct}%)`,
+    );
   }
   console.log('='.repeat(65));
 }

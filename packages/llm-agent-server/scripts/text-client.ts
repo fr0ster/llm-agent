@@ -15,9 +15,9 @@
  *   /exit    — quit (or Ctrl+C / Ctrl+D)
  */
 
-import { createInterface } from 'node:readline';
-import { request } from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { request } from 'node:http';
+import { createInterface } from 'node:readline';
 
 const PORT = Number(process.env.PORT || 4004);
 const HOST = process.env.HOST || '127.0.0.1';
@@ -58,7 +58,9 @@ function streamChat(messages: Message[]): Promise<string> {
         if (res.statusCode && res.statusCode >= 400) {
           let body = '';
           res.on('data', (c) => (body += c.toString()));
-          res.on('end', () => reject(new Error(`HTTP ${res.statusCode}: ${body}`)));
+          res.on('end', () =>
+            reject(new Error(`HTTP ${res.statusCode}: ${body}`)),
+          );
           return;
         }
 

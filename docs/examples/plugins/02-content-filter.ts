@@ -38,7 +38,10 @@ class ValidatorError extends Error {
 const FORBIDDEN_PATTERNS = [
   { pattern: /password\s*[:=]\s*\S+/gi, reason: 'Possible password leak' },
   { pattern: /\b\d{16}\b/g, reason: 'Possible credit card number' },
-  { pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/g, reason: 'Private key detected' },
+  {
+    pattern: /-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----/g,
+    reason: 'Private key detected',
+  },
   { pattern: /AKIA[0-9A-Z]{16}/g, reason: 'AWS access key detected' },
 ];
 

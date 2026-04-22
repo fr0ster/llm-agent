@@ -20,13 +20,14 @@ export type {
   IModelInfo,
   IModelProvider,
 } from './model-provider.js';
-export type { ISmartAgentPlugin, IRagStoreConfig, RagScope } from './plugin.js';
+export type { IRagStoreConfig, ISmartAgentPlugin, RagScope } from './plugin.js';
 export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
   EmbedderFactoryConfig,
   IEmbedder,
   IEmbedderBatch,
+  IEmbedResult,
   IIdStrategy,
   IRag,
   IRagBackendWriter,
@@ -36,7 +37,6 @@ export type {
   IRagRegistry,
   RagCollectionMeta,
   RagCollectionScope,
-  IEmbedResult,
 } from './rag.js';
 export { isBatchEmbedder } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';
