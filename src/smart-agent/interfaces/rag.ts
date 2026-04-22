@@ -105,11 +105,17 @@ export interface IRagBackendWriter {
   ): Promise<Result<void, RagError>>;
 }
 
+export type RagCollectionScope = 'session' | 'user' | 'global';
+
 export interface RagCollectionMeta {
   readonly name: string;
   readonly displayName: string;
   readonly description?: string;
   readonly editable: boolean;
+  readonly scope?: RagCollectionScope;
+  readonly sessionId?: string;
+  readonly userId?: string;
+  readonly providerName?: string;
   readonly tags?: readonly string[];
 }
 
@@ -124,4 +130,49 @@ export interface IRagRegistry {
   get(name: string): IRag | undefined;
   getEditor(name: string): IRagEditor | undefined;
   list(): readonly RagCollectionMeta[];
+
+  /** Create a collection via a provider and register it atomically. */
+  createCollection(params: {
+    providerName: string;
+    collectionName: string;
+    scope: RagCollectionScope;
+    sessionId?: string;
+    userId?: string;
+    displayName?: string;
+    description?: string;
+    tags?: readonly string[];
+  }): Promise<Result<RagCollectionMeta, RagError>>;
+
+  /** Delete a collection; delegate to provider (if set in meta) then unregister. */
+  deleteCollection(name: string): Promise<Result<void, RagError>>;
+
+  /** Unregister + delete all session-scoped collections with the given sessionId. */
+  closeSession(sessionId: string): Promise<Result<void, RagError>>;
+}
+
+// v9.1 — provider layer
+
+export interface IRagProvider {
+  readonly name: string;
+  readonly kind: string;
+  readonly editable: boolean;
+  readonly supportedScopes: readonly RagCollectionScope[];
+
+  createCollection(
+    name: string,
+    opts: {
+      scope: RagCollectionScope;
+      sessionId?: string;
+      userId?: string;
+    },
+  ): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>>;
+
+  deleteCollection?(name: string): Promise<Result<void, RagError>>;
+  listCollections?(): Promise<Result<string[], RagError>>;
+}
+
+export interface IRagProviderRegistry {
+  registerProvider(provider: IRagProvider): void;
+  getProvider(name: string): IRagProvider | undefined;
+  listProviders(): readonly string[];
 }
