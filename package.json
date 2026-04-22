@@ -6,9 +6,9 @@
   "scripts": {
     "build": "tsc -b packages/llm-agent packages/llm-agent-server",
     "clean": "tsc -b --clean packages/llm-agent packages/llm-agent-server",
-    "lint": "biome check --write packages scripts docs examples",
-    "lint:check": "biome check packages scripts docs examples",
-    "format": "biome format --write packages scripts docs examples",
+    "lint": "biome check --write packages",
+    "lint:check": "biome check packages",
+    "format": "biome format --write packages",
     "test": "npm run test --workspaces --if-present",
     "changeset": "changeset",
     "version": "changeset version",
