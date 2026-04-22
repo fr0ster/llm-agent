@@ -1,4 +1,4 @@
-import type { Message } from '../../types.js';
+import type { Message } from '../types.js';
 import type { ILlm } from './llm.js';
 import type {
   CallOptions,

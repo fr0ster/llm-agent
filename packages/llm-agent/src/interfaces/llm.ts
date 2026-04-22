@@ -1,4 +1,4 @@
-import type { Message } from '../../types.js';
+import type { Message } from '../types.js';
 import type { IModelInfo } from './model-provider.js';
 import type {
   CallOptions,

@@ -2,7 +2,7 @@
  * Shared types for Smart Orchestrated Agent contracts.
  */
 
-import type { Message } from '../../types.js';
+import type { Message } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Result envelope
