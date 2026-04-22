@@ -1,0 +1,2 @@
+#!/usr/bin/env node
+import('../dist/smart-agent/check-models-cli.js');
