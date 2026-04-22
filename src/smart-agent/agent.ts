@@ -13,7 +13,12 @@ import type { ILlm } from './interfaces/llm.js';
 import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
-import type { IEmbedder, IRag } from './interfaces/rag.js';
+import type {
+  IEmbedder,
+  IRag,
+  IRagProviderRegistry,
+  IRagRegistry,
+} from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type {
@@ -115,6 +120,10 @@ export interface SmartAgentDeps {
    * The pipeline translates the query to English before searching these stores.
    */
   translateQueryStores?: Set<string>;
+  /** Registry of RAG collections (v9.1+). When present, ragStores is a live projection. */
+  ragRegistry?: IRagRegistry;
+  /** Registry of RAG providers for dynamic collection creation (v9.1+). */
+  ragProviderRegistry?: IRagProviderRegistry;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
@@ -354,7 +363,20 @@ export class SmartAgent {
         `Cannot overwrite built-in RAG store "${name}" via addRagStore()`,
       );
     }
-    this.deps.ragStores[name] = store;
+    if (this.deps.ragRegistry) {
+      // Route through registry so the ragStores projection (and any listeners)
+      // see the change.
+      if (this.deps.ragRegistry.get(name)) {
+        this.deps.ragRegistry.unregister(name);
+      }
+      this.deps.ragRegistry.register(name, store, undefined, {
+        displayName: name,
+        scope: 'global',
+      });
+    } else {
+      // Fallback for consumers that built SmartAgentDeps without a registry.
+      this.deps.ragStores[name] = store;
+    }
     if (options?.translateQuery) {
       if (!this.deps.translateQueryStores) {
         this.deps.translateQueryStores = new Set();
@@ -374,9 +396,32 @@ export class SmartAgent {
         `Cannot remove built-in RAG store "${name}" via removeRagStore()`,
       );
     }
-    delete this.deps.ragStores[name];
+    if (this.deps.ragRegistry) {
+      this.deps.ragRegistry.unregister(name);
+    } else {
+      delete this.deps.ragStores[name];
+    }
     this.deps.translateQueryStores?.delete(name);
     this.deps.pipeline?.rebuildStages?.();
+  }
+
+  /**
+   * Close a session: remove session-scoped RAG collections for the given
+   * sessionId and flush session-scoped history memory.
+   * Errors from registry cleanup are logged but not thrown — best-effort.
+   */
+  async closeSession(sessionId: string): Promise<void> {
+    if (this.deps.ragRegistry) {
+      const res = await this.deps.ragRegistry.closeSession(sessionId);
+      if (!res.ok) {
+        this.deps.logger?.log({
+          type: 'warning',
+          traceId: 'close_session',
+          message: `closeSession(${sessionId}) failed: ${res.error.message}`,
+        });
+      }
+    }
+    this.deps.historyMemory?.clear(sessionId);
   }
 
   /** Returns the model identifiers of the currently active LLM instances. */

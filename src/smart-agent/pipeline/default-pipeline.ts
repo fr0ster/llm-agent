@@ -294,6 +294,8 @@ export class DefaultPipeline implements IPipeline {
       classifier: this.resolvedClassifier,
       assembler: this.resolvedAssembler,
       ragStores,
+      ragRegistry: this.deps.ragRegistry,
+      ragProviderRegistry: this.deps.ragProviderRegistry,
       mcpClients: this.deps.mcpClients,
       reranker: this.resolvedReranker,
       queryExpander: this.resolvedQueryExpander,

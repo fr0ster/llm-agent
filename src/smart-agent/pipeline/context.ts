@@ -31,7 +31,11 @@ import type { ILlm } from '../interfaces/llm.js';
 import type { ILlmCallStrategy } from '../interfaces/llm-call-strategy.js';
 import type { IMcpClient } from '../interfaces/mcp-client.js';
 import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder } from '../interfaces/rag.js';
+import type {
+  IEmbedder,
+  IRagProviderRegistry,
+  IRagRegistry,
+} from '../interfaces/rag.js';
 import type { IRequestLogger } from '../interfaces/request-logger.js';
 import type { ISkill, ISkillManager } from '../interfaces/skill.js';
 import type {
@@ -79,6 +83,8 @@ export interface PipelineContext {
   readonly classifier: ISubpromptClassifier;
   readonly assembler: IContextAssembler;
   readonly ragStores: SmartAgentRagStores;
+  readonly ragRegistry: IRagRegistry | undefined;
+  readonly ragProviderRegistry: IRagProviderRegistry | undefined;
   readonly mcpClients: IMcpClient[];
   readonly reranker: IReranker;
   readonly queryExpander: IQueryExpander;

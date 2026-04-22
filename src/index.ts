@@ -151,8 +151,11 @@ export type {
   IRag,
   IRagBackendWriter,
   IRagEditor,
+  IRagProvider,
+  IRagProviderRegistry,
   IRagRegistry,
   RagCollectionMeta,
+  RagCollectionScope,
 } from './smart-agent/interfaces/rag.js';
 export { isBatchEmbedder } from './smart-agent/interfaces/rag.js';
 export type { ILlmRateLimiter } from './smart-agent/interfaces/rate-limiter.js';
@@ -249,18 +252,23 @@ export {
   ActiveFilteringRag,
   buildCorrectionMetadata,
   CanonicalKeyCollisionError,
+  CollectionNotFoundError,
   type CorrectionMetadata,
   CorrectionTag,
   deprecateMetadata,
   filterActive,
   MissingIdError,
+  ProviderNotFoundError,
   ReadOnlyError,
+  ScopeViolationError,
+  UnsupportedScopeError,
   validateCorrectionMetadata,
 } from './smart-agent/rag/corrections/index.js';
 export { builtInEmbedderFactories } from './smart-agent/rag/embedder-factories.js';
 export { InMemoryRag } from './smart-agent/rag/in-memory-rag.js';
 export {
   buildRagCollectionToolEntries,
+  type RagToolContext,
   type RagToolEntry,
 } from './smart-agent/rag/mcp-tools/index.js';
 export {
@@ -289,6 +297,21 @@ export {
   PreprocessorChain,
   TranslatePreprocessor,
 } from './smart-agent/rag/preprocessor.js';
+// RAG Providers (v9.1)
+export { AbstractRagProvider } from './smart-agent/rag/providers/base-provider.js';
+export {
+  InMemoryRagProvider,
+  type InMemoryRagProviderConfig,
+} from './smart-agent/rag/providers/in-memory-rag-provider.js';
+export {
+  QdrantRagProvider,
+  type QdrantRagProviderConfig,
+} from './smart-agent/rag/providers/qdrant-rag-provider.js';
+export { SimpleRagProviderRegistry } from './smart-agent/rag/providers/simple-provider-registry.js';
+export {
+  VectorRagProvider,
+  type VectorRagProviderConfig,
+} from './smart-agent/rag/providers/vector-rag-provider.js';
 // Qdrant RAG
 export {
   QdrantRag,
