@@ -200,7 +200,7 @@ export function filterActive<T>(
 ): T[];
 ```
 
-`ActiveFilteringRag` wraps any `IRag`: on `query`, applies `filterActive` unless `options.ragFilter?.includeInactive === true`. On `getById`, returns null when the item has `deprecated` / `superseded` tag unless `includeInactive` is set. Composable with existing `ExpositionFilteringRag`.
+`ActiveFilteringRag` wraps any `IRag`: on `query`, applies `filterActive` unless `options.ragFilter?.includeInactive === true`. On `getById`, returns null when the item has `deprecated` / `superseded` tag unless `includeInactive` is set.
 
 ## MCP tool factory
 
@@ -265,7 +265,7 @@ registry.register(
   'session',
   new SessionScopedRag(corpQdrant, sessionOverlay, sessionId),
   new SessionScopedEditStrategy(
-    sessionOverlay.writer(),
+    sessionOverlayWriter,
     sessionId,
     new SessionScopedIdStrategy(sessionId),
   ),
@@ -299,7 +299,6 @@ Existing backend tests updated for the new read/write split.
 
 ## Open items for implementation plan
 
-- Concrete shape of `IRagBackendWriter` per backend (may be identical or diverge).
+- Concrete shape of `IRagBackendWriter` per backend, including whether backends expose it via `rag.writer()` or a separate writer class.
 - Whether `rag_create_collection` ships in the first version or is deferred — design allows either without breaking.
 - Registry listing order (insertion vs alphabetical vs meta-tag-grouped) — defaulting to insertion order.
-- Shape of the companion writer exposed by `InMemoryRag` / `QdrantRag` / `OllamaRag` (`rag.writer()` accessor vs separate writer class). Resolve in the implementation plan.
