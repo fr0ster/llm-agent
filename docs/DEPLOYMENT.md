@@ -1,12 +1,12 @@
 # Deployment Guide
 
-This guide covers production deployment patterns for `@mcp-abap-adt/llm-agent`, including containerization, process management, serverless patterns, scaling strategies, and operational best practices.
+This guide covers production deployment patterns for `@mcp-abap-adt/llm-agent-server`, including containerization, process management, serverless patterns, scaling strategies, and operational best practices.
 
 ## Quick Start
 
 ```bash
 # 1. Install
-npm install @mcp-abap-adt/llm-agent
+npm install @mcp-abap-adt/llm-agent-server
 
 # 2. Generate config
 npx llm-agent --init   # creates smart-server.yaml
@@ -173,7 +173,7 @@ For file-based logging (when `log:` is set in `smart-server.yaml`), use `logrota
 For serverless environments, use `SmartAgent` programmatically without the HTTP layer:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
 
 // Build once per cold start (or pool across invocations)
 const handle = await new SmartAgentBuilder({
@@ -268,7 +268,7 @@ Use this for load balancer health checks and Kubernetes liveness/readiness probe
 Export metrics via `InMemoryMetrics.snapshot()`:
 
 ```ts
-import { InMemoryMetrics } from '@mcp-abap-adt/llm-agent';
+import { InMemoryMetrics } from '@mcp-abap-adt/llm-agent-server';
 
 const metrics = new InMemoryMetrics();
 // Wire into SmartAgentBuilder via .withMetrics(metrics)
@@ -292,7 +292,7 @@ npm install @opentelemetry/api
 ```
 
 ```ts
-import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent/otel';
+import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent-server/otel';
 
 const tracer = new OtelTracerAdapter();
 // Wire into SmartAgentBuilder via .withTracer(tracer)

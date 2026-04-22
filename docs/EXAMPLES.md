@@ -109,7 +109,7 @@ the pipeline. Use this to attach domain knowledge bases, user-specific indexes, 
 stores on demand:
 
 ```typescript
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
 
 const agent = await new SmartAgentBuilder()
   .withMainLlm(myLlm)
@@ -133,11 +133,8 @@ Use `QdrantRagProvider` so the LLM can create session-scoped collections on dema
 results, correct errors, and let the consumer clean up on disconnect:
 
 ```ts
-import {
-  SmartAgentBuilder,
-  QdrantRagProvider,
-  buildRagCollectionToolEntries,
-} from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { QdrantRagProvider, buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
 
 // 1. Build agent with a Qdrant provider
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
@@ -169,7 +166,7 @@ await agent.closeSession(sessionId);
 ### Programmatic embedding (`SmartServer`)
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
 
 const server = new SmartServer({
   port: 4004,
@@ -193,7 +190,7 @@ process.on('SIGTERM', async () => {
 ### Custom embedder injection
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
 
 const server = new SmartServer({
   llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
@@ -209,8 +206,8 @@ const server = new SmartServer({
 ### Structured pipeline with custom stage handler
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent/smart-server';
-import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent';
+import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent-server';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
@@ -247,7 +244,7 @@ import {
   SmartAgentBuilder,
   ClaudeSkillManager,
   FileSystemSkillManager,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
 
 // Option 1: Claude-convention directories (~/.claude/skills/ + <project>/.claude/skills/)
 const builder = new SmartAgentBuilder()
@@ -382,8 +379,8 @@ Look for these log entries:
 ### Custom pipeline implementation
 
 ```ts
-import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent-server';
 
 // Extend the default pipeline by wrapping it
 class AuditedPipeline implements IPipeline {
@@ -422,7 +419,7 @@ agent:
 ## Test doubles for consumer integration tests
 
 ```ts
-import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent/testing';
+import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent-server/testing';
 
 const llm = makeLlm([{ content: 'ok' }]);
 const rag = makeRag();

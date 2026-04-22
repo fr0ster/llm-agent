@@ -22,7 +22,7 @@ import type {
   ISpan,
   IStageHandler,
   PipelineContext,
-} from '@mcp-abap-adt/llm-agent';
+} from '@mcp-abap-adt/llm-agent-server';
 
 class AuditLogHandler implements IStageHandler {
   async execute(
