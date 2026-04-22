@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "9.1.0",
+  "version": "10.0.0",
   "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
   "type": "module",
   "main": "dist/index.js",
