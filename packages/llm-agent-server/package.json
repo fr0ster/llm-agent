@@ -1,0 +1,89 @@
+{
+  "name": "@mcp-abap-adt/llm-agent-server",
+  "version": "10.0.0",
+  "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "llm-agent": "bin/llm-agent",
+    "llm-agent-check": "bin/llm-agent-check",
+    "claude-via-agent": "tools/claude-via-agent.sh"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "types": "./dist/smart-agent/testing/index.d.ts",
+      "import": "./dist/smart-agent/testing/index.js",
+      "default": "./dist/smart-agent/testing/index.js"
+    },
+    "./smart-server": {
+      "types": "./dist/smart-agent/smart-server.d.ts",
+      "import": "./dist/smart-agent/smart-server.js",
+      "default": "./dist/smart-agent/smart-server.js"
+    },
+    "./otel": {
+      "types": "./dist/smart-agent/otel/index.d.ts",
+      "import": "./dist/smart-agent/otel/index.js",
+      "default": "./dist/smart-agent/otel/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "bin",
+    "tools",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "prebuild": "node scripts/generate-version.js",
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -p tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'",
+    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
+    "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
+    "smoke:adapters": "tsx src/smoke-adapters.ts",
+    "start": "node dist/smart-agent/cli.js",
+    "start:smart": "node dist/smart-agent/cli.js --config smart-server.yaml",
+    "dev": "tsx src/smart-agent/cli.ts",
+    "dev:llm": "tsx src/smart-agent/cli.ts --llm-only",
+    "release:check": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mcp-abap-adt/llm-agent": "*",
+    "@modelcontextprotocol/sdk": "^1.28.0",
+    "@sap-ai-sdk/orchestration": "^2.9.0",
+    "axios": "^1.14.0",
+    "dotenv": "^17.3.1",
+    "yaml": "^2.8.3"
+  },
+  "devDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@sap-ai-sdk/ai-api": "^2.0.0",
+    "@types/node": "^25.6.0"
+  },
+  "peerDependencies": {
+    "@opentelemetry/api": "^1.9.1",
+    "@sap-ai-sdk/ai-api": "^2.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@opentelemetry/api": {
+      "optional": true
+    },
+    "@sap-ai-sdk/ai-api": {
+      "optional": true
+    }
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

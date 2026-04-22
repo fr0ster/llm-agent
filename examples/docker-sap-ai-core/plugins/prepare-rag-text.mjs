@@ -18,7 +18,7 @@
 class PrepareRagTextHandler {
   async execute(ctx, _config, span) {
     // Use all subprompt texts (classifier may classify questions as 'fact', not 'action')
-    const texts = (ctx.subprompts || []).map(sp => sp.text).filter(Boolean);
+    const texts = (ctx.subprompts || []).map((sp) => sp.text).filter(Boolean);
     ctx.ragText = texts.length > 0 ? texts.join(' ') : ctx.inputText;
     span.setAttribute('ragText', ctx.ragText.slice(0, 200));
     return true;

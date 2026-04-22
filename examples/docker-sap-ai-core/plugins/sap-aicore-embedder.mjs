@@ -32,7 +32,7 @@ async function getToken() {
   const resp = await fetch(`${AICORE_AUTH_URL}/oauth/token`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: `grant_type=client_credentials&client_id=${encodeURIComponent(AICORE_CLIENT_ID)}&client_secret=${encodeURIComponent(AICORE_CLIENT_SECRET)}`
+    body: `grant_type=client_credentials&client_id=${encodeURIComponent(AICORE_CLIENT_ID)}&client_secret=${encodeURIComponent(AICORE_CLIENT_SECRET)}`,
   });
   if (!resp.ok) throw new Error(`AI Core token error: ${resp.status}`);
   const data = await resp.json();
@@ -46,12 +46,18 @@ async function resolveDeploymentId(model) {
   const token = await getToken();
   const resp = await fetch(
     `${AICORE_BASE_URL}/v2/lm/deployments?scenarioId=foundation-models&status=RUNNING`,
-    { headers: { 'Authorization': `Bearer ${token}`, 'AI-Resource-Group': 'default' } }
+    {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        'AI-Resource-Group': 'default',
+      },
+    },
   );
-  if (!resp.ok) throw new Error(`AI Core deployments query failed: ${resp.status}`);
+  if (!resp.ok)
+    throw new Error(`AI Core deployments query failed: ${resp.status}`);
   const data = await resp.json();
   const deployment = data.resources?.find(
-    r => r.details?.resources?.backend_details?.model?.name === model
+    (r) => r.details?.resources?.backend_details?.model?.name === model,
   );
   const id = deployment?.id;
   if (!id) throw new Error(`No running deployment found for model ${model}`);
@@ -72,7 +78,7 @@ class SapAiCoreEmbedder {
       if (EMBED_THROTTLE_MS > 0) {
         const elapsed = Date.now() - lastEmbedTime;
         if (elapsed < EMBED_THROTTLE_MS) {
-          await new Promise(r => setTimeout(r, EMBED_THROTTLE_MS - elapsed));
+          await new Promise((r) => setTimeout(r, EMBED_THROTTLE_MS - elapsed));
         }
       }
       lastEmbedTime = Date.now();
@@ -83,13 +89,13 @@ class SapAiCoreEmbedder {
         {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${token}`,
+            Authorization: `Bearer ${token}`,
             'AI-Resource-Group': 'default',
-            'Content-Type': 'application/json'
+            'Content-Type': 'application/json',
           },
           body: JSON.stringify({ instances: [{ content: text }] }),
-          signal: AbortSignal.timeout(this.timeoutMs)
-        }
+          signal: AbortSignal.timeout(this.timeoutMs),
+        },
       );
       if (resp.ok) {
         const data = await resp.json();
@@ -101,21 +107,24 @@ class SapAiCoreEmbedder {
         const retryAfter = resp.headers.get('retry-after');
         const backoff = retryAfter
           ? Number(retryAfter) * 1000
-          : Math.min(1000 * Math.pow(2, attempt + 1), 30000);
+          : Math.min(1000 * 2 ** (attempt + 1), 30000);
         lastEmbedTime = Date.now() + backoff; // prevent next call from firing immediately
-        await new Promise(r => setTimeout(r, backoff));
+        await new Promise((r) => setTimeout(r, backoff));
         continue;
       }
       const errText = await resp.text();
-      throw new Error(`AI Core embedding error ${resp.status}: ${errText.slice(0, 200)}`);
+      throw new Error(
+        `AI Core embedding error ${resp.status}: ${errText.slice(0, 200)}`,
+      );
     }
   }
 }
 
 /** @type {Record<string, import('@mcp-abap-adt/llm-agent').EmbedderFactory>} */
 export const embedderFactories = {
-  'sap-aicore': (cfg) => new SapAiCoreEmbedder({
-    model: cfg.model,
-    timeoutMs: cfg.timeoutMs,
-  }),
+  'sap-aicore': (cfg) =>
+    new SapAiCoreEmbedder({
+      model: cfg.model,
+      timeoutMs: cfg.timeoutMs,
+    }),
 };
