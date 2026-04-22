@@ -1612,6 +1612,21 @@ for (const c of this._staticCollections) {
   ragRegistry.register(c.name, c.rag, c.editor, c.meta);
 }
 
+// Mirror built-in stores into the registry so the projection preserves
+// existing ragStores.tools / ragStores.history behavior.
+if (toolsRag && !ragRegistry.get('tools')) {
+  ragRegistry.register('tools', toolsRag, undefined, {
+    displayName: 'tools',
+    scope: 'global',
+  });
+}
+if (historyRag && !ragRegistry.get('history')) {
+  ragRegistry.register('history', historyRag, undefined, {
+    displayName: 'history',
+    scope: 'global',
+  });
+}
+
 // Create any queued dynamic collections at startup.
 for (const c of this._pendingDynamicCollections) {
   const res = await ragRegistry.createCollection(c);
@@ -1640,7 +1655,7 @@ if (
 // Reuse ragStores below — unchanged code paths (assembler, pipeline handlers) see the same shape.
 ```
 
-Replace the current `ragStores` construction path with the new one. `translateQueryStores` logic stays as is; continue populating it from static collection meta and the existing `toolsRag` convention.
+Replace the current `ragStores` construction path with the new one. Preserve current built-in behavior: `toolsRag` and `historyRag` must still appear under `ragStores.tools` / `ragStores.history`, either by registering them into `ragRegistry` before the first projection rebuild or by explicitly layering them into the projection. `translateQueryStores` logic stays as is; continue populating it from the existing `toolsRag` convention.
 
 Include `ragRegistry` and `ragProviderRegistry` in the `SmartAgentDeps` object returned / passed to `SmartAgent`.
 
@@ -1698,35 +1713,35 @@ import { makeMinimalAgent } from './helpers.js';  // ← create if missing, or i
 
 describe('SmartAgent.closeSession', () => {
   it('removes session-scoped collections with matching sessionId', async () => {
-    const agent = await makeMinimalAgent({
+    const { agent, deps } = await makeMinimalAgent({
       providers: [new InMemoryRagProvider({ name: 'mem' })],
     });
-    await agent.deps.ragRegistry.createCollection({
+    await deps.ragRegistry.createCollection({
       providerName: 'mem',
       collectionName: 'session-A',
       scope: 'session',
       sessionId: 'S',
     });
-    assert.ok(agent.deps.ragRegistry.get('session-A'));
+    assert.ok(deps.ragRegistry.get('session-A'));
     await agent.closeSession('S');
-    assert.equal(agent.deps.ragRegistry.get('session-A'), undefined);
+    assert.equal(deps.ragRegistry.get('session-A'), undefined);
   });
 
   it('preserves global/user collections', async () => {
-    const agent = await makeMinimalAgent({
+    const { agent, deps } = await makeMinimalAgent({
       providers: [new InMemoryRagProvider({ name: 'mem' })],
     });
     // Static global registered manually
-    agent.deps.ragRegistry.register('global', new (await import('../rag/in-memory-rag.js')).InMemoryRag(), undefined, {
+    deps.ragRegistry.register('global', new (await import('../rag/in-memory-rag.js')).InMemoryRag(), undefined, {
       displayName: 'G', scope: 'global',
     });
     await agent.closeSession('NONE');
-    assert.ok(agent.deps.ragRegistry.get('global'));
+    assert.ok(deps.ragRegistry.get('global'));
   });
 });
 ```
 
-If `makeMinimalAgent` doesn't exist, create it in `src/smart-agent/__tests__/helpers.ts` as a minimal builder invocation with a stub LLM reusing whatever pattern the existing tests use. Keep it small.
+If `makeMinimalAgent` doesn't exist, create it in `src/smart-agent/__tests__/helpers.ts` as a minimal builder invocation with a stub LLM reusing whatever pattern the existing tests use, and make it return `{ agent, deps }` rather than reaching into private fields.
 
 - [ ] **Step 2: Run — expect failure (closeSession missing)**
 
@@ -1738,11 +1753,11 @@ Add to `SmartAgent` class in `src/smart-agent/agent.ts`:
 async closeSession(sessionId: string): Promise<void> {
   const res = await this.deps.ragRegistry.closeSession(sessionId);
   if (!res.ok) {
-    // Log but don't throw — best-effort cleanup.
-    this.deps.requestLogger?.log?.({
-      type: 'warning',
-      traceId: sessionId,
-      message: `closeSession: ${res.error.message}`,
+    // Best-effort cleanup: log through the normal logger when available.
+    this.deps.logger?.log({
+      event: 'rag_close_session_failed',
+      sessionId,
+      error: res.error.message,
     });
   }
   this.deps.historyMemory?.clear(sessionId);
@@ -2050,8 +2065,13 @@ if (opts.providerRegistry) {
       },
     },
     handler: async (ctx: RagToolContext, args) => {
+      const providerName = String(args.provider);
+      const provider = providerRegistry.getProvider(providerName);
+      if (!provider) {
+        return { ok: false, error: `RAG provider '${providerName}' is not registered` };
+      }
       const res = await registry.createCollection({
-        providerName: String(args.provider),
+        providerName,
         collectionName: String(args.name),
         scope: args.scope as 'session' | 'user' | 'global',
         sessionId: ctx.sessionId,
@@ -2060,8 +2080,6 @@ if (opts.providerRegistry) {
         description: args.description as string | undefined,
         tags: args.tags as string[] | undefined,
       });
-      // Confirm provider registry is actually consulted — defensive use-statement:
-      void providerRegistry;
       return res.ok ? { ok: true, meta: res.value } : { ok: false, error: res.error.message };
     },
   };
