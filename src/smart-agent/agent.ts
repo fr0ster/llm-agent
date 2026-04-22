@@ -13,7 +13,12 @@ import type { ILlm } from './interfaces/llm.js';
 import type { ILlmCallStrategy } from './interfaces/llm-call-strategy.js';
 import type { IMcpClient } from './interfaces/mcp-client.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
-import type { IEmbedder, IRag } from './interfaces/rag.js';
+import type {
+  IEmbedder,
+  IRag,
+  IRagProviderRegistry,
+  IRagRegistry,
+} from './interfaces/rag.js';
 import type { IRequestLogger } from './interfaces/request-logger.js';
 import type { ISkillManager } from './interfaces/skill.js';
 import type {
@@ -115,6 +120,10 @@ export interface SmartAgentDeps {
    * The pipeline translates the query to English before searching these stores.
    */
   translateQueryStores?: Set<string>;
+  /** Registry of RAG collections (v9.1+). When present, ragStores is a live projection. */
+  ragRegistry?: IRagRegistry;
+  /** Registry of RAG providers for dynamic collection creation (v9.1+). */
+  ragProviderRegistry?: IRagProviderRegistry;
 }
 export interface SmartAgentConfig {
   maxIterations: number;
