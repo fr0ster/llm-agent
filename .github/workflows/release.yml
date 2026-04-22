@@ -1,5 +1,7 @@
 name: Release
 
+# Triggers on semantic version tags (v*). Creates a GitHub release automatically.
+# npm publish remains manual until changesets automation is wired up in a future version.
 on:
   push:
     tags: ['v*']
