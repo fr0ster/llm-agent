@@ -56,10 +56,10 @@ export interface RagCollectionMeta {
   readonly displayName: string;
   readonly description?: string;
   readonly editable: boolean;
-  readonly scope: RagCollectionScope;
-  readonly sessionId?: string;    // populated when scope === 'session'
-  readonly userId?: string;       // populated when scope === 'user'
-  readonly providerName?: string; // set when created via a provider
+  readonly scope?: RagCollectionScope;   // optional in the interface; SimpleRagRegistry normalizes missing → 'global'
+  readonly sessionId?: string;           // populated when scope === 'session'
+  readonly userId?: string;              // populated when scope === 'user'
+  readonly providerName?: string;        // set when created via a provider
   readonly tags?: readonly string[];
 }
 
@@ -355,7 +355,19 @@ Lean: **eager**, with the sync hook baked into `SimpleRagRegistry` via a `mutati
 
 Code that iterates `ragStores` today (`assembler.ts`, `rag-query.ts`, `revectorizeTools` in `agent.ts`, `smart-server.ts` hot-reload) continues to work unchanged because `ragStores` is still there with the same shape. New code written in v9.1.0 should prefer `ragRegistry` — it carries scope and meta info; `ragStores` only has the `IRag` instances.
 
-Public API retained: `SmartAgent.addRagStore(name, store, opts)` delegates to `ragRegistry.register(name, store, undefined, { scope: 'global' })`; `SmartAgent.removeRagStore(name)` delegates to `ragRegistry.unregister(name)`. Built-in name protection ('tools' / 'history') stays.
+Public API retained with full semantics. `SmartAgent.addRagStore(name, store, opts)` keeps all current behavior:
+- Rejects overwrite of built-in names `tools` and `history` (throws as today).
+- Internally calls `this.deps.ragRegistry.register(name, store, undefined, { scope: 'global' })`.
+- Updates `this.deps.translateQueryStores` when `opts.translateQuery === true`.
+- Triggers `this.deps.pipeline?.rebuildStages?.()`.
+
+`SmartAgent.removeRagStore(name)`:
+- Rejects removal of built-in names `tools` and `history`.
+- Internally calls `this.deps.ragRegistry.unregister(name)`.
+- Removes `name` from `translateQueryStores`.
+- Triggers `this.deps.pipeline?.rebuildStages?.()`.
+
+The `ragStores` projection updates automatically after `register` / `unregister` through the mutation listener (see "Projection sync mechanism" in open items). No consumer code needs to change for existing callers.
 
 ## `SmartAgent.closeSession`
 
@@ -394,14 +406,19 @@ Unit tests per new module (as listed in file layout). Key scenarios:
 
 ## Migration for 9.0.0 consumers
 
-Fields added; no removals. All v9.0.0 public API stays functional.
+Runtime behavior stays backward-compatible for builder-based consumers. TypeScript surface remains compatible except where explicitly noted below.
 
-- `SmartAgentDeps.ragStores` — **retained as a live projection** from `ragRegistry`. Consumers who build `SmartAgentDeps` manually OR use the builder get transparent compatibility. `SmartAgent.addRagStore` / `removeRagStore` continue to work and are now thin delegates to `ragRegistry.register` / `unregister`.
+- `SmartAgentDeps.ragStores` — **retained as a live projection** from `ragRegistry` (sync via mutation listener). Consumers who build `SmartAgentDeps` manually or use the builder get transparent compatibility.
+- `SmartAgent.addRagStore` / `removeRagStore` — **semantics fully preserved** (built-in name protection, `translateQueryStores` sync, `pipeline.rebuildStages()` trigger). See "Pipeline integration" above for the exact delegate flow.
 - `buildRagCollectionToolEntries({ registry })` — signature accepts an optional `providerRegistry`. When omitted, the four new tools (`rag_create_collection`, `rag_list_collections`, `rag_describe_collection`, `rag_delete_collection`) are omitted from the returned entries; existing tools work unchanged.
-- `RagCollectionMeta.scope` — new required field on the interface but defaulted to `'global'` by `SimpleRagRegistry.register` when consumer doesn't specify. Code that calls `register(name, rag, editor)` without scope keeps working.
+- `RagCollectionMeta.scope` — added as **optional** field on the public interface. Existing code that constructs `RagCollectionMeta` literals without `scope` keeps compiling. `SimpleRagRegistry` internally normalizes missing values to `'global'` for consistent handling.
 - `RagToolEntry.handler` — `context` parameter type tightens from `object` to `RagToolContext` (structurally compatible; old `{}` still satisfies). Existing handler bodies unchanged.
 - New public methods on `SmartAgent`: `closeSession(sessionId)`. Additive.
 - New public methods on `SmartAgentBuilder`: `addRagProvider(...)`, `addRagCollection(...)`, `createRagCollection(...)`, `setRagRegistry(...)`, `setRagProviderRegistry(...)`. Additive.
+
+**Known source-compatibility edge cases** (not breaking for typical consumers):
+- Consumers that directly implement the `IRagRegistry` interface (rather than extending `SimpleRagRegistry`) must add the three new methods (`createCollection`, `deleteCollection`, `closeSession`). This is legitimately a TypeScript source-breaking change. Documented in release notes.
+- Consumers that construct `RagCollectionMeta` literals with `scope` set stay compatible — the field is optional.
 
 ## Future roadmap (not in v9.1.0)
 
@@ -422,3 +439,4 @@ This directly informs v9.1.0 design: the `IRagProvider` interface and provider i
 - Hot-reload integration in `smart-server.ts`: currently it iterates `Object.values(ragStores)` for reconfigure paths; when registry becomes source of truth and `ragStores` is derived, confirm that rebuild hooks fire in the right order on reconfigure.
 - `rag_create_collection` sessionId source: auto-populate from `context.sessionId` rather than requiring the LLM to pass it — minimizes LLM error surface.
 - Projection sync mechanism for `ragStores` ← `ragRegistry`: eager via `mutationListener` (lean) vs. Proxy. Resolve before coding `SimpleRagRegistry` extensions.
+
