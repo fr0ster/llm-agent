@@ -323,7 +323,7 @@ describe('QdrantRag', () => {
     await w.upsertRaw('a', 't', {});
     await w.upsertRaw('b', 't', {});
     const cleared = await w.clearAll?.();
-    assert.ok(cleared && cleared.ok);
+    assert.ok(cleared?.ok);
     assert.equal(state.collections.get('test-clear')?.length, 0);
   });
 });
