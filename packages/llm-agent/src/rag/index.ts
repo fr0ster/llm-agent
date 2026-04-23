@@ -3,8 +3,6 @@ export { builtInEmbedderFactories } from './embedder-factories.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';
 export * from './mcp-tools/index.js';
-export type { OllamaEmbedderConfig } from './ollama-rag.js';
-export { OllamaEmbedder, OllamaRag } from './ollama-rag.js';
 export * from './overlays/index.js';
 export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 export {

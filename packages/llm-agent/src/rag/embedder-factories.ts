@@ -6,16 +6,16 @@
  */
 
 import type { EmbedderFactory } from '../interfaces/rag.js';
-import { OllamaEmbedder } from './ollama-rag.js';
 import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
 export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
-  ollama: (cfg) =>
-    new OllamaEmbedder({
-      ollamaUrl: cfg.url,
-      model: cfg.model,
-      timeoutMs: cfg.timeoutMs,
-    }),
+  // Task 12: ollama embedder factory restored and moved to server package
+  // ollama: (cfg) =>
+  //   new OllamaEmbedder({
+  //     ollamaUrl: cfg.url,
+  //     model: cfg.model,
+  //     timeoutMs: cfg.timeoutMs,
+  //   }),
   // Task 12: openai embedder factory restored and moved to server package
   // openai: (cfg) => {
   //   if (!cfg.apiKey) {

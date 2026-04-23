@@ -63,6 +63,7 @@
     "yaml": "^2.8.3"
   },
   "devDependencies": {
+    "@mcp-abap-adt/ollama-embedder": "*",
     "@mcp-abap-adt/openai-embedder": "*",
     "@opentelemetry/api": "^1.9.1",
     "@sap-ai-sdk/ai-api": "^2.0.0",

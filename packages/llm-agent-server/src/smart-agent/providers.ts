@@ -20,10 +20,10 @@ import type {
 import {
   builtInEmbedderFactories,
   InMemoryRag,
-  OllamaRag,
   QdrantRag,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import { OllamaRag } from '@mcp-abap-adt/ollama-embedder';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import {
   type SapAICoreCredentials,

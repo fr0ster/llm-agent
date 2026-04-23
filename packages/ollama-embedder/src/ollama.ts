@@ -1,6 +1,10 @@
-import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
-import { type CallOptions, RagError } from '../interfaces/types.js';
-import { VectorRag, type VectorRagConfig } from './vector-rag.js';
+import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
+import {
+  type CallOptions,
+  RagError,
+  VectorRag,
+  type VectorRagConfig,
+} from '@mcp-abap-adt/llm-agent';
 
 export interface OllamaEmbedderConfig {
   /** Default: 'http://localhost:11434' */

@@ -14,6 +14,11 @@ export {
   DeepSeekProvider,
 } from '@mcp-abap-adt/deepseek-llm';
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
+export {
+  OllamaEmbedder,
+  type OllamaEmbedderConfig,
+  OllamaRag,
+} from '@mcp-abap-adt/ollama-embedder';
 // Embedder providers
 export {
   OpenAiEmbedder,
