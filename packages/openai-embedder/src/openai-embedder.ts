@@ -1,5 +1,5 @@
-import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
-import { type CallOptions, RagError } from '../interfaces/types.js';
+import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
+import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 
 export interface OpenAiEmbedderConfig {
   /** API key for OpenAI-compatible service */
