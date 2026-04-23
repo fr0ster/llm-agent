@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
   "main": "dist/index.js",
@@ -61,14 +61,14 @@
     "zod": "^3.25.0"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/openai-llm": "^11.0.0",
-    "@mcp-abap-adt/anthropic-llm": "^11.0.0",
-    "@mcp-abap-adt/deepseek-llm": "^11.0.0",
-    "@mcp-abap-adt/sap-aicore-llm": "^11.0.0",
-    "@mcp-abap-adt/openai-embedder": "^11.0.0",
-    "@mcp-abap-adt/ollama-embedder": "^11.0.0",
-    "@mcp-abap-adt/sap-aicore-embedder": "^11.0.0",
-    "@mcp-abap-adt/qdrant-rag": "^11.0.0"
+    "@mcp-abap-adt/openai-llm": "^12.0.0",
+    "@mcp-abap-adt/anthropic-llm": "^12.0.0",
+    "@mcp-abap-adt/deepseek-llm": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^12.0.0",
+    "@mcp-abap-adt/openai-embedder": "^12.0.0",
+    "@mcp-abap-adt/ollama-embedder": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-embedder": "^12.0.0",
+    "@mcp-abap-adt/qdrant-rag": "^12.0.0"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/openai-llm": {
