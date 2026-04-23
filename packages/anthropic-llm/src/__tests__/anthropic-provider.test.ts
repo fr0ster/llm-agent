@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { AnthropicProvider } from '../anthropic.js';
+import { AnthropicProvider } from '../anthropic-provider.js';
 
 // ---------------------------------------------------------------------------
 // Constructor

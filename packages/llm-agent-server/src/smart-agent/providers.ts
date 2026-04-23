@@ -6,6 +6,7 @@
  * pipeline YAML) delegate here to resolve config into interface instances.
  */
 
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import type {
   EmbedderFactory,
   IDocumentEnricher,
@@ -27,7 +28,6 @@ import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
 import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
-import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import {
   type SapAICoreCredentials,

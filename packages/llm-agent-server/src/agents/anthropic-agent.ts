@@ -5,8 +5,8 @@
  * tool use blocks in the response content.
  */
 
+import type { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import type { AnthropicProvider } from '../llm-providers/anthropic.js';
 import {
   type AgentCallOptions,
   BaseAgent,
