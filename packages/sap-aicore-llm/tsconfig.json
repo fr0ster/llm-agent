@@ -3,15 +3,10 @@
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist",
-    "lib": ["ES2022", "DOM"],
+    "lib": ["ES2022"],
     "types": ["node"]
   },
   "include": ["src/**/*"],
   "exclude": ["**/__tests__/**", "**/*.test.ts", "dist"],
-  "references": [
-    { "path": "../llm-agent" },
-    { "path": "../openai-llm" },
-    { "path": "../anthropic-llm" },
-    { "path": "../sap-aicore-llm" }
-  ]
+  "references": [{ "path": "../llm-agent" }]
 }

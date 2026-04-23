@@ -11,7 +11,7 @@
  */
 
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import type { SapCoreAIProvider } from '../llm-providers/sap-core-ai.js';
+import type { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
 import {
   type AgentCallOptions,
   BaseAgent,

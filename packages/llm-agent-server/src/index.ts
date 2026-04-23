@@ -11,6 +11,14 @@ export {
 } from '@mcp-abap-adt/anthropic-llm';
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
 export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+// Re-export for backward compatibility
+export type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
+// LLM Providers
+// NOTE: All LLM providers are accessed through SAP AI Core
+export {
+  type SapCoreAIConfig,
+  SapCoreAIProvider,
+} from '@mcp-abap-adt/sap-aicore-llm';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 export {
@@ -38,13 +46,6 @@ export {
   type DeepSeekConfig,
   DeepSeekProvider,
 } from './llm-providers/deepseek.js';
-// LLM Providers
-// NOTE: All LLM providers are accessed through SAP AI Core
-export {
-  type SapAICoreCredentials,
-  type SapCoreAIConfig,
-  SapCoreAIProvider,
-} from './llm-providers/sap-core-ai.js';
 // MCP Client
 export {
   type MCPClientConfig,

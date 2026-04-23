@@ -5,7 +5,7 @@
  * Provider resolution is delegated to `providers.ts`.
  */
 
-import type { SapAICoreCredentials } from '../llm-providers/sap-core-ai.js';
+import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 
 // ---------------------------------------------------------------------------
 // Config types
