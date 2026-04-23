@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
-import type { IEmbedder } from '../../interfaces/rag.js';
-import { UnsupportedScopeError } from '../corrections/errors.js';
-import { QdrantRagProvider } from '../providers/qdrant-rag-provider.js';
-import { QdrantRag } from '../qdrant-rag.js';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { UnsupportedScopeError } from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from './qdrant-rag.js';
+import { QdrantRagProvider } from './qdrant-rag-provider.js';
 
 function makeEmbedder(dim = 3): IEmbedder {
   return {

@@ -3,10 +3,6 @@ export {
   InMemoryRagProvider,
   type InMemoryRagProviderConfig,
 } from './in-memory-rag-provider.js';
-export {
-  QdrantRagProvider,
-  type QdrantRagProviderConfig,
-} from './qdrant-rag-provider.js';
 export { SimpleRagProviderRegistry } from './simple-provider-registry.js';
 export {
   VectorRagProvider,

@@ -25,6 +25,13 @@ export {
   type OpenAiEmbedderConfig,
 } from '@mcp-abap-adt/openai-embedder';
 export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+// Vector RAG providers
+export {
+  QdrantRag,
+  type QdrantRagConfig,
+  QdrantRagProvider,
+  type QdrantRagProviderConfig,
+} from '@mcp-abap-adt/qdrant-rag';
 export {
   SapAiCoreEmbedder,
   type SapAiCoreEmbedderConfig,

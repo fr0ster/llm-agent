@@ -1,13 +1,17 @@
-import type { IQueryEmbedding } from '../interfaces/query-embedding.js';
-import type { IEmbedder, IRag, IRagBackendWriter } from '../interfaces/rag.js';
+import type {
+  IEmbedder,
+  IQueryEmbedding,
+  IRag,
+  IRagBackendWriter,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  FallbackQueryEmbedding,
   RagError,
   type RagMetadata,
   type RagResult,
   type Result,
-} from '../interfaces/types.js';
-import { FallbackQueryEmbedding } from './query-embedding.js';
+} from '@mcp-abap-adt/llm-agent';
 
 /**
  * Derive a deterministic UUID from a stable string key using SHA-256.
