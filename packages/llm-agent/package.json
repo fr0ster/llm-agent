@@ -23,7 +23,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@sap-ai-sdk/orchestration": "^2.9.0",
     "zod": "^3.25.0"
   },
   "license": "MIT",
