@@ -46,11 +46,21 @@ Both implement `IRag` from core and produce editors paired with `IRagBackendWrit
 | 4 | Schema management | Hybrid — `autoCreateSchema: boolean` config flag. Default `true`. |
 | 5 | Connection shape | Accept both URL string (`postgres://…`, HANA equivalent) AND config object. Internal resolve. |
 | 6 | `supportedScopes` | `['session', 'user', 'global']` for both |
-| 7 | Auto-schema DDL location | Inside the provider's `createCollection` method when `autoCreateSchema: true`. Idempotent (`CREATE TABLE IF NOT EXISTS`, `CREATE EXTENSION IF NOT EXISTS vector`). |
+| 7 | Auto-schema DDL location | In backend-owned lazy init used by both direct `makeRag()` construction and provider `createCollection()`. Provider may call an explicit `ensureSchema()` helper, but schema creation must NOT rely on the provider path only. |
 | 8 | Distance metric | Cosine similarity (default; matches Qdrant's default and SmartAgent's RAG query shape). |
 | 9 | Vector dimension | Fixed per collection, supplied via config. Default 1536 (OpenAI text-embedding-3-small). Consumer overrides per collection. |
 
 ## Shared architecture (both packages)
+
+### Architectural principles
+
+This work may adjust the current module layout, but it should stay inside the project's existing architectural style:
+
+- **Dependency injection first**: composition roots create concrete backends/providers; consumers work against `IRag`, `IRagProvider`, `IRagEditor`, `IRagBackendWriter`, and related abstractions.
+- **Implementation isolation**: HANA- and Postgres-specific driver code stays inside their packages and behind interface-based boundaries. Server/core code should not grow backend-specific SQL or driver coupling.
+- **Behavior via strategies**: editing, id generation, ranking, and similar policy choices should continue to flow through strategy/factory seams rather than new hard-coded branches when an existing abstraction already fits.
+- **Config-driven composition**: declarative config may select implementations, but after resolution the runtime should operate through interfaces, not by type-checking concrete classes.
+- **Optional peer safety**: backend packages remain optional at installation time; the architecture must preserve clean failure modes when a selected backend package is not installed.
 
 ### Public surface
 
@@ -147,24 +157,34 @@ Both backends use the collection name as a SQL table identifier. Must be SQL-saf
 
 ```ts
 export class HanaVectorRagProvider extends AbstractRagProvider {
-  readonly name = 'hana-vector';
-  readonly kind = 'vector-db';
+  readonly name: string;
+  readonly kind = 'vector';
+  readonly editable: boolean;
   readonly supportedScopes = ['session', 'user', 'global'] as const;
 
   constructor(private readonly cfg: {
-    defaultEmbedder: IEmbedder;
+    name: string;
+    embedder: IEmbedder;
     connection: HanaVectorRagConfig | string;
     defaultDimension?: number;
     autoCreateSchema?: boolean;
-    defaultIdStrategy?: 'caller-provided' | 'uuid' | 'session-scoped' | 'canonical-key';
+    editable?: boolean;
+    idStrategyFactory?: (opts: {
+      scope: RagCollectionScope;
+      sessionId?: string;
+      userId?: string;
+    }) => IIdStrategy;
   }) {
     super();
+    this.name = cfg.name;
+    this.editable = cfg.editable ?? true;
+    if (cfg.idStrategyFactory) this.idStrategyFactory = cfg.idStrategyFactory;
   }
 
   async createCollection(name: string, opts: { scope, sessionId?, userId? }): Promise<Result<{ rag: IRag; editor: IRagEditor }, RagError>> {
     // 1. Validate scope against supportedScopes
     // 2. Instantiate HanaVectorRag with cfg.connection + name
-    // 3. If autoCreateSchema: run CREATE TABLE IF NOT EXISTS + CREATE INDEX
+    // 3. If autoCreateSchema: call rag.ensureSchema() (same helper used by direct makeRag() path)
     // 4. Build editor via buildEditor() helper from AbstractRagProvider
     // 5. Return pair
   }
@@ -183,7 +203,18 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
 
 ### Server integration
 
-Add to server's factory registry (`embedder-factories.ts` analog for RAG providers — or in a new file if a dedicated RAG factory registry is warranted). For v11.0.0 scope, the factory registry stays on embedders; RAG backends are instantiated by name inside `SmartServer` composition. Task plan inspects `SmartServer.ts` to see how `rag.type` resolves today and extends that resolver with `hana-vector` and `pg-vector` cases.
+This spec defines required behavior, not a mandatory refactor shape. The current v11 server architecture resolves YAML/CLI RAG stores synchronously via `makeRag()`, but the implementation is allowed to evolve while this work is in progress.
+
+The implementation MUST preserve these observable properties regardless of the final internal architecture:
+
+- `hana-vector` and `pg-vector` can be selected from declarative server config just like existing RAG backends.
+- Missing optional peer packages fail with `MissingProviderError` (or an equivalent purpose-built startup/config error if the architecture is refactored), rather than crashing from an unconditional top-level import.
+- Schema bootstrap works for both direct config-driven construction and provider-driven dynamic collection creation.
+- Config parsing, validation, and docs stay aligned so the same `rag.type` values are accepted everywhere the server exposes RAG configuration.
+
+One acceptable implementation is a dedicated `rag-factories.ts` mirroring `embedder-factories.ts` with prefetch + sync resolve. Another acceptable implementation is a broader architecture change that makes RAG resolution async or moves optional-peer loading behind a different composition boundary. In both cases, concrete backend selection should remain a composition-root concern and the rest of the runtime should continue to depend on interfaces/strategies rather than backend-specific conditionals.
+
+Do not hard-code the work to a specific current filename such as `SmartServer.ts`. The exact integration points may move during implementation.
 
 Server's `peerDependencies` gains:
 
@@ -202,17 +233,18 @@ Root `package.json` `build`/`clean` scripts extended with `packages/hana-vector-
 
 Changesets `fixed` group extended to 12 packages.
 
-### Factory registry additions
+### RAG factory registry additions
 
-In `packages/llm-agent-server/src/smart-agent/embedder-factories.ts` (if that's where RAG resolution lives — or a sibling RAG factory file), add:
+If the implementation keeps the current factory-based resolution style, add a dedicated RAG factory registry, for example `packages/llm-agent-server/src/smart-agent/rag-factories.ts`:
 
 ```ts
 // PACKAGE_BY_NAME (for RAG backends requiring peer resolution)
+'qdrant':      '@mcp-abap-adt/qdrant-rag',
 'hana-vector': '@mcp-abap-adt/hana-vector-rag',
 'pg-vector':   '@mcp-abap-adt/pg-vector-rag',
 ```
 
-If SmartServer's config resolution for `rag.type` is hard-coded (switch statement) rather than factory-based, extend the switch with the two new cases, each preceded by a prefetch step that dynamic-imports the peer and falls back to `MissingProviderError` when absent.
+If the implementation keeps a `providers.ts`-style switch, extend it with `hana-vector` and `pg-vector` cases that resolve via that registry rather than unconditional direct imports. If the architecture is refactored away from that switch, preserve the same behavior through the new composition path. In all cases, `RagResolutionConfig['type']`, pipeline config types, YAML comments, and example config docs must be extended to include both new literals.
 
 ## Testing
 
@@ -223,7 +255,8 @@ Cover:
 - Provider: `createCollection` (happy path + autoCreateSchema on/off), `deleteCollection`, `listCollections`, scope rejection
 - Connection string parsing (URL vs explicit fields)
 - Collection-name validation rejection
-- `MissingProviderError` path when peer isn't installed (integration test in server)
+- `MissingProviderError` path when peer isn't installed (integration test in server prefetch/resolve flow)
+- Direct `makeRag()` path initializes schema when `autoCreateSchema: true` even without going through `IRagProvider`
 
 No real-database tests in CI for v11.0.0. Real-DB integration is out-of-scope (separate smoke suite later).
 
@@ -267,10 +300,11 @@ Both new packages depend only on core. No cross-deps with other peers. Clean fan
 3. `MIGRATION-v11.md` gains a "New RAG backends" section naming both packages.
 4. README gains both in the package table.
 5. Extend root CHANGELOG entry for 11.0.0 to mention the two new packages.
-6. Full workspace build + test clean.
-7. Merge PR to `main`.
-8. Post-merge: `npx changeset publish` → all 12 packages published at 11.0.0.
-9. `git tag -a v11.0.0 -m "Release 11.0.0"` + push → GitHub release workflow.
+6. Update whichever server config/resolution modules own `rag.type` parsing so both new values are accepted everywhere current literals are enumerated.
+7. Full workspace build + test clean.
+8. Merge PR to `main`.
+9. Post-merge: `npx changeset publish` → all 12 packages published at 11.0.0.
+10. `git tag -a v11.0.0 -m "Release 11.0.0"` + push → GitHub release workflow.
 
 ## Out of scope
 
@@ -284,5 +318,10 @@ Both new packages depend only on core. No cross-deps with other peers. Clean fan
 ## Known items for implementation plan
 
 - Collection-name → SQL table-identifier sanitization: single regex, same in both packages. Centralize in a core utility? For v11.0.0 scope, keep the regex duplicated in each package; consolidate later if multiple backends grow.
-- Connection pool lifecycle: both packages own their pool. Server doesn't manage it. Pool closes on `rag.close?()` (if IRag gains an optional close method) or on process exit via handler.
-- Metadata JSON column type: Postgres supports native `JSONB` (preferred). HANA has `NCLOB` for JSON; `NVARCHAR` as fallback with size limit. Tests must round-trip metadata correctly.
+- Connection pool lifecycle: both packages own their pool. Do not add `IRag.close()` in this scope. Create one pool/connection-manager per `IRag` instance and rely on process lifetime for now; if explicit disposal becomes necessary, that is a separate core API change.
+- Metadata JSON column type: Postgres uses native `JSONB`. HANA uses `NCLOB` for serialized JSON payloads; do not standardize on `NVARCHAR` in the primary schema because size limits are too constraining for metadata growth. Tests must round-trip metadata correctly.
+- Auto-schema bootstrap must work in both construction paths:
+  - direct `makeRag()` / SmartServer config path
+  - dynamic collection creation via `IRagProvider`
+  Backend code should expose one internal schema-init helper so DDL behavior does not diverge across those paths.
+- Architecture flexibility: while implementing this spec, it is acceptable to change the current server/provider composition if that produces a cleaner solution for optional-peer loading and RAG backend resolution. The spec constrains behavior and external contracts, not the exact module layout, but the solution should still follow the repository's standing principles: DI, implementation isolation behind interfaces, and behavior modeled through strategies/factories where appropriate.
