@@ -10,6 +10,10 @@ export {
   type AnthropicConfig,
   AnthropicProvider,
 } from '@mcp-abap-adt/anthropic-llm';
+export {
+  type DeepSeekConfig,
+  DeepSeekProvider,
+} from '@mcp-abap-adt/deepseek-llm';
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
 // Legacy exports (deprecated - use SapCoreAIProvider instead)
 // These are kept for backward compatibility but will be removed in future versions
@@ -18,4 +22,3 @@ export {
   type SapCoreAIConfig,
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
-export { type DeepSeekConfig, DeepSeekProvider } from './deepseek.js';
