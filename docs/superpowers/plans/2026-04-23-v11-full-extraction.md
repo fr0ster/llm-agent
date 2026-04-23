@@ -632,8 +632,8 @@ import { resolveEmbedder } from '../embedder-factories.js';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 
 describe('resolveEmbedder', () => {
-  it('throws MissingProviderError for unknown names', async () => {
-    await assert.rejects(
+  it('throws MissingProviderError for unknown names', () => {
+    assert.throws(
       () => resolveEmbedder('does-not-exist', {}),
       (err: unknown) => err instanceof MissingProviderError,
     );
@@ -1189,7 +1189,7 @@ cd /home/okyslytsia/prj/llm-agent
 npm run clean && npm install && npm run lint:check && npm run build && npm test 2>&1 | tail -5
 ```
 
-All four must exit 0.
+All five commands must exit 0.
 
 - [ ] **Step 2: Push branch**
 
@@ -1246,7 +1246,7 @@ gh pr merge --merge --delete-branch
 ## Notes
 
 - **Extraction tasks (2-9) mirror each other** — follow Task 2 exactly, substituting package name, directory, source file, and dependencies. Resist rewriting provider logic.
-- **Task 12's dynamic-import pattern** is the key correctness invariant. Hardcoded `import { X } from 'Y'` at the top of embedder-factories.ts would force every peer to be a hard dependency. Use `await import(name)` in the function body.
+- **Task 12's dynamic-import pattern** is the key correctness invariant. Hardcoded `import { X } from 'Y'` at the top of embedder-factories.ts would force every peer to be a hard dependency. Keep `await import(name)` in the startup-prefetch phase, then preserve synchronous resolve calls for the rest of server composition.
 - **Task 18-20 are non-coding validation** — they are mandatory go/no-go gates, not software artifacts. Record results; don't commit them.
 - **Biome lint scope stays at `packages/`** — nothing in docs/ or examples/ lint-gates.
 - **Pre-merge CI** runs on Node 22 (v10.0 baseline). No Node-version change needed.
