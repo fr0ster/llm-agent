@@ -1,49 +1,15 @@
 /**
  * Server package entry.
- * Re-exports SmartAgent, Builder, pipeline, LLM providers, MCP client,
- * adapters, resilience wrappers, skills, agents, and server-specific types.
- * Core interfaces and RAG implementations are available via @mcp-abap-adt/llm-agent.
+ * Re-exports SmartAgent, Builder, pipeline, MCP client, adapters,
+ * resilience wrappers, skills, agents, and server-specific types.
+ * Core interfaces (BaseLLMProvider, LLMProvider, MissingProviderError) and
+ * provider/embedder/RAG implementations are available via their canonical packages:
+ * @mcp-abap-adt/llm-agent, @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm,
+ * @mcp-abap-adt/deepseek-llm, @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
+ * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder, @mcp-abap-adt/qdrant-rag.
  */
 
-export {
-  type AnthropicConfig,
-  AnthropicProvider,
-} from '@mcp-abap-adt/anthropic-llm';
-export {
-  type DeepSeekConfig,
-  DeepSeekProvider,
-} from '@mcp-abap-adt/deepseek-llm';
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
-export {
-  OllamaEmbedder,
-  type OllamaEmbedderConfig,
-  OllamaRag,
-} from '@mcp-abap-adt/ollama-embedder';
-// Embedder providers
-export {
-  OpenAiEmbedder,
-  type OpenAiEmbedderConfig,
-} from '@mcp-abap-adt/openai-embedder';
-export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
-// Vector RAG providers
-export {
-  QdrantRag,
-  type QdrantRagConfig,
-  QdrantRagProvider,
-  type QdrantRagProviderConfig,
-} from '@mcp-abap-adt/qdrant-rag';
-export {
-  SapAiCoreEmbedder,
-  type SapAiCoreEmbedderConfig,
-} from '@mcp-abap-adt/sap-aicore-embedder';
-// Re-export for backward compatibility
-export type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
-// LLM Providers
-// NOTE: All LLM providers are accessed through SAP AI Core
-export {
-  type SapCoreAIConfig,
-  SapCoreAIProvider,
-} from '@mcp-abap-adt/sap-aicore-llm';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 // MCP Client
