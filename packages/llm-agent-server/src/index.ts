@@ -89,6 +89,12 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './smart-agent/config/config-watcher.js';
+// Embedder factory registry
+export {
+  builtInEmbedderFactories,
+  type EmbedderFactoryOpts,
+  prefetchEmbedderFactories,
+} from './smart-agent/embedder-factories.js';
 export {
   HealthChecker,
   type HealthCheckerDeps,

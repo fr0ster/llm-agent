@@ -17,11 +17,7 @@ import type {
   IRag,
   ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  builtInEmbedderFactories,
-  InMemoryRag,
-  VectorRag,
-} from '@mcp-abap-adt/llm-agent';
+import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent';
 import { OllamaRag } from '@mcp-abap-adt/ollama-embedder';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
@@ -32,6 +28,7 @@ import {
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
+import { builtInEmbedderFactories } from './embedder-factories.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
 
 // ---------------------------------------------------------------------------
@@ -219,19 +216,30 @@ export function resolveEmbedder(
   if (options?.injectedEmbedder) return options.injectedEmbedder;
 
   const name = cfg.embedder ?? 'ollama';
-  const factories = { ...builtInEmbedderFactories, ...options?.extraFactories };
-  const factory = factories[name];
-  if (!factory) {
-    throw new Error(
-      `Unknown embedder "${name}". Register a factory or use: ${Object.keys(factories).join(', ')}`,
-    );
-  }
-  return factory({
+  const opts = {
     url: cfg.url,
     apiKey: cfg.apiKey,
     model: cfg.model,
     timeoutMs: cfg.timeoutMs,
-  });
+  };
+
+  // Check built-in prefetch-based factories first
+  if (name in builtInEmbedderFactories) {
+    return builtInEmbedderFactories[name](opts);
+  }
+
+  // Fall back to consumer-registered extra factories
+  const extraFactory = options?.extraFactories?.[name];
+  if (!extraFactory) {
+    const known = [
+      ...Object.keys(builtInEmbedderFactories),
+      ...Object.keys(options?.extraFactories ?? {}),
+    ];
+    throw new Error(
+      `Unknown embedder "${name}". Register a factory or use: ${known.join(', ')}`,
+    );
+  }
+  return extraFactory(opts);
 }
 
 // ---------------------------------------------------------------------------
