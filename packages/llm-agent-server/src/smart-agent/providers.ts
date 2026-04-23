@@ -7,6 +7,7 @@
  */
 
 import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import type {
   EmbedderFactory,
   IDocumentEnricher,
@@ -32,7 +33,6 @@ import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
 import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
-import { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';

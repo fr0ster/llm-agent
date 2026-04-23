@@ -4,8 +4,8 @@
  * DeepSeek supports function calling similar to OpenAI via the `tools` parameter.
  */
 
+import type { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import type { DeepSeekProvider } from '../llm-providers/deepseek.js';
 import {
   type AgentCallOptions,
   BaseAgent,

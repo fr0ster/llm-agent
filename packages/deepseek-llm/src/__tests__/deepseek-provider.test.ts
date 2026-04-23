@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { DeepSeekProvider } from '../deepseek.js';
+import { DeepSeekProvider } from '../deepseek-provider.js';
 
 // ---------------------------------------------------------------------------
 // Constructor

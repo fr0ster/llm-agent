@@ -8,11 +8,5 @@
   },
   "include": ["src/**/*"],
   "exclude": ["**/__tests__/**", "**/*.test.ts", "dist"],
-  "references": [
-    { "path": "../llm-agent" },
-    { "path": "../openai-llm" },
-    { "path": "../anthropic-llm" },
-    { "path": "../sap-aicore-llm" },
-    { "path": "../deepseek-llm" }
-  ]
+  "references": [{ "path": "../llm-agent" }, { "path": "../openai-llm" }]
 }
