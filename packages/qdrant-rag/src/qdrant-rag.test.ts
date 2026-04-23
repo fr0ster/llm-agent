@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { after, before, describe, it } from 'node:test';
-import type { IEmbedder } from '../../interfaces/rag.js';
-import { QdrantRag } from '../qdrant-rag.js';
-import { QueryEmbedding } from '../query-embedding.js';
+import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { QueryEmbedding } from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from './qdrant-rag.js';
 
 // ---------------------------------------------------------------------------
 // Stub embedder
@@ -323,7 +323,7 @@ describe('QdrantRag', () => {
     await w.upsertRaw('a', 't', {});
     await w.upsertRaw('b', 't', {});
     const cleared = await w.clearAll?.();
-    assert.ok(cleared.ok);
+    assert.ok(cleared && cleared.ok);
     assert.equal(state.collections.get('test-clear')?.length, 0);
   });
 });

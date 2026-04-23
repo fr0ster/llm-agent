@@ -16,6 +16,7 @@
     { "path": "../deepseek-llm" },
     { "path": "../ollama-embedder" },
     { "path": "../openai-embedder" },
+    { "path": "../qdrant-rag" },
     { "path": "../sap-aicore-embedder" }
   ]
 }

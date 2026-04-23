@@ -4,10 +4,13 @@ import type {
   IRag,
   IRagEditor,
   RagCollectionScope,
-} from '../../interfaces/rag.js';
-import { RagError, type Result } from '../../interfaces/types.js';
-import { QdrantRag } from '../qdrant-rag.js';
-import { AbstractRagProvider } from './base-provider.js';
+} from '@mcp-abap-adt/llm-agent';
+import {
+  AbstractRagProvider as BaseRagProvider,
+  RagError,
+  type Result,
+} from '@mcp-abap-adt/llm-agent';
+import { QdrantRag } from './qdrant-rag.js';
 
 export interface QdrantRagProviderConfig {
   name: string;
@@ -24,7 +27,7 @@ export interface QdrantRagProviderConfig {
   }) => IIdStrategy;
 }
 
-export class QdrantRagProvider extends AbstractRagProvider {
+export class QdrantRagProvider extends BaseRagProvider {
   readonly name: string;
   readonly kind = 'vector';
   readonly editable: boolean;
