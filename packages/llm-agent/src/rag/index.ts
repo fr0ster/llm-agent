@@ -1,5 +1,4 @@
 export * from './corrections/index.js';
-export { builtInEmbedderFactories } from './embedder-factories.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';
 export * from './mcp-tools/index.js';

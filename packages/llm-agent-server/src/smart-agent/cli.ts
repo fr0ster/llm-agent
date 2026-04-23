@@ -72,6 +72,7 @@ import {
   type ResolveConfigArgs,
   resolveSmartServerConfig,
 } from './config.js';
+import { prefetchEmbedderFactories } from './embedder-factories.js';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
 
@@ -221,6 +222,22 @@ const config: SmartServerConfig = {
     }
   },
 };
+
+// ---------------------------------------------------------------------------
+// Prefetch embedder peer packages — fails fast if a named peer is missing
+// ---------------------------------------------------------------------------
+
+{
+  const ragCfg = baseConfig.rag;
+  const embedderNames: string[] = [];
+  if (ragCfg && ragCfg.type !== 'in-memory') {
+    // Explicit embedder override takes priority; otherwise derive from RAG type
+    const name =
+      ragCfg.embedder ?? (ragCfg.type === 'openai' ? 'openai' : 'ollama');
+    embedderNames.push(name);
+  }
+  await prefetchEmbedderFactories(embedderNames);
+}
 
 // ---------------------------------------------------------------------------
 // Start
