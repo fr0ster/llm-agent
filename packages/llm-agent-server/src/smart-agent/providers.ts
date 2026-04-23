@@ -24,15 +24,15 @@ import {
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import {
+  type SapAICoreCredentials,
+  SapCoreAIProvider,
+} from '@mcp-abap-adt/sap-aicore-llm';
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
 import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
-import {
-  type SapAICoreCredentials,
-  SapCoreAIProvider,
-} from '../llm-providers/sap-core-ai.js';
 import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
@@ -138,11 +138,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
         log: {
-          debug: (msg, meta) =>
+          debug: (msg: string, meta?: Record<string, unknown>) =>
             process.stderr.write(
               `[sap-ai-sdk:debug] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
             ),
-          error: (msg, meta) =>
+          error: (msg: string, meta?: Record<string, unknown>) =>
             process.stderr.write(
               `[sap-ai-sdk:error] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
             ),
