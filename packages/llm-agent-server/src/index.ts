@@ -46,27 +46,6 @@ export {
 } from '@mcp-abap-adt/sap-aicore-llm';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
-export {
-  AnthropicAgent,
-  type AnthropicAgentConfig,
-} from './agents/anthropic-agent.js';
-// New Agent implementations (recommended)
-export { BaseAgent, type BaseAgentConfig } from './agents/base.js';
-export {
-  DeepSeekAgent,
-  type DeepSeekAgentConfig,
-} from './agents/deepseek-agent.js';
-// Legacy exports (deprecated - use SapCoreAIProvider instead)
-// These are kept for backward compatibility but will be removed in future versions
-export { OpenAIAgent, type OpenAIAgentConfig } from './agents/openai-agent.js';
-export {
-  PromptBasedAgent,
-  type PromptBasedAgentConfig,
-} from './agents/prompt-based-agent.js';
-export {
-  SapCoreAIAgent,
-  type SapCoreAIAgentConfig,
-} from './agents/sap-core-ai-agent.js';
 // MCP Client
 export {
   type MCPClientConfig,
@@ -76,9 +55,12 @@ export {
 // Adapters
 export { ClineClientAdapter } from './smart-agent/adapters/cline-client-adapter.js';
 export {
+  type AgentCallOptions,
+  type BaseAgentLlmBridge,
   LlmAdapter,
   type LlmAdapterProviderInfo,
 } from './smart-agent/adapters/llm-adapter.js';
+export { LlmProviderBridge } from './smart-agent/adapters/llm-provider-bridge.js';
 export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 // Builder & Providers
 export type {
