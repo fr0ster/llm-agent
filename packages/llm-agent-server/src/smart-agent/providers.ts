@@ -29,12 +29,8 @@ import {
   type SapAICoreCredentials,
   SapCoreAIProvider,
 } from '@mcp-abap-adt/sap-aicore-llm';
-import { AnthropicAgent } from '../agents/anthropic-agent.js';
-import { DeepSeekAgent } from '../agents/deepseek-agent.js';
-import { OpenAIAgent } from '../agents/openai-agent.js';
-import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
-import { MCPClientWrapper } from '../mcp/client.js';
 import { LlmAdapter } from './adapters/llm-adapter.js';
+import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
 
@@ -61,11 +57,6 @@ export interface LlmProviderConfig {
  * This is the only function that knows about concrete LLM implementations.
  */
 export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
-  const dummyMcp = new MCPClientWrapper({
-    transport: 'embedded',
-    listToolsHandler: async () => [],
-  });
-
   // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
 
@@ -80,14 +71,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new DeepSeekAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -99,14 +87,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new OpenAIAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -118,14 +103,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new AnthropicAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -148,14 +130,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
             ),
         },
       });
-      const agent = new SapCoreAIAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }

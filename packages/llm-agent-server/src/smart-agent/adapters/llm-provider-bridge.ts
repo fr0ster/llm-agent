@@ -1,61 +1,81 @@
 /**
- * OpenAI Agent - Uses OpenAI function calling for tool integration
+ * LlmProviderBridge — wraps a legacy LLMProvider as BaseAgentLlmBridge.
  *
- * OpenAI supports function calling via the `tools` parameter in chat completions.
- * Tools are passed as JSON schema, and LLM returns function calls in response.
+ * This adapter bridges the old LLMProvider interface (returns LLMResponse directly)
+ * to the BaseAgentLlmBridge interface expected by LlmAdapter (returns Result<LlmResponse>).
+ *
+ * It handles OpenAI-style tool format conversion (MCP tools → { type: 'function', function: {...} }).
  */
 
-import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import type { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
-import {
-  type AgentCallOptions,
-  BaseAgent,
-  type BaseAgentConfig,
-} from './base.js';
+import type {
+  AgentStreamChunk,
+  LLMProvider,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
+import type { AgentCallOptions, BaseAgentLlmBridge } from './llm-adapter.js';
 
-export interface OpenAIAgentConfig extends BaseAgentConfig {
-  llmProvider: OpenAIProvider;
+/**
+ * Convert MCP-style tools to OpenAI function-call format.
+ * This is the same conversion that OpenAIAgent/DeepSeekAgent used to do.
+ */
+function convertToolsToFunctions(
+  tools: unknown[],
+): Array<Record<string, unknown>> {
+  return tools.map((rawTool) => {
+    const tool = rawTool as {
+      name?: string;
+      description?: string;
+      inputSchema?: Record<string, unknown>;
+    };
+    return {
+      type: 'function',
+      function: {
+        name: tool.name ?? '',
+        description: tool.description || '',
+        parameters: tool.inputSchema || {
+          type: 'object',
+          properties: {},
+        },
+      },
+    };
+  });
 }
 
-export class OpenAIAgent extends BaseAgent {
-  private llmProvider: OpenAIProvider;
+/**
+ * Wraps a LLMProvider as a BaseAgentLlmBridge, enabling LlmAdapter to use it.
+ *
+ * Usage:
+ *   const provider = new OpenAIProvider({ ... });
+ *   const bridge = new LlmProviderBridge(provider);
+ *   const llm = new LlmAdapter(bridge, { model: provider.model });
+ */
+export class LlmProviderBridge implements BaseAgentLlmBridge {
+  constructor(private readonly provider: LLMProvider) {}
 
-  constructor(config: OpenAIAgentConfig) {
-    super(config);
-    this.llmProvider = config.llmProvider;
-  }
-
-  /**
-   * Call OpenAI with tools using function calling
-   */
-  protected async callLLMWithTools(
+  async callWithTools(
     messages: Message[],
     tools: unknown[],
     options?: AgentCallOptions,
   ): Promise<{ content: string; raw?: unknown }> {
-    const functions = this.convertToolsToOpenAIFunctions(tools);
-
-    const response = await this.llmProvider.chat(
+    const functions = convertToolsToFunctions(tools);
+    const response = await this.provider.chat(
       messages,
       functions.length > 0 ? functions : undefined,
       options,
     );
-
-    return {
-      content: response.content,
-      raw: response.raw,
-    };
+    return { content: response.content, raw: response.raw };
   }
 
-  /**
-   * Stream OpenAI response
-   */
-  protected async *streamLLMWithTools(
+  async *streamWithTools(
     messages: Message[],
     tools: unknown[],
     options?: AgentCallOptions,
-  ): AsyncGenerator<AgentStreamChunk, void, unknown> {
-    const functions = this.convertToolsToOpenAIFunctions(tools);
+  ): AsyncGenerator<
+    { content: string; raw?: unknown } | AgentStreamChunk,
+    void,
+    unknown
+  > {
+    const functions = convertToolsToFunctions(tools);
 
     const toolCallMap = new Map<
       number,
@@ -63,17 +83,17 @@ export class OpenAIAgent extends BaseAgent {
     >();
     let finishReason: 'stop' | 'tool_calls' | 'length' | 'error' = 'stop';
 
-    for await (const chunk of this.llmProvider.streamChat(
+    for await (const chunk of this.provider.streamChat(
       messages,
       functions.length > 0 ? functions : undefined,
       options,
     )) {
       // Yield text deltas
       if (chunk.content) {
-        yield { type: 'text', delta: chunk.content };
+        yield { type: 'text', delta: chunk.content } as AgentStreamChunk;
       }
 
-      // Extract usage from raw
+      // Extract usage and tool calls from raw
       const raw = chunk.raw as Record<string, unknown> | undefined;
       if (raw) {
         const usage = raw.usage as
@@ -84,7 +104,7 @@ export class OpenAIAgent extends BaseAgent {
             type: 'usage',
             promptTokens: usage.prompt_tokens ?? 0,
             completionTokens: usage.completion_tokens ?? 0,
-          };
+          } as AgentStreamChunk;
         }
 
         // Accumulate tool calls from raw delta
@@ -148,35 +168,9 @@ export class OpenAIAgent extends BaseAgent {
             }
           })(),
         }));
-      yield { type: 'tool_calls', toolCalls };
+      yield { type: 'tool_calls', toolCalls } as AgentStreamChunk;
     }
 
-    yield { type: 'done', finishReason };
-  }
-
-  /**
-   * Convert MCP tools to OpenAI function format
-   */
-  private convertToolsToOpenAIFunctions(
-    tools: unknown[],
-  ): Array<Record<string, unknown>> {
-    return tools.map((rawTool) => {
-      const tool = rawTool as {
-        name?: string;
-        description?: string;
-        inputSchema?: Record<string, unknown>;
-      };
-      return {
-        type: 'function',
-        function: {
-          name: tool.name ?? '',
-          description: tool.description || '',
-          parameters: tool.inputSchema || {
-            type: 'object',
-            properties: {},
-          },
-        },
-      };
-    });
+    yield { type: 'done', finishReason } as AgentStreamChunk;
   }
 }
