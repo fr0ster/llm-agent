@@ -15,11 +15,11 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
 import {
   type ChatMessage,
   OrchestrationClient,
 } from '@sap-ai-sdk/orchestration';
-import { BaseLLMProvider } from './base.js';
 
 /**
  * OAuth2 Client Credentials for programmatic SAP AI Core authentication.

@@ -6,7 +6,7 @@
  */
 
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
-import type { OpenAIProvider } from '../llm-providers/openai.js';
+import type { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import {
   type AgentCallOptions,
   BaseAgent,

@@ -9,8 +9,8 @@ import type {
   LLMResponse,
   Message,
 } from '@mcp-abap-adt/llm-agent';
+import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
 import axios, { type AxiosInstance } from 'axios';
-import { BaseLLMProvider } from './base.js';
 
 export interface OpenAIConfig extends LLMProviderConfig {
   model?: string;
