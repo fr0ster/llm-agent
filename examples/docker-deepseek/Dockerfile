@@ -1,6 +1,9 @@
 FROM node:20-alpine
 
-RUN npm install -g @mcp-abap-adt/llm-agent@latest
+# Server + peers required by smart-server.yaml (deepseek LLM + ollama embeddings)
+RUN npm install -g @mcp-abap-adt/llm-agent-server@latest \
+                   @mcp-abap-adt/deepseek-llm@latest \
+                   @mcp-abap-adt/ollama-embedder@latest
 
 WORKDIR /app
 

@@ -8,20 +8,55 @@ A high-performance, RAG-orchestrated LLM agent and OpenAI-compatible server with
 
 | Package | What it is |
 |---|---|
-| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Interfaces, types, and lightweight default RAG implementations. |
-| [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | Default SmartAgent, pipeline, LLM providers, MCP client, HTTP server, and CLIs. Depends on `@mcp-abap-adt/llm-agent`. |
+| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, and lightweight RAG utilities. Zero provider dependencies. |
+| [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | `SmartAgent`, pipeline, MCP client, HTTP server, and CLIs. Depends on `@mcp-abap-adt/llm-agent`; provider packages are optional peers. |
+| [`@mcp-abap-adt/openai-llm`](packages/openai-llm/README.md) | OpenAI LLM provider (`OpenAIProvider`). |
+| [`@mcp-abap-adt/anthropic-llm`](packages/anthropic-llm/README.md) | Anthropic LLM provider (`AnthropicProvider`). |
+| [`@mcp-abap-adt/deepseek-llm`](packages/deepseek-llm/README.md) | DeepSeek LLM provider (`DeepSeekProvider`, extends OpenAI-compatible). |
+| [`@mcp-abap-adt/sap-aicore-llm`](packages/sap-aicore-llm/README.md) | SAP AI Core LLM provider via `@sap-ai-sdk/orchestration`. |
+| [`@mcp-abap-adt/openai-embedder`](packages/openai-embedder/README.md) | OpenAI embeddings (`OpenAiEmbedder`). |
+| [`@mcp-abap-adt/ollama-embedder`](packages/ollama-embedder/README.md) | Ollama embeddings + RAG (`OllamaEmbedder`, `OllamaRag`). |
+| [`@mcp-abap-adt/sap-aicore-embedder`](packages/sap-aicore-embedder/README.md) | SAP AI Core embeddings (`SapAiCoreEmbedder`). |
+| [`@mcp-abap-adt/qdrant-rag`](packages/qdrant-rag/README.md) | Qdrant vector store RAG (`QdrantRag`, `QdrantRagProvider`). |
 
 ## Quick install
 
-```bash
-# Default runtime (most common)
-npm install @mcp-abap-adt/llm-agent-server
+### (a) Server-managed declarative (most common)
 
-# Writing your own agent on our interfaces
+Install server + exactly the peers your `smart-server.yaml` references:
+
+```bash
+# Fully local — Ollama LLM + Ollama embeddings
+npm install @mcp-abap-adt/llm-agent-server \
+            @mcp-abap-adt/ollama-embedder
+
+# DeepSeek LLM + Ollama embeddings
+npm install @mcp-abap-adt/llm-agent-server \
+            @mcp-abap-adt/deepseek-llm \
+            @mcp-abap-adt/ollama-embedder
+
+# SAP AI Core LLM + SAP AI Core embeddings + Qdrant RAG
+npm install @mcp-abap-adt/llm-agent-server \
+            @mcp-abap-adt/sap-aicore-llm \
+            @mcp-abap-adt/sap-aicore-embedder \
+            @mcp-abap-adt/qdrant-rag
+```
+
+A missing peer throws `MissingProviderError` at startup with an install hint.
+
+### (b) Programmatic server composition
+
+Same install as (a), but construct `SmartAgent` via `SmartAgentBuilder` in code rather than via `smart-server.yaml`. Import provider classes from their packages and pass instances to the builder's fluent setters.
+
+### (c) Core-only (no SmartAgent, no server)
+
+```bash
 npm install @mcp-abap-adt/llm-agent
 ```
 
-See `docs/MIGRATION-v10.md` if you are upgrading from a v9 install.
+Build your own agent against the interfaces exported by core. Supply your own `ILlm` and `IEmbedder` implementations.
+
+See [docs/MIGRATION-v11.md](docs/MIGRATION-v11.md) if you are upgrading from v10.
 
 ## Documentation
 
