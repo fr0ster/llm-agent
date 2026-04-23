@@ -1,12 +1,12 @@
 /**
- * SAP AI Core Embedder — IEmbedder implementation using @sap-ai-sdk/orchestration.
+ * SAP AI Core Embedder — IEmbedderBatch implementation using @sap-ai-sdk/orchestration.
  *
  * Generates text embeddings via SAP AI Core embedding model deployments.
  * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
  */
 
-import type { IEmbedderBatch, IEmbedResult } from '../interfaces/rag.js';
-import type { CallOptions } from '../interfaces/types.js';
+import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
+import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 
 export interface SapAiCoreEmbedderConfig {
   /** Embedding model name (e.g. 'text-embedding-3-small') */
@@ -40,7 +40,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
     const embeddings = response.getEmbeddings();
 
     if (!embeddings || embeddings.length === 0) {
-      throw new Error('No embeddings returned from SAP AI Core');
+      throw new RagError('No embeddings returned from SAP AI Core');
     }
 
     const embedding = embeddings[0].embedding;
@@ -80,7 +80,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
     const embeddings = response.getEmbeddings();
 
     if (!embeddings || embeddings.length === 0) {
-      throw new Error('No embeddings returned from SAP AI Core batch');
+      throw new RagError('No embeddings returned from SAP AI Core batch');
     }
 
     const sorted = [...embeddings].sort((a, b) => a.index - b.index);

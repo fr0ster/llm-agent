@@ -6,7 +6,6 @@
  */
 
 import type { EmbedderFactory } from '../interfaces/rag.js';
-import { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 
 export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
   // Task 12: ollama embedder factory restored and moved to server package
@@ -28,8 +27,9 @@ export const builtInEmbedderFactories: Record<string, EmbedderFactory> = {
   //     timeoutMs: cfg.timeoutMs,
   //   });
   // },
-  'sap-ai-core': (cfg) =>
-    new SapAiCoreEmbedder({
-      model: cfg.model ?? 'text-embedding-3-small',
-    }),
+  // Task 12: sap-ai-core embedder factory restored and moved to server package
+  // 'sap-ai-core': (cfg) =>
+  //   new SapAiCoreEmbedder({
+  //     model: cfg.model ?? 'text-embedding-3-small',
+  //   }),
 };

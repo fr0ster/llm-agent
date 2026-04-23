@@ -25,6 +25,10 @@ export {
   type OpenAiEmbedderConfig,
 } from '@mcp-abap-adt/openai-embedder';
 export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+export {
+  SapAiCoreEmbedder,
+  type SapAiCoreEmbedderConfig,
+} from '@mcp-abap-adt/sap-aicore-embedder';
 // Re-export for backward compatibility
 export type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 // LLM Providers
