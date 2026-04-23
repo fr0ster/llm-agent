@@ -22,13 +22,13 @@ import {
   QdrantRag,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 import { AnthropicAgent } from '../agents/anthropic-agent.js';
 import { DeepSeekAgent } from '../agents/deepseek-agent.js';
 import { OpenAIAgent } from '../agents/openai-agent.js';
 import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
 import { AnthropicProvider } from '../llm-providers/anthropic.js';
 import { DeepSeekProvider } from '../llm-providers/deepseek.js';
-import { OpenAIProvider } from '../llm-providers/openai.js';
 import {
   type SapAICoreCredentials,
   SapCoreAIProvider,

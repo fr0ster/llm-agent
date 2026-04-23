@@ -7,7 +7,7 @@ import type {
   LLMProviderConfig,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { type OpenAIConfig, OpenAIProvider } from './openai.js';
+import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 
 export interface DeepSeekConfig extends LLMProviderConfig {
   model?: string;

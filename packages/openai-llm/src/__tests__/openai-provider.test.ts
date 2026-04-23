@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { OpenAIProvider } from '../openai.js';
+import { OpenAIProvider } from '../openai-provider.js';
 
 // ---------------------------------------------------------------------------
 // Constructor
@@ -438,7 +438,7 @@ describe('OpenAIProvider — streamChat() usage', () => {
         yield Buffer.from('data: [DONE]\n\n');
       })(),
     });
-    const chunks: import('../../types.js').LLMResponse[] = [];
+    const chunks: import('@mcp-abap-adt/llm-agent').LLMResponse[] = [];
     for await (const chunk of provider.streamChat([
       { role: 'user', content: 'hi' },
     ])) {

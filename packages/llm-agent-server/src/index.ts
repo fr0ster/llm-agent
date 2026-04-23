@@ -5,6 +5,8 @@
  * Core interfaces and RAG implementations are available via @mcp-abap-adt/llm-agent.
  */
 
+export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
+export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 export {
@@ -32,12 +34,10 @@ export {
   type AnthropicConfig,
   AnthropicProvider,
 } from './llm-providers/anthropic.js';
-export { BaseLLMProvider, type LLMProvider } from './llm-providers/base.js';
 export {
   type DeepSeekConfig,
   DeepSeekProvider,
 } from './llm-providers/deepseek.js';
-export { type OpenAIConfig, OpenAIProvider } from './llm-providers/openai.js';
 // LLM Providers
 // NOTE: All LLM providers are accessed through SAP AI Core
 export {
