@@ -13,6 +13,7 @@
     { "path": "../openai-llm" },
     { "path": "../anthropic-llm" },
     { "path": "../sap-aicore-llm" },
-    { "path": "../deepseek-llm" }
+    { "path": "../deepseek-llm" },
+    { "path": "../openai-embedder" }
   ]
 }

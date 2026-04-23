@@ -14,6 +14,11 @@ export {
   DeepSeekProvider,
 } from '@mcp-abap-adt/deepseek-llm';
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
+// Embedder providers
+export {
+  OpenAiEmbedder,
+  type OpenAiEmbedderConfig,
+} from '@mcp-abap-adt/openai-embedder';
 export { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
 // Re-export for backward compatibility
 export type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';

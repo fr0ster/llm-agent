@@ -1,0 +1,36 @@
+{
+  "name": "@mcp-abap-adt/openai-embedder",
+  "version": "11.0.0",
+  "description": "OpenAI embedding provider (IEmbedderBatch) for @mcp-abap-adt/llm-agent.",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "clean": "tsc -p tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
+  },
+  "dependencies": {
+    "@mcp-abap-adt/llm-agent": "*"
+  },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/fr0ster/llm-agent.git"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
