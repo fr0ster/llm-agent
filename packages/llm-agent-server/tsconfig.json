@@ -14,6 +14,7 @@
     { "path": "../anthropic-llm" },
     { "path": "../sap-aicore-llm" },
     { "path": "../deepseek-llm" },
+    { "path": "../ollama-embedder" },
     { "path": "../openai-embedder" }
   ]
 }
