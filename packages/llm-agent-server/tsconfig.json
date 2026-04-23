@@ -15,6 +15,7 @@
     { "path": "../sap-aicore-llm" },
     { "path": "../deepseek-llm" },
     { "path": "../ollama-embedder" },
-    { "path": "../openai-embedder" }
+    { "path": "../openai-embedder" },
+    { "path": "../sap-aicore-embedder" }
   ]
 }
