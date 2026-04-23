@@ -1,5 +1,25 @@
 # @mcp-abap-adt/llm-agent
 
+## 11.0.0
+
+### Major Changes
+
+- Complete provider and backend extraction. Eight new packages shipped:
+  @mcp-abap-adt/openai-llm, anthropic-llm, deepseek-llm, sap-aicore-llm,
+  openai-embedder, ollama-embedder, sap-aicore-embedder, qdrant-rag.
+
+  Breaking changes:
+
+  - Back-compat re-exports from v10.0 removed. Each symbol lives in exactly
+    one package. See docs/MIGRATION-v11.md for the symbol-by-symbol table.
+  - Non-Smart Agent hierarchy removed. Use SmartAgent + a provider class
+    directly.
+  - Core runtime dep shrinks to zod only; axios and @sap-ai-sdk/\* move to
+    their respective extracted packages.
+  - Server provider dependencies are optional peer deps. Install only the
+    peers your smart-server.yaml names. Missing peer throws
+    MissingProviderError at startup.
+
 ## 10.0.0
 
 ### Major Changes

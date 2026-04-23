@@ -1,5 +1,5 @@
 /**
- * LlmAdapter — wraps BaseAgent as ILlm.
+ * LlmAdapter — wraps a bridge object implementing callWithTools/streamWithTools as ILlm.
  */
 
 import type {
@@ -21,7 +21,35 @@ import {
   type Result,
   type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
-import type { BaseAgentLlmBridge } from '../../agents/base.js';
+
+// ---------------------------------------------------------------------------
+// Bridge interface (formerly in agents/base.ts — kept here so LlmAdapter has
+// no dependency on the deleted agents/ directory)
+// ---------------------------------------------------------------------------
+
+export interface AgentCallOptions {
+  temperature?: number;
+  maxTokens?: number;
+  topP?: number;
+  stop?: string[];
+}
+
+export interface BaseAgentLlmBridge {
+  callWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): Promise<{ content: string; raw?: unknown }>;
+  streamWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<
+    { content: string; raw?: unknown } | CoreAgentStreamChunk,
+    void,
+    unknown
+  >;
+}
 
 type ParseStage = 'response' | 'stream';
 type ParseDiagnostic = {

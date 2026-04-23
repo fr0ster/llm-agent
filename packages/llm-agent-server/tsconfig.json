@@ -8,5 +8,15 @@
   },
   "include": ["src/**/*"],
   "exclude": ["**/__tests__/**", "**/*.test.ts", "dist"],
-  "references": [{ "path": "../llm-agent" }]
+  "references": [
+    { "path": "../llm-agent" },
+    { "path": "../openai-llm" },
+    { "path": "../anthropic-llm" },
+    { "path": "../sap-aicore-llm" },
+    { "path": "../deepseek-llm" },
+    { "path": "../ollama-embedder" },
+    { "path": "../openai-embedder" },
+    { "path": "../qdrant-rag" },
+    { "path": "../sap-aicore-embedder" }
+  ]
 }

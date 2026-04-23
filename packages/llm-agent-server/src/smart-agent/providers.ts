@@ -6,6 +6,8 @@
  * pipeline YAML) delegate here to resolve config into interface instances.
  */
 
+import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import type {
   EmbedderFactory,
   IDocumentEnricher,
@@ -15,27 +17,18 @@ import type {
   IRag,
   ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  builtInEmbedderFactories,
-  InMemoryRag,
-  OllamaRag,
-  QdrantRag,
-  VectorRag,
-} from '@mcp-abap-adt/llm-agent';
-import { AnthropicAgent } from '../agents/anthropic-agent.js';
-import { DeepSeekAgent } from '../agents/deepseek-agent.js';
-import { OpenAIAgent } from '../agents/openai-agent.js';
-import { SapCoreAIAgent } from '../agents/sap-core-ai-agent.js';
-import { AnthropicProvider } from '../llm-providers/anthropic.js';
-import { DeepSeekProvider } from '../llm-providers/deepseek.js';
-import { OpenAIProvider } from '../llm-providers/openai.js';
+import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent';
+import { OllamaRag } from '@mcp-abap-adt/ollama-embedder';
+import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import {
   type SapAICoreCredentials,
   SapCoreAIProvider,
-} from '../llm-providers/sap-core-ai.js';
-import { MCPClientWrapper } from '../mcp/client.js';
+} from '@mcp-abap-adt/sap-aicore-llm';
 import { LlmAdapter } from './adapters/llm-adapter.js';
+import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
+import { builtInEmbedderFactories } from './embedder-factories.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
 
 // ---------------------------------------------------------------------------
@@ -61,11 +54,6 @@ export interface LlmProviderConfig {
  * This is the only function that knows about concrete LLM implementations.
  */
 export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
-  const dummyMcp = new MCPClientWrapper({
-    transport: 'embedded',
-    listToolsHandler: async () => [],
-  });
-
   // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
 
@@ -80,14 +68,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new DeepSeekAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -99,14 +84,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new OpenAIAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -118,14 +100,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         temperature,
         maxTokens,
       });
-      const agent = new AnthropicAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -138,24 +117,21 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
         resourceGroup: cfg.resourceGroup,
         credentials: cfg.credentials,
         log: {
-          debug: (msg, meta) =>
+          debug: (msg: string, meta?: Record<string, unknown>) =>
             process.stderr.write(
               `[sap-ai-sdk:debug] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
             ),
-          error: (msg, meta) =>
+          error: (msg: string, meta?: Record<string, unknown>) =>
             process.stderr.write(
               `[sap-ai-sdk:error] ${msg} ${meta ? JSON.stringify(meta) : ''}\n`,
             ),
         },
       });
-      const agent = new SapCoreAIAgent({
-        llmProvider: provider,
-        mcpClient: dummyMcp,
-      });
-      llm = new LlmAdapter(agent, {
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
         model: provider.model,
-        getModels: () => provider.getModels(),
-        getEmbeddingModels: () => provider.getEmbeddingModels(),
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
       });
       break;
     }
@@ -240,19 +216,30 @@ export function resolveEmbedder(
   if (options?.injectedEmbedder) return options.injectedEmbedder;
 
   const name = cfg.embedder ?? 'ollama';
-  const factories = { ...builtInEmbedderFactories, ...options?.extraFactories };
-  const factory = factories[name];
-  if (!factory) {
-    throw new Error(
-      `Unknown embedder "${name}". Register a factory or use: ${Object.keys(factories).join(', ')}`,
-    );
-  }
-  return factory({
+  const opts = {
     url: cfg.url,
     apiKey: cfg.apiKey,
     model: cfg.model,
     timeoutMs: cfg.timeoutMs,
-  });
+  };
+
+  // Check built-in prefetch-based factories first
+  if (name in builtInEmbedderFactories) {
+    return builtInEmbedderFactories[name](opts);
+  }
+
+  // Fall back to consumer-registered extra factories
+  const extraFactory = options?.extraFactories?.[name];
+  if (!extraFactory) {
+    const known = [
+      ...Object.keys(builtInEmbedderFactories),
+      ...Object.keys(options?.extraFactories ?? {}),
+    ];
+    throw new Error(
+      `Unknown embedder "${name}". Register a factory or use: ${known.join(', ')}`,
+    );
+  }
+  return extraFactory(opts);
 }
 
 // ---------------------------------------------------------------------------

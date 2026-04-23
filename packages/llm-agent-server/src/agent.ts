@@ -4,8 +4,11 @@
  * Coordinates between LLM provider and MCP tools
  */
 
-import type { AgentResponse, Message } from '@mcp-abap-adt/llm-agent';
-import type { LLMProvider } from './llm-providers/base.js';
+import type {
+  AgentResponse,
+  LLMProvider,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import { type MCPClientConfig, MCPClientWrapper } from './mcp/client.js';
 
 export interface AgentConfig {

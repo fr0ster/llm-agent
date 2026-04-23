@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
   "main": "dist/index.js",
@@ -56,27 +56,59 @@
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "*",
     "@modelcontextprotocol/sdk": "^1.28.0",
-    "@sap-ai-sdk/orchestration": "^2.9.0",
-    "axios": "^1.14.0",
     "dotenv": "^17.3.1",
-    "yaml": "^2.8.3"
-  },
-  "devDependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "@sap-ai-sdk/ai-api": "^2.0.0",
-    "@types/node": "^25.6.0"
+    "yaml": "^2.8.3",
+    "zod": "^3.25.0"
   },
   "peerDependencies": {
-    "@opentelemetry/api": "^1.9.1",
-    "@sap-ai-sdk/ai-api": "^2.0.0"
+    "@mcp-abap-adt/openai-llm": "^12.0.0",
+    "@mcp-abap-adt/anthropic-llm": "^12.0.0",
+    "@mcp-abap-adt/deepseek-llm": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^12.0.0",
+    "@mcp-abap-adt/openai-embedder": "^12.0.0",
+    "@mcp-abap-adt/ollama-embedder": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-embedder": "^12.0.0",
+    "@mcp-abap-adt/qdrant-rag": "^12.0.0"
   },
   "peerDependenciesMeta": {
-    "@opentelemetry/api": {
+    "@mcp-abap-adt/openai-llm": {
       "optional": true
     },
-    "@sap-ai-sdk/ai-api": {
+    "@mcp-abap-adt/anthropic-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/deepseek-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/sap-aicore-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/openai-embedder": {
+      "optional": true
+    },
+    "@mcp-abap-adt/ollama-embedder": {
+      "optional": true
+    },
+    "@mcp-abap-adt/sap-aicore-embedder": {
+      "optional": true
+    },
+    "@mcp-abap-adt/qdrant-rag": {
       "optional": true
     }
+  },
+  "devDependencies": {
+    "@mcp-abap-adt/openai-llm": "*",
+    "@mcp-abap-adt/anthropic-llm": "*",
+    "@mcp-abap-adt/deepseek-llm": "*",
+    "@mcp-abap-adt/sap-aicore-llm": "*",
+    "@mcp-abap-adt/openai-embedder": "*",
+    "@mcp-abap-adt/ollama-embedder": "*",
+    "@mcp-abap-adt/sap-aicore-embedder": "*",
+    "@mcp-abap-adt/qdrant-rag": "*",
+    "@opentelemetry/api": "^1.9.1",
+    "@sap-ai-sdk/ai-api": "^2.0.0",
+    "@sap-ai-sdk/orchestration": "^2.9.0",
+    "@types/node": "^25.6.0"
   },
   "license": "MIT",
   "repository": {
