@@ -1,50 +1,17 @@
 /**
  * Server package entry.
- * Re-exports SmartAgent, Builder, pipeline, LLM providers, MCP client,
- * adapters, resilience wrappers, skills, agents, and server-specific types.
- * Core interfaces and RAG implementations are available via @mcp-abap-adt/llm-agent.
+ * Re-exports SmartAgent, Builder, pipeline, MCP client, adapters,
+ * resilience wrappers, skills, agents, and server-specific types.
+ * Core interfaces (BaseLLMProvider, LLMProvider, MissingProviderError) and
+ * provider/embedder/RAG implementations are available via their canonical packages:
+ * @mcp-abap-adt/llm-agent, @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm,
+ * @mcp-abap-adt/deepseek-llm, @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
+ * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder, @mcp-abap-adt/qdrant-rag.
  */
 
+export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
-export {
-  AnthropicAgent,
-  type AnthropicAgentConfig,
-} from './agents/anthropic-agent.js';
-// New Agent implementations (recommended)
-export { BaseAgent, type BaseAgentConfig } from './agents/base.js';
-export {
-  DeepSeekAgent,
-  type DeepSeekAgentConfig,
-} from './agents/deepseek-agent.js';
-// Legacy exports (deprecated - use SapCoreAIProvider instead)
-// These are kept for backward compatibility but will be removed in future versions
-export { OpenAIAgent, type OpenAIAgentConfig } from './agents/openai-agent.js';
-export {
-  PromptBasedAgent,
-  type PromptBasedAgentConfig,
-} from './agents/prompt-based-agent.js';
-export {
-  SapCoreAIAgent,
-  type SapCoreAIAgentConfig,
-} from './agents/sap-core-ai-agent.js';
-export {
-  type AnthropicConfig,
-  AnthropicProvider,
-} from './llm-providers/anthropic.js';
-export { BaseLLMProvider, type LLMProvider } from './llm-providers/base.js';
-export {
-  type DeepSeekConfig,
-  DeepSeekProvider,
-} from './llm-providers/deepseek.js';
-export { type OpenAIConfig, OpenAIProvider } from './llm-providers/openai.js';
-// LLM Providers
-// NOTE: All LLM providers are accessed through SAP AI Core
-export {
-  type SapAICoreCredentials,
-  type SapCoreAIConfig,
-  SapCoreAIProvider,
-} from './llm-providers/sap-core-ai.js';
 // MCP Client
 export {
   type MCPClientConfig,
@@ -54,9 +21,12 @@ export {
 // Adapters
 export { ClineClientAdapter } from './smart-agent/adapters/cline-client-adapter.js';
 export {
+  type AgentCallOptions,
+  type BaseAgentLlmBridge,
   LlmAdapter,
   type LlmAdapterProviderInfo,
 } from './smart-agent/adapters/llm-adapter.js';
+export { LlmProviderBridge } from './smart-agent/adapters/llm-provider-bridge.js';
 export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 // Builder & Providers
 export type {
@@ -85,6 +55,12 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './smart-agent/config/config-watcher.js';
+// Embedder factory registry
+export {
+  builtInEmbedderFactories,
+  type EmbedderFactoryOpts,
+  prefetchEmbedderFactories,
+} from './smart-agent/embedder-factories.js';
 export {
   HealthChecker,
   type HealthCheckerDeps,

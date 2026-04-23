@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "10.0.0",
+  "version": "11.0.0",
   "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,6 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@sap-ai-sdk/orchestration": "^2.9.0",
-    "axios": "^1.14.0",
     "zod": "^3.25.0"
   },
   "license": "MIT",

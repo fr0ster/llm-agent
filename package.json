@@ -5,8 +5,8 @@
   "workspaces": ["packages/*"],
   "scripts": {
     "prebuild": "npm run --workspace @mcp-abap-adt/llm-agent-server prebuild",
-    "build": "tsc -b packages/llm-agent packages/llm-agent-server",
-    "clean": "tsc -b --clean packages/llm-agent packages/llm-agent-server",
+    "build": "tsc -b packages/llm-agent packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/llm-agent-server",
+    "clean": "tsc -b --clean packages/llm-agent packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/llm-agent-server",
     "lint": "biome check --write packages",
     "lint:check": "biome check packages",
     "format": "biome format --write packages",
@@ -18,6 +18,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
     "@changesets/cli": "^2.31.0",
+    "@types/node": "^22.0.0",
     "typescript": "^6.0.2",
     "tsx": "^4.21.0",
     "rimraf": "^5.0.0"

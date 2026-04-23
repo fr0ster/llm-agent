@@ -1,12 +1,7 @@
 export * from './corrections/index.js';
-export { builtInEmbedderFactories } from './embedder-factories.js';
 export type { InMemoryRagConfig } from './in-memory-rag.js';
 export { InMemoryRag } from './in-memory-rag.js';
 export * from './mcp-tools/index.js';
-export type { OllamaEmbedderConfig } from './ollama-rag.js';
-export { OllamaEmbedder, OllamaRag } from './ollama-rag.js';
-export type { OpenAiEmbedderConfig } from './openai-embedder.js';
-export { OpenAiEmbedder } from './openai-embedder.js';
 export * from './overlays/index.js';
 export type { IDocumentEnricher, IQueryPreprocessor } from './preprocessor.js';
 export {
@@ -18,8 +13,6 @@ export {
   TranslatePreprocessor,
 } from './preprocessor.js';
 export * from './providers/index.js';
-export type { QdrantRagConfig } from './qdrant-rag.js';
-export { QdrantRag } from './qdrant-rag.js';
 export {
   FallbackQueryEmbedding,
   QueryEmbedding,
@@ -27,10 +20,6 @@ export {
 } from './query-embedding.js';
 export { LlmQueryExpander, NoopQueryExpander } from './query-expander.js';
 export * from './registry/index.js';
-export {
-  SapAiCoreEmbedder,
-  type SapAiCoreEmbedderConfig,
-} from './sap-ai-core-embedder.js';
 export type {
   IScoredResult,
   ISearchCandidate,

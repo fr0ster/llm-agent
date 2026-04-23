@@ -2,34 +2,28 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { AgentStreamChunk, Message } from '@mcp-abap-adt/llm-agent';
 import { LlmError } from '@mcp-abap-adt/llm-agent';
-import { BaseAgent } from '../../../agents/base.js';
-import type { MCPClientWrapper } from '../../../mcp/client.js';
+import type { BaseAgentLlmBridge } from '../llm-adapter.js';
 import { LlmAdapter } from '../llm-adapter.js';
 
 // ---------------------------------------------------------------------------
-// StubAgent — controlled BaseAgent for testing LlmAdapter
+// StubBridge — implements BaseAgentLlmBridge without any agent class dependency
 // ---------------------------------------------------------------------------
 
-class StubAgent extends BaseAgent {
+class StubBridge implements BaseAgentLlmBridge {
   constructor(
     private readonly _resp: { content: string; raw?: unknown },
     private readonly _err?: Error,
     private readonly _streamChunks: Array<
       { content: string; raw?: unknown } | AgentStreamChunk
     > = [],
-  ) {
-    // BaseAgent stores mcpClient but never calls it in callLLMWithTools path
-    super({ mcpClient: {} as unknown as MCPClientWrapper });
-  }
+  ) {}
 
-  // biome-ignore lint/suspicious/noExplicitAny: matches BaseAgent signature
-  protected async callLLMWithTools(_msgs: Message[], _tools: any[]) {
+  async callWithTools(_msgs: Message[], _tools: unknown[]) {
     if (this._err) throw this._err;
     return this._resp;
   }
 
-  // biome-ignore lint/suspicious/noExplicitAny: matches BaseAgent signature
-  protected async *streamLLMWithTools(_msgs: Message[], _tools: any[]) {
+  async *streamWithTools(_msgs: Message[], _tools: unknown[]) {
     if (this._err) throw this._err;
     if (this._streamChunks.length === 0) {
       yield { content: this._resp.content, raw: this._resp.raw };
@@ -49,7 +43,7 @@ const USER: Message = { role: 'user', content: 'Hi' };
 
 describe('LlmAdapter — success paths', () => {
   it('plain stop — no raw provider payload', async () => {
-    const adapter = new LlmAdapter(new StubAgent({ content: 'Hello' }));
+    const adapter = new LlmAdapter(new StubBridge({ content: 'Hello' }));
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.equal(r.value.content, 'Hello');
@@ -74,7 +68,7 @@ describe('LlmAdapter — success paths', () => {
         },
       ],
     };
-    const adapter = new LlmAdapter(new StubAgent({ content: '', raw }));
+    const adapter = new LlmAdapter(new StubBridge({ content: '', raw }));
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.equal(r.value.finishReason, 'tool_calls');
@@ -100,7 +94,7 @@ describe('LlmAdapter — success paths', () => {
         },
       ],
     };
-    const adapter = new LlmAdapter(new StubAgent({ content: '', raw }));
+    const adapter = new LlmAdapter(new StubBridge({ content: '', raw }));
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.deepEqual(r.value.toolCalls?.[0].arguments, {});
@@ -123,7 +117,7 @@ describe('LlmAdapter — success paths', () => {
       ],
     };
     const events: Array<{ name: string; data: unknown }> = [];
-    const adapter = new LlmAdapter(new StubAgent({ content: '', raw }));
+    const adapter = new LlmAdapter(new StubBridge({ content: '', raw }));
     const r = await adapter.chat([USER], undefined, {
       sessionLogger: {
         logStep(name, data) {
@@ -150,7 +144,7 @@ describe('LlmAdapter — success paths', () => {
       stop_reason: 'tool_use',
     };
     const adapter = new LlmAdapter(
-      new StubAgent({ content: 'Thinking...', raw }),
+      new StubBridge({ content: 'Thinking...', raw }),
     );
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
@@ -165,7 +159,7 @@ describe('LlmAdapter — success paths', () => {
       content: [{ type: 'text', text: 'Done.' }],
       stop_reason: 'end_turn',
     };
-    const adapter = new LlmAdapter(new StubAgent({ content: 'Done.', raw }));
+    const adapter = new LlmAdapter(new StubBridge({ content: 'Done.', raw }));
     const r = await adapter.chat([USER]);
     assert.ok(r.ok);
     assert.equal(r.value.finishReason, 'stop');
@@ -175,7 +169,7 @@ describe('LlmAdapter — success paths', () => {
   it('stream tool delta without index emits diagnostic and is ignored', async () => {
     const events: Array<{ name: string; data: unknown }> = [];
     const adapter = new LlmAdapter(
-      new StubAgent({ content: '' }, undefined, [
+      new StubBridge({ content: '' }, undefined, [
         {
           content: '',
           raw: {
@@ -218,7 +212,7 @@ describe('LlmAdapter — success paths', () => {
 describe('LlmAdapter — error paths', () => {
   it('provider throws generic Error → wrapped in LlmError', async () => {
     const adapter = new LlmAdapter(
-      new StubAgent({ content: '' }, new Error('network timeout')),
+      new StubBridge({ content: '' }, new Error('network timeout')),
     );
     const r = await adapter.chat([USER]);
     assert.ok(!r.ok);
@@ -228,7 +222,7 @@ describe('LlmAdapter — error paths', () => {
 
   it('provider throws LlmError → same instance returned', async () => {
     const original = new LlmError('quota exceeded', 'QUOTA');
-    const adapter = new LlmAdapter(new StubAgent({ content: '' }, original));
+    const adapter = new LlmAdapter(new StubBridge({ content: '' }, original));
     const r = await adapter.chat([USER]);
     assert.ok(!r.ok);
     assert.equal(r.error, original);
@@ -239,7 +233,7 @@ describe('LlmAdapter — error paths', () => {
 describe('LlmAdapter — AbortSignal', () => {
   it('pre-aborted signal → ABORTED without calling provider', async () => {
     const adapter = new LlmAdapter(
-      new StubAgent({ content: 'should not reach' }),
+      new StubBridge({ content: 'should not reach' }),
     );
     const ctrl = new AbortController();
     ctrl.abort();

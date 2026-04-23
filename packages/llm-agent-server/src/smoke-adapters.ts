@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Smoke test for Phase 2 adapters: LlmAdapter + McpClientAdapter
+ * Smoke test for Phase 2 adapters: LlmProviderBridge + LlmAdapter + McpClientAdapter
  *
  * Uses:
  *   - mcp-abap-adt (stdio, --env-path) for MCP
@@ -32,9 +32,11 @@ if (!existsSync(smokeEnvPath)) {
 }
 config({ path: smokeEnvPath });
 
+import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { DeepSeekAgent, DeepSeekProvider, MCPClientWrapper } from './index.js';
+import { MCPClientWrapper } from './index.js';
 import { LlmAdapter } from './smart-agent/adapters/llm-adapter.js';
+import { LlmProviderBridge } from './smart-agent/adapters/llm-provider-bridge.js';
 import { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
 
 // ---------------------------------------------------------------------------
@@ -97,16 +99,18 @@ async function main() {
     model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
   });
 
-  // DeepSeekAgent is needed to get a BaseAgent instance for LlmAdapter
-  const agent = new DeepSeekAgent({ llmProvider, mcpClient: mcpClientWrapper });
-
-  const llmAdapter = new LlmAdapter(agent);
+  const llmAdapter = new LlmAdapter(new LlmProviderBridge(llmProvider), {
+    model: llmProvider.model,
+    getModels: () => llmProvider.getModels?.() ?? Promise.resolve([]),
+    getEmbeddingModels: () =>
+      llmProvider.getEmbeddingModels?.() ?? Promise.resolve([]),
+  });
   const mcpAdapter = new McpClientAdapter(mcpClientWrapper);
 
   // --- Connect ---
   console.log('🔌 Connecting to MCP (mcp-abap-adt via stdio)...');
   try {
-    await agent.connect();
+    await mcpClientWrapper.connect();
     ok('MCP connected');
   } catch (err) {
     fail('MCP connect', String(err));
