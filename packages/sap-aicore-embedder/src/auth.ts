@@ -5,6 +5,11 @@ export interface TokenProviderConfig {
 }
 
 export interface GetTokenOptions {
+  /**
+   * Skip the local expiry cache. Note: if another `getToken()` call is already
+   * fetching a token, this flag coalesces into that in-flight request rather
+   * than starting a second one.
+   */
   forceRefresh?: boolean;
 }
 
@@ -29,6 +34,7 @@ export class TokenProvider {
     ) {
       return this.cachedToken;
     }
+    // Dedupe concurrent callers, including those with forceRefresh (see GetTokenOptions).
     if (this.inFlight) return this.inFlight;
 
     this.inFlight = this.fetchToken()
