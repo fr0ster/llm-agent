@@ -31,14 +31,42 @@ console.log(results.map(r => r.vector));
 
 ## Configuration
 
-### SapAiCoreEmbedderConfig
+```ts
+interface SapAiCoreEmbedderConfig {
+  model: string;
+  resourceGroup?: string;                             // default: 'default'
+  scenario?: 'foundation-models' | 'orchestration';   // default: 'foundation-models'
+  credentials?: FoundationModelsCredentials;          // foundation-models only; falls back to AICORE_SERVICE_KEY
+}
+```
 
-- `model` (required): Embedding model name (e.g., 'text-embedding-3-small')
-- `resourceGroup` (optional): SAP AI Core resource group
+### Foundation-models (default)
+
+For tenants where embedding models are deployed under the `foundation-models` scenario:
+
+```ts
+import { SapAiCoreEmbedder } from '@mcp-abap-adt/sap-aicore-embedder';
+
+const embedder = new SapAiCoreEmbedder({ model: 'gemini-embedding' });
+// Auth: process.env.AICORE_SERVICE_KEY (client_credentials flow)
+```
+
+### Orchestration
+
+For tenants where the embedding model is deployed under the `orchestration` scenario:
+
+```ts
+const embedder = new SapAiCoreEmbedder({
+  model: 'text-embedding-3-small',
+  scenario: 'orchestration',
+});
+```
 
 ## Authentication
 
-Authentication uses the `AICORE_SERVICE_KEY` environment variable, which is read automatically by the SAP AI SDK orchestration client.
+For the `foundation-models` scenario (default), authentication uses the `AICORE_SERVICE_KEY` environment variable directly (client credentials flow). You can also pass credentials explicitly via the `credentials` option.
+
+For the `orchestration` scenario, authentication is handled automatically by the SAP AI SDK orchestration client using `AICORE_SERVICE_KEY`.
 
 ## License
 
