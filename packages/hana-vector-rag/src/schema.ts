@@ -28,5 +28,5 @@ export function createTableSql(collection: string, dimension: number): string {
 }
 
 export function dropTableSql(collection: string): string {
-  return `DROP TABLE ${quoteIdent(collection)}`;
+  return `DROP TABLE IF EXISTS ${quoteIdent(collection)}`;
 }
