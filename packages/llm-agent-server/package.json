@@ -68,7 +68,9 @@
     "@mcp-abap-adt/openai-embedder": "^12.0.0",
     "@mcp-abap-adt/ollama-embedder": "^12.0.0",
     "@mcp-abap-adt/sap-aicore-embedder": "^12.0.0",
-    "@mcp-abap-adt/qdrant-rag": "^12.0.0"
+    "@mcp-abap-adt/qdrant-rag": "^12.0.0",
+    "@mcp-abap-adt/hana-vector-rag": "^12.0.0",
+    "@mcp-abap-adt/pg-vector-rag": "^12.0.0"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/openai-llm": {
@@ -94,6 +96,12 @@
     },
     "@mcp-abap-adt/qdrant-rag": {
       "optional": true
+    },
+    "@mcp-abap-adt/hana-vector-rag": {
+      "optional": true
+    },
+    "@mcp-abap-adt/pg-vector-rag": {
+      "optional": true
     }
   },
   "devDependencies": {
@@ -105,6 +113,8 @@
     "@mcp-abap-adt/ollama-embedder": "*",
     "@mcp-abap-adt/sap-aicore-embedder": "*",
     "@mcp-abap-adt/qdrant-rag": "*",
+    "@mcp-abap-adt/hana-vector-rag": "*",
+    "@mcp-abap-adt/pg-vector-rag": "*",
     "@opentelemetry/api": "^1.9.1",
     "@sap-ai-sdk/ai-api": "^2.0.0",
     "@sap-ai-sdk/orchestration": "^2.9.0",
