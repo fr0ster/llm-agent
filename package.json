@@ -13,7 +13,8 @@
     "test": "npm run test --workspaces --if-present",
     "changeset": "changeset",
     "version": "changeset version",
-    "release": "npm run build && changeset publish"
+    "release": "npm run build && changeset publish",
+    "release:publish": "bash scripts/publish-all.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.9",
