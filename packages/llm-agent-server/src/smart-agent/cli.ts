@@ -73,6 +73,7 @@ import {
   resolveSmartServerConfig,
 } from './config.js';
 import { prefetchEmbedderFactories } from './embedder-factories.js';
+import { prefetchRagFactories } from './rag-factories.js';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
 
@@ -237,6 +238,24 @@ const config: SmartServerConfig = {
     embedderNames.push(name);
   }
   await prefetchEmbedderFactories(embedderNames);
+}
+
+// ---------------------------------------------------------------------------
+// Prefetch RAG backend peer packages — fails fast if a named peer is missing
+// ---------------------------------------------------------------------------
+
+{
+  const ragCfg = baseConfig.rag;
+  const ragBackendNames: string[] = [];
+  if (
+    ragCfg &&
+    (ragCfg.type === 'qdrant' ||
+      ragCfg.type === 'hana-vector' ||
+      ragCfg.type === 'pg-vector')
+  ) {
+    ragBackendNames.push(ragCfg.type);
+  }
+  await prefetchRagFactories(ragBackendNames);
 }
 
 // ---------------------------------------------------------------------------
