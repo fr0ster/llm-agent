@@ -65,7 +65,13 @@ export interface SmartServerLlmConfig {
 }
 
 export interface SmartServerRagConfig {
-  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  type?:
+    | 'ollama'
+    | 'openai'
+    | 'in-memory'
+    | 'qdrant'
+    | 'hana-vector'
+    | 'pg-vector';
   /**
    * Embedder name — resolved from the embedder factory registry.
    * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
@@ -78,6 +84,17 @@ export interface SmartServerRagConfig {
   dedupThreshold?: number;
   vectorWeight?: number;
   keywordWeight?: number;
+  connectionString?: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  database?: string;
+  schema?: string;
+  dimension?: number;
+  autoCreateSchema?: boolean;
+  poolMax?: number;
+  connectTimeout?: number;
 }
 
 export interface SmartServerMcpConfig {

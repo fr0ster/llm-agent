@@ -7,6 +7,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [11.0.0] — 2026-04-24
+
+### Breaking
+- **Provider and RAG backends extracted into dedicated packages.** Core (`@mcp-abap-adt/llm-agent`) drops its LLM provider classes, embedder implementations, and agent hierarchy. Runtime deps reduced to `zod` only.
+- **`@mcp-abap-adt/llm-agent-server`** now declares all backend packages as **optional peer dependencies**. Consumers install the server plus exactly the peers referenced by their config.
+- Missing peer packages fail fast at startup with typed `MissingProviderError` naming the missing package.
+
+### Added
+- **New provider packages (LLM):** `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`.
+- **New embedder packages:** `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`.
+- **New RAG backend packages:**
+  - `@mcp-abap-adt/qdrant-rag` — Qdrant vector store.
+  - `@mcp-abap-adt/hana-vector-rag` — SAP HANA Cloud Vector Engine (`REAL_VECTOR(dim)` + `COSINE_SIMILARITY`).
+  - `@mcp-abap-adt/pg-vector-rag` — PostgreSQL + pgvector (`vector(dim)` + `<=>` distance).
+- **Server-side RAG factory registry** with startup-prefetch + sync-resolve pattern mirroring embedder factories. Selects optional peer on demand; surfaces `MissingProviderError` without top-level import crashes.
+- **Config surface extended:** `rag.type` accepts `hana-vector` and `pg-vector` in YAML and programmatic config. New fields: `connectionString`, `host`, `port`, `user`, `password`, `database`, `schema`, `dimension`, `autoCreateSchema`, `poolMax`, `connectTimeout`.
+- **Schema bootstrap owned by backend.** Both HANA and pgvector backends expose `ensureSchema()`. Used by both direct `makeRag()` construction and `IRagProvider.createCollection()` paths. Auto-runs when `autoCreateSchema: true` (default).
+- **Migration doc:** `docs/MIGRATION-v11.md` with install / config / import tables, plus a "New RAG backends" section.
+
+### Changed
+- **Changesets fixed group** now covers all 12 packages for lock-step versioning.
+- **Root build scripts** extended to include `hana-vector-rag` and `pg-vector-rag` in the `tsc -b` sequence.
+
+### Removed
+- Agent hierarchy (`BaseAgent` and five subclasses) replaced by direct LLM provider composition in the server.
+- Back-compat re-exports from core for extracted providers — imports must now come from the provider package directly.
+
+---
+
 ## [10.0.0] — 2026-04-22
 
 ### Breaking
