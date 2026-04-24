@@ -1,5 +1,6 @@
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
+import { decodeEmbedding } from './decode-embedding.js';
 
 export interface OrchestrationScenarioEmbedderConfig {
   model: string;
@@ -51,17 +52,4 @@ export class OrchestrationScenarioEmbedder implements IEmbedderBatch {
       this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
     );
   }
-}
-
-function decodeEmbedding(embedding: number[] | string): number[] {
-  if (typeof embedding === 'string') {
-    const buffer = Buffer.from(embedding, 'base64');
-    const float32 = new Float32Array(
-      buffer.buffer,
-      buffer.byteOffset,
-      buffer.length / 4,
-    );
-    return Array.from(float32);
-  }
-  return embedding;
 }
