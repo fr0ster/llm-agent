@@ -35,9 +35,10 @@ export function parseServiceKey(raw: string): ParsedServiceKey {
     );
   }
 
-  const tokenUrl = authUrl.endsWith('/oauth/token')
-    ? authUrl
-    : `${authUrl.replace(/\/+$/, '')}/oauth/token`;
+  const trimmedAuth = authUrl.replace(/\/+$/, '');
+  const tokenUrl = trimmedAuth.endsWith('/oauth/token')
+    ? trimmedAuth
+    : `${trimmedAuth}/oauth/token`;
 
   return {
     clientId,
