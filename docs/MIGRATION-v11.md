@@ -96,3 +96,33 @@ Fix by installing the named peer. Config-validation catches the error before the
 ## Dockerfile examples
 
 `examples/docker-*/Dockerfile`s now install server + the specific peers their bundled `smart-server.yaml` uses. See the repo `examples/` directory for concrete snippets.
+
+## New RAG backends
+
+Two additional optional peer packages ship with 11.0.0:
+
+- `@mcp-abap-adt/hana-vector-rag` — SAP HANA Cloud Vector Engine. Runtime peer: `@sap/hana-client`.
+- `@mcp-abap-adt/pg-vector-rag` — PostgreSQL + pgvector. Runtime peer: `pg`.
+
+Install only the backend your deployment actually uses:
+
+```bash
+# HANA
+npm install @mcp-abap-adt/llm-agent-server @mcp-abap-adt/hana-vector-rag @sap/hana-client
+
+# Postgres + pgvector
+npm install @mcp-abap-adt/llm-agent-server @mcp-abap-adt/pg-vector-rag pg
+```
+
+YAML config:
+
+```yaml
+rag:
+  type: hana-vector           # or: pg-vector
+  connectionString: hdbsql://user:pass@host:443
+  collectionName: llm_agent_docs
+  dimension: 1536
+  autoCreateSchema: true
+```
+
+Cosine similarity is the default distance metric. Schema bootstrap runs automatically when `autoCreateSchema: true` (default). If the selected `rag.type` references a backend whose peer package is not installed, server startup fails with `MissingProviderError` naming the missing package.

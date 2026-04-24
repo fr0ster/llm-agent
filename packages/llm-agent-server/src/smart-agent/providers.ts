@@ -20,7 +20,6 @@ import type {
 import { InMemoryRag, VectorRag } from '@mcp-abap-adt/llm-agent';
 import { OllamaRag } from '@mcp-abap-adt/ollama-embedder';
 import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
-import { QdrantRag } from '@mcp-abap-adt/qdrant-rag';
 import {
   type SapAICoreCredentials,
   SapCoreAIProvider,
@@ -30,6 +29,7 @@ import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 import { builtInEmbedderFactories } from './embedder-factories.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
+import { resolveRag } from './rag-factories.js';
 
 // ---------------------------------------------------------------------------
 // LLM provider resolution
@@ -247,7 +247,13 @@ export function resolveEmbedder(
 // ---------------------------------------------------------------------------
 
 export interface RagResolutionConfig {
-  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  type?:
+    | 'ollama'
+    | 'openai'
+    | 'in-memory'
+    | 'qdrant'
+    | 'hana-vector'
+    | 'pg-vector';
   embedder?: string;
   url?: string;
   apiKey?: string;
@@ -263,6 +269,18 @@ export interface RagResolutionConfig {
   queryPreprocessors?: IQueryPreprocessor[];
   /** Document enrichers for this RAG store. */
   documentEnrichers?: IDocumentEnricher[];
+  /** Connection string or URL for external vector backends. */
+  connectionString?: string;
+  host?: string;
+  port?: number;
+  user?: string;
+  password?: string;
+  database?: string;
+  schema?: string;
+  dimension?: number;
+  autoCreateSchema?: boolean;
+  poolMax?: number;
+  connectTimeout?: number;
 }
 
 export interface RagResolutionOptions {
@@ -305,12 +323,55 @@ export function makeRag(
       throw new Error('Qdrant URL is required for qdrant RAG type');
     }
     const embedder = resolveEmbedder(cfg, options);
-    return new QdrantRag({
+    return resolveRag('qdrant', {
       url: cfg.url,
       collectionName: cfg.collectionName ?? 'llm-agent',
       embedder,
       apiKey: cfg.apiKey,
       timeoutMs: cfg.timeoutMs,
+    });
+  }
+
+  if (cfg.type === 'hana-vector') {
+    if (!cfg.collectionName) {
+      throw new Error('collectionName is required for hana-vector RAG type');
+    }
+    const embedder = resolveEmbedder(cfg, options);
+    return resolveRag('hana-vector', {
+      connectionString: cfg.connectionString,
+      host: cfg.host,
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password,
+      schema: cfg.schema,
+      collectionName: cfg.collectionName,
+      dimension: cfg.dimension,
+      autoCreateSchema: cfg.autoCreateSchema,
+      poolMax: cfg.poolMax,
+      connectTimeout: cfg.connectTimeout,
+      embedder,
+    });
+  }
+
+  if (cfg.type === 'pg-vector') {
+    if (!cfg.collectionName) {
+      throw new Error('collectionName is required for pg-vector RAG type');
+    }
+    const embedder = resolveEmbedder(cfg, options);
+    return resolveRag('pg-vector', {
+      connectionString: cfg.connectionString,
+      host: cfg.host,
+      port: cfg.port,
+      user: cfg.user,
+      password: cfg.password,
+      database: cfg.database,
+      schema: cfg.schema,
+      collectionName: cfg.collectionName,
+      dimension: cfg.dimension,
+      autoCreateSchema: cfg.autoCreateSchema,
+      poolMax: cfg.poolMax,
+      connectTimeout: cfg.connectTimeout,
+      embedder,
     });
   }
 
