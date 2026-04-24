@@ -47,3 +47,16 @@ test('parseServiceKey throws on missing required fields', () => {
 test('parseServiceKey throws on invalid JSON', () => {
   assert.throws(() => parseServiceKey('not json'), /AICORE_SERVICE_KEY/);
 });
+
+test('parseServiceKey handles trailing slash on URL already ending in /oauth/token', () => {
+  const raw = JSON.stringify({
+    clientid: 'x',
+    clientsecret: 'y',
+    url: 'https://example.authentication.eu10.hana.ondemand.com/oauth/token/',
+    serviceurls: { AI_API_URL: 'https://api.example.com' },
+  });
+  assert.equal(
+    parseServiceKey(raw).tokenUrl,
+    'https://example.authentication.eu10.hana.ondemand.com/oauth/token',
+  );
+});
