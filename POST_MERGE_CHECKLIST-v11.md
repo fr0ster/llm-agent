@@ -14,9 +14,10 @@ All 12 packages are at version `11.0.0` in their `package.json` files already. N
 
 ## Publish
 
-5. `npx changeset publish`
-   - Publishes all 12 packages to npm at their current `11.0.0` versions in lock-step.
-   - Requires NPM_TOKEN / `npm login` with publish rights on the `@mcp-abap-adt` scope.
+5. `npm run release:publish`
+   - Runs `scripts/publish-all.sh` — sequential `npm publish` for all 12 packages in dependency order (core → providers → embedders → RAG backends → server).
+   - On the first publish, browser opens for WebAuthn 2FA; tap YubiKey and check "trust this device for 5 minutes" — subsequent publishes in the same run go through without further prompts.
+   - Requires `npm login` with publish rights on the `@mcp-abap-adt` scope.
 6. `git tag -a v11.0.0 -m "Release 11.0.0"`
 7. `git push --tags` — triggers the GitHub release workflow.
 
@@ -36,4 +37,4 @@ Once npm reports all 12 packages at 11.0.0 and `v11.0.0` tag is pushed:
 ## Notes
 
 - Do NOT run `npx changeset version` at any point — there are no pending changesets and any bump would move versions away from 11.0.0.
-- Peer-dependency version ranges in `packages/llm-agent-server/package.json` currently read `^12.0.0` (a pre-existing leftover from an earlier overshoot). Consider fixing them to `^11.0.0` in a small follow-up PR. Out of scope for v11.0.0 release.
+- Peer-dependency version ranges in `packages/llm-agent-server/package.json` were already normalized to `^11.0.0` as part of the v11 final fix commit.
