@@ -42,9 +42,13 @@ export class HanaVectorRag implements IRag {
     this.dimension = config.dimension ?? 1536;
     this.embedder = config.embedder;
     this.autoCreateSchema = config.autoCreateSchema ?? true;
-    this.clientPromise = injectedClient
+    // Attach a no-op catch so the eager import never becomes an unhandledRejection.
+    // The rejection is re-thrown when clientPromise is actually awaited.
+    const driverPromise = injectedClient
       ? Promise.resolve(injectedClient)
       : this.createDriverClient(config);
+    driverPromise.catch(() => {});
+    this.clientPromise = driverPromise;
   }
 
   private async createDriverClient(
