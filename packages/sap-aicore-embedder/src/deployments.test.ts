@@ -69,6 +69,21 @@ test('resolveDeploymentId returns id of RUNNING deployment matching model name',
   assert.equal(headers['AI-Resource-Group'], 'default');
 });
 
+test('resolveDeploymentId falls back to top-level model.name when details path is absent', async () => {
+  mockOnce({
+    resources: [{ id: 'd-fallback', model: { name: 'fallback-model' } }],
+  });
+
+  const id = await resolveDeploymentId({
+    apiBaseUrl: 'https://api.example.com',
+    token: 'tok',
+    resourceGroup: 'default',
+    model: 'fallback-model',
+  });
+
+  assert.equal(id, 'd-fallback');
+});
+
 test('resolveDeploymentId throws when no match found', async () => {
   mockOnce({ resources: [] });
   await assert.rejects(
@@ -79,7 +94,7 @@ test('resolveDeploymentId throws when no match found', async () => {
         resourceGroup: 'default',
         model: 'gemini-embedding',
       }),
-    /gemini-embedding/,
+    /gemini-embedding.*foundation-models/,
   );
 });
 
