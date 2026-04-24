@@ -9,7 +9,7 @@ import type {
 import { AbstractRagProvider, RagError } from '@mcp-abap-adt/llm-agent';
 import type { HanaVectorRagConfig } from './connection.js';
 import { type HanaClient, HanaVectorRag } from './hana-vector-rag.js';
-import { quoteIdent } from './schema.js';
+import { dropTableSql } from './schema.js';
 
 export interface HanaVectorRagProviderConfig {
   name: string;
@@ -98,7 +98,7 @@ export class HanaVectorRagProvider extends AbstractRagProvider {
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     try {
       const client = this.requireClient();
-      await client.exec(`DROP TABLE ${quoteIdent(name)}`);
+      await client.exec(dropTableSql(name));
       return { ok: true, value: undefined };
     } catch (err) {
       return {

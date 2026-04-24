@@ -44,7 +44,7 @@ describe('hana schema', () => {
     assert.match(sql, /metadata NCLOB/);
   });
 
-  it('emits DROP TABLE DDL', () => {
-    assert.equal(dropTableSql('llm_docs'), 'DROP TABLE "llm_docs"');
+  it('emits DROP TABLE DDL with IF EXISTS', () => {
+    assert.equal(dropTableSql('llm_docs'), 'DROP TABLE IF EXISTS "llm_docs"');
   });
 });

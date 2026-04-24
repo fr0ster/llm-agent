@@ -73,10 +73,17 @@ export class HanaVectorRag implements IRag {
     return {
       exec: (sql, params = []) =>
         new Promise((resolve, reject) =>
-          conn.exec(sql, params as unknown[], (err, rows) =>
+          conn.exec(sql, params as unknown[], (err, result) =>
             err
               ? reject(err)
-              : resolve({ rowCount: Array.isArray(rows) ? rows.length : 1 }),
+              : resolve({
+                  rowCount:
+                    typeof result === 'number'
+                      ? result
+                      : Array.isArray(result)
+                        ? result.length
+                        : 0,
+                }),
           ),
         ),
       query: (sql, params = []) =>

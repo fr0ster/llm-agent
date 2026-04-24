@@ -96,6 +96,28 @@ describe('HanaVectorRag', () => {
     assert.ok(client.calls.some((c) => c.sql.includes('DELETE FROM')));
   });
 
+  it('deleteByIdRaw reports false when no row matched', async () => {
+    const calls: ExecCall[] = [];
+    const client: HanaClient = {
+      async exec(sql, params = []) {
+        calls.push({ sql, params });
+        return { rowCount: 0 };
+      },
+      async query() {
+        return [];
+      },
+      async close() {},
+    };
+    const rag = new HanaVectorRag(
+      { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
+      client,
+    );
+    const r = await rag.writer().deleteByIdRaw('missing');
+    assert.equal(r.ok, true);
+    if (!r.ok) throw new Error('unreachable');
+    assert.equal(r.value, false);
+  });
+
   it('clearAll issues TRUNCATE', async () => {
     const client = makeFakeClient();
     const rag = new HanaVectorRag(

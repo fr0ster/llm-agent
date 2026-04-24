@@ -9,7 +9,7 @@ import type {
 import { AbstractRagProvider, RagError } from '@mcp-abap-adt/llm-agent';
 import type { PgVectorRagConfig } from './connection.js';
 import { type PgClient, PgVectorRag } from './pg-vector-rag.js';
-import { quoteIdent } from './schema.js';
+import { dropTableSql } from './schema.js';
 
 export interface PgVectorRagProviderConfig {
   name: string;
@@ -95,7 +95,7 @@ export class PgVectorRagProvider extends AbstractRagProvider {
   async deleteCollection(name: string): Promise<Result<void, RagError>> {
     try {
       const client = this.requireClient();
-      await client.query(`DROP TABLE IF EXISTS ${quoteIdent(name)}`);
+      await client.query(dropTableSql(name));
       return { ok: true, value: undefined };
     } catch (err) {
       return {
