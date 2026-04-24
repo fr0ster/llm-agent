@@ -6,7 +6,7 @@
 # On the first `npm publish` a browser window opens for 2FA. Check the
 # "trust this device for 5 minutes" option; subsequent publishes in the
 # same run go through without further prompts.
-set -euo pipefail
+set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
@@ -25,11 +25,33 @@ PACKAGES=(
   llm-agent-server
 )
 
+PUBLISHED=0
+SKIPPED=0
+FAILED=()
+
 for pkg in "${PACKAGES[@]}"; do
   echo
-  echo ">>> Publishing @mcp-abap-adt/$pkg"
-  npm publish --workspace "@mcp-abap-adt/$pkg" --access public
+  name="@mcp-abap-adt/$pkg"
+  version="$(node -p "require('./packages/$pkg/package.json').version")"
+  echo ">>> $name@$version"
+
+  # Check if this exact version is already published
+  if npm view "$name@$version" version >/dev/null 2>&1; then
+    echo "    already on npm — skipping"
+    SKIPPED=$((SKIPPED + 1))
+    continue
+  fi
+
+  if npm publish --workspace "$name" --access public; then
+    PUBLISHED=$((PUBLISHED + 1))
+  else
+    FAILED+=("$name@$version")
+  fi
 done
 
 echo
-echo "All ${#PACKAGES[@]} packages published."
+echo "Published: $PUBLISHED  Skipped: $SKIPPED  Failed: ${#FAILED[@]}"
+if [ "${#FAILED[@]}" -gt 0 ]; then
+  printf '  - %s\n' "${FAILED[@]}"
+  exit 1
+fi
