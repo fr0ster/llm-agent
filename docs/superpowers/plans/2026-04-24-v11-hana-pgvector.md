@@ -630,7 +630,7 @@ describe('HanaVectorRag', () => {
   it('rejects invalid collection name at construction', () => {
     assert.throws(
       () => new HanaVectorRag({ collectionName: "bad'; DROP", embedder: makeEmbedder() }, makeFakeClient()),
-      /INVALID_COLLECTION_NAME/,
+      (err: Error & { code?: string }) => err.code === 'INVALID_COLLECTION_NAME',
     );
   });
 });
@@ -1312,10 +1312,16 @@ describe('pg schema', () => {
     assertCollectionName('docs_2');
   });
   it('rejects digit-led name', () => {
-    assert.throws(() => assertCollectionName('1bad'), /INVALID_COLLECTION_NAME/);
+    assert.throws(
+      () => assertCollectionName('1bad'),
+      (err: Error & { code?: string }) => err.code === 'INVALID_COLLECTION_NAME',
+    );
   });
   it('rejects punctuation', () => {
-    assert.throws(() => assertCollectionName("x'); DROP"), /INVALID_COLLECTION_NAME/);
+    assert.throws(
+      () => assertCollectionName("x'); DROP"),
+      (err: Error & { code?: string }) => err.code === 'INVALID_COLLECTION_NAME',
+    );
   });
   it('quotes identifiers with double-quotes', () => {
     assert.equal(quoteIdent('docs'), '"docs"');
@@ -1491,7 +1497,7 @@ describe('PgVectorRag', () => {
   it('rejects invalid collection name', () => {
     assert.throws(
       () => new PgVectorRag({ collectionName: "bad'; DROP", embedder: makeEmbedder() }, makeFakeClient()),
-      /INVALID_COLLECTION_NAME/,
+      (err: Error & { code?: string }) => err.code === 'INVALID_COLLECTION_NAME',
     );
   });
 });
