@@ -14,19 +14,22 @@ describe('hana schema', () => {
   it('rejects collection name starting with digit', () => {
     assert.throws(
       () => assertCollectionName('1bad'),
-      /INVALID_COLLECTION_NAME/,
+      (err: Error & { code?: string }) =>
+        err.code === 'INVALID_COLLECTION_NAME',
     );
   });
   it('rejects collection name with special chars', () => {
     assert.throws(
       () => assertCollectionName("x'); DROP"),
-      /INVALID_COLLECTION_NAME/,
+      (err: Error & { code?: string }) =>
+        err.code === 'INVALID_COLLECTION_NAME',
     );
   });
   it('rejects names longer than 63 chars', () => {
     assert.throws(
       () => assertCollectionName('a'.repeat(64)),
-      /INVALID_COLLECTION_NAME/,
+      (err: Error & { code?: string }) =>
+        err.code === 'INVALID_COLLECTION_NAME',
     );
   });
 
