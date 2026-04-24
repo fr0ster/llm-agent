@@ -62,7 +62,10 @@ describe('PgVectorRag', () => {
       { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
       client,
     );
-    const r = await rag.query({ toVector: async () => [0.1, 0.2, 0.3] }, 5);
+    const r = await rag.query(
+      { text: 'test query', toVector: async () => [0.1, 0.2, 0.3] },
+      5,
+    );
     assert.equal(r.ok, true);
     if (!r.ok) throw new Error('unreachable');
     assert.equal(r.value[0].text, 'hello');
@@ -98,7 +101,7 @@ describe('PgVectorRag', () => {
       { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
       client,
     );
-    const r = await rag.writer().clearAll();
+    const r = await rag.writer().clearAll!();
     assert.equal(r.ok, true);
     assert.ok(client.calls.some((c) => c.sql.startsWith('TRUNCATE')));
   });
