@@ -101,7 +101,9 @@ describe('PgVectorRag', () => {
       { collectionName: 'docs', dimension: 3, embedder: makeEmbedder(3) },
       client,
     );
-    const r = await rag.writer().clearAll!();
+    const writer = rag.writer();
+    assert.ok(writer.clearAll);
+    const r = await writer.clearAll();
     assert.equal(r.ok, true);
     assert.ok(client.calls.some((c) => c.sql.startsWith('TRUNCATE')));
   });
