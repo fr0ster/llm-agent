@@ -49,11 +49,11 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory | qdrant
+  type: ollama                        # ollama | in-memory | qdrant | hana-vector | pg-vector
   # embedder: ollama                  # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
-  # collectionName: llm-agent         # Qdrant collection name (qdrant type only)
+  # collectionName: llm-agent         # Collection/table name (qdrant | hana-vector | pg-vector)
   dedupThreshold: 0.92
   vectorWeight: 0.7                   # Semantic similarity weight (0..1)
   keywordWeight: 0.3                  # Lexical matching weight (0..1)
@@ -283,7 +283,12 @@ export function resolveSmartServerConfig(
     rag: {
       type: ((args['rag-type'] as string) ??
         get(yaml, 'rag', 'type') ??
-        'ollama') as 'ollama' | 'in-memory' | 'qdrant',
+        'ollama') as
+        | 'ollama'
+        | 'in-memory'
+        | 'qdrant'
+        | 'hana-vector'
+        | 'pg-vector',
       embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
       url:
         (args['rag-url'] as string) ??

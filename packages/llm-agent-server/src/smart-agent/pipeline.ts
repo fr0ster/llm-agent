@@ -30,8 +30,14 @@ export interface PipelineLlmProviderConfig {
 }
 
 export interface PipelineRagStoreConfig {
-  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant'. Default: 'ollama' */
-  type?: 'ollama' | 'openai' | 'in-memory' | 'qdrant';
+  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector'. Default: 'ollama' */
+  type?:
+    | 'ollama'
+    | 'openai'
+    | 'in-memory'
+    | 'qdrant'
+    | 'hana-vector'
+    | 'pg-vector';
   /**
    * Embedder name — resolved from the embedder factory registry.
    * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
@@ -44,7 +50,7 @@ export interface PipelineRagStoreConfig {
   apiKey?: string;
   /** Embedding model name */
   model?: string;
-  /** Qdrant collection name (required for qdrant type) */
+  /** Collection / table name (required for qdrant, hana-vector, pg-vector) */
   collectionName?: string;
   /** Cosine similarity dedup threshold. Default: 0.92 */
   dedupThreshold?: number;
