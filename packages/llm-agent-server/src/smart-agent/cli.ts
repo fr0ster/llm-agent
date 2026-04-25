@@ -262,7 +262,7 @@ const config: SmartServerConfig = {
 {
   const ragCfg = baseConfig.rag;
   const ragBackendNames = new Set<string>();
-  const peerBackend = (t?: string): boolean =>
+  const peerBackend = (t: string | undefined): t is string =>
     t === 'qdrant' || t === 'hana-vector' || t === 'pg-vector';
   if (ragCfg && peerBackend(ragCfg.type)) ragBackendNames.add(ragCfg.type);
   const pipelineRag = (
