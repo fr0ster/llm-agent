@@ -40,7 +40,9 @@ test('scenario: foundation-models calls REST inference endpoint', async () => {
               id: 'd-1',
               details: {
                 resources: {
-                  backend_details: { model: { name: 'gemini-embedding' } },
+                  backend_details: {
+                    model: { name: 'text-embedding-3-small' },
+                  },
                 },
               },
             },
@@ -56,7 +58,7 @@ test('scenario: foundation-models calls REST inference endpoint', async () => {
   }) as typeof fetch;
 
   const emb = new SapAiCoreEmbedder({
-    model: 'gemini-embedding',
+    model: 'text-embedding-3-small',
     scenario: 'foundation-models',
   });
   const res = await emb.embed('hi');
