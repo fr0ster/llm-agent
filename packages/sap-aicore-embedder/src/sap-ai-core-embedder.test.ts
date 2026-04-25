@@ -15,7 +15,7 @@ afterEach(() => {
   delete process.env.AICORE_SERVICE_KEY;
 });
 
-test('defaults to foundation-models scenario and calls REST inference endpoint', async () => {
+test('scenario: foundation-models calls REST inference endpoint', async () => {
   process.env.AICORE_SERVICE_KEY = JSON.stringify({
     clientid: 'cid',
     clientsecret: 'csec',
@@ -55,7 +55,10 @@ test('defaults to foundation-models scenario and calls REST inference endpoint',
     );
   }) as typeof fetch;
 
-  const emb = new SapAiCoreEmbedder({ model: 'gemini-embedding' });
+  const emb = new SapAiCoreEmbedder({
+    model: 'gemini-embedding',
+    scenario: 'foundation-models',
+  });
   const res = await emb.embed('hi');
   assert.deepEqual(res.vector, [0.5]);
   assert.ok(lastUrl.includes('/v2/inference/deployments/d-1/embeddings'));
@@ -74,5 +77,16 @@ test('scenario: orchestration delegates to the SDK-based backend', async () => {
     model: 'text-embedding-3-small',
     scenario: 'orchestration',
   });
+  assert.ok(emb);
+});
+
+test('default scenario is orchestration (no REST fetch on construction)', async () => {
+  globalThis.fetch = (async () => {
+    throw new Error(
+      'fetch should not be called when default (orchestration) is used at construction',
+    );
+  }) as typeof fetch;
+
+  const emb = new SapAiCoreEmbedder({ model: 'text-embedding-3-small' });
   assert.ok(emb);
 });

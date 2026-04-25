@@ -18,10 +18,12 @@ export interface SapAiCoreEmbedderConfig {
   resourceGroup?: string;
   /**
    * SAP AI Core scenario under which the embedding model is deployed.
-   * - `'foundation-models'` (default): calls the AI Core REST inference API directly.
-   *   Works on tenants where embedding models are deployed under the foundation-models scenario.
-   * - `'orchestration'`: uses `OrchestrationEmbeddingClient` from `@sap-ai-sdk/orchestration`.
-   *   Requires an orchestration-scenario deployment of the embedding model.
+   * - `'orchestration'` (default): uses `OrchestrationEmbeddingClient` from `@sap-ai-sdk/orchestration`.
+   *   Requires an orchestration-scenario deployment of the embedding model. This matches v11.0.0 behavior.
+   * - `'foundation-models'`: calls the AI Core REST inference API directly.
+   *   Use this when your embedding models are deployed under the foundation-models scenario
+   *   (common for tenants where SAP AI Core embedders such as `gemini-embedding` and `text-embedding-3-small`
+   *   are deployed outside the orchestration scenario).
    */
   scenario?: SapAiCoreEmbedderScenario;
   /**
@@ -38,7 +40,7 @@ export class SapAiCoreEmbedder implements IEmbedderBatch {
   private readonly backend: IEmbedderBatch;
 
   constructor(config: SapAiCoreEmbedderConfig) {
-    const scenario = config.scenario ?? 'foundation-models';
+    const scenario = config.scenario ?? 'orchestration';
     if (scenario === 'orchestration') {
       this.backend = new OrchestrationScenarioEmbedder({
         model: config.model,
