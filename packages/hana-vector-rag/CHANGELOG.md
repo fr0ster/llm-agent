@@ -1,4 +1,4 @@
-# @mcp-abap-adt/ollama-embedder
+# @mcp-abap-adt/hana-vector-rag
 
 ## 11.1.0
 
@@ -8,7 +8,6 @@
 
 ## 11.0.0
 
-### Patch Changes
+### Initial Release
 
-- Updated dependencies
-  - @mcp-abap-adt/llm-agent@12.0.0
+- HanaVectorRag + HanaVectorRagProvider (#115).

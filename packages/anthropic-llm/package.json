@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/anthropic-llm",
-  "version": "11.0.0",
+  "version": "11.1.0",
   "description": "Anthropic (Claude) LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
