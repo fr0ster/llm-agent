@@ -67,6 +67,7 @@ export const builtInEmbedderFactories: Record<
   openai: (opts) => resolveEmbedder('openai', opts),
   ollama: (opts) => resolveEmbedder('ollama', opts),
   'sap-ai-core': (opts) => resolveEmbedder('sap-ai-core', opts),
+  'sap-aicore': (opts) => resolveEmbedder('sap-aicore', opts),
 };
 
 /** Test-only: reset the prefetched map (for unit tests). */
