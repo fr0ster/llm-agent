@@ -34,7 +34,7 @@ pipeline:
   # deployed under the `foundation-models` scenario in SAP AI Core — keep that as default.
   rag:
     tools:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -44,7 +44,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     facts:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -55,7 +55,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     feedback:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -66,7 +66,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     state:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -77,7 +77,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_literature:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -87,7 +87,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_news:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
@@ -97,7 +97,7 @@ pipeline:
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_sap_cases:
-      type: qdrant
+      type: ${RAG_TYPE:-in-memory}
       embedder: ${RAG_EMBEDDER:-sap-ai-core}
       scenario: ${RAG_SCENARIO:-foundation-models}
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
