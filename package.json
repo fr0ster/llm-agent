@@ -11,6 +11,8 @@
     "lint:check": "biome check packages",
     "format": "biome format --write packages",
     "test": "npm run test --workspaces --if-present",
+    "dev": "tsx packages/llm-agent-server/src/smart-agent/cli.ts --config smart-server.yaml",
+    "dev:llm": "tsx packages/llm-agent-server/src/smart-agent/cli.ts --config smart-server.yaml --llm-only",
     "changeset": "changeset",
     "version": "changeset version",
     "release": "npm run build && changeset publish",
