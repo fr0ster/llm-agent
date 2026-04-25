@@ -1,4 +1,3 @@
-// packages/sap-aicore-embedder/src/foundation-embedder.ts
 import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
 import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
 import { TokenProvider } from './auth.js';
@@ -18,19 +17,32 @@ export interface FoundationModelsEmbedderConfig {
   resourceGroup?: string;
   /** Explicit credentials. When omitted, `AICORE_SERVICE_KEY` env var is parsed. */
   credentials?: FoundationModelsCredentials;
+  /**
+   * Azure OpenAI api-version query parameter for OpenAI-family deployments.
+   * Default: '2023-05-15'. Ignored for Gemini-family models.
+   */
+  azureApiVersion?: string;
 }
 
-interface EmbeddingsResponseItem {
+type ModelFamily = 'azure-openai' | 'gemini';
+
+interface NormalizedItem {
   embedding: number[] | string;
   index: number;
 }
 
-interface EmbeddingsResponse {
-  data?: EmbeddingsResponseItem[];
+interface OpenAiEmbeddingsResponse {
+  data?: Array<{ embedding: number[] | string; index: number }>;
+}
+
+interface GeminiPredictResponse {
+  predictions?: Array<{ embeddings?: { values?: number[] } }>;
 }
 
 export class FoundationModelsEmbedder implements IEmbedderBatch {
   private readonly model: string;
+  private readonly family: ModelFamily;
+  private readonly azureApiVersion: string;
   private readonly resourceGroup: string;
   private readonly apiBaseUrl: string;
   private readonly tokenProvider: TokenProvider;
@@ -39,6 +51,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
   constructor(config: FoundationModelsEmbedderConfig) {
     const creds = config.credentials ?? this.loadCredentialsFromEnv();
     this.model = config.model;
+    this.family = detectFamily(config.model);
+    this.azureApiVersion = config.azureApiVersion ?? '2023-05-15';
     this.resourceGroup = config.resourceGroup ?? 'default';
     this.apiBaseUrl = creds.apiBaseUrl;
     this.tokenProvider = new TokenProvider({
@@ -69,21 +83,47 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     return sorted.map((item) => ({ vector: decodeEmbedding(item.embedding) }));
   }
 
-  private async requestEmbeddings(
-    input: string[],
-  ): Promise<EmbeddingsResponseItem[]> {
+  private async requestEmbeddings(input: string[]): Promise<NormalizedItem[]> {
     const token = await this.tokenProvider.getToken();
     const deploymentId = await this.getDeploymentId(token);
-    const url = `${this.apiBaseUrl}/v2/inference/deployments/${deploymentId}/embeddings`;
+    const base = `${this.apiBaseUrl}/v2/inference/deployments/${deploymentId}`;
+    const headers = {
+      Authorization: `Bearer ${token}`,
+      'AI-Resource-Group': this.resourceGroup,
+      'Content-Type': 'application/json',
+      Accept: 'application/json',
+    };
+
+    if (this.family === 'gemini') {
+      const url = `${base}/models/${encodeURIComponent(this.model)}:predict`;
+      const body = {
+        instances: input.map((content) => ({ content })),
+      };
+      const res = await fetch(url, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => '');
+        throw new RagError(
+          `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
+        );
+      }
+      const json = (await res.json()) as GeminiPredictResponse;
+      return (json.predictions ?? []).map((p, i) => ({
+        embedding: p.embeddings?.values ?? [],
+        index: i,
+      }));
+    }
+
+    // azure-openai
+    const url = `${base}/embeddings?api-version=${encodeURIComponent(this.azureApiVersion)}`;
+    const body = { input: input.length === 1 ? input[0] : input };
     const res = await fetch(url, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'AI-Resource-Group': this.resourceGroup,
-        'Content-Type': 'application/json',
-        Accept: 'application/json',
-      },
-      body: JSON.stringify({ input: input.length === 1 ? input[0] : input }),
+      headers,
+      body: JSON.stringify(body),
     });
     if (!res.ok) {
       const text = await res.text().catch(() => '');
@@ -91,8 +131,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         `SAP AI Core embeddings call failed: ${res.status} ${res.statusText} ${text}`,
       );
     }
-    const body = (await res.json()) as EmbeddingsResponse;
-    return body.data ?? [];
+    const json = (await res.json()) as OpenAiEmbeddingsResponse;
+    return json.data ?? [];
   }
 
   private getDeploymentId(token: string): Promise<string> {
@@ -103,7 +143,6 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
         resourceGroup: this.resourceGroup,
         model: this.model,
       }).catch((err) => {
-        // Don't cache failures
         this.deploymentIdPromise = null;
         throw err;
       });
@@ -120,4 +159,8 @@ export class FoundationModelsEmbedder implements IEmbedderBatch {
     }
     return parseServiceKey(raw);
   }
+}
+
+function detectFamily(model: string): ModelFamily {
+  return /^gemini/i.test(model) ? 'gemini' : 'azure-openai';
 }

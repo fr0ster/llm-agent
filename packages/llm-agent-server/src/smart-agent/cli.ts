@@ -231,11 +231,16 @@ const config: SmartServerConfig = {
 {
   const ragCfg = baseConfig.rag;
   const embedderNames: string[] = [];
-  if (ragCfg && ragCfg.type !== 'in-memory') {
-    // Explicit embedder override takes priority; otherwise derive from RAG type
-    const name =
-      ragCfg.embedder ?? (ragCfg.type === 'openai' ? 'openai' : 'ollama');
-    embedderNames.push(name);
+  if (ragCfg) {
+    if (ragCfg.type !== 'in-memory') {
+      // Non-in-memory types always need an embedder
+      const name =
+        ragCfg.embedder ?? (ragCfg.type === 'openai' ? 'openai' : 'ollama');
+      embedderNames.push(name);
+    } else if (ragCfg.embedder) {
+      // in-memory + explicit embedder upgrades to VectorRag — still needs the peer
+      embedderNames.push(ragCfg.embedder);
+    }
   }
   await prefetchEmbedderFactories(embedderNames);
 }
