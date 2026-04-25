@@ -53,6 +53,8 @@ rag:
   # embedder: ollama                  # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
+  # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
+  # scenario: orchestration           # SAP AI Core scenario: orchestration (default) | foundation-models
   # collectionName: llm-agent         # Collection/table name (qdrant | hana-vector | pg-vector)
   dedupThreshold: 0.92
   vectorWeight: 0.7                   # Semantic similarity weight (0..1)
@@ -311,6 +313,16 @@ export function resolveSmartServerConfig(
       keywordWeight: Number(
         args['rag-keyword-weight'] ?? get(yaml, 'rag', 'keywordWeight') ?? 0.3,
       ),
+      ...(get(yaml, 'rag', 'resourceGroup') !== undefined
+        ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
+        : {}),
+      ...(get(yaml, 'rag', 'scenario') !== undefined
+        ? {
+            scenario: String(get(yaml, 'rag', 'scenario')) as
+              | 'orchestration'
+              | 'foundation-models',
+          }
+        : {}),
     },
     mcp: mcpType
       ? {
