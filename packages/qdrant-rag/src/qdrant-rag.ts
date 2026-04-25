@@ -90,6 +90,30 @@ export class QdrantRag implements IRag {
       signal,
     );
     if (res.ok) {
+      // Collection exists — verify the embedder dimension matches.
+      // Qdrant collections have a fixed vectors.size set at creation time;
+      // upserts with a different vector length are silently dropped.
+      // Fail fast so the operator can either delete the stale collection
+      // or point this RAG store at a collection matching the current embedder.
+      try {
+        const body = (await res.json()) as {
+          result?: {
+            config?: { params?: { vectors?: { size?: number } } };
+          };
+        };
+        const existingSize = body.result?.config?.params?.vectors?.size;
+        if (typeof existingSize === 'number' && existingSize !== vectorSize) {
+          throw new RagError(
+            `Qdrant collection "${this.collectionName}" has vectors.size=${existingSize} but the current embedder produces ${vectorSize}-dim vectors. ` +
+              'The collection was created for a different embedding model. ' +
+              'Either drop and recreate the collection, or point this RAG store at a collection matching the current embedder.',
+            'UPSERT_ERROR',
+          );
+        }
+      } catch (err) {
+        if (err instanceof RagError) throw err;
+        // JSON parsing or transient read failures — let the next upsert surface them naturally.
+      }
       this.collectionEnsured = true;
       return;
     }

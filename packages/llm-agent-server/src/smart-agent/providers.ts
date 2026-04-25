@@ -192,6 +192,13 @@ export interface EmbedderResolutionConfig {
   apiKey?: string;
   model?: string;
   timeoutMs?: number;
+  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
+  resourceGroup?: string;
+  /**
+   * SAP AI Core scenario for the embedding model deployment.
+   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
+   */
+  scenario?: 'orchestration' | 'foundation-models';
 }
 
 export interface EmbedderResolutionOptions {
@@ -221,6 +228,8 @@ export function resolveEmbedder(
     apiKey: cfg.apiKey,
     model: cfg.model,
     timeoutMs: cfg.timeoutMs,
+    resourceGroup: cfg.resourceGroup,
+    scenario: cfg.scenario,
   };
 
   // Check built-in prefetch-based factories first
@@ -281,6 +290,13 @@ export interface RagResolutionConfig {
   autoCreateSchema?: boolean;
   poolMax?: number;
   connectTimeout?: number;
+  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
+  resourceGroup?: string;
+  /**
+   * SAP AI Core scenario for the embedding model deployment.
+   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
+   */
+  scenario?: 'orchestration' | 'foundation-models';
 }
 
 export interface RagResolutionOptions {

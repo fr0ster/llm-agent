@@ -1,100 +1,65 @@
-/**
- * SAP AI Core Embedder — IEmbedderBatch implementation using @sap-ai-sdk/orchestration.
- *
- * Generates text embeddings via SAP AI Core embedding model deployments.
- * Authentication: reads AICORE_SERVICE_KEY env var automatically (same as LLM provider).
- */
+import type {
+  CallOptions,
+  IEmbedderBatch,
+  IEmbedResult,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  type FoundationModelsCredentials,
+  FoundationModelsEmbedder,
+} from './foundation-embedder.js';
+import { OrchestrationScenarioEmbedder } from './orchestration-embedder.js';
 
-import type { IEmbedderBatch, IEmbedResult } from '@mcp-abap-adt/llm-agent';
-import { type CallOptions, RagError } from '@mcp-abap-adt/llm-agent';
+export type SapAiCoreEmbedderScenario = 'foundation-models' | 'orchestration';
 
 export interface SapAiCoreEmbedderConfig {
-  /** Embedding model name (e.g. 'text-embedding-3-small') */
+  /** Embedding model name (e.g. 'text-embedding-3-small', 'gemini-embedding') */
   model: string;
-  /** SAP AI Core resource group (optional) */
+  /** SAP AI Core resource group. Default: 'default'. */
   resourceGroup?: string;
+  /**
+   * SAP AI Core scenario under which the embedding model is deployed.
+   * - `'orchestration'` (default): uses `OrchestrationEmbeddingClient` from `@sap-ai-sdk/orchestration`.
+   *   Requires an orchestration-scenario deployment of the embedding model. This matches v11.0.0 behavior.
+   * - `'foundation-models'`: calls the AI Core REST inference API directly.
+   *   Use this when your embedding models are deployed under the foundation-models scenario
+   *   (common for tenants where SAP AI Core embedders such as `gemini-embedding` and `text-embedding-3-small`
+   *   are deployed outside the orchestration scenario).
+   */
+  scenario?: SapAiCoreEmbedderScenario;
+  /**
+   * Explicit credentials for the `foundation-models` scenario.
+   * When omitted, `AICORE_SERVICE_KEY` env var is parsed instead.
+   * Ignored for `scenario: 'orchestration'` (the SAP SDK handles auth there).
+   */
+  credentials?: FoundationModelsCredentials;
 }
 
+export type { FoundationModelsCredentials };
+
 export class SapAiCoreEmbedder implements IEmbedderBatch {
-  private readonly model: string;
-  private readonly resourceGroup?: string;
+  private readonly backend: IEmbedderBatch;
 
   constructor(config: SapAiCoreEmbedderConfig) {
-    this.model = config.model;
-    this.resourceGroup = config.resourceGroup;
+    const scenario = config.scenario ?? 'orchestration';
+    if (scenario === 'orchestration') {
+      this.backend = new OrchestrationScenarioEmbedder({
+        model: config.model,
+        resourceGroup: config.resourceGroup,
+      });
+    } else {
+      this.backend = new FoundationModelsEmbedder({
+        model: config.model,
+        resourceGroup: config.resourceGroup,
+        credentials: config.credentials,
+      });
+    }
   }
 
-  async embed(text: string, _options?: CallOptions): Promise<IEmbedResult> {
-    const { OrchestrationEmbeddingClient } = await import(
-      '@sap-ai-sdk/orchestration'
-    );
-
-    const modelName = this
-      .model as unknown as import('@sap-ai-sdk/orchestration').EmbeddingModel;
-    const client = new OrchestrationEmbeddingClient(
-      { embeddings: { model: { name: modelName } } },
-      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
-    );
-
-    const response = await client.embed({ input: text });
-    const embeddings = response.getEmbeddings();
-
-    if (!embeddings || embeddings.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core');
-    }
-
-    const embedding = embeddings[0].embedding;
-
-    // Handle base64-encoded embeddings
-    if (typeof embedding === 'string') {
-      const buffer = Buffer.from(embedding, 'base64');
-      const float32 = new Float32Array(
-        buffer.buffer,
-        buffer.byteOffset,
-        buffer.length / 4,
-      );
-      return { vector: Array.from(float32) };
-    }
-
-    return { vector: embedding };
+  embed(text: string, options?: CallOptions): Promise<IEmbedResult> {
+    return this.backend.embed(text, options);
   }
 
-  async embedBatch(
-    texts: string[],
-    _options?: CallOptions,
-  ): Promise<IEmbedResult[]> {
-    if (texts.length === 0) return [];
-
-    const { OrchestrationEmbeddingClient } = await import(
-      '@sap-ai-sdk/orchestration'
-    );
-
-    const modelName = this
-      .model as unknown as import('@sap-ai-sdk/orchestration').EmbeddingModel;
-    const client = new OrchestrationEmbeddingClient(
-      { embeddings: { model: { name: modelName } } },
-      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
-    );
-
-    const response = await client.embed({ input: texts });
-    const embeddings = response.getEmbeddings();
-
-    if (!embeddings || embeddings.length === 0) {
-      throw new RagError('No embeddings returned from SAP AI Core batch');
-    }
-
-    const sorted = [...embeddings].sort((a, b) => a.index - b.index);
-    return sorted.map((e) => {
-      if (typeof e.embedding === 'string') {
-        const buffer = Buffer.from(e.embedding, 'base64');
-        const float32 = new Float32Array(
-          buffer.buffer,
-          buffer.byteOffset,
-          buffer.length / 4,
-        );
-        return { vector: Array.from(float32) };
-      }
-      return { vector: e.embedding };
-    });
+  embedBatch(texts: string[], options?: CallOptions): Promise<IEmbedResult[]> {
+    return this.backend.embedBatch(texts, options);
   }
 }
