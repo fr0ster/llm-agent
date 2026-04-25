@@ -40,7 +40,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: mcp_tools
+      collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
       vectorWeight: 0.7
       keywordWeight: 0.3
     facts:
@@ -50,7 +50,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_facts
+      collectionName: experience_facts__${EMBEDDING_MODEL:-text-embedding-3-small}
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
@@ -61,7 +61,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_feedback
+      collectionName: experience_feedback__${EMBEDDING_MODEL:-text-embedding-3-small}
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
@@ -72,7 +72,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_state
+      collectionName: experience_state__${EMBEDDING_MODEL:-text-embedding-3-small}
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
@@ -83,7 +83,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_literature
+      collectionName: demo_literature__${EMBEDDING_MODEL:-text-embedding-3-small}
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_news:
@@ -93,7 +93,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_news
+      collectionName: demo_news__${EMBEDDING_MODEL:-text-embedding-3-small}
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_sap_cases:
@@ -103,7 +103,7 @@ pipeline:
       resourceGroup: ${RAG_RESOURCE_GROUP:-default}
       url: ${QDRANT_URL:-http://localhost:6333}
       model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_sap_cases
+      collectionName: demo_sap_cases__${EMBEDDING_MODEL:-text-embedding-3-small}
       vectorWeight: 0.7
       keywordWeight: 0.3
 
