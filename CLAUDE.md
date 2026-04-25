@@ -102,6 +102,7 @@ Copy `.env.template` to `.env`. Key variables:
 - `docs/DEPLOYMENT.md` — production deployment patterns (Docker, systemd, serverless)
 - `docs/PERFORMANCE.md` — RAG, BM25, model selection, token budget tuning
 - `docs/INTEGRATION.md` — custom interface implementation guide with code examples
+- `docs/TROUBLESHOOTING.md` — symptom→cause→fix index for SAP AI Core / Qdrant / pipeline-mode issues
 - `examples/docker-ollama/` — Docker Compose, fully local (Ollama LLM + embeddings, no API keys)
 - `examples/docker-deepseek/` — Docker Compose, DeepSeek LLM + Ollama embeddings
 - `examples/docker-sap-ai-core/` — Docker Compose, SAP AI Core (LLM + embeddings + Qdrant + compat layer)
