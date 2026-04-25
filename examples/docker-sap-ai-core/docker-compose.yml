@@ -23,6 +23,7 @@ services:
       - LLM_MAX_TOKENS=${LLM_MAX_TOKENS:-32768}
 
       # --- RAG: embedder + vector DB ---
+      - RAG_TYPE=${RAG_TYPE:-qdrant}
       - RAG_EMBEDDER=${RAG_EMBEDDER:-sap-aicore}
       - EMBEDDING_MODEL=${EMBEDDING_MODEL:-gemini-embedding}
       - QDRANT_URL=${QDRANT_URL:-http://host.docker.internal:6333}
