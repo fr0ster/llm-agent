@@ -1,94 +1,108 @@
-port: 8010
+port: ${PORT:-4004}
 host: 0.0.0.0
 mode: smart
 
-# Plugins auto-loaded from ./plugins (WORKDIR=/app → /app/plugins)
-
-# Skills: filesystem-based skill discovery (SKILL.md per subdirectory)
+# Skills: filesystem-based discovery (SKILL.md per subdirectory).
+# Default `./skills` is relative to the launch CWD; in docker-compose set SKILLS_DIR=/app/skills.
 skills:
   type: filesystem
   dirs:
-    - /app/skills
+    - ${SKILLS_DIR:-./skills}
 
-# Multi-model pipeline: separate LLMs for main work, classification, and helper tasks
-# Provider & model configured via LLM_PROVIDER and LLM_MODEL_NAME env vars
-# Supported providers: sap-ai-sdk, openai, and any custom provider plugin
+# Multi-model pipeline: separate LLMs for main work, classification, and helper tasks.
+# Provider & model configured via LLM_PROVIDER (default: sap-ai-sdk) and LLM_MODEL_NAME.
 pipeline:
   llm:
     main:
-      provider: ${LLM_PROVIDER}
-      model: ${LLM_MODEL_NAME}
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_MODEL_NAME:-anthropic--claude-4.6-sonnet}
       temperature: 0.7
       maxTokens: 32768
     classifier:
-      provider: ${LLM_PROVIDER}
-      model: ${LLM_CLASSIFIER_MODEL:-gpt-4.1-mini}
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
       temperature: 0.1
       maxTokens: 2048
     helper:
-      provider: ${LLM_PROVIDER}
-      model: ${LLM_HELPER_MODEL:-gpt-4.1-mini}
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
       temperature: 0.1
       maxTokens: 2048
 
-  # Consumer-defined RAG stores (v3.0.0)
+  # Consumer-defined RAG stores. All stores share the embedder/scenario.
+  # Embedding models like `gemini-embedding` and `text-embedding-3-small` are typically
+  # deployed under the `foundation-models` scenario in SAP AI Core — keep that as default.
   rag:
     tools:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: mcp_tools
       vectorWeight: 0.7
       keywordWeight: 0.3
     facts:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: experience_facts
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
     feedback:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: experience_feedback
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
     state:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: experience_state
       dedupThreshold: 0.92
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_literature:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: demo_literature
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_news:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: demo_news
       vectorWeight: 0.7
       keywordWeight: 0.3
     demo_sap_cases:
       type: qdrant
-      embedder: ${RAG_EMBEDDER}
-      url: ${QDRANT_URL}
-      model: ${EMBEDDING_MODEL}
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      url: ${QDRANT_URL:-http://localhost:6333}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
       collectionName: demo_sap_cases
       vectorWeight: 0.7
       keywordWeight: 0.3
@@ -96,28 +110,23 @@ pipeline:
   # Default flow (no pipeline.stages) — llm-agent's hardcoded flow handles:
   # classification, RAG query (all stores), tool selection, reranking, assembly,
   # tool-loop, and client adapter wrapping (ClineClientAdapter) automatically.
-  # This is more robust for OpenAI protocol clients (Cline, Goose, etc.)
-  # than the structured pipeline, which extracts inputText separately.
 
-# MCP: YAML-based config enables auto-vectorization of tools into RAG
-# (plugin mcpClients skip vectorization per builder.js)
+# MCP: YAML-based config enables auto-vectorization of tools into RAG.
 mcp:
   type: http
-  url: ${MCP_SERVER_URL}
+  url: ${MCP_SERVER_URL:-http://localhost:3001/mcp/stream/http}
   headers:
     Accept: "application/json, text/event-stream"
 
-logDir: /app/sessions
+# Default `./sessions` is relative to the launch CWD; in docker-compose set LOG_DIR=/app/sessions.
+logDir: ${LOG_DIR:-./sessions}
 
 # Custom classifier prompt: classify knowledge questions as "action" so RAG is triggered.
-# Upstream issue: ragRetrievalMode=always still skips RAG for non-action types.
 prompts:
-  # System prompt preamble — injected before all LLM calls
   system: >
     Use MCP tools when they can accomplish the task. Answer or fulfill requests when possible.
     When an action is impossible with available tools — say so and do not attempt it.
 
-  # RAG query translation — strict translation without LLM commentary (fr0ster/llm-agent#26)
   ragTranslate: >
     Translate the following text to English for vector search.
     Output ONLY the translated text — no explanations, no commentary,
@@ -161,24 +170,19 @@ agent:
   toolResultCacheTtlMs: 300000
   ragRetrievalMode: always
   ragQueryK: 5
-  # v5.18.0: keep last N client messages in LLM context (older available via RAG)
   historyRecencyWindow: 4
   showReasoning: false
   historyAutoSummarizeLimit: 10
   queryExpansionEnabled: false
   ragTranslationEnabled: true
-  # Keep RAG-selected tools (5-6) across iterations instead of refreshing all 139 MCP tools
   refreshToolsPerIteration: false
-  # Re-run RAG tool selection on error iterations for context-aware tool discovery
   toolReselectPerIteration: true
   # SAP AI Core Orchestration requires non-streaming for tool-use (SSE errors on stream)
   llmCallStrategy: non-streaming
-  # v3.4.0: buffer intermediate tool-loop output, stream only final response (#21)
   streamMode: final
   reportUsage: true
-  # v5.18.2: health check timeout — SAP AI Core needs >5s for LLM probe (#71)
+  # SAP AI Core needs >5s for LLM probe
   healthTimeoutMs: 15000
-  # v3.4.0: retry with exponential backoff on 429/5xx (#20)
   retry:
     maxAttempts: 3
     backoffMs: 2000
