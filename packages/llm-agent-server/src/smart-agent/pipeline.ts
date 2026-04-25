@@ -60,6 +60,13 @@ export interface PipelineRagStoreConfig {
   keywordWeight?: number;
   /** Per-request timeout for embedding calls in milliseconds. Default: 30 000 */
   timeoutMs?: number;
+  /** SAP AI Core resource group (used when embedder is 'sap-ai-core' / 'sap-aicore'). */
+  resourceGroup?: string;
+  /**
+   * SAP AI Core scenario for the embedding model deployment.
+   * `'orchestration'` (default) uses the SAP SDK; `'foundation-models'` calls the REST inference API.
+   */
+  scenario?: 'orchestration' | 'foundation-models';
 }
 
 export interface PipelineConfig {

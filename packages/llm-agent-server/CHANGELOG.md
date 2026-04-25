@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 11.1.0
+
+### Minor Changes
+
+- feat: forward `scenario` and `resourceGroup` from RAG store config to the SAP AI Core embedder, so consumers can target `scenario: 'foundation-models'` deployments via YAML/programmatic config (see #116).
+
 ## 11.0.0
 
 ### Major Changes
