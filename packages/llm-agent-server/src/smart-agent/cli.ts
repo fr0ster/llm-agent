@@ -230,19 +230,29 @@ const config: SmartServerConfig = {
 
 {
   const ragCfg = baseConfig.rag;
-  const embedderNames: string[] = [];
-  if (ragCfg) {
-    if (ragCfg.type !== 'in-memory') {
-      // Non-in-memory types always need an embedder
-      const name =
-        ragCfg.embedder ?? (ragCfg.type === 'openai' ? 'openai' : 'ollama');
-      embedderNames.push(name);
-    } else if (ragCfg.embedder) {
+  const embedderNames = new Set<string>();
+  const pushEmbedderFor = (cfg: { type?: string; embedder?: string }): void => {
+    if (cfg.type && cfg.type !== 'in-memory') {
+      embedderNames.add(
+        cfg.embedder ?? (cfg.type === 'openai' ? 'openai' : 'ollama'),
+      );
+    } else if (cfg.embedder) {
       // in-memory + explicit embedder upgrades to VectorRag — still needs the peer
-      embedderNames.push(ragCfg.embedder);
+      embedderNames.add(cfg.embedder);
+    }
+  };
+  if (ragCfg) pushEmbedderFor(ragCfg);
+  // Pipeline mode: each `pipeline.rag.{name}` entry can declare its own embedder
+  const pipelineRag = (
+    baseConfig as { pipeline?: { rag?: Record<string, unknown> } }
+  ).pipeline?.rag;
+  if (pipelineRag) {
+    for (const cfg of Object.values(pipelineRag)) {
+      if (cfg && typeof cfg === 'object')
+        pushEmbedderFor(cfg as { type?: string; embedder?: string });
     }
   }
-  await prefetchEmbedderFactories(embedderNames);
+  await prefetchEmbedderFactories([...embedderNames]);
 }
 
 // ---------------------------------------------------------------------------
@@ -251,16 +261,21 @@ const config: SmartServerConfig = {
 
 {
   const ragCfg = baseConfig.rag;
-  const ragBackendNames: string[] = [];
-  if (
-    ragCfg &&
-    (ragCfg.type === 'qdrant' ||
-      ragCfg.type === 'hana-vector' ||
-      ragCfg.type === 'pg-vector')
-  ) {
-    ragBackendNames.push(ragCfg.type);
+  const ragBackendNames = new Set<string>();
+  const peerBackend = (t?: string): boolean =>
+    t === 'qdrant' || t === 'hana-vector' || t === 'pg-vector';
+  if (ragCfg && peerBackend(ragCfg.type)) ragBackendNames.add(ragCfg.type);
+  const pipelineRag = (
+    baseConfig as {
+      pipeline?: { rag?: Record<string, { type?: string }> };
+    }
+  ).pipeline?.rag;
+  if (pipelineRag) {
+    for (const cfg of Object.values(pipelineRag)) {
+      if (cfg?.type && peerBackend(cfg.type)) ragBackendNames.add(cfg.type);
+    }
   }
-  await prefetchRagFactories(ragBackendNames);
+  await prefetchRagFactories([...ragBackendNames]);
 }
 
 // ---------------------------------------------------------------------------
