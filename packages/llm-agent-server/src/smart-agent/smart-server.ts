@@ -407,6 +407,31 @@ export class SmartServer {
       builder = builder.setHistoryRag(makeRag({ ...this.cfg.rag }, ragOptions));
     }
 
+    // Wire pipeline.rag.{name} stores into the builder so multi-store YAML
+    // configs behave the same as the flat `rag:` block: `tools` and `history`
+    // map to the agent's built-in slots; everything else is registered as a
+    // named collection that the registry projection exposes via ragStores[name].
+    if (pipeline?.rag) {
+      const ragOptions = {
+        injectedEmbedder: this.cfg.embedder,
+        extraFactories: mergedEmbedderFactories,
+      };
+      for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
+        const rag = makeRag(storeCfg, ragOptions);
+        if (name === 'tools') {
+          builder = builder.setToolsRag(rag);
+        } else if (name === 'history') {
+          builder = builder.setHistoryRag(rag);
+        } else {
+          builder = builder.addRagCollection({
+            name,
+            rag,
+            meta: { displayName: name, scope: 'global' },
+          });
+        }
+      }
+    }
+
     if (this.cfg.circuitBreaker) {
       builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
     }
