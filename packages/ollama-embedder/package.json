@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/ollama-embedder",
-  "version": "11.1.0",
+  "version": "11.1.1",
   "description": "Ollama embedding provider and OllamaRag convenience class for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",

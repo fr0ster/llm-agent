@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/deepseek-llm",
-  "version": "11.1.0",
+  "version": "11.1.1",
   "description": "DeepSeek LLM provider (ILlm, extends OpenAIProvider) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
