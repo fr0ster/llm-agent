@@ -210,6 +210,32 @@ If translation chain is unreliable, use a multilingual embedder instead — `nom
 
 ---
 
+## MCP / streaming runtime
+
+### Streaming chat returns an empty response on every tool-using request
+
+**Symptom.** With a tool-capable model and `stream: true`, the agent log shows `finishReason: 'tool_calls'` but `toolCalls: []` and `responseLength: 0`. The model wanted to call a tool, but nothing was dispatched and the client gets an empty stream. Issue tracking: #119.
+
+**Cause.** `@mcp-abap-adt/llm-agent@11.0.0–11.1.0` (the 10.x provider split) — the per-provider streaming paths in `sap-aicore-llm`, `openai-llm`/`deepseek-llm`, and `anthropic-llm` never populated the normalized `LlmStreamChunk.toolCalls` field. `LlmProviderBridge` accumulated tool deltas only from the OpenAI raw shape (`choice.delta.tool_calls`), so SAP AI SDK chunks (`getDeltaToolCalls()`) and Anthropic SSE blocks (`tool_use` / `input_json_delta`) were silently dropped.
+
+**Fix.** Upgrade to `>=11.1.1`. All four providers now emit normalized `toolCalls` deltas during streaming and the bridge accumulates from the normalized field — provider-specific raw shapes are no longer special-cased. Anthropic also normalizes `stop_reason: 'tool_use'` → `finishReason: 'tool_calls'`.
+
+---
+
+### MCP server unreachable but the agent boots silently
+
+**Symptom.** Server starts cleanly with `event: server_started`, `/health` returns `mcpReachable: false` (or `mcp: []`), tool-using requests return "I don't have that tool" — and there is no log line explaining *why* the MCP wasn't connected. Issue tracking: #118.
+
+**Cause.** `SmartAgentBuilder.build()` in `@mcp-abap-adt/llm-agent-server@11.0.0–11.1.0` wrapped the per-MCP-config setup loop in a bare `catch {}` with no binding and no log call. Connect failures (unreachable host, bad auth, 127.0.0.1 vs container gateway, blocked port) and post-connect failures (tool vectorization throwing) were equally invisible.
+
+**Fix.** Upgrade to `>=11.1.1`. The catch now emits a `warning` log entry — `MCP setup failed for <url-or-command>: <error message>` — matching the pattern used elsewhere in the same file. Graceful-degradation behavior is preserved (the agent still builds without that MCP server). For one-off diagnosis on older versions, run a probe inside the container:
+
+```bash
+docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-server").then(async ({MCPClientWrapper})=>{const w=new MCPClientWrapper({transport:"auto",url:process.env.MCP_SERVER_URL,headers:{Accept:"application/json, text/event-stream"}});try{await w.connect();console.log("OK")}catch(e){console.error("ERR:",e.message)}})'
+```
+
+---
+
 ## When in doubt
 
 - `smart-server.log` — every chat request, every tool-loop iteration with `toolCount` and a content summary.

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/sap-aicore-llm",
-  "version": "11.1.0",
+  "version": "11.1.1",
   "description": "SAP AI Core LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
