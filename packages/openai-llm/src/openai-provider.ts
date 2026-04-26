@@ -148,10 +148,26 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
             const parsed = JSON.parse(data);
             const choice = parsed.choices?.[0];
             if (choice?.delta) {
+              const deltaToolCalls = choice.delta.tool_calls as
+                | Array<{
+                    index: number;
+                    id?: string;
+                    function?: { name?: string; arguments?: string };
+                  }>
+                | undefined;
+              const toolCalls = deltaToolCalls?.length
+                ? deltaToolCalls.map((tc) => ({
+                    index: tc.index,
+                    id: tc.id,
+                    name: tc.function?.name,
+                    arguments: tc.function?.arguments,
+                  }))
+                : undefined;
               yield {
                 content: choice.delta.content || '',
                 finishReason: choice.finish_reason,
                 raw: parsed,
+                ...(toolCalls ? { toolCalls } : {}),
               };
             }
             // Usage-only chunk (stream_options: include_usage)

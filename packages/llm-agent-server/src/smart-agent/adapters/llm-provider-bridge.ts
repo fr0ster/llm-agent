@@ -93,49 +93,34 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
         yield { type: 'text', delta: chunk.content } as AgentStreamChunk;
       }
 
-      // Extract usage and tool calls from raw
-      const raw = chunk.raw as Record<string, unknown> | undefined;
-      if (raw) {
-        const usage = raw.usage as
-          | { prompt_tokens?: number; completion_tokens?: number }
-          | undefined;
-        if (usage) {
-          yield {
-            type: 'usage',
-            promptTokens: usage.prompt_tokens ?? 0,
-            completionTokens: usage.completion_tokens ?? 0,
-          } as AgentStreamChunk;
-        }
+      // Yield normalized usage from the chunk (provider populates this).
+      if (chunk.usage) {
+        yield {
+          type: 'usage',
+          promptTokens: chunk.usage.prompt_tokens ?? 0,
+          completionTokens: chunk.usage.completion_tokens ?? 0,
+        } as AgentStreamChunk;
+      }
 
-        // Accumulate tool calls from raw delta
-        const choices = raw.choices as
-          | Array<{
-              delta?: {
-                tool_calls?: Array<{
-                  index: number;
-                  id?: string;
-                  function?: { name?: string; arguments?: string };
-                }>;
-              };
-            }>
-          | undefined;
-        const delta = choices?.[0]?.delta;
-        if (delta?.tool_calls) {
-          for (const tc of delta.tool_calls) {
-            const index = tc.index;
-            if (!toolCallMap.has(index)) {
-              toolCallMap.set(index, {
-                id: tc.id ?? '',
-                name: tc.function?.name ?? '',
-                arguments: '',
-              });
-            }
-            if (tc.function?.arguments) {
-              const accumulated = toolCallMap.get(index);
-              if (accumulated) {
-                accumulated.arguments += tc.function.arguments;
-              }
-            }
+      // Accumulate tool-call deltas from the provider-normalized field.
+      // Each provider (OpenAI/DeepSeek, Anthropic, SAP AI SDK) populates
+      // chunk.toolCalls with a uniform LlmToolCallDelta shape, so the bridge
+      // no longer needs to reach into provider-specific raw payloads.
+      if (chunk.toolCalls) {
+        for (const tc of chunk.toolCalls) {
+          const index = tc.index;
+          if (!toolCallMap.has(index)) {
+            toolCallMap.set(index, {
+              id: tc.id ?? '',
+              name: tc.name ?? '',
+              arguments: '',
+            });
+          }
+          const accumulated = toolCallMap.get(index);
+          if (accumulated) {
+            if (tc.id && !accumulated.id) accumulated.id = tc.id;
+            if (tc.name && !accumulated.name) accumulated.name = tc.name;
+            if (tc.arguments) accumulated.arguments += tc.arguments;
           }
         }
       }

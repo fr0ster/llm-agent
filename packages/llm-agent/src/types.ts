@@ -45,6 +45,18 @@ export interface LLMResponse {
   content: string;
   raw?: unknown;
   finishReason?: string;
+  /**
+   * Streaming tool-call deltas emitted by the underlying provider, normalized
+   * across providers (SAP AI SDK, OpenAI/DeepSeek, Anthropic). Populated only
+   * by `streamChat()`. Consumers (e.g. LlmProviderBridge) should accumulate
+   * these by `index` to reconstruct full tool calls.
+   */
+  toolCalls?: Array<{
+    index: number;
+    id?: string;
+    name?: string;
+    arguments?: string;
+  }>;
   usage?: {
     prompt_tokens: number;
     completion_tokens: number;

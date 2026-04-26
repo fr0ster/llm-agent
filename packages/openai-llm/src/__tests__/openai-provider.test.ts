@@ -421,6 +421,45 @@ describe('OpenAIProvider — streamChat() usage', () => {
     assert.deepEqual(capturedBody.stream_options, { include_usage: true });
   });
 
+  it('forwards tool_calls deltas in normalized form (regression: #119)', async () => {
+    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async () => ({
+      data: (async function* () {
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call_1","function":{"name":"get_weather","arguments":""}}]},"finish_reason":null}]}\n\n',
+        );
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\\"city\\":"}}]},"finish_reason":null}]}\n\n',
+        );
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\\"Kyiv\\"}"}}]},"finish_reason":null}]}\n\n',
+        );
+        yield Buffer.from(
+          'data: {"choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n',
+        );
+        yield Buffer.from('data: [DONE]\n\n');
+      })(),
+    });
+    const chunks: import('@mcp-abap-adt/llm-agent').LLMResponse[] = [];
+    for await (const chunk of provider.streamChat([
+      { role: 'user', content: 'hi' },
+    ])) {
+      chunks.push(chunk);
+    }
+    const toolChunks = chunks.filter((c) => c.toolCalls);
+    assert.equal(toolChunks.length, 3, 'expected 3 chunks carrying toolCalls');
+    assert.deepEqual(toolChunks[0].toolCalls, [
+      { index: 0, id: 'call_1', name: 'get_weather', arguments: '' },
+    ]);
+    assert.deepEqual(toolChunks[1].toolCalls, [
+      { index: 0, id: undefined, name: undefined, arguments: '{"city":' },
+    ]);
+    assert.deepEqual(toolChunks[2].toolCalls, [
+      { index: 0, id: undefined, name: undefined, arguments: '"Kyiv"}' },
+    ]);
+  });
+
   it('yields usage-only chunk at end of stream', async () => {
     const provider = new OpenAIProvider({ apiKey: 'sk-test' });
     // @ts-expect-error — stub axios for test
