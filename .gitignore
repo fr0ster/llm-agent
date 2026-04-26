@@ -44,3 +44,8 @@ sessions/
 logs_debug/
 .codex
 .worktrees
+
+# Claude Code local harness state
+.claude/scheduled_tasks.lock
+.claude/settings.local.json
+.claude/worktrees/
