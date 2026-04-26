@@ -151,6 +151,14 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     const decoder = new TextDecoder();
     let buffer = '';
 
+    // Anthropic streams tool_use as discrete content blocks: a
+    // `content_block_start` with type=tool_use carries id+name, then a series
+    // of `content_block_delta` with type=input_json_delta carries the JSON
+    // arguments in pieces. Map block index → tool-call index to produce
+    // normalized LlmToolCallDelta chunks.
+    const toolBlockIndices = new Map<number, number>();
+    let nextToolIndex = 0;
+
     try {
       while (true) {
         const { done, value } = await reader.read();
@@ -181,6 +189,42 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               parsed.delta?.type === 'text_delta'
             ) {
               yield { content: parsed.delta.text || '', raw: parsed };
+            } else if (
+              eventType === 'content_block_start' &&
+              parsed.content_block?.type === 'tool_use'
+            ) {
+              const blockIndex = parsed.index as number;
+              const toolIndex = nextToolIndex++;
+              toolBlockIndices.set(blockIndex, toolIndex);
+              yield {
+                content: '',
+                raw: parsed,
+                toolCalls: [
+                  {
+                    index: toolIndex,
+                    id: parsed.content_block.id,
+                    name: parsed.content_block.name,
+                    arguments: '',
+                  },
+                ],
+              };
+            } else if (
+              eventType === 'content_block_delta' &&
+              parsed.delta?.type === 'input_json_delta'
+            ) {
+              const toolIndex = toolBlockIndices.get(parsed.index as number);
+              if (toolIndex !== undefined) {
+                yield {
+                  content: '',
+                  raw: parsed,
+                  toolCalls: [
+                    {
+                      index: toolIndex,
+                      arguments: parsed.delta.partial_json ?? '',
+                    },
+                  ],
+                };
+              }
             } else if (eventType === 'message_start' && parsed.message?.usage) {
               const u = parsed.message.usage;
               yield {
@@ -194,9 +238,13 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
               };
             } else if (eventType === 'message_delta') {
               const u = parsed.usage;
+              const stopReason = parsed.delta?.stop_reason;
               yield {
                 content: '',
-                finishReason: parsed.delta?.stop_reason,
+                // Normalize Anthropic's 'tool_use' to 'tool_calls' so the
+                // downstream bridge / agent sees the canonical finish reason.
+                finishReason:
+                  stopReason === 'tool_use' ? 'tool_calls' : stopReason,
                 raw: parsed,
                 usage: u
                   ? {

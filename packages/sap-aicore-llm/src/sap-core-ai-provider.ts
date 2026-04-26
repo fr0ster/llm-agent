@@ -308,6 +308,24 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           emittedContentChars += deltaContent.length;
         }
         const finishReason = chunk.getFinishReason();
+        // SAP AI SDK exposes tool-call deltas via getDeltaToolCalls(); without
+        // forwarding them the agent sees finishReason='tool_calls' but no calls
+        // to dispatch (regression introduced in the 10.x provider split).
+        const sdkToolCalls = chunk.getDeltaToolCalls?.() as
+          | Array<{
+              index: number;
+              id?: string;
+              function?: { name?: string; arguments?: string };
+            }>
+          | undefined;
+        const toolCalls = sdkToolCalls?.length
+          ? sdkToolCalls.map((tc) => ({
+              index: tc.index,
+              id: tc.id,
+              name: tc.function?.name,
+              arguments: tc.function?.arguments,
+            }))
+          : undefined;
         this.log?.debug('SAP AI SDK streamChat chunk received', {
           model,
           chunkIndex,
@@ -328,6 +346,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           content: deltaContent,
           finishReason,
           raw: chunk,
+          ...(toolCalls ? { toolCalls } : {}),
           ...(tokenUsage
             ? {
                 usage: {
