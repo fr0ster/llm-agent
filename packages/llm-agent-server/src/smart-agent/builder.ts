@@ -978,8 +978,19 @@ export class SmartAgentBuilder {
 
           connected.push(adapter);
           closeFns.push(() => wrapper.disconnect?.() ?? Promise.resolve());
-        } catch {
-          // Skip failed MCP connections — agent continues without that server
+        } catch (err) {
+          // Skip failed MCP setup — agent continues without that server, but
+          // surface why: silently swallowing this leaves operators chasing
+          // "agent has no tools" with no log line to point at the cause
+          // (unreachable host, bad auth, container-network mismatch, etc.).
+          // Note: this try-block also covers tool/skill vectorization, so the
+          // failure could be either connect or post-connect setup.
+          const target = mcpCfg.type === 'stdio' ? mcpCfg.command : mcpCfg.url;
+          log?.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `MCP setup failed for ${target}: ${err instanceof Error ? err.message : String(err)}`,
+          });
         }
       }
       mcpClients = connected;
