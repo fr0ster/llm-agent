@@ -1,49 +1,25 @@
 /**
- * Server package entry.
- * Re-exports SmartAgent, Builder, pipeline, MCP client, adapters,
- * resilience wrappers, skills, agents, and server-specific types.
- * Core interfaces (BaseLLMProvider, LLMProvider, MissingProviderError) and
- * provider/embedder/RAG implementations are available via their canonical packages:
- * @mcp-abap-adt/llm-agent, @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm,
- * @mcp-abap-adt/deepseek-llm, @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
- * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder, @mcp-abap-adt/qdrant-rag.
+ * Server package entry — runnable distribution of SmartAgent.
+ *
+ * This package ships the binary (CLI + HTTP server) plus its build-time
+ * dependencies: SmartAgentBuilder, providers/factories, plugins, skills,
+ * sessions, metrics, tracer, validator, reranker, history, pipeline,
+ * health, config watcher, MCP client wrapper, and server-specific types.
+ *
+ * Library helpers (CircuitBreaker family, FallbackRag, LLM call strategies,
+ * ToolCache, ClineClientAdapter, AnthropicApiAdapter / OpenAiApiAdapter and
+ * their interface types, external-tools-normalizer, tool-call-deltas, ILogger)
+ * live in @mcp-abap-adt/llm-agent — import them from there directly when
+ * embedding SmartAgent in your own server.
+ *
+ * Provider implementations live in their canonical packages:
+ * @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm, @mcp-abap-adt/deepseek-llm,
+ * @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
+ * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder,
+ * @mcp-abap-adt/qdrant-rag, @mcp-abap-adt/hana-vector-rag, @mcp-abap-adt/pg-vector-rag.
  */
 
-// Adapters
-// API adapters
-// Resilience
-// Utils
-export {
-  AdapterValidationError,
-  AnthropicApiAdapter,
-  type ApiRequestContext,
-  type ApiSseEvent,
-  BaseLLMProvider,
-  CircuitBreaker,
-  type CircuitBreakerConfig,
-  CircuitBreakerEmbedder,
-  CircuitBreakerLlm,
-  type CircuitState,
-  ClineClientAdapter,
-  type ExternalToolValidationCode,
-  type ExternalToolValidationError,
-  FallbackLlmCallStrategy,
-  FallbackRag,
-  getStreamToolCallName,
-  type IClientAdapter,
-  type ILlmApiAdapter,
-  type IToolCache,
-  type LLMProvider,
-  NonStreamingLlmCallStrategy,
-  NoopToolCache,
-  type NormalizedRequest,
-  normalizeAndValidateExternalTools,
-  normalizeExternalTools,
-  OpenAiApiAdapter,
-  StreamingLlmCallStrategy,
-  ToolCache,
-  toToolCallDelta,
-} from '@mcp-abap-adt/llm-agent';
+export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 // MCP Client
