@@ -1,4 +1,4 @@
-# Design: complete the v12 package split into 4 cohesive packages
+# Design: complete the v12 package split into cohesive packages
 
 **Date:** 2026-04-28
 **Issue:** #125
@@ -15,7 +15,7 @@ What actually shipped in 12.0.0: only chat-style helpers (api-adapters, `ClineCl
 
 ## Goal
 
-Complete the split so consumers can build a SmartAgent without `@mcp-abap-adt/llm-agent-server` as a dependency. `llm-agent-server` becomes a runnable binary only. Composition is delivered via three cohesive packages organised by domain (MCP, RAG, core composition), so consumers either take the whole runtime or none of it — no internal peer-range matrix to maintain.
+Complete the split so consumers can build a SmartAgent without `@mcp-abap-adt/llm-agent-server` as a dependency. `llm-agent-server` becomes a runnable binary only. Composition is delivered via cohesive packages organised by domain (MCP, RAG, core composition), with `llm-agent-libs` as the SmartAgent composition entry point and `llm-agent-mcp` / `llm-agent-rag` available for narrower standalone use.
 
 ## Final package layout
 
@@ -46,11 +46,13 @@ Dependency graph:
 
 `llm-agent-libs` directly depends on `llm-agent`, `llm-agent-mcp`, and `llm-agent-rag`. Provider/embedder/RAG leaf packages remain `optional peerDependencies` of `llm-agent-libs` and `llm-agent-rag` so consumers install only the backends they use.
 
-Consumer rule: take all four library packages (`llm-agent`, `llm-agent-mcp`, `llm-agent-rag`, `llm-agent-libs`) or none. There is no supported subset combination — `llm-agent-libs` always pulls the other three transitively. This eliminates internal peer-range mismatch as a class of problem.
+Consumer rule for SmartAgent composition: depend on `llm-agent-libs`; it pulls `llm-agent`, `llm-agent-mcp`, and `llm-agent-rag` transitively. Standalone use of `llm-agent-mcp` or `llm-agent-rag` is supported when a consumer needs only MCP or only RAG/embedder composition. Do not mix internal package versions manually — use matching published versions.
 
 ## Versioning policy
 
-`changesets` is configured with a **fixed version group** containing all five workspace packages:
+Current state of `.changeset/config.json` (verified 2026-04-28): the `fixed` group contains all 12 workspace packages — `llm-agent`, `llm-agent-server`, plus all 10 provider/embedder/RAG leaves. That is why the v12.0.0 release bumped every package together.
+
+Narrow the existing `fixed` group to only the five SmartAgent family packages:
 
 ```jsonc
 // .changeset/config.json (excerpt)
@@ -59,9 +61,11 @@ Consumer rule: take all four library packages (`llm-agent`, `llm-agent-mcp`, `ll
            "@mcp-abap-adt/llm-agent-server"]]
 ```
 
-All five always ship at the same version. A patch in `llm-agent-mcp` bumps every package to the next patch, etc. This guarantees that `llm-agent-libs@X` always pairs with `llm-agent-mcp@X` and `llm-agent-rag@X` — drift cannot occur.
+All five always ship at the same version. A patch in `llm-agent-mcp` bumps every package to the next patch, etc. This guarantees that `llm-agent-libs@X` always pairs with `llm-agent-mcp@X` and `llm-agent-rag@X` — drift inside the family cannot occur.
 
-The published provider/embedder/RAG leaf packages are **not** part of the fixed group: they evolve at their own cadence and only need to satisfy the optional peer ranges declared by `llm-agent-libs` / `llm-agent-rag`.
+**Delta vs. current behaviour**: provider/embedder/RAG leaf packages (`openai-llm`, embedders, vector stores, etc.) leave the fixed group. From 12.0.1 onward they evolve at their own cadence and only need to satisfy the optional peer ranges declared by `llm-agent-libs` / `llm-agent-rag`. Their next release after this refactor will not auto-bump together with the family unless an explicit changeset entry is added for them.
+
+**Standalone consumers**: a project that depends only on `@mcp-abap-adt/llm-agent-mcp` (or only `@mcp-abap-adt/llm-agent-rag`) will see version bumps even when that package's own code did not change — because of the family fixed group. Treat the family version as the meaningful semver. Internal package versions are kept in lockstep, so a bump alone is not a signal of a behavioural change in that specific package; consult the changeset entry to see what actually moved.
 
 ## What moves where
 
@@ -77,6 +81,12 @@ Decision rule: a type goes to `llm-agent` if any of the following holds:
 
 Implementation-owned configuration types of a single concrete class (e.g. `RetryOptions`, `FileSystemPluginLoaderConfig`, `ConfigWatcherOptions`) live in the same package as the class itself.
 
+Before moving any type, grep `packages/llm-agent/src/interfaces/` and `packages/llm-agent/src/types.ts` — if a type with the same (or near-identical) name already exists, integrate or deduplicate rather than create a duplicate. Known cases at the time of writing:
+
+- `AgentCallOptions` already exists in `packages/llm-agent/src/interfaces/agent-contracts.ts`. The `AgentCallOptions` in `llm-agent-server/src/smart-agent/adapters/llm-adapter.ts` must be reconciled with it (most likely deduplicated against the existing one) rather than copied.
+- `LLMProviderConfig` (uppercase LLM) already exists in `packages/llm-agent/src/types.ts` and is the consumer-facing provider config. The `LlmProviderConfig` (lowercase) used internally by `makeLlm` in `smart-agent/providers.ts` is a **different** type with a similar name; it stays in `llm-agent-libs`. Do not merge them — but consider renaming the libs-internal one (e.g. to `MakeLlmConfig`) to remove the naming collision once the move is done.
+- `MissingProviderError` is already in `@mcp-abap-adt/llm-agent` and imported by both `rag-factories.ts` and `embedder-factories.ts`. Both `llm-agent-rag` and `llm-agent-libs` will continue to import it from `llm-agent` — no action needed.
+
 | From `llm-agent-server` | To `llm-agent` |
 |---|---|
 | `smart-agent/interfaces/{mcp-connection-strategy,model-resolver,pipeline}.ts` | `interfaces/` (move as-is) |
@@ -89,13 +99,12 @@ Implementation-owned configuration types of a single concrete class (e.g. `Retry
 | `smart-agent/plugins/index.ts` types `IPluginLoader`, `LoadedPlugins`, `PluginExports` | `interfaces/plugin.ts` (extend) |
 | `smart-agent/builder.ts` type `SmartAgentHandle` | `interfaces/builder.ts` (new) |
 | `smart-agent/adapters/llm-adapter.ts` type `BaseAgentLlmBridge` | `interfaces/agent-contracts.ts` (extend) |
-| `smart-agent/providers.ts` type `LlmProviderConfig` (if not already in `types.ts`) | `interfaces/providers.ts` or `types.ts` |
 | `smart-agent/pipeline/index.ts` types `StageDefinition`, `IStageHandler`, `PipelineContext`, `BuiltInStageType`, `ControlFlowType`, `StageType` | `interfaces/pipeline.ts` (extend) |
 | `smart-agent/logger/` `ILogger`/`LogEvent` types (if not already exported) | `interfaces/request-logger.ts` (extend) |
 
 Types that stay with their implementation (move to the package below that owns the class):
 
-`FileSystemPluginLoaderConfig`, `ConfigWatcherOptions`, `HotReloadableConfig`, `RetryOptions`, `TokenBucketConfig`, `EmbedderFactoryOpts`, `RagResolutionConfig/Options`, `EmbedderResolutionConfig/Options`, `SmartAgentBuilderConfig`, `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentRagStores`, `SmartAgentReconfigureOptions`, `AgentCallOptions`, `LlmAdapterProviderInfo`, `LazyOptions`.
+`FileSystemPluginLoaderConfig`, `ConfigWatcherOptions`, `HotReloadableConfig`, `RetryOptions`, `TokenBucketConfig`, `LlmProviderConfig`, `EmbedderFactoryOpts`, `RagResolutionConfig/Options`, `EmbedderResolutionConfig/Options`, `SmartAgentBuilderConfig`, `BuilderMcpConfig`, `BuilderPromptsConfig`, `SmartAgentRagStores`, `SmartAgentReconfigureOptions`, `AgentCallOptions`, `LlmAdapterProviderInfo`, `LazyOptions`.
 
 `llm-agent/src/index.ts` re-exports the new interface modules through `interfaces/index.ts`. No runtime composition classes are added here.
 
@@ -123,7 +132,7 @@ Owns the composition layer above the leaf RAG / embedder packages.
 
 ```
 src/embedder-factories.ts   ← from llm-agent-server/src/smart-agent/embedder-factories.ts  (resolveEmbedder, builtInEmbedderFactories, prefetchEmbedderFactories, EmbedderFactoryOpts)
-src/rag-factories.ts        ← from llm-agent-server/src/smart-agent/rag-factories.ts       (makeRag and friends)
+src/rag-factories.ts        ← from llm-agent-server/src/smart-agent/rag-factories.ts plus the RAG/embedder resolution block from providers.ts (makeRag, resolveRag, resolution config types)
 src/index.ts                public exports
 ```
 
@@ -170,6 +179,8 @@ src/index.ts                public exports
 - `peerDependencies` (all `optional`): `@mcp-abap-adt/openai-llm`, `anthropic-llm`, `deepseek-llm`, `sap-aicore-llm`. These are LLM provider backends used by `makeLlm()` via dynamic `import()`.
 - `devDependencies` mirroring the LLM peer packages.
 
+Implementation note: current `providers.ts` uses static provider imports. During the move, convert `makeLlm()` to the same optional-provider pattern used by embedder/RAG factories: dynamic `import()` plus `MissingProviderError`. Otherwise importing `llm-agent-libs` would still require every optional LLM provider to be installed.
+
 Subpath exports:
 - `@mcp-abap-adt/llm-agent-libs` — main composition surface.
 - `@mcp-abap-adt/llm-agent-libs/testing` — test helpers (replaces current `@mcp-abap-adt/llm-agent-server/testing`).
@@ -190,7 +201,7 @@ src/generated/                          codegen artifacts
 `package.json`:
 - `bin` keeps current binary entries.
 - `main` / `types` / `exports` removed (or `exports` set to `{ "./package.json": "./package.json" }` only). The package is no longer importable as a library — that is the intended contract.
-- `dependencies`: drops everything that moved; adds `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`, `@mcp-abap-adt/llm-agent-libs`.
+- `dependencies`: drops everything that moved; adds `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`, `@mcp-abap-adt/llm-agent-libs`. List all four explicitly even though `llm-agent-libs` already pulls the others transitively — any binary entry point that imports directly from `llm-agent-mcp` or `llm-agent-rag` (e.g. `check-models-cli.ts`) needs them as direct deps to satisfy strict bundler / `noUncheckedSideEffects` checks.
 
 The legacy top-level `Agent` class stays server-internal. Public composition path is `SmartAgentBuilder` from `@mcp-abap-adt/llm-agent-libs`.
 
@@ -268,8 +279,8 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 2. Scaffold three new packages (`llm-agent-mcp`, `llm-agent-rag`, `llm-agent-libs`) with `package.json`, `tsconfig.json`, biome inheritance, empty `src/index.ts`. Add to root `workspaces`.
 3. Move type-only declarations from `llm-agent-server` → `llm-agent/src/interfaces/` per the table above. Update `llm-agent/src/index.ts`. Run `tsc --noEmit` across the workspace; resolve any cycles before continuing.
 4. Move MCP code (`mcp/client.ts`, `smart-agent/adapters/mcp-client-adapter.ts`, `smart-agent/mcp-client-factory.ts`, `smart-agent/strategies/`) into `llm-agent-mcp`. Update imports to `@mcp-abap-adt/llm-agent`. Populate `llm-agent-mcp/src/index.ts`.
-5. Move RAG/embedder code (`smart-agent/embedder-factories.ts`, `smart-agent/rag-factories.ts`) into `llm-agent-rag`. Strip the RAG-related portion of `providers.ts` here and leave the LLM-related portion (`makeLlm`, `DefaultModelResolver`) for step 6. Configure optional peers + devDeps. Populate `llm-agent-rag/src/index.ts`.
-6. Move everything else listed under `llm-agent-libs` into that package. Rewrite cross-package imports to use `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`. Configure optional LLM peers + devDeps. Populate `llm-agent-libs/src/index.ts`.
+5. Move RAG/embedder code (`smart-agent/embedder-factories.ts`, `smart-agent/rag-factories.ts`, and the RAG/embedder resolution block from `smart-agent/providers.ts`) into `llm-agent-rag`. Leave only the LLM-related portion (`makeLlm`, `DefaultModelResolver`) for step 6. Configure optional peers + devDeps. Populate `llm-agent-rag/src/index.ts`.
+6. Move everything else listed under `llm-agent-libs` into that package. Rewrite cross-package imports to use `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`. Convert `makeLlm()` provider loading from static imports to dynamic optional imports. Configure optional LLM peers + devDeps. Populate `llm-agent-libs/src/index.ts`.
 7. Add `package.json` `exports` entries: `"."`, `"./testing"`, `"./otel"` for `llm-agent-libs`.
 8. Move implementation tests with the code into the new packages; only CLI / HTTP tests remain in `llm-agent-server`.
 9. Trim `llm-agent-server/src/`: keep CLI / HTTP server / legacy Agent only. Rewrite imports. Drop library exports from `package.json`. Update `dependencies`.
@@ -293,5 +304,5 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 
 - Adding new unit tests beyond relocating existing ones.
 - Restructuring interfaces beyond what is needed to relocate them.
-- Changing any provider/embedder/RAG leaf package beyond a 12.0.1 version bump (driven by the fixed group) and any lockfile changes.
+- Changing any provider/embedder/RAG leaf package beyond optional peer range alignment and any lockfile changes.
 - Promoting individual leaves out of `llm-agent-libs` into their own packages — see "Future split criteria" for when that becomes warranted.
