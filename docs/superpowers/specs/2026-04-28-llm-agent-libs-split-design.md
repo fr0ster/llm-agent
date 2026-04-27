@@ -17,7 +17,11 @@ What actually shipped in 12.0.0: only chat-style helpers (api-adapters, `ClineCl
 
 Complete the split so consumers can build a SmartAgent without `@mcp-abap-adt/llm-agent-server` as a dependency. `llm-agent-server` becomes a runnable binary only. Composition is delivered via cohesive packages organised by domain (MCP, RAG, core composition), with `llm-agent-libs` as the SmartAgent composition entry point and `llm-agent-mcp` / `llm-agent-rag` available for narrower standalone use.
 
-Also in scope: convert `makeLlm()` and `makeRag()` from static provider imports to the same dynamic optional-import pattern used by embedder factories. The current `package.json` already declares the LLM/RAG provider packages as `optional peerDependencies`, but `providers.ts` imports them statically — the optional-peer promise is currently a lie. This refactor delivers what v12 advertised. The signature change is small (sync → async; one `await` at each callsite) and is framed as completing v12, not a new breaking direction.
+Also in scope: convert `makeLlm()` / `makeDefaultLlm()` / `makeRag()` from static provider imports to dynamic optional imports. The current `package.json` already declares the LLM/RAG provider packages as `optional peerDependencies`, but `providers.ts` and `rag-factories.ts` import them statically — the optional-peer promise is currently a lie. This refactor delivers what v12 advertised.
+
+All three factories become async (`Promise<ILlm>` / `Promise<IRag>`). Direct callers add one `await` per call. `SmartAgentBuilder.build()` is already async, so the main builder API does not change.
+
+Architectural rationale for full async (rather than keeping factories sync via prefetch indirection): we are accepting a breaking change anyway, and the cleanest result is symmetric — both LLM and RAG factories use the same dynamic-import + `MissingProviderError` pattern, no implicit consumer-side prefetch contract. One pattern is easier to reason about than two. The `prefetchEmbedderFactories()` / `prefetchRagFactories()` helpers may stay as optional warm-up utilities but are no longer prerequisites for `makeRag()`.
 
 ## Final package layout
 
@@ -145,7 +149,9 @@ src/index.ts                public exports
 
 Rationale: factories use dynamic `import()` + `MissingProviderError`, so consumers only install the embedder/RAG backends they actually need.
 
-Implementation note: current `makeRag()` still has a default path that statically imports `OllamaRag` from `@mcp-abap-adt/ollama-embedder`. During the move, remove that static import as well. Either resolve Ollama through the same dynamic optional factory path (`resolveEmbedder('ollama')` + `VectorRag`) or dynamically import `OllamaRag` with `MissingProviderError`; importing `llm-agent-rag` must not require `ollama-embedder`.
+Implementation note (in-scope conversion): current `makeRag()` statically imports `OllamaRag` from `@mcp-abap-adt/ollama-embedder` for the default path, plus other RAG backends are wired in similarly. During the move, convert `makeRag()` to dynamic `import()` + `MissingProviderError` for every backend, including the Ollama default. The function becomes async: `makeRag(cfg, ...): Promise<IRag>`. Importing `llm-agent-rag` must not require any specific embedder/RAG package — only the ones the consumer configures.
+
+Do not substitute `OllamaRag` with a `resolveEmbedder('ollama') + VectorRag` composition unless `OllamaRag` is verified to be exactly that combination at the source level — preserve current behaviour by dynamic-importing `OllamaRag` itself.
 
 ### `@mcp-abap-adt/llm-agent-libs` — core composition
 
@@ -183,15 +189,15 @@ src/index.ts                public exports
 - `peerDependencies` (all `optional`): `@mcp-abap-adt/openai-llm`, `anthropic-llm`, `deepseek-llm`, `sap-aicore-llm`. These are LLM provider backends used by `makeLlm()` via dynamic `import()`.
 - `devDependencies` mirroring the LLM peer packages.
 
-Implementation note (in-scope conversion): current `providers.ts` imports each LLM provider statically (`OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `SapAiCoreProvider`). During the move, convert `makeLlm()` to the same optional-provider pattern used by embedder/RAG factories — dynamic `import()` plus `MissingProviderError`. The function becomes `async`: `makeLlm(cfg, temperature): Promise<ILlm>`.
+Implementation note (in-scope conversion): current `providers.ts` imports each LLM provider statically (`OpenAIProvider`, `AnthropicProvider`, `DeepSeekProvider`, `SapAiCoreProvider`). During the move, convert `makeLlm()` and `makeDefaultLlm()` to dynamic `import()` plus `MissingProviderError`. Both functions become async: `makeLlm(cfg, temperature): Promise<ILlm>` and `makeDefaultLlm(...): Promise<ILlm>`.
 
 Affected callsites:
 
 - `SmartAgentBuilder.build()` is already `async` (currently `async build(): Promise<SmartAgentHandle>`); the internal `makeLlm(...)` call gains an `await`. No external signature change.
 - `testing/index.ts` exports its own `makeLlm` / `makeRag` helpers — those are test stubs and stay synchronous (they do not load real providers).
-- External direct callsites: `cloud-llm-hub/tools/generate-tool-intents.ts:17` is the only known external `makeLlm` user. Migration adds one `await`.
+- External direct callsites: `cloud-llm-hub/tools/generate-tool-intents.ts:17` is the only known external `makeLlm` user. Migration adds one `await`. Direct `makeDefaultLlm()` and `makeRag()` callers, if any are found during implementation, need the same treatment.
 
-`makeRag()` in the new `llm-agent-rag` package undergoes the same conversion if it is currently sync. See the `llm-agent-rag` section above (`OllamaRag` static-import note) for the parallel change.
+`makeRag()` in the new `llm-agent-rag` package undergoes the parallel conversion — see the `llm-agent-rag` section above for details.
 
 Subpath exports:
 - `@mcp-abap-adt/llm-agent-libs` — main composition surface.
@@ -246,7 +252,7 @@ No library exports. `bin` only.
 - All five SmartAgent family packages bump to **12.0.1** via a single `patch` changeset.
 - Configure changesets `fixed` group covering the five packages so future releases stay aligned.
 - The new packages `llm-agent-mcp`, `llm-agent-rag`, `llm-agent-libs` are published at 12.0.1 directly.
-- Release notes frame this as completing the v12 split and fixing issue #125 — no public symbol is removed, only relocated.
+- Release notes frame this as completing the v12 split and fixing issue #125. No high-level `SmartAgentBuilder` API is removed; direct `makeLlm()` / `makeDefaultLlm()` / `makeRag()` factory callers must add `await` as part of the migration.
 
 ## Migration for consumers (cloud-llm-hub style)
 
@@ -272,9 +278,12 @@ import {
   InMemoryMetrics,
 } from '@mcp-abap-adt/llm-agent-libs';
 
-// makeLlm is now async — add await at the callsite
+// makeLlm and makeRag are now async — add await at direct callsites
 const llm = await makeLlm(cfg, temperature);
+const rag = await makeRag(ragCfg, { embedder, breaker });
 ```
+
+Consumers calling `makeRag()` directly must add `await`. Consumers using only `SmartAgentBuilder` are unaffected (`build()` is already async and absorbs the change internally).
 
 Most cloud-llm-hub imports already come from `@mcp-abap-adt/llm-agent` (they import `Message`, `IRag`, `VectorRag`, etc. from there) — those lines do not change. Only the `@mcp-abap-adt/llm-agent-server` imports get rewritten to one of `llm-agent-mcp`, `llm-agent-rag`, or `llm-agent-libs` depending on the symbol. README of each new package contains the migration table.
 
@@ -294,8 +303,8 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 2. Scaffold three new packages (`llm-agent-mcp`, `llm-agent-rag`, `llm-agent-libs`) with `package.json`, `tsconfig.json`, biome inheritance, empty `src/index.ts`. Add to root `workspaces`.
 3. Move type-only declarations from `llm-agent-server` → `llm-agent/src/interfaces/` per the table above. Update `llm-agent/src/index.ts`. Run `tsc --noEmit` across the workspace; resolve any cycles before continuing.
 4. Move MCP code (`mcp/client.ts`, `smart-agent/adapters/mcp-client-adapter.ts`, `smart-agent/mcp-client-factory.ts`, `smart-agent/strategies/`) into `llm-agent-mcp`. Update imports to `@mcp-abap-adt/llm-agent`. Populate `llm-agent-mcp/src/index.ts`.
-5. Move RAG/embedder code (`smart-agent/embedder-factories.ts`, `smart-agent/rag-factories.ts`, and the RAG/embedder resolution block from `smart-agent/providers.ts`) into `llm-agent-rag`. Leave only the LLM-related portion (`makeLlm`, `DefaultModelResolver`) for step 6. Configure optional peers + devDeps. Populate `llm-agent-rag/src/index.ts`.
-6. Move everything else listed under `llm-agent-libs` into that package. Rewrite cross-package imports to use `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`. Convert `makeLlm()` provider loading from static imports to dynamic optional imports. Configure optional LLM peers + devDeps. Populate `llm-agent-libs/src/index.ts`.
+5. Move RAG/embedder code (`smart-agent/embedder-factories.ts`, `smart-agent/rag-factories.ts`, and the RAG/embedder resolution block from `smart-agent/providers.ts`) into `llm-agent-rag`. Leave only the LLM-related portion (`makeLlm`, `DefaultModelResolver`) for step 6. Convert `makeRag()` from static imports (including the default `OllamaRag` path) to dynamic optional imports — the function becomes async. Configure optional peers + devDeps. Populate `llm-agent-rag/src/index.ts`.
+6. Move everything else listed under `llm-agent-libs` into that package. Rewrite cross-package imports to use `@mcp-abap-adt/llm-agent`, `@mcp-abap-adt/llm-agent-mcp`, `@mcp-abap-adt/llm-agent-rag`. Convert `makeLlm()` / `makeDefaultLlm()` provider loading from static imports to dynamic optional imports (the `makeRag()` conversion is part of step 5). Configure optional LLM peers + devDeps. Populate `llm-agent-libs/src/index.ts`.
 7. Add `package.json` `exports` entries: `"."`, `"./testing"`, `"./otel"` for `llm-agent-libs`.
 8. Move implementation tests with the code into the new packages; only CLI / HTTP tests remain in `llm-agent-server`. Before moving, audit each test file for relative cross-package imports (e.g. `import ... from '../../testing/...'`) and rewrite them to use `@mcp-abap-adt/...` package paths so the move does not break resolution.
 9. Trim `llm-agent-server/src/`: keep CLI / HTTP server / legacy Agent only. Rewrite imports. Drop library exports from `package.json`. Update `dependencies`.
@@ -314,7 +323,7 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 - **`package.json` without `main`/`exports`.** Some bundlers warn. If it causes friction, set `"exports": { "./package.json": "./package.json" }` to keep package metadata resolvable while still preventing library imports.
 - **Tests located by path.** Implementation tests must move alongside the code; otherwise coverage disappears from the package that now owns the behaviour.
 - **Lockfile churn.** `package-lock.json` changes are committed alongside the refactor per repo convention.
-- **`makeLlm` / `makeRag` become async.** All internal callsites (notably `SmartAgentBuilder.build()`, which is already async) gain `await`. The known external callsite (`cloud-llm-hub/tools/generate-tool-intents.ts`) gets one `await` in the same migration commit that rewrites its import path. Risk: an undiscovered sync callsite passes a `Promise<ILlm>` where `ILlm` is expected — caught by `tsc --noEmit`, which must run clean before merging.
+- **`makeLlm` / `makeDefaultLlm` / `makeRag` become async.** All internal callsites (notably `SmartAgentBuilder.build()`, which is already async) gain `await`. The known external callsite (`cloud-llm-hub/tools/generate-tool-intents.ts`) gets one `await` in the same migration commit that rewrites its import path. Risk: an undiscovered sync callsite passes a `Promise<ILlm>` / `Promise<IRag>` where the bare interface is expected — caught by `tsc --noEmit`, which must run clean before merging.
 
 ## Out of scope
 
