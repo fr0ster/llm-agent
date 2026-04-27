@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import { CircuitBreaker, CircuitBreakerLlm } from '@mcp-abap-adt/llm-agent';
 import { NonStreamingLlm } from '../../adapters/non-streaming-llm.js';
 import { makeLlm } from '../../testing/index.js';
-import { CircuitBreaker } from '../circuit-breaker.js';
-import { CircuitBreakerLlm } from '../circuit-breaker-llm.js';
 import { RateLimiterLlm } from '../rate-limiter-llm.js';
 import { RetryLlm } from '../retry-llm.js';
 
