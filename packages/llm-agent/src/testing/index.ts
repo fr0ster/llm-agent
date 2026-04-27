@@ -5,13 +5,15 @@
  * Full test helpers (SmartAgent stubs, etc.) live in @mcp-abap-adt/llm-agent-server.
  */
 
-import type { ILlm } from '../interfaces/llm.js';
+import type { ILlm, IQueryEmbedding, IRag } from '../interfaces/index.js';
 import {
   LlmError,
   type LlmFinishReason,
   type LlmResponse,
   type LlmStreamChunk,
   type LlmToolCall,
+  RagError,
+  type RagResult,
   type Result,
 } from '../interfaces/types.js';
 
@@ -87,4 +89,45 @@ export function makeLlm(
       return { ok: true, value: true };
     },
   };
+}
+
+// ---------------------------------------------------------------------------
+// RAG stubs
+// ---------------------------------------------------------------------------
+
+export function makeRag(
+  queryResults: RagResult[] = [],
+): IRag & { upsertCalls: string[] } {
+  const upsertCalls: string[] = [];
+  const stub: IRag & { upsertCalls: string[] } = {
+    upsertCalls,
+    async query(
+      _embedding: IQueryEmbedding,
+    ): Promise<Result<RagResult[], RagError>> {
+      return { ok: true, value: queryResults };
+    },
+    async healthCheck(): Promise<Result<void, RagError>> {
+      return { ok: true, value: undefined };
+    },
+    async getById(_id: string): Promise<Result<RagResult | null, RagError>> {
+      return { ok: true, value: null };
+    },
+    writer() {
+      return {
+        upsertRaw: async (
+          _id: string,
+          text: string,
+        ): Promise<Result<void, RagError>> => {
+          upsertCalls.push(text);
+          return { ok: true, value: undefined };
+        },
+        deleteByIdRaw: async (
+          _id: string,
+        ): Promise<Result<boolean, RagError>> => {
+          return { ok: true, value: false };
+        },
+      };
+    },
+  };
+  return stub;
 }
