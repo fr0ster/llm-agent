@@ -2,7 +2,13 @@
 
 ## Scope
 
-`@mcp-abap-adt/llm-agent-server` currently contains two layers:
+The codebase is split across two npm packages:
+
+1. **`@mcp-abap-adt/llm-agent`** — the library: interfaces, types, default RAG implementations, and embeddable helpers usable when shipping your own HTTP server. Includes `CircuitBreaker` family, `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter` and their interface types, external-tools normalization, tool-call-delta utilities, and `ILogger`.
+
+2. **`@mcp-abap-adt/llm-agent-server`** — the runnable distribution: CLI, HTTP server (`SmartServer`), `SmartAgentBuilder`, providers/factories composition root, plugins, skills, sessions, metrics, tracer, validator, reranker, history, structured pipeline, health, config watcher, MCP client wrapper. Depends on `llm-agent`.
+
+`llm-agent-server` itself contains two layers:
 
 1. **Legacy core (`src/agents`, `src/llm-providers`, `src/mcp`)**
 - Provider-specific agent implementations and direct MCP integration.
