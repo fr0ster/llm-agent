@@ -2,6 +2,8 @@
 
 This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/llm-agent-server`. Each interface has a description, method signatures, and a working code example.
 
+> **Package split (12.0.0+).** Library helpers — `CircuitBreaker` family, `FallbackRag`, LLM call strategies (`StreamingLlmCallStrategy`, `NonStreamingLlmCallStrategy`, `FallbackLlmCallStrategy`), `ToolCache` / `NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter` / `OpenAiApiAdapter` and their interface types (`NormalizedRequest`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `AdapterValidationError`), `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `getStreamToolCallName`, `toToolCallDelta`, `ILogger` — now live in `@mcp-abap-adt/llm-agent`. Embedded consumers that ship their own HTTP server can depend on `@mcp-abap-adt/llm-agent` only and skip the `-server` package entirely. The runnable distribution (CLI, HTTP server, `SmartAgentBuilder` and the providers/factories/plugins/skills/sessions/metrics/tracer/validator/reranker/history/pipeline/health/config-watcher around it) stays in `@mcp-abap-adt/llm-agent-server`.
+
 ## Architecture Overview
 
 The SmartAgent pipeline is fully interface-driven. Every component can be replaced via `SmartAgentBuilder`:
@@ -1335,9 +1337,17 @@ class AdapterValidationError extends Error {
 ### Example: custom adapter skeleton
 
 ```ts
-import type { ILlmApiAdapter, ApiRequestContext, ApiSseEvent, NormalizedRequest } from '@mcp-abap-adt/llm-agent-server';
-import type { SmartAgentResponse, OrchestratorError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent-server';
-import { AdapterValidationError } from '@mcp-abap-adt/llm-agent-server';
+import type {
+  ApiRequestContext,
+  ApiSseEvent,
+  ILlmApiAdapter,
+  LlmStreamChunk,
+  NormalizedRequest,
+  OrchestratorError,
+  Result,
+  SmartAgentResponse,
+} from '@mcp-abap-adt/llm-agent';
+import { AdapterValidationError } from '@mcp-abap-adt/llm-agent';
 
 class MyProtocolAdapter implements ILlmApiAdapter {
   readonly name = 'my-protocol';
@@ -1505,14 +1515,14 @@ Controls how the tool-loop calls the LLM. Three built-in strategies:
 **1. `StreamingLlmCallStrategy`** (default) — uses `streamChat()`. Chunks streamed to client in real-time.
 
 ```ts
-import { StreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
+import { StreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
 builder.withLlmCallStrategy(new StreamingLlmCallStrategy());
 ```
 
 **2. `NonStreamingLlmCallStrategy`** — uses `chat()`. Full response yielded as a single chunk. Use when streaming is unreliable.
 
 ```ts
-import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
+import { NonStreamingLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
 builder.withLlmCallStrategy(new NonStreamingLlmCallStrategy());
 ```
 
@@ -1521,7 +1531,7 @@ For `sap-ai-sdk`, this is the recommended production strategy when SAP AI Core s
 **3. `FallbackLlmCallStrategy`** — starts with streaming. On error, logs the cause and automatically switches to `chat()` for the remaining iterations in the same request. Never loses the error cause.
 
 ```ts
-import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent-server';
+import { FallbackLlmCallStrategy } from '@mcp-abap-adt/llm-agent';
 builder.withLlmCallStrategy(new FallbackLlmCallStrategy(logger));
 ```
 
@@ -1791,8 +1801,8 @@ When set, only the last N non-system messages from client history are passed to 
 ### Full example
 
 ```ts
-import { SmartAgentBuilder, ToolCache, SessionManager, InMemoryMetrics, OllamaEmbedder } from '@mcp-abap-adt/llm-agent-server';
-import { QdrantRag } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, SessionManager, InMemoryMetrics, OllamaEmbedder } from '@mcp-abap-adt/llm-agent-server';
+import { QdrantRag, ToolCache } from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
 
