@@ -31,14 +31,14 @@ import type {
   Result,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
+import {
+  getStreamToolCallName,
+  toToolCallDelta,
+} from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { fireInternalToolsAsync } from '../../policy/mixed-tool-call-handler.js';
 import { isToolContextUnavailableError } from '../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../tracer/types.js';
-import {
-  getStreamToolCallName,
-  toToolCallDelta,
-} from '../../utils/tool-call-deltas.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
