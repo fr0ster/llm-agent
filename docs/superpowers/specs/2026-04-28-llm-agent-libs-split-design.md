@@ -19,7 +19,7 @@ Complete the split so consumers can build a SmartAgent without `@mcp-abap-adt/ll
 
 Also in scope: convert `makeLlm()` / `makeDefaultLlm()` / `makeRag()` from static provider imports to dynamic optional imports. The current `package.json` already declares the LLM/RAG provider packages as `optional peerDependencies`, but `providers.ts` imports the LLM providers and the default `OllamaRag` path statically — the optional-peer promise is currently a lie. This refactor delivers what v12 advertised.
 
-All three factories become async (`Promise<ILlm>` / `Promise<IRag>`). Direct callers add one `await` per call. `SmartAgentBuilder.build()` is already async, so the main builder API does not change.
+Top-level factories/helpers become async: `makeLlm()` / `makeDefaultLlm()` return `Promise<ILlm>`, and `makeRag()` / `resolveEmbedder()` return `Promise<IRag>` / `Promise<IEmbedder>`. Direct callers add one `await` per call. `SmartAgentBuilder.build()` is already async, so the main builder API does not change.
 
 Architectural rationale for full async (rather than keeping top-level factories sync via prefetch indirection): we are accepting a breaking change anyway, and the cleanest top-level API is symmetric — both LLM and RAG factories use the same dynamic-import + `MissingProviderError` pattern, no implicit consumer-side prefetch contract. One pattern is easier to reason about than two.
 
@@ -245,6 +245,8 @@ Exports `MCPClientWrapper`, `MCPClientConfig`, `TransportType`, `McpClientAdapte
 
 Exports `makeRag`, `resolveEmbedder`, `resolvePrefetchedEmbedder`, `resolvePrefetchedRag`, `builtInEmbedderFactories`, `prefetchEmbedderFactories`, `prefetchRagFactories`, `ragBackendNames`, `EmbedderFactoryOpts`, `RagFactoryOpts`, `RagResolutionConfig`, `RagResolutionOptions`, `EmbedderResolutionConfig`, `EmbedderResolutionOptions`.
 
+`makeRag()` and top-level `resolveEmbedder()` are async config helpers. `resolvePrefetchedEmbedder()` and `resolvePrefetchedRag()` are synchronous low-level helpers for callers that explicitly warm the caches first.
+
 ### `@mcp-abap-adt/llm-agent-libs`
 
 Re-exports the runtime composition surface that is currently in `llm-agent-server@12.0.0` minus what was reassigned to `llm-agent-mcp` and `llm-agent-rag`, plus impl-owned config types (`SmartAgentBuilderConfig`, `RetryOptions`, `TokenBucketConfig`, `ConfigWatcherOptions`, `HotReloadableConfig`, `FileSystemPluginLoaderConfig`, `SmartAgentRagStores`, `SmartAgentReconfigureOptions`, `AgentCallOptions`, `LlmAdapterProviderInfo`, `LazyOptions`).
@@ -279,7 +281,7 @@ import {
 // After (12.0.1)
 import { type SmartAgentHandle } from '@mcp-abap-adt/llm-agent';
 import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
-import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import { makeRag, resolveEmbedder } from '@mcp-abap-adt/llm-agent-rag';
 import {
   SmartAgentBuilder,
   SessionManager,
