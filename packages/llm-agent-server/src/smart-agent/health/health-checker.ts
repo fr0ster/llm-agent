@@ -1,6 +1,6 @@
+import type { CircuitBreaker } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import type { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
-import type { CircuitBreaker } from '../resilience/circuit-breaker.js';
 import type { HealthStatus } from './types.js';
 
 export interface HealthCheckerDeps {

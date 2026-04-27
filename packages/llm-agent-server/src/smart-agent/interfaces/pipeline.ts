@@ -18,6 +18,7 @@ import type {
   IHistorySummarizer,
   ILlm,
   ILlmCallStrategy,
+  ILogger,
   IMcpClient,
   IQueryExpander,
   IRag,
@@ -26,6 +27,7 @@ import type {
   IRequestLogger,
   ISkillManager,
   ISubpromptClassifier,
+  IToolCache,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -33,8 +35,6 @@ import type {
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError, SmartAgentConfig } from '../agent.js';
-import type { IToolCache } from '../cache/types.js';
-import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import type { IReranker } from '../reranker/types.js';

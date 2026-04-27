@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server",
-  "version": "11.1.2",
+  "version": "12.0.0",
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
   "main": "dist/index.js",
@@ -61,16 +61,16 @@
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/anthropic-llm": "^11.1.2",
-    "@mcp-abap-adt/deepseek-llm": "^11.1.2",
-    "@mcp-abap-adt/hana-vector-rag": "^11.1.2",
-    "@mcp-abap-adt/ollama-embedder": "^11.1.2",
-    "@mcp-abap-adt/openai-embedder": "^11.1.2",
-    "@mcp-abap-adt/openai-llm": "^11.1.2",
-    "@mcp-abap-adt/pg-vector-rag": "^11.1.2",
-    "@mcp-abap-adt/qdrant-rag": "^11.1.2",
-    "@mcp-abap-adt/sap-aicore-embedder": "^11.1.2",
-    "@mcp-abap-adt/sap-aicore-llm": "^11.1.2"
+    "@mcp-abap-adt/anthropic-llm": "^12.0.0",
+    "@mcp-abap-adt/deepseek-llm": "^12.0.0",
+    "@mcp-abap-adt/hana-vector-rag": "^12.0.0",
+    "@mcp-abap-adt/ollama-embedder": "^12.0.0",
+    "@mcp-abap-adt/openai-embedder": "^12.0.0",
+    "@mcp-abap-adt/openai-llm": "^12.0.0",
+    "@mcp-abap-adt/pg-vector-rag": "^12.0.0",
+    "@mcp-abap-adt/qdrant-rag": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-embedder": "^12.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^12.0.0"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/openai-llm": {

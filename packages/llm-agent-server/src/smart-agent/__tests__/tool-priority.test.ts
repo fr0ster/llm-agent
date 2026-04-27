@@ -6,9 +6,9 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeExternalTools } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../agent.js';
 import { makeAssembler, makeDefaultDeps } from '../testing/index.js';
-import { normalizeExternalTools } from '../utils/external-tools-normalizer.js';
 
 // ---------------------------------------------------------------------------
 // [client-provided] prefix on external tool descriptions

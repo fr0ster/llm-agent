@@ -14,20 +14,28 @@
  */
 
 import type {
+  IClientAdapter,
   IContextAssembler,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
+  ILlmApiAdapter,
   ILlmCallStrategy,
   ILlmRateLimiter,
+  ILogger,
   IMcpClient,
   IModelProvider,
   IQueryExpander,
   IRequestLogger,
   ISkillManager,
   ISubpromptClassifier,
+  IToolCache,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  CircuitBreaker,
+  type CircuitBreakerConfig,
+  CircuitBreakerLlm,
+  FallbackRag,
   type IEmbedder,
   InMemoryRag,
   type IRag,
@@ -48,7 +56,6 @@ import {
   type SmartAgentConfig,
   type SmartAgentRagStores,
 } from './agent.js';
-import type { IToolCache } from './cache/types.js';
 import {
   LlmClassifier,
   type LlmClassifierConfig,
@@ -59,12 +66,9 @@ import {
 } from './context/context-assembler.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
-import type { ILlmApiAdapter } from './interfaces/api-adapter.js';
-import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
-import type { ILogger } from './logger/types.js';
 import type { IMetrics } from './metrics/types.js';
 import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { IPluginLoader } from './plugins/types.js';
@@ -74,12 +78,6 @@ import type {
   SessionPolicy,
 } from './policy/types.js';
 import type { IReranker } from './reranker/types.js';
-import {
-  CircuitBreaker,
-  type CircuitBreakerConfig,
-} from './resilience/circuit-breaker.js';
-import { CircuitBreakerLlm } from './resilience/circuit-breaker-llm.js';
-import { FallbackRag } from './resilience/fallback-rag.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';

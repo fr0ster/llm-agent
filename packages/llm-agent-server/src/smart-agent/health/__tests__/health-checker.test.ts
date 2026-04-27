@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import { CircuitBreaker } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '../../agent.js';
 import { InMemoryMetrics } from '../../metrics/in-memory-metrics.js';
-import { CircuitBreaker } from '../../resilience/circuit-breaker.js';
 import {
   makeDefaultDeps,
   makeFailingRag,

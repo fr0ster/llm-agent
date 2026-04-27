@@ -57,12 +57,12 @@
 
 import type {
   EmbedderFactory,
+  IClientAdapter,
+  ILlmApiAdapter,
   IMcpClient,
   IQueryExpander,
   ISkillManager,
 } from '@mcp-abap-adt/llm-agent';
-import type { ILlmApiAdapter } from '../interfaces/api-adapter.js';
-import type { IClientAdapter } from '../interfaces/client-adapter.js';
 import type { IStageHandler } from '../pipeline/stage-handler.js';
 import type { IReranker } from '../reranker/types.js';
 import type { IOutputValidator } from '../validator/types.js';

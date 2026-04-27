@@ -1,12 +1,22 @@
 /**
- * Server package entry.
- * Re-exports SmartAgent, Builder, pipeline, MCP client, adapters,
- * resilience wrappers, skills, agents, and server-specific types.
- * Core interfaces (BaseLLMProvider, LLMProvider, MissingProviderError) and
- * provider/embedder/RAG implementations are available via their canonical packages:
- * @mcp-abap-adt/llm-agent, @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm,
- * @mcp-abap-adt/deepseek-llm, @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
- * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder, @mcp-abap-adt/qdrant-rag.
+ * Server package entry — runnable distribution of SmartAgent.
+ *
+ * This package ships the binary (CLI + HTTP server) plus its build-time
+ * dependencies: SmartAgentBuilder, providers/factories, plugins, skills,
+ * sessions, metrics, tracer, validator, reranker, history, pipeline,
+ * health, config watcher, MCP client wrapper, and server-specific types.
+ *
+ * Library helpers (CircuitBreaker family, FallbackRag, LLM call strategies,
+ * ToolCache, ClineClientAdapter, AnthropicApiAdapter / OpenAiApiAdapter and
+ * their interface types, external-tools-normalizer, tool-call-deltas, ILogger)
+ * live in @mcp-abap-adt/llm-agent — import them from there directly when
+ * embedding SmartAgent in your own server.
+ *
+ * Provider implementations live in their canonical packages:
+ * @mcp-abap-adt/openai-llm, @mcp-abap-adt/anthropic-llm, @mcp-abap-adt/deepseek-llm,
+ * @mcp-abap-adt/sap-aicore-llm, @mcp-abap-adt/openai-embedder,
+ * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder,
+ * @mcp-abap-adt/qdrant-rag, @mcp-abap-adt/hana-vector-rag, @mcp-abap-adt/pg-vector-rag.
  */
 
 export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
@@ -18,8 +28,6 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
-// Adapters
-export { ClineClientAdapter } from './smart-agent/adapters/cline-client-adapter.js';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -33,11 +41,6 @@ export type {
   SmartAgentRagStores,
   SmartAgentReconfigureOptions,
 } from './smart-agent/agent.js';
-// API adapters
-export {
-  AnthropicApiAdapter,
-  OpenAiApiAdapter,
-} from './smart-agent/api-adapters/index.js';
 export {
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
@@ -45,10 +48,6 @@ export {
   type SmartAgentBuilderConfig,
   type SmartAgentHandle,
 } from './smart-agent/builder.js';
-export { NoopToolCache } from './smart-agent/cache/noop-tool-cache.js';
-export { ToolCache } from './smart-agent/cache/tool-cache.js';
-// Tool Cache
-export type { IToolCache } from './smart-agent/cache/types.js';
 // Config
 export {
   ConfigWatcher,
@@ -74,14 +73,6 @@ export type {
 // History
 export { HistoryMemory } from './smart-agent/history/history-memory.js';
 export { HistorySummarizer } from './smart-agent/history/history-summarizer.js';
-export {
-  AdapterValidationError,
-  type ApiRequestContext,
-  type ApiSseEvent,
-  type ILlmApiAdapter,
-  type NormalizedRequest,
-} from './smart-agent/interfaces/api-adapter.js';
-export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
 export type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,
@@ -141,9 +132,6 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
-export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-strategy.js';
-export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
-export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export {
   DefaultModelResolver,
   type EmbedderResolutionConfig,
@@ -160,15 +148,6 @@ export {
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';
 export type { IReranker } from './smart-agent/reranker/types.js';
-// Resilience
-export {
-  CircuitBreaker,
-  type CircuitBreakerConfig,
-  type CircuitState,
-} from './smart-agent/resilience/circuit-breaker.js';
-export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
-export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
-export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
 export { RateLimiterLlm } from './smart-agent/resilience/rate-limiter-llm.js';
 export {
   RetryLlm,
@@ -201,23 +180,12 @@ export type {
   SpanOptions,
   SpanStatus,
 } from './smart-agent/tracer/types.js';
-// Utils
-export {
-  type ExternalToolValidationCode,
-  type ExternalToolValidationError,
-  normalizeAndValidateExternalTools,
-  normalizeExternalTools,
-} from './smart-agent/utils/external-tools-normalizer.js';
 // Lazy initialization
 export {
   LazyInitError,
   type LazyOptions,
   lazy,
 } from './smart-agent/utils/lazy.js';
-export {
-  getStreamToolCallName,
-  toToolCallDelta,
-} from './smart-agent/utils/tool-call-deltas.js';
 export { NoopValidator } from './smart-agent/validator/noop-validator.js';
 // Output Validator
 export type {

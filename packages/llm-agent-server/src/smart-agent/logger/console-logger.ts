@@ -1,4 +1,4 @@
-import type { ILogger, LogEvent } from './types.js';
+import type { ILogger, LogEvent } from '@mcp-abap-adt/llm-agent';
 
 export class ConsoleLogger implements ILogger {
   private readonly enabled: boolean;
