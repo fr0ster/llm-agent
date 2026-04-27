@@ -1,5 +1,11 @@
 # @mcp-abap-adt/llm-agent
 
+## 11.1.2
+
+### Patch Changes
+
+- Bump dependencies: biome 2.4.13, typescript 6.0.3, @types/node 25, rimraf 6, zod 4.3. MCP SDK 1.29 supports zod 3 || 4; smoke-tested via `npm run dev` against real MCP server.
+
 ## 11.1.1
 
 ### Patch Changes

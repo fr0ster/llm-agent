@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/sap-aicore-embedder",
-  "version": "11.1.1",
+  "version": "11.1.2",
   "description": "SAP AI Core embedding provider (IEmbedder) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
