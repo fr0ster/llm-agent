@@ -481,9 +481,7 @@ export class SmartServer {
     }
 
     // Client adapters (DI > plugin; ClineClientAdapter is always registered as default)
-    const { ClineClientAdapter } = await import(
-      './adapters/cline-client-adapter.js'
-    );
+    const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
     const adapterSources = [
       ...(this.cfg.clientAdapters ?? []),
       ...plugins.clientAdapters,
@@ -505,11 +503,8 @@ export class SmartServer {
     } = agentHandle;
 
     // ---- API adapter map (built-in → config DI; DI wins) --------------------
-    const { OpenAiApiAdapter } = await import(
-      './api-adapters/openai-adapter.js'
-    );
-    const { AnthropicApiAdapter } = await import(
-      './api-adapters/anthropic-adapter.js'
+    const { OpenAiApiAdapter, AnthropicApiAdapter } = await import(
+      '@mcp-abap-adt/llm-agent'
     );
     const adapterMap = new Map<string, ILlmApiAdapter>();
     if (!this.cfg.disableBuiltInAdapters) {

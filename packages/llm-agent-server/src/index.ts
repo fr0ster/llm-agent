@@ -9,7 +9,41 @@
  * @mcp-abap-adt/ollama-embedder, @mcp-abap-adt/sap-aicore-embedder, @mcp-abap-adt/qdrant-rag.
  */
 
-export { BaseLLMProvider, type LLMProvider } from '@mcp-abap-adt/llm-agent';
+// Adapters
+// API adapters
+// Resilience
+// Utils
+export {
+  AdapterValidationError,
+  AnthropicApiAdapter,
+  type ApiRequestContext,
+  type ApiSseEvent,
+  BaseLLMProvider,
+  CircuitBreaker,
+  type CircuitBreakerConfig,
+  CircuitBreakerEmbedder,
+  CircuitBreakerLlm,
+  type CircuitState,
+  ClineClientAdapter,
+  type ExternalToolValidationCode,
+  type ExternalToolValidationError,
+  FallbackLlmCallStrategy,
+  FallbackRag,
+  getStreamToolCallName,
+  type IClientAdapter,
+  type ILlmApiAdapter,
+  type IToolCache,
+  type LLMProvider,
+  NonStreamingLlmCallStrategy,
+  NoopToolCache,
+  type NormalizedRequest,
+  normalizeAndValidateExternalTools,
+  normalizeExternalTools,
+  OpenAiApiAdapter,
+  StreamingLlmCallStrategy,
+  ToolCache,
+  toToolCallDelta,
+} from '@mcp-abap-adt/llm-agent';
 // Legacy Agent (kept for backward compatibility, but deprecated)
 export { Agent, type AgentConfig } from './agent.js';
 // MCP Client
@@ -18,8 +52,6 @@ export {
   MCPClientWrapper,
   type TransportType,
 } from './mcp/client.js';
-// Adapters
-export { ClineClientAdapter } from './smart-agent/adapters/cline-client-adapter.js';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -33,11 +65,6 @@ export type {
   SmartAgentRagStores,
   SmartAgentReconfigureOptions,
 } from './smart-agent/agent.js';
-// API adapters
-export {
-  AnthropicApiAdapter,
-  OpenAiApiAdapter,
-} from './smart-agent/api-adapters/index.js';
 export {
   type BuilderMcpConfig,
   type BuilderPromptsConfig,
@@ -45,10 +72,6 @@ export {
   type SmartAgentBuilderConfig,
   type SmartAgentHandle,
 } from './smart-agent/builder.js';
-export { NoopToolCache } from './smart-agent/cache/noop-tool-cache.js';
-export { ToolCache } from './smart-agent/cache/tool-cache.js';
-// Tool Cache
-export type { IToolCache } from './smart-agent/cache/types.js';
 // Config
 export {
   ConfigWatcher,
@@ -74,14 +97,6 @@ export type {
 // History
 export { HistoryMemory } from './smart-agent/history/history-memory.js';
 export { HistorySummarizer } from './smart-agent/history/history-summarizer.js';
-export {
-  AdapterValidationError,
-  type ApiRequestContext,
-  type ApiSseEvent,
-  type ILlmApiAdapter,
-  type NormalizedRequest,
-} from './smart-agent/interfaces/api-adapter.js';
-export type { IClientAdapter } from './smart-agent/interfaces/client-adapter.js';
 export type {
   ConnectionStrategyOptions,
   IMcpConnectionStrategy,
@@ -141,9 +156,6 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './smart-agent/plugins/index.js';
-export { FallbackLlmCallStrategy } from './smart-agent/policy/fallback-llm-call-strategy.js';
-export { NonStreamingLlmCallStrategy } from './smart-agent/policy/non-streaming-llm-call-strategy.js';
-export { StreamingLlmCallStrategy } from './smart-agent/policy/streaming-llm-call-strategy.js';
 export {
   DefaultModelResolver,
   type EmbedderResolutionConfig,
@@ -160,15 +172,6 @@ export {
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';
 export type { IReranker } from './smart-agent/reranker/types.js';
-// Resilience
-export {
-  CircuitBreaker,
-  type CircuitBreakerConfig,
-  type CircuitState,
-} from './smart-agent/resilience/circuit-breaker.js';
-export { CircuitBreakerEmbedder } from './smart-agent/resilience/circuit-breaker-embedder.js';
-export { CircuitBreakerLlm } from './smart-agent/resilience/circuit-breaker-llm.js';
-export { FallbackRag } from './smart-agent/resilience/fallback-rag.js';
 export { RateLimiterLlm } from './smart-agent/resilience/rate-limiter-llm.js';
 export {
   RetryLlm,
@@ -201,23 +204,12 @@ export type {
   SpanOptions,
   SpanStatus,
 } from './smart-agent/tracer/types.js';
-// Utils
-export {
-  type ExternalToolValidationCode,
-  type ExternalToolValidationError,
-  normalizeAndValidateExternalTools,
-  normalizeExternalTools,
-} from './smart-agent/utils/external-tools-normalizer.js';
 // Lazy initialization
 export {
   LazyInitError,
   type LazyOptions,
   lazy,
 } from './smart-agent/utils/lazy.js';
-export {
-  getStreamToolCallName,
-  toToolCallDelta,
-} from './smart-agent/utils/tool-call-deltas.js';
 export { NoopValidator } from './smart-agent/validator/noop-validator.js';
 // Output Validator
 export type {

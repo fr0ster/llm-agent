@@ -12,7 +12,7 @@ import {
   type LlmResponse,
   type LlmStreamChunk,
   type LlmToolCall,
-  RagError,
+  type RagError,
   type RagResult,
   type Result,
 } from '../interfaces/types.js';
