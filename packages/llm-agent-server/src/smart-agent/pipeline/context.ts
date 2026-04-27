@@ -24,6 +24,7 @@ import type {
   IHistorySummarizer,
   ILlm,
   ILlmCallStrategy,
+  ILogger,
   IMcpClient,
   IQueryEmbedding,
   IQueryExpander,
@@ -33,6 +34,7 @@ import type {
   ISkill,
   ISkillManager,
   ISubpromptClassifier,
+  IToolCache,
   LlmStreamChunk,
   LlmTool,
   McpTool,
@@ -47,8 +49,6 @@ import type {
   SmartAgentConfig,
   SmartAgentRagStores,
 } from '../agent.js';
-import type { IToolCache } from '../cache/types.js';
-import type { ILogger } from '../logger/types.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
 import type { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';

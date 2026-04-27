@@ -1,5 +1,5 @@
+import type { CircuitState } from '@mcp-abap-adt/llm-agent';
 import type { MetricsSnapshot } from '../metrics/in-memory-metrics.js';
-import type { CircuitState } from '../resilience/circuit-breaker.js';
 
 export interface HealthComponentStatus {
   llm: boolean;

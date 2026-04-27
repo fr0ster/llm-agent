@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type {
   CallOptions,
+  IClientAdapter,
   IContextAssembler,
   IEmbedder,
   IHistoryMemory,
@@ -14,6 +15,7 @@ import type {
   IRequestLogger,
   ISkillManager,
   ISubpromptClassifier,
+  IToolCache,
   LlmFinishReason,
   LlmStreamChunk,
   LlmTool,
@@ -26,13 +28,24 @@ import type {
   Subprompt,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
-import { NoopToolCache } from './cache/noop-tool-cache.js';
-import type { IToolCache } from './cache/types.js';
+import {
+  type AgentCallOptions,
+  getStreamToolCallName,
+  type IQueryExpander,
+  NoopQueryExpander,
+  NoopToolCache,
+  normalizeExternalTools,
+  OrchestratorError,
+  QueryEmbedding,
+  type SmartAgentResponse,
+  type StopReason,
+  StreamingLlmCallStrategy,
+  TextOnlyEmbedding,
+  toToolCallDelta,
+} from '@mcp-abap-adt/llm-agent';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
-import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
-import { StreamingLlmCallStrategy } from './policy/streaming-llm-call-strategy.js';
 
 export {
   type AgentCallOptions,
@@ -41,16 +54,6 @@ export {
   type StopReason,
 } from '@mcp-abap-adt/llm-agent';
 
-import {
-  type AgentCallOptions,
-  type IQueryExpander,
-  NoopQueryExpander,
-  OrchestratorError,
-  QueryEmbedding,
-  type SmartAgentResponse,
-  type StopReason,
-  TextOnlyEmbedding,
-} from '@mcp-abap-adt/llm-agent';
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
@@ -73,11 +76,6 @@ import { NoopSessionManager } from './session/noop-session-manager.js';
 import type { ISessionManager } from './session/types.js';
 import { NoopTracer } from './tracer/noop-tracer.js';
 import type { ISpan, ITracer } from './tracer/types.js';
-import { normalizeExternalTools } from './utils/external-tools-normalizer.js';
-import {
-  getStreamToolCallName,
-  toToolCallDelta,
-} from './utils/tool-call-deltas.js';
 import { NoopValidator } from './validator/noop-validator.js';
 import type { IOutputValidator } from './validator/types.js';
 

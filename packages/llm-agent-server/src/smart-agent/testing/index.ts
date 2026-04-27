@@ -14,17 +14,22 @@
 import type {
   IContextAssembler,
   ILlm,
+  ILogger,
   IMcpClient,
   IQueryEmbedding,
   IRag,
   IRagProviderRegistry,
   IRagRegistry,
   ISubpromptClassifier,
+  IToolCache,
+  LogEvent,
   Message,
 } from '@mcp-abap-adt/llm-agent';
 import {
   AssemblerError,
   type CallOptions,
+  CircuitBreaker,
+  type CircuitBreakerConfig,
   ClassifierError,
   type IQueryExpander,
   LlmError,
@@ -36,27 +41,21 @@ import {
   type McpTool,
   type McpToolResult,
   NoopQueryExpander,
+  NoopToolCache,
   RagError,
   type RagMetadata,
   type RagResult,
   type Result,
   type Subprompt,
+  ToolCache,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
-import { NoopToolCache } from '../cache/noop-tool-cache.js';
-import { ToolCache } from '../cache/tool-cache.js';
-import type { IToolCache } from '../cache/types.js';
 import type { IMcpConnectionStrategy } from '../interfaces/mcp-connection-strategy.js';
-import type { ILogger, LogEvent } from '../logger/types.js';
 import { InMemoryMetrics } from '../metrics/in-memory-metrics.js';
 import type { IMetrics } from '../metrics/types.js';
 import type { IPromptInjectionDetector, IToolPolicy } from '../policy/types.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
 import type { IReranker } from '../reranker/types.js';
-import {
-  CircuitBreaker,
-  type CircuitBreakerConfig,
-} from '../resilience/circuit-breaker.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';
 import { SessionManager } from '../session/session-manager.js';
 import type { ISessionManager } from '../session/types.js';

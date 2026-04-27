@@ -7,13 +7,23 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
 import type {
   EmbedderFactory,
+  IClientAdapter,
   IEmbedder,
+  ILlmApiAdapter,
+  ILogger,
   IMcpClient,
   IModelProvider,
   IRequestLogger,
   ISkillManager,
   Message,
+  NormalizedRequest,
   VectorRag,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  AdapterValidationError,
+  type ExternalToolValidationCode,
+  normalizeAndValidateExternalTools,
+  toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type {
@@ -27,15 +37,8 @@ import {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 import { HealthChecker } from './health/health-checker.js';
-import type {
-  ILlmApiAdapter,
-  NormalizedRequest,
-} from './interfaces/api-adapter.js';
-import { AdapterValidationError } from './interfaces/api-adapter.js';
-import type { IClientAdapter } from './interfaces/client-adapter.js';
 import type { IModelResolver } from './interfaces/model-resolver.js';
 import { SessionLogger } from './logger/session-logger.js';
-import type { ILogger } from './logger/types.js';
 import type { PipelineConfig } from './pipeline.js';
 import {
   FileSystemPluginLoader,
@@ -46,11 +49,6 @@ import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
 import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
 import { CodexSkillManager } from './skills/codex-skill-manager.js';
 import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';
-import {
-  type ExternalToolValidationCode,
-  normalizeAndValidateExternalTools,
-} from './utils/external-tools-normalizer.js';
-import { toToolCallDelta } from './utils/tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -458,15 +456,11 @@ export class SmartServer {
     // LLM call strategy (from agent config)
     const strategyName = this.cfg.agent?.llmCallStrategy;
     if (strategyName) {
-      const { StreamingLlmCallStrategy } = await import(
-        './policy/streaming-llm-call-strategy.js'
-      );
-      const { NonStreamingLlmCallStrategy } = await import(
-        './policy/non-streaming-llm-call-strategy.js'
-      );
-      const { FallbackLlmCallStrategy } = await import(
-        './policy/fallback-llm-call-strategy.js'
-      );
+      const {
+        StreamingLlmCallStrategy,
+        NonStreamingLlmCallStrategy,
+        FallbackLlmCallStrategy,
+      } = await import('@mcp-abap-adt/llm-agent');
       const strategies = {
         streaming: () => new StreamingLlmCallStrategy(),
         'non-streaming': () => new NonStreamingLlmCallStrategy(),
