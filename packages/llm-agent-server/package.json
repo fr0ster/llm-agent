@@ -58,19 +58,19 @@
     "@modelcontextprotocol/sdk": "^1.28.0",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",
-    "zod": "^3.25.0"
+    "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/openai-llm": "^11.1.1",
     "@mcp-abap-adt/anthropic-llm": "^11.1.1",
     "@mcp-abap-adt/deepseek-llm": "^11.1.1",
-    "@mcp-abap-adt/sap-aicore-llm": "^11.1.1",
-    "@mcp-abap-adt/openai-embedder": "^11.1.1",
-    "@mcp-abap-adt/ollama-embedder": "^11.1.1",
-    "@mcp-abap-adt/sap-aicore-embedder": "^11.1.1",
-    "@mcp-abap-adt/qdrant-rag": "^11.1.1",
     "@mcp-abap-adt/hana-vector-rag": "^11.1.1",
-    "@mcp-abap-adt/pg-vector-rag": "^11.1.1"
+    "@mcp-abap-adt/ollama-embedder": "^11.1.1",
+    "@mcp-abap-adt/openai-embedder": "^11.1.1",
+    "@mcp-abap-adt/openai-llm": "^11.1.1",
+    "@mcp-abap-adt/pg-vector-rag": "^11.1.1",
+    "@mcp-abap-adt/qdrant-rag": "^11.1.1",
+    "@mcp-abap-adt/sap-aicore-embedder": "^11.1.1",
+    "@mcp-abap-adt/sap-aicore-llm": "^11.1.1"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/openai-llm": {
@@ -105,16 +105,16 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/openai-llm": "*",
     "@mcp-abap-adt/anthropic-llm": "*",
     "@mcp-abap-adt/deepseek-llm": "*",
-    "@mcp-abap-adt/sap-aicore-llm": "*",
-    "@mcp-abap-adt/openai-embedder": "*",
-    "@mcp-abap-adt/ollama-embedder": "*",
-    "@mcp-abap-adt/sap-aicore-embedder": "*",
-    "@mcp-abap-adt/qdrant-rag": "*",
     "@mcp-abap-adt/hana-vector-rag": "*",
+    "@mcp-abap-adt/ollama-embedder": "*",
+    "@mcp-abap-adt/openai-embedder": "*",
+    "@mcp-abap-adt/openai-llm": "*",
     "@mcp-abap-adt/pg-vector-rag": "*",
+    "@mcp-abap-adt/qdrant-rag": "*",
+    "@mcp-abap-adt/sap-aicore-embedder": "*",
+    "@mcp-abap-adt/sap-aicore-llm": "*",
     "@opentelemetry/api": "^1.9.1",
     "@sap-ai-sdk/ai-api": "^2.0.0",
     "@sap-ai-sdk/orchestration": "^2.9.0",
