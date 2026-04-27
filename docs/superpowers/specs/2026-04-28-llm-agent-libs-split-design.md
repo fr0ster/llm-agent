@@ -23,11 +23,11 @@ All three factories become async (`Promise<ILlm>` / `Promise<IRag>`). Direct cal
 
 Architectural rationale for full async (rather than keeping top-level factories sync via prefetch indirection): we are accepting a breaking change anyway, and the cleanest top-level API is symmetric — both LLM and RAG factories use the same dynamic-import + `MissingProviderError` pattern, no implicit consumer-side prefetch contract. One pattern is easier to reason about than two.
 
-Low-level `resolveEmbedder()` / `resolveRag()` may remain synchronous and keep the existing prefetch contract for internal and advanced use. `prefetchEmbedderFactories()` / `prefetchRagFactories()` remain useful as optional warm-up utilities, but they are no longer prerequisites for top-level `makeRag()`.
+Low-level prefetched resolvers may remain synchronous and keep the existing prefetch contract for internal and advanced use. Name them distinctly from the top-level config resolvers: `resolvePrefetchedEmbedder(name, opts)` and `resolvePrefetchedRag(name, opts)`. `prefetchEmbedderFactories()` / `prefetchRagFactories()` remain useful as optional warm-up utilities, but they are no longer prerequisites for top-level `makeRag()`.
 
-If `resolveRag()` does not yet exist as a separate sync helper, extracting it (the cached/prefetch-backed lookup body) from the current `makeRag()` is part of step 5. Top-level `makeRag()` then becomes async and delegates to `resolveRag()` after performing the dynamic-import lookup itself.
+Top-level config helpers keep ergonomic names and are async where they load optional packages: `makeRag(cfg, options): Promise<IRag>` and `resolveEmbedder(cfg, options): Promise<IEmbedder>`. If a prefetched low-level helper does not yet exist as a separate function, extracting the cached lookup body is part of step 5.
 
-`SmartAgentBuilder.build()` uses the top-level async path: it calls `await makeLlm(...)` and `await makeRag(...)`. It does not call low-level `resolveRag()` / `resolveEmbedder()` directly — the builder is the simple-path consumer of the public API, and using the same path keeps the builder code symmetric. Low-level sync helpers exist for hot-path consumers who do their own prefetch, not for the builder.
+`SmartAgentBuilder.build()` uses the top-level async path: it calls `await makeLlm(...)` and `await makeRag(...)`. It does not call low-level `resolvePrefetchedRag()` / `resolvePrefetchedEmbedder()` directly — the builder is the simple-path consumer of the public API, and using the same path keeps the builder code symmetric. Low-level sync helpers exist for hot-path consumers who do their own prefetch, not for the builder.
 
 ## Final package layout
 
@@ -143,8 +143,8 @@ No optional peers (transports are configured via the SDK directly).
 Owns the composition layer above the leaf RAG / embedder packages.
 
 ```
-src/embedder-factories.ts   ← from llm-agent-server/src/smart-agent/embedder-factories.ts  (resolveEmbedder, builtInEmbedderFactories, prefetchEmbedderFactories, EmbedderFactoryOpts)
-src/rag-factories.ts        ← from llm-agent-server/src/smart-agent/rag-factories.ts plus the RAG/embedder resolution block from providers.ts (makeRag, resolveRag, resolution config types)
+src/embedder-factories.ts   ← from llm-agent-server/src/smart-agent/embedder-factories.ts plus the embedder resolution block from providers.ts (resolveEmbedder, resolvePrefetchedEmbedder, builtInEmbedderFactories, prefetchEmbedderFactories, EmbedderFactoryOpts)
+src/rag-factories.ts        ← from llm-agent-server/src/smart-agent/rag-factories.ts plus the RAG resolution block from providers.ts (makeRag, resolvePrefetchedRag, prefetchRagFactories, resolution config types)
 src/index.ts                public exports
 ```
 
@@ -155,11 +155,11 @@ src/index.ts                public exports
 
 Rationale: factories use dynamic `import()` + `MissingProviderError`, so consumers only install the embedder/RAG backends they actually need.
 
-Implementation note (in-scope conversion): current `makeRag()` statically imports `OllamaRag` from `@mcp-abap-adt/ollama-embedder` for the default path, plus other RAG backends are wired in similarly. During the move, convert `makeRag()` to dynamic `import()` + `MissingProviderError` for every backend, including the Ollama default. The function becomes async: `makeRag(cfg, ...): Promise<IRag>`. Importing `llm-agent-rag` must not require any specific embedder/RAG package — only the ones the consumer configures.
+Implementation note (in-scope conversion): current `makeRag()` statically imports `OllamaRag` from `@mcp-abap-adt/ollama-embedder` for the default path in `providers.ts`. The external RAG backends (`qdrant`, `hana-vector`, `pg-vector`) already use dynamic imports through `rag-factories.ts`; preserve that behaviour while moving it. During the move, convert the top-level `makeRag()` path to dynamic `import()` + `MissingProviderError` for every optional package it can load, including the Ollama default. The function becomes async: `makeRag(cfg, ...): Promise<IRag>`. Importing `llm-agent-rag` must not require any specific embedder/RAG package — only the ones the consumer configures.
 
 Do not substitute `OllamaRag` with a `resolveEmbedder('ollama') + VectorRag` composition unless `OllamaRag` is verified to be exactly that combination at the source level — preserve current behaviour by dynamic-importing `OllamaRag` itself.
 
-Low-level `resolveEmbedder()` / `resolveRag()` can stay sync and prefetch-backed; top-level `makeRag()` should not require callers to prefetch first.
+Low-level `resolvePrefetchedEmbedder()` / `resolvePrefetchedRag()` stay sync and prefetch-backed; top-level `resolveEmbedder()` / `makeRag()` do not require callers to prefetch first.
 
 ### `@mcp-abap-adt/llm-agent-libs` — core composition
 
@@ -243,7 +243,7 @@ Exports `MCPClientWrapper`, `MCPClientConfig`, `TransportType`, `McpClientAdapte
 
 ### `@mcp-abap-adt/llm-agent-rag`
 
-Exports `makeRag`, `resolveEmbedder`, `builtInEmbedderFactories`, `prefetchEmbedderFactories`, `EmbedderFactoryOpts`, `RagResolutionConfig`, `RagResolutionOptions`, `EmbedderResolutionConfig`, `EmbedderResolutionOptions`.
+Exports `makeRag`, `resolveEmbedder`, `resolvePrefetchedEmbedder`, `resolvePrefetchedRag`, `builtInEmbedderFactories`, `prefetchEmbedderFactories`, `prefetchRagFactories`, `ragBackendNames`, `EmbedderFactoryOpts`, `RagFactoryOpts`, `RagResolutionConfig`, `RagResolutionOptions`, `EmbedderResolutionConfig`, `EmbedderResolutionOptions`.
 
 ### `@mcp-abap-adt/llm-agent-libs`
 
@@ -287,12 +287,13 @@ import {
   InMemoryMetrics,
 } from '@mcp-abap-adt/llm-agent-libs';
 
-// makeLlm and makeRag are now async — add await at direct callsites
+// makeLlm, makeRag, and resolveEmbedder are now async — add await at direct callsites
 const llm = await makeLlm(cfg, temperature);
 const rag = await makeRag(ragCfg, { injectedEmbedder });
+const embedder = await resolveEmbedder(embCfg, options);
 ```
 
-Consumers calling `makeRag()` directly must add `await`. Consumers using only `SmartAgentBuilder` are unaffected (`build()` is already async and absorbs the change internally).
+Consumers calling `makeLlm()` / `makeRag()` / `resolveEmbedder()` directly must add `await`. Consumers using only `SmartAgentBuilder` are unaffected (`build()` is already async and absorbs the change internally). Hot-path consumers that need synchronous resolution use `resolvePrefetchedEmbedder()` / `resolvePrefetchedRag()` after running the corresponding prefetch helper.
 
 Most cloud-llm-hub imports already come from `@mcp-abap-adt/llm-agent` (they import `Message`, `IRag`, `VectorRag`, etc. from there) — those lines do not change. Only the `@mcp-abap-adt/llm-agent-server` imports get rewritten to one of `llm-agent-mcp`, `llm-agent-rag`, or `llm-agent-libs` depending on the symbol. README of each new package contains the migration table.
 
@@ -320,7 +321,7 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 10. Update root `tsconfig.json` references and any path mappings.
 11. Run `npm install`, `npm run build`, `npm run lint`. Smoke-test the binary: `npm run dev` (with MCP) and `npm run dev:llm` (LLM-only) from `packages/llm-agent-server`.
 12. Add a single `patch` changeset entry for the fixed group → all five packages bump to 12.0.1.
-13. Update `docs/ARCHITECTURE.md` and per-package READMEs (new layout, migration tables). The `llm-agent-rag` README documents both patterns explicitly: `await makeRag(cfg)` for the common case (dynamic import + resolution in one async call) and `prefetchEmbedderFactories(); prefetchRagFactories(); resolveRag(cfg)` for hot-path consumers that need synchronous resolution after warm-up.
+13. Update `docs/ARCHITECTURE.md` and per-package READMEs (new layout, migration tables). The `llm-agent-rag` README documents both patterns explicitly: `await makeRag(cfg)` for the common case (dynamic import + resolution in one async call) and `prefetchEmbedderFactories(); prefetchRagFactories(); resolvePrefetchedEmbedder(name, opts); resolvePrefetchedRag(name, opts)` for hot-path consumers that need synchronous resolution after warm-up.
 14. Open PR referencing #125.
 
 ## Risks and mitigations
@@ -332,7 +333,7 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 - **`package.json` without `main`/`exports`.** Some bundlers warn. If it causes friction, set `"exports": { "./package.json": "./package.json" }` to keep package metadata resolvable while still preventing library imports.
 - **Tests located by path.** Implementation tests must move alongside the code; otherwise coverage disappears from the package that now owns the behaviour.
 - **Lockfile churn.** `package-lock.json` changes are committed alongside the refactor per repo convention.
-- **`makeLlm` / `makeDefaultLlm` / `makeRag` become async.** All internal callsites (notably `SmartAgentBuilder.build()`, which is already async) gain `await`. The known external callsite (`cloud-llm-hub/tools/generate-tool-intents.ts`) gets one `await` in the same migration commit that rewrites its import path. Risk: an undiscovered sync callsite passes a `Promise<ILlm>` / `Promise<IRag>` where the bare interface is expected — caught by `tsc --noEmit`, which must run clean before merging.
+- **`makeLlm` / `makeDefaultLlm` / `makeRag` / `resolveEmbedder` become async.** All internal callsites (notably `SmartAgentBuilder.build()`, which is already async) gain `await`. The known external callsite (`cloud-llm-hub/tools/generate-tool-intents.ts`) gets one `await` in the same migration commit that rewrites its import path. No external direct caller of `resolveEmbedder` is currently known (cloud-llm-hub only imports the `IEmbedder` type), but during implementation grep both consumer repos for direct calls and add `await` if found. Risk: an undiscovered sync callsite passes a `Promise<ILlm>` / `Promise<IRag>` / `Promise<IEmbedder>` where the bare interface is expected — caught by `tsc --noEmit`, which must run clean before merging. Hot-path consumers that need synchronous resolution use `resolvePrefetchedEmbedder()` / `resolvePrefetchedRag()` after explicit `prefetchEmbedderFactories()` / `prefetchRagFactories()`.
 
 ## Out of scope
 
