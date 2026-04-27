@@ -31,13 +31,16 @@ import type {
   Message,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import { NoopQueryExpander } from '@mcp-abap-adt/llm-agent';
+import {
+  NoopQueryExpander,
+  NoopToolCache,
+  StreamingLlmCallStrategy,
+} from '@mcp-abap-adt/llm-agent';
 import type {
   OrchestratorError,
   SmartAgentConfig,
   SmartAgentRagStores,
 } from '../agent.js';
-import { NoopToolCache } from '../cache/noop-tool-cache.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
 import type {
@@ -48,7 +51,6 @@ import type {
 import { NoopRequestLogger } from '../logger/noop-request-logger.js';
 import { NoopMetrics } from '../metrics/noop-metrics.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
-import { StreamingLlmCallStrategy } from '../policy/streaming-llm-call-strategy.js';
 import { ToolAvailabilityRegistry } from '../policy/tool-availability-registry.js';
 import { NoopReranker } from '../reranker/noop-reranker.js';
 import { NoopSessionManager } from '../session/noop-session-manager.js';

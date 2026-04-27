@@ -7,6 +7,31 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [12.0.0] — 2026-04-27
+
+### Breaking
+- **Library helpers moved from `@mcp-abap-adt/llm-agent-server` into `@mcp-abap-adt/llm-agent`.** Consumers that ship their own HTTP server can now depend on `@mcp-abap-adt/llm-agent` only and skip the server package entirely. The following symbols are no longer exported from `@mcp-abap-adt/llm-agent-server` — import them from `@mcp-abap-adt/llm-agent` instead:
+  - **Resilience:** `CircuitBreaker`, `CircuitBreakerConfig`, `CircuitState`, `CircuitBreakerLlm`, `CircuitBreakerEmbedder`, `FallbackRag`
+  - **LLM call policies:** `NonStreamingLlmCallStrategy`, `StreamingLlmCallStrategy`, `FallbackLlmCallStrategy`
+  - **Tool cache:** `ToolCache`, `NoopToolCache`, `IToolCache`
+  - **API adapters:** `AnthropicApiAdapter`, `OpenAiApiAdapter`, `AdapterValidationError`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `NormalizedRequest`
+  - **Client adapters:** `ClineClientAdapter`, `IClientAdapter`
+  - **Tool utilities:** `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `ExternalToolValidationCode`, `ExternalToolValidationError`, `CLIENT_PROVIDED_PREFIX`, `getStreamToolCallName`, `toToolCallDelta`
+  - **Logger:** `ILogger`, `LogEvent`
+
+  Existing imports from `@mcp-abap-adt/llm-agent-server` for any of the above will fail to resolve. The runnable distribution (`SmartAgentBuilder`, `SmartServer`, providers/factories composition root, plugins, skills, sessions, metrics, tracer, validator, reranker, history, structured pipeline, health, config watcher, MCP client wrapper, CLI, bin entries) stays in `@mcp-abap-adt/llm-agent-server`.
+
+### Changed
+- **`@mcp-abap-adt/llm-agent`** runtime dependencies remain unchanged (`zod` only). The moved files only reference internal types that already lived in `llm-agent`.
+- **`@mcp-abap-adt/llm-agent-server` `index.ts`** trimmed: docstring rewritten to describe the package as the runnable distribution, and the helper re-export block deleted (the server still re-exports `BaseLLMProvider` / `LLMProvider` from `llm-agent` for back-compat).
+- **`docs/INTEGRATION.md`** — added a callout near the top documenting the package split; rewrote example imports for the moved symbols (API adapters section, LLM call strategies section, multi-store builder example).
+- **`docs/ARCHITECTURE.md`** — Scope section now describes the two-package split before diving into the server's internal layers.
+
+### Closes
+- [#123](https://github.com/fr0ster/llm-agent/issues/123) — Move library-grade exports out of `llm-agent-server` (or re-export from `llm-agent`)
+
+---
+
 ## [11.0.0] — 2026-04-24
 
 ### Breaking

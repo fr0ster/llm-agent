@@ -17,7 +17,7 @@ import {
   type ILlmApiAdapter,
   type NormalizedRequest,
 } from '../interfaces/api-adapter.js';
-import { toToolCallDelta } from '../utils/tool-call-deltas.js';
+import { toToolCallDelta } from '../tool-call-deltas.js';
 
 // ---------------------------------------------------------------------------
 // Helpers
