@@ -17,11 +17,17 @@ What actually shipped in 12.0.0: only chat-style helpers (api-adapters, `ClineCl
 
 Complete the split so consumers can build a SmartAgent without `@mcp-abap-adt/llm-agent-server` as a dependency. `llm-agent-server` becomes a runnable binary only. Composition is delivered via cohesive packages organised by domain (MCP, RAG, core composition), with `llm-agent-libs` as the SmartAgent composition entry point and `llm-agent-mcp` / `llm-agent-rag` available for narrower standalone use.
 
-Also in scope: convert `makeLlm()` / `makeDefaultLlm()` / `makeRag()` from static provider imports to dynamic optional imports. The current `package.json` already declares the LLM/RAG provider packages as `optional peerDependencies`, but `providers.ts` and `rag-factories.ts` import them statically — the optional-peer promise is currently a lie. This refactor delivers what v12 advertised.
+Also in scope: convert `makeLlm()` / `makeDefaultLlm()` / `makeRag()` from static provider imports to dynamic optional imports. The current `package.json` already declares the LLM/RAG provider packages as `optional peerDependencies`, but `providers.ts` imports the LLM providers and the default `OllamaRag` path statically — the optional-peer promise is currently a lie. This refactor delivers what v12 advertised.
 
 All three factories become async (`Promise<ILlm>` / `Promise<IRag>`). Direct callers add one `await` per call. `SmartAgentBuilder.build()` is already async, so the main builder API does not change.
 
-Architectural rationale for full async (rather than keeping factories sync via prefetch indirection): we are accepting a breaking change anyway, and the cleanest result is symmetric — both LLM and RAG factories use the same dynamic-import + `MissingProviderError` pattern, no implicit consumer-side prefetch contract. One pattern is easier to reason about than two. The `prefetchEmbedderFactories()` / `prefetchRagFactories()` helpers may stay as optional warm-up utilities but are no longer prerequisites for `makeRag()`.
+Architectural rationale for full async (rather than keeping top-level factories sync via prefetch indirection): we are accepting a breaking change anyway, and the cleanest top-level API is symmetric — both LLM and RAG factories use the same dynamic-import + `MissingProviderError` pattern, no implicit consumer-side prefetch contract. One pattern is easier to reason about than two.
+
+Low-level `resolveEmbedder()` / `resolveRag()` may remain synchronous and keep the existing prefetch contract for internal and advanced use. `prefetchEmbedderFactories()` / `prefetchRagFactories()` remain useful as optional warm-up utilities, but they are no longer prerequisites for top-level `makeRag()`.
+
+If `resolveRag()` does not yet exist as a separate sync helper, extracting it (the cached/prefetch-backed lookup body) from the current `makeRag()` is part of step 5. Top-level `makeRag()` then becomes async and delegates to `resolveRag()` after performing the dynamic-import lookup itself.
+
+`SmartAgentBuilder.build()` uses the top-level async path: it calls `await makeLlm(...)` and `await makeRag(...)`. It does not call low-level `resolveRag()` / `resolveEmbedder()` directly — the builder is the simple-path consumer of the public API, and using the same path keeps the builder code symmetric. Low-level sync helpers exist for hot-path consumers who do their own prefetch, not for the builder.
 
 ## Final package layout
 
@@ -153,6 +159,8 @@ Implementation note (in-scope conversion): current `makeRag()` statically import
 
 Do not substitute `OllamaRag` with a `resolveEmbedder('ollama') + VectorRag` composition unless `OllamaRag` is verified to be exactly that combination at the source level — preserve current behaviour by dynamic-importing `OllamaRag` itself.
 
+Low-level `resolveEmbedder()` / `resolveRag()` can stay sync and prefetch-backed; top-level `makeRag()` should not require callers to prefetch first.
+
 ### `@mcp-abap-adt/llm-agent-libs` — core composition
 
 Everything else — the runtime that orchestrates LLM, MCP, and RAG into a SmartAgent.
@@ -271,6 +279,7 @@ import {
 // After (12.0.1)
 import { type SmartAgentHandle } from '@mcp-abap-adt/llm-agent';
 import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
+import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import {
   SmartAgentBuilder,
   SessionManager,
@@ -280,7 +289,7 @@ import {
 
 // makeLlm and makeRag are now async — add await at direct callsites
 const llm = await makeLlm(cfg, temperature);
-const rag = await makeRag(ragCfg, { embedder, breaker });
+const rag = await makeRag(ragCfg, { injectedEmbedder });
 ```
 
 Consumers calling `makeRag()` directly must add `await`. Consumers using only `SmartAgentBuilder` are unaffected (`build()` is already async and absorbs the change internally).
@@ -311,7 +320,7 @@ If none of these triggers, the leaf stays in `llm-agent-libs`. The fixed-version
 10. Update root `tsconfig.json` references and any path mappings.
 11. Run `npm install`, `npm run build`, `npm run lint`. Smoke-test the binary: `npm run dev` (with MCP) and `npm run dev:llm` (LLM-only) from `packages/llm-agent-server`.
 12. Add a single `patch` changeset entry for the fixed group → all five packages bump to 12.0.1.
-13. Update `docs/ARCHITECTURE.md` and per-package READMEs (new layout, migration tables).
+13. Update `docs/ARCHITECTURE.md` and per-package READMEs (new layout, migration tables). The `llm-agent-rag` README documents both patterns explicitly: `await makeRag(cfg)` for the common case (dynamic import + resolution in one async call) and `prefetchEmbedderFactories(); prefetchRagFactories(); resolveRag(cfg)` for hot-path consumers that need synchronous resolution after warm-up.
 14. Open PR referencing #125.
 
 ## Risks and mitigations
