@@ -26,7 +26,7 @@
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
     "@changesets/cli": "^2.31.0",
-    "@types/node": "^22.0.0",
+    "@types/node": "^25.6.0",
     "rimraf": "^5.0.0",
     "tsx": "^4.21.0",
     "typescript": "^6.0.3"
