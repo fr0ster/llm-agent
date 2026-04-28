@@ -12,6 +12,8 @@ cd "$(dirname "$0")/.."
 
 PACKAGES=(
   llm-agent
+  llm-agent-mcp
+  llm-agent-rag
   openai-llm
   anthropic-llm
   deepseek-llm
@@ -22,6 +24,7 @@ PACKAGES=(
   qdrant-rag
   hana-vector-rag
   pg-vector-rag
+  llm-agent-libs
   llm-agent-server
 )
 
