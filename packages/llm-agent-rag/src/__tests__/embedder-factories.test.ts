@@ -4,7 +4,7 @@ import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import {
   _resetPrefetchedForTests,
   prefetchEmbedderFactories,
-  resolveEmbedder,
+  resolvePrefetchedEmbedder,
 } from '../embedder-factories.js';
 
 afterEach(() => {
@@ -12,21 +12,21 @@ afterEach(() => {
 });
 
 describe('factory registry — MissingProviderError', () => {
-  it('resolveEmbedder throws MissingProviderError for unknown factory name', () => {
+  it('resolvePrefetchedEmbedder throws MissingProviderError for unknown factory name', () => {
     assert.throws(
-      () => resolveEmbedder('does-not-exist', {}),
+      () => resolvePrefetchedEmbedder('does-not-exist', {}),
       (err: unknown) => err instanceof MissingProviderError,
     );
   });
-  it('resolveEmbedder throws before prefetch', () => {
+  it('resolvePrefetchedEmbedder throws before prefetch', () => {
     assert.throws(
-      () => resolveEmbedder('openai', {}),
+      () => resolvePrefetchedEmbedder('openai', {}),
       (err: unknown) => err instanceof MissingProviderError,
     );
   });
   it('prefetchEmbedderFactories resolves installed peer', async () => {
     await prefetchEmbedderFactories(['openai']);
-    const e = resolveEmbedder('openai', { apiKey: 'test' });
+    const e = resolvePrefetchedEmbedder('openai', { apiKey: 'test' });
     assert.ok(e);
   });
 });

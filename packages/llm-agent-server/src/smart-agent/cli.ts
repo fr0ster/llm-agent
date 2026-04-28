@@ -72,8 +72,7 @@ import {
   type ResolveConfigArgs,
   resolveSmartServerConfig,
 } from './config.js';
-import { prefetchEmbedderFactories } from './embedder-factories.js';
-import { prefetchRagFactories } from './rag-factories.js';
+import { prefetchEmbedderFactories, prefetchRagFactories } from '@mcp-abap-adt/llm-agent-rag';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
 

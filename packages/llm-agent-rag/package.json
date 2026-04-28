@@ -13,7 +13,8 @@
   "files": ["dist", "README.md"],
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "clean": "tsc -p tsconfig.json --clean"
+    "clean": "tsc -p tsconfig.json --clean",
+    "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "*"
