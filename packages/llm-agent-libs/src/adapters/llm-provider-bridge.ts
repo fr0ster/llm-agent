@@ -8,11 +8,12 @@
  */
 
 import type {
+  AgentCallOptions,
   AgentStreamChunk,
+  BaseAgentLlmBridge,
   LLMProvider,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import type { AgentCallOptions, BaseAgentLlmBridge } from './llm-adapter.js';
 
 /**
  * Convert MCP-style tools to OpenAI function-call format.

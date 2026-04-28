@@ -11,7 +11,7 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { ILogger, LogEvent } from '../logger/types.js';
+import type { ILogger, LogEvent } from '@mcp-abap-adt/llm-agent';
 
 function stubLlm(): ILlm {
   return {

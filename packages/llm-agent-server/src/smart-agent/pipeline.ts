@@ -101,5 +101,5 @@ export interface PipelineConfig {
    * When present, the pipeline executor replaces the default hardcoded flow.
    * See `docs/ARCHITECTURE.md` for stage types and YAML examples.
    */
-  stages?: import('./pipeline/types.js').StageDefinition[];
+  stages?: import('@mcp-abap-adt/llm-agent-libs').StageDefinition[];
 }

@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "*",
+    "@mcp-abap-adt/llm-agent-libs": "*",
     "@mcp-abap-adt/llm-agent-mcp": "*",
     "@mcp-abap-adt/llm-agent-rag": "*",
     "@modelcontextprotocol/sdk": "^1.28.0",

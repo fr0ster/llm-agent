@@ -3,6 +3,7 @@
  */
 
 import type {
+  AgentCallOptions,
   AgentStreamChunk as CoreAgentStreamChunk,
   BaseAgentLlmBridge,
   ILlm,
@@ -23,18 +24,7 @@ import {
   type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 
-export type { BaseAgentLlmBridge };
-
-// ---------------------------------------------------------------------------
-// Bridge interface AgentCallOptions
-// ---------------------------------------------------------------------------
-
-export interface AgentCallOptions {
-  temperature?: number;
-  maxTokens?: number;
-  topP?: number;
-  stop?: string[];
-}
+export type { AgentCallOptions, BaseAgentLlmBridge };
 
 type ParseStage = 'response' | 'stream';
 type ParseDiagnostic = {

@@ -2,10 +2,10 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { SmartAgent } from '../agent.js';
-import type { IModelResolver } from '../interfaces/model-resolver.js';
+import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
+import type { IModelResolver } from '@mcp-abap-adt/llm-agent';
 import { SmartServer } from '../smart-server.js';
-import { makeDefaultDeps, makeLlm as makeTestLlm } from '../testing/index.js';
+import { makeDefaultDeps, makeLlm as makeTestLlm } from '@mcp-abap-adt/llm-agent-libs/testing';
 
 function makeResolver(results: Record<string, ILlm | Error>): IModelResolver {
   return {

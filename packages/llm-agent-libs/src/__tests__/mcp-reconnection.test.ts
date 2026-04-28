@@ -5,7 +5,7 @@ import { SmartAgent } from '../agent.js';
 import type {
   IMcpConnectionStrategy,
   McpConnectionResult,
-} from '../interfaces/mcp-connection-strategy.js';
+} from '@mcp-abap-adt/llm-agent';
 import { makeDefaultDeps, makeMcpClient } from '../testing/index.js';
 
 describe('SmartAgent MCP reconnection', () => {
