@@ -5,17 +5,10 @@
   "fixed": [
     [
       "@mcp-abap-adt/llm-agent",
-      "@mcp-abap-adt/llm-agent-server",
-      "@mcp-abap-adt/openai-llm",
-      "@mcp-abap-adt/anthropic-llm",
-      "@mcp-abap-adt/deepseek-llm",
-      "@mcp-abap-adt/sap-aicore-llm",
-      "@mcp-abap-adt/openai-embedder",
-      "@mcp-abap-adt/ollama-embedder",
-      "@mcp-abap-adt/sap-aicore-embedder",
-      "@mcp-abap-adt/qdrant-rag",
-      "@mcp-abap-adt/hana-vector-rag",
-      "@mcp-abap-adt/pg-vector-rag"
+      "@mcp-abap-adt/llm-agent-mcp",
+      "@mcp-abap-adt/llm-agent-rag",
+      "@mcp-abap-adt/llm-agent-libs",
+      "@mcp-abap-adt/llm-agent-server"
     ]
   ],
   "linked": [],

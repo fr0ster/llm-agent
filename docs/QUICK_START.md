@@ -19,7 +19,7 @@ Or run from source:
 ```bash
 git clone <repo> && cd llm-agent
 npm install && npm run build
-npx llm-agent          # uses ./dist/smart-agent/cli.js
+npx llm-agent          # uses packages/llm-agent-server/dist/smart-agent/cli.js
 ```
 
 ---
@@ -225,7 +225,7 @@ See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for full pipeline and programma
 Let the LLM create temporary collections scoped to a session:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { InMemoryRagProvider } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })

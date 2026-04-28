@@ -1,12 +1,23 @@
 export type { IQueryExpander } from '../rag/query-expander.js';
 export {
   type AgentCallOptions,
+  type BaseAgentLlmBridge,
   OrchestratorError,
   type SmartAgentResponse,
   type StopReason,
 } from './agent-contracts.js';
 export type { HistoryEntry, IContextAssembler } from './assembler.js';
+export type {
+  ISmartAgent,
+  SmartAgentHandle,
+  SmartAgentRagStores,
+} from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
+export type {
+  CircuitBreakerStatus,
+  HealthComponentStatus,
+  HealthStatus,
+} from './health.js';
 export type { IHistoryMemory } from './history-memory.js';
 export type {
   HistoryTurn,
@@ -16,11 +27,42 @@ export type { ILlm } from './llm.js';
 export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
 export type {
+  ConnectionStrategyOptions,
+  IMcpConnectionStrategy,
+  McpClientFactory,
+  McpClientFactoryResult,
+  McpConnectionConfig,
+  McpConnectionResult,
+} from './mcp-connection-strategy.js';
+export type {
+  CounterSnapshot,
+  HistogramSnapshot,
+  ICounter,
+  IHistogram,
+  IMetrics,
+  MetricsSnapshot,
+} from './metrics.js';
+export type {
   IModelFilter,
   IModelInfo,
   IModelProvider,
 } from './model-provider.js';
-export type { IRagStoreConfig, ISmartAgentPlugin, RagScope } from './plugin.js';
+export type { IModelResolver } from './model-resolver.js';
+export type {
+  BuiltInStageType,
+  ControlFlowType,
+  StageDefinition,
+  StageType,
+} from './pipeline.js';
+export type {
+  IPluginLoader,
+  IRagStoreConfig,
+  ISmartAgentPlugin,
+  IStageHandler,
+  LoadedPlugins,
+  PluginExports,
+  RagScope,
+} from './plugin.js';
 export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
@@ -50,12 +92,15 @@ export type {
   TokenCategory,
   ToolCallEntry,
 } from './request-logger.js';
+export type { IReranker } from './reranker.js';
+export type { ISessionManager } from './session.js';
 export type {
   ISkill,
   ISkillManager,
   ISkillMeta,
   ISkillResource,
 } from './skill.js';
+export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
   AgentConfig,
   CallOptions,
@@ -91,3 +136,5 @@ export {
   SkillError,
   SmartAgentError,
 } from './types.js';
+export type { IOutputValidator, ValidationResult } from './validator.js';
+export { ValidatorError } from './validator.js';

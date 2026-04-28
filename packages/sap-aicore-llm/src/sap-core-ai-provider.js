@@ -1,0 +1,425 @@
+/**
+ * SAP AI SDK LLM Provider
+ *
+ * Implementation of LLMProvider interface using @sap-ai-sdk/orchestration.
+ * Authentication is handled automatically via AICORE_SERVICE_KEY environment variable.
+ *
+ * Architecture:
+ * - Agent → SapCoreAIProvider → OrchestrationClient → SAP AI Core → External LLM
+ */
+import https from 'node:https';
+import { BaseLLMProvider } from '@mcp-abap-adt/llm-agent';
+import { OrchestrationClient } from '@sap-ai-sdk/orchestration';
+/**
+ * SAP AI SDK Provider implementation
+ *
+ * Uses @sap-ai-sdk/orchestration for authentication and LLM access.
+ * A new OrchestrationClient is created per call because tools may change between calls.
+ */
+export class SapCoreAIProvider extends BaseLLMProvider {
+  model;
+  resourceGroup;
+  log;
+  destination;
+  httpsAgent;
+  modelsCache = null;
+  modelsCacheExpiry = 0;
+  static MODELS_CACHE_TTL_MS = 300_000; // 5 min
+  modelOverride;
+  static summarizeMessages(messages) {
+    const totalChars = messages.reduce((sum, msg) => {
+      const content =
+        typeof msg.content === 'string'
+          ? msg.content
+          : JSON.stringify(msg.content ?? '');
+      return sum + content.length;
+    }, 0);
+    return {
+      totalChars,
+      roles: messages.map((msg, index) => ({
+        index,
+        role: msg.role,
+        contentLength:
+          typeof msg.content === 'string'
+            ? msg.content.length
+            : JSON.stringify(msg.content ?? '').length,
+        hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+        toolCallCount:
+          'tool_calls' in msg && Array.isArray(msg.tool_calls)
+            ? msg.tool_calls.length
+            : 0,
+        toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+      })),
+      tail: messages.slice(-4).map((msg, index) => {
+        const content =
+          typeof msg.content === 'string'
+            ? msg.content
+            : JSON.stringify(msg.content ?? '');
+        return {
+          index: messages.length - Math.min(messages.length, 4) + index,
+          role: msg.role,
+          preview:
+            content.length > 240
+              ? `${content.slice(0, 240)}...[truncated]`
+              : content,
+          hasToolCalls: 'tool_calls' in msg && Array.isArray(msg.tool_calls),
+          toolCallNames:
+            'tool_calls' in msg && Array.isArray(msg.tool_calls)
+              ? msg.tool_calls.map((tc) => tc.function?.name || '')
+              : [],
+          toolCallId: 'tool_call_id' in msg ? (msg.tool_call_id ?? null) : null,
+        };
+      }),
+    };
+  }
+  static summarizeStreamingError(error) {
+    // biome-ignore lint/suspicious/noExplicitAny: diagnostic error shape from SDK/axios
+    const err = error;
+    const cause = err?.cause;
+    return {
+      error: SapCoreAIProvider.extractErrorDetail(error),
+      name: err?.name,
+      message: err?.message,
+      cause: cause?.message || cause,
+      causeCode: cause?.code,
+      status: err?.response?.status,
+      responseData:
+        typeof err?.response?.data === 'string'
+          ? err.response.data
+          : err?.response?.data
+            ? JSON.stringify(err.response.data)
+            : undefined,
+    };
+  }
+  /** Set a per-request model override. Cleared after each chat/streamChat call. */
+  setModelOverride(model) {
+    this.modelOverride = model;
+  }
+  constructor(config) {
+    super(config);
+    // Skip validateConfig() — SAP SDK handles auth via AICORE_SERVICE_KEY env var
+    this.model = config.model || 'gpt-4o';
+    this.resourceGroup = config.resourceGroup;
+    this.log = config.log;
+    this.httpsAgent = new https.Agent({
+      keepAlive: true,
+      timeout: 60_000,
+    });
+    if (config.credentials) {
+      this.destination = {
+        url: config.credentials.servicUrl,
+        authentication: 'OAuth2ClientCredentials',
+        clientId: config.credentials.clientId,
+        clientSecret: config.credentials.clientSecret,
+        tokenServiceUrl: config.credentials.tokenServiceUrl,
+      };
+    }
+  }
+  async chat(messages, tools) {
+    try {
+      this.log?.debug('Sending chat request via SAP AI SDK', {
+        model: this.modelOverride ?? this.model,
+        messageCount: messages.length,
+        toolCount: tools?.length || 0,
+        maxTokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+      });
+      const formatted = this.formatMessages(messages);
+      const client = this.createClient(formatted, tools);
+      const response = await client.chatCompletion(undefined, {
+        httpsAgent: this.httpsAgent,
+      });
+      const toolCalls = response.getToolCalls();
+      const content = response.getContent() || '';
+      const finishReason = response.getFinishReason();
+      this.log?.debug('Received response from SAP AI SDK', { finishReason });
+      return {
+        content,
+        finishReason,
+        raw: {
+          choices: [
+            {
+              message: {
+                role: 'assistant',
+                content,
+                ...(toolCalls ? { tool_calls: toolCalls } : {}),
+              },
+              finish_reason: finishReason,
+            },
+          ],
+          usage: response.getTokenUsage(),
+        },
+      };
+    } catch (error) {
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
+      this.log?.error('SAP AI SDK API error', { error: detail });
+      // biome-ignore lint/suspicious/noExplicitAny: diagnostic error details
+      const axiosErr = error;
+      if (axiosErr?.response?.data) {
+        this.log?.error('SAP AI SDK response body', {
+          status: axiosErr.response.status,
+          data:
+            typeof axiosErr.response.data === 'string'
+              ? axiosErr.response.data
+              : JSON.stringify(axiosErr.response.data),
+        });
+      }
+      throw new Error(`SAP AI SDK API error: ${detail}`);
+    } finally {
+      this.modelOverride = undefined;
+    }
+  }
+  async *streamChat(messages, tools) {
+    const model = this.modelOverride ?? this.model;
+    const messageSummary = SapCoreAIProvider.summarizeMessages(messages);
+    const toolCount = tools?.length || 0;
+    let streamOpened = false;
+    let chunkIndex = 0;
+    let emittedContentChunks = 0;
+    let emittedContentChars = 0;
+    try {
+      this.log?.debug('SAP AI SDK streamChat start', {
+        model,
+        resourceGroup: this.resourceGroup ?? 'default',
+        messageCount: messages.length,
+        toolCount,
+        maxTokens: this.config.maxTokens,
+        temperature: this.config.temperature,
+        messageSummary,
+      });
+      const formatted = this.formatMessages(messages);
+      this.log?.debug('SAP AI SDK streamChat messages formatted', {
+        model,
+        formattedMessageCount: formatted.length,
+        messageSummary,
+      });
+      const client = this.createClient(formatted, tools);
+      this.log?.debug('SAP AI SDK streamChat client created', {
+        model,
+        toolCount,
+      });
+      // Each stream gets its own agent to prevent connection multiplexing.
+      // A shared keepAlive agent can cause SAP AI Core to route SSE chunks
+      // to the wrong stream when multiple requests share the same XSUAA user.
+      const streamAgent = new https.Agent({
+        keepAlive: false,
+        timeout: 120_000,
+      });
+      this.log?.debug('SAP AI SDK streamChat opening stream', {
+        model,
+        keepAlive: false,
+        timeoutMs: 120_000,
+      });
+      const streamResponse = await client.stream(
+        undefined,
+        undefined,
+        undefined,
+        { httpsAgent: streamAgent },
+      );
+      streamOpened = true;
+      this.log?.debug('SAP AI SDK streamChat stream opened', {
+        model,
+        messageCount: messages.length,
+        toolCount,
+      });
+      for await (const chunk of streamResponse.stream) {
+        chunkIndex += 1;
+        // TokenUsage is only available in the final chunk (final_result.usage)
+        const tokenUsage = chunk.getTokenUsage();
+        const deltaContent = chunk.getDeltaContent() || '';
+        if (deltaContent) {
+          emittedContentChunks += 1;
+          emittedContentChars += deltaContent.length;
+        }
+        const finishReason = chunk.getFinishReason();
+        // SAP AI SDK exposes tool-call deltas via getDeltaToolCalls(); without
+        // forwarding them the agent sees finishReason='tool_calls' but no calls
+        // to dispatch (regression introduced in the 10.x provider split).
+        const sdkToolCalls = chunk.getDeltaToolCalls?.();
+        const toolCalls = sdkToolCalls?.length
+          ? sdkToolCalls.map((tc) => ({
+              index: tc.index,
+              id: tc.id,
+              name: tc.function?.name,
+              arguments: tc.function?.arguments,
+            }))
+          : undefined;
+        this.log?.debug('SAP AI SDK streamChat chunk received', {
+          model,
+          chunkIndex,
+          hasContent: deltaContent.length > 0,
+          contentLength: deltaContent.length,
+          emittedContentChunks,
+          emittedContentChars,
+          finishReason,
+          usage: tokenUsage
+            ? {
+                promptTokens: tokenUsage.prompt_tokens || 0,
+                completionTokens: tokenUsage.completion_tokens || 0,
+                totalTokens: tokenUsage.total_tokens || 0,
+              }
+            : undefined,
+        });
+        yield {
+          content: deltaContent,
+          finishReason,
+          raw: chunk,
+          ...(toolCalls ? { toolCalls } : {}),
+          ...(tokenUsage
+            ? {
+                usage: {
+                  prompt_tokens: tokenUsage.prompt_tokens || 0,
+                  completion_tokens: tokenUsage.completion_tokens || 0,
+                  total_tokens: tokenUsage.total_tokens || 0,
+                },
+              }
+            : {}),
+        };
+      }
+      this.log?.debug('SAP AI SDK streamChat completed', {
+        model,
+        chunkCount: chunkIndex,
+        emittedContentChunks,
+        emittedContentChars,
+      });
+    } catch (error) {
+      this.log?.error('SAP AI SDK streaming error', {
+        model,
+        resourceGroup: this.resourceGroup ?? 'default',
+        streamOpened,
+        chunkIndex,
+        emittedContentChunks,
+        emittedContentChars,
+        toolCount,
+        messageSummary,
+        ...SapCoreAIProvider.summarizeStreamingError(error),
+      });
+      const detail = SapCoreAIProvider.extractErrorDetail(error);
+      throw new Error(`SAP AI SDK streaming error: ${detail}`);
+    } finally {
+      this.modelOverride = undefined;
+    }
+  }
+  /**
+   * Fetch all models from SAP AI Core, caching the result for MODELS_CACHE_TTL_MS.
+   * Returns ALL models regardless of capability — callers filter as needed.
+   */
+  async _fetchAllModels() {
+    if (this.modelsCache && Date.now() < this.modelsCacheExpiry) {
+      return this.modelsCache;
+    }
+    try {
+      const { ScenarioApi } = await import('@sap-ai-sdk/ai-api');
+      const result = await ScenarioApi.scenarioQueryModels(
+        'foundation-models',
+        { 'AI-Resource-Group': this.resourceGroup ?? 'default' },
+      ).execute();
+      const models = [];
+      for (const r of result.resources) {
+        const latest = r.versions?.find((v) => v.isLatest) ?? r.versions?.[0];
+        if (!latest) continue;
+        models.push({
+          id: r.model,
+          displayName: r.displayName,
+          owned_by: r.provider,
+          provider: r.provider,
+          capabilities: latest.capabilities,
+          contextLength: latest.contextLength,
+          streamingSupported: latest.streamingSupported,
+          deprecated: latest.deprecated,
+        });
+      }
+      this.modelsCache = models;
+      this.modelsCacheExpiry =
+        Date.now() + SapCoreAIProvider.MODELS_CACHE_TTL_MS;
+      return models;
+    } catch {
+      // Fallback to configured model if AI API is not available
+      return [{ id: this.model }];
+    }
+  }
+  async getModels() {
+    return this._fetchAllModels();
+  }
+  async getEmbeddingModels() {
+    const all = await this._fetchAllModels();
+    return all.filter((m) => m.capabilities?.includes('embeddings'));
+  }
+  /**
+   * Extract detailed error information from SAP AI SDK / axios errors.
+   */
+  static extractErrorDetail(error) {
+    if (error !== null && typeof error === 'object') {
+      // biome-ignore lint/suspicious/noExplicitAny: axios error shape is untyped
+      const axiosError = error;
+      if (axiosError.response?.data) {
+        const data = axiosError.response.data;
+        const detail =
+          typeof data === 'string' ? data : JSON.stringify(data).slice(0, 500);
+        return `${axiosError.message} — ${detail}`;
+      }
+    }
+    return error instanceof Error ? error.message : String(error);
+  }
+  /**
+   * Create an OrchestrationClient with the given tools configuration.
+   * Tools are expected in OpenAI function format (already converted by the agent layer).
+   */
+  createClient(messages, tools) {
+    // biome-ignore lint/suspicious/noExplicitAny: SDK model type is a string literal union but the API accepts any model name
+    const orchConfig = {
+      promptTemplating: {
+        model: {
+          name: this.modelOverride ?? this.model,
+          params: {
+            max_tokens: this.config.maxTokens || 16384,
+            temperature: this.config.temperature || 0.7,
+            ...(tools?.length ? { tool_choice: 'auto' } : {}),
+          },
+        },
+        prompt: {
+          template: messages,
+          ...(tools?.length ? { tools } : {}),
+        },
+      },
+    };
+    return new OrchestrationClient(
+      orchConfig,
+      this.resourceGroup ? { resourceGroup: this.resourceGroup } : undefined,
+      this.destination,
+    );
+  }
+  /**
+   * Format messages for the SAP AI SDK (OpenAI-compatible format).
+   */
+  formatMessages(messages) {
+    return messages.map((msg) => {
+      if (
+        msg.role === 'assistant' &&
+        msg.tool_calls &&
+        msg.tool_calls.length > 0
+      ) {
+        return {
+          role: 'assistant',
+          content: msg.content || undefined,
+          tool_calls: msg.tool_calls,
+        };
+      }
+      if (msg.role === 'tool' && msg.tool_call_id) {
+        return {
+          role: 'tool',
+          content:
+            typeof msg.content === 'string'
+              ? msg.content
+              : JSON.stringify(msg.content ?? ''),
+          tool_call_id: msg.tool_call_id,
+        };
+      }
+      return {
+        role: msg.role,
+        content: msg.content ?? '',
+      };
+    });
+  }
+}
+//# sourceMappingURL=sap-core-ai-provider.js.map

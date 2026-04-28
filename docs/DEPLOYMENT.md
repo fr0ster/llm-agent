@@ -1,12 +1,12 @@
 # Deployment Guide
 
-This guide covers production deployment patterns for `@mcp-abap-adt/llm-agent-server`, including containerization, process management, serverless patterns, scaling strategies, and operational best practices.
+This guide covers production deployment patterns for the SmartAgent monorepo (`@mcp-abap-adt/llm-agent-libs` + binary `@mcp-abap-adt/llm-agent-server`), including containerization, process management, serverless patterns, scaling strategies, and operational best practices.
 
 ## Quick Start
 
 ```bash
 # 1. Install
-npm install @mcp-abap-adt/llm-agent-server
+npm install -g @mcp-abap-adt/llm-agent-server
 
 # 2. Generate config
 npx llm-agent --init   # creates smart-server.yaml
@@ -111,7 +111,7 @@ rag:
   url: ${QDRANT_URL:-http://qdrant:6333}
 ```
 
-Variables are resolved at startup by `resolveEnvVars()` in `src/smart-agent/config.ts`.
+Variables are resolved at startup by `resolveEnvVars()` in `packages/llm-agent-server/src/smart-agent/config.ts`.
 
 ## systemd
 
@@ -173,7 +173,7 @@ For file-based logging (when `log:` is set in `smart-server.yaml`), use `logrota
 For serverless environments, use `SmartAgent` programmatically without the HTTP layer:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
 // Build once per cold start (or pool across invocations)
 const handle = await new SmartAgentBuilder({
@@ -268,7 +268,7 @@ Use this for load balancer health checks and Kubernetes liveness/readiness probe
 Export metrics via `InMemoryMetrics.snapshot()`:
 
 ```ts
-import { InMemoryMetrics } from '@mcp-abap-adt/llm-agent-server';
+import { InMemoryMetrics } from '@mcp-abap-adt/llm-agent-libs';
 
 const metrics = new InMemoryMetrics();
 // Wire into SmartAgentBuilder via .withMetrics(metrics)
@@ -292,7 +292,7 @@ npm install @opentelemetry/api
 ```
 
 ```ts
-import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent-server/otel';
+import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent-libs/otel';
 
 const tracer = new OtelTracerAdapter();
 // Wire into SmartAgentBuilder via .withTracer(tracer)

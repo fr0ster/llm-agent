@@ -1,0 +1,1 @@
+{"version":3,"file":"history-memory.d.ts","sourceRoot":"","sources":["history-memory.ts"],"names":[],"mappings":"AAAA,MAAM,WAAW,cAAc;IAC7B,UAAU,CAAC,SAAS,EAAE,MAAM,EAAE,OAAO,EAAE,MAAM,GAAG,IAAI,CAAC;IACrD,SAAS,CAAC,SAAS,EAAE,MAAM,EAAE,KAAK,EAAE,MAAM,GAAG,MAAM,EAAE,CAAC;IACtD,KAAK,CAAC,SAAS,EAAE,MAAM,GAAG,IAAI,CAAC;CAChC"}

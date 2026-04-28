@@ -1,8 +1,8 @@
 # Integration Guide
 
-This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/llm-agent-server`. Each interface has a description, method signatures, and a working code example.
+This guide explains how to implement custom components for every pluggable interface in `@mcp-abap-adt/llm-agent` and `@mcp-abap-adt/llm-agent-libs`. Each interface has a description, method signatures, and a working code example.
 
-> **Package split (12.0.0+).** Library helpers — `CircuitBreaker` family, `FallbackRag`, LLM call strategies (`StreamingLlmCallStrategy`, `NonStreamingLlmCallStrategy`, `FallbackLlmCallStrategy`), `ToolCache` / `NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter` / `OpenAiApiAdapter` and their interface types (`NormalizedRequest`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `AdapterValidationError`), `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `getStreamToolCallName`, `toToolCallDelta`, `ILogger` — now live in `@mcp-abap-adt/llm-agent`. Embedded consumers that ship their own HTTP server can depend on `@mcp-abap-adt/llm-agent` only and skip the `-server` package entirely. The runnable distribution (CLI, HTTP server, `SmartAgentBuilder` and the providers/factories/plugins/skills/sessions/metrics/tracer/validator/reranker/history/pipeline/health/config-watcher around it) stays in `@mcp-abap-adt/llm-agent-server`.
+> **Package split (12.0.0+).** Library helpers — `CircuitBreaker` family, `FallbackRag`, LLM call strategies (`StreamingLlmCallStrategy`, `NonStreamingLlmCallStrategy`, `FallbackLlmCallStrategy`), `ToolCache` / `NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter` / `OpenAiApiAdapter` and their interface types (`NormalizedRequest`, `ApiRequestContext`, `ApiSseEvent`, `ILlmApiAdapter`, `AdapterValidationError`), `normalizeAndValidateExternalTools`, `normalizeExternalTools`, `getStreamToolCallName`, `toToolCallDelta`, `ILogger` — now live in `@mcp-abap-adt/llm-agent`. The composition runtime (`SmartAgentBuilder` and the providers/factories/plugins/skills/sessions/metrics/tracer/validator/reranker/history/pipeline/health/config-watcher around it) lives in `@mcp-abap-adt/llm-agent-libs`. The binary distribution (CLI, HTTP server) is in `@mcp-abap-adt/llm-agent-server` (not a library — do not import from it).
 
 ## Architecture Overview
 
@@ -41,7 +41,7 @@ IMcpClient            ──►  Executes tool calls
 
 ## ILlm
 
-**File:** `src/smart-agent/interfaces/llm.ts`
+**File:** `packages/llm-agent/src/interfaces/llm.ts`
 
 The core LLM interface for chat and streaming chat:
 
@@ -138,7 +138,7 @@ Always check `result.ok` before accessing `result.value`. Error types extend `Sm
 
 ## IModelProvider
 
-**File:** `src/smart-agent/interfaces/model-provider.ts`
+**File:** `packages/llm-agent/src/interfaces/model-provider.ts`
 
 Model discovery and per-request model selection:
 
@@ -229,7 +229,7 @@ Via `SmartServer`: the `model` field in `POST /v1/chat/completions` request body
 
 ## IModelResolver
 
-**File:** `src/smart-agent/interfaces/model-resolver.ts`
+**File:** `packages/llm-agent/src/interfaces/model-resolver.ts`
 
 Resolves a model name into an `ILlm` instance at runtime. Used by `SmartServer` to handle `PUT /v1/config` model changes:
 
@@ -243,16 +243,27 @@ interface IModelResolver {
 
 Wraps `makeLlm()` with provider settings. Pass the same provider config used at startup:
 
-```ts
-import { DefaultModelResolver, SmartServer } from '@mcp-abap-adt/llm-agent-server';
+```yaml
+# smart-server.yaml — configure DefaultModelResolver via YAML
+llm:
+  provider: openai
+  apiKey: ${OPENAI_API_KEY}
+  model: gpt-4o
+modelResolver:
+  provider: openai
+  apiKey: ${OPENAI_API_KEY}
+```
 
-const server = new SmartServer({
-  llm: { apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' },
-  modelResolver: new DefaultModelResolver({
-    provider: 'openai',
-    apiKey: process.env.OPENAI_API_KEY!,
-  }),
-});
+For programmatic embedding without the CLI binary, use `SmartAgentBuilder` with `makeLlm`:
+
+```ts
+import { SmartAgentBuilder, DefaultModelResolver, makeLlm } from '@mcp-abap-adt/llm-agent-libs';
+
+const mainLlm = await makeLlm({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY!, model: 'gpt-4o' });
+const handle = await new SmartAgentBuilder()
+  .withMainLlm(mainLlm)
+  .withModelResolver(new DefaultModelResolver({ provider: 'openai', apiKey: process.env.OPENAI_API_KEY! }))
+  .build();
 ```
 
 ### Runtime config endpoints
@@ -278,7 +289,7 @@ Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are va
 
 ## IRag
 
-**File:** `src/smart-agent/interfaces/rag.ts`
+**File:** `packages/llm-agent/src/interfaces/rag.ts`
 
 Read-only RAG store interface. Writing is handled by a separate writer object returned from the optional `writer()` method:
 
@@ -432,7 +443,7 @@ When `translateQuery: true` is set, the pipeline translates the query to English
 **Example:**
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { QdrantRag } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
@@ -453,7 +464,7 @@ agent.removeRagStore('tenant-42');
 
 ## IRagProvider
 
-**File:** `src/smart-agent/interfaces/rag.ts`
+**File:** `packages/llm-agent/src/interfaces/rag.ts`
 
 `IRagProvider` lets the LLM create and delete RAG collections at runtime through MCP tools, rather than registering all stores statically at startup. Providers are registered with the builder and exposed through `IRagProviderRegistry`.
 
@@ -549,7 +560,7 @@ class MyDbRagProvider extends AbstractRagProvider {
 ### Builder integration
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { QdrantRagProvider, ImmutableEditStrategy } from '@mcp-abap-adt/llm-agent';
 
 const { agent } = await new SmartAgentBuilder({ /* ... */ })
@@ -610,7 +621,7 @@ Call this from your session lifecycle hook (user logout, WebSocket disconnect). 
 
 ## IMcpClient
 
-**File:** `src/smart-agent/interfaces/mcp-client.ts`
+**File:** `packages/llm-agent/src/interfaces/mcp-client.ts`
 
 Wraps tool discovery and execution:
 
@@ -681,7 +692,7 @@ class RestApiToolClient implements IMcpClient {
 
 ## IReranker
 
-**File:** `src/smart-agent/reranker/types.ts`
+**File:** `packages/llm-agent/src/interfaces/reranker.ts`
 
 Re-scores RAG results after initial retrieval:
 
@@ -733,7 +744,7 @@ The library ships `LlmReranker` (uses the helper LLM for relevance scoring) and 
 
 ## IOutputValidator
 
-**File:** `src/smart-agent/validator/types.ts`
+**File:** `packages/llm-agent/src/interfaces/validator.ts`
 
 Validates LLM output after generation:
 
@@ -814,7 +825,7 @@ class ContentModerationValidator implements IOutputValidator {
 
 ## IQueryExpander
 
-**File:** `src/smart-agent/rag/query-expander.ts`
+**File:** `packages/llm-agent/src/rag/query-expander.ts`
 
 Expands user queries with synonyms before RAG retrieval:
 
@@ -856,7 +867,7 @@ The library ships `LlmQueryExpander` (LLM-generated expansion) and `NoopQueryExp
 
 ## ISearchStrategy
 
-**File:** `src/smart-agent/rag/search-strategy.ts`
+**File:** `packages/llm-agent/src/rag/search-strategy.ts`
 
 Pluggable scoring algorithm for RAG search. The strategy receives a query (text + vector), candidates, and a search context (inverted index + tokenizer). It returns scored and sorted results.
 
@@ -918,7 +929,7 @@ class BoostRecentStrategy implements ISearchStrategy {
 
 ## IQueryPreprocessor
 
-**File:** `src/smart-agent/rag/preprocessor.ts`
+**File:** `packages/llm-agent/src/rag/preprocessor.ts`
 
 Transforms query text before embedding and search. Configured per RAG store — each store can have its own preprocessing chain. This replaces pipeline-level translation and expansion.
 
@@ -978,7 +989,7 @@ class SapAbbreviationExpander implements IQueryPreprocessor {
 
 ## IDocumentEnricher
 
-**File:** `src/smart-agent/rag/preprocessor.ts`
+**File:** `packages/llm-agent/src/rag/preprocessor.ts`
 
 Enriches document text before embedding and storage. Applied during `upsert()`. Useful for adding translations, synonyms, or intent keywords to indexed content.
 
@@ -1010,7 +1021,7 @@ const rag = new VectorRag(embedder, {
 
 ## IToolIndexingStrategy
 
-**File:** `src/smart-agent/rag/tool-indexing-strategy.ts`
+**File:** `packages/llm-agent/src/rag/tool-indexing-strategy.ts`
 
 Generates text variants for tool descriptions at indexing time. The builder indexes tools into the RAG store — strategies control what text gets embedded. Multiple strategies can be combined for dual/multi indexing.
 
@@ -1060,7 +1071,7 @@ for (const tool of tools) {
 
 ## ISubpromptClassifier
 
-**File:** `src/smart-agent/interfaces/classifier.ts`
+**File:** `packages/llm-agent/src/interfaces/classifier.ts`
 
 Decomposes user messages into typed subprompts:
 
@@ -1075,7 +1086,7 @@ Subprompt types: `action`, `fact`, `chat`, `state`, `feedback`.
 ### Example: Rule-based classifier for simple use cases
 
 ```ts
-import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent';
 import type { Subprompt, ClassifierError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1101,7 +1112,7 @@ class RuleBasedClassifier implements ISubpromptClassifier {
 
 ## IContextAssembler
 
-**File:** `src/smart-agent/interfaces/assembler.ts`
+**File:** `packages/llm-agent/src/interfaces/assembler.ts`
 
 Packs retrieved context into LLM-ready messages:
 
@@ -1119,7 +1130,7 @@ interface IContextAssembler {
 ### Example: Custom context window packing strategy
 
 ```ts
-import type { IContextAssembler } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import type { IContextAssembler } from '@mcp-abap-adt/llm-agent';
 import type { Message, Subprompt, RagResult, McpTool, AssemblerError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1158,7 +1169,7 @@ class CompactAssembler implements IContextAssembler {
 
 ## ISkillManager
 
-**File:** `src/smart-agent/interfaces/skill.ts`
+**File:** `packages/llm-agent/src/interfaces/skill.ts`
 
 Discovers and provides access to agent skills (SKILL.md files):
 
@@ -1238,7 +1249,7 @@ class DatabaseSkillManager implements ISkillManager {
 ### Wiring via builder
 
 ```ts
-import { SmartAgentBuilder, ClaudeSkillManager } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder, ClaudeSkillManager } from '@mcp-abap-adt/llm-agent-libs';
 
 const handle = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
   .withMainLlm(myLlm)
@@ -1262,14 +1273,14 @@ skills:
 
 ```ts
 // In a plugin file:
-import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent-server';
+import { FileSystemSkillManager } from '@mcp-abap-adt/llm-agent-libs';
 
 export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
 ```
 
 ## ILlmApiAdapter
 
-**File:** `src/smart-agent/interfaces/api-adapter.ts`
+**File:** `packages/llm-agent/src/interfaces/api-adapter.ts`
 
 A stateless singleton that translates between an inbound API protocol and the internal SmartAgent format. One adapter instance handles all requests for its protocol.
 
@@ -1419,23 +1430,26 @@ MCP clients can be injected via three paths (precedence: config > plugin > YAML)
 ### Via SmartServer config
 
 ```ts
-import { SmartServer, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 
 const wrapper = new MCPClientWrapper({ transport: 'auto', url: 'http://localhost:3001/mcp' });
 await wrapper.connect();
 const client = new McpClientAdapter(wrapper);
 
-const server = new SmartServer({
-  llm: { apiKey: process.env.API_KEY! },
-  mcpClients: [client],  // DI — takes precedence over mcp: YAML config
-});
+// Inject directly via builder — takes precedence over mcp: YAML config
+const { agent } = await new SmartAgentBuilder()
+  .withMainLlm(myLlm)
+  .withMcpClients([client])
+  .build();
 ```
 
 ### Via plugin (lazy initialization)
 
 ```ts
 // plugins/lazy-mcp.mjs
-import { lazy, MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-server';
+import { lazy } from '@mcp-abap-adt/llm-agent-libs';
+import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 
 const url = process.env.MCP_SERVER_URL;
 
@@ -1463,7 +1477,7 @@ const handle = await new SmartAgentBuilder({})
 
 By default the agent starts with an empty tool catalog if the MCP server is unavailable at startup. `IMcpConnectionStrategy` solves this by letting the agent re-resolve its MCP clients on every request.
 
-**Interface** (`src/smart-agent/interfaces/mcp-connection-strategy.ts`):
+**Interface** (`packages/llm-agent/src/interfaces/mcp-connection-strategy.ts`):
 
 ```ts
 interface IMcpConnectionStrategy {
@@ -1487,10 +1501,8 @@ interface IMcpConnectionStrategy {
 ### Builder usage
 
 ```ts
-import {
-  LazyConnectionStrategy,
-  SmartAgentBuilder,
-} from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { LazyConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 
 const mcpConfigs = [
   { type: 'http' as const, url: 'http://localhost:3001/mcp/stream/http' },
@@ -1637,7 +1649,7 @@ All ILlm decorators (`NonStreamingLlm`, `RetryLlm`, `CircuitBreakerLlm`, `RateLi
 Swap LLM instances at runtime without restarting the server:
 
 ```typescript
-import { makeLlm } from '@mcp-abap-adt/llm-agent-server';
+import { makeLlm } from '@mcp-abap-adt/llm-agent-libs';
 
 // Create a new classifier LLM
 const newClassifier = makeLlm(
@@ -1665,7 +1677,7 @@ console.log(agent.getActiveConfig());
 Throttle outbound LLM requests to stay within provider rate limits.
 
 ```ts
-import { TokenBucketRateLimiter } from '@mcp-abap-adt/llm-agent-server';
+import { TokenBucketRateLimiter } from '@mcp-abap-adt/llm-agent-libs';
 
 builder.withRateLimiter(new TokenBucketRateLimiter({
   maxRequests: 10,     // max requests per window
@@ -1681,7 +1693,7 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 ### IMetrics
 
-**File:** `src/smart-agent/metrics/types.ts`
+**File:** `packages/llm-agent/src/interfaces/metrics.ts`
 
 ```ts
 interface IMetrics {
@@ -1701,7 +1713,7 @@ Implementations: `InMemoryMetrics` (for testing/diagnostics), `NoopMetrics` (zer
 
 ### ITracer
 
-**File:** `src/smart-agent/tracer/types.ts`
+**File:** `packages/llm-agent/src/interfaces/tracer.ts`
 
 ```ts
 interface ITracer {
@@ -1709,11 +1721,11 @@ interface ITracer {
 }
 ```
 
-Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent-server/otel`).
+Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent-libs/otel`).
 
 ### ISessionManager
 
-**File:** `src/smart-agent/session/types.ts`
+**File:** `packages/llm-agent/src/interfaces/session.ts`
 
 ```ts
 interface ISessionManager {
@@ -1728,7 +1740,7 @@ Implementations: `SessionManager` (with token budget), `NoopSessionManager` (no 
 
 ### IToolCache
 
-**File:** `src/smart-agent/cache/types.ts`
+**File:** `packages/llm-agent/src/cache/tool-cache.ts`
 
 ```ts
 interface IToolCache {
@@ -1801,7 +1813,8 @@ When set, only the last N non-system messages from client history are passed to 
 ### Full example
 
 ```ts
-import { SmartAgentBuilder, SessionManager, InMemoryMetrics, OllamaEmbedder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder, SessionManager, InMemoryMetrics } from '@mcp-abap-adt/llm-agent-libs';
+import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
 import { QdrantRag, ToolCache } from '@mcp-abap-adt/llm-agent';
 
 const metrics = new InMemoryMetrics();
@@ -1862,22 +1875,20 @@ console.log(result.content);
 await handle.close();
 ```
 
-### Custom embedder injection via SmartServer
+### Custom embedder injection via SmartAgentBuilder
 
 For YAML-driven configs, inject a custom `IEmbedder` or register embedder factories:
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const server = new SmartServer({
-  llm: { apiKey: process.env.API_KEY! },
-  rag: { type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' },
-  mode: 'smart',
-  // Register custom embedder factory — referenced by name in YAML config
-  embedderFactories: {
+const handle = await new SmartAgentBuilder()
+  .withMainLlm({ provider: 'openai', apiKey: process.env.API_KEY! })
+  .withRag({ type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' })
+  .withEmbedderFactories({
     'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
-  },
-});
+  })
+  .build();
 ```
 
 ## Structured Pipeline (YAML DSL)
@@ -1930,7 +1941,7 @@ import {
   SmartAgentBuilder,
   type StructuredPipelineDefinition,
   getDefaultStages,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-libs';
 
 const pipeline: StructuredPipelineDefinition = {
   version: '1',
@@ -1986,8 +1997,8 @@ Supported operators: `!`, `&&`, `||`, `>`, `<`, `>=`, `<=`, `==`, `!=`
 Register custom handlers for domain-specific pipeline stages:
 
 ```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
-import type { ISpan } from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 class ContentFilterHandler implements IStageHandler {
   async execute(
@@ -2077,7 +2088,7 @@ pipeline:
 ### Using Default Stages as Base
 
 ```ts
-import { getDefaultStages } from '@mcp-abap-adt/llm-agent-server';
+import { getDefaultStages } from '@mcp-abap-adt/llm-agent-libs';
 
 // Get default stages and insert a custom stage before tool-loop
 const stages = getDefaultStages();
@@ -2132,7 +2143,8 @@ Drop plugin files into a directory. SmartServer scans and loads them at startup.
 **Example plugin file** (`~/.config/llm-agent/plugins/audit-log.ts`):
 
 ```ts
-import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan) {
@@ -2164,7 +2176,7 @@ pipeline:
 **Programmatic usage:**
 
 ```ts
-import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent-server';
+import { FileSystemPluginLoader, getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent-libs';
 
 const loader = new FileSystemPluginLoader({
   dirs: [...getDefaultPluginDirs(), './my-extra-plugins'],
@@ -2180,11 +2192,11 @@ Replace the filesystem scanner with your own discovery mechanism:
 
 ```ts
 import {
-  IPluginLoader,
-  LoadedPlugins,
+  type IPluginLoader,
+  type LoadedPlugins,
   emptyLoadedPlugins,
   mergePluginExports,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-libs';
 
 class NpmPluginLoader implements IPluginLoader {
   constructor(private packages: string[]) {}
@@ -2277,7 +2289,7 @@ See [`docs/examples/plugins/`](examples/plugins/) for 6 complete plugin examples
 
 ## Test Doubles
 
-The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent-server/testing`:
+The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent-libs/testing`:
 
 ```ts
 import {
@@ -2295,7 +2307,7 @@ import {
   makeOutputValidator,
   makeSessionManager,
   makeDefaultDeps,
-} from '@mcp-abap-adt/llm-agent-server/testing';
+} from '@mcp-abap-adt/llm-agent-libs/testing';
 ```
 
 ### Example: Testing a custom validator
@@ -2303,7 +2315,7 @@ import {
 ```ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent-server/testing';
+import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent-libs/testing';
 
 describe('JsonSchemaValidator', () => {
   it('rejects invalid JSON', async () => {

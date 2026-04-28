@@ -18,11 +18,8 @@
  * Drop this file into your plugin directory.
  */
 
-import type {
-  ISpan,
-  IStageHandler,
-  PipelineContext,
-} from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 /** Sliding window entry: timestamp of each request */
 const sessionWindows = new Map<string, number[]>();

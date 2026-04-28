@@ -54,7 +54,7 @@ The `@sap-ai-sdk/orchestration` package reads this variable automatically. No ad
 For environments where you cannot set environment variables (e.g., multi-tenant apps, serverless functions), pass credentials programmatically:
 
 ```typescript
-import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/llm-agent-server';
+import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 
 const credentials: SapAICoreCredentials = {
   clientId: 'sb-xxx...',
@@ -112,7 +112,8 @@ npm run dev
 ### Programmatic Usage — Basic
 
 ```typescript
-import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent-server';
+import { SapCoreAIProvider } from '@mcp-abap-adt/sap-aicore-llm';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
 const provider = new SapCoreAIProvider({
   model: 'gpt-4o',
@@ -120,10 +121,9 @@ const provider = new SapCoreAIProvider({
   maxTokens: 4000,
 });
 
-const agent = new SapCoreAIAgent({
-  mcpClient,          // your MCPClientWrapper instance
-  llmProvider: provider,
-});
+const { agent } = await new SmartAgentBuilder()
+  .withMainLlm(provider)
+  .build();
 
 const response = await agent.process('What tools are available?');
 ```
@@ -131,24 +131,26 @@ const response = await agent.process('What tools are available?');
 ### Programmatic Usage — With Credentials
 
 ```typescript
-import { SapCoreAIProvider, SapCoreAIAgent } from '@mcp-abap-adt/llm-agent-server';
+import { SapCoreAIProvider, type SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+
+const credentials: SapAICoreCredentials = {
+  clientId: 'sb-xxx',
+  clientSecret: 'secret',
+  tokenServiceUrl: 'https://auth.example.com/oauth/token',
+  servicUrl: 'https://api.ai.example.com',
+};
 
 const provider = new SapCoreAIProvider({
   model: 'claude-3-5-sonnet',
   resourceGroup: 'default',
-  credentials: {
-    clientId: 'sb-xxx',
-    clientSecret: 'secret',
-    tokenServiceUrl: 'https://auth.example.com/oauth/token',
-    servicUrl: 'https://api.ai.example.com',
-  },
+  credentials,
   log: console, // optional: log debug/error messages
 });
 
-const agent = new SapCoreAIAgent({
-  mcpClient,
-  llmProvider: provider,
-});
+const { agent } = await new SmartAgentBuilder()
+  .withMainLlm(provider)
+  .build();
 ```
 
 ### Pipeline Configuration (SmartAgent)

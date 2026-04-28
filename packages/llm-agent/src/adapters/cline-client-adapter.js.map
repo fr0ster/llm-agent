@@ -1,0 +1,1 @@
+{"version":3,"file":"cline-client-adapter.js","sourceRoot":"","sources":["cline-client-adapter.ts"],"names":[],"mappings":"AAAA;;;;;;;;;;GAUG;AAIH,MAAM,OAAO,kBAAkB;IACpB,IAAI,GAAG,OAAO,CAAC;IAExB,MAAM,CAAC,YAAoB;QACzB,OAAO,YAAY,CAAC,QAAQ,CAAC,eAAe,CAAC,CAAC;IAChD,CAAC;IAED,YAAY,CAAC,OAAe;QAC1B,OAAO,mCAAmC,OAAO,oCAAoC,CAAC;IACxF,CAAC;CACF"}

@@ -3,34 +3,13 @@
   "version": "12.0.0",
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
   "bin": {
     "llm-agent": "bin/llm-agent",
     "llm-agent-check": "bin/llm-agent-check",
     "claude-via-agent": "tools/claude-via-agent.sh"
   },
   "exports": {
-    ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js",
-      "default": "./dist/index.js"
-    },
-    "./testing": {
-      "types": "./dist/smart-agent/testing/index.d.ts",
-      "import": "./dist/smart-agent/testing/index.js",
-      "default": "./dist/smart-agent/testing/index.js"
-    },
-    "./smart-server": {
-      "types": "./dist/smart-agent/smart-server.d.ts",
-      "import": "./dist/smart-agent/smart-server.js",
-      "default": "./dist/smart-agent/smart-server.js"
-    },
-    "./otel": {
-      "types": "./dist/smart-agent/otel/index.d.ts",
-      "import": "./dist/smart-agent/otel/index.js",
-      "default": "./dist/smart-agent/otel/index.js"
-    }
+    "./package.json": "./package.json"
   },
   "files": [
     "dist",
@@ -44,7 +23,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'",
-    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
+    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts",
     "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
     "smoke:adapters": "tsx src/smoke-adapters.ts",
     "start": "node dist/smart-agent/cli.js",
@@ -55,6 +34,9 @@
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "*",
+    "@mcp-abap-adt/llm-agent-libs": "*",
+    "@mcp-abap-adt/llm-agent-mcp": "*",
+    "@mcp-abap-adt/llm-agent-rag": "*",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",

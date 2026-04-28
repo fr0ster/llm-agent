@@ -13,6 +13,7 @@ import type {
   ILogger,
   IMcpClient,
   IModelProvider,
+  IModelResolver,
   IRequestLogger,
   ISkillManager,
   Message,
@@ -25,30 +26,30 @@ import {
   normalizeAndValidateExternalTools,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
-import { PACKAGE_VERSION } from '../generated/version.js';
 import type {
+  IPluginLoader,
   SmartAgent,
-  SmartAgentReconfigureOptions,
   StopReason,
-} from './agent.js';
-import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
+  ClaudeSkillManager,
+  CodexSkillManager,
   ConfigWatcher,
-  type HotReloadableConfig,
-} from './config/config-watcher.js';
-import { HealthChecker } from './health/health-checker.js';
-import type { IModelResolver } from './interfaces/model-resolver.js';
-import { SessionLogger } from './logger/session-logger.js';
-import type { PipelineConfig } from './pipeline.js';
-import {
   FileSystemPluginLoader,
+  FileSystemSkillManager,
   getDefaultPluginDirs,
-} from './plugins/index.js';
-import type { IPluginLoader } from './plugins/types.js';
-import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
-import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
-import { CodexSkillManager } from './skills/codex-skill-manager.js';
-import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';
+  HealthChecker,
+  type HotReloadableConfig,
+  makeDefaultLlm,
+  makeLlm,
+  SessionLogger,
+  SmartAgentBuilder,
+  type SmartAgentHandle,
+  type SmartAgentReconfigureOptions,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import { PACKAGE_VERSION } from '../generated/version.js';
+import type { PipelineConfig } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -315,8 +316,8 @@ export class SmartServer {
       pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7,
     );
     const mainLlm = pipeline?.llm?.main
-      ? makeLlm(pipeline.llm.main, mainTemp)
-      : makeDefaultLlm(
+      ? await makeLlm(pipeline.llm.main, mainTemp)
+      : await makeDefaultLlm(
           this.cfg.llm.apiKey,
           this.cfg.llm.model ?? 'deepseek-chat',
           mainTemp,
@@ -328,17 +329,17 @@ export class SmartServer {
         0.1,
     );
     const classifierLlm = pipeline?.llm?.classifier
-      ? makeLlm(pipeline.llm.classifier, classifierTemp)
+      ? await makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
-        ? makeLlm(pipeline.llm.main, classifierTemp)
-        : makeDefaultLlm(
+        ? await makeLlm(pipeline.llm.main, classifierTemp)
+        : await makeDefaultLlm(
             this.cfg.llm.apiKey,
             this.cfg.llm.model ?? 'deepseek-chat',
             classifierTemp,
           );
 
     const helperLlm = pipeline?.llm?.helper
-      ? makeLlm(
+      ? await makeLlm(
           pipeline.llm.helper,
           Number(pipeline.llm.helper.temperature ?? 0.1),
         )
@@ -401,8 +402,10 @@ export class SmartServer {
         injectedEmbedder: this.cfg.embedder,
         extraFactories: mergedEmbedderFactories,
       };
-      builder = builder.setToolsRag(makeRag(this.cfg.rag, ragOptions));
-      builder = builder.setHistoryRag(makeRag({ ...this.cfg.rag }, ragOptions));
+      builder = builder.setToolsRag(await makeRag(this.cfg.rag, ragOptions));
+      builder = builder.setHistoryRag(
+        await makeRag({ ...this.cfg.rag }, ragOptions),
+      );
     }
 
     // Wire pipeline.rag.{name} stores into the builder so multi-store YAML
@@ -415,7 +418,7 @@ export class SmartServer {
         extraFactories: mergedEmbedderFactories,
       };
       for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
-        const rag = makeRag(storeCfg, ragOptions);
+        const rag = await makeRag(storeCfg, ragOptions);
         if (name === 'tools') {
           builder = builder.setToolsRag(rag);
         } else if (name === 'history') {

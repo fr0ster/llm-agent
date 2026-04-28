@@ -179,7 +179,7 @@ for (const tool of tools) {
 
 ### How InvertedIndex works
 
-`InvertedIndex` (in `src/smart-agent/rag/inverted-index.ts`) maintains an in-memory inverted index with BM25 scoring:
+`InvertedIndex` (in `packages/llm-agent/src/rag/inverted-index.ts`) maintains an in-memory inverted index with BM25 scoring:
 
 1. **On upsert:** Tokenizes text, updates document frequency (DF) maps, stores term positions.
 2. **On query:** Computes BM25 score per document using IDF × TF saturation × length normalization.

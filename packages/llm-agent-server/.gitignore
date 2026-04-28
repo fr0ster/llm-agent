@@ -1,0 +1,4 @@
+# Compiled artifacts that must never be tracked under src/
+src/**/*.d.ts
+src/**/*.js
+src/**/*.js.map
