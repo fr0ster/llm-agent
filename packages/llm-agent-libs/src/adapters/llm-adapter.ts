@@ -4,8 +4,8 @@
 
 import type {
   AgentCallOptions,
-  AgentStreamChunk as CoreAgentStreamChunk,
   BaseAgentLlmBridge,
+  AgentStreamChunk as CoreAgentStreamChunk,
   ILlm,
   IModelFilter,
   IModelInfo,

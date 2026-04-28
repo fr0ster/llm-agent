@@ -19,6 +19,7 @@ import { existsSync, readdirSync } from 'node:fs';
 import { extname, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { emptyLoadedPlugins, mergePluginExports } from './types.js';
+
 const PLUGIN_EXTENSIONS = new Set(['.js', '.mjs', '.ts']);
 /**
  * Filesystem-based plugin loader.
@@ -42,49 +43,47 @@ const PLUGIN_EXTENSIONS = new Set(['.js', '.mjs', '.ts']);
  * ```
  */
 export class FileSystemPluginLoader {
-    dirs;
-    log;
-    constructor(config) {
-        this.dirs = config.dirs;
-        this.log = config.log;
-    }
-    async load() {
-        const result = emptyLoadedPlugins();
-        for (const dir of this.dirs) {
-            const resolved = resolve(dir);
-            if (!existsSync(resolved)) {
-                this.log?.(`[plugins] Directory not found, skipping: ${resolved}`);
-                continue;
-            }
-            let files;
-            try {
-                files = readdirSync(resolved)
-                    .filter((f) => PLUGIN_EXTENSIONS.has(extname(f)))
-                    .sort();
-            }
-            catch {
-                this.log?.(`[plugins] Cannot read directory: ${resolved}`);
-                continue;
-            }
-            for (const file of files) {
-                const filePath = resolve(resolved, file);
-                try {
-                    const fileUrl = pathToFileURL(filePath).href;
-                    const mod = (await import(fileUrl));
-                    const registered = mergePluginExports(result, mod, filePath);
-                    if (registered) {
-                        this.log?.(`[plugins] Loaded: ${filePath}`);
-                    }
-                }
-                catch (err) {
-                    const message = err instanceof Error ? err.message : String(err);
-                    result.errors.push({ file: filePath, error: message });
-                    this.log?.(`[plugins] Failed to load ${filePath}: ${message}`);
-                }
-            }
+  dirs;
+  log;
+  constructor(config) {
+    this.dirs = config.dirs;
+    this.log = config.log;
+  }
+  async load() {
+    const result = emptyLoadedPlugins();
+    for (const dir of this.dirs) {
+      const resolved = resolve(dir);
+      if (!existsSync(resolved)) {
+        this.log?.(`[plugins] Directory not found, skipping: ${resolved}`);
+        continue;
+      }
+      let files;
+      try {
+        files = readdirSync(resolved)
+          .filter((f) => PLUGIN_EXTENSIONS.has(extname(f)))
+          .sort();
+      } catch {
+        this.log?.(`[plugins] Cannot read directory: ${resolved}`);
+        continue;
+      }
+      for (const file of files) {
+        const filePath = resolve(resolved, file);
+        try {
+          const fileUrl = pathToFileURL(filePath).href;
+          const mod = await import(fileUrl);
+          const registered = mergePluginExports(result, mod, filePath);
+          if (registered) {
+            this.log?.(`[plugins] Loaded: ${filePath}`);
+          }
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          result.errors.push({ file: filePath, error: message });
+          this.log?.(`[plugins] Failed to load ${filePath}: ${message}`);
         }
-        return result;
+      }
     }
+    return result;
+  }
 }
 /**
  * Returns the default plugin directories (in load order).
@@ -93,13 +92,13 @@ export class FileSystemPluginLoader {
  * 2. `./plugins/` (project-level, relative to cwd)
  */
 export function getDefaultPluginDirs() {
-    const home = process.env.HOME || process.env.USERPROFILE || '';
-    const dirs = [];
-    if (home) {
-        dirs.push(resolve(home, '.config', 'llm-agent', 'plugins'));
-    }
-    dirs.push(resolve(process.cwd(), 'plugins'));
-    return dirs;
+  const home = process.env.HOME || process.env.USERPROFILE || '';
+  const dirs = [];
+  if (home) {
+    dirs.push(resolve(home, '.config', 'llm-agent', 'plugins'));
+  }
+  dirs.push(resolve(process.cwd(), 'plugins'));
+  return dirs;
 }
 /**
  * Convenience function — creates a {@link FileSystemPluginLoader} and loads.
@@ -109,6 +108,6 @@ export function getDefaultPluginDirs() {
  * @returns Merged plugin registrations.
  */
 export async function loadPlugins(dirs, log) {
-    return new FileSystemPluginLoader({ dirs, log }).load();
+  return new FileSystemPluginLoader({ dirs, log }).load();
 }
 //# sourceMappingURL=loader.js.map

@@ -1,7 +1,11 @@
-import type { AgentCallOptions, OrchestratorError, SmartAgentResponse } from './agent-contracts.js';
+import type { Message } from '../types.js';
+import type {
+  AgentCallOptions,
+  OrchestratorError,
+  SmartAgentResponse,
+} from './agent-contracts.js';
 import type { IRag } from './rag.js';
 import type { LlmStreamChunk, Result } from './types.js';
-import type { Message } from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Minimal SmartAgent interface

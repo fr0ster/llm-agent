@@ -65,6 +65,10 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
+import {
+  prefetchEmbedderFactories,
+  prefetchRagFactories,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { configDotenv } from 'dotenv';
 import {
   generateConfigTemplate,
@@ -72,7 +76,6 @@ import {
   type ResolveConfigArgs,
   resolveSmartServerConfig,
 } from './config.js';
-import { prefetchEmbedderFactories, prefetchRagFactories } from '@mcp-abap-adt/llm-agent-rag';
 import type { SmartServerConfig } from './smart-server.js';
 import { SmartServer } from './smart-server.js';
 

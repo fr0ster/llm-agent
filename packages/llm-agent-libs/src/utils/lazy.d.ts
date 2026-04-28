@@ -23,19 +23,19 @@
  * ```
  */
 export interface LazyOptions<T extends object> {
-    /**
-     * Minimum milliseconds between retry attempts after a failed init.
-     * Default: `5_000`.
-     */
-    retryIntervalMs?: number;
-    /** Called every time the factory throws / rejects. */
-    onError?: (error: unknown) => void;
-    /**
-     * Optional fallback instance used while the real one is unavailable.
-     * When provided, method calls are delegated to this fallback instead
-     * of propagating the factory error.
-     */
-    fallback?: T;
+  /**
+   * Minimum milliseconds between retry attempts after a failed init.
+   * Default: `5_000`.
+   */
+  retryIntervalMs?: number;
+  /** Called every time the factory throws / rejects. */
+  onError?: (error: unknown) => void;
+  /**
+   * Optional fallback instance used while the real one is unavailable.
+   * When provided, method calls are delegated to this fallback instead
+   * of propagating the factory error.
+   */
+  fallback?: T;
 }
 /**
  * Create a lazy-initializing proxy for interface `T`.
@@ -44,8 +44,11 @@ export interface LazyOptions<T extends object> {
  * @param options  Retry interval, error callback, optional fallback.
  * @returns A `T`-shaped proxy.
  */
-export declare function lazy<T extends object>(factory: () => T | Promise<T>, options?: LazyOptions<T>): T;
+export declare function lazy<T extends object>(
+  factory: () => T | Promise<T>,
+  options?: LazyOptions<T>,
+): T;
 export declare class LazyInitError extends Error {
-    constructor(message: string);
+  constructor(message: string);
 }
 //# sourceMappingURL=lazy.d.ts.map

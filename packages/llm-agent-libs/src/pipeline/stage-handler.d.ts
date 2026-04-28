@@ -23,14 +23,18 @@
 import type { ISpan } from '../tracer/types.js';
 import type { PipelineContext } from './context.js';
 export interface IStageHandler {
-    /**
-     * Execute the stage.
-     *
-     * @param ctx    - Mutable pipeline context (read inputs, write outputs).
-     * @param config - Stage-specific config from the YAML `config` field.
-     * @param span   - Tracing span for this stage (call `span.end()` is handled by executor).
-     * @returns `true` to continue pipeline, `false` to abort.
-     */
-    execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean>;
+  /**
+   * Execute the stage.
+   *
+   * @param ctx    - Mutable pipeline context (read inputs, write outputs).
+   * @param config - Stage-specific config from the YAML `config` field.
+   * @param span   - Tracing span for this stage (call `span.end()` is handled by executor).
+   * @returns `true` to continue pipeline, `false` to abort.
+   */
+  execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    span: ISpan,
+  ): Promise<boolean>;
 }
 //# sourceMappingURL=stage-handler.d.ts.map

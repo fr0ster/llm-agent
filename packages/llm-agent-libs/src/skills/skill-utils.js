@@ -13,34 +13,32 @@ import { loadSkillFromDir } from './filesystem-skill.js';
  * @param enrichSkill - Optional async function to enrich a loaded skill (e.g. with vendor config).
  */
 export async function scanDirsForSkills(dirs, normalizeMeta, enrichSkill) {
-    const byName = new Map();
-    for (const baseDir of dirs) {
-        let entries;
-        try {
-            const dirEntries = await readdir(baseDir, { withFileTypes: true });
-            entries = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
-        }
-        catch {
-            continue; // Directory doesn't exist — skip
-        }
-        for (const entry of entries) {
-            const skillDir = join(baseDir, entry);
-            const skill = await loadSkillFromDir(skillDir);
-            if (!skill)
-                continue;
-            if (normalizeMeta) {
-                const normalized = normalizeMeta(skill.meta);
-                Object.assign(skill.meta, normalized);
-                // Update name/description if changed by normalization
-                skill.name = normalized.name;
-                skill.description = normalized.description;
-            }
-            if (enrichSkill) {
-                await enrichSkill(skill, skillDir);
-            }
-            byName.set(skill.name, skill);
-        }
+  const byName = new Map();
+  for (const baseDir of dirs) {
+    let entries;
+    try {
+      const dirEntries = await readdir(baseDir, { withFileTypes: true });
+      entries = dirEntries.filter((e) => e.isDirectory()).map((e) => e.name);
+    } catch {
+      continue; // Directory doesn't exist — skip
     }
-    return [...byName.values()];
+    for (const entry of entries) {
+      const skillDir = join(baseDir, entry);
+      const skill = await loadSkillFromDir(skillDir);
+      if (!skill) continue;
+      if (normalizeMeta) {
+        const normalized = normalizeMeta(skill.meta);
+        Object.assign(skill.meta, normalized);
+        // Update name/description if changed by normalization
+        skill.name = normalized.name;
+        skill.description = normalized.description;
+      }
+      if (enrichSkill) {
+        await enrichSkill(skill, skillDir);
+      }
+      byName.set(skill.name, skill);
+    }
+  }
+  return [...byName.values()];
 }
 //# sourceMappingURL=skill-utils.js.map

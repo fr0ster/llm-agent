@@ -51,12 +51,22 @@ export interface BaseAgentLlmBridge {
   callWithTools(
     messages: Message[],
     tools: unknown[],
-    options?: { temperature?: number; maxTokens?: number; topP?: number; stop?: string[] },
+    options?: {
+      temperature?: number;
+      maxTokens?: number;
+      topP?: number;
+      stop?: string[];
+    },
   ): Promise<{ content: string; raw?: unknown }>;
   streamWithTools(
     messages: Message[],
     tools: unknown[],
-    options?: { temperature?: number; maxTokens?: number; topP?: number; stop?: string[] },
+    options?: {
+      temperature?: number;
+      maxTokens?: number;
+      topP?: number;
+      stop?: string[];
+    },
   ): AsyncGenerator<
     { content: string; raw?: unknown } | AgentStreamChunk,
     void,

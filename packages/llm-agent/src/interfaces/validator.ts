@@ -1,6 +1,6 @@
+import type { Message } from '../types.js';
 import type { CallOptions, LlmTool, Result } from './types.js';
 import { SmartAgentError } from './types.js';
-import type { Message } from '../types.js';
 
 export interface ValidationResult {
   valid: boolean;

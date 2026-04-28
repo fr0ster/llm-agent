@@ -34,94 +34,94 @@ const DEFAULT_RETRY_INTERVAL_MS = 5_000;
  * @returns A `T`-shaped proxy.
  */
 export function lazy(factory, options) {
-    const retryIntervalMs = options?.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
-    const onError = options?.onError;
-    const fallback = options?.fallback;
-    let instance = null;
-    let initPromise = null;
-    let lastFailureTs = 0;
-    // -----------------------------------------------------------------------
-    // Init logic with mutex + retry gate
-    // -----------------------------------------------------------------------
-    async function doInit() {
-        const now = Date.now();
-        if (now - lastFailureTs < retryIntervalMs) {
-            throw new LazyInitError(`Lazy init: retry suppressed (next attempt in ${retryIntervalMs - (now - lastFailureTs)} ms)`);
-        }
-        try {
-            const result = factory();
-            instance = result instanceof Promise ? await result : result;
-        }
-        catch (err) {
-            lastFailureTs = Date.now();
-            onError?.(err);
-            throw err;
-        }
+  const retryIntervalMs = options?.retryIntervalMs ?? DEFAULT_RETRY_INTERVAL_MS;
+  const onError = options?.onError;
+  const fallback = options?.fallback;
+  let instance = null;
+  let initPromise = null;
+  let lastFailureTs = 0;
+  // -----------------------------------------------------------------------
+  // Init logic with mutex + retry gate
+  // -----------------------------------------------------------------------
+  async function doInit() {
+    const now = Date.now();
+    if (now - lastFailureTs < retryIntervalMs) {
+      throw new LazyInitError(
+        `Lazy init: retry suppressed (next attempt in ${retryIntervalMs - (now - lastFailureTs)} ms)`,
+      );
     }
-    async function ensureInitialized() {
-        if (instance)
-            return;
-        // Mutex: if another call is already initializing, piggy-back.
-        if (initPromise) {
-            await initPromise;
-            return;
-        }
-        initPromise = doInit();
-        try {
-            await initPromise;
-        }
-        finally {
-            initPromise = null;
-        }
+    try {
+      const result = factory();
+      instance = result instanceof Promise ? await result : result;
+    } catch (err) {
+      lastFailureTs = Date.now();
+      onError?.(err);
+      throw err;
     }
-    // -----------------------------------------------------------------------
-    // Proxy handler
-    // -----------------------------------------------------------------------
-    const handler = {
-        get(_target, prop, _receiver) {
-            // Fast path: instance is ready — delegate directly.
-            if (instance) {
-                const val = instance[prop];
-                return typeof val === 'function' ? val.bind(instance) : val;
+  }
+  async function ensureInitialized() {
+    if (instance) return;
+    // Mutex: if another call is already initializing, piggy-back.
+    if (initPromise) {
+      await initPromise;
+      return;
+    }
+    initPromise = doInit();
+    try {
+      await initPromise;
+    } finally {
+      initPromise = null;
+    }
+  }
+  // -----------------------------------------------------------------------
+  // Proxy handler
+  // -----------------------------------------------------------------------
+  const handler = {
+    get(_target, prop, _receiver) {
+      // Fast path: instance is ready — delegate directly.
+      if (instance) {
+        const val = instance[prop];
+        return typeof val === 'function' ? val.bind(instance) : val;
+      }
+      // Slow path: return an async wrapper that initializes first.
+      // This works for async methods; for sync properties on an
+      // uninitialized proxy it will return a Promise (type mismatch),
+      // which is acceptable for the intended interface patterns.
+      return async (...args) => {
+        try {
+          await ensureInitialized();
+        } catch {
+          // Init failed — delegate to fallback if available.
+          if (fallback) {
+            const fn = fallback[prop];
+            if (typeof fn === 'function') {
+              return fn.apply(fallback, args);
             }
-            // Slow path: return an async wrapper that initializes first.
-            // This works for async methods; for sync properties on an
-            // uninitialized proxy it will return a Promise (type mismatch),
-            // which is acceptable for the intended interface patterns.
-            return async (...args) => {
-                try {
-                    await ensureInitialized();
-                }
-                catch {
-                    // Init failed — delegate to fallback if available.
-                    if (fallback) {
-                        const fn = fallback[prop];
-                        if (typeof fn === 'function') {
-                            return fn.apply(fallback, args);
-                        }
-                        return fn;
-                    }
-                    throw new LazyInitError(`Lazy init failed and no fallback provided (property: ${String(prop)})`);
-                }
-                const fn = instance[prop];
-                if (typeof fn === 'function') {
-                    return fn.apply(instance, args);
-                }
-                return fn;
-            };
-        },
-    };
-    // Use an empty object as the proxy target — all access goes through
-    // the handler which delegates to `instance` or `fallback`.
-    return new Proxy({}, handler);
+            return fn;
+          }
+          throw new LazyInitError(
+            `Lazy init failed and no fallback provided (property: ${String(prop)})`,
+          );
+        }
+        const fn = instance[prop];
+        if (typeof fn === 'function') {
+          return fn.apply(instance, args);
+        }
+        return fn;
+      };
+    },
+  };
+  // Use an empty object as the proxy target — all access goes through
+  // the handler which delegates to `instance` or `fallback`.
+  return new Proxy({}, handler);
 }
 // ---------------------------------------------------------------------------
 // Error class
 // ---------------------------------------------------------------------------
 export class LazyInitError extends Error {
-    constructor(message) {
-        super(message);
-        this.name = 'LazyInitError';
-    }
+  constructor(message) {
+    super(message);
+    this.name = 'LazyInitError';
+  }
 }
 //# sourceMappingURL=lazy.js.map

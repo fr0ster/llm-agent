@@ -7,11 +7,12 @@ import { describe, it } from 'node:test';
 import type {
   CallOptions,
   ILlm,
+  ILogger,
   LlmStreamChunk,
   LlmTool,
+  LogEvent,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { ILogger, LogEvent } from '@mcp-abap-adt/llm-agent';
 
 function stubLlm(): ILlm {
   return {

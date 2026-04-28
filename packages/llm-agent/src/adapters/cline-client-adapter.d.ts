@@ -11,8 +11,8 @@
  */
 import type { IClientAdapter } from '../interfaces/client-adapter.js';
 export declare class ClineClientAdapter implements IClientAdapter {
-    readonly name = "cline";
-    detect(systemPrompt: string): boolean;
-    wrapResponse(content: string): string;
+  readonly name = 'cline';
+  detect(systemPrompt: string): boolean;
+  wrapResponse(content: string): string;
 }
 //# sourceMappingURL=cline-client-adapter.d.ts.map

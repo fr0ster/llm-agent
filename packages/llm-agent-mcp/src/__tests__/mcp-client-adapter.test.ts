@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
 import { McpError } from '@mcp-abap-adt/llm-agent';
-import type { MCPClientWrapper } from '../client.js';
 import { McpClientAdapter } from '../adapter.js';
+import type { MCPClientWrapper } from '../client.js';
 
 // ---------------------------------------------------------------------------
 // Duck-typed mock factory

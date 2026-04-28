@@ -34,9 +34,11 @@ config({ path: smokeEnvPath });
 
 import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
 import type { Message } from '@mcp-abap-adt/llm-agent';
-import { MCPClientWrapper } from '@mcp-abap-adt/llm-agent-mcp';
 import { LlmAdapter, LlmProviderBridge } from '@mcp-abap-adt/llm-agent-libs';
-import { McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 
 // ---------------------------------------------------------------------------
 // Config validation

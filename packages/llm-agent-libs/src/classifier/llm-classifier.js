@@ -1,4 +1,4 @@
-import { ClassifierError, } from '@mcp-abap-adt/llm-agent';
+import { ClassifierError } from '@mcp-abap-adt/llm-agent';
 export const DEFAULT_CLASSIFIER_PROMPT = `You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
 For each task, identify:
   - "type": chat (greetings, simple questions, math), action (tasks requiring tools or execution).
@@ -21,108 +21,118 @@ Result: [
 
 Return ONLY a JSON array.`;
 function stripCodeFence(s) {
-    return s
-        .replace(/^```(?:json)?\s*/i, '')
-        .replace(/\s*```\s*$/, '')
-        .trim();
+  return s
+    .replace(/^```(?:json)?\s*/i, '')
+    .replace(/\s*```\s*$/, '')
+    .trim();
 }
 function parseSubprompts(raw) {
-    const cleaned = stripCodeFence(raw);
-    let parsed;
-    try {
-        parsed = JSON.parse(cleaned);
+  const cleaned = stripCodeFence(raw);
+  let parsed;
+  try {
+    parsed = JSON.parse(cleaned);
+  } catch {
+    throw new ClassifierError(
+      `Non-JSON: ${cleaned.slice(0, 120)}`,
+      'PARSE_ERROR',
+    );
+  }
+  if (!Array.isArray(parsed))
+    throw new ClassifierError('Not a JSON array', 'SCHEMA_ERROR');
+  for (const entry of parsed) {
+    if (
+      typeof entry !== 'object' ||
+      entry === null ||
+      typeof entry.type !== 'string' ||
+      entry.type.length === 0 ||
+      typeof entry.text !== 'string' ||
+      entry.text.length === 0
+    ) {
+      throw new ClassifierError(
+        `Invalid entry: ${JSON.stringify(entry)}`,
+        'SCHEMA_ERROR',
+      );
     }
-    catch {
-        throw new ClassifierError(`Non-JSON: ${cleaned.slice(0, 120)}`, 'PARSE_ERROR');
-    }
-    if (!Array.isArray(parsed))
-        throw new ClassifierError('Not a JSON array', 'SCHEMA_ERROR');
-    for (const entry of parsed) {
-        if (typeof entry !== 'object' ||
-            entry === null ||
-            typeof entry.type !== 'string' ||
-            entry.type.length === 0 ||
-            typeof entry.text !== 'string' ||
-            entry.text.length === 0) {
-            throw new ClassifierError(`Invalid entry: ${JSON.stringify(entry)}`, 'SCHEMA_ERROR');
-        }
-    }
-    return parsed;
+  }
+  return parsed;
 }
 function withAbort(promise, signal, makeError) {
-    if (!signal)
-        return promise;
-    if (signal.aborted)
-        return Promise.reject(makeError());
-    return Promise.race([
-        promise,
-        new Promise((_, reject) => {
-            signal.addEventListener('abort', () => reject(makeError()), {
-                once: true,
-            });
-        }),
-    ]);
+  if (!signal) return promise;
+  if (signal.aborted) return Promise.reject(makeError());
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      signal.addEventListener('abort', () => reject(makeError()), {
+        once: true,
+      });
+    }),
+  ]);
 }
 export class LlmClassifier {
-    llm;
-    requestLogger;
-    systemPrompt;
-    cache;
-    constructor(llm, config, requestLogger) {
-        this.llm = llm;
-        this.requestLogger = requestLogger;
-        this.systemPrompt = config?.systemPrompt ?? DEFAULT_CLASSIFIER_PROMPT;
-        this.cache = (config?.enableCache ?? true) ? new Map() : null;
-    }
-    async classify(text, options) {
-        try {
-            if (options?.signal?.aborted)
-                return { ok: false, error: new ClassifierError('Aborted', 'ABORTED') };
-            if (this.cache?.has(text)) {
-                const cached = this.cache.get(text);
-                if (cached) {
-                    return { ok: true, value: cached };
-                }
-            }
-            const messages = [
-                { role: 'system', content: this.systemPrompt },
-                { role: 'user', content: text },
-            ];
-            const chatStart = Date.now();
-            const llmResult = await withAbort(this.llm.chat(messages, [], options), options?.signal, () => new ClassifierError('Aborted', 'ABORTED'));
-            if (this.requestLogger) {
-                this.requestLogger.logLlmCall({
-                    component: 'classifier',
-                    model: this.llm.model ?? 'unknown',
-                    promptTokens: llmResult.ok
-                        ? (llmResult.value.usage?.promptTokens ?? 0)
-                        : 0,
-                    completionTokens: llmResult.ok
-                        ? (llmResult.value.usage?.completionTokens ?? 0)
-                        : 0,
-                    totalTokens: llmResult.ok
-                        ? (llmResult.value.usage?.totalTokens ?? 0)
-                        : 0,
-                    durationMs: Date.now() - chatStart,
-                });
-            }
-            if (!llmResult.ok)
-                return {
-                    ok: false,
-                    error: new ClassifierError(llmResult.error.message, llmResult.error.code),
-                };
-            const subprompts = parseSubprompts(llmResult.value.content);
-            this.cache?.set(text, subprompts);
-            return { ok: true, value: subprompts };
+  llm;
+  requestLogger;
+  systemPrompt;
+  cache;
+  constructor(llm, config, requestLogger) {
+    this.llm = llm;
+    this.requestLogger = requestLogger;
+    this.systemPrompt = config?.systemPrompt ?? DEFAULT_CLASSIFIER_PROMPT;
+    this.cache = (config?.enableCache ?? true) ? new Map() : null;
+  }
+  async classify(text, options) {
+    try {
+      if (options?.signal?.aborted)
+        return { ok: false, error: new ClassifierError('Aborted', 'ABORTED') };
+      if (this.cache?.has(text)) {
+        const cached = this.cache.get(text);
+        if (cached) {
+          return { ok: true, value: cached };
         }
-        catch (err) {
-            if (err instanceof ClassifierError)
-                return { ok: false, error: err };
-            return {
-                ok: false,
-                error: new ClassifierError(String(err), 'LLM_ERROR'),
-            };
-        }
+      }
+      const messages = [
+        { role: 'system', content: this.systemPrompt },
+        { role: 'user', content: text },
+      ];
+      const chatStart = Date.now();
+      const llmResult = await withAbort(
+        this.llm.chat(messages, [], options),
+        options?.signal,
+        () => new ClassifierError('Aborted', 'ABORTED'),
+      );
+      if (this.requestLogger) {
+        this.requestLogger.logLlmCall({
+          component: 'classifier',
+          model: this.llm.model ?? 'unknown',
+          promptTokens: llmResult.ok
+            ? (llmResult.value.usage?.promptTokens ?? 0)
+            : 0,
+          completionTokens: llmResult.ok
+            ? (llmResult.value.usage?.completionTokens ?? 0)
+            : 0,
+          totalTokens: llmResult.ok
+            ? (llmResult.value.usage?.totalTokens ?? 0)
+            : 0,
+          durationMs: Date.now() - chatStart,
+        });
+      }
+      if (!llmResult.ok)
+        return {
+          ok: false,
+          error: new ClassifierError(
+            llmResult.error.message,
+            llmResult.error.code,
+          ),
+        };
+      const subprompts = parseSubprompts(llmResult.value.content);
+      this.cache?.set(text, subprompts);
+      return { ok: true, value: subprompts };
+    } catch (err) {
+      if (err instanceof ClassifierError) return { ok: false, error: err };
+      return {
+        ok: false,
+        error: new ClassifierError(String(err), 'LLM_ERROR'),
+      };
     }
+  }
 }
 //# sourceMappingURL=llm-classifier.js.map

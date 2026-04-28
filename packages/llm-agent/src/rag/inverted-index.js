@@ -6,78 +6,76 @@
  * in VectorRag.bm25Score().
  */
 export class InvertedIndex {
-    /** term → number of documents containing the term */
-    termDf = new Map();
-    /** docId → number of tokens in that document */
-    docLengths = new Map();
-    /** Total token count across all documents */
-    totalTokens = 0;
-    /** Register a new document's tokens. */
-    add(docId, tokens) {
-        this.docLengths.set(docId, tokens.length);
-        this.totalTokens += tokens.length;
-        const uniqueTerms = new Set(tokens);
-        for (const term of uniqueTerms) {
-            this.termDf.set(term, (this.termDf.get(term) ?? 0) + 1);
-        }
+  /** term → number of documents containing the term */
+  termDf = new Map();
+  /** docId → number of tokens in that document */
+  docLengths = new Map();
+  /** Total token count across all documents */
+  totalTokens = 0;
+  /** Register a new document's tokens. */
+  add(docId, tokens) {
+    this.docLengths.set(docId, tokens.length);
+    this.totalTokens += tokens.length;
+    const uniqueTerms = new Set(tokens);
+    for (const term of uniqueTerms) {
+      this.termDf.set(term, (this.termDf.get(term) ?? 0) + 1);
     }
-    /** Update a document (e.g. dedup replacement). */
-    update(docId, oldTokens, newTokens) {
-        // Remove old contributions
-        const oldLength = this.docLengths.get(docId) ?? 0;
-        this.totalTokens -= oldLength;
-        const oldUnique = new Set(oldTokens);
-        for (const term of oldUnique) {
-            const current = this.termDf.get(term) ?? 0;
-            if (current <= 1) {
-                this.termDf.delete(term);
-            }
-            else {
-                this.termDf.set(term, current - 1);
-            }
-        }
-        // Add new contributions
-        this.docLengths.set(docId, newTokens.length);
-        this.totalTokens += newTokens.length;
-        const newUnique = new Set(newTokens);
-        for (const term of newUnique) {
-            this.termDf.set(term, (this.termDf.get(term) ?? 0) + 1);
-        }
+  }
+  /** Update a document (e.g. dedup replacement). */
+  update(docId, oldTokens, newTokens) {
+    // Remove old contributions
+    const oldLength = this.docLengths.get(docId) ?? 0;
+    this.totalTokens -= oldLength;
+    const oldUnique = new Set(oldTokens);
+    for (const term of oldUnique) {
+      const current = this.termDf.get(term) ?? 0;
+      if (current <= 1) {
+        this.termDf.delete(term);
+      } else {
+        this.termDf.set(term, current - 1);
+      }
     }
-    /** Remove a document's contribution from the index. */
-    remove(docId, tokens) {
-        const oldLength = this.docLengths.get(docId) ?? 0;
-        this.totalTokens -= oldLength;
-        this.docLengths.delete(docId);
-        const oldUnique = new Set(tokens);
-        for (const term of oldUnique) {
-            const current = this.termDf.get(term) ?? 0;
-            if (current <= 1) {
-                this.termDf.delete(term);
-            }
-            else {
-                this.termDf.set(term, current - 1);
-            }
-        }
+    // Add new contributions
+    this.docLengths.set(docId, newTokens.length);
+    this.totalTokens += newTokens.length;
+    const newUnique = new Set(newTokens);
+    for (const term of newUnique) {
+      this.termDf.set(term, (this.termDf.get(term) ?? 0) + 1);
     }
-    /** O(1) document frequency lookup for a term. */
-    getDocFrequency(term) {
-        return this.termDf.get(term) ?? 0;
+  }
+  /** Remove a document's contribution from the index. */
+  remove(docId, tokens) {
+    const oldLength = this.docLengths.get(docId) ?? 0;
+    this.totalTokens -= oldLength;
+    this.docLengths.delete(docId);
+    const oldUnique = new Set(tokens);
+    for (const term of oldUnique) {
+      const current = this.termDf.get(term) ?? 0;
+      if (current <= 1) {
+        this.termDf.delete(term);
+      } else {
+        this.termDf.set(term, current - 1);
+      }
     }
-    /** Pre-computed average document length. */
-    get avgDocLength() {
-        const count = this.docLengths.size;
-        return count === 0 ? 0 : this.totalTokens / count;
-    }
-    /** Number of indexed documents. */
-    get docCount() {
-        return this.docLengths.size;
-    }
-    /** Remove all indexed terms and document lengths. */
-    clear() {
-        this.termDf.clear();
-        this.docLengths.clear();
-        this.totalTokens = 0;
-    }
+  }
+  /** O(1) document frequency lookup for a term. */
+  getDocFrequency(term) {
+    return this.termDf.get(term) ?? 0;
+  }
+  /** Pre-computed average document length. */
+  get avgDocLength() {
+    const count = this.docLengths.size;
+    return count === 0 ? 0 : this.totalTokens / count;
+  }
+  /** Number of indexed documents. */
+  get docCount() {
+    return this.docLengths.size;
+  }
+  /** Remove all indexed terms and document lengths. */
+  clear() {
+    this.termDf.clear();
+    this.docLengths.clear();
+    this.totalTokens = 0;
+  }
 }
 //# sourceMappingURL=inverted-index.js.map

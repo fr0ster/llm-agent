@@ -11,5 +11,9 @@ import { type FileSystemSkill } from './filesystem-skill.js';
  * @param normalizeMeta - Optional function to normalize vendor-specific frontmatter keys.
  * @param enrichSkill - Optional async function to enrich a loaded skill (e.g. with vendor config).
  */
-export declare function scanDirsForSkills(dirs: string[], normalizeMeta?: (meta: ISkillMeta) => ISkillMeta, enrichSkill?: (skill: FileSystemSkill, dir: string) => Promise<void>): Promise<ISkill[]>;
+export declare function scanDirsForSkills(
+  dirs: string[],
+  normalizeMeta?: (meta: ISkillMeta) => ISkillMeta,
+  enrichSkill?: (skill: FileSystemSkill, dir: string) => Promise<void>,
+): Promise<ISkill[]>;
 //# sourceMappingURL=skill-utils.d.ts.map

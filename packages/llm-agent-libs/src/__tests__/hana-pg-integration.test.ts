@@ -56,7 +56,7 @@ describe('hana-vector / pg-vector server integration', () => {
         return { vector: [0, 0, 0] };
       },
     };
-    const rag = await makeRag(
+    const rag = (await makeRag(
       {
         type: 'hana-vector',
         host: 'h',
@@ -67,7 +67,7 @@ describe('hana-vector / pg-vector server integration', () => {
         autoCreateSchema: true,
       },
       { injectedEmbedder: embedder },
-    ) as unknown as { ensureSchema: () => Promise<void> };
+    )) as unknown as { ensureSchema: () => Promise<void> };
     assert.equal(typeof rag.ensureSchema, 'function');
   });
 
@@ -79,7 +79,7 @@ describe('hana-vector / pg-vector server integration', () => {
         return { vector: [0, 0, 0] };
       },
     };
-    const rag = await makeRag(
+    const rag = (await makeRag(
       {
         type: 'pg-vector',
         host: 'h',
@@ -91,7 +91,7 @@ describe('hana-vector / pg-vector server integration', () => {
         autoCreateSchema: true,
       },
       { injectedEmbedder: embedder },
-    ) as unknown as { ensureSchema: () => Promise<void> };
+    )) as unknown as { ensureSchema: () => Promise<void> };
     assert.equal(typeof rag.ensureSchema, 'function');
   });
 });

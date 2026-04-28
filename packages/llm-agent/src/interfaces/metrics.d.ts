@@ -6,53 +6,53 @@
  * (useful for testing and diagnostics).
  */
 export interface ICounter {
-    /** Increment the counter by 1 (or a custom value). */
-    add(value?: number, attributes?: Record<string, string>): void;
+  /** Increment the counter by 1 (or a custom value). */
+  add(value?: number, attributes?: Record<string, string>): void;
 }
 export interface IHistogram {
-    /** Record a single observation (e.g. latency in ms). */
-    record(value: number, attributes?: Record<string, string>): void;
+  /** Record a single observation (e.g. latency in ms). */
+  record(value: number, attributes?: Record<string, string>): void;
 }
 export interface IMetrics {
-    /** Total incoming requests to SmartAgent.process / streamProcess. */
-    requestCount: ICounter;
-    /** Request end-to-end latency (ms). */
-    requestLatency: IHistogram;
-    /** Number of tool calls executed (internal MCP). */
-    toolCallCount: ICounter;
-    /** Number of RAG queries executed. Attributes: store (store name), hit (true|false). */
-    ragQueryCount: ICounter;
-    /** Intent classifier invocation count. Attributes: intent (action|feedback|chat). */
-    classifierIntentCount: ICounter;
-    /** LLM chat / streamChat invocations. */
-    llmCallCount: ICounter;
-    /** LLM call latency (ms). */
-    llmCallLatency: IHistogram;
-    /** Circuit breaker state transitions. Attributes: from, to, target (llm|embedder). */
-    circuitBreakerTransition: ICounter;
-    /** Tool result cache hits. */
-    toolCacheHitCount: ICounter;
+  /** Total incoming requests to SmartAgent.process / streamProcess. */
+  requestCount: ICounter;
+  /** Request end-to-end latency (ms). */
+  requestLatency: IHistogram;
+  /** Number of tool calls executed (internal MCP). */
+  toolCallCount: ICounter;
+  /** Number of RAG queries executed. Attributes: store (store name), hit (true|false). */
+  ragQueryCount: ICounter;
+  /** Intent classifier invocation count. Attributes: intent (action|feedback|chat). */
+  classifierIntentCount: ICounter;
+  /** LLM chat / streamChat invocations. */
+  llmCallCount: ICounter;
+  /** LLM call latency (ms). */
+  llmCallLatency: IHistogram;
+  /** Circuit breaker state transitions. Attributes: from, to, target (llm|embedder). */
+  circuitBreakerTransition: ICounter;
+  /** Tool result cache hits. */
+  toolCacheHitCount: ICounter;
 }
 export interface CounterSnapshot {
-    total: number;
-    byAttributes: Map<string, number>;
+  total: number;
+  byAttributes: Map<string, number>;
 }
 export interface HistogramSnapshot {
-    count: number;
-    sum: number;
-    min: number;
-    max: number;
-    values: number[];
+  count: number;
+  sum: number;
+  min: number;
+  max: number;
+  values: number[];
 }
 export interface MetricsSnapshot {
-    requestCount: CounterSnapshot;
-    requestLatency: HistogramSnapshot;
-    toolCallCount: CounterSnapshot;
-    ragQueryCount: CounterSnapshot;
-    classifierIntentCount: CounterSnapshot;
-    llmCallCount: CounterSnapshot;
-    llmCallLatency: HistogramSnapshot;
-    circuitBreakerTransition: CounterSnapshot;
-    toolCacheHitCount: CounterSnapshot;
+  requestCount: CounterSnapshot;
+  requestLatency: HistogramSnapshot;
+  toolCallCount: CounterSnapshot;
+  ragQueryCount: CounterSnapshot;
+  classifierIntentCount: CounterSnapshot;
+  llmCallCount: CounterSnapshot;
+  llmCallLatency: HistogramSnapshot;
+  circuitBreakerTransition: CounterSnapshot;
+  toolCacheHitCount: CounterSnapshot;
 }
 //# sourceMappingURL=metrics.d.ts.map

@@ -17,10 +17,10 @@
  */
 import type { IPluginLoader, LoadedPlugins } from './types.js';
 export interface FileSystemPluginLoaderConfig {
-    /** Directories to scan for plugin files (in order, later wins). */
-    dirs: string[];
-    /** Optional logger for diagnostic messages. */
-    log?: (msg: string) => void;
+  /** Directories to scan for plugin files (in order, later wins). */
+  dirs: string[];
+  /** Optional logger for diagnostic messages. */
+  log?: (msg: string) => void;
 }
 /**
  * Filesystem-based plugin loader.
@@ -44,10 +44,10 @@ export interface FileSystemPluginLoaderConfig {
  * ```
  */
 export declare class FileSystemPluginLoader implements IPluginLoader {
-    private readonly dirs;
-    private readonly log?;
-    constructor(config: FileSystemPluginLoaderConfig);
-    load(): Promise<LoadedPlugins>;
+  private readonly dirs;
+  private readonly log?;
+  constructor(config: FileSystemPluginLoaderConfig);
+  load(): Promise<LoadedPlugins>;
 }
 /**
  * Returns the default plugin directories (in load order).
@@ -63,5 +63,8 @@ export declare function getDefaultPluginDirs(): string[];
  * @param log  - Optional logger.
  * @returns Merged plugin registrations.
  */
-export declare function loadPlugins(dirs: string[], log?: (msg: string) => void): Promise<LoadedPlugins>;
+export declare function loadPlugins(
+  dirs: string[],
+  log?: (msg: string) => void,
+): Promise<LoadedPlugins>;
 //# sourceMappingURL=loader.d.ts.map
