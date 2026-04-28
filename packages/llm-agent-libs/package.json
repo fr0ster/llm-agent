@@ -1,21 +1,24 @@
 {
   "name": "@mcp-abap-adt/llm-agent-libs",
-  "version": "12.0.3",
+  "version": "12.0.4",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
     },
     "./testing": {
       "types": "./dist/testing/index.d.ts",
-      "import": "./dist/testing/index.js"
+      "import": "./dist/testing/index.js",
+      "default": "./dist/testing/index.js"
     },
     "./otel": {
       "types": "./dist/otel/index.d.ts",
-      "import": "./dist/otel/index.js"
+      "import": "./dist/otel/index.js",
+      "default": "./dist/otel/index.js"
     }
   },
   "files": [
@@ -28,9 +31,9 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^12.0.3",
-    "@mcp-abap-adt/llm-agent-mcp": "^12.0.3",
-    "@mcp-abap-adt/llm-agent-rag": "^12.0.3",
+    "@mcp-abap-adt/llm-agent": "^12.0.4",
+    "@mcp-abap-adt/llm-agent-mcp": "^12.0.4",
+    "@mcp-abap-adt/llm-agent-rag": "^12.0.4",
     "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",
@@ -57,10 +60,10 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/openai-llm": "^12.0.3",
-    "@mcp-abap-adt/anthropic-llm": "^12.0.3",
-    "@mcp-abap-adt/deepseek-llm": "^12.0.3",
-    "@mcp-abap-adt/sap-aicore-llm": "^12.0.3"
+    "@mcp-abap-adt/openai-llm": "^12.0.4",
+    "@mcp-abap-adt/anthropic-llm": "^12.0.4",
+    "@mcp-abap-adt/deepseek-llm": "^12.0.4",
+    "@mcp-abap-adt/sap-aicore-llm": "^12.0.4"
   },
   "publishConfig": {
     "access": "public"

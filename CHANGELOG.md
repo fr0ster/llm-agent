@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [12.0.4] — 2026-04-28
+
+### Fixed
+- **`@mcp-abap-adt/llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`** now declare a `"default"` condition in their `package.json#exports` (root and sub-paths `./testing`, `./otel` for `llm-agent-libs`). Without it, CommonJS consumers (e.g. CAP/CDS apps that compile to CJS) failed at startup with `ERR_PACKAGE_PATH_NOT_EXPORTED` when importing these packages. The other v12 packages already had `"default"`; only the three companion packages drifted from the convention.
+
+### Closes
+- [#127](https://github.com/fr0ster/llm-agent/issues/127) — `llm-agent-libs` / `llm-agent-mcp` / `llm-agent-rag` missing `"default"` condition in exports — breaks CJS consumers
+
+---
+
 ## [12.0.0] — 2026-04-27
 
 ### Breaking
