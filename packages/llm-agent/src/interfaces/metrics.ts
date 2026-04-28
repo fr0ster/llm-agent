@@ -36,3 +36,32 @@ export interface IMetrics {
   /** Tool result cache hits. */
   toolCacheHitCount: ICounter;
 }
+
+// ---------------------------------------------------------------------------
+// Snapshot types (used by InMemoryMetrics and HealthStatus)
+// ---------------------------------------------------------------------------
+
+export interface CounterSnapshot {
+  total: number;
+  byAttributes: Map<string, number>;
+}
+
+export interface HistogramSnapshot {
+  count: number;
+  sum: number;
+  min: number;
+  max: number;
+  values: number[];
+}
+
+export interface MetricsSnapshot {
+  requestCount: CounterSnapshot;
+  requestLatency: HistogramSnapshot;
+  toolCallCount: CounterSnapshot;
+  ragQueryCount: CounterSnapshot;
+  classifierIntentCount: CounterSnapshot;
+  llmCallCount: CounterSnapshot;
+  llmCallLatency: HistogramSnapshot;
+  circuitBreakerTransition: CounterSnapshot;
+  toolCacheHitCount: CounterSnapshot;
+}

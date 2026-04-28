@@ -1,165 +1,19 @@
 /**
  * Plugin contract types.
  *
- * A plugin is a module that exports named registrations matching
- * {@link PluginExports}. The plugin loader discovers and imports
- * plugins, returning merged registrations as {@link LoadedPlugins}.
- *
- * ## Extension model
- *
- * The library provides {@link IPluginLoader} — an interface for plugin
- * discovery — and a default filesystem-based implementation
- * ({@link FileSystemPluginLoader}). Consumers can:
- *
- * - Use the default loader (filesystem scan) as-is
- * - Provide a custom loader (npm packages, remote registry, DB, etc.)
- * - Skip loaders entirely and wire via `SmartAgentBuilder` directly
- *
- * ## Supported exports
- *
- * | Export name          | Type                                      | Registers as           |
- * |----------------------|-------------------------------------------|------------------------|
- * | `stageHandlers`      | `Record<string, IStageHandler>`           | Pipeline stage handlers |
- * | `embedderFactories`  | `Record<string, EmbedderFactory>`         | Embedder factories      |
- * | `reranker`           | `IReranker`                               | RAG reranker            |
- * | `queryExpander`      | `IQueryExpander`                          | Query expander          |
- * | `outputValidator`    | `IOutputValidator`                        | Output validator        |
- * | `skillManager`       | `ISkillManager`                           | Skill manager           |
- * | `mcpClients`         | `IMcpClient[]`                            | MCP clients             |
- *
- * ## Example plugin file (filesystem loader)
- *
- * ```ts
- * // ~/.config/llm-agent/plugins/my-plugin.js
- * import type { PluginExports } from '@mcp-abap-adt/llm-agent';
- *
- * class AuditLogHandler {
- *   async execute(ctx, config, span) {
- *     console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
- *     return true;
- *   }
- * }
- *
- * export const stageHandlers = {
- *   'audit-log': new AuditLogHandler(),
- * };
- * ```
- *
- * ## Plugin directories (filesystem loader)
- *
- * Plugins are loaded from (in order, later wins):
- * 1. `~/.config/llm-agent/plugins/` (user-level)
- * 2. `./plugins/` (project-level)
- * 3. Path specified via `--plugin-dir` CLI flag or `pluginDir` in YAML
- *
- * Only `.js`, `.mjs`, and `.ts` files are loaded. Subdirectories are ignored.
+ * Type declarations moved to @mcp-abap-adt/llm-agent.
+ * This file re-exports them and provides the runtime helper functions.
  */
 
+import type { ILlmApiAdapter } from '@mcp-abap-adt/llm-agent';
 import type {
-  EmbedderFactory,
-  IClientAdapter,
-  ILlmApiAdapter,
-  IMcpClient,
-  IQueryExpander,
-  ISkillManager,
+  IPluginLoader,
+  IStageHandler,
+  LoadedPlugins,
+  PluginExports,
 } from '@mcp-abap-adt/llm-agent';
-import type { IStageHandler } from '../pipeline/stage-handler.js';
-import type { IReranker } from '../reranker/types.js';
-import type { IOutputValidator } from '../validator/types.js';
 
-/**
- * Shape of a plugin module's named exports.
- * All fields are optional — a plugin can register any subset.
- */
-export interface PluginExports {
-  /** Custom pipeline stage handlers, keyed by stage type name. */
-  stageHandlers?: Record<string, IStageHandler>;
-
-  /** Custom embedder factories, keyed by embedder name. */
-  embedderFactories?: Record<string, EmbedderFactory>;
-
-  /** Custom RAG reranker (replaces the default). */
-  reranker?: IReranker;
-
-  /** Custom query expander (replaces the default). */
-  queryExpander?: IQueryExpander;
-
-  /** Custom output validator (replaces the default). */
-  outputValidator?: IOutputValidator;
-
-  /** Custom skill manager (replaces the default). */
-  skillManager?: ISkillManager;
-
-  /** Pre-built MCP clients (accumulated from all plugins). */
-  mcpClients?: IMcpClient[];
-
-  /** Client adapters for auto-detecting prompt-based clients (accumulated). */
-  clientAdapters?: IClientAdapter[];
-
-  /** API protocol adapters, keyed by adapter name. */
-  apiAdapters?: Record<string, ILlmApiAdapter>;
-}
-
-/**
- * Result of loading all plugins.
- * Merged registrations from all discovered plugin sources.
- */
-export interface LoadedPlugins {
-  stageHandlers: Map<string, IStageHandler>;
-  embedderFactories: Record<string, EmbedderFactory>;
-  reranker?: IReranker;
-  queryExpander?: IQueryExpander;
-  outputValidator?: IOutputValidator;
-  skillManager?: ISkillManager;
-  mcpClients: IMcpClient[];
-  clientAdapters: IClientAdapter[];
-  apiAdapters: Map<string, ILlmApiAdapter>;
-  /** Source identifiers for successfully loaded plugins. */
-  loadedFiles: string[];
-  /** Plugins that failed to load, with error messages. */
-  errors: Array<{ file: string; error: string }>;
-}
-
-/**
- * Plugin loader interface.
- *
- * Abstracts how plugins are discovered and loaded. The library ships
- * a default filesystem-based implementation ({@link FileSystemPluginLoader}).
- * Consumers can provide their own implementation to load plugins from
- * npm packages, remote registries, databases, or any other source.
- *
- * @example Default filesystem loader
- * ```ts
- * const loader = new FileSystemPluginLoader({
- *   dirs: ['~/.config/llm-agent/plugins/', './plugins/'],
- * });
- * builder.withPluginLoader(loader);
- * ```
- *
- * @example Custom npm-based loader
- * ```ts
- * class NpmPluginLoader implements IPluginLoader {
- *   constructor(private packages: string[]) {}
- *   async load() {
- *     const result = emptyLoadedPlugins();
- *     for (const pkg of this.packages) {
- *       const mod = await import(pkg);
- *       mergePluginExports(result, mod, pkg);
- *     }
- *     return result;
- *   }
- * }
- * builder.withPluginLoader(new NpmPluginLoader(['my-plugin-a', 'my-plugin-b']));
- * ```
- */
-export interface IPluginLoader {
-  /**
-   * Discover and load plugins.
-   *
-   * @returns Merged plugin registrations from all discovered sources.
-   */
-  load(): Promise<LoadedPlugins>;
-}
+export type { IPluginLoader, IStageHandler, LoadedPlugins, PluginExports };
 
 /**
  * Creates an empty {@link LoadedPlugins} object.
