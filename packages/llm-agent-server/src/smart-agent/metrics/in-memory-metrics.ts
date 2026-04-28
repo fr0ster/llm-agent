@@ -1,13 +1,17 @@
-import type { ICounter, IHistogram, IMetrics } from './types.js';
+import type {
+  CounterSnapshot,
+  HistogramSnapshot,
+  ICounter,
+  IHistogram,
+  IMetrics,
+  MetricsSnapshot,
+} from '@mcp-abap-adt/llm-agent';
+
+export type { CounterSnapshot, HistogramSnapshot, MetricsSnapshot };
 
 // ---------------------------------------------------------------------------
-// In-memory counter
+// In-memory counter (implementation only — types re-exported from @mcp-abap-adt/llm-agent)
 // ---------------------------------------------------------------------------
-
-export interface CounterSnapshot {
-  total: number;
-  byAttributes: Map<string, number>;
-}
 
 class MemCounter implements ICounter {
   private total = 0;
@@ -32,14 +36,6 @@ class MemCounter implements ICounter {
 // ---------------------------------------------------------------------------
 // In-memory histogram
 // ---------------------------------------------------------------------------
-
-export interface HistogramSnapshot {
-  count: number;
-  sum: number;
-  min: number;
-  max: number;
-  values: number[];
-}
 
 class MemHistogram implements IHistogram {
   private readonly values: number[] = [];
@@ -71,18 +67,6 @@ class MemHistogram implements IHistogram {
 // ---------------------------------------------------------------------------
 // InMemoryMetrics
 // ---------------------------------------------------------------------------
-
-export interface MetricsSnapshot {
-  requestCount: CounterSnapshot;
-  requestLatency: HistogramSnapshot;
-  toolCallCount: CounterSnapshot;
-  ragQueryCount: CounterSnapshot;
-  classifierIntentCount: CounterSnapshot;
-  llmCallCount: CounterSnapshot;
-  llmCallLatency: HistogramSnapshot;
-  circuitBreakerTransition: CounterSnapshot;
-  toolCacheHitCount: CounterSnapshot;
-}
 
 /**
  * In-memory metrics collector — useful for testing and diagnostics endpoints.

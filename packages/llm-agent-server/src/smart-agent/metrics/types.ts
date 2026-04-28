@@ -1,1 +1,8 @@
-export type { ICounter, IHistogram, IMetrics } from '@mcp-abap-adt/llm-agent';
+export type {
+  CounterSnapshot,
+  HistogramSnapshot,
+  ICounter,
+  IHistogram,
+  IMetrics,
+  MetricsSnapshot,
+} from '@mcp-abap-adt/llm-agent';

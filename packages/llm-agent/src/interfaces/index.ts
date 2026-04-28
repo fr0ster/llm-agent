@@ -20,7 +20,15 @@ export type {
   IModelInfo,
   IModelProvider,
 } from './model-provider.js';
-export type { IRagStoreConfig, ISmartAgentPlugin, RagScope } from './plugin.js';
+export type {
+  IPluginLoader,
+  ISmartAgentPlugin,
+  IStageHandler,
+  IRagStoreConfig,
+  LoadedPlugins,
+  PluginExports,
+  RagScope,
+} from './plugin.js';
 export type { IQueryEmbedding } from './query-embedding.js';
 export type {
   EmbedderFactory,
@@ -91,9 +99,21 @@ export {
   SkillError,
   SmartAgentError,
 } from './types.js';
-export type { ICounter, IHistogram, IMetrics } from './metrics.js';
+export type {
+  CounterSnapshot,
+  HistogramSnapshot,
+  ICounter,
+  IHistogram,
+  IMetrics,
+  MetricsSnapshot,
+} from './metrics.js';
 export type { IOutputValidator, ValidationResult } from './validator.js';
 export { ValidatorError } from './validator.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type { ISessionManager } from './session.js';
 export type { IReranker } from './reranker.js';
+export type {
+  CircuitBreakerStatus,
+  HealthComponentStatus,
+  HealthStatus,
+} from './health.js';
