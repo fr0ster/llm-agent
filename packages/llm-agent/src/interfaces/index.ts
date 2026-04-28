@@ -9,6 +9,7 @@ export {
 export type { HistoryEntry, IContextAssembler } from './assembler.js';
 export type {
   ISmartAgent,
+  SmartAgentHandle,
   SmartAgentRagStores,
 } from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
