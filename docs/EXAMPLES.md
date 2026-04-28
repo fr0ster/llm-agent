@@ -109,7 +109,7 @@ the pipeline. Use this to attach domain knowledge bases, user-specific indexes, 
 stores on demand:
 
 ```typescript
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
 const agent = await new SmartAgentBuilder()
   .withMainLlm(myLlm)
@@ -133,7 +133,7 @@ Use `QdrantRagProvider` so the LLM can create session-scoped collections on dema
 results, correct errors, and let the consumer clean up on disconnect:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { QdrantRagProvider, buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
 
 // 1. Build agent with a Qdrant provider
@@ -239,7 +239,7 @@ import {
   SmartAgentBuilder,
   ClaudeSkillManager,
   FileSystemSkillManager,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-libs';
 
 // Option 1: Claude-convention directories (~/.claude/skills/ + <project>/.claude/skills/)
 const builder = new SmartAgentBuilder()
@@ -374,8 +374,8 @@ Look for these log entries:
 ### Custom pipeline implementation
 
 ```ts
-import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent-server';
-import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent-server';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent-libs';
 
 // Extend the default pipeline by wrapping it
 class AuditedPipeline implements IPipeline {

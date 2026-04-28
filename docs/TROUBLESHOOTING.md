@@ -231,7 +231,7 @@ If translation chain is unreliable, use a multilingual embedder instead — `nom
 **Fix.** Upgrade to `>=11.1.1`. The catch now emits a `warning` log entry — `MCP setup failed for <url-or-command>: <error message>` — matching the pattern used elsewhere in the same file. Graceful-degradation behavior is preserved (the agent still builds without that MCP server). For one-off diagnosis on older versions, run a probe inside the container:
 
 ```bash
-docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-server").then(async ({MCPClientWrapper})=>{const w=new MCPClientWrapper({transport:"auto",url:process.env.MCP_SERVER_URL,headers:{Accept:"application/json, text/event-stream"}});try{await w.connect();console.log("OK")}catch(e){console.error("ERR:",e.message)}})'
+docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({MCPClientWrapper})=>{const w=new MCPClientWrapper({transport:"auto",url:process.env.MCP_SERVER_URL,headers:{Accept:"application/json, text/event-stream"}});try{await w.connect();console.log("OK")}catch(e){console.error("ERR:",e.message)}})'
 ```
 
 ---

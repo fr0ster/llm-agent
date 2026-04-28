@@ -7,10 +7,10 @@
 
 ## Current Project Snapshot
 
-- Packages: `@mcp-abap-adt/llm-agent` (core — interfaces, types, RAG impls) and `@mcp-abap-adt/llm-agent-server` (runtime — SmartAgent, LLM providers, MCP client, CLIs)
-- Version line: `10.x`
-- Main runtime: `src/smart-agent` (`SmartServer` + `SmartAgent`) — published as `@mcp-abap-adt/llm-agent-server`
-- Public exports: `@mcp-abap-adt/llm-agent` (core types/interfaces/RAG), `@mcp-abap-adt/llm-agent-server` (runtime), `@mcp-abap-adt/llm-agent-server/smart-server`, `@mcp-abap-adt/llm-agent-server/testing`, `@mcp-abap-adt/llm-agent-server/otel`
+- Packages: `@mcp-abap-adt/llm-agent` (contracts: interfaces, types, lightweight helpers), `@mcp-abap-adt/llm-agent-mcp` (MCP client), `@mcp-abap-adt/llm-agent-rag` (RAG/embedder composition), `@mcp-abap-adt/llm-agent-libs` (composition runtime: SmartAgentBuilder, pipeline, skills, ...), `@mcp-abap-adt/llm-agent-server` (binary only: CLI + HTTP server)
+- Version line: `12.x`
+- Main runtime: `SmartAgentBuilder` (in `@mcp-abap-adt/llm-agent-libs`); HTTP server `SmartServer` (binary only, in `@mcp-abap-adt/llm-agent-server`)
+- Public library exports: `@mcp-abap-adt/llm-agent` (contracts), `@mcp-abap-adt/llm-agent-mcp` (MCP), `@mcp-abap-adt/llm-agent-rag` (RAG), `@mcp-abap-adt/llm-agent-libs` (composition runtime), `@mcp-abap-adt/llm-agent-libs/testing`, `@mcp-abap-adt/llm-agent-libs/otel`
 
 Legacy modules under `src/agents`, `src/llm-providers`, and `src/mcp` are still present for compatibility and adapter reuse.
 
