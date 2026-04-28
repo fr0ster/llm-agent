@@ -7,8 +7,8 @@
   ],
   "scripts": {
     "prebuild": "npm run --workspace @mcp-abap-adt/llm-agent-server prebuild",
-    "build": "tsc -b packages/llm-agent packages/llm-agent-mcp packages/llm-agent-rag packages/llm-agent-libs packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/hana-vector-rag packages/pg-vector-rag packages/llm-agent-server",
-    "clean": "tsc -b --clean packages/llm-agent packages/llm-agent-mcp packages/llm-agent-rag packages/llm-agent-libs packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/hana-vector-rag packages/pg-vector-rag packages/llm-agent-server",
+    "build": "tsc -b packages/llm-agent packages/llm-agent-mcp packages/llm-agent-rag packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/hana-vector-rag packages/pg-vector-rag packages/llm-agent-libs packages/llm-agent-server",
+    "clean": "tsc -b --clean packages/llm-agent packages/llm-agent-mcp packages/llm-agent-rag packages/openai-llm packages/anthropic-llm packages/openai-embedder packages/ollama-embedder packages/qdrant-rag packages/sap-aicore-llm packages/sap-aicore-embedder packages/deepseek-llm packages/hana-vector-rag packages/pg-vector-rag packages/llm-agent-libs packages/llm-agent-server",
     "lint": "biome check --write packages",
     "lint:check": "biome check packages",
     "format": "biome format --write packages",
