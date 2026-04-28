@@ -18,6 +18,7 @@ import type {
   ISkillManager,
   Message,
   NormalizedRequest,
+  StreamToolCall,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -1121,7 +1122,8 @@ export class SmartServer {
         // SSE timing breakdown comment — sent with the final chunk
         if (chunk.value.timing) {
           const parts = chunk.value.timing.map(
-            (t) => `${t.phase}=${t.duration}ms`,
+            (t: { phase: string; duration: number }) =>
+              `${t.phase}=${t.duration}ms`,
           );
           res.write(`: timing ${parts.join(' ')}\n\n`);
         }
@@ -1152,18 +1154,20 @@ export class SmartServer {
           const delta: Record<string, unknown> = {};
           if (chunk.value.content) delta.content = chunk.value.content;
           if (chunk.value.toolCalls) {
-            delta.tool_calls = chunk.value.toolCalls.map((call, index) => {
-              const tc = toToolCallDelta(call, index);
-              return {
-                index: tc.index,
-                id: tc.id,
-                type: 'function',
-                function: {
-                  name: tc.name,
-                  arguments: tc.arguments || '',
-                },
-              };
-            });
+            delta.tool_calls = chunk.value.toolCalls.map(
+              (call: StreamToolCall, index: number) => {
+                const tc = toToolCallDelta(call, index);
+                return {
+                  index: tc.index,
+                  id: tc.id,
+                  type: 'function',
+                  function: {
+                    name: tc.name,
+                    arguments: tc.arguments || '',
+                  },
+                };
+              },
+            );
           }
           res.write(
             `data: ${JSON.stringify({ ...baseResponse, choices: [{ index: 0, delta, finish_reason: null }] })}\n\n`,

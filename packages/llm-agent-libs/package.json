@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-libs",
-  "version": "12.0.2",
+  "version": "12.0.3",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -28,9 +28,9 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "*",
-    "@mcp-abap-adt/llm-agent-mcp": "*",
-    "@mcp-abap-adt/llm-agent-rag": "*",
+    "@mcp-abap-adt/llm-agent": "^12.0.3",
+    "@mcp-abap-adt/llm-agent-mcp": "^12.0.3",
+    "@mcp-abap-adt/llm-agent-rag": "^12.0.3",
     "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",
@@ -57,10 +57,10 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/openai-llm": "*",
-    "@mcp-abap-adt/anthropic-llm": "*",
-    "@mcp-abap-adt/deepseek-llm": "*",
-    "@mcp-abap-adt/sap-aicore-llm": "*"
+    "@mcp-abap-adt/openai-llm": "^12.0.3",
+    "@mcp-abap-adt/anthropic-llm": "^12.0.3",
+    "@mcp-abap-adt/deepseek-llm": "^12.0.3",
+    "@mcp-abap-adt/sap-aicore-llm": "^12.0.3"
   },
   "publishConfig": {
     "access": "public"

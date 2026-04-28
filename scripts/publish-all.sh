@@ -10,6 +10,10 @@ set -uo pipefail
 
 cd "$(dirname "$0")/.."
 
+echo ">>> Clean + rebuild before publish"
+npm run clean
+npm run build
+
 PACKAGES=(
   llm-agent
   llm-agent-mcp

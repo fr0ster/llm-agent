@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/sap-aicore-llm",
-  "version": "12.0.2",
+  "version": "12.0.3",
   "description": "SAP AI Core LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "*",
+    "@mcp-abap-adt/llm-agent": "^12.0.3",
     "@sap-ai-sdk/ai-api": "^2.9.0",
     "@sap-ai-sdk/orchestration": "^2.9.0"
   },

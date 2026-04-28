@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/deepseek-llm",
-  "version": "12.0.2",
+  "version": "12.0.3",
   "description": "DeepSeek LLM provider (ILlm, extends OpenAIProvider) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,8 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "*",
-    "@mcp-abap-adt/openai-llm": "*"
+    "@mcp-abap-adt/llm-agent": "^12.0.3",
+    "@mcp-abap-adt/openai-llm": "^12.0.3"
   },
   "license": "MIT",
   "repository": {

@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-rag
 
-## 12.0.2
+## 12.0.3
 
 ### Patch Changes
 
