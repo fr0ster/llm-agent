@@ -4,6 +4,7 @@
 
 import type {
   AgentStreamChunk as CoreAgentStreamChunk,
+  BaseAgentLlmBridge,
   ILlm,
   IModelFilter,
   IModelInfo,
@@ -22,9 +23,10 @@ import {
   type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 
+export type { BaseAgentLlmBridge };
+
 // ---------------------------------------------------------------------------
-// Bridge interface (formerly in agents/base.ts — kept here so LlmAdapter has
-// no dependency on the deleted agents/ directory)
+// Bridge interface AgentCallOptions
 // ---------------------------------------------------------------------------
 
 export interface AgentCallOptions {
@@ -32,23 +34,6 @@ export interface AgentCallOptions {
   maxTokens?: number;
   topP?: number;
   stop?: string[];
-}
-
-export interface BaseAgentLlmBridge {
-  callWithTools(
-    messages: Message[],
-    tools: unknown[],
-    options?: AgentCallOptions,
-  ): Promise<{ content: string; raw?: unknown }>;
-  streamWithTools(
-    messages: Message[],
-    tools: unknown[],
-    options?: AgentCallOptions,
-  ): AsyncGenerator<
-    { content: string; raw?: unknown } | CoreAgentStreamChunk,
-    void,
-    unknown
-  >;
 }
 
 type ParseStage = 'response' | 'stream';
