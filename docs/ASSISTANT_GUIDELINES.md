@@ -53,4 +53,4 @@ Legacy modules under `src/agents`, `src/llm-providers`, and `src/mcp` are still 
 - Usage snippets: `docs/EXAMPLES.md`
 - Deployment examples: `examples/`
 
-If docs conflict, align them to actual `src/smart-agent/*` behavior and tests.
+If docs conflict, align them to actual package source behavior and tests (`packages/llm-agent-libs/src/`, `packages/llm-agent/src/`, etc.).

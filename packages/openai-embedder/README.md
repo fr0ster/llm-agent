@@ -27,4 +27,4 @@ const result = await embedder.embed('Hello world');
 console.log(result.vector);
 ```
 
-Optional peer dependency of @mcp-abap-adt/llm-agent-server.
+Optional peer dependency of @mcp-abap-adt/llm-agent-rag.

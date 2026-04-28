@@ -38,4 +38,4 @@ const searchResults = await rag.query('What is Ollama?', documents);
 console.log(searchResults);
 ```
 
-Optional peer dependency of @mcp-abap-adt/llm-agent-server.
+Optional peer dependency of @mcp-abap-adt/llm-agent-rag.

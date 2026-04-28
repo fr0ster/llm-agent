@@ -1,6 +1,6 @@
 # @mcp-abap-adt/sap-aicore-llm
 
-SAP AI Core LLM provider for @mcp-abap-adt/llm-agent / @mcp-abap-adt/llm-agent-server.
+SAP AI Core LLM provider for @mcp-abap-adt/llm-agent / @mcp-abap-adt/llm-agent-libs.
 
 Exports:
 - `SapCoreAIProvider` — implements ILlm, calls SAP AI Core orchestration API.

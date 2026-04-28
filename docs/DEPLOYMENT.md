@@ -111,7 +111,7 @@ rag:
   url: ${QDRANT_URL:-http://qdrant:6333}
 ```
 
-Variables are resolved at startup by `resolveEnvVars()` in `src/smart-agent/config.ts`.
+Variables are resolved at startup by `resolveEnvVars()` in `packages/llm-agent-server/src/smart-agent/config.ts`.
 
 ## systemd
 

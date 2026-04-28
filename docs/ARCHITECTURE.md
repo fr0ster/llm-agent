@@ -18,7 +18,7 @@ The codebase is split across **five npm packages**:
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
-- **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` and `makeDefaultLlm` are **async** (`Promise<IRag>`). `resolveEmbedder` stays **synchronous** (uses `prefetchEmbedderFactories` warm-up contract). Embedder/RAG backend packages are optional peers — only install what you use. Depends on `llm-agent`.
+- **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` is **async** (`Promise<IRag>`); it auto-prefetches backends so no manual warm-up is needed for one-shot use. `resolveEmbedder` stays **synchronous** (call `prefetchEmbedderFactories([...])` once at startup for hot-path sync resolves). Embedder/RAG backend packages are optional peers — only install what you use. Depends on `llm-agent`.
 
 - **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers. `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
 
@@ -45,7 +45,7 @@ Optional peer dependencies (not in the graph above):
 - `makeLlm(cfg, temperature)` → `Promise<ILlm>` (async)
 - `makeDefaultLlm(cfg)` → `Promise<ILlm>` (async)
 - `makeRag(cfg, options)` → `Promise<IRag>` (async)
-- `resolveEmbedder(cfg, options)` → `IEmbedder` (sync — call `prefetchEmbedderFactories([...])` once at startup)
+- `resolveEmbedder(cfg, options)` → `IEmbedder` (sync — call `prefetchEmbedderFactories([...])` once at startup before using this hot-path resolver; NOT required before `makeRag`)
 - `SmartAgentBuilder.build()` → `Promise<SmartAgentHandle>` (async, unchanged externally)
 
 Missing optional providers throw `MissingProviderError` at first use.
@@ -456,7 +456,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 - **`SmartAgentBuilder`** (in `@mcp-abap-adt/llm-agent-libs`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
 - **`makeLlm`/`makeDefaultLlm`** (in `@mcp-abap-adt/llm-agent-libs`) — composition root for LLMs. The only place that imports concrete LLM provider packages. Resolves config → `ILlm` instance. **Async** since 12.0.1.
-- **`makeRag`/`resolveEmbedder`** (in `@mcp-abap-adt/llm-agent-rag`) — composition root for RAG/embedders. Resolves config → `IRag`/`IEmbedder`. `makeRag` is **async**; `resolveEmbedder` is sync (prefetch required).
+- **`makeRag`/`resolveEmbedder`** (in `@mcp-abap-adt/llm-agent-rag`) — composition root for RAG/embedders. Resolves config → `IRag`/`IEmbedder`. `makeRag` is **async** and auto-prefetches — no warm-up needed for one-shot use. `resolveEmbedder` is **sync** — call `prefetchEmbedderFactories([...])` once at startup before using this hot-path resolver.
 - **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server`) — uses `makeLlm`/`makeRag` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
 ## Execution Modes
@@ -696,14 +696,14 @@ Consumers extend the agent by implementing `IPipeline` directly and injecting it
 `DefaultPipeline` is backed by `PipelineExecutor` — a tree walker over `StageDefinition[]` objects.
 
 Key components:
-- **`PipelineExecutor`** (`src/smart-agent/pipeline/executor.ts`) — walks the stage tree, handles `parallel`/`repeat` control flow, evaluates `when` conditions, creates tracer spans.
-- **`PipelineContext`** (`src/smart-agent/pipeline/context.ts`) — mutable state bag threaded through all stages. Contains immutable input, injected dependencies, mutable state (RAG results, tools, messages), and a `yield()` callback for streaming.
-- **`IStageHandler`** (`src/smart-agent/pipeline/stage-handler.ts`) — single-method interface: `execute(ctx, config, span): Promise<boolean>`.
-- **Condition evaluator** (`src/smart-agent/pipeline/condition-evaluator.ts`) — safe expression evaluator for `when`/`until` fields. Supports dot-path property access, negation, `&&`/`||`, comparisons. No `eval()`.
+- **`PipelineExecutor`** (`packages/llm-agent-libs/src/pipeline/executor.ts`) — walks the stage tree, handles `parallel`/`repeat` control flow, evaluates `when` conditions, creates tracer spans.
+- **`PipelineContext`** (`packages/llm-agent/src/pipeline/context.ts`) — mutable state bag threaded through all stages. Contains immutable input, injected dependencies, mutable state (RAG results, tools, messages), and a `yield()` callback for streaming.
+- **`IStageHandler`** (`packages/llm-agent/src/pipeline/stage-handler.ts`) — single-method interface: `execute(ctx, config, span): Promise<boolean>`.
+- **Condition evaluator** (`packages/llm-agent/src/pipeline/condition-evaluator.ts`) — safe expression evaluator for `when`/`until` fields. Supports dot-path property access, negation, `&&`/`||`, comparisons. No `eval()`.
 
 ### Stage Types
 
-**Built-in operations** — each has a handler in `src/smart-agent/pipeline/handlers/`:
+**Built-in operations** — each has a handler in `packages/llm-agent-libs/src/pipeline/handlers/`:
 
 | Stage type | Handler | Role |
 |---|---|---|
