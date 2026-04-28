@@ -2,21 +2,60 @@
 
 ## Scope
 
-The codebase is split across two npm packages:
+The codebase is split across **five npm packages**:
 
-1. **`@mcp-abap-adt/llm-agent`** — the library: interfaces, types, default RAG implementations, and embeddable helpers usable when shipping your own HTTP server. Includes `CircuitBreaker` family, `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter` and their interface types, external-tools normalization, tool-call-delta utilities, and `ILogger`.
+```
+@mcp-abap-adt/llm-agent          contracts: interfaces, public types, lightweight helpers
+@mcp-abap-adt/llm-agent-mcp      MCP client wrapper + adapter + connection strategies
+@mcp-abap-adt/llm-agent-rag      RAG/embedder composition (makeRag, resolveEmbedder, factories)
+@mcp-abap-adt/llm-agent-libs     core composition: builder, agent, pipeline, sessions, ...
+@mcp-abap-adt/llm-agent-server   binary only (CLI + HTTP server, no library exports)
+```
 
-2. **`@mcp-abap-adt/llm-agent-server`** — the runnable distribution: CLI, HTTP server (`SmartServer`), `SmartAgentBuilder`, providers/factories composition root, plugins, skills, sessions, metrics, tracer, validator, reranker, history, structured pipeline, health, config watcher, MCP client wrapper. Depends on `llm-agent`.
+### Package responsibilities
 
-`llm-agent-server` itself contains two layers:
+- **`@mcp-abap-adt/llm-agent`** — contracts: all `I*` interfaces, shared types/DTOs, and lightweight helpers usable when embedding SmartAgent in your own server. Includes `CircuitBreaker` family, `FallbackRag`, LLM call strategies, `ToolCache`/`NoopToolCache`, `ClineClientAdapter`, `AnthropicApiAdapter`/`OpenAiApiAdapter`, external-tools normalization, tool-call-delta utilities, `ILogger`, and RAG implementations (`InMemoryRag`, `VectorRag`, `QdrantRag`, etc.).
 
-1. **Legacy core (`src/agents`, `src/llm-providers`, `src/mcp`)**
-- Provider-specific agent implementations and direct MCP integration.
-- Kept for backward compatibility and adapter reuse.
+- **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
-2. **Smart Agent stack (`src/smart-agent`)**
-- Orchestrated pipeline with classification, RAG retrieval, policy checks, MCP execution loop, and OpenAI-compatible HTTP serving.
-- This is the primary runtime architecture for new work.
+- **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` and `makeDefaultLlm` are **async** (`Promise<IRag>`). `resolveEmbedder` stays **synchronous** (uses `prefetchEmbedderFactories` warm-up contract). Embedder/RAG backend packages are optional peers — only install what you use. Depends on `llm-agent`.
+
+- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers. `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
+
+- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server (`SmartServer`). **Not a library** — importing from this package as a library is not supported as of 12.0.1. Depends on `llm-agent-libs`.
+
+### Package dependency graph
+
+```
+llm-agent-server
+  └── llm-agent-libs
+        ├── llm-agent-mcp
+        │     └── llm-agent
+        ├── llm-agent-rag
+        │     └── llm-agent
+        └── llm-agent
+```
+
+Optional peer dependencies (not in the graph above):
+- `llm-agent-libs` → `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`
+- `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
+
+### Key API notes (since 12.0.1)
+
+- `makeLlm(cfg, temperature)` → `Promise<ILlm>` (async)
+- `makeDefaultLlm(cfg)` → `Promise<ILlm>` (async)
+- `makeRag(cfg, options)` → `Promise<IRag>` (async)
+- `resolveEmbedder(cfg, options)` → `IEmbedder` (sync — call `prefetchEmbedderFactories([...])` once at startup)
+- `SmartAgentBuilder.build()` → `Promise<SmartAgentHandle>` (async, unchanged externally)
+
+Missing optional providers throw `MissingProviderError` at first use.
+
+### Legacy internal source structure
+
+`llm-agent-server` previously housed all SmartAgent code under `src/smart-agent/`. That code now lives in the library packages above. The legacy paths below are preserved for reference but no longer reflect the active source layout:
+
+- **Legacy core** (`src/agents`, `src/llm-providers`, `src/mcp`) — provider-specific agent implementations and direct MCP integration. Kept for backward compatibility.
+- **Smart Agent stack** (`src/smart-agent`) — orchestrated pipeline; now distributed across `llm-agent-libs`, `llm-agent-mcp`, and `llm-agent-rag`.
 
 ## Runtime Topology (Smart Stack)
 
@@ -101,18 +140,18 @@ Adapter responsibilities:
 
 Custom adapters are registered via `builder.withApiAdapter()`, the `apiAdapters` SmartServer config field, or the `apiAdapters` plugin export. Set `disableBuiltInAdapters: true` in SmartServer config to suppress the built-in OpenAI and Anthropic adapters.
 
-Files:
-- `src/smart-agent/interfaces/api-adapter.ts` — `ILlmApiAdapter`, `ApiRequestContext`, `ApiSseEvent`, `AdapterValidationError`
-- `src/smart-agent/api-adapters/openai-adapter.ts` — `OpenAiApiAdapter`
-- `src/smart-agent/api-adapters/anthropic-adapter.ts` — `AnthropicApiAdapter`
+Packages:
+- `@mcp-abap-adt/llm-agent` — `ILlmApiAdapter`, `ApiRequestContext`, `ApiSseEvent`, `AdapterValidationError`
+- `@mcp-abap-adt/llm-agent` — `OpenAiApiAdapter`, `AnthropicApiAdapter`
 
 ## Embeddable Component Contract (No YAML)
 
 For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
 
 Primary embeddable surfaces:
-- package export `@mcp-abap-adt/llm-agent-server/smart-server` -> `SmartServer`
-- package export `@mcp-abap-adt/llm-agent-server/testing` -> deterministic test doubles for consumer integration tests
+- `@mcp-abap-adt/llm-agent-server` -> `SmartServer` (binary runtime)
+- `@mcp-abap-adt/llm-agent-libs/testing` -> deterministic test doubles for consumer integration tests
+- `@mcp-abap-adt/llm-agent-libs/otel` -> OpenTelemetry tracer adapter
 
 Minimal programmatic integration:
 
@@ -239,8 +278,8 @@ sequenceDiagram
 ### 1. Server Boundary
 
 Entry points:
-- `src/smart-agent/smart-server.ts` (`SmartServer`)
-- `src/smart-agent/server.ts` (`SmartAgentServer`, lightweight/legacy test server)
+- `SmartServer` — in `@mcp-abap-adt/llm-agent-server`
+- `SmartAgentServer` — lightweight/legacy test server, in `@mcp-abap-adt/llm-agent-server`
 
 `SmartServer` responsibilities:
 - Parse/validate OpenAI-compatible requests (`/v1/chat/completions`).
@@ -252,7 +291,7 @@ Entry points:
 ### 2. Orchestration Core
 
 Main implementation:
-- `src/smart-agent/agent.ts` (`SmartAgent`)
+- `SmartAgent` — in `@mcp-abap-adt/llm-agent-libs`
 
 SmartAgent delegates request orchestration to the injected `IPipeline`:
 
@@ -267,30 +306,32 @@ See [Pipeline Architecture](#pipeline-architecture) for details.
 ### 3. LLM Integration
 
 Abstractions:
-- `src/smart-agent/interfaces/llm.ts`
-- `src/smart-agent/adapters/llm-adapter.ts`
+- `ILlm` interface — in `@mcp-abap-adt/llm-agent`
+- `LlmAdapter` — in `@mcp-abap-adt/llm-agent-libs`; bridges legacy `BaseAgent` implementations to `ILlm`
 
-`LlmAdapter` bridges legacy `BaseAgent` implementations to smart-agent `ILlm`.
-Concrete provider resolution is centralized in:
-- `src/smart-agent/providers.ts` — the only module that imports concrete LLM providers
+Concrete provider resolution is centralized in `makeLlm`/`makeDefaultLlm` (in `@mcp-abap-adt/llm-agent-libs`). LLM provider packages are optional peers:
+- `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`
 
 Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`) are defined in:
-- `src/smart-agent/pipeline.ts` (types only, no provider logic)
+- `@mcp-abap-adt/llm-agent` (types only, no provider logic)
 
 ### 4. RAG Layer
 
-Core contracts:
-- `src/smart-agent/interfaces/rag.ts` — `IEmbedder`, `IRag`, `EmbedderFactory`
-- `src/smart-agent/rag/search-strategy.ts` — `ISearchStrategy` (pluggable scoring algorithms)
-- `src/smart-agent/rag/preprocessor.ts` — `IQueryPreprocessor`, `IDocumentEnricher` (query/document transformation)
-- `src/smart-agent/rag/tool-indexing-strategy.ts` — `IToolIndexingStrategy` (tool description variants for indexing)
+Core contracts (in `@mcp-abap-adt/llm-agent`):
+- `IEmbedder`, `IRag`, `EmbedderFactory` — core RAG interfaces
+- `ISearchStrategy` — pluggable scoring algorithms
+- `IQueryPreprocessor`, `IDocumentEnricher` — query/document transformation
+- `IToolIndexingStrategy` — tool description variants for indexing
 
-RAG store implementations:
-- `src/smart-agent/rag/vector-rag.ts` — hybrid search (vector + BM25), accepts strategy/preprocessors
-- `src/smart-agent/rag/in-memory-rag.ts` — text-only (token frequency), accepts preprocessors
-- `src/smart-agent/rag/ollama-rag.ts` — VectorRag + Ollama embedder convenience wrapper
-- `src/smart-agent/rag/qdrant-rag.ts` — external Qdrant vector database
-- `src/smart-agent/rag/openai-embedder.ts`, `src/smart-agent/rag/embedder-factories.ts`
+RAG store implementations (in `@mcp-abap-adt/llm-agent`):
+- `VectorRag` — hybrid search (vector + BM25), accepts strategy/preprocessors
+- `InMemoryRag` — text-only (token frequency), accepts preprocessors
+
+RAG/embedder backends (optional peer packages, used via `@mcp-abap-adt/llm-agent-rag` factories):
+- `@mcp-abap-adt/qdrant-rag` — external Qdrant vector database
+- `@mcp-abap-adt/hana-vector-rag` — SAP HANA vector store
+- `@mcp-abap-adt/pg-vector-rag` — Postgres + pgvector
+- `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`
 
 Search strategies (`ISearchStrategy`):
 - `WeightedFusionStrategy` — weighted sum of vector + BM25 scores (default)
@@ -327,8 +368,8 @@ The builder selects the `tools` store by key for tool/skill vectorization at sta
 
 ### 5. MCP Layer
 
-- Smart stack uses `IMcpClient` abstraction.
-- Default adapter wraps `MCPClientWrapper` from `src/mcp/client.ts`.
+- Smart stack uses `IMcpClient` abstraction (interface in `@mcp-abap-adt/llm-agent`).
+- Default adapter wraps `MCPClientWrapper` from `@mcp-abap-adt/llm-agent-mcp`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.
 - Health checks use lightweight MCP ping (`MCPClientWrapper.ping()`) instead of `listTools()`, avoiding unnecessary tool catalog requests when health is polled frequently.
 - **Reconnection** — `IMcpConnectionStrategy` is an optional dependency injected via `builder.withMcpConnectionStrategy()`. It is called at the start of each request to resolve the current set of live MCP clients. Built-in strategies: `NoopConnectionStrategy` (pass-through, default behaviour), `LazyConnectionStrategy` (reconnects on demand with cooldown), `PeriodicConnectionStrategy` (reconnects on a background timer).
@@ -405,9 +446,10 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 
 ### Separation of concerns
 
-- **`SmartAgentBuilder`** (`src/smart-agent/builder.ts`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
-- **`providers.ts`** (`src/smart-agent/providers.ts`) — composition root. The only module that imports concrete LLM providers (`DeepSeek`, `OpenAI`, `Anthropic`, `SapCoreAI`) and RAG implementations (`OllamaRag`, `QdrantRag`, etc.). Resolves config → interface instances.
-- **`SmartServer`** (`src/smart-agent/smart-server.ts`) — uses `providers.ts` to resolve config, then injects interfaces into `SmartAgentBuilder`.
+- **`SmartAgentBuilder`** (in `@mcp-abap-adt/llm-agent-libs`) — interface-only factory. Accepts `ILlm`, `IRag`, `IMcpClient`, `IPipeline`, etc. Has no knowledge of concrete providers. RAG stores are injected via `.setToolsRag(rag)` and `.setHistoryRag(rag)`; a custom pipeline is injected via `.setPipeline(pipeline)`. Supports an optional `onBeforeStream` hook (set via `.withOnBeforeStream(hook)`) for post-processing the final response before it is streamed to the caller.
+- **`makeLlm`/`makeDefaultLlm`** (in `@mcp-abap-adt/llm-agent-libs`) — composition root for LLMs. The only place that imports concrete LLM provider packages. Resolves config → `ILlm` instance. **Async** since 12.0.1.
+- **`makeRag`/`resolveEmbedder`** (in `@mcp-abap-adt/llm-agent-rag`) — composition root for RAG/embedders. Resolves config → `IRag`/`IEmbedder`. `makeRag` is **async**; `resolveEmbedder` is sync (prefetch required).
+- **`SmartServer`** (in `@mcp-abap-adt/llm-agent-server`) — uses `makeLlm`/`makeRag` to resolve config, then injects interfaces into `SmartAgentBuilder`.
 
 ## Execution Modes
 
@@ -450,17 +492,17 @@ Composition order: `RetryLlm → CircuitBreakerLlm → LlmAdapter`. Retry sits o
 - `LlmToolCallDelta`
 
 Defined in:
-- `src/smart-agent/interfaces/types.ts`
+- `@mcp-abap-adt/llm-agent` — `LlmStreamChunk`, `LlmToolCall`, `LlmToolCallDelta`
 
 Normalization helpers:
-- `src/smart-agent/utils/tool-call-deltas.ts`
+- `@mcp-abap-adt/llm-agent` — `getStreamToolCallName`, `toToolCallDelta`
 
 This removes unsafe cast chains in critical stream paths and keeps delta assembly explicit.
 
 ### External Tool Input Contract
 
 Incoming tool payloads are normalized at boundary:
-- `src/smart-agent/utils/external-tools-normalizer.ts`
+- `@mcp-abap-adt/llm-agent` — `normalizeAndValidateExternalTools`, `normalizeExternalTools`
 
 Accepted shapes:
 - internal `LlmTool`
@@ -505,55 +547,89 @@ Action policy:
 
 ## Key Modules
 
-- `src/smart-agent/agent.ts`: orchestration loop and tool execution control.
-- `src/smart-agent/smart-server.ts`: production OpenAI-compatible server.
-- `src/smart-agent/builder.ts`: interface-only dependency wiring (no provider knowledge).
-- `src/smart-agent/providers.ts`: composition root — concrete provider/embedder/RAG resolution.
-- `src/smart-agent/pipeline/default-pipeline.ts`: DefaultPipeline — built-in IPipeline implementation.
-- `src/smart-agent/context/context-assembler.ts`: final context construction.
-- `src/smart-agent/classifier/llm-classifier.ts`: subprompt decomposition.
-- `src/smart-agent/policy/*`: policy guard + injection detector.
-- `src/mcp/client.ts`: transport implementation and resilience behavior.
+| Module | Package | Role |
+|---|---|---|
+| `SmartAgent` | `@mcp-abap-adt/llm-agent-libs` | Orchestration loop and tool execution control |
+| `SmartServer` | `@mcp-abap-adt/llm-agent-server` | Production OpenAI-compatible HTTP server |
+| `SmartAgentBuilder` | `@mcp-abap-adt/llm-agent-libs` | Interface-only dependency wiring (no provider knowledge) |
+| `makeLlm` / `makeDefaultLlm` | `@mcp-abap-adt/llm-agent-libs` | Composition root — concrete LLM provider resolution (async) |
+| `makeRag` / `resolveEmbedder` | `@mcp-abap-adt/llm-agent-rag` | RAG/embedder resolution |
+| `DefaultPipeline` / `PipelineExecutor` | `@mcp-abap-adt/llm-agent-libs` | Built-in `IPipeline` implementation |
+| `ContextAssembler` | `@mcp-abap-adt/llm-agent-libs` | Final LLM context construction |
+| `LlmClassifier` | `@mcp-abap-adt/llm-agent-libs` | Subprompt decomposition |
+| `ToolPolicyGuard` / `HeuristicInjectionDetector` | `@mcp-abap-adt/llm-agent-libs` | Policy guard + injection detector |
+| `MCPClientWrapper` | `@mcp-abap-adt/llm-agent-mcp` | Transport implementation and resilience behavior |
 
 ## Repository Structure (High Level)
 
+The monorepo is organized as a collection of npm packages under `packages/`:
+
 ```text
-src/
-  agents/                  # legacy/provider-specific agent implementations
-  llm-providers/           # provider clients (OpenAI/Anthropic/DeepSeek/SAP Core)
-  mcp/                     # MCP transport client wrapper
-  smart-agent/             # primary orchestrated architecture
-    adapters/              # request/response adapter layer
-    api-adapters/          # ILlmApiAdapter implementations (OpenAI, Anthropic)
-    cache/                 # tool result caching
-    classifier/            # subprompt decomposition (LLM-based)
-    config/                # configuration parsing and validation
-    context/               # final LLM context assembly
-    health/                # health check endpoint
-    interfaces/            # all public interfaces (ILlm, IRag, IMcpClient, etc.)
-    history/               # session history memory and summarization
-    logger/                # structured logging (ConsoleLogger, SessionLogger)
-    metrics/               # Prometheus / metrics collection
-    otel/                  # OpenTelemetry integration
-    pipeline/              # structured YAML pipeline DSL
-      handlers/            # built-in stage handler implementations
-    plugins/               # plugin system (dynamic stage handler loading)
-    policy/                # policy guard + injection detector
-    rag/                   # RAG stores, embedders, query expansion
-    reranker/              # result re-scoring
-    resilience/            # circuit breaker and resilience decorators
-    session/               # session management
-    skills/                # ISkillManager implementations (Claude, Codex, FileSystem)
-    testing/               # test doubles (makeLlm, makeRag, makeMcpClient)
-    tracer/                # ITracer implementations
-    utils/                 # shared utilities
-    validator/             # IOutputValidator implementations
-    __tests__/             # integration tests
-    smart-server.ts
-    agent.ts
-    builder.ts             # interface-only factory
-    providers.ts           # composition root (concrete providers)
-    pipeline.ts            # pipeline config types
+packages/
+  llm-agent/               # @mcp-abap-adt/llm-agent
+    src/
+      interfaces/          # all I* interfaces (ILlm, IRag, IMcpClient, IPipeline, etc.)
+      types/               # shared types (Message, ToolCall, AgentResponse, errors, etc.)
+      rag/                 # RAG implementations (InMemoryRag, VectorRag, QdrantRag, etc.)
+      resilience/          # CircuitBreaker family, FallbackRag
+      strategies/          # LLM call strategies
+      cache/               # ToolCache, NoopToolCache
+      adapters/            # ClineClientAdapter, AnthropicApiAdapter, OpenAiApiAdapter
+      utils/               # external-tools normalization, tool-call-delta utilities
+
+  llm-agent-mcp/           # @mcp-abap-adt/llm-agent-mcp
+    src/
+      client.ts            # MCPClientWrapper — multi-transport (stdio/SSE/stream-http/embedded/auto)
+      adapter.ts           # McpClientAdapter
+      factory.ts           # createDefaultMcpClient()
+      strategies/          # LazyConnectionStrategy, PeriodicConnectionStrategy, NoopConnectionStrategy
+
+  llm-agent-rag/           # @mcp-abap-adt/llm-agent-rag
+    src/
+      make-rag.ts          # makeRag(cfg, options): Promise<IRag>
+      resolve-embedder.ts  # resolveEmbedder(cfg, options): IEmbedder (sync, needs prefetch)
+      prefetch.ts          # prefetchEmbedderFactories, prefetchRagFactories
+      factories/           # builtInEmbedderFactories registry, dynamic backend imports
+
+  llm-agent-libs/          # @mcp-abap-adt/llm-agent-libs
+    src/
+      builder.ts           # SmartAgentBuilder — interface-only factory
+      agent.ts             # SmartAgent — orchestration loop
+      adapters/            # LlmAdapter, LlmProviderBridge
+      pipeline/            # DefaultPipeline, PipelineExecutor, stage handlers
+      session/             # SessionManager, NoopSessionManager
+      history/             # HistoryMemory, HistorySummarizer
+      skills/              # ClaudeSkillManager, CodexSkillManager, FileSystemSkillManager
+      plugins/             # FileSystemPluginLoader, plugin merge utilities
+      metrics/             # InMemoryMetrics, NoopMetrics
+      tracer/              # NoopTracer, OTel adapter
+      reranker/            # LlmReranker, NoopReranker
+      validator/           # NoopValidator
+      health/              # HealthChecker
+      config/              # ConfigWatcher
+      make-llm.ts          # makeLlm, makeDefaultLlm (async)
+      testing/             # test doubles
+
+  llm-agent-server/        # @mcp-abap-adt/llm-agent-server — binary only
+    src/
+      smart-server.ts      # SmartServer — HTTP + SSE server
+      cli.ts               # llm-agent CLI entrypoint
+      check.ts             # llm-agent-check CLI
+      claude-via-agent.ts  # claude-via-agent convenience wrapper
+
+  # LLM provider packages (optional peers of llm-agent-libs)
+  openai-llm/              # @mcp-abap-adt/openai-llm
+  anthropic-llm/           # @mcp-abap-adt/anthropic-llm
+  deepseek-llm/            # @mcp-abap-adt/deepseek-llm
+  sap-aicore-llm/          # @mcp-abap-adt/sap-aicore-llm
+
+  # Embedder/RAG backend packages (optional peers of llm-agent-rag)
+  openai-embedder/         # @mcp-abap-adt/openai-embedder
+  ollama-embedder/         # @mcp-abap-adt/ollama-embedder
+  sap-aicore-embedder/     # @mcp-abap-adt/sap-aicore-embedder
+  qdrant-rag/              # @mcp-abap-adt/qdrant-rag
+  hana-vector-rag/         # @mcp-abap-adt/hana-vector-rag
+  pg-vector-rag/           # @mcp-abap-adt/pg-vector-rag
 ```
 
 ## Pipeline Architecture
@@ -657,7 +733,7 @@ classify → summarize
 A consumer can implement `IPipeline` to add stores and stages not present in `DefaultPipeline`:
 
 ```ts
-import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent-server';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
 
 class MyPipeline implements IPipeline {
   initialize(deps: PipelineDeps): void { /* wire deps */ }
@@ -680,7 +756,7 @@ builder
 Consumers can register custom stage handlers via the builder:
 
 ```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
@@ -709,28 +785,34 @@ When no pipeline is configured, `SmartAgent` uses `DefaultPipeline` automaticall
 
 ### Pipeline Files
 
+Pipeline types live in `@mcp-abap-adt/llm-agent`; implementation in `@mcp-abap-adt/llm-agent-libs`:
+
 ```text
-src/smart-agent/pipeline/
-  types.ts              # StageDefinition, BuiltInStageType, ControlFlowType
-  context.ts            # PipelineContext interface
-  stage-handler.ts      # IStageHandler interface
-  condition-evaluator.ts # Safe expression evaluator for when/until
-  executor.ts           # PipelineExecutor — tree walker
-  default-pipeline.ts   # DefaultPipeline — IPipeline implementation
-  handlers/
-    index.ts            # buildDefaultHandlerRegistry() + re-exports
-    classify.ts         # ClassifyHandler
-    summarize.ts        # SummarizeHandler
-    translate.ts        # TranslateHandler
-    expand.ts           # ExpandHandler
-    rag-query.ts        # RagQueryHandler
-    rerank.ts           # RerankHandler
-    tool-select.ts      # ToolSelectHandler
-    skill-select.ts     # SkillSelectHandler
-    assemble.ts         # AssembleHandler
-    tool-loop.ts        # ToolLoopHandler
-    history-upsert.ts   # HistoryUpsertHandler
-  index.ts              # Re-exports all pipeline types and classes
+packages/llm-agent/src/
+  pipeline/
+    types.ts              # StageDefinition, BuiltInStageType, ControlFlowType
+    context.ts            # PipelineContext interface
+    stage-handler.ts      # IStageHandler interface
+    condition-evaluator.ts # Safe expression evaluator for when/until
+
+packages/llm-agent-libs/src/
+  pipeline/
+    executor.ts           # PipelineExecutor — tree walker
+    default-pipeline.ts   # DefaultPipeline — IPipeline implementation
+    handlers/
+      index.ts            # buildDefaultHandlerRegistry() + re-exports
+      classify.ts         # ClassifyHandler
+      summarize.ts        # SummarizeHandler
+      translate.ts        # TranslateHandler
+      expand.ts           # ExpandHandler
+      rag-query.ts        # RagQueryHandler
+      rerank.ts           # RerankHandler
+      tool-select.ts      # ToolSelectHandler
+      skill-select.ts     # SkillSelectHandler
+      assemble.ts         # AssembleHandler
+      tool-loop.ts        # ToolLoopHandler
+      history-upsert.ts   # HistoryUpsertHandler
+    index.ts              # Re-exports all pipeline types and classes
 ```
 
 ---
@@ -815,11 +897,18 @@ SmartServer.start() / builder.build()
 
 ### Plugin files
 
+Plugin interfaces live in `@mcp-abap-adt/llm-agent`; implementation in `@mcp-abap-adt/llm-agent-libs`:
+
 ```text
-src/smart-agent/plugins/
-  types.ts       # IPluginLoader, PluginExports, LoadedPlugins, helpers
-  loader.ts      # FileSystemPluginLoader, getDefaultPluginDirs(), loadPlugins()
-  index.ts       # Re-exports
+packages/llm-agent/src/
+  plugins/
+    types.ts       # IPluginLoader, PluginExports, LoadedPlugins
+
+packages/llm-agent-libs/src/
+  plugins/
+    loader.ts      # FileSystemPluginLoader, getDefaultPluginDirs(), loadPlugins()
+    utils.ts       # emptyLoadedPlugins(), mergePluginExports()
+    index.ts       # Re-exports
 ```
 
 ## Current Technical Debt (Explicit)

@@ -1,8 +1,17 @@
 # @mcp-abap-adt/llm-agent-server
 
-Default SmartAgent implementation plus LLM providers, MCP client, HTTP server, and CLI. Depends on `@mcp-abap-adt/llm-agent` (core).
+Runnable distribution of SmartAgent (CLI + HTTP server). **Binary-only.**
 
-Install this package when you want the out-of-the-box agent without writing your own pipeline. Install only `@mcp-abap-adt/llm-agent` when you're writing a custom agent on our interfaces.
+## Library imports are not supported
+
+Importing from `@mcp-abap-adt/llm-agent-server` as a library is not supported as of 12.0.1. Composition surface lives elsewhere:
+
+- `@mcp-abap-adt/llm-agent-libs` — `SmartAgentBuilder`, `SessionManager`, `makeLlm`, `InMemoryMetrics`, etc.
+- `@mcp-abap-adt/llm-agent-mcp` — `MCPClientWrapper`, `McpClientAdapter`, connection strategies.
+- `@mcp-abap-adt/llm-agent-rag` — `makeRag`, `resolveEmbedder`, prefetch helpers.
+- `@mcp-abap-adt/llm-agent` — interfaces and DTOs (`IMetrics`, `IRag`, `Message`, etc.).
+
+(... existing binary documentation continues below ...)
 
 ## CLIs shipped
 
