@@ -10,6 +10,7 @@
   "exclude": ["**/__tests__/**", "**/*.test.ts", "dist"],
   "references": [
     { "path": "../llm-agent" },
+    { "path": "../llm-agent-mcp" },
     { "path": "../openai-llm" },
     { "path": "../anthropic-llm" },
     { "path": "../sap-aicore-llm" },

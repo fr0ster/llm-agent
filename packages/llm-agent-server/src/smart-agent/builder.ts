@@ -50,8 +50,7 @@ import {
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
-import { MCPClientWrapper } from '../mcp/client.js';
-import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
+import { MCPClientWrapper, McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 import {
   SmartAgent,
   type SmartAgentConfig,

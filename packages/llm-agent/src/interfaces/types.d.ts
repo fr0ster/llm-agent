@@ -1,0 +1,187 @@
+/**
+ * Shared types for Smart Orchestrated Agent contracts.
+ */
+import type { Message } from '../types.js';
+export type Result<T, E> = {
+    ok: true;
+    value: T;
+} | {
+    ok: false;
+    error: E;
+};
+export interface TraceContext {
+    traceId: string;
+    spanId?: string;
+    baggage?: Record<string, string>;
+}
+export interface CallOptions {
+    trace?: TraceContext;
+    sessionId?: string;
+    userId?: string;
+    signal?: AbortSignal;
+    temperature?: number;
+    maxTokens?: number;
+    topP?: number;
+    stop?: string[];
+    stream?: boolean;
+    /** Per-request model override. Affects only the main LLM. */
+    model?: string;
+    /** Filter RAG results by namespace or other metadata. */
+    ragFilter?: {
+        namespace?: string;
+        userId?: string;
+        sessionId?: string;
+        [key: string]: unknown;
+    };
+    /** Detailed session debugger logger. */
+    sessionLogger?: {
+        logStep(name: string, data: unknown): void;
+    };
+}
+export interface ToolHeartbeat {
+    /** Tool name currently being executed. */
+    tool: string;
+    /** Milliseconds elapsed since tool execution started. */
+    elapsed: number;
+}
+export interface TimingEntry {
+    /** Phase label, e.g. 'llm_call_1', 'tool_get_order'. */
+    phase: string;
+    /** Duration in milliseconds. */
+    duration: number;
+}
+export interface LlmStreamChunk {
+    content: string;
+    toolCalls?: StreamToolCall[];
+    finishReason?: LlmFinishReason;
+    usage?: LlmUsage & {
+        models?: Record<string, ModelUsageEntry>;
+        components?: Record<string, ModelUsageEntry>;
+        categories?: Record<string, ModelUsageEntry>;
+    };
+    /** Periodic heartbeat emitted while an MCP tool is executing. */
+    heartbeat?: ToolHeartbeat;
+    /** End-of-request timing breakdown for all phases. */
+    timing?: TimingEntry[];
+    /** When true, consumer must discard previously accumulated chunks — stream is being retried from scratch. */
+    reset?: boolean;
+}
+export declare class SmartAgentError extends Error {
+    readonly code: string;
+    constructor(message: string, code: string);
+}
+export declare class LlmError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export declare class McpError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export declare class RagError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export declare class ClassifierError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export declare class AssemblerError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export declare class SkillError extends SmartAgentError {
+    constructor(message: string, code?: string);
+}
+export type SubpromptType = 'action' | 'chat' | (string & {});
+export interface Subprompt {
+    type: SubpromptType;
+    text: string;
+    /** Semantic context: 'sap-abap', 'math', 'general', etc. */
+    context?: string;
+    /** ID of a subprompt this one depends on, or 'independent' / 'sequential'. */
+    dependency?: string | 'independent' | 'sequential';
+}
+export interface LlmTool {
+    name: string;
+    description: string;
+    /** JSON Schema describing the tool's input parameters. */
+    inputSchema: Record<string, unknown>;
+}
+export interface LlmToolCall {
+    id: string;
+    name: string;
+    arguments: Record<string, unknown>;
+}
+export interface LlmToolCallDelta {
+    index: number;
+    id?: string;
+    name?: string;
+    arguments?: string;
+}
+export type StreamToolCall = LlmToolCall | LlmToolCallDelta;
+export type LlmFinishReason = 'stop' | 'tool_calls' | 'length' | 'error';
+export interface LlmUsage {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+}
+export interface ModelUsageEntry {
+    promptTokens: number;
+    completionTokens: number;
+    totalTokens: number;
+    requests: number;
+}
+export interface LlmResponse {
+    content: string;
+    toolCalls?: LlmToolCall[];
+    finishReason: LlmFinishReason;
+    usage?: LlmUsage;
+    raw?: unknown;
+}
+export interface McpTool {
+    name: string;
+    description: string;
+    /** JSON Schema describing the tool's input parameters. */
+    inputSchema: Record<string, unknown>;
+}
+export interface McpToolResult {
+    content: string | Record<string, unknown>;
+    isError?: boolean;
+}
+export interface ToolCallRecord {
+    call: LlmToolCall;
+    result: McpToolResult;
+}
+export interface RagMetadata {
+    id?: string;
+    /** Unix timestamp (seconds) after which this record is considered expired. */
+    ttl?: number;
+    /** Logical namespace, e.g. "tenant/user/session". */
+    namespace?: string;
+    [key: string]: unknown;
+}
+export interface RagResult {
+    text: string;
+    metadata: RagMetadata;
+    /** Cosine similarity score in [0, 1]. */
+    score: number;
+}
+export interface ContextFrame {
+    action: Subprompt;
+    facts: RagResult[];
+    feedback: RagResult[];
+    state: RagResult[];
+    tools: McpTool[];
+    toolResults: ToolCallRecord[];
+    constraints: {
+        maxIterations: number;
+        tokenLimit?: number;
+        timeoutMs?: number;
+    };
+}
+export interface StreamHookContext {
+    messages: Message[];
+}
+export interface AgentConfig {
+    maxIterations: number;
+    timeoutMs?: number;
+    maxToolCalls?: number;
+    tokenLimit?: number;
+}
+//# sourceMappingURL=types.d.ts.map

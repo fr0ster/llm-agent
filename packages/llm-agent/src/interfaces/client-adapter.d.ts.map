@@ -1,0 +1,1 @@
+{"version":3,"file":"client-adapter.d.ts","sourceRoot":"","sources":["client-adapter.ts"],"names":[],"mappings":"AAAA;;;;;;;GAOG;AAEH,MAAM,WAAW,cAAc;IAC7B,wCAAwC;IACxC,QAAQ,CAAC,IAAI,EAAE,MAAM,CAAC;IAEtB;;;OAGG;IACH,MAAM,CAAC,YAAY,EAAE,MAAM,GAAG,OAAO,CAAC;IAEtC;;;OAGG;IACH,YAAY,CAAC,OAAO,EAAE,MAAM,GAAG,MAAM,CAAC;CACvC"}

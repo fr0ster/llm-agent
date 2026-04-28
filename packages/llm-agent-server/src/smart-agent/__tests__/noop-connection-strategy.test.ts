@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { NoopConnectionStrategy } from '../strategies/noop-connection-strategy.js';
+import { NoopConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { makeMcpClient } from '../testing/index.js';
 
 describe('NoopConnectionStrategy', () => {
