@@ -91,3 +91,9 @@ export {
   SkillError,
   SmartAgentError,
 } from './types.js';
+export type { ICounter, IHistogram, IMetrics } from './metrics.js';
+export type { IOutputValidator, ValidationResult } from './validator.js';
+export { ValidatorError } from './validator.js';
+export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
+export type { ISessionManager } from './session.js';
+export type { IReranker } from './reranker.js';

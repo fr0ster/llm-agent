@@ -1,14 +1,1 @@
-import type {
-  CallOptions,
-  RagError,
-  RagResult,
-  Result,
-} from '@mcp-abap-adt/llm-agent';
-
-export interface IReranker {
-  rerank(
-    query: string,
-    results: RagResult[],
-    options?: CallOptions,
-  ): Promise<Result<RagResult[], RagError>>;
-}
+export type { IReranker } from '@mcp-abap-adt/llm-agent';

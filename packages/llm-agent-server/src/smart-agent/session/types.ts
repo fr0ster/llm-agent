@@ -1,6 +1,1 @@
-export interface ISessionManager {
-  addTokens(count: number): void;
-  isOverBudget(): boolean;
-  reset(): void;
-  readonly totalTokens: number;
-}
+export type { ISessionManager } from '@mcp-abap-adt/llm-agent';
