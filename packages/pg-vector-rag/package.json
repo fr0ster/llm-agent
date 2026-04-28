@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/pg-vector-rag",
-  "version": "12.0.0",
+  "version": "12.0.2",
   "description": "PgVectorRag (PostgreSQL + pgvector) and PgVectorRagProvider for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",

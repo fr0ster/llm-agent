@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-server",
-  "version": "12.0.1",
+  "version": "12.0.2",
   "description": "Default SmartAgent implementation with LLM providers, MCP client, HTTP server, and CLI.",
   "type": "module",
   "bin": {
