@@ -1,6 +1,7 @@
 export type { IQueryExpander } from '../rag/query-expander.js';
 export {
   type AgentCallOptions,
+  type BaseAgentLlmBridge,
   OrchestratorError,
   type SmartAgentResponse,
   type StopReason,
@@ -112,6 +113,25 @@ export { ValidatorError } from './validator.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type { ISessionManager } from './session.js';
 export type { IReranker } from './reranker.js';
+export type {
+  ISmartAgent,
+  SmartAgentRagStores,
+} from './builder.js';
+export type {
+  BuiltInStageType,
+  ControlFlowType,
+  StageDefinition,
+  StageType,
+} from './pipeline.js';
+export type {
+  ConnectionStrategyOptions,
+  IMcpConnectionStrategy,
+  McpClientFactory,
+  McpClientFactoryResult,
+  McpConnectionConfig,
+  McpConnectionResult,
+} from './mcp-connection-strategy.js';
+export type { IModelResolver } from './model-resolver.js';
 export type {
   CircuitBreakerStatus,
   HealthComponentStatus,

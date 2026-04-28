@@ -30,6 +30,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  SmartAgentRagStores,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CircuitBreaker,
@@ -54,7 +55,6 @@ import { McpClientAdapter } from './adapters/mcp-client-adapter.js';
 import {
   SmartAgent,
   type SmartAgentConfig,
-  type SmartAgentRagStores,
 } from './agent.js';
 import {
   LlmClassifier,
