@@ -6,7 +6,7 @@ import { SmartAgentBuilder } from '../builder.js';
 import type {
   ILlmApiAdapter,
   NormalizedRequest,
-} from '../interfaces/api-adapter.js';
+} from '@mcp-abap-adt/llm-agent';
 
 function makeMockLlm(): ILlmApiAdapter['normalizeRequest'] extends never
   ? never

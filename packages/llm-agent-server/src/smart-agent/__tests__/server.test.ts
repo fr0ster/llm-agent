@@ -6,7 +6,7 @@ import {
   OrchestratorError,
   type SmartAgent,
   type SmartAgentResponse,
-} from '../agent.js';
+} from '@mcp-abap-adt/llm-agent-libs';
 import { SmartAgentServer } from '../server.js';
 
 // ---------------------------------------------------------------------------

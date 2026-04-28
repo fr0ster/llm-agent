@@ -2,9 +2,9 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
-import { SmartAgent } from '../agent.js';
+import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
 import { SmartAgentServer } from '../server.js';
-import { makeDefaultDeps } from '../testing/index.js';
+import { makeDefaultDeps } from '@mcp-abap-adt/llm-agent-libs/testing';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 

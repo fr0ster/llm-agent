@@ -13,7 +13,7 @@ import type {
   ApiSseEvent,
   ILlmApiAdapter,
   NormalizedRequest,
-} from '../interfaces/api-adapter.js';
+} from '@mcp-abap-adt/llm-agent';
 import { SmartServer } from '../smart-server.js';
 
 // ---------------------------------------------------------------------------

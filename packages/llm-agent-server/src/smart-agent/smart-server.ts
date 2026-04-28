@@ -26,30 +26,30 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import { PACKAGE_VERSION } from '../generated/version.js';
+import type { IModelResolver } from '@mcp-abap-adt/llm-agent';
+import {
+  type SmartAgentHandle,
+  type SmartAgentReconfigureOptions,
+  ClaudeSkillManager,
+  CodexSkillManager,
+  ConfigWatcher,
+  FileSystemPluginLoader,
+  FileSystemSkillManager,
+  HealthChecker,
+  type HotReloadableConfig,
+  makeDefaultLlm,
+  makeLlm,
+  SessionLogger,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type {
   SmartAgent,
-  SmartAgentReconfigureOptions,
   StopReason,
-} from './agent.js';
-import { SmartAgentBuilder, type SmartAgentHandle } from './builder.js';
-import {
-  ConfigWatcher,
-  type HotReloadableConfig,
-} from './config/config-watcher.js';
-import { HealthChecker } from './health/health-checker.js';
-import type { IModelResolver } from './interfaces/model-resolver.js';
-import { SessionLogger } from './logger/session-logger.js';
-import type { PipelineConfig } from './pipeline.js';
-import {
-  FileSystemPluginLoader,
-  getDefaultPluginDirs,
-} from './plugins/index.js';
-import type { IPluginLoader } from './plugins/types.js';
+} from '@mcp-abap-adt/llm-agent-libs';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
-import { makeDefaultLlm, makeLlm } from './providers.js';
-import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
-import { CodexSkillManager } from './skills/codex-skill-manager.js';
-import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';
+import { getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent-libs';
+import type { IPluginLoader } from '@mcp-abap-adt/llm-agent-libs';
+import type { PipelineConfig } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -316,8 +316,8 @@ export class SmartServer {
       pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7,
     );
     const mainLlm = pipeline?.llm?.main
-      ? makeLlm(pipeline.llm.main, mainTemp)
-      : makeDefaultLlm(
+      ? await makeLlm(pipeline.llm.main, mainTemp)
+      : await makeDefaultLlm(
           this.cfg.llm.apiKey,
           this.cfg.llm.model ?? 'deepseek-chat',
           mainTemp,
@@ -329,17 +329,17 @@ export class SmartServer {
         0.1,
     );
     const classifierLlm = pipeline?.llm?.classifier
-      ? makeLlm(pipeline.llm.classifier, classifierTemp)
+      ? await makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
-        ? makeLlm(pipeline.llm.main, classifierTemp)
-        : makeDefaultLlm(
+        ? await makeLlm(pipeline.llm.main, classifierTemp)
+        : await makeDefaultLlm(
             this.cfg.llm.apiKey,
             this.cfg.llm.model ?? 'deepseek-chat',
             classifierTemp,
           );
 
     const helperLlm = pipeline?.llm?.helper
-      ? makeLlm(
+      ? await makeLlm(
           pipeline.llm.helper,
           Number(pipeline.llm.helper.temperature ?? 0.1),
         )

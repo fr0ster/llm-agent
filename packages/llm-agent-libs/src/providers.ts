@@ -3,26 +3,23 @@
  *
  * This module is the ONLY place that knows about concrete LLM providers.
  * Embedder and RAG factories live in @mcp-abap-adt/llm-agent-rag.
+ *
+ * LLM provider packages are optional peers loaded via dynamic import().
+ * MissingProviderError is thrown when a required peer is not installed.
  */
 
-import { AnthropicProvider } from '@mcp-abap-adt/anthropic-llm';
-import { DeepSeekProvider } from '@mcp-abap-adt/deepseek-llm';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
-import { OpenAIProvider } from '@mcp-abap-adt/openai-llm';
-import {
-  type SapAICoreCredentials,
-  SapCoreAIProvider,
-} from '@mcp-abap-adt/sap-aicore-llm';
+import type { ILlm, IModelResolver } from '@mcp-abap-adt/llm-agent';
+import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 import { LlmAdapter } from './adapters/llm-adapter.js';
 import { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-import type { IModelResolver } from './interfaces/model-resolver.js';
 
 // ---------------------------------------------------------------------------
 // LLM provider resolution
 // ---------------------------------------------------------------------------
 
-export interface LlmProviderConfig {
+export interface MakeLlmConfig {
   provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
   apiKey?: string;
   /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
@@ -36,11 +33,98 @@ export interface LlmProviderConfig {
   streaming?: boolean;
 }
 
+// ---------------------------------------------------------------------------
+// Per-provider dynamic loaders
+// ---------------------------------------------------------------------------
+
+function isMissingOptionalPeer(err: unknown, pkg: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ERR_MODULE_NOT_FOUND') return true;
+  if (err.message.includes(pkg) && err.message.toLowerCase().includes('cannot find')) return true;
+  return false;
+}
+
+async function loadOpenAI() {
+  const pkg = '@mcp-abap-adt/openai-llm';
+  try {
+    const mod = await import(pkg);
+    return mod.OpenAIProvider as new (opts: {
+      apiKey?: string;
+      baseURL?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+  } catch (err) {
+    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'openai');
+    throw err;
+  }
+}
+
+async function loadDeepSeek() {
+  const pkg = '@mcp-abap-adt/deepseek-llm';
+  try {
+    const mod = await import(pkg);
+    return mod.DeepSeekProvider as new (opts: {
+      apiKey?: string;
+      baseURL?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+  } catch (err) {
+    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'deepseek');
+    throw err;
+  }
+}
+
+async function loadAnthropic() {
+  const pkg = '@mcp-abap-adt/anthropic-llm';
+  try {
+    const mod = await import(pkg);
+    return mod.AnthropicProvider as new (opts: {
+      apiKey?: string;
+      baseURL?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+  } catch (err) {
+    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'anthropic');
+    throw err;
+  }
+}
+
+async function loadSapAiCore() {
+  const pkg = '@mcp-abap-adt/sap-aicore-llm';
+  try {
+    const mod = await import(pkg);
+    return mod.SapCoreAIProvider as new (opts: {
+      apiKey?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+      resourceGroup?: string;
+      credentials?: SapAICoreCredentials;
+      log?: { debug: (msg: string, meta?: Record<string, unknown>) => void; error: (msg: string, meta?: Record<string, unknown>) => void };
+    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+  } catch (err) {
+    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'sap-ai-sdk');
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// makeLlm — async, dynamic-import based
+// ---------------------------------------------------------------------------
+
 /**
  * Create an ILlm from a declarative provider config.
  * This is the only function that knows about concrete LLM implementations.
+ * Provider packages are loaded via dynamic import (optional peers).
  */
-export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
+export async function makeLlm(cfg: MakeLlmConfig, temperature: number): Promise<ILlm> {
   // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
 
@@ -48,6 +132,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
 
   switch (cfg.provider) {
     case 'deepseek': {
+      const DeepSeekProvider = await loadDeepSeek();
       const provider = new DeepSeekProvider({
         apiKey: cfg.apiKey,
         baseURL: cfg.baseURL,
@@ -64,6 +149,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       break;
     }
     case 'openai': {
+      const OpenAIProvider = await loadOpenAI();
       const provider = new OpenAIProvider({
         apiKey: cfg.apiKey,
         baseURL: cfg.baseURL,
@@ -80,6 +166,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       break;
     }
     case 'anthropic': {
+      const AnthropicProvider = await loadAnthropic();
       const provider = new AnthropicProvider({
         apiKey: cfg.apiKey,
         baseURL: cfg.baseURL,
@@ -96,6 +183,7 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
       break;
     }
     case 'sap-ai-sdk': {
+      const SapCoreAIProvider = await loadSapAiCore();
       const provider = new SapCoreAIProvider({
         apiKey: cfg.apiKey,
         model: cfg.model,
@@ -140,11 +228,11 @@ export function makeLlm(cfg: LlmProviderConfig, temperature: number): ILlm {
  * Create a default DeepSeek-based ILlm from simple config (apiKey + model).
  * Used by the flat YAML / CLI path.
  */
-export function makeDefaultLlm(
+export async function makeDefaultLlm(
   apiKey: string,
   model: string,
   temperature: number,
-): ILlm {
+): Promise<ILlm> {
   return makeLlm({ provider: 'deepseek', apiKey, model }, temperature);
 }
 
@@ -154,7 +242,7 @@ export function makeDefaultLlm(
  */
 export class DefaultModelResolver implements IModelResolver {
   constructor(
-    private readonly providerConfig: Omit<LlmProviderConfig, 'model'>,
+    private readonly providerConfig: Omit<MakeLlmConfig, 'model'>,
     private readonly defaults: { temperature?: number } = {},
   ) {}
 
