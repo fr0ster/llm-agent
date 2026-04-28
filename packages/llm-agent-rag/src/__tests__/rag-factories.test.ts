@@ -3,9 +3,11 @@ import { describe, it } from 'node:test';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
 import {
   _resetPrefetchedRagForTests,
+  makeRag,
   prefetchRagFactories,
   resolveRag,
 } from '../rag-factories.js';
+import { _resetPrefetchedForTests } from '../embedder-factories.js';
 
 describe('rag-factories', () => {
   it('throws MissingProviderError for unknown backend name', async () => {
@@ -45,5 +47,25 @@ describe('rag-factories', () => {
       },
     });
     assert.equal(typeof rag.query, 'function');
+  });
+
+  it('makeRag qdrant auto-prefetches without prior prefetch (no MissingProviderError)', async () => {
+    _resetPrefetchedRagForTests();
+    _resetPrefetchedForTests();
+    // Verify it does NOT throw MissingProviderError — actual Qdrant connection
+    // failure is fine; the test only guards against missing-provider regression.
+    try {
+      await makeRag({
+        type: 'qdrant',
+        url: 'http://localhost:6333',
+        collectionName: 'test',
+        embedder: 'ollama',
+      });
+    } catch (err) {
+      assert.ok(
+        !(err instanceof MissingProviderError),
+        `Expected no MissingProviderError but got: ${err}`,
+      );
+    }
   });
 });
