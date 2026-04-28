@@ -1,6 +1,6 @@
 # @mcp-abap-adt/llm-agent-libs
 
-## 12.0.1
+## 12.0.2
 
 ### Patch Changes
 
