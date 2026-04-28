@@ -367,8 +367,12 @@ export async function makeRag(
   }
 
   if (cfg.type === 'openai') {
+    const embedderName = cfg.embedder ?? 'openai';
+    if (!options?.injectedEmbedder) {
+      await prefetchEmbedderFactories([embedderName]);
+    }
     const embedder = resolveEmbedder(
-      { ...cfg, embedder: cfg.embedder ?? 'openai' },
+      { ...cfg, embedder: embedderName },
       options,
     );
     return new VectorRag(embedder, {
@@ -398,8 +402,12 @@ export async function makeRag(
     });
   }
 
+  const embedderName = cfg.embedder ?? 'ollama';
+  if (!options?.injectedEmbedder) {
+    await prefetchEmbedderFactories([embedderName]);
+  }
   const embedder = resolveEmbedder(
-    { ...cfg, embedder: cfg.embedder ?? 'ollama' },
+    { ...cfg, embedder: embedderName },
     options,
   );
   return new VectorRag(embedder, {
