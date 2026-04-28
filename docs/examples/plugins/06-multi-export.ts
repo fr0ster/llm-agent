@@ -21,7 +21,8 @@
  *       - { id: timing-end, type: request-timer-end }
  */
 
-import type { ISpan, IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 import type { CallOptions, IQueryExpander, RagError, Result } from '@mcp-abap-adt/llm-agent';
 
 // ---------------------------------------------------------------------------

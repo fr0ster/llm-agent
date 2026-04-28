@@ -18,11 +18,8 @@
  *   or any directory specified via --plugin-dir / pluginDir
  */
 
-import type {
-  ISpan,
-  IStageHandler,
-  PipelineContext,
-} from '@mcp-abap-adt/llm-agent-server';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 class AuditLogHandler implements IStageHandler {
   async execute(

@@ -9,6 +9,12 @@ dist/
 src/generated/
 **/src/generated/
 
+# Plugin example compiled output (source-of-truth is the .ts files)
+docs/examples/**/*.js
+docs/examples/**/*.js.map
+docs/examples/**/*.d.ts
+docs/examples/**/*.d.ts.map
+
 # Environment variables
 .env
 .env.smoke
