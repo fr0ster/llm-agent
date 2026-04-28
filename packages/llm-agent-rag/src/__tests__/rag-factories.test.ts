@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
+import { _resetPrefetchedForTests } from '../embedder-factories.js';
 import {
   _resetPrefetchedRagForTests,
   makeRag,
   prefetchRagFactories,
   resolveRag,
 } from '../rag-factories.js';
-import { _resetPrefetchedForTests } from '../embedder-factories.js';
 
 describe('rag-factories', () => {
   it('throws MissingProviderError for unknown backend name', async () => {
