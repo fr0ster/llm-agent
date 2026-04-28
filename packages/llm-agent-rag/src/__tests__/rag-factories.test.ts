@@ -68,4 +68,34 @@ describe('rag-factories', () => {
       );
     }
   });
+
+  it('makeRag openai auto-prefetches embedder without prior prefetch (no MissingProviderError)', async () => {
+    _resetPrefetchedRagForTests();
+    _resetPrefetchedForTests();
+    // Verify it does NOT throw MissingProviderError — actual OpenAI network
+    // failure is fine; the test only guards against missing-provider regression.
+    try {
+      await makeRag({ type: 'openai', apiKey: 'test' });
+    } catch (err) {
+      assert.ok(
+        !(err instanceof MissingProviderError),
+        `Expected no MissingProviderError but got: ${err}`,
+      );
+    }
+  });
+
+  it('makeRag default path with explicit openai embedder auto-prefetches (no MissingProviderError)', async () => {
+    _resetPrefetchedRagForTests();
+    _resetPrefetchedForTests();
+    // Verify it does NOT throw MissingProviderError — actual OpenAI network
+    // failure is fine; the test only guards against missing-provider regression.
+    try {
+      await makeRag({ embedder: 'openai', apiKey: 'test' });
+    } catch (err) {
+      assert.ok(
+        !(err instanceof MissingProviderError),
+        `Expected no MissingProviderError but got: ${err}`,
+      );
+    }
+  });
 });
