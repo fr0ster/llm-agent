@@ -24,9 +24,9 @@
 
 ---
 
-## Task 1: Narrow changesets fixed group
+## Task 1: Narrow changesets fixed group for existing packages
 
-**Goal:** Restrict the changesets `fixed` group to the five SmartAgent family packages only. Provider/embedder/RAG leaves leave the group.
+**Goal:** Remove provider/embedder/RAG leaves from the changesets `fixed` group. At this point only two SmartAgent family packages exist in the workspace, so keep `llm-agent` and `llm-agent-server` here. The three new family packages are added to the fixed group after they are scaffolded in Task 4.
 
 **Files:**
 - Modify: `.changeset/config.json`
@@ -39,9 +39,6 @@ Replace the `fixed` array with:
 "fixed": [
   [
     "@mcp-abap-adt/llm-agent",
-    "@mcp-abap-adt/llm-agent-mcp",
-    "@mcp-abap-adt/llm-agent-rag",
-    "@mcp-abap-adt/llm-agent-libs",
     "@mcp-abap-adt/llm-agent-server"
   ]
 ]
@@ -313,11 +310,12 @@ git commit -m "chore(llm-agent-rag): scaffold empty package"
 
 ## Task 4: Scaffold `@mcp-abap-adt/llm-agent-libs`
 
-**Goal:** Create the empty `llm-agent-libs` package with subpath exports for `./testing` and `./otel`, optional LLM peers.
+**Goal:** Create the empty `llm-agent-libs` package with subpath exports for `./testing` and `./otel`, optional LLM peers. After all three new packages exist, expand the changesets fixed group to the final five-package SmartAgent family.
 
 **Files:**
 - Create: `packages/llm-agent-libs/{package.json,tsconfig.json,biome.json,src/index.ts,src/testing/index.ts,src/otel/index.ts,README.md}`
 - Modify: root `package.json` build/clean
+- Modify: `.changeset/config.json`
 
 - [ ] **Step 1: Create `packages/llm-agent-libs/package.json`**
 
@@ -351,6 +349,7 @@ git commit -m "chore(llm-agent-rag): scaffold empty package"
     "@mcp-abap-adt/llm-agent": "*",
     "@mcp-abap-adt/llm-agent-mcp": "*",
     "@mcp-abap-adt/llm-agent-rag": "*",
+    "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
@@ -379,7 +378,7 @@ git commit -m "chore(llm-agent-rag): scaffold empty package"
 }
 ```
 
-If the current `llm-agent-server/package.json` has additional runtime deps (e.g. OpenTelemetry API packages), copy them here. Verify with `cat packages/llm-agent-server/package.json` and reconcile.
+If the current `llm-agent-server/package.json` has additional runtime deps, copy them here. `@opentelemetry/api` is required as a runtime dependency because `llm-agent-libs` publishes the `./otel` subpath.
 
 - [ ] **Step 2: Create `packages/llm-agent-libs/tsconfig.json`**
 
@@ -443,19 +442,36 @@ See `docs/ARCHITECTURE.md` for the full SmartAgent package layout.
 
 Insert `packages/llm-agent-libs` AFTER `packages/llm-agent-rag` and BEFORE `packages/llm-agent-server` in both `build` and `clean` scripts.
 
-- [ ] **Step 5: Install + build**
+- [ ] **Step 5: Expand changesets fixed group to all five family packages**
+
+Now that `llm-agent-mcp`, `llm-agent-rag`, and `llm-agent-libs` exist in `packages/*`, replace the `fixed` array in `.changeset/config.json` with:
+
+```json
+"fixed": [
+  [
+    "@mcp-abap-adt/llm-agent",
+    "@mcp-abap-adt/llm-agent-mcp",
+    "@mcp-abap-adt/llm-agent-rag",
+    "@mcp-abap-adt/llm-agent-libs",
+    "@mcp-abap-adt/llm-agent-server"
+  ]
+]
+```
+
+- [ ] **Step 6: Install + build**
 
 ```bash
 npm install
 npx tsc -b
+npx changeset status
 ```
 
-Expected: full workspace build clean.
+Expected: full workspace build clean. `changeset status` exits 0 and prints "No changesets present" or current pending status (no parse errors).
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add packages/llm-agent-libs/ package.json package-lock.json
+git add packages/llm-agent-libs/ package.json package-lock.json .changeset/config.json
 git commit -m "chore(llm-agent-libs): scaffold empty package with testing+otel subpaths"
 ```
 
@@ -777,16 +793,27 @@ In `packages/llm-agent-rag/src/embedder-factories.ts` and `rag-factories.ts`:
 
 a) For each provider used (`openai-embedder`, `ollama-embedder`, `sap-aicore-embedder`, `qdrant-rag`, `hana-vector-rag`, `pg-vector-rag`, default `OllamaRag`):
 - Remove the static `import { ... } from '@mcp-abap-adt/<provider>'`.
-- Replace the in-function provider lookup with dynamic `import()` wrapped in `try/catch`. On `ERR_MODULE_NOT_FOUND` or similar, throw `new MissingProviderError(packageName, factoryName)`.
+- Replace the in-function provider lookup with dynamic `import()` wrapped in `try/catch`. Only missing optional peer resolution should become `new MissingProviderError(packageName, factoryName)`. If the optional package is installed but throws during module initialization, rethrow that original error.
 
 Pattern to follow (already used in current `rag-factories.ts:50` for non-default backends):
 ```ts
+function isMissingOptionalPeer(err: unknown, packageName: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return (
+    code === 'ERR_MODULE_NOT_FOUND' &&
+    (err.message.includes(packageName) || err.message.includes(`'${packageName}'`))
+  );
+}
+
 async function loadOllamaRag() {
+  const packageName = '@mcp-abap-adt/ollama-embedder';
   try {
-    const mod = await import('@mcp-abap-adt/ollama-embedder');
+    const mod = await import(packageName);
     return mod.OllamaRag;
   } catch (err) {
-    throw new MissingProviderError('@mcp-abap-adt/ollama-embedder', 'ollama');
+    if (!isMissingOptionalPeer(err, packageName)) throw err;
+    throw new MissingProviderError(packageName, 'ollama');
   }
 }
 ```
@@ -942,6 +969,11 @@ The server's `LlmAdapter` defined a local `AgentCallOptions`. The canonical one 
 In `packages/llm-agent-libs/src/adapters/llm-adapter.ts` (now moved):
 - Delete the local `AgentCallOptions` declaration.
 - Add `import type { AgentCallOptions } from '@mcp-abap-adt/llm-agent';`
+- Re-export the canonical type from this module if the `llm-agent-libs` top-level barrel re-exports it from `./adapters/llm-adapter.js`:
+  ```ts
+  export type { AgentCallOptions } from '@mcp-abap-adt/llm-agent';
+  ```
+  Alternatively, export it directly from `packages/llm-agent-libs/src/index.ts` with `export type { AgentCallOptions } from '@mcp-abap-adt/llm-agent';`. Do not point a barrel export at a type that is only imported locally.
 - If the deleted local type had additional properties beyond the canonical version, extend the canonical type in `packages/llm-agent/src/interfaces/agent-contracts.ts` to include them — DO NOT keep two divergent types.
 
 - [ ] **Step 3: Rename internal `LlmProviderConfig` to `MakeLlmConfig`**
@@ -961,6 +993,15 @@ a) Remove static imports of provider classes (`OpenAIProvider`, `AnthropicProvid
 
 b) Add per-provider async loaders:
 ```ts
+function isMissingOptionalPeer(err: unknown, packageName: string): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { code?: unknown }).code;
+  return (
+    code === 'ERR_MODULE_NOT_FOUND' &&
+    (err.message.includes(packageName) || err.message.includes(`'${packageName}'`))
+  );
+}
+
 async function loadProvider(kind: 'openai' | 'anthropic' | 'deepseek' | 'sap-ai-core') {
   const map = {
     'openai':      ['@mcp-abap-adt/openai-llm', 'OpenAIProvider'],
@@ -975,10 +1016,13 @@ async function loadProvider(kind: 'openai' | 'anthropic' | 'deepseek' | 'sap-ai-
     if (typeof Cls !== 'function') throw new Error(`${exportName} not a constructor`);
     return Cls;
   } catch (err) {
+    if (!isMissingOptionalPeer(err, pkg)) throw err;
     throw new MissingProviderError(pkg, kind);
   }
 }
 ```
+
+Do not convert arbitrary module initialization errors inside an installed provider package into `MissingProviderError`; only missing optional peer resolution should become `MissingProviderError`.
 
 c) Convert signatures:
 - `export async function makeLlm(cfg: MakeLlmConfig, temperature: number): Promise<ILlm>`
@@ -1014,28 +1058,20 @@ For each callsite that is not already inside an `await` expression, add `await` 
 
 - [ ] **Step 7: Move tests**
 
+Move implementation tests with the source code that owns the behaviour. Do not rely on a hardcoded filename list; the test tree changes over time.
+
+Rules:
+- Tests under moved directories (for example `classifier/__tests__`, `pipeline/__tests__`, `pipeline/handlers/__tests__`, `policy/__tests__`, `health/__tests__`, `history/__tests__`, `logger/__tests__`, `metrics/__tests__`, `plugins/__tests__`, `reranker/__tests__`, `resilience/__tests__`, `session/__tests__`, `tracer/__tests__`, `utils/__tests__`, `validator/__tests__`) move with those directories into `packages/llm-agent-libs/src/`.
+- Top-level SmartAgent implementation tests under `smart-agent/__tests__/` move to `packages/llm-agent-libs/src/__tests__/` unless they specifically exercise the binary HTTP/CLI harness.
+- Server retains only tests that target server-owned entry points (`cli.ts`, `server.ts`, `smart-server.ts`, `check-models-cli.ts`, legacy `src/agent.ts`) and cannot reasonably run against `llm-agent-libs`.
+
+Use this audit after Tasks 6 and 7 have moved their MCP/RAG tests:
+
 ```bash
-mkdir -p packages/llm-agent-libs/src/__tests__
-SRV_T=packages/llm-agent-server/src/smart-agent/__tests__
-LIBS_T=packages/llm-agent-libs/src/__tests__
-git mv $SRV_T/smart-agent-custom-rag.test.ts          $LIBS_T/
-git mv $SRV_T/request-logger.test.ts                  $LIBS_T/
-git mv $SRV_T/hana-pg-integration.test.ts             $LIBS_T/
-git mv $SRV_T/tool-reselection.test.ts                $LIBS_T/
-git mv $SRV_T/issue-92-repro.test.ts                  $LIBS_T/
-git mv $SRV_T/external-tool-propagation.test.ts       $LIBS_T/
-git mv $SRV_T/smart-agent-close-session.test.ts       $LIBS_T/
-git mv $SRV_T/streaming.test.ts                       $LIBS_T/
-git mv $SRV_T/handle-hotswap.test.ts                  $LIBS_T/
-git mv $SRV_T/regression.test.ts                      $LIBS_T/
-git mv $SRV_T/config-endpoints.test.ts                $LIBS_T/
-git mv $SRV_T/smart-server-api-adapters.test.ts       $LIBS_T/
+find packages/llm-agent-server/src/smart-agent -path '*/__tests__/*' -name '*.test.ts' | sort
 ```
 
-Server should retain only test files relevant to CLI / HTTP server / legacy `Agent`:
-- `server.test.ts`
-
-Verify: `ls packages/llm-agent-server/src/smart-agent/__tests__/` should show `server.test.ts` (and possibly nothing else). Anything else not listed above — categorise and move.
+For every remaining test, decide its owning package before moving. At the end of Task 8, `packages/llm-agent-server/src/smart-agent/__tests__/` should contain only server-owned tests (normally `server.test.ts`, plus any explicitly justified CLI/HTTP harness tests).
 
 For each moved test, rewrite relative cross-dir imports following the same pattern as Task 6/7. Run:
 ```bash
@@ -1058,6 +1094,8 @@ Mirror the runtime composition surface from current `llm-agent-server/src/index.
 Concrete content (verify against the actual files for any naming surprises):
 
 ```ts
+export type { AgentCallOptions } from '@mcp-abap-adt/llm-agent';
+
 // Builder + agent
 export {
   SmartAgentBuilder,
@@ -1073,7 +1111,6 @@ export type {
 
 // Adapters
 export {
-  type AgentCallOptions, // canonical from @mcp-abap-adt/llm-agent — re-export for ergonomics
   type BaseAgentLlmBridge,
   LlmAdapter,
   type LlmAdapterProviderInfo,
@@ -1488,7 +1525,7 @@ If `CLAUDE.md` lists the package layout, refresh it to match `docs/ARCHITECTURE.
 
 ```bash
 git add -A
-git commit -m "docs: document the four-package SmartAgent layout and migration paths"
+git commit -m "docs: document the five-package SmartAgent layout and migration paths"
 ```
 
 ---
@@ -1518,10 +1555,7 @@ npx changeset status
 ```
 Expected: lists the five family packages with `patch` bump.
 
-```bash
-npx changeset version --snapshot
-```
-Wait — DO NOT run `version --snapshot` yet, as that mutates files. Instead, mentally verify by reading the generated `.md` file: it should list all five packages.
+Read the generated `.md` file and verify it lists all five packages. Do not run `changeset version` or `changeset version --snapshot` in this task because both mutate package files.
 
 - [ ] **Step 3: Commit**
 
@@ -1611,8 +1645,6 @@ Closes #125.
 - [x] `npm run dev:llm` starts without resolution errors
 - [x] `npm run dev` starts without resolution errors (MCP connection failure if no server is fine)
 - [x] `cloud-llm-hub` can be migrated by changing import paths and adding `await` at one direct `makeLlm` callsite
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 EOF
 )"
 ```
