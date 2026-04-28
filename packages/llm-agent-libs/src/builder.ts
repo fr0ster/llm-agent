@@ -30,6 +30,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  SmartAgentHandle as SmartAgentHandleBase,
   SmartAgentRagStores,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -129,31 +130,15 @@ export interface SmartAgentBuilderConfig {
 // Handle returned by build()
 // ---------------------------------------------------------------------------
 
-export interface SmartAgentHandle {
-  /** The built and wired SmartAgent, ready to call .process(). */
-  agent: SmartAgent;
-  /**
-   * Direct LLM chat — bypasses SmartAgent pipeline.
-   * Used by SmartServer passthrough mode to forward the full message history.
-   */
-  chat: ILlm['chat'];
-  /** Direct LLM streaming chat. */
-  streamChat: ILlm['streamChat'];
-  /** Request logger for per-model usage tracking. */
-  requestLogger: IRequestLogger;
-  /** Gracefully close MCP connections. Call on shutdown. */
-  close(): Promise<void>;
-  /** Circuit breakers (empty when not configured). */
-  circuitBreakers: CircuitBreaker[];
-  /** RAG stores (for config hot-reload weight updates). */
-  ragStores: SmartAgentRagStores;
-  /** Model provider for discovery. Undefined when not available. */
-  modelProvider?: IModelProvider;
-  /** Look up a registered API adapter by name. */
-  getApiAdapter(name: string): ILlmApiAdapter | undefined;
-  /** List all registered API adapter names. */
-  listApiAdapters(): string[];
-}
+/**
+ * SmartAgentHandle specialized for the concrete SmartAgent class.
+ *
+ * This re-exports the generic SmartAgentHandle from @mcp-abap-adt/llm-agent
+ * with SmartAgent as the type parameter, preserving full concrete typing
+ * (including internal methods like `applyConfigUpdate`, `reconfigure`,
+ * `getActiveConfig`) for callers in llm-agent-libs and llm-agent-server.
+ */
+export type SmartAgentHandle = SmartAgentHandleBase<SmartAgent>;
 
 // ---------------------------------------------------------------------------
 // SmartAgentBuilder
