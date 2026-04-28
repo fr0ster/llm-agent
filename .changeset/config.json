@@ -5,6 +5,9 @@
   "fixed": [
     [
       "@mcp-abap-adt/llm-agent",
+      "@mcp-abap-adt/llm-agent-mcp",
+      "@mcp-abap-adt/llm-agent-rag",
+      "@mcp-abap-adt/llm-agent-libs",
       "@mcp-abap-adt/llm-agent-server"
     ]
   ],
