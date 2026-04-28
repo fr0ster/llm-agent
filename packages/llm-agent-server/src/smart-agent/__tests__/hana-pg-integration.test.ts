@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { MissingProviderError } from '@mcp-abap-adt/llm-agent';
-import { makeRag } from '../providers.js';
 import {
   _resetPrefetchedRagForTests,
+  makeRag,
   prefetchRagFactories,
   resolveRag,
-} from '../rag-factories.js';
+} from '@mcp-abap-adt/llm-agent-rag';
 
 /**
  * HanaVectorRag and PgVectorRag eagerly create a `clientPromise` in their
@@ -56,7 +56,7 @@ describe('hana-vector / pg-vector server integration', () => {
         return { vector: [0, 0, 0] };
       },
     };
-    const rag = makeRag(
+    const rag = await makeRag(
       {
         type: 'hana-vector',
         host: 'h',
@@ -79,7 +79,7 @@ describe('hana-vector / pg-vector server integration', () => {
         return { vector: [0, 0, 0] };
       },
     };
-    const rag = makeRag(
+    const rag = await makeRag(
       {
         type: 'pg-vector',
         host: 'h',

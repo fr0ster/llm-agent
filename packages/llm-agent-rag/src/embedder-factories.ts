@@ -42,8 +42,11 @@ export async function prefetchEmbedderFactories(
   }
 }
 
-/** Sync resolve. Caller MUST have awaited prefetchEmbedderFactories(names) first. */
-export function resolveEmbedder(
+/**
+ * Sync resolve from prefetched cache.
+ * Caller MUST have awaited prefetchEmbedderFactories(names) first.
+ */
+export function resolvePrefetchedEmbedder(
   name: string,
   opts: EmbedderFactoryOpts,
 ): IEmbedder {
@@ -64,10 +67,10 @@ export const builtInEmbedderFactories: Record<
   string,
   (opts: EmbedderFactoryOpts) => IEmbedder
 > = {
-  openai: (opts) => resolveEmbedder('openai', opts),
-  ollama: (opts) => resolveEmbedder('ollama', opts),
-  'sap-ai-core': (opts) => resolveEmbedder('sap-ai-core', opts),
-  'sap-aicore': (opts) => resolveEmbedder('sap-aicore', opts),
+  openai: (opts) => resolvePrefetchedEmbedder('openai', opts),
+  ollama: (opts) => resolvePrefetchedEmbedder('ollama', opts),
+  'sap-ai-core': (opts) => resolvePrefetchedEmbedder('sap-ai-core', opts),
+  'sap-aicore': (opts) => resolvePrefetchedEmbedder('sap-aicore', opts),
 };
 
 /** Test-only: reset the prefetched map (for unit tests). */

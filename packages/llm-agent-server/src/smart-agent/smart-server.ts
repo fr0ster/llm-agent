@@ -45,7 +45,8 @@ import {
   getDefaultPluginDirs,
 } from './plugins/index.js';
 import type { IPluginLoader } from './plugins/types.js';
-import { makeDefaultLlm, makeLlm, makeRag } from './providers.js';
+import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import { makeDefaultLlm, makeLlm } from './providers.js';
 import { ClaudeSkillManager } from './skills/claude-skill-manager.js';
 import { CodexSkillManager } from './skills/codex-skill-manager.js';
 import { FileSystemSkillManager } from './skills/filesystem-skill-manager.js';
@@ -401,8 +402,8 @@ export class SmartServer {
         injectedEmbedder: this.cfg.embedder,
         extraFactories: mergedEmbedderFactories,
       };
-      builder = builder.setToolsRag(makeRag(this.cfg.rag, ragOptions));
-      builder = builder.setHistoryRag(makeRag({ ...this.cfg.rag }, ragOptions));
+      builder = builder.setToolsRag(await makeRag(this.cfg.rag, ragOptions));
+      builder = builder.setHistoryRag(await makeRag({ ...this.cfg.rag }, ragOptions));
     }
 
     // Wire pipeline.rag.{name} stores into the builder so multi-store YAML
@@ -415,7 +416,7 @@ export class SmartServer {
         extraFactories: mergedEmbedderFactories,
       };
       for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
-        const rag = makeRag(storeCfg, ragOptions);
+        const rag = await makeRag(storeCfg, ragOptions);
         if (name === 'tools') {
           builder = builder.setToolsRag(rag);
         } else if (name === 'history') {

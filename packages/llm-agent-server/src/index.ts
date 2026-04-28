@@ -54,12 +54,12 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './smart-agent/config/config-watcher.js';
-// Embedder factory registry
+// Embedder factory registry — re-exported from @mcp-abap-adt/llm-agent-rag
 export {
   builtInEmbedderFactories,
   type EmbedderFactoryOpts,
   prefetchEmbedderFactories,
-} from './smart-agent/embedder-factories.js';
+} from '@mcp-abap-adt/llm-agent-rag';
 export {
   HealthChecker,
   type HealthCheckerDeps,
@@ -134,16 +134,19 @@ export {
 } from './smart-agent/plugins/index.js';
 export {
   DefaultModelResolver,
-  type EmbedderResolutionConfig,
-  type EmbedderResolutionOptions,
   type LlmProviderConfig,
   makeDefaultLlm,
   makeLlm,
+} from './smart-agent/providers.js';
+// RAG/embedder resolution — re-exported from @mcp-abap-adt/llm-agent-rag
+export {
+  type EmbedderResolutionConfig,
+  type EmbedderResolutionOptions,
   makeRag,
   type RagResolutionConfig,
   type RagResolutionOptions,
   resolveEmbedder,
-} from './smart-agent/providers.js';
+} from '@mcp-abap-adt/llm-agent-rag';
 // Reranker
 export { LlmReranker } from './smart-agent/reranker/llm-reranker.js';
 export { NoopReranker } from './smart-agent/reranker/noop-reranker.js';
