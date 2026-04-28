@@ -18,48 +18,37 @@ There is no unit test framework. `npm run test` is just `build + start` (smoke t
 
 ## Architecture
 
-This is a **thin LLM proxy / orchestration layer** published as an npm package. Its job is to normalize access to LLM providers and surface MCP tool catalogs — it does **not** execute tools itself; the consumer is responsible for executing tools returned in the raw response.
-
-### Data flow
+This monorepo publishes five npm packages forming the SmartAgent runtime:
 
 ```
-Consumer → agent.process(message)
-         → LLM Provider (formats tools list from MCP, sends chat request)
-         ← LLM response (may contain tool_call requests)
-         ← AgentResponse { message, raw?, error? }
-Consumer parses raw for tool calls → calls mcpClient.callTool() directly
+@mcp-abap-adt/llm-agent          contracts: interfaces, public types, lightweight helpers
+@mcp-abap-adt/llm-agent-mcp      MCP client wrapper + adapter + connection strategies
+@mcp-abap-adt/llm-agent-rag      RAG/embedder composition (makeRag, resolveEmbedder, factories)
+@mcp-abap-adt/llm-agent-libs     core composition: builder, agent, pipeline, sessions, ...
+@mcp-abap-adt/llm-agent-server   binary only (CLI + HTTP server, no library exports)
 ```
+
+Dependency order: `llm-agent-server → llm-agent-libs → {llm-agent-mcp, llm-agent-rag} → llm-agent`.
+
+LLM provider packages (`@mcp-abap-adt/openai-llm`, etc.) are optional peers of `llm-agent-libs`.
+Embedder/RAG backend packages (`@mcp-abap-adt/qdrant-rag`, etc.) are optional peers of `llm-agent-rag`.
+
+### Key API notes
+
+- `makeLlm` / `makeDefaultLlm` (in `llm-agent-libs`) → **async** `Promise<ILlm>`
+- `makeRag` (in `llm-agent-rag`) → **async** `Promise<IRag>`
+- `resolveEmbedder` (in `llm-agent-rag`) → sync (call `prefetchEmbedderFactories` once at startup)
+- `SmartAgentBuilder.build()` → async (unchanged externally)
 
 ### Key layers
 
-| Layer | Files | Role |
-|-------|-------|------|
-| **Agents** | `src/agents/` | Template Method pattern; `BaseAgent` handles MCP connection, history, tool loading; subclasses handle provider-specific tool formatting |
-| **LLM Providers** | `src/llm-providers/` | Thin HTTP wrappers per provider; each implements `LLMProvider` interface from `base.ts` |
-| **Smart Agent** | `src/smart-agent/` | Orchestrated pipeline: classification, RAG, MCP, tool loop |
-| **Builder** | `src/smart-agent/builder.ts` | Interface-only factory — assembles SmartAgent from `ILlm`, `IRag`, `IMcpClient`, etc. No provider knowledge |
-| **Providers** | `src/smart-agent/providers.ts` | Composition root — resolves config to concrete implementations (DeepSeek, OpenAI, Ollama, etc.) |
-| **Skills** | `src/smart-agent/skills/` | `ISkillManager` interface; Claude, Codex, FileSystem managers; SKILL.md discovery + content injection |
-| **Pipeline** | `src/smart-agent/pipeline.ts` | Pipeline config types only (no logic) |
-| **MCP Client** | `src/mcp/client.ts` | `MCPClientWrapper` — multi-transport abstraction (stdio / SSE / stream-http / embedded / auto) |
-| **Types** | `src/types.ts` | Shared types: `Message`, `ToolCall`, `AgentResponse`, `LLMResponse`, `LLMProviderConfig` |
-| **Public API** | `src/index.ts` | All exports for npm consumers |
-| **CLI** | `src/smart-agent/cli.ts` | Dev test launcher; reads `.env`; not part of public API |
-
-### Agent hierarchy
-
-```
-BaseAgent (abstract)
-├── OpenAIAgent            — native function calling (tools param)
-│   └── DeepSeekAgent      — OpenAI-compatible (extends OpenAIAgent)
-├── AnthropicAgent         — native tools API (content blocks)
-├── SapCoreAIAgent     — SAP AI SDK native function calling (@sap-ai-sdk/orchestration)
-└── PromptBasedAgent   — tools described in system prompt
-```
-
-LLM providers follow the same hierarchy: `DeepSeekProvider extends OpenAIProvider`.
-
-`PromptBasedAgent` is the fallback for providers that don't support native function calling.
+| Layer | Package | Role |
+|-------|---------|------|
+| **Interfaces & types** | `@mcp-abap-adt/llm-agent` | All `I*` interfaces, shared types, lightweight helpers (CircuitBreaker, FallbackRag, LLM call strategies, ToolCache, adapters, normalizers) |
+| **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
+| **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
+| **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, `makeLlm` |
+| **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + `SmartServer` HTTP server |
 
 ### MCP transports
 

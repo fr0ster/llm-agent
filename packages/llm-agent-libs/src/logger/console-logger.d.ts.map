@@ -1,0 +1,1 @@
+{"version":3,"file":"console-logger.d.ts","sourceRoot":"","sources":["console-logger.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,QAAQ,EAAE,MAAM,yBAAyB,CAAC;AAEjE,qBAAa,aAAc,YAAW,OAAO;IAC3C,OAAO,CAAC,QAAQ,CAAC,OAAO,CAAU;gBAEtB,OAAO,CAAC,EAAE,OAAO;IAI7B,GAAG,CAAC,KAAK,EAAE,QAAQ,GAAG,IAAI;CAM3B"}

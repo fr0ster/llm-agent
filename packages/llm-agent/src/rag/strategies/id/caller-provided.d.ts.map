@@ -1,0 +1,1 @@
+{"version":3,"file":"caller-provided.d.ts","sourceRoot":"","sources":["caller-provided.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,4BAA4B,CAAC;AAC9D,OAAO,KAAK,EAAE,WAAW,EAAE,MAAM,8BAA8B,CAAC;AAGhE,qBAAa,wBAAyB,YAAW,WAAW;IAC1D,OAAO,CAAC,QAAQ,EAAE,WAAW,EAAE,KAAK,EAAE,MAAM,GAAG,MAAM;CAMtD"}

@@ -109,7 +109,7 @@ the pipeline. Use this to attach domain knowledge bases, user-specific indexes, 
 stores on demand:
 
 ```typescript
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
 const agent = await new SmartAgentBuilder()
   .withMainLlm(myLlm)
@@ -133,7 +133,7 @@ Use `QdrantRagProvider` so the LLM can create session-scoped collections on dema
 results, correct errors, and let the consumer clean up on disconnect:
 
 ```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import { QdrantRagProvider, buildRagCollectionToolEntries } from '@mcp-abap-adt/llm-agent';
 
 // 1. Build agent with a Qdrant provider
@@ -163,24 +163,20 @@ myMcpServer.registerTools(entries);
 await agent.closeSession(sessionId);
 ```
 
-### Programmatic embedding (`SmartServer`)
+### Programmatic embedding (`SmartAgentBuilder`)
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const server = new SmartServer({
-  port: 4004,
-  mode: 'smart',
-  llm: {
+const handle = await new SmartAgentBuilder()
+  .withMainLlm({
+    provider: 'deepseek',
     apiKey: process.env.DEEPSEEK_API_KEY!,
     model: 'deepseek-chat',
     temperature: 0.7,
-  },
-  rag: { type: 'in-memory' },
-});
-
-const handle = await server.start();
-console.log(`Listening on ${handle.port}`);
+  })
+  .withRag({ type: 'in-memory' })
+  .build();
 
 process.on('SIGTERM', async () => {
   await handle.close();
@@ -190,24 +186,23 @@ process.on('SIGTERM', async () => {
 ### Custom embedder injection
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const server = new SmartServer({
-  llm: { apiKey: process.env.DEEPSEEK_API_KEY! },
-  rag: { type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' },
-  mode: 'smart',
-  // Register custom embedder factory — referenced in rag.embedder
-  embedderFactories: {
+const handle = await new SmartAgentBuilder()
+  .withMainLlm({ provider: 'deepseek', apiKey: process.env.DEEPSEEK_API_KEY! })
+  .withRag({ type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' })
+  .withEmbedderFactories({
     'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
-  },
-});
+  })
+  .build();
 ```
 
 ### Structured pipeline with custom stage handler
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
-import type { IStageHandler, PipelineContext, ISpan } from '@mcp-abap-adt/llm-agent-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
+import type { ISpan } from '@mcp-abap-adt/llm-agent';
 
 class AuditLogHandler implements IStageHandler {
   async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
@@ -217,10 +212,10 @@ class AuditLogHandler implements IStageHandler {
   }
 }
 
-const server = new SmartServer({
-  configPath: 'smart-server.yaml',
-  stageHandlers: { 'audit-log': new AuditLogHandler() },
-});
+const handle = await new SmartAgentBuilder()
+  .withConfigPath('smart-server.yaml')
+  .withStageHandlers({ 'audit-log': new AuditLogHandler() })
+  .build();
 ```
 
 Then reference in YAML (see [`04-structured-default.yaml`](examples/04-structured-default.yaml) and add):
@@ -244,7 +239,7 @@ import {
   SmartAgentBuilder,
   ClaudeSkillManager,
   FileSystemSkillManager,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-libs';
 
 // Option 1: Claude-convention directories (~/.claude/skills/ + <project>/.claude/skills/)
 const builder = new SmartAgentBuilder()
@@ -379,8 +374,8 @@ Look for these log entries:
 ### Custom pipeline implementation
 
 ```ts
-import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent-server';
-import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent-server';
+import type { IPipeline, PipelineDeps, PipelineResult, CallOptions, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+import { SmartAgentBuilder, DefaultPipeline } from '@mcp-abap-adt/llm-agent-libs';
 
 // Extend the default pipeline by wrapping it
 class AuditedPipeline implements IPipeline {
@@ -419,7 +414,7 @@ agent:
 ## Test doubles for consumer integration tests
 
 ```ts
-import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent-server/testing';
+import { makeLlm, makeMcpClient, makeRag } from '@mcp-abap-adt/llm-agent-libs/testing';
 
 const llm = makeLlm([{ content: 'ok' }]);
 const rag = makeRag();

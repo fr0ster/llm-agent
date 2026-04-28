@@ -3,17 +3,15 @@ import assert from 'node:assert/strict';
 import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type {
+  ApiRequestContext,
+  ApiSseEvent,
+  ILlmApiAdapter,
   LlmStreamChunk,
+  NormalizedRequest,
   OrchestratorError,
   Result,
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
-import type {
-  ApiRequestContext,
-  ApiSseEvent,
-  ILlmApiAdapter,
-  NormalizedRequest,
-} from '../interfaces/api-adapter.js';
 import { SmartServer } from '../smart-server.js';
 
 // ---------------------------------------------------------------------------
