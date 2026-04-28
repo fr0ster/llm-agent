@@ -1,0 +1,1 @@
+{"version":3,"file":"tool-policy-guard.d.ts","sourceRoot":"","sources":["tool-policy-guard.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,WAAW,EAAE,aAAa,EAAE,gBAAgB,EAAE,MAAM,YAAY,CAAC;AAE/E,qBAAa,eAAgB,YAAW,WAAW;IACjD,OAAO,CAAC,QAAQ,CAAC,QAAQ,CAA6B;IACtD,OAAO,CAAC,QAAQ,CAAC,OAAO,CAA6B;gBAEzC,MAAM,CAAC,EAAE,gBAAgB;IAarC,KAAK,CAAC,QAAQ,EAAE,MAAM,GAAG,aAAa;CAqBvC"}

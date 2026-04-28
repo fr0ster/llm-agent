@@ -27,7 +27,7 @@ export {
   type MCPClientConfig,
   MCPClientWrapper,
   type TransportType,
-} from './mcp/client.js';
+} from '@mcp-abap-adt/llm-agent-mcp';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -35,7 +35,7 @@ export {
   type LlmAdapterProviderInfo,
 } from './smart-agent/adapters/llm-adapter.js';
 export { LlmProviderBridge } from './smart-agent/adapters/llm-provider-bridge.js';
-export { McpClientAdapter } from './smart-agent/adapters/mcp-client-adapter.js';
+export { McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 // Builder & Providers
 export type {
   SmartAgentRagStores,
@@ -89,7 +89,7 @@ export type {
 } from './smart-agent/interfaces/pipeline.js';
 export { DefaultRequestLogger } from './smart-agent/logger/default-request-logger.js';
 export { NoopRequestLogger } from './smart-agent/logger/noop-request-logger.js';
-export { createDefaultMcpClient } from './smart-agent/mcp-client-factory.js';
+export { createDefaultMcpClient } from '@mcp-abap-adt/llm-agent-mcp';
 export {
   type CounterSnapshot,
   type HistogramSnapshot,
@@ -171,7 +171,7 @@ export {
   LazyConnectionStrategy,
   NoopConnectionStrategy,
   PeriodicConnectionStrategy,
-} from './smart-agent/strategies/index.js';
+} from '@mcp-abap-adt/llm-agent-mcp';
 // Tracer
 export { NoopTracer } from './smart-agent/tracer/noop-tracer.js';
 export type {

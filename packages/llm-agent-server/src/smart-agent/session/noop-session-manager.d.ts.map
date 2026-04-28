@@ -1,0 +1,1 @@
+{"version":3,"file":"noop-session-manager.d.ts","sourceRoot":"","sources":["noop-session-manager.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,YAAY,CAAC;AAElD,qBAAa,kBAAmB,YAAW,eAAe;IACxD,IAAI,WAAW,IAAI,MAAM,CAExB;IACD,SAAS,IAAI,IAAI;IACjB,YAAY,IAAI,OAAO;IAGvB,KAAK,IAAI,IAAI;CACd"}

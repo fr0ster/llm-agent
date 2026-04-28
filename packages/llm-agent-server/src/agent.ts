@@ -9,7 +9,7 @@ import type {
   LLMProvider,
   Message,
 } from '@mcp-abap-adt/llm-agent';
-import { type MCPClientConfig, MCPClientWrapper } from './mcp/client.js';
+import { type MCPClientConfig, MCPClientWrapper } from '@mcp-abap-adt/llm-agent-mcp';
 
 export interface AgentConfig {
   llmProvider: LLMProvider;

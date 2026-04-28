@@ -44,7 +44,7 @@
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'",
-    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts src/smart-agent/adapters/__tests__/mcp-client-adapter.test.ts",
+    "test:adapters": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/adapters/__tests__/llm-adapter.test.ts",
     "test:server": "node --import tsx/esm --test --test-reporter=spec src/smart-agent/__tests__/server.test.ts",
     "smoke:adapters": "tsx src/smoke-adapters.ts",
     "start": "node dist/smart-agent/cli.js",
@@ -55,6 +55,7 @@
   },
   "dependencies": {
     "@mcp-abap-adt/llm-agent": "*",
+    "@mcp-abap-adt/llm-agent-mcp": "*",
     "@modelcontextprotocol/sdk": "^1.28.0",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",

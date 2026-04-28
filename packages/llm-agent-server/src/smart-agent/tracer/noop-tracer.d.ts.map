@@ -1,0 +1,1 @@
+{"version":3,"file":"noop-tracer.d.ts","sourceRoot":"","sources":["noop-tracer.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,KAAK,EAAE,OAAO,EAAE,WAAW,EAAc,MAAM,YAAY,CAAC;AAqB1E,qBAAa,UAAW,YAAW,OAAO;IACxC,SAAS,CAAC,IAAI,EAAE,MAAM,EAAE,QAAQ,CAAC,EAAE,WAAW,GAAG,KAAK;CAGvD"}
