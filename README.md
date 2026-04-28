@@ -8,8 +8,11 @@ A high-performance, RAG-orchestrated LLM agent and OpenAI-compatible server with
 
 | Package | What it is |
 |---|---|
-| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, and lightweight RAG utilities. Zero provider dependencies. |
-| [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | `SmartAgent`, pipeline, MCP client, HTTP server, and CLIs. Depends on `@mcp-abap-adt/llm-agent`; provider packages are optional peers. |
+| [`@mcp-abap-adt/llm-agent`](packages/llm-agent/README.md) | Core interfaces, types, `MissingProviderError`, lightweight helpers (`CircuitBreaker`, `FallbackRag`, LLM call strategies, `ToolCache`, adapters, normalizers). Zero provider dependencies. |
+| [`@mcp-abap-adt/llm-agent-mcp`](packages/llm-agent-mcp/README.md) | `MCPClientWrapper`, `McpClientAdapter`, `createDefaultMcpClient`, and MCP connection strategies. |
+| [`@mcp-abap-adt/llm-agent-rag`](packages/llm-agent-rag/README.md) | RAG/embedder composition — `makeRag` (async), `resolveEmbedder` (sync), prefetch helpers, backend factories. |
+| [`@mcp-abap-adt/llm-agent-libs`](packages/llm-agent-libs/README.md) | Core composition runtime: `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, resilience, observability, plugins, skills, `makeLlm`/`makeDefaultLlm`. |
+| [`@mcp-abap-adt/llm-agent-server`](packages/llm-agent-server/README.md) | **Binary only** — CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP `SmartServer`. Not importable as a library. |
 | [`@mcp-abap-adt/openai-llm`](packages/openai-llm/README.md) | OpenAI LLM provider (`OpenAIProvider`). |
 | [`@mcp-abap-adt/anthropic-llm`](packages/anthropic-llm/README.md) | Anthropic LLM provider (`AnthropicProvider`). |
 | [`@mcp-abap-adt/deepseek-llm`](packages/deepseek-llm/README.md) | DeepSeek LLM provider (`DeepSeekProvider`, extends OpenAI-compatible). |
@@ -46,9 +49,17 @@ npm install @mcp-abap-adt/llm-agent-server \
 
 A missing peer throws `MissingProviderError` at startup with an install hint.
 
-### (b) Programmatic server composition
+### (b) Programmatic composition (no YAML)
 
-Same install as (a), but construct `SmartAgent` via `SmartAgentBuilder` in code rather than via `smart-server.yaml`. Import provider classes from their packages and pass instances to the builder's fluent setters.
+Install `llm-agent-libs` + the peers you need. Construct `SmartAgent` via `SmartAgentBuilder` in code. Import provider classes from their packages and pass instances to the builder's fluent setters.
+
+```bash
+npm install @mcp-abap-adt/llm-agent-libs \
+            @mcp-abap-adt/llm-agent-mcp \
+            @mcp-abap-adt/llm-agent-rag \
+            @mcp-abap-adt/deepseek-llm \
+            @mcp-abap-adt/ollama-embedder
+```
 
 ### (c) Core-only (no SmartAgent, no server)
 

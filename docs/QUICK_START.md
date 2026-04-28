@@ -19,7 +19,7 @@ Or run from source:
 ```bash
 git clone <repo> && cd llm-agent
 npm install && npm run build
-npx llm-agent          # uses ./dist/smart-agent/cli.js
+npx llm-agent          # uses packages/llm-agent-server/dist/smart-agent/cli.js
 ```
 
 ---

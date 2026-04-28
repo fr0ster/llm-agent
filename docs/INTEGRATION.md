@@ -41,7 +41,7 @@ IMcpClient            ──►  Executes tool calls
 
 ## ILlm
 
-**File:** `src/smart-agent/interfaces/llm.ts`
+**File:** `packages/llm-agent/src/interfaces/llm.ts`
 
 The core LLM interface for chat and streaming chat:
 
@@ -138,7 +138,7 @@ Always check `result.ok` before accessing `result.value`. Error types extend `Sm
 
 ## IModelProvider
 
-**File:** `src/smart-agent/interfaces/model-provider.ts`
+**File:** `packages/llm-agent/src/interfaces/model-provider.ts`
 
 Model discovery and per-request model selection:
 
@@ -229,7 +229,7 @@ Via `SmartServer`: the `model` field in `POST /v1/chat/completions` request body
 
 ## IModelResolver
 
-**File:** `src/smart-agent/interfaces/model-resolver.ts`
+**File:** `packages/llm-agent/src/interfaces/model-resolver.ts`
 
 Resolves a model name into an `ILlm` instance at runtime. Used by `SmartServer` to handle `PUT /v1/config` model changes:
 
@@ -289,7 +289,7 @@ Model fields require `modelResolver` on `SmartServerConfig`. Agent fields are va
 
 ## IRag
 
-**File:** `src/smart-agent/interfaces/rag.ts`
+**File:** `packages/llm-agent/src/interfaces/rag.ts`
 
 Read-only RAG store interface. Writing is handled by a separate writer object returned from the optional `writer()` method:
 
@@ -464,7 +464,7 @@ agent.removeRagStore('tenant-42');
 
 ## IRagProvider
 
-**File:** `src/smart-agent/interfaces/rag.ts`
+**File:** `packages/llm-agent/src/interfaces/rag.ts`
 
 `IRagProvider` lets the LLM create and delete RAG collections at runtime through MCP tools, rather than registering all stores statically at startup. Providers are registered with the builder and exposed through `IRagProviderRegistry`.
 
@@ -621,7 +621,7 @@ Call this from your session lifecycle hook (user logout, WebSocket disconnect). 
 
 ## IMcpClient
 
-**File:** `src/smart-agent/interfaces/mcp-client.ts`
+**File:** `packages/llm-agent/src/interfaces/mcp-client.ts`
 
 Wraps tool discovery and execution:
 
@@ -692,7 +692,7 @@ class RestApiToolClient implements IMcpClient {
 
 ## IReranker
 
-**File:** `src/smart-agent/reranker/types.ts`
+**File:** `packages/llm-agent/src/interfaces/reranker.ts`
 
 Re-scores RAG results after initial retrieval:
 
@@ -744,7 +744,7 @@ The library ships `LlmReranker` (uses the helper LLM for relevance scoring) and 
 
 ## IOutputValidator
 
-**File:** `src/smart-agent/validator/types.ts`
+**File:** `packages/llm-agent/src/interfaces/validator.ts`
 
 Validates LLM output after generation:
 
@@ -825,7 +825,7 @@ class ContentModerationValidator implements IOutputValidator {
 
 ## IQueryExpander
 
-**File:** `src/smart-agent/rag/query-expander.ts`
+**File:** `packages/llm-agent/src/rag/query-expander.ts`
 
 Expands user queries with synonyms before RAG retrieval:
 
@@ -867,7 +867,7 @@ The library ships `LlmQueryExpander` (LLM-generated expansion) and `NoopQueryExp
 
 ## ISearchStrategy
 
-**File:** `src/smart-agent/rag/search-strategy.ts`
+**File:** `packages/llm-agent/src/rag/search-strategy.ts`
 
 Pluggable scoring algorithm for RAG search. The strategy receives a query (text + vector), candidates, and a search context (inverted index + tokenizer). It returns scored and sorted results.
 
@@ -929,7 +929,7 @@ class BoostRecentStrategy implements ISearchStrategy {
 
 ## IQueryPreprocessor
 
-**File:** `src/smart-agent/rag/preprocessor.ts`
+**File:** `packages/llm-agent/src/rag/preprocessor.ts`
 
 Transforms query text before embedding and search. Configured per RAG store — each store can have its own preprocessing chain. This replaces pipeline-level translation and expansion.
 
@@ -989,7 +989,7 @@ class SapAbbreviationExpander implements IQueryPreprocessor {
 
 ## IDocumentEnricher
 
-**File:** `src/smart-agent/rag/preprocessor.ts`
+**File:** `packages/llm-agent/src/rag/preprocessor.ts`
 
 Enriches document text before embedding and storage. Applied during `upsert()`. Useful for adding translations, synonyms, or intent keywords to indexed content.
 
@@ -1021,7 +1021,7 @@ const rag = new VectorRag(embedder, {
 
 ## IToolIndexingStrategy
 
-**File:** `src/smart-agent/rag/tool-indexing-strategy.ts`
+**File:** `packages/llm-agent/src/rag/tool-indexing-strategy.ts`
 
 Generates text variants for tool descriptions at indexing time. The builder indexes tools into the RAG store — strategies control what text gets embedded. Multiple strategies can be combined for dual/multi indexing.
 
@@ -1071,7 +1071,7 @@ for (const tool of tools) {
 
 ## ISubpromptClassifier
 
-**File:** `src/smart-agent/interfaces/classifier.ts`
+**File:** `packages/llm-agent/src/interfaces/classifier.ts`
 
 Decomposes user messages into typed subprompts:
 
@@ -1112,7 +1112,7 @@ class RuleBasedClassifier implements ISubpromptClassifier {
 
 ## IContextAssembler
 
-**File:** `src/smart-agent/interfaces/assembler.ts`
+**File:** `packages/llm-agent/src/interfaces/assembler.ts`
 
 Packs retrieved context into LLM-ready messages:
 
@@ -1169,7 +1169,7 @@ class CompactAssembler implements IContextAssembler {
 
 ## ISkillManager
 
-**File:** `src/smart-agent/interfaces/skill.ts`
+**File:** `packages/llm-agent/src/interfaces/skill.ts`
 
 Discovers and provides access to agent skills (SKILL.md files):
 
@@ -1280,7 +1280,7 @@ export const skillManager = new FileSystemSkillManager(['/opt/shared-skills']);
 
 ## ILlmApiAdapter
 
-**File:** `src/smart-agent/interfaces/api-adapter.ts`
+**File:** `packages/llm-agent/src/interfaces/api-adapter.ts`
 
 A stateless singleton that translates between an inbound API protocol and the internal SmartAgent format. One adapter instance handles all requests for its protocol.
 
@@ -1477,7 +1477,7 @@ const handle = await new SmartAgentBuilder({})
 
 By default the agent starts with an empty tool catalog if the MCP server is unavailable at startup. `IMcpConnectionStrategy` solves this by letting the agent re-resolve its MCP clients on every request.
 
-**Interface** (`src/smart-agent/interfaces/mcp-connection-strategy.ts`):
+**Interface** (`packages/llm-agent/src/interfaces/mcp-connection-strategy.ts`):
 
 ```ts
 interface IMcpConnectionStrategy {
@@ -1693,7 +1693,7 @@ The rate limiter wraps outermost in the decorator chain: `RateLimiterLlm → Ret
 
 ### IMetrics
 
-**File:** `src/smart-agent/metrics/types.ts`
+**File:** `packages/llm-agent/src/interfaces/metrics.ts`
 
 ```ts
 interface IMetrics {
@@ -1713,7 +1713,7 @@ Implementations: `InMemoryMetrics` (for testing/diagnostics), `NoopMetrics` (zer
 
 ### ITracer
 
-**File:** `src/smart-agent/tracer/types.ts`
+**File:** `packages/llm-agent/src/interfaces/tracer.ts`
 
 ```ts
 interface ITracer {
@@ -1725,7 +1725,7 @@ Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt
 
 ### ISessionManager
 
-**File:** `src/smart-agent/session/types.ts`
+**File:** `packages/llm-agent/src/interfaces/session.ts`
 
 ```ts
 interface ISessionManager {
@@ -1740,7 +1740,7 @@ Implementations: `SessionManager` (with token budget), `NoopSessionManager` (no 
 
 ### IToolCache
 
-**File:** `src/smart-agent/cache/types.ts`
+**File:** `packages/llm-agent/src/cache/tool-cache.ts`
 
 ```ts
 interface IToolCache {

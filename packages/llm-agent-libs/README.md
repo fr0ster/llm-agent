@@ -23,14 +23,14 @@ Install only the providers you use. Missing providers throw `MissingProviderErro
 ## Migration from 12.0.0
 
 ```ts
-// Before
+// Before (12.0.0 — symbols were in llm-agent-server, which is now binary-only)
 import {
   SmartAgentBuilder,
   SessionManager,
   makeLlm,
-} from '@mcp-abap-adt/llm-agent-server';
+} from '@mcp-abap-adt/llm-agent-server'; // ← no longer valid
 
-// After
+// After (12.0.1+)
 import {
   SmartAgentBuilder,
   SessionManager,
