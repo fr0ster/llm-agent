@@ -149,32 +149,40 @@ Packages:
 For library embedding, YAML is not required. YAML is only a CLI/runtime convenience for `llm-agent`.
 
 Primary embeddable surfaces:
-- `@mcp-abap-adt/llm-agent-server` -> `SmartServer` (binary runtime)
+- `@mcp-abap-adt/llm-agent-libs` -> `SmartAgentBuilder` (programmatic composition)
 - `@mcp-abap-adt/llm-agent-libs/testing` -> deterministic test doubles for consumer integration tests
 - `@mcp-abap-adt/llm-agent-libs/otel` -> OpenTelemetry tracer adapter
+- `@mcp-abap-adt/llm-agent-server` -> binary CLI (`llm-agent`, `llm-agent-check`) + HTTP server (not a library)
 
 Minimal programmatic integration:
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const server = new SmartServer({
-  llm: {
+const handle = await new SmartAgentBuilder()
+  .withMainLlm({
+    provider: 'deepseek',
     apiKey: process.env.DEEPSEEK_API_KEY!,
     model: 'deepseek-chat',
-  },
-  mode: 'smart',
-});
+  })
+  .build();
 
-const handle = await server.start();
-// handle.port, handle.requestLogger.getSummary(), handle.close()
+// handle.agent.process(messages, options)
+// handle.close()
 ```
 
-`SmartServer` public contract:
-- input: `SmartServerConfig`
-- output: `Promise<SmartServerHandle>`
-- lifecycle: `start()` -> `{ port, requestLogger, close }`
-- protocol: OpenAI-compatible `/v1/chat/completions` (JSON + SSE)
+`SmartAgentBuilder` public contract:
+- input: fluent builder methods (`.withMainLlm()`, `.withRag()`, `.withMcp()`, `.withClassifier()`, etc.)
+- output: `Promise<SmartAgentHandle>` via `.build()`
+- lifecycle: `handle.agent.process(...)` -> `SmartAgentResponse`; `handle.close()` releases resources
+
+To run the HTTP server (OpenAI-compatible `/v1/chat/completions`), use the CLI binary instead:
+
+```bash
+npx llm-agent --config smart-server.yaml
+# or
+npm run dev:llm
+```
 
 ## Request Processing Flow
 

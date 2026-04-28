@@ -1075,7 +1075,7 @@ Subprompt types: `action`, `fact`, `chat`, `state`, `feedback`.
 ### Example: Rule-based classifier for simple use cases
 
 ```ts
-import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import type { ISubpromptClassifier } from '@mcp-abap-adt/llm-agent';
 import type { Subprompt, ClassifierError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1119,7 +1119,7 @@ interface IContextAssembler {
 ### Example: Custom context window packing strategy
 
 ```ts
-import type { IContextAssembler } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import type { IContextAssembler } from '@mcp-abap-adt/llm-agent';
 import type { Message, Subprompt, RagResult, McpTool, AssemblerError, Result, CallOptions }
   from '@mcp-abap-adt/llm-agent';
 
@@ -1709,7 +1709,7 @@ interface ITracer {
 }
 ```
 
-Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent-server/otel`).
+Implementations: `NoopTracer` (default), `OtelTracerAdapter` (via `@mcp-abap-adt/llm-agent-libs/otel`).
 
 ### ISessionManager
 
@@ -1862,22 +1862,20 @@ console.log(result.content);
 await handle.close();
 ```
 
-### Custom embedder injection via SmartServer
+### Custom embedder injection via SmartAgentBuilder
 
 For YAML-driven configs, inject a custom `IEmbedder` or register embedder factories:
 
 ```ts
-import { SmartServer } from '@mcp-abap-adt/llm-agent-server/smart-server';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const server = new SmartServer({
-  llm: { apiKey: process.env.API_KEY! },
-  rag: { type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' },
-  mode: 'smart',
-  // Register custom embedder factory — referenced by name in YAML config
-  embedderFactories: {
+const handle = await new SmartAgentBuilder()
+  .withMainLlm({ provider: 'openai', apiKey: process.env.API_KEY! })
+  .withRag({ type: 'qdrant', url: 'http://qdrant:6333', embedder: 'sap-ai-sdk' })
+  .withEmbedderFactories({
     'sap-ai-sdk': (cfg) => new SapAiCoreEmbedder({ model: cfg.model }),
-  },
-});
+  })
+  .build();
 ```
 
 ## Structured Pipeline (YAML DSL)
@@ -2277,7 +2275,7 @@ See [`docs/examples/plugins/`](examples/plugins/) for 6 complete plugin examples
 
 ## Test Doubles
 
-The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent-server/testing`:
+The library exports comprehensive test double factories via `@mcp-abap-adt/llm-agent-libs/testing`:
 
 ```ts
 import {
@@ -2295,7 +2293,7 @@ import {
   makeOutputValidator,
   makeSessionManager,
   makeDefaultDeps,
-} from '@mcp-abap-adt/llm-agent-server/testing';
+} from '@mcp-abap-adt/llm-agent-libs/testing';
 ```
 
 ### Example: Testing a custom validator
@@ -2303,7 +2301,7 @@ import {
 ```ts
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent-server/testing';
+import { makeLlm, makeDefaultDeps } from '@mcp-abap-adt/llm-agent-libs/testing';
 
 describe('JsonSchemaValidator', () => {
   it('rejects invalid JSON', async () => {

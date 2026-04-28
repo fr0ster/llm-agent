@@ -292,7 +292,7 @@ npm install @opentelemetry/api
 ```
 
 ```ts
-import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent-server/otel';
+import { OtelTracerAdapter } from '@mcp-abap-adt/llm-agent-libs/otel';
 
 const tracer = new OtelTracerAdapter();
 // Wire into SmartAgentBuilder via .withTracer(tracer)
