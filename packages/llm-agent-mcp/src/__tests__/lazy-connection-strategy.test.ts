@@ -3,15 +3,13 @@ import { describe, it } from 'node:test';
 import type {
   CallOptions,
   IMcpClient,
+  McpClientFactory,
+  McpClientFactoryResult,
+  McpConnectionConfig,
   McpError,
   McpTool,
   McpToolResult,
   Result,
-} from '@mcp-abap-adt/llm-agent';
-import type {
-  McpClientFactory,
-  McpClientFactoryResult,
-  McpConnectionConfig,
 } from '@mcp-abap-adt/llm-agent';
 import { LazyConnectionStrategy } from '../strategies/lazy-connection-strategy.js';
 

@@ -34,40 +34,39 @@
  *          Returns `true` for `undefined` or empty expressions (no condition = always run).
  */
 export function evaluateCondition(expr, ctx) {
-    if (!expr || expr.trim() === '')
-        return true;
-    return evaluateExpression(expr.trim(), ctx);
+  if (!expr || expr.trim() === '') return true;
+  return evaluateExpression(expr.trim(), ctx);
 }
 // ---------------------------------------------------------------------------
 // Expression evaluator
 // ---------------------------------------------------------------------------
 function evaluateExpression(expr, ctx) {
-    // Handle logical OR (lowest precedence)
-    if (expr.includes('||')) {
-        return expr
-            .split('||')
-            .some((part) => evaluateExpression(part.trim(), ctx));
-    }
-    // Handle logical AND
-    if (expr.includes('&&')) {
-        return expr
-            .split('&&')
-            .every((part) => evaluateExpression(part.trim(), ctx));
-    }
-    // Handle negation
-    if (expr.startsWith('!')) {
-        return !evaluateExpression(expr.slice(1).trim(), ctx);
-    }
-    // Handle comparison operators
-    const compMatch = expr.match(/^(.+?)\s*(>=|<=|!=|==|>|<)\s*(.+)$/);
-    if (compMatch) {
-        const left = resolveValue(compMatch[1].trim(), ctx);
-        const op = compMatch[2];
-        const right = resolveValue(compMatch[3].trim(), ctx);
-        return compare(left, op, right);
-    }
-    // Simple truthy check on a dot-path
-    return Boolean(resolveValue(expr, ctx));
+  // Handle logical OR (lowest precedence)
+  if (expr.includes('||')) {
+    return expr
+      .split('||')
+      .some((part) => evaluateExpression(part.trim(), ctx));
+  }
+  // Handle logical AND
+  if (expr.includes('&&')) {
+    return expr
+      .split('&&')
+      .every((part) => evaluateExpression(part.trim(), ctx));
+  }
+  // Handle negation
+  if (expr.startsWith('!')) {
+    return !evaluateExpression(expr.slice(1).trim(), ctx);
+  }
+  // Handle comparison operators
+  const compMatch = expr.match(/^(.+?)\s*(>=|<=|!=|==|>|<)\s*(.+)$/);
+  if (compMatch) {
+    const left = resolveValue(compMatch[1].trim(), ctx);
+    const op = compMatch[2];
+    const right = resolveValue(compMatch[3].trim(), ctx);
+    return compare(left, op, right);
+  }
+  // Simple truthy check on a dot-path
+  return Boolean(resolveValue(expr, ctx));
 }
 // ---------------------------------------------------------------------------
 // Value resolution
@@ -82,20 +81,16 @@ function evaluateExpression(expr, ctx) {
  * - Boolean literal: `"true"`, `"false"`
  */
 function resolveValue(token, ctx) {
-    // Boolean literals
-    if (token === 'true')
-        return true;
-    if (token === 'false')
-        return false;
-    // Numeric literals
-    if (/^-?\d+(\.\d+)?$/.test(token))
-        return Number(token);
-    // String literals (single or double quoted)
-    const strMatch = token.match(/^['"](.*)['"]$/);
-    if (strMatch)
-        return strMatch[1];
-    // Dot-path lookup on context
-    return resolvePath(token, ctx);
+  // Boolean literals
+  if (token === 'true') return true;
+  if (token === 'false') return false;
+  // Numeric literals
+  if (/^-?\d+(\.\d+)?$/.test(token)) return Number(token);
+  // String literals (single or double quoted)
+  const strMatch = token.match(/^['"](.*)['"]$/);
+  if (strMatch) return strMatch[1];
+  // Dot-path lookup on context
+  return resolvePath(token, ctx);
 }
 /**
  * Resolve a dot-separated path against the pipeline context.
@@ -106,38 +101,36 @@ function resolveValue(token, ctx) {
  *           `"ragResults.facts.length"` → `ctx.ragResults.facts.length`
  */
 function resolvePath(path, ctx) {
-    const parts = path.split('.');
-    let current = ctx;
-    for (const part of parts) {
-        if (current === null || current === undefined)
-            return undefined;
-        if (typeof current !== 'object')
-            return undefined;
-        current = current[part];
-    }
-    return current;
+  const parts = path.split('.');
+  let current = ctx;
+  for (const part of parts) {
+    if (current === null || current === undefined) return undefined;
+    if (typeof current !== 'object') return undefined;
+    current = current[part];
+  }
+  return current;
 }
 // ---------------------------------------------------------------------------
 // Comparison
 // ---------------------------------------------------------------------------
 function compare(left, op, right) {
-    const l = typeof left === 'string' ? left : Number(left);
-    const r = typeof right === 'string' ? right : Number(right);
-    switch (op) {
-        case '==':
-            return l === r;
-        case '!=':
-            return l !== r;
-        case '>':
-            return l > r;
-        case '<':
-            return l < r;
-        case '>=':
-            return l >= r;
-        case '<=':
-            return l <= r;
-        default:
-            return false;
-    }
+  const l = typeof left === 'string' ? left : Number(left);
+  const r = typeof right === 'string' ? right : Number(right);
+  switch (op) {
+    case '==':
+      return l === r;
+    case '!=':
+      return l !== r;
+    case '>':
+      return l > r;
+    case '<':
+      return l < r;
+    case '>=':
+      return l >= r;
+    case '<=':
+      return l <= r;
+    default:
+      return false;
+  }
 }
 //# sourceMappingURL=condition-evaluator.js.map

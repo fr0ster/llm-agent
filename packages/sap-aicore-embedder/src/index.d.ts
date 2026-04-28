@@ -1,3 +1,7 @@
-export type { FoundationModelsCredentials, SapAiCoreEmbedderConfig, SapAiCoreEmbedderScenario, } from './sap-ai-core-embedder.js';
+export type {
+  FoundationModelsCredentials,
+  SapAiCoreEmbedderConfig,
+  SapAiCoreEmbedderScenario,
+} from './sap-ai-core-embedder.js';
 export { SapAiCoreEmbedder } from './sap-ai-core-embedder.js';
 //# sourceMappingURL=index.d.ts.map

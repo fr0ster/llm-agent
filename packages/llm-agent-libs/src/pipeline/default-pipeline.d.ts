@@ -23,9 +23,19 @@
  * Additional custom stores can be passed via `ragStores` and are queried in parallel
  * with built-ins. Stores can be added/removed at runtime via `rebuildStages()`.
  */
-import type { CallOptions, LlmStreamChunk, LlmTool, Message, Result } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  LlmStreamChunk,
+  LlmTool,
+  Message,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
 import type { OrchestratorError } from '../agent.js';
-import type { IPipeline, PipelineDeps, PipelineResult } from '../interfaces/pipeline.js';
+import type {
+  IPipeline,
+  PipelineDeps,
+  PipelineResult,
+} from '../interfaces/pipeline.js';
 /**
  * Standard IPipeline implementation that orchestrates the default SmartAgent
  * request lifecycle via PipelineExecutor and built-in stage handlers.
@@ -38,32 +48,38 @@ import type { IPipeline, PipelineDeps, PipelineResult } from '../interfaces/pipe
  * ```
  */
 export declare class DefaultPipeline implements IPipeline {
-    private deps;
-    private executor;
-    private stages;
-    private resolvedTracer;
-    private resolvedClassifier;
-    private resolvedAssembler;
-    private resolvedReranker;
-    private resolvedQueryExpander;
-    private resolvedToolCache;
-    private resolvedOutputValidator;
-    private resolvedSessionManager;
-    private resolvedMetrics;
-    private resolvedRequestLogger;
-    private resolvedLlmCallStrategy;
-    initialize(deps: PipelineDeps): void;
-    execute(input: string | Message[], history: Message[], options: CallOptions | undefined, yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void, externalTools?: LlmTool[]): Promise<PipelineResult>;
-    rebuildStages(): void;
-    /**
-     * Build the fixed stage list. RAG parallel block only includes stores
-     * that were provided in deps.
-     */
-    private _buildStages;
-    /**
-     * Create a PipelineContext from deps + per-request input.
-     * Mirrors the pattern in SmartAgent._runStructuredPipeline().
-     */
-    private _buildContext;
+  private deps;
+  private executor;
+  private stages;
+  private resolvedTracer;
+  private resolvedClassifier;
+  private resolvedAssembler;
+  private resolvedReranker;
+  private resolvedQueryExpander;
+  private resolvedToolCache;
+  private resolvedOutputValidator;
+  private resolvedSessionManager;
+  private resolvedMetrics;
+  private resolvedRequestLogger;
+  private resolvedLlmCallStrategy;
+  initialize(deps: PipelineDeps): void;
+  execute(
+    input: string | Message[],
+    history: Message[],
+    options: CallOptions | undefined,
+    yieldChunk: (chunk: Result<LlmStreamChunk, OrchestratorError>) => void,
+    externalTools?: LlmTool[],
+  ): Promise<PipelineResult>;
+  rebuildStages(): void;
+  /**
+   * Build the fixed stage list. RAG parallel block only includes stores
+   * that were provided in deps.
+   */
+  private _buildStages;
+  /**
+   * Create a PipelineContext from deps + per-request input.
+   * Mirrors the pattern in SmartAgent._runStructuredPipeline().
+   */
+  private _buildContext;
 }
 //# sourceMappingURL=default-pipeline.d.ts.map

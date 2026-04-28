@@ -30,25 +30,29 @@ import type { PipelineContext } from './context.js';
 import type { StageHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
 export declare class PipelineExecutor {
-    private readonly handlers;
-    private readonly tracer;
-    constructor(handlers: StageHandlerRegistry, tracer: ITracer);
-    /**
-     * Execute a list of stages sequentially.
-     *
-     * @param stages    - Stage definitions to execute in order.
-     * @param ctx       - Mutable pipeline context.
-     * @param parentSpan - Parent tracing span.
-     * @returns `true` if all stages completed successfully, `false` if aborted.
-     */
-    executeStages(stages: StageDefinition[], ctx: PipelineContext, parentSpan: ISpan): Promise<boolean>;
-    /**
-     * Execute child stages in parallel, then run `after` stages sequentially.
-     */
-    private _executeParallel;
-    /**
-     * Execute child stages in a loop until condition or max iterations.
-     */
-    private _executeRepeat;
+  private readonly handlers;
+  private readonly tracer;
+  constructor(handlers: StageHandlerRegistry, tracer: ITracer);
+  /**
+   * Execute a list of stages sequentially.
+   *
+   * @param stages    - Stage definitions to execute in order.
+   * @param ctx       - Mutable pipeline context.
+   * @param parentSpan - Parent tracing span.
+   * @returns `true` if all stages completed successfully, `false` if aborted.
+   */
+  executeStages(
+    stages: StageDefinition[],
+    ctx: PipelineContext,
+    parentSpan: ISpan,
+  ): Promise<boolean>;
+  /**
+   * Execute child stages in parallel, then run `after` stages sequentially.
+   */
+  private _executeParallel;
+  /**
+   * Execute child stages in a loop until condition or max iterations.
+   */
+  private _executeRepeat;
 }
 //# sourceMappingURL=executor.d.ts.map

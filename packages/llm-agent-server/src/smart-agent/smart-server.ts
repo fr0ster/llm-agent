@@ -13,6 +13,7 @@ import type {
   ILogger,
   IMcpClient,
   IModelProvider,
+  IModelResolver,
   IRequestLogger,
   ISkillManager,
   Message,
@@ -25,30 +26,29 @@ import {
   normalizeAndValidateExternalTools,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
-import { PACKAGE_VERSION } from '../generated/version.js';
-import type { IModelResolver } from '@mcp-abap-adt/llm-agent';
+import type {
+  IPluginLoader,
+  SmartAgent,
+  StopReason,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
-  type SmartAgentHandle,
-  type SmartAgentReconfigureOptions,
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
   FileSystemPluginLoader,
   FileSystemSkillManager,
+  getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
   makeDefaultLlm,
   makeLlm,
   SessionLogger,
   SmartAgentBuilder,
-} from '@mcp-abap-adt/llm-agent-libs';
-import type {
-  SmartAgent,
-  StopReason,
+  type SmartAgentHandle,
+  type SmartAgentReconfigureOptions,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
-import { getDefaultPluginDirs } from '@mcp-abap-adt/llm-agent-libs';
-import type { IPluginLoader } from '@mcp-abap-adt/llm-agent-libs';
+import { PACKAGE_VERSION } from '../generated/version.js';
 import type { PipelineConfig } from './pipeline.js';
 
 // ---------------------------------------------------------------------------
@@ -403,7 +403,9 @@ export class SmartServer {
         extraFactories: mergedEmbedderFactories,
       };
       builder = builder.setToolsRag(await makeRag(this.cfg.rag, ragOptions));
-      builder = builder.setHistoryRag(await makeRag({ ...this.cfg.rag }, ragOptions));
+      builder = builder.setHistoryRag(
+        await makeRag({ ...this.cfg.rag }, ragOptions),
+      );
     }
 
     // Wire pipeline.rag.{name} stores into the builder so multi-store YAML

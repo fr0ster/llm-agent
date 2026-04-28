@@ -1,3 +1,4 @@
+export { McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';
 export {
   type AgentCallOptions,
   type BaseAgentLlmBridge,
@@ -5,4 +6,3 @@ export {
   type LlmAdapterProviderInfo,
 } from './llm-adapter.js';
 export { LlmProviderBridge } from './llm-provider-bridge.js';
-export { McpClientAdapter } from '@mcp-abap-adt/llm-agent-mcp';

@@ -5,8 +5,8 @@
  * This file re-exports them and provides the runtime helper functions.
  */
 
-import type { ILlmApiAdapter } from '@mcp-abap-adt/llm-agent';
 import type {
+  ILlmApiAdapter,
   IPluginLoader,
   IStageHandler,
   LoadedPlugins,

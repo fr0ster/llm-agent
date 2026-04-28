@@ -6,7 +6,11 @@
  *
  * It handles OpenAI-style tool format conversion (MCP tools → { type: 'function', function: {...} }).
  */
-import type { AgentStreamChunk, LLMProvider, Message } from '@mcp-abap-adt/llm-agent';
+import type {
+  AgentStreamChunk,
+  LLMProvider,
+  Message,
+} from '@mcp-abap-adt/llm-agent';
 import type { AgentCallOptions, BaseAgentLlmBridge } from './llm-adapter.js';
 /**
  * Wraps a LLMProvider as a BaseAgentLlmBridge, enabling LlmAdapter to use it.
@@ -17,15 +21,28 @@ import type { AgentCallOptions, BaseAgentLlmBridge } from './llm-adapter.js';
  *   const llm = new LlmAdapter(bridge, { model: provider.model });
  */
 export declare class LlmProviderBridge implements BaseAgentLlmBridge {
-    private readonly provider;
-    constructor(provider: LLMProvider);
-    callWithTools(messages: Message[], tools: unknown[], options?: AgentCallOptions): Promise<{
+  private readonly provider;
+  constructor(provider: LLMProvider);
+  callWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): Promise<{
+    content: string;
+    raw?: unknown;
+  }>;
+  streamWithTools(
+    messages: Message[],
+    tools: unknown[],
+    options?: AgentCallOptions,
+  ): AsyncGenerator<
+    | {
         content: string;
         raw?: unknown;
-    }>;
-    streamWithTools(messages: Message[], tools: unknown[], options?: AgentCallOptions): AsyncGenerator<{
-        content: string;
-        raw?: unknown;
-    } | AgentStreamChunk, void, unknown>;
+      }
+    | AgentStreamChunk,
+    void,
+    unknown
+  >;
 }
 //# sourceMappingURL=llm-provider-bridge.d.ts.map

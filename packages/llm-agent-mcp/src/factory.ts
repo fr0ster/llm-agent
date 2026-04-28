@@ -1,9 +1,9 @@
-import { MCPClientWrapper } from './client.js';
-import { McpClientAdapter } from './adapter.js';
 import type {
   McpClientFactoryResult,
   McpConnectionConfig,
 } from '@mcp-abap-adt/llm-agent';
+import { McpClientAdapter } from './adapter.js';
+import { MCPClientWrapper } from './client.js';
 
 export async function createDefaultMcpClient(
   config: McpConnectionConfig,

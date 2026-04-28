@@ -5,14 +5,13 @@
  * and extend classifier prompts without modifying core agent code.
  */
 
-import type { IClientAdapter } from './client-adapter.js';
-import type { ILlmApiAdapter } from './api-adapter.js';
-import type { IMcpClient } from './mcp-client.js';
 import type { IQueryExpander } from '../rag/query-expander.js';
-import type { ISkillManager } from './skill.js';
-import type { EmbedderFactory } from './rag.js';
-import type { IRag } from './rag.js';
+import type { ILlmApiAdapter } from './api-adapter.js';
+import type { IClientAdapter } from './client-adapter.js';
+import type { IMcpClient } from './mcp-client.js';
+import type { EmbedderFactory, IRag } from './rag.js';
 import type { IReranker } from './reranker.js';
+import type { ISkillManager } from './skill.js';
 import type { IOutputValidator } from './validator.js';
 
 // ---------------------------------------------------------------------------
@@ -83,7 +82,11 @@ export interface ISmartAgentPlugin {
  */
 export interface IStageHandler {
   // biome-ignore lint/suspicious/noExplicitAny: context type is server-defined
-  execute(ctx: any, config: Record<string, unknown>, span: unknown): Promise<boolean>;
+  execute(
+    ctx: any,
+    config: Record<string, unknown>,
+    span: unknown,
+  ): Promise<boolean>;
 }
 
 /**

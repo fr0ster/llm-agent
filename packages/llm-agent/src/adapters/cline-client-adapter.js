@@ -10,12 +10,12 @@
  * the final response accordingly.
  */
 export class ClineClientAdapter {
-    name = 'cline';
-    detect(systemPrompt) {
-        return systemPrompt.includes('You are Cline');
-    }
-    wrapResponse(content) {
-        return `<attempt_completion>\n<result>\n${content}\n</result>\n</attempt_completion>`;
-    }
+  name = 'cline';
+  detect(systemPrompt) {
+    return systemPrompt.includes('You are Cline');
+  }
+  wrapResponse(content) {
+    return `<attempt_completion>\n<result>\n${content}\n</result>\n</attempt_completion>`;
+  }
 }
 //# sourceMappingURL=cline-client-adapter.js.map

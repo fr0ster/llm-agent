@@ -41,7 +41,11 @@ function isMissingOptionalPeer(err: unknown, pkg: string): boolean {
   if (!(err instanceof Error)) return false;
   const code = (err as NodeJS.ErrnoException).code;
   if (code === 'ERR_MODULE_NOT_FOUND') return true;
-  if (err.message.includes(pkg) && err.message.toLowerCase().includes('cannot find')) return true;
+  if (
+    err.message.includes(pkg) &&
+    err.message.toLowerCase().includes('cannot find')
+  )
+    return true;
   return false;
 }
 
@@ -55,9 +59,14 @@ async function loadOpenAI() {
       model?: string;
       temperature?: number;
       maxTokens?: number;
-    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+    }) => {
+      model: string;
+      getModels?: () => Promise<string[]>;
+      getEmbeddingModels?: () => Promise<string[]>;
+    } & import('@mcp-abap-adt/llm-agent').LLMProvider;
   } catch (err) {
-    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'openai');
+    if (isMissingOptionalPeer(err, pkg))
+      throw new MissingProviderError(pkg, 'openai');
     throw err;
   }
 }
@@ -72,9 +81,14 @@ async function loadDeepSeek() {
       model?: string;
       temperature?: number;
       maxTokens?: number;
-    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+    }) => {
+      model: string;
+      getModels?: () => Promise<string[]>;
+      getEmbeddingModels?: () => Promise<string[]>;
+    } & import('@mcp-abap-adt/llm-agent').LLMProvider;
   } catch (err) {
-    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'deepseek');
+    if (isMissingOptionalPeer(err, pkg))
+      throw new MissingProviderError(pkg, 'deepseek');
     throw err;
   }
 }
@@ -89,9 +103,14 @@ async function loadAnthropic() {
       model?: string;
       temperature?: number;
       maxTokens?: number;
-    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+    }) => {
+      model: string;
+      getModels?: () => Promise<string[]>;
+      getEmbeddingModels?: () => Promise<string[]>;
+    } & import('@mcp-abap-adt/llm-agent').LLMProvider;
   } catch (err) {
-    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'anthropic');
+    if (isMissingOptionalPeer(err, pkg))
+      throw new MissingProviderError(pkg, 'anthropic');
     throw err;
   }
 }
@@ -107,10 +126,18 @@ async function loadSapAiCore() {
       maxTokens?: number;
       resourceGroup?: string;
       credentials?: SapAICoreCredentials;
-      log?: { debug: (msg: string, meta?: Record<string, unknown>) => void; error: (msg: string, meta?: Record<string, unknown>) => void };
-    }) => { model: string; getModels?: () => Promise<string[]>; getEmbeddingModels?: () => Promise<string[]> } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+      log?: {
+        debug: (msg: string, meta?: Record<string, unknown>) => void;
+        error: (msg: string, meta?: Record<string, unknown>) => void;
+      };
+    }) => {
+      model: string;
+      getModels?: () => Promise<string[]>;
+      getEmbeddingModels?: () => Promise<string[]>;
+    } & import('@mcp-abap-adt/llm-agent').LLMProvider;
   } catch (err) {
-    if (isMissingOptionalPeer(err, pkg)) throw new MissingProviderError(pkg, 'sap-ai-sdk');
+    if (isMissingOptionalPeer(err, pkg))
+      throw new MissingProviderError(pkg, 'sap-ai-sdk');
     throw err;
   }
 }
@@ -124,7 +151,10 @@ async function loadSapAiCore() {
  * This is the only function that knows about concrete LLM implementations.
  * Provider packages are loaded via dynamic import (optional peers).
  */
-export async function makeLlm(cfg: MakeLlmConfig, temperature: number): Promise<ILlm> {
+export async function makeLlm(
+  cfg: MakeLlmConfig,
+  temperature: number,
+): Promise<ILlm> {
   // Coerce numeric fields that may arrive as strings from ${ENV_VAR} substitution
   const maxTokens = cfg.maxTokens != null ? Number(cfg.maxTokens) : undefined;
 

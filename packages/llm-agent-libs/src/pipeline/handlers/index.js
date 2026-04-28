@@ -24,21 +24,34 @@ import { TranslateHandler } from './translate.js';
  * {@link PipelineContext}.
  */
 export function buildDefaultHandlerRegistry() {
-    return new Map([
-        ['classify', new ClassifyHandler()],
-        ['summarize', new SummarizeHandler()],
-        ['translate', new TranslateHandler()],
-        ['expand', new ExpandHandler()],
-        ['rag-query', new RagQueryHandler()],
-        ['rerank', new RerankHandler()],
-        ['skill-select', new SkillSelectHandler()],
-        ['build-tool-query', new BuildToolQueryHandler()],
-        ['tool-select', new ToolSelectHandler()],
-        ['assemble', new AssembleHandler()],
-        ['tool-loop', new ToolLoopHandler()],
-        ['history-upsert', new HistoryUpsertHandler()],
-    ]);
+  return new Map([
+    ['classify', new ClassifyHandler()],
+    ['summarize', new SummarizeHandler()],
+    ['translate', new TranslateHandler()],
+    ['expand', new ExpandHandler()],
+    ['rag-query', new RagQueryHandler()],
+    ['rerank', new RerankHandler()],
+    ['skill-select', new SkillSelectHandler()],
+    ['build-tool-query', new BuildToolQueryHandler()],
+    ['tool-select', new ToolSelectHandler()],
+    ['assemble', new AssembleHandler()],
+    ['tool-loop', new ToolLoopHandler()],
+    ['history-upsert', new HistoryUpsertHandler()],
+  ]);
 }
 export { summarizeAndStore } from './history-upsert.js';
-export { AssembleHandler, BuildToolQueryHandler, ClassifyHandler, ExpandHandler, HistoryUpsertHandler, RagQueryHandler, RerankHandler, SkillSelectHandler, SummarizeHandler, ToolLoopHandler, ToolSelectHandler, TranslateHandler, };
+export {
+  AssembleHandler,
+  BuildToolQueryHandler,
+  ClassifyHandler,
+  ExpandHandler,
+  HistoryUpsertHandler,
+  RagQueryHandler,
+  RerankHandler,
+  SkillSelectHandler,
+  SummarizeHandler,
+  ToolLoopHandler,
+  ToolSelectHandler,
+  TranslateHandler,
+};
 //# sourceMappingURL=index.js.map

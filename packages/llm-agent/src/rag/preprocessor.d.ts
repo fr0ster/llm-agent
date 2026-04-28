@@ -7,8 +7,11 @@ import type { CallOptions, RagError, Result } from '../interfaces/types.js';
  * Runs inside IRag.query() before embedding.
  */
 export interface IQueryPreprocessor {
-    readonly name: string;
-    process(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  readonly name: string;
+  process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 /**
  * Enriches document text before RAG storage.
@@ -16,16 +19,19 @@ export interface IQueryPreprocessor {
  * Runs inside IRag.upsert() before embedding.
  */
 export interface IDocumentEnricher {
-    readonly name: string;
-    enrich(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  readonly name: string;
+  enrich(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 export declare class NoopQueryPreprocessor implements IQueryPreprocessor {
-    readonly name = "noop";
-    process(text: string): Promise<Result<string, RagError>>;
+  readonly name = 'noop';
+  process(text: string): Promise<Result<string, RagError>>;
 }
 export declare class NoopDocumentEnricher implements IDocumentEnricher {
-    readonly name = "noop";
-    enrich(text: string): Promise<Result<string, RagError>>;
+  readonly name = 'noop';
+  enrich(text: string): Promise<Result<string, RagError>>;
 }
 /**
  * Translates non-ASCII queries to English via helper LLM.
@@ -33,24 +39,38 @@ export declare class NoopDocumentEnricher implements IDocumentEnricher {
  * Falls back to original text on LLM failure.
  */
 export declare class TranslatePreprocessor implements IQueryPreprocessor {
-    private readonly llm;
-    private readonly requestLogger?;
-    private readonly systemPrompt?;
-    readonly name = "translate";
-    constructor(llm: ILlm, requestLogger?: IRequestLogger | undefined, systemPrompt?: string | undefined);
-    process(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  private readonly llm;
+  private readonly requestLogger?;
+  private readonly systemPrompt?;
+  readonly name = 'translate';
+  constructor(
+    llm: ILlm,
+    requestLogger?: IRequestLogger | undefined,
+    systemPrompt?: string | undefined,
+  );
+  process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 /**
  * Expands queries with LLM-generated synonyms and related terms.
  * Concatenates original + expansion for broader recall.
  */
 export declare class ExpandPreprocessor implements IQueryPreprocessor {
-    private readonly llm;
-    private readonly requestLogger?;
-    private readonly systemPrompt?;
-    readonly name = "expand";
-    constructor(llm: ILlm, requestLogger?: IRequestLogger | undefined, systemPrompt?: string | undefined);
-    process(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  private readonly llm;
+  private readonly requestLogger?;
+  private readonly systemPrompt?;
+  readonly name = 'expand';
+  constructor(
+    llm: ILlm,
+    requestLogger?: IRequestLogger | undefined,
+    systemPrompt?: string | undefined,
+  );
+  process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 /**
  * Generates concise intent-based descriptions via LLM.
@@ -61,12 +81,19 @@ export declare class ExpandPreprocessor implements IQueryPreprocessor {
  * Both original and intent are stored — BM25 matches keywords, vector matches semantics.
  */
 export declare class IntentEnricher implements IDocumentEnricher {
-    private readonly llm;
-    private readonly requestLogger?;
-    private readonly systemPrompt?;
-    readonly name = "intent";
-    constructor(llm: ILlm, requestLogger?: IRequestLogger | undefined, systemPrompt?: string | undefined);
-    enrich(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  private readonly llm;
+  private readonly requestLogger?;
+  private readonly systemPrompt?;
+  readonly name = 'intent';
+  constructor(
+    llm: ILlm,
+    requestLogger?: IRequestLogger | undefined,
+    systemPrompt?: string | undefined,
+  );
+  enrich(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 /**
  * Runs multiple preprocessors in sequence.
@@ -74,9 +101,12 @@ export declare class IntentEnricher implements IDocumentEnricher {
  * Stops and returns error on first failure.
  */
 export declare class PreprocessorChain implements IQueryPreprocessor {
-    private readonly preprocessors;
-    readonly name: string;
-    constructor(preprocessors: IQueryPreprocessor[]);
-    process(text: string, options?: CallOptions): Promise<Result<string, RagError>>;
+  private readonly preprocessors;
+  readonly name: string;
+  constructor(preprocessors: IQueryPreprocessor[]);
+  process(
+    text: string,
+    options?: CallOptions,
+  ): Promise<Result<string, RagError>>;
 }
 //# sourceMappingURL=preprocessor.d.ts.map

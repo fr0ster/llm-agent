@@ -8,17 +8,17 @@
  * Skipped when `queryExpansionEnabled` is false.
  */
 export class ExpandHandler {
-    async execute(ctx, _config, span) {
-        if (!ctx.config.queryExpansionEnabled) {
-            span.setAttribute('skipped', true);
-            return true;
-        }
-        const result = await ctx.queryExpander.expand(ctx.ragText, ctx.options);
-        if (result.ok) {
-            ctx.ragText = result.value;
-            span.setAttribute('expanded', true);
-        }
-        return true;
+  async execute(ctx, _config, span) {
+    if (!ctx.config.queryExpansionEnabled) {
+      span.setAttribute('skipped', true);
+      return true;
     }
+    const result = await ctx.queryExpander.expand(ctx.ragText, ctx.options);
+    if (result.ok) {
+      ctx.ragText = result.value;
+      span.setAttribute('expanded', true);
+    }
+    return true;
+  }
 }
 //# sourceMappingURL=expand.js.map

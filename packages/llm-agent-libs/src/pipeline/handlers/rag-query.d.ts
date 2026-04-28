@@ -22,6 +22,10 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 export declare class RagQueryHandler implements IStageHandler {
-    execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean>;
+  execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    span: ISpan,
+  ): Promise<boolean>;
 }
 //# sourceMappingURL=rag-query.d.ts.map

@@ -1,5 +1,6 @@
-import type { CallOptions, IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type {
+  CallOptions,
+  IMcpClient,
   IMcpConnectionStrategy,
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';

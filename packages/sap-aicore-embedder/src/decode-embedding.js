@@ -5,11 +5,15 @@
  * deployments return).
  */
 export function decodeEmbedding(embedding) {
-    if (typeof embedding === 'string') {
-        const buffer = Buffer.from(embedding, 'base64');
-        const float32 = new Float32Array(buffer.buffer, buffer.byteOffset, buffer.length / 4);
-        return Array.from(float32);
-    }
-    return embedding;
+  if (typeof embedding === 'string') {
+    const buffer = Buffer.from(embedding, 'base64');
+    const float32 = new Float32Array(
+      buffer.buffer,
+      buffer.byteOffset,
+      buffer.length / 4,
+    );
+    return Array.from(float32);
+  }
+  return embedding;
 }
 //# sourceMappingURL=decode-embedding.js.map

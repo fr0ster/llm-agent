@@ -1,9 +1,9 @@
+export { McpClientAdapter } from './adapter.js';
 export {
-  MCPClientWrapper,
   type MCPClientConfig,
+  MCPClientWrapper,
   type TransportType,
 } from './client.js';
-export { McpClientAdapter } from './adapter.js';
 export { createDefaultMcpClient } from './factory.js';
 export {
   LazyConnectionStrategy,

@@ -12,5 +12,17 @@ export { DefaultPipeline } from './default-pipeline.js';
 export { PipelineExecutor } from './executor.js';
 // Handler registry
 // Individual handlers (for subclassing or direct use)
-export { AssembleHandler, buildDefaultHandlerRegistry, ClassifyHandler, ExpandHandler, RagQueryHandler, RerankHandler, SkillSelectHandler, SummarizeHandler, ToolLoopHandler, ToolSelectHandler, TranslateHandler, } from './handlers/index.js';
+export {
+  AssembleHandler,
+  buildDefaultHandlerRegistry,
+  ClassifyHandler,
+  ExpandHandler,
+  RagQueryHandler,
+  RerankHandler,
+  SkillSelectHandler,
+  SummarizeHandler,
+  ToolLoopHandler,
+  ToolSelectHandler,
+  TranslateHandler,
+} from './handlers/index.js';
 //# sourceMappingURL=index.js.map

@@ -6,27 +6,6 @@
  */
 
 // ---------------------------------------------------------------------------
-// Builder + agent
-// ---------------------------------------------------------------------------
-export {
-  SmartAgentBuilder,
-  type SmartAgentBuilderConfig,
-  type BuilderMcpConfig,
-  type BuilderPromptsConfig,
-  type SmartAgentHandle,
-} from './builder.js';
-export {
-  SmartAgent,
-  type SmartAgentConfig,
-  type SmartAgentDeps,
-  type SmartAgentReconfigureOptions,
-  type SmartAgentRagStores,
-  OrchestratorError,
-  type SmartAgentResponse,
-  type StopReason,
-} from './agent.js';
-
-// ---------------------------------------------------------------------------
 // Adapters
 // ---------------------------------------------------------------------------
 export {
@@ -37,17 +16,26 @@ export {
 } from './adapters/llm-adapter.js';
 export { LlmProviderBridge } from './adapters/llm-provider-bridge.js';
 export { NonStreamingLlm } from './adapters/non-streaming-llm.js';
-
+export {
+  OrchestratorError,
+  SmartAgent,
+  type SmartAgentConfig,
+  type SmartAgentDeps,
+  type SmartAgentRagStores,
+  type SmartAgentReconfigureOptions,
+  type SmartAgentResponse,
+  type StopReason,
+} from './agent.js';
 // ---------------------------------------------------------------------------
-// Providers (LLM)
+// Builder + agent
 // ---------------------------------------------------------------------------
 export {
-  DefaultModelResolver,
-  makeDefaultLlm,
-  makeLlm,
-  type MakeLlmConfig,
-} from './providers.js';
-
+  type BuilderMcpConfig,
+  type BuilderPromptsConfig,
+  SmartAgentBuilder,
+  type SmartAgentBuilderConfig,
+  type SmartAgentHandle,
+} from './builder.js';
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
@@ -56,7 +44,6 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
-
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -64,12 +51,16 @@ export {
   HealthChecker,
   type HealthCheckerDeps,
 } from './health/health-checker.js';
-
 // ---------------------------------------------------------------------------
 // History
 // ---------------------------------------------------------------------------
 export { HistoryMemory } from './history/history-memory.js';
 export { HistorySummarizer } from './history/history-summarizer.js';
+export type {
+  IPipeline,
+  PipelineDeps,
+  PipelineResult,
+} from './interfaces/pipeline.js';
 
 // ---------------------------------------------------------------------------
 // Logger
@@ -82,9 +73,9 @@ export { SessionLogger } from './logger/session-logger.js';
 // Metrics
 // ---------------------------------------------------------------------------
 export {
-  InMemoryMetrics,
   type CounterSnapshot,
   type HistogramSnapshot,
+  InMemoryMetrics,
   type MetricsSnapshot,
 } from './metrics/in-memory-metrics.js';
 export { NoopMetrics } from './metrics/noop-metrics.js';
@@ -93,22 +84,22 @@ export { NoopMetrics } from './metrics/noop-metrics.js';
 // Pipeline
 // ---------------------------------------------------------------------------
 export {
+  type BuiltInStageType,
   buildDefaultHandlerRegistry,
+  type ControlFlowType,
   DefaultPipeline,
   evaluateCondition,
-  PipelineExecutor,
-  type BuiltInStageType,
-  type ControlFlowType,
   type IStageHandler,
   type PipelineContext,
+  PipelineExecutor,
   type StageDefinition,
   type StageType,
 } from './pipeline/index.js';
 export type {
-  IPipeline,
-  PipelineDeps,
-  PipelineResult,
-} from './interfaces/pipeline.js';
+  IPluginLoader,
+  LoadedPlugins,
+  PluginExports,
+} from './plugins/index.js';
 
 // ---------------------------------------------------------------------------
 // Plugins
@@ -121,11 +112,15 @@ export {
   loadPlugins,
   mergePluginExports,
 } from './plugins/index.js';
-export type {
-  IPluginLoader,
-  LoadedPlugins,
-  PluginExports,
-} from './plugins/index.js';
+// ---------------------------------------------------------------------------
+// Providers (LLM)
+// ---------------------------------------------------------------------------
+export {
+  DefaultModelResolver,
+  type MakeLlmConfig,
+  makeDefaultLlm,
+  makeLlm,
+} from './providers.js';
 
 // ---------------------------------------------------------------------------
 // Reranker

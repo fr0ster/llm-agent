@@ -31,5 +31,8 @@ import type { PipelineContext } from './context.js';
  * @returns `true` if the condition is met, `false` otherwise.
  *          Returns `true` for `undefined` or empty expressions (no condition = always run).
  */
-export declare function evaluateCondition(expr: string | undefined, ctx: PipelineContext): boolean;
+export declare function evaluateCondition(
+  expr: string | undefined,
+  ctx: PipelineContext,
+): boolean;
 //# sourceMappingURL=condition-evaluator.d.ts.map

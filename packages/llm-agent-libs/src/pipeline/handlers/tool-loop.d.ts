@@ -27,6 +27,10 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 export declare class ToolLoopHandler implements IStageHandler {
-    execute(ctx: PipelineContext, config: Record<string, unknown>, parentSpan: ISpan): Promise<boolean>;
+  execute(
+    ctx: PipelineContext,
+    config: Record<string, unknown>,
+    parentSpan: ISpan,
+  ): Promise<boolean>;
 }
 //# sourceMappingURL=tool-loop.d.ts.map

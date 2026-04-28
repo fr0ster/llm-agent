@@ -3,8 +3,8 @@ import { request } from 'node:http';
 import { describe, it } from 'node:test';
 import type { LlmError, LlmStreamChunk, Result } from '@mcp-abap-adt/llm-agent';
 import { SmartAgent } from '@mcp-abap-adt/llm-agent-libs';
-import { SmartAgentServer } from '../server.js';
 import { makeDefaultDeps } from '@mcp-abap-adt/llm-agent-libs/testing';
+import { SmartAgentServer } from '../server.js';
 
 const DEFAULT_CONFIG = { maxIterations: 5 };
 

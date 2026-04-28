@@ -1,6 +1,6 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type {
   ConnectionStrategyOptions,
+  IMcpClient,
   IMcpConnectionStrategy,
   McpClientFactory,
   McpConnectionConfig,

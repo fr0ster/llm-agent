@@ -6,7 +6,11 @@ import type {
   IRag,
   ISearchStrategy,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryRag, MissingProviderError, VectorRag } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryRag,
+  MissingProviderError,
+  VectorRag,
+} from '@mcp-abap-adt/llm-agent';
 import { builtInEmbedderFactories } from './embedder-factories.js';
 
 // ---------------------------------------------------------------------------
@@ -100,16 +104,29 @@ export const ragBackendNames = Object.freeze(
 function isMissingOptionalPeer(err: unknown, pkg: string): boolean {
   if (!(err instanceof Error)) return false;
   // Node ESM resolver
-  if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND') return true;
+  if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND')
+    return true;
   // CJS / generic
-  if (err.message.includes(pkg) && err.message.toLowerCase().includes('cannot find')) return true;
+  if (
+    err.message.includes(pkg) &&
+    err.message.toLowerCase().includes('cannot find')
+  )
+    return true;
   return false;
 }
 
-async function loadOllamaRag(): Promise<new (opts: Record<string, unknown>) => IRag> {
+async function loadOllamaRag(): Promise<
+  new (
+    opts: Record<string, unknown>,
+  ) => IRag
+> {
   try {
     const mod = await import('@mcp-abap-adt/ollama-embedder');
-    return (mod as unknown as { OllamaRag: new (opts: Record<string, unknown>) => IRag }).OllamaRag;
+    return (
+      mod as unknown as {
+        OllamaRag: new (opts: Record<string, unknown>) => IRag;
+      }
+    ).OllamaRag;
   } catch (err) {
     if (isMissingOptionalPeer(err, '@mcp-abap-adt/ollama-embedder')) {
       throw new MissingProviderError('@mcp-abap-adt/ollama-embedder', 'ollama');

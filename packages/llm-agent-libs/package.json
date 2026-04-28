@@ -18,7 +18,10 @@
       "import": "./dist/otel/index.js"
     }
   },
-  "files": ["dist", "README.md"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
@@ -40,10 +43,18 @@
     "@mcp-abap-adt/sap-aicore-llm": "^12.0.0"
   },
   "peerDependenciesMeta": {
-    "@mcp-abap-adt/openai-llm": { "optional": true },
-    "@mcp-abap-adt/anthropic-llm": { "optional": true },
-    "@mcp-abap-adt/deepseek-llm": { "optional": true },
-    "@mcp-abap-adt/sap-aicore-llm": { "optional": true }
+    "@mcp-abap-adt/openai-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/anthropic-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/deepseek-llm": {
+      "optional": true
+    },
+    "@mcp-abap-adt/sap-aicore-llm": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@mcp-abap-adt/openai-llm": "*",
