@@ -11,7 +11,10 @@ import {
   MissingProviderError,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
-import { builtInEmbedderFactories } from './embedder-factories.js';
+import {
+  builtInEmbedderFactories,
+  prefetchEmbedderFactories,
+} from './embedder-factories.js';
 
 // ---------------------------------------------------------------------------
 // Low-level prefetch / resolve — sync, prefetch-based
@@ -271,6 +274,9 @@ export async function makeRag(
   if (cfg.type === 'in-memory') {
     // When an embedder is specified, upgrade to VectorRag for hybrid scoring
     if (cfg.embedder || options?.injectedEmbedder) {
+      if (!options?.injectedEmbedder) {
+        await prefetchEmbedderFactories([cfg.embedder ?? 'ollama']);
+      }
       const embedder = resolveEmbedder(cfg, options);
       return new VectorRag(embedder, {
         dedupThreshold: cfg.dedupThreshold,
@@ -292,6 +298,11 @@ export async function makeRag(
     if (!cfg.url) {
       throw new Error('Qdrant URL is required for qdrant RAG type');
     }
+    const embedderName = cfg.embedder ?? 'ollama';
+    if (!options?.injectedEmbedder) {
+      await prefetchEmbedderFactories([embedderName]);
+    }
+    await prefetchRagFactories(['qdrant']);
     const embedder = resolveEmbedder(cfg, options);
     return resolveRag('qdrant', {
       url: cfg.url,
@@ -306,6 +317,11 @@ export async function makeRag(
     if (!cfg.collectionName) {
       throw new Error('collectionName is required for hana-vector RAG type');
     }
+    const embedderName = cfg.embedder ?? 'ollama';
+    if (!options?.injectedEmbedder) {
+      await prefetchEmbedderFactories([embedderName]);
+    }
+    await prefetchRagFactories(['hana-vector']);
     const embedder = resolveEmbedder(cfg, options);
     return resolveRag('hana-vector', {
       connectionString: cfg.connectionString,
@@ -327,6 +343,11 @@ export async function makeRag(
     if (!cfg.collectionName) {
       throw new Error('collectionName is required for pg-vector RAG type');
     }
+    const embedderName = cfg.embedder ?? 'ollama';
+    if (!options?.injectedEmbedder) {
+      await prefetchEmbedderFactories([embedderName]);
+    }
+    await prefetchRagFactories(['pg-vector']);
     const embedder = resolveEmbedder(cfg, options);
     return resolveRag('pg-vector', {
       connectionString: cfg.connectionString,
