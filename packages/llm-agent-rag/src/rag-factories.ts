@@ -406,10 +406,7 @@ export async function makeRag(
   if (!options?.injectedEmbedder) {
     await prefetchEmbedderFactories([embedderName]);
   }
-  const embedder = resolveEmbedder(
-    { ...cfg, embedder: embedderName },
-    options,
-  );
+  const embedder = resolveEmbedder({ ...cfg, embedder: embedderName }, options);
   return new VectorRag(embedder, {
     dedupThreshold: cfg.dedupThreshold,
     vectorWeight: cfg.vectorWeight,
