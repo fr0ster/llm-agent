@@ -1,9 +1,10 @@
 /**
- * IStageHandler — interface for pipeline stage handlers.
+ * IStageHandler — interface for pipeline stage handlers, specialized to PipelineContext.
  *
- * Each built-in stage type (classify, summarize, rag-query, etc.) has a
- * corresponding handler implementation. Handlers are stateless — all mutable
- * state lives in the {@link PipelineContext}.
+ * Re-exports the generic IStageHandler from @mcp-abap-adt/llm-agent with
+ * PipelineContext as the context type parameter. This preserves the existing
+ * API in llm-agent-libs (all internal handlers use PipelineContext) while
+ * removing the separate interface definition and name collision.
  *
  * ## Contract
  *
@@ -21,21 +22,7 @@
  * additional handlers in their own `buildDefaultHandlerRegistry()` call.
  */
 
-import type { ISpan } from '../tracer/types.js';
+import type { IStageHandler as IStageHandlerBase } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from './context.js';
 
-export interface IStageHandler {
-  /**
-   * Execute the stage.
-   *
-   * @param ctx    - Mutable pipeline context (read inputs, write outputs).
-   * @param config - Stage-specific config from the YAML `config` field.
-   * @param span   - Tracing span for this stage (call `span.end()` is handled by executor).
-   * @returns `true` to continue pipeline, `false` to abort.
-   */
-  execute(
-    ctx: PipelineContext,
-    config: Record<string, unknown>,
-    span: ISpan,
-  ): Promise<boolean>;
-}
+export type IStageHandler = IStageHandlerBase<PipelineContext>;

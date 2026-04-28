@@ -77,13 +77,16 @@ export interface ISmartAgentPlugin {
 // ---------------------------------------------------------------------------
 
 /**
- * Minimal stage handler interface for plugin registration.
- * The full `IStageHandler` (with typed PipelineContext) lives in llm-agent-server.
+ * Stage handler interface for pipeline extensibility.
+ *
+ * Generic over the pipeline context type so that:
+ * - Consumers coding against the public contract use `IStageHandler` (default: `unknown`).
+ * - llm-agent-libs re-exports `IStageHandler<PipelineContext>` to preserve full
+ *   concrete typing for internal handlers.
  */
-export interface IStageHandler {
-  // biome-ignore lint/suspicious/noExplicitAny: context type is server-defined
+export interface IStageHandler<TContext = unknown> {
   execute(
-    ctx: any,
+    ctx: TContext,
     config: Record<string, unknown>,
     span: unknown,
   ): Promise<boolean>;
