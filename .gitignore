@@ -9,6 +9,12 @@ dist/
 src/generated/
 **/src/generated/
 
+# Stray compiled artifacts inside src/ (legitimate output goes to dist/)
+packages/*/src/**/*.js
+packages/*/src/**/*.js.map
+packages/*/src/**/*.d.ts
+packages/*/src/**/*.d.ts.map
+
 # Plugin example compiled output (source-of-truth is the .ts files)
 docs/examples/**/*.js
 docs/examples/**/*.js.map
