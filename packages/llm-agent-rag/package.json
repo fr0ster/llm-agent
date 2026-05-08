@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-rag",
-  "version": "12.0.4",
+  "version": "12.0.5",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -21,7 +21,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^12.0.4"
+    "@mcp-abap-adt/llm-agent": "^12.0.5"
   },
   "peerDependencies": {
     "@mcp-abap-adt/openai-embedder": "^12.0.0",
@@ -52,12 +52,12 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/openai-embedder": "^12.0.4",
-    "@mcp-abap-adt/ollama-embedder": "^12.0.4",
-    "@mcp-abap-adt/sap-aicore-embedder": "^12.0.4",
-    "@mcp-abap-adt/qdrant-rag": "^12.0.4",
-    "@mcp-abap-adt/hana-vector-rag": "^12.0.4",
-    "@mcp-abap-adt/pg-vector-rag": "^12.0.4"
+    "@mcp-abap-adt/openai-embedder": "^12.0.5",
+    "@mcp-abap-adt/ollama-embedder": "^12.0.5",
+    "@mcp-abap-adt/sap-aicore-embedder": "^12.0.5",
+    "@mcp-abap-adt/qdrant-rag": "^12.0.5",
+    "@mcp-abap-adt/hana-vector-rag": "^12.0.5",
+    "@mcp-abap-adt/pg-vector-rag": "^12.0.5"
   },
   "publishConfig": {
     "access": "public"
