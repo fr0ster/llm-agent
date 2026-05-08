@@ -7,6 +7,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [12.0.5] — 2026-05-08
+
+### Chore
+- Repository hygiene only — published tarballs are functionally identical to 12.0.4. Stop tracking compiled artifacts (`*.js`, `*.d.ts`, `*.map`) that were accidentally committed inside `packages/*/src/`; legitimate output goes to `dist/` per each package's `tsconfig.json`. `.gitignore` updated to prevent them from returning.
+
+---
+
 ## [12.0.4] — 2026-04-28
 
 ### Fixed
