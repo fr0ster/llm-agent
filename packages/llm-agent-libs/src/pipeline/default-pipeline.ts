@@ -26,6 +26,7 @@
 
 import type {
   CallOptions,
+  ICoordinatorConfig,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -98,6 +99,13 @@ export interface DefaultPipelineOptions {
    * handler registry. When omitted or empty, no sub-agent handler is wired in.
    */
   subAgents?: SubAgentRegistry;
+  /**
+   * Optional coordinator configuration. When `planning` and `dispatch`
+   * strategies are both supplied and the `activation` strategy fires at
+   * build time, the trailing `tool-loop` stage is swapped for a
+   * `coordinator` stage.
+   */
+  coordinator?: ICoordinatorConfig;
 }
 
 export class DefaultPipeline implements IPipeline {
@@ -105,9 +113,11 @@ export class DefaultPipeline implements IPipeline {
   private executor!: PipelineExecutor;
   private stages!: StageDefinition[];
   private readonly subAgents?: SubAgentRegistry;
+  private readonly coordinator?: ICoordinatorConfig;
 
   constructor(options: DefaultPipelineOptions = {}) {
     this.subAgents = options.subAgents;
+    this.coordinator = options.coordinator;
   }
 
   // Cached defaults (created once in initialize, reused per request)
@@ -146,7 +156,19 @@ export class DefaultPipeline implements IPipeline {
     this.resolvedLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
 
-    const registry = buildDefaultHandlerRegistry(this.subAgents);
+    const registry = buildDefaultHandlerRegistry({
+      subAgents: this.subAgents,
+      coordinator:
+        this.coordinator?.planning && this.coordinator?.dispatch
+          ? {
+              planning: this.coordinator.planning,
+              dispatch: this.coordinator.dispatch,
+              maxSteps: this.coordinator.maxSteps ?? 12,
+              maxRetriesPerStep: this.coordinator.maxRetriesPerStep ?? 1,
+              failPolicy: this.coordinator.failPolicy ?? 'abort',
+            }
+          : undefined,
+    });
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);
 
     // Fixed stage list — only tools + history RAG stores
@@ -268,10 +290,22 @@ export class DefaultPipeline implements IPipeline {
       });
     }
 
+    const hasSubAgents = (this.subAgents?.size ?? 0) > 0;
+    const wantsCoordinator =
+      this.coordinator?.planning != null &&
+      this.coordinator?.dispatch != null &&
+      (this.coordinator.activation?.shouldActivate({
+        hasSubAgents,
+        hasStructuredSkill: false,
+      }) ??
+        false);
+
     stages.push(
       { id: 'tool-select', type: 'tool-select' },
       { id: 'assemble', type: 'assemble' },
-      { id: 'tool-loop', type: 'tool-loop' },
+      wantsCoordinator
+        ? { id: 'coordinator', type: 'coordinator' }
+        : { id: 'tool-loop', type: 'tool-loop' },
       { id: 'history-upsert', type: 'history-upsert' },
     );
 
