@@ -1,0 +1,56 @@
+# Subagent orchestration — iterative ABAP code generation with review loop.
+#
+# Pipeline:
+#   1. assemble  — build LLM context from the user request
+#   2. repeat    — up to 3 iterations: generate code, review it, stop when approved
+#        a. subagent: abap-coder    — generate / refine ABAP code
+#        b. subagent: code-reviewer — review code, return {"approved":bool,"issues":[]}
+#   3. tool-loop — final pass (one iteration) for any follow-up tool calls
+#
+# Usage:
+#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/subagent-orchestration.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${OPENAI_API_KEY}
+  model: ${OPENAI_MODEL:-gpt-4o-mini}
+  temperature: 0.7
+
+subagents:
+  - name: abap-coder
+    config: ../../examples/subagents/abap-coder.yaml
+  - name: code-reviewer
+    config: ../../examples/subagents/code-reviewer.yaml
+
+pipeline:
+  version: "1"
+  stages:
+    - id: assemble
+      type: assemble
+
+    - id: generate-and-review
+      type: repeat
+      maxIterations: 3
+      until: "ctx.subResults?.review?.includes('\"approved\": true')"
+      stages:
+        - id: generate-code
+          type: subagent
+          config:
+            agent: abap-coder
+            task: "{{inputText}}{% if subResults.review %}\n\nPrevious review feedback:\n{{subResults.review}}{% endif %}"
+            outputTo: subResults.code
+
+        - id: review-code
+          type: subagent
+          config:
+            agent: code-reviewer
+            task: "Review this ABAP code:\n{{subResults.code}}"
+            outputTo: subResults.review
+
+    - id: tool-loop
+      type: tool-loop
+      config:
+        maxIterations: 1

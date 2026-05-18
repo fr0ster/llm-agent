@@ -1,0 +1,24 @@
+# Sub-agent: code reviewer that returns structured JSON approval.
+# Invoked by an orchestrator via the `subagent` pipeline stage.
+# Must NOT contain: pluginDir, clientAdapter, circuitBreaker,
+#   pipeline.reranker, pipeline.queryExpander, pipeline.outputValidator,
+#   pipeline.rag (object), or subagents.
+
+mode: smart
+
+llm:
+  apiKey: ${OPENAI_API_KEY}
+  model: ${OPENAI_MODEL:-gpt-4o-mini}
+  temperature: 0.1
+
+systemPrompt: 'You are a senior code reviewer. Read the code and respond with a JSON object: {"approved": boolean, "issues": string[]}. Approve only if the code is correct, idiomatic, and complete.'
+
+pipeline:
+  version: "1"
+  stages:
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+      config:
+        maxIterations: 1
