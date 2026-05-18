@@ -919,6 +919,26 @@ packages/llm-agent-libs/src/
     index.ts       # Re-exports
 ```
 
+## Subagent orchestration
+
+Pipelines can invoke nested `SmartAgent` instances as a built-in stage. A top-level
+`subagents:` YAML block declares named subagents (each a full SmartAgent config in
+its own file); the `subagent` stage type runs one by name, with task and output
+binding driven by `{{path}}` templates against `PipelineContext`.
+
+Parallel fanout uses the existing `parallel` control-flow stage; iterative
+refinement uses `repeat` with an `until:` expression.
+
+Subagent YAML files cannot define their own `subagents:` (loaders reject this to
+prevent cycles) and cannot use `pluginDir`, `clientAdapter`, `circuitBreaker`,
+`pipeline.reranker`, `pipeline.queryExpander`, `pipeline.outputValidator`, or
+multi-store `pipeline.rag` objects. To compose more deeply, build the outer agent
+programmatically and pass a custom `SubAgentRegistry` via
+`SmartAgentBuilder.withSubAgents(registry)`.
+
+See `docs/examples/subagent-orchestration.yaml` for a worked example combining
+`repeat` with two subagent stages.
+
 ## Current Technical Debt (Explicit)
 
 - No known outstanding technical debt. Aggregate metrics, circuit breakers, health checks, and config hot-reload have been implemented.
