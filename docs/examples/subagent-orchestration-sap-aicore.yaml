@@ -1,5 +1,5 @@
-# Subagent orchestration — SAP AI Core variant.
-# Routes the parent agent and both sub-agents through SAP AI Core (gpt-4o by default).
+# Subagent orchestration — SAP AI Core variant with semantic tool-select.
+# Routes parent + sub-agents through SAP AI Core (gpt-4o by default).
 # Connects MCP via the local mcp-abap-adt-proxy on http://127.0.0.1:3001.
 #
 # Prerequisites:
@@ -8,8 +8,7 @@
 #   2. AICORE_SERVICE_KEY env variable populated.
 #
 # Usage:
-#   npm run dev -- --config docs/examples/subagent-orchestration-sap-aicore.yaml \
-#     --input "Write an ABAP report that prints 'Hello World'."
+#   npm run dev -- --config docs/examples/subagent-orchestration-sap-aicore.yaml
 
 port: 4004
 host: 0.0.0.0
@@ -17,6 +16,7 @@ mode: smart
 
 agent:
   healthTimeoutMs: 15000
+  ragQueryK: 10
 
 pipeline:
   llm:
@@ -31,6 +31,10 @@ pipeline:
       resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
       temperature: 0.1
 
+  rag:
+    tools:
+      type: in-memory
+
   mcp:
     - type: http
       url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
@@ -39,6 +43,17 @@ pipeline:
   stages:
     - id: classify
       type: classify
+
+    - id: rag-retrieval
+      type: parallel
+      stages:
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+      after:
+        - id: tool-select
+          type: tool-select
+
     - id: assemble
       type: assemble
 

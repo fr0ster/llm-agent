@@ -1,4 +1,4 @@
-# SAP AI Core-backed ABAP coder sub-agent.
+# SAP AI Core-backed ABAP coder sub-agent (with semantic tool-select).
 # Used by docs/examples/subagent-orchestration-sap-aicore.yaml.
 # Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
 
@@ -6,11 +6,16 @@ mode: smart
 
 agent:
   healthTimeoutMs: 15000
-  maxIterations: 1
+  maxIterations: 3
+  ragQueryK: 10
+
+rag:
+  type: in-memory
 
 systemPrompt: |
   You are an expert ABAP developer. Produce concise, production-grade ABAP code
-  for the given task. Do not explain unless asked.
+  for the given task. Use the available SAP tools to verify or create code in the
+  system when helpful. Do not explain unless asked.
 
 pipeline:
   llm:
@@ -19,12 +24,32 @@ pipeline:
       model: ${SAP_AI_MODEL:-gpt-4o}
       resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
       temperature: 0.2
+    classifier:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_MODEL:-gpt-4o}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0.1
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
 
   version: "1"
   stages:
+    - id: classify
+      type: classify
+    - id: rag-retrieval
+      type: parallel
+      stages:
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+      after:
+        - id: tool-select
+          type: tool-select
     - id: assemble
       type: assemble
     - id: tool-loop
       type: tool-loop
       config:
-        maxIterations: 1
+        maxIterations: 3
