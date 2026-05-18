@@ -19,6 +19,7 @@ import type {
   Message,
   NormalizedRequest,
   StreamToolCall,
+  SubAgentRegistry,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -47,6 +48,7 @@ import {
   SmartAgentBuilder,
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
+  SmartAgentSubAgent,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
@@ -209,6 +211,22 @@ export interface SmartServerConfig {
   skipModelValidation?: boolean;
   /** Model resolver for PUT /v1/config model changes. When not set, model updates are rejected with 400. */
   modelResolver?: IModelResolver;
+  /**
+   * Nested sub-agents loaded from a top-level `subagents:` YAML block.
+   * Each entry is built into a `SmartAgentSubAgent` and registered via
+   * `SmartAgentBuilder.withSubAgents(...)`.
+   */
+  subAgentConfigs?: SmartServerSubAgentConfig[];
+}
+
+/**
+ * A nested sub-agent declared via the top-level `subagents:` YAML block.
+ * The `config` field is the resolved `SmartServerConfig` for the sub-agent
+ * (without `subagents:` of its own — nested orchestration is not supported).
+ */
+export interface SmartServerSubAgentConfig {
+  name: string;
+  config: Omit<SmartServerConfig, 'log'>;
 }
 
 export interface SmartServerHandle {
@@ -495,6 +513,24 @@ export class SmartServer {
       builder = builder.withClientAdapter(adapter);
     }
 
+    // Build SubAgentRegistry from `subagents:` YAML block (if present).
+    // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
+    // outputs (embedder factories, plugins) but with its own LLM/RAG/MCP/etc.
+    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
+      const registry: SubAgentRegistry = new Map();
+      for (const sub of this.cfg.subAgentConfigs) {
+        const subAgent = await this.buildSubAgent(
+          sub.name,
+          sub.config,
+          fileLogger,
+          mergedEmbedderFactories,
+        );
+        registry.set(sub.name, new SmartAgentSubAgent(sub.name, subAgent));
+        log({ event: 'subagent_built', name: sub.name });
+      }
+      builder = builder.withSubAgents(registry);
+    }
+
     const agentHandle = await builder.build();
     const {
       agent: smartAgent,
@@ -634,6 +670,99 @@ export class SmartServer {
         });
       });
     });
+  }
+
+  /**
+   * Build a `SmartAgent` instance from a nested sub-agent config.
+   *
+   * Mirrors the parent's composition flow but intentionally narrower:
+   *   - reuses the parent's merged embedder factories so plugin-provided
+   *     embedders stay available without a second `pluginLoader.load()`;
+   *   - shares the parent's file logger to keep one log stream;
+   *   - skips features that don't make sense for a nested agent (HTTP
+   *     surface, plugin reranker/queryExpander/outputValidator, MCP
+   *     client DI, custom client adapters, structured pipeline rag.*
+   *     stores). Only the flat `rag:` block is honoured.
+   *
+   * Sub-agents do not recurse — `subagents:` inside a sub-YAML is
+   * rejected at config-parse time, so `subCfg.subAgentConfigs` is
+   * always undefined here.
+   */
+  private async buildSubAgent(
+    _name: string,
+    subCfg: Omit<SmartServerConfig, 'log'>,
+    parentLogger: ILogger,
+    embedderFactories: Record<string, EmbedderFactory>,
+  ): Promise<SmartAgent> {
+    const subPipeline = subCfg.pipeline;
+    const mainTemp = Number(
+      subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,
+    );
+    const mainLlm = subPipeline?.llm?.main
+      ? await makeLlm(subPipeline.llm.main, mainTemp)
+      : await makeDefaultLlm(
+          subCfg.llm.apiKey,
+          subCfg.llm.model ?? 'deepseek-chat',
+          mainTemp,
+        );
+
+    const classifierTemp = Number(
+      subPipeline?.llm?.classifier?.temperature ??
+        subCfg.llm.classifierTemperature ??
+        0.1,
+    );
+    const classifierLlm = subPipeline?.llm?.classifier
+      ? await makeLlm(subPipeline.llm.classifier, classifierTemp)
+      : subPipeline?.llm?.main
+        ? await makeLlm(subPipeline.llm.main, classifierTemp)
+        : await makeDefaultLlm(
+            subCfg.llm.apiKey,
+            subCfg.llm.model ?? 'deepseek-chat',
+            classifierTemp,
+          );
+
+    let subBuilder = new SmartAgentBuilder({
+      mcp: subPipeline?.mcp ?? subCfg.mcp,
+      agent: subCfg.agent,
+      prompts: subCfg.prompts,
+      skipModelValidation: subCfg.skipModelValidation,
+    })
+      .withMainLlm(mainLlm)
+      .withClassifierLlm(classifierLlm)
+      .withLogger(parentLogger)
+      .withMode(subCfg.mode ?? 'smart');
+
+    if (subPipeline?.llm?.helper) {
+      const helperLlm = await makeLlm(
+        subPipeline.llm.helper,
+        Number(subPipeline.llm.helper.temperature ?? 0.1),
+      );
+      subBuilder = subBuilder.withHelperLlm(helperLlm);
+    }
+
+    if (subCfg.rag) {
+      const ragOptions = {
+        injectedEmbedder: subCfg.embedder,
+        extraFactories: embedderFactories,
+      };
+      subBuilder = subBuilder.setToolsRag(
+        await makeRag(subCfg.rag, ragOptions),
+      );
+      subBuilder = subBuilder.setHistoryRag(
+        await makeRag({ ...subCfg.rag }, ragOptions),
+      );
+    }
+
+    if (subCfg.skillManager) {
+      subBuilder = subBuilder.withSkillManager(subCfg.skillManager);
+    }
+
+    if (subCfg.mcpClients && subCfg.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(subCfg.mcpClients);
+    }
+
+    const handle = await subBuilder.build();
+    return handle.agent;
   }
 
   private async _handle(

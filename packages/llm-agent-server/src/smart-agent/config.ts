@@ -3,8 +3,13 @@
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { parse as parseYaml } from 'yaml';
-import type { SmartServerConfig, SmartServerMode } from './smart-server.js';
+import type {
+  SmartServerConfig,
+  SmartServerMode,
+  SmartServerSubAgentConfig,
+} from './smart-server.js';
 
 export type YamlConfig = Record<string, unknown>;
 
@@ -173,6 +178,10 @@ agent:
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
 # pluginDir: ./my-plugins             # Additional plugin directory (loaded after defaults)
+
+# subagents:                          # Optional: nested agents callable from pipeline
+#   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
+#     config: ./agents/code-reviewer.yaml
 `;
 
 export function resolveEnvVars(
@@ -215,10 +224,81 @@ const get = (obj: unknown, ...keys: string[]): unknown =>
     return undefined;
   }, obj);
 
+/**
+ * Recursively parse the top-level `subagents:` block from a YAML config.
+ *
+ * Each entry references a sibling YAML file whose resolved config (sans
+ * `subagents:` itself — nested orchestration is rejected) becomes a
+ * `SmartServerSubAgentConfig`. Relative `config:` paths are resolved
+ * against `configPath`'s directory. A `subagents:` block inside a
+ * sub-YAML is rejected to guard against unbounded recursion.
+ *
+ * Returns `undefined` when the parent YAML has no `subagents:` block or
+ * when `configPath` is not provided (relative paths cannot be resolved).
+ */
+function parseSubAgents(
+  yaml: YamlConfig,
+  configPath: string | undefined,
+  args: ResolveConfigArgs,
+  env: NodeJS.ProcessEnv,
+): SmartServerSubAgentConfig[] | undefined {
+  const raw = (yaml as { subagents?: unknown }).subagents;
+  if (!Array.isArray(raw) || raw.length === 0) return undefined;
+  if (!configPath) {
+    throw new Error(
+      "subagents: parent YAML must be loaded from a file path so 'config' entries can be resolved",
+    );
+  }
+
+  const baseDir = path.dirname(path.resolve(configPath));
+  const out: SmartServerSubAgentConfig[] = [];
+  for (const entry of raw) {
+    if (
+      !entry ||
+      typeof entry !== 'object' ||
+      typeof (entry as { name?: unknown }).name !== 'string' ||
+      typeof (entry as { config?: unknown }).config !== 'string'
+    ) {
+      throw new Error(
+        `subagents[]: each entry needs 'name' and 'config' (got ${JSON.stringify(entry)})`,
+      );
+    }
+    const name = (entry as { name: string }).name;
+    const cfgRel = (entry as { config: string }).config;
+    const subConfigPath = path.isAbsolute(cfgRel)
+      ? cfgRel
+      : path.resolve(baseDir, cfgRel);
+
+    const subYaml = loadYamlConfig(subConfigPath, env);
+    if ((subYaml as { subagents?: unknown }).subagents !== undefined) {
+      throw new Error(
+        `subagent '${name}' must not define its own 'subagents:' (nested orchestration is not supported)`,
+      );
+    }
+    // Recursive call — we just verified the sub YAML has no `subagents:`, so
+    // the parseSubAgents call inside will short-circuit to undefined.
+    const subResolved = resolveSmartServerConfig(args, subYaml, env, {
+      configPath: subConfigPath,
+    });
+    out.push({ name, config: subResolved });
+  }
+  return out;
+}
+
+export interface ResolveSmartServerConfigOptions {
+  /**
+   * Filesystem path of the YAML config that produced `yaml`. Required for
+   * resolving relative `subagents[].config` paths. When omitted, a `subagents:`
+   * block in `yaml` will cause an error.
+   */
+  configPath?: string;
+}
+
 export function resolveSmartServerConfig(
   args: ResolveConfigArgs = {},
   yaml: YamlConfig = {},
   env: NodeJS.ProcessEnv = process.env,
+  options: ResolveSmartServerConfigOptions = {},
 ): Omit<SmartServerConfig, 'log'> {
   const flatApiKey =
     (args['llm-api-key'] as string) ??
@@ -486,6 +566,15 @@ export function resolveSmartServerConfig(
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
+    ...(() => {
+      const subAgentConfigs = parseSubAgents(
+        yaml,
+        options.configPath,
+        args,
+        env,
+      );
+      return subAgentConfigs ? { subAgentConfigs } : {};
+    })(),
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
     ...(yaml.skills
       ? {

@@ -189,6 +189,7 @@ try {
     args as ResolveConfigArgs,
     yaml,
     process.env,
+    { configPath: path.resolve(configPath) },
   );
 } catch (err) {
   process.stderr.write(`Error: ${String(err)}\n`);
