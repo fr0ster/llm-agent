@@ -16,6 +16,7 @@ export interface ISubAgentResult {
 
 export interface ISubAgent {
   readonly name: string;
+  readonly description?: string;
   run(input: ISubAgentInput): Promise<ISubAgentResult>;
 }
 

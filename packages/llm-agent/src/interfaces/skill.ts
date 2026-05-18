@@ -24,6 +24,11 @@ export interface ISkillMeta {
   model?: string;
   context?: 'inline' | 'fork';
   argumentHint?: string;
+  steps?: Array<{
+    id: string;
+    goal: string;
+    expectedTools?: string[];
+  }>;
   /** Vendor-specific extensions (hooks, agent, etc.). */
   [key: string]: unknown;
 }
