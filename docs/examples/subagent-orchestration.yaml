@@ -40,7 +40,14 @@ pipeline:
           type: subagent
           config:
             agent: abap-coder
-            task: "{{inputText}}{% if subResults.review %}\n\nPrevious review feedback:\n{{subResults.review}}{% endif %}"
+            task: |
+              {{inputText}}
+
+              Previous attempt (if any):
+              {{subResults.code}}
+
+              Reviewer feedback (if any):
+              {{subResults.review}}
             outputTo: subResults.code
 
         - id: review-code
