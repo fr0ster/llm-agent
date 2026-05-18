@@ -39,8 +39,11 @@ import type {
   LlmTool,
   McpTool,
   Message,
+  Plan,
   RagResult,
   Result,
+  StepResult,
+  SubAgentRegistry,
   Subprompt,
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
@@ -169,4 +172,17 @@ export interface PipelineContext {
    * streaming content and heartbeats back through the SSE connection.
    */
   yield(chunk: Result<LlmStreamChunk, OrchestratorError>): void;
+
+  // -- Coordinator / subagent orchestration ----------------------------------
+
+  /** Subagent stage outputs written by SubAgentHandler. Keyed by output path. */
+  subResults?: Record<string, unknown>;
+  /** Subagent registry exposed to runtime stages (coordinator, subagent). */
+  subAgents?: SubAgentRegistry;
+  /** Coordinator plan, if a coordinator stage ran. */
+  plan?: Plan;
+  /** Index of the step currently being executed by the coordinator. */
+  currentStepIdx?: number;
+  /** Per-step results captured by the coordinator, keyed by stepId. */
+  stepResults?: Record<string, StepResult>;
 }
