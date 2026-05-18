@@ -5,6 +5,7 @@
  * Custom handlers can be registered by supplying a custom `IPipeline` implementation.
  */
 
+import type { SubAgentRegistry } from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../stage-handler.js';
 import { AssembleHandler } from './assemble.js';
 import { BuildToolQueryHandler } from './build-tool-query.js';
@@ -14,6 +15,7 @@ import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
 import { RerankHandler } from './rerank.js';
 import { SkillSelectHandler } from './skill-select.js';
+import { SubAgentHandler } from './subagent.js';
 import { SummarizeHandler } from './summarize.js';
 import { ToolLoopHandler } from './tool-loop.js';
 import { ToolSelectHandler } from './tool-select.js';
@@ -28,8 +30,10 @@ export type StageHandlerRegistry = Map<string, IStageHandler>;
  * instances. All handlers are stateless — they read/write through the
  * {@link PipelineContext}.
  */
-export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
-  return new Map<string, IStageHandler>([
+export function buildDefaultHandlerRegistry(
+  subAgents?: SubAgentRegistry,
+): StageHandlerRegistry {
+  const registry = new Map<string, IStageHandler>([
     ['classify', new ClassifyHandler()],
     ['summarize', new SummarizeHandler()],
     ['translate', new TranslateHandler()],
@@ -43,6 +47,10 @@ export function buildDefaultHandlerRegistry(): StageHandlerRegistry {
     ['tool-loop', new ToolLoopHandler()],
     ['history-upsert', new HistoryUpsertHandler()],
   ]);
+  if (subAgents && subAgents.size > 0) {
+    registry.set('subagent', new SubAgentHandler(subAgents));
+  }
+  return registry;
 }
 
 export { summarizeAndStore } from './history-upsert.js';

@@ -1,0 +1,24 @@
+# Sub-agent: ABAP code generator.
+# Invoked by an orchestrator via the `subagent` pipeline stage.
+# Must NOT contain: pluginDir, clientAdapter, circuitBreaker,
+#   pipeline.reranker, pipeline.queryExpander, pipeline.outputValidator,
+#   pipeline.rag (object), or subagents.
+
+mode: smart
+
+llm:
+  apiKey: ${OPENAI_API_KEY}
+  model: ${OPENAI_MODEL:-gpt-4o-mini}
+  temperature: 0.2
+
+systemPrompt: "You are an expert ABAP developer. Produce concise, production-grade ABAP code for the given task. Do not explain unless asked."
+
+pipeline:
+  version: "1"
+  stages:
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+      config:
+        maxIterations: 1

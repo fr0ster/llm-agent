@@ -1,0 +1,59 @@
+# Subagent orchestration — DeepSeek variant.
+# Identical pipeline to subagent-orchestration.yaml but routes through DeepSeek
+# for parent and sub-agents (uses the DEEPSEEK_API_KEY from .env).
+#
+# Usage:
+#   DEEPSEEK_API_KEY=sk-... npm run dev -- --config docs/examples/subagent-orchestration-deepseek.yaml
+
+port: 4004
+host: 0.0.0.0
+mode: smart
+
+llm:
+  apiKey: ${DEEPSEEK_API_KEY}
+  endpoint: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+  model: ${DEEPSEEK_MODEL:-deepseek-chat}
+  temperature: 0.7
+
+subagents:
+  - name: abap-coder
+    config: ../../examples/subagents/abap-coder-deepseek.yaml
+  - name: code-reviewer
+    config: ../../examples/subagents/code-reviewer-deepseek.yaml
+
+pipeline:
+  version: "1"
+  stages:
+    - id: assemble
+      type: assemble
+
+    - id: generate-and-review
+      type: repeat
+      maxIterations: 3
+      until: "ctx.subResults?.review?.includes('\"approved\": true')"
+      stages:
+        - id: generate-code
+          type: subagent
+          config:
+            agent: abap-coder
+            task: |
+              {{inputText}}
+
+              Previous attempt (if any):
+              {{subResults.code}}
+
+              Reviewer feedback (if any):
+              {{subResults.review}}
+            outputTo: subResults.code
+
+        - id: review-code
+          type: subagent
+          config:
+            agent: code-reviewer
+            task: "Review this ABAP code:\n{{subResults.code}}"
+            outputTo: subResults.review
+
+    - id: tool-loop
+      type: tool-loop
+      config:
+        maxIterations: 1

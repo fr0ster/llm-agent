@@ -25,7 +25,8 @@ export type BuiltInStageType =
   | 'build-tool-query'
   | 'assemble'
   | 'tool-loop'
-  | 'history-upsert';
+  | 'history-upsert'
+  | 'subagent';
 
 /**
  * Control flow stage types — orchestrate child stages without

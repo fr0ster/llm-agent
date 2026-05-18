@@ -559,6 +559,12 @@ curl http://localhost:4004/v1/chat/completions \
   -d '{"model":"smart-agent","messages":[{"role":"user","content":"Hello"}]}'
 ```
 
+### Subagent orchestration
+
+`docs/examples/subagent-orchestration.yaml` — fan out to a coder + reviewer
+subagent pair and loop until the reviewer approves. References
+`examples/subagents/abap-coder.yaml` and `examples/subagents/code-reviewer.yaml`.
+
 ## Current npm scripts
 
 ```bash
