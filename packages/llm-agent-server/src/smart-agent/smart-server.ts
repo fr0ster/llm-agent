@@ -689,11 +689,14 @@ export class SmartServer {
    * always undefined here.
    */
   private async buildSubAgent(
-    _name: string,
+    name: string,
     subCfg: Omit<SmartServerConfig, 'log'>,
     parentLogger: ILogger,
     embedderFactories: Record<string, EmbedderFactory>,
   ): Promise<SmartAgent> {
+    if (!subCfg.llm?.apiKey && !subCfg.pipeline?.llm?.main) {
+      throw new Error(`subagent '${name}': LLM API key is required`);
+    }
     const subPipeline = subCfg.pipeline;
     const mainTemp = Number(
       subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,

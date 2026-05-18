@@ -275,6 +275,45 @@ function parseSubAgents(
         `subagent '${name}' must not define its own 'subagents:' (nested orchestration is not supported)`,
       );
     }
+
+    // Loudly reject fields that the sub-agent builder silently drops today.
+    // Keeps the contract honest: if a sub YAML declares these, it gets an
+    // error rather than a misleadingly-quiet partial config.
+    const unsupported: string[] = [];
+    if ((subYaml as { pluginDir?: unknown }).pluginDir !== undefined) {
+      unsupported.push('pluginDir');
+    }
+    if ((subYaml as { clientAdapter?: unknown }).clientAdapter !== undefined) {
+      unsupported.push('clientAdapter');
+    }
+    if (
+      (subYaml as { circuitBreaker?: unknown }).circuitBreaker !== undefined
+    ) {
+      unsupported.push('circuitBreaker');
+    }
+    const subPipeline = (subYaml as { pipeline?: unknown }).pipeline;
+    if (subPipeline && typeof subPipeline === 'object') {
+      const p = subPipeline as Record<string, unknown>;
+      if (p.reranker !== undefined) unsupported.push('pipeline.reranker');
+      if (p.queryExpander !== undefined)
+        unsupported.push('pipeline.queryExpander');
+      if (p.outputValidator !== undefined)
+        unsupported.push('pipeline.outputValidator');
+      if (
+        p.rag !== undefined &&
+        p.rag !== null &&
+        typeof p.rag === 'object' &&
+        !Array.isArray(p.rag)
+      ) {
+        unsupported.push('pipeline.rag');
+      }
+    }
+    if (unsupported.length > 0) {
+      throw new Error(
+        `subagent '${name}': unsupported fields [${unsupported.join(', ')}]`,
+      );
+    }
+
     // Recursive call — we just verified the sub YAML has no `subagents:`, so
     // the parseSubAgents call inside will short-circuit to undefined.
     const subResolved = resolveSmartServerConfig(args, subYaml, env, {
