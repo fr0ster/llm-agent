@@ -100,6 +100,12 @@ export type {
   ISkillMeta,
   ISkillResource,
 } from './skill.js';
+export type {
+  ISubAgent,
+  ISubAgentInput,
+  ISubAgentResult,
+  SubAgentRegistry,
+} from './subagent.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
   AgentConfig,
