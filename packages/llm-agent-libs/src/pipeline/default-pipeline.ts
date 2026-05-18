@@ -30,6 +30,7 @@ import type {
   LlmTool,
   Message,
   Result,
+  SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
   NoopQueryExpander,
@@ -88,10 +89,26 @@ const DEFAULT_CONFIG: SmartAgentConfig = {
  * const result = await pipeline.execute(input, history, options, yieldChunk);
  * ```
  */
+/**
+ * Optional construction options for {@link DefaultPipeline}.
+ */
+export interface DefaultPipelineOptions {
+  /**
+   * Sub-agent registry to expose as a `sub_agent_call` tool via the default
+   * handler registry. When omitted or empty, no sub-agent handler is wired in.
+   */
+  subAgents?: SubAgentRegistry;
+}
+
 export class DefaultPipeline implements IPipeline {
   private deps!: PipelineDeps;
   private executor!: PipelineExecutor;
   private stages!: StageDefinition[];
+  private readonly subAgents?: SubAgentRegistry;
+
+  constructor(options: DefaultPipelineOptions = {}) {
+    this.subAgents = options.subAgents;
+  }
 
   // Cached defaults (created once in initialize, reused per request)
   private resolvedTracer!: PipelineContext['tracer'];
@@ -129,7 +146,7 @@ export class DefaultPipeline implements IPipeline {
     this.resolvedLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
 
-    const registry = buildDefaultHandlerRegistry();
+    const registry = buildDefaultHandlerRegistry(this.subAgents);
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);
 
     // Fixed stage list — only tools + history RAG stores

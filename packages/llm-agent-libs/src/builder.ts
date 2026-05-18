@@ -32,6 +32,7 @@ import type {
   IToolCache,
   SmartAgentHandle as SmartAgentHandleBase,
   SmartAgentRagStores,
+  SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CircuitBreaker,
@@ -187,6 +188,7 @@ export class SmartAgentBuilder {
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
   private _connectionStrategy?: IMcpConnectionStrategy;
+  private _subAgents?: SubAgentRegistry;
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
   private _llmCallStrategy?: ILlmCallStrategy;
@@ -489,6 +491,15 @@ export class SmartAgentBuilder {
   /** Set the number of RAG results to retrieve per store. */
   withRagQueryK(k: number): this {
     this._agentOverrides.ragQueryK = k;
+    return this;
+  }
+
+  /**
+   * Register a sub-agent registry. When provided (and non-empty), the default
+   * pipeline wires in a `sub_agent_call` tool that dispatches to these agents.
+   */
+  withSubAgents(registry: SubAgentRegistry): this {
+    this._subAgents = registry;
     return this;
   }
 
@@ -1115,7 +1126,8 @@ export class SmartAgentBuilder {
     }
 
     // ---- Pipeline initialization -------------------------------------------
-    const pipeline = this._pipeline ?? new DefaultPipeline();
+    const pipeline =
+      this._pipeline ?? new DefaultPipeline({ subAgents: this._subAgents });
     pipeline.initialize({
       mainLlm: wrappedMainLlm,
       helperLlm,
