@@ -242,6 +242,29 @@ await agent.closeSession('session-id');  // clears all session-scoped collection
 See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full provider setup,
 scope semantics, and the MCP tool factory.
 
+### Multi-step processes (Coordinator)
+
+The Coordinator stage decomposes a request into a multi-step plan and dispatches each step to a named subagent (or back to the parent agent), aggregating results into a final response.
+
+Minimal YAML to enable it:
+
+```yaml
+coordinator:
+  planning: one-shot          # or replan-on-error
+  dispatch: hybrid            # subagent + self fallback
+  plannerLlm: helper
+
+subagents:
+  - name: my-coder
+    config: ./agents/coder.yaml
+  - name: my-reviewer
+    config: ./agents/reviewer.yaml
+```
+
+The coordinator activates whenever a `coordinator:` block is present — the block itself is the opt-in signal. To fall back to `tool-loop` when there are no subagents or skill steps, set `coordinator.activation: auto`.
+
+See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.
+
 ---
 
 ## Troubleshooting

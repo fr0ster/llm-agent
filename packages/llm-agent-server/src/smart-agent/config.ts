@@ -4,12 +4,92 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import {
+  AutoActivation,
+  ExplicitActivation,
+  HybridDispatch,
+  OneShotPlanning,
+  ReplanOnErrorPlanning,
+  SelfDispatch,
+  SkillStepsPlanning,
+  SubAgentDispatch,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
 import type {
   SmartServerConfig,
   SmartServerMode,
   SmartServerSubAgentConfig,
 } from './smart-server.js';
+
+export interface YamlCoordinator {
+  planning?: 'one-shot' | 'replan-on-error' | 'skill-steps';
+  dispatch?: 'subagent' | 'self' | 'hybrid';
+  activation?: 'auto' | 'explicit';
+  plannerLlm?: 'main' | 'planner' | 'helper';
+  maxSteps?: number;
+  maxRetriesPerStep?: number;
+  failPolicy?: 'abort' | 'continue';
+}
+
+export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
+  switch (name) {
+    case 'one-shot':
+      return new OneShotPlanning(plannerLlm);
+    case 'replan-on-error':
+      return new ReplanOnErrorPlanning(plannerLlm);
+    case 'skill-steps':
+      // SkillStepsPlanning reads `ctx.activeSkillMeta` (populated by
+      // CoordinatorHandler from `ctx.selectedSkills`). No planner LLM
+      // needed — the plan comes directly from the skill's `steps:` block.
+      return new SkillStepsPlanning();
+    default:
+      throw new Error(
+        `Unknown coordinator.planning strategy: '${name}'. Allowed: one-shot, replan-on-error, skill-steps.`,
+      );
+  }
+}
+
+export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
+  switch (name) {
+    case 'subagent':
+      return new SubAgentDispatch();
+    case 'self':
+      if (!fallbackLlm) {
+        throw new Error(
+          'coordinator.dispatch=self requires a planner or main LLM',
+        );
+      }
+      return new SelfDispatch(fallbackLlm);
+    case 'hybrid':
+      if (!fallbackLlm) {
+        throw new Error(
+          'coordinator.dispatch=hybrid requires a planner or main LLM',
+        );
+      }
+      return new HybridDispatch(
+        new SubAgentDispatch(),
+        new SelfDispatch(fallbackLlm),
+      );
+    default:
+      throw new Error(
+        `Unknown coordinator.dispatch strategy: '${name}'. Allowed: subagent, self, hybrid.`,
+      );
+  }
+}
+
+export function resolveCoordinatorActivation(name: string) {
+  switch (name) {
+    case 'auto':
+      return new AutoActivation();
+    case 'explicit':
+      return new ExplicitActivation();
+    default:
+      throw new Error(
+        `Unknown coordinator.activation strategy: '${name}'. Allowed: auto, explicit.`,
+      );
+  }
+}
 
 export type YamlConfig = Record<string, unknown>;
 
@@ -181,7 +261,19 @@ log: smart-server.log                 # path to log file; omit for stdout
 
 # subagents:                          # Optional: nested agents callable from pipeline
 #   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
+#     description: |                  # Optional. Shown to the Coordinator planner LLM
+#       Reviews code and returns      # so it can pick this agent for the right step.
+#       structured JSON.
 #     config: ./agents/code-reviewer.yaml
+
+# coordinator:                        # Optional: enable autonomous plan-execute loop
+#   planning: one-shot                # one-shot | replan-on-error | skill-steps
+#   dispatch: subagent                # subagent | self | hybrid
+#   activation: explicit              # explicit (default) | auto
+#   plannerLlm: main                  # main | planner | helper (unused by skill-steps)
+#   maxSteps: 12
+#   maxRetriesPerStep: 1
+#   failPolicy: abort                 # abort | continue
 `;
 
 export function resolveEnvVars(
@@ -265,6 +357,12 @@ function parseSubAgents(
     }
     const name = (entry as { name: string }).name;
     const cfgRel = (entry as { config: string }).config;
+    const description = (entry as { description?: unknown }).description;
+    if (description !== undefined && typeof description !== 'string') {
+      throw new Error(
+        `subagents[].description must be a string when present (got ${JSON.stringify(description)})`,
+      );
+    }
     const subConfigPath = path.isAbsolute(cfgRel)
       ? cfgRel
       : path.resolve(baseDir, cfgRel);
@@ -319,7 +417,7 @@ function parseSubAgents(
     const subResolved = resolveSmartServerConfig(args, subYaml, env, {
       configPath: subConfigPath,
     });
-    out.push({ name, config: subResolved });
+    out.push({ name, description, config: subResolved });
   }
   return out;
 }
@@ -613,6 +711,11 @@ export function resolveSmartServerConfig(
         env,
       );
       return subAgentConfigs ? { subAgentConfigs } : {};
+    })(),
+    ...(() => {
+      const coordinatorYaml = (yaml as { coordinator?: YamlCoordinator })
+        .coordinator;
+      return coordinatorYaml ? { coordinatorYaml } : {};
     })(),
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
     ...(yaml.skills

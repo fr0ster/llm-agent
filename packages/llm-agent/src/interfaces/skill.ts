@@ -24,6 +24,19 @@ export interface ISkillMeta {
   model?: string;
   context?: 'inline' | 'fork';
   argumentHint?: string;
+  steps?: Array<{
+    id: string;
+    goal: string;
+    /**
+     * Optional subagent name to route this step to. Read by SkillStepsPlanning
+     * → propagated to PlanStep.agent → resolved by SubAgentDispatch /
+     * HybridDispatch. Omit when the surrounding dispatch strategy is
+     * registry-free (SelfDispatch) or when HybridDispatch should fall back
+     * to self.
+     */
+    agent?: string;
+    expectedTools?: string[];
+  }>;
   /** Vendor-specific extensions (hooks, agent, etc.). */
   [key: string]: unknown;
 }

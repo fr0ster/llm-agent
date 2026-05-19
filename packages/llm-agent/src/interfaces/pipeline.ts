@@ -26,7 +26,9 @@ export type BuiltInStageType =
   | 'assemble'
   | 'tool-loop'
   | 'history-upsert'
-  | 'subagent';
+  | 'subagent'
+  | 'coordinator'
+  | 'coordinator-activate';
 
 /**
  * Control flow stage types — orchestrate child stages without

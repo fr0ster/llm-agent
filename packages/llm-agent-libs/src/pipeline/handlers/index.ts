@@ -5,11 +5,19 @@
  * Custom handlers can be registered by supplying a custom `IPipeline` implementation.
  */
 
-import type { SubAgentRegistry } from '@mcp-abap-adt/llm-agent';
+import type {
+  IActivationStrategy,
+  SubAgentRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../stage-handler.js';
 import { AssembleHandler } from './assemble.js';
 import { BuildToolQueryHandler } from './build-tool-query.js';
 import { ClassifyHandler } from './classify.js';
+import {
+  CoordinatorHandler,
+  type CoordinatorHandlerDeps,
+} from './coordinator.js';
+import { CoordinatorActivateHandler } from './coordinator-activate.js';
 import { ExpandHandler } from './expand.js';
 import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
@@ -30,8 +38,19 @@ export type StageHandlerRegistry = Map<string, IStageHandler>;
  * instances. All handlers are stateless — they read/write through the
  * {@link PipelineContext}.
  */
+export interface BuildHandlerRegistryOptions {
+  subAgents?: SubAgentRegistry;
+  coordinator?: CoordinatorHandlerDeps;
+  /**
+   * Activation strategy used by the `coordinator-activate` runtime stage to
+   * compute `ctx.coordinatorActive`. Required when `coordinator` is set —
+   * without it, coordinator activation cannot honour runtime skill state.
+   */
+  coordinatorActivation?: IActivationStrategy;
+}
+
 export function buildDefaultHandlerRegistry(
-  subAgents?: SubAgentRegistry,
+  opts: BuildHandlerRegistryOptions = {},
 ): StageHandlerRegistry {
   const registry = new Map<string, IStageHandler>([
     ['classify', new ClassifyHandler()],
@@ -47,8 +66,17 @@ export function buildDefaultHandlerRegistry(
     ['tool-loop', new ToolLoopHandler()],
     ['history-upsert', new HistoryUpsertHandler()],
   ]);
-  if (subAgents && subAgents.size > 0) {
-    registry.set('subagent', new SubAgentHandler(subAgents));
+  if (opts.subAgents && opts.subAgents.size > 0) {
+    registry.set('subagent', new SubAgentHandler(opts.subAgents));
+  }
+  if (opts.coordinator) {
+    registry.set('coordinator', new CoordinatorHandler(opts.coordinator));
+  }
+  if (opts.coordinatorActivation) {
+    registry.set(
+      'coordinator-activate',
+      new CoordinatorActivateHandler(opts.coordinatorActivation),
+    );
   }
   return registry;
 }

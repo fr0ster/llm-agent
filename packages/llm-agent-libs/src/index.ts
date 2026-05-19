@@ -45,6 +45,19 @@ export {
   type HotReloadableConfig,
 } from './config/config-watcher.js';
 // ---------------------------------------------------------------------------
+// Coordinator strategies
+// ---------------------------------------------------------------------------
+export {
+  AutoActivation,
+  ExplicitActivation,
+  HybridDispatch,
+  OneShotPlanning,
+  ReplanOnErrorPlanning,
+  SelfDispatch,
+  SkillStepsPlanning,
+  SubAgentDispatch,
+} from './coordinator/index.js';
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 export {
@@ -61,14 +74,12 @@ export type {
   PipelineDeps,
   PipelineResult,
 } from './interfaces/pipeline.js';
-
 // ---------------------------------------------------------------------------
 // Logger
 // ---------------------------------------------------------------------------
 export { DefaultRequestLogger } from './logger/default-request-logger.js';
 export { NoopRequestLogger } from './logger/noop-request-logger.js';
 export { SessionLogger } from './logger/session-logger.js';
-
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
@@ -79,7 +90,6 @@ export {
   type MetricsSnapshot,
 } from './metrics/in-memory-metrics.js';
 export { NoopMetrics } from './metrics/noop-metrics.js';
-
 // ---------------------------------------------------------------------------
 // Pipeline
 // ---------------------------------------------------------------------------
@@ -100,7 +110,6 @@ export type {
   LoadedPlugins,
   PluginExports,
 } from './plugins/index.js';
-
 // ---------------------------------------------------------------------------
 // Plugins
 // ---------------------------------------------------------------------------
@@ -121,13 +130,11 @@ export {
   makeDefaultLlm,
   makeLlm,
 } from './providers.js';
-
 // ---------------------------------------------------------------------------
 // Reranker
 // ---------------------------------------------------------------------------
 export { LlmReranker } from './reranker/llm-reranker.js';
 export { NoopReranker } from './reranker/noop-reranker.js';
-
 // ---------------------------------------------------------------------------
 // Resilience
 // ---------------------------------------------------------------------------
@@ -137,13 +144,11 @@ export {
   type TokenBucketConfig,
   TokenBucketRateLimiter,
 } from './resilience/token-bucket-rate-limiter.js';
-
 // ---------------------------------------------------------------------------
 // Session
 // ---------------------------------------------------------------------------
 export { NoopSessionManager } from './session/noop-session-manager.js';
 export { SessionManager } from './session/session-manager.js';
-
 // ---------------------------------------------------------------------------
 // Skills
 // ---------------------------------------------------------------------------
