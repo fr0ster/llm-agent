@@ -4,12 +4,86 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import {
+  AutoActivation,
+  ExplicitActivation,
+  HybridDispatch,
+  OneShotPlanning,
+  ReplanOnErrorPlanning,
+  SelfDispatch,
+  SubAgentDispatch,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
 import type {
   SmartServerConfig,
   SmartServerMode,
   SmartServerSubAgentConfig,
 } from './smart-server.js';
+
+export interface YamlCoordinator {
+  planning?: 'one-shot' | 'replan-on-error';
+  dispatch?: 'subagent' | 'self' | 'hybrid';
+  activation?: 'auto' | 'explicit';
+  plannerLlm?: 'main' | 'planner' | 'helper';
+  maxSteps?: number;
+  maxRetriesPerStep?: number;
+  failPolicy?: 'abort' | 'continue';
+}
+
+export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
+  switch (name) {
+    case 'one-shot':
+      return new OneShotPlanning(plannerLlm);
+    case 'replan-on-error':
+      return new ReplanOnErrorPlanning(plannerLlm);
+    default:
+      throw new Error(
+        `Unknown coordinator.planning strategy: '${name}'. Allowed: one-shot, replan-on-error.`,
+      );
+  }
+}
+
+export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
+  switch (name) {
+    case 'subagent':
+      return new SubAgentDispatch();
+    case 'self':
+      if (!fallbackLlm) {
+        throw new Error(
+          'coordinator.dispatch=self requires a planner or main LLM',
+        );
+      }
+      return new SelfDispatch(fallbackLlm);
+    case 'hybrid':
+      if (!fallbackLlm) {
+        throw new Error(
+          'coordinator.dispatch=hybrid requires a planner or main LLM',
+        );
+      }
+      return new HybridDispatch(
+        new SubAgentDispatch(),
+        new SelfDispatch(fallbackLlm),
+      );
+    default:
+      throw new Error(
+        `Unknown coordinator.dispatch strategy: '${name}'. Allowed: subagent, self, hybrid.`,
+      );
+  }
+}
+
+export function resolveCoordinatorActivation(name: string) {
+  switch (name) {
+    case 'auto':
+      return new AutoActivation();
+    case 'explicit':
+      return new ExplicitActivation();
+    default:
+      throw new Error(
+        `Unknown coordinator.activation strategy: '${name}'. Allowed: auto, explicit.`,
+      );
+  }
+}
 
 export type YamlConfig = Record<string, unknown>;
 
@@ -182,6 +256,15 @@ log: smart-server.log                 # path to log file; omit for stdout
 # subagents:                          # Optional: nested agents callable from pipeline
 #   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
 #     config: ./agents/code-reviewer.yaml
+
+# coordinator:                        # Optional: enable autonomous plan-execute loop
+#   planning: one-shot                # one-shot | replan-on-error
+#   dispatch: subagent                # subagent | self | hybrid
+#   activation: auto                  # auto | explicit
+#   plannerLlm: main                  # main | planner | helper
+#   maxSteps: 12
+#   maxRetriesPerStep: 1
+#   failPolicy: abort                 # abort | continue
 `;
 
 export function resolveEnvVars(
@@ -613,6 +696,11 @@ export function resolveSmartServerConfig(
         env,
       );
       return subAgentConfigs ? { subAgentConfigs } : {};
+    })(),
+    ...(() => {
+      const coordinatorYaml = (yaml as { coordinator?: YamlCoordinator })
+        .coordinator;
+      return coordinatorYaml ? { coordinatorYaml } : {};
     })(),
     ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
     ...(yaml.skills

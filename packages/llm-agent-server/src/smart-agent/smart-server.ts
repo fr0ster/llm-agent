@@ -217,6 +217,11 @@ export interface SmartServerConfig {
    * `SmartAgentBuilder.withSubAgents(...)`.
    */
   subAgentConfigs?: SmartServerSubAgentConfig[];
+  /**
+   * Raw coordinator YAML block. Translated to concrete strategy instances by
+   * `SmartServer.start()` once the parent LLMs are built.
+   */
+  coordinatorYaml?: import('./config.js').YamlCoordinator;
 }
 
 /**
@@ -303,10 +308,19 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import {
+  resolveCoordinatorActivation,
+  resolveCoordinatorDispatch,
+  resolveCoordinatorPlanning,
+} from './config.js';
+
 export {
   generateConfigTemplate,
   loadYamlConfig,
   type ResolveConfigArgs,
+  resolveCoordinatorActivation,
+  resolveCoordinatorDispatch,
+  resolveCoordinatorPlanning,
   resolveEnvVars,
   resolveSmartServerConfig,
   YAML_TEMPLATE,
@@ -529,6 +543,31 @@ export class SmartServer {
         log({ event: 'subagent_built', name: sub.name });
       }
       builder = builder.withSubAgents(registry);
+    }
+
+    // ---- Coordinator (autonomous plan-execute loop) ------------------------
+    const coordCfg = this.cfg.coordinatorYaml;
+    if (coordCfg) {
+      // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
+      // 'helper' → helperLlm if present, else fall back to mainLlm.
+      const plannerLlm =
+        coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+      builder = builder.withCoordinator({
+        planning: resolveCoordinatorPlanning(
+          coordCfg.planning ?? 'one-shot',
+          plannerLlm,
+        ),
+        dispatch: resolveCoordinatorDispatch(
+          coordCfg.dispatch ?? 'subagent',
+          plannerLlm,
+        ),
+        activation: resolveCoordinatorActivation(coordCfg.activation ?? 'auto'),
+        plannerLlm,
+        maxSteps: coordCfg.maxSteps,
+        maxRetriesPerStep: coordCfg.maxRetriesPerStep,
+        failPolicy: coordCfg.failPolicy,
+      });
+      log({ event: 'coordinator_configured', config: coordCfg });
     }
 
     const agentHandle = await builder.build();
