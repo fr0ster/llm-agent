@@ -92,6 +92,36 @@ describe('DefaultPipeline coordinator stage wiring', () => {
     assert.equal(findStage(stages, 'tool-loop')?.when, undefined);
   });
 
+  it('coordinator config without activation → defaults to ExplicitActivation, handler is registered', () => {
+    // Reviewer scenario: direct DefaultPipeline construction with planning +
+    // dispatch but no activation. Must NOT result in an unknown
+    // coordinator-activate stage at runtime.
+    const { deps } = makeDefaultDeps();
+    const pipeline = new DefaultPipeline({
+      coordinator: {
+        planning: new OneShotPlanning(deps.mainLlm),
+        dispatch: new SelfDispatch(deps.mainLlm),
+        // activation: intentionally omitted
+      },
+    });
+    pipeline.initialize(buildDeps());
+    const stages = getStages(pipeline);
+    assert.ok(
+      findStage(stages, 'coordinator-activate'),
+      'coordinator-activate must be in the stage list',
+    );
+    // Sanity: the underlying handler registry must include the
+    // coordinator-activate handler. We verify indirectly by inspecting
+    // the executor's known stage types.
+    const executor = (
+      pipeline as unknown as { executor: { handlers: Map<string, unknown> } }
+    ).executor;
+    assert.ok(
+      executor.handlers.has('coordinator-activate'),
+      'coordinator-activate handler must be registered when coordinator is configured',
+    );
+  });
+
   it('stage ordering: coordinator-activate runs after skill-select, before coordinator/tool-loop', () => {
     const { deps } = makeDefaultDeps();
     const pipeline = new DefaultPipeline({

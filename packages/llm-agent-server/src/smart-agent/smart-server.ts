@@ -569,15 +569,17 @@ export class SmartServer {
       // 'helper' → helperLlm if present, else fall back to mainLlm.
       const plannerLlm =
         coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+      // For 'skill-steps' planning the default dispatch is 'hybrid' rather
+      // than 'subagent': skill-step `agent:` is optional, so steps without
+      // an explicit agent need a self-LLM fallback. Users can still pin
+      // dispatch: subagent explicitly when every step declares `agent:`.
+      const planningKind = coordCfg.planning ?? 'one-shot';
+      const dispatchKind =
+        coordCfg.dispatch ??
+        (planningKind === 'skill-steps' ? 'hybrid' : 'subagent');
       builder = builder.withCoordinator({
-        planning: resolveCoordinatorPlanning(
-          coordCfg.planning ?? 'one-shot',
-          plannerLlm,
-        ),
-        dispatch: resolveCoordinatorDispatch(
-          coordCfg.dispatch ?? 'subagent',
-          plannerLlm,
-        ),
+        planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
+        dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm),
         // Default to 'explicit' — the presence of a `coordinator:` block in
         // YAML is itself the opt-in signal. Users that want the auto-fallback
         // semantics (no subagents and no skill steps → tool-loop) must set

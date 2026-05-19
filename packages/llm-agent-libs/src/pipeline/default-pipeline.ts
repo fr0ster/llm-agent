@@ -45,6 +45,7 @@ import type {
 } from '../agent.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
+import { ExplicitActivation } from '../coordinator/activation/explicit.js';
 import type {
   IPipeline,
   PipelineDeps,
@@ -172,8 +173,13 @@ export class DefaultPipeline implements IPipeline {
               failPolicy: this.coordinator?.failPolicy ?? 'abort',
             }
           : undefined,
+      // Default to ExplicitActivation when caller passes a coordinator config
+      // without an activation strategy. Matches SmartAgentBuilder.withCoordinator
+      // semantics: presence of coordinator config IS the opt-in signal.
+      // Without this default, `_buildStages()` would emit a `coordinator-activate`
+      // stage whose handler is unregistered → unknown-stage runtime error.
       coordinatorActivation: coordinatorConfigured
-        ? this.coordinator?.activation
+        ? (this.coordinator?.activation ?? new ExplicitActivation())
         : undefined,
     });
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);

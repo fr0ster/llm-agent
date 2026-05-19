@@ -36,6 +36,21 @@ describe('SkillStepsPlanning', () => {
     assert.match(plan.rationale ?? '', /create-and-test/);
   });
 
+  it('propagates step.agent through to PlanStep.agent for SubAgent/Hybrid dispatch', async () => {
+    const meta: ISkillMeta = {
+      name: 'routed-process',
+      description: 'two-agent process',
+      steps: [
+        { id: 'gen', goal: 'Generate code', agent: 'abap-coder' },
+        { id: 'rev', goal: 'Review code', agent: 'reviewer' },
+      ],
+    };
+    const strategy = new SkillStepsPlanning();
+    const plan = await strategy.buildInitialPlan(makeCtx(meta));
+    assert.equal(plan.steps[0].agent, 'abap-coder');
+    assert.equal(plan.steps[1].agent, 'reviewer');
+  });
+
   it('throws when no active skill with steps is present', async () => {
     const strategy = new SkillStepsPlanning();
     await assert.rejects(

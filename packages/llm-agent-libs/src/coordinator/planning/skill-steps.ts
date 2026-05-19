@@ -43,6 +43,7 @@ export class SkillStepsPlanning implements IPlanningStrategy {
     const steps: PlanStep[] = meta.steps.map((s) => ({
       id: s.id,
       goal: s.goal,
+      agent: s.agent,
       expectedTools: s.expectedTools,
       status: 'pending',
     }));
