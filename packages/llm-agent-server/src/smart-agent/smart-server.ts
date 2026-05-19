@@ -578,7 +578,13 @@ export class SmartServer {
           coordCfg.dispatch ?? 'subagent',
           plannerLlm,
         ),
-        activation: resolveCoordinatorActivation(coordCfg.activation ?? 'auto'),
+        // Default to 'explicit' — the presence of a `coordinator:` block in
+        // YAML is itself the opt-in signal. Users that want the auto-fallback
+        // semantics (no subagents and no skill steps → tool-loop) must set
+        // `activation: auto` explicitly.
+        activation: resolveCoordinatorActivation(
+          coordCfg.activation ?? 'explicit',
+        ),
         plannerLlm,
         maxSteps: coordCfg.maxSteps,
         maxRetriesPerStep: coordCfg.maxRetriesPerStep,

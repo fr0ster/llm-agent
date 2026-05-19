@@ -68,7 +68,7 @@ import {
   type ContextAssemblerConfig,
 } from './context/context-assembler.js';
 import {
-  AutoActivation,
+  ExplicitActivation,
   OneShotPlanning,
   SubAgentDispatch,
 } from './coordinator/index.js';
@@ -515,12 +515,17 @@ export class SmartAgentBuilder {
   /**
    * Enable the coordinator orchestration mode. When set, the pipeline swaps
    * the tool-loop stage for a plan-then-dispatch stage.
+   *
+   * Activation defaults to {@link ExplicitActivation} — calling this method is
+   * itself the opt-in signal. Pass `activation: new AutoActivation()` if you
+   * want graceful degradation back to `tool-loop` when neither subagents nor a
+   * structured skill are present at request time.
    */
   withCoordinator(cfg: ICoordinatorConfig = {}): this {
     this._coordinator = {
       planning: cfg.planning,
       dispatch: cfg.dispatch,
-      activation: cfg.activation ?? new AutoActivation(),
+      activation: cfg.activation ?? new ExplicitActivation(),
       plannerLlm: cfg.plannerLlm,
       maxSteps: cfg.maxSteps ?? 12,
       maxRetriesPerStep: cfg.maxRetriesPerStep ?? 1,
