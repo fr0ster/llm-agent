@@ -2345,3 +2345,241 @@ const agent = new SmartAgent(deps, { maxIterations: 5, maxToolCalls: 10, ragQuer
 const result = await agent.process('What is the answer?');
 assert.equal(llm.callCount, 1);
 ```
+
+---
+
+## Subagent orchestration & Coordinator
+
+The Coordinator turns a single `SmartAgent` into a **multi-agent pipeline**. You compose a registry of
+`ISubAgent` implementations, attach a `ICoordinatorConfig`, and the Coordinator handles planning,
+dispatch, retries, and replanning transparently — the outer `agent.process(task)` call remains
+unchanged to callers.
+
+### ISubAgent contract
+
+Any class that implements `ISubAgent` can be registered and invoked by the Coordinator — not just
+`SmartAgent`-wrapped instances. This makes it trivial to integrate external microservices, specialised
+models, or any async operation as a first-class participant in a multi-agent plan.
+
+```ts
+import type { ISubAgent, ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+
+interface ISubAgent {
+  readonly name: string;
+  readonly description?: string;
+  run(input: ISubAgentInput): Promise<ISubAgentResult>;
+}
+
+interface ISubAgentInput {
+  task: string;
+  sessionId?: string;
+  signal?: AbortSignal;
+  context?: Record<string, unknown>;
+}
+
+interface ISubAgentResult {
+  output: string;
+  toolCalls?: unknown[];
+  usage?: { totalTokens?: number };
+  metadata?: Record<string, unknown>;
+}
+```
+
+**Custom implementation — HTTP microservice subagent:**
+
+```ts
+import type { ISubAgent, ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+
+class RemoteAnalystSubAgent implements ISubAgent {
+  readonly name = 'remote-analyst';
+  readonly description = 'Calls external analyst microservice via HTTP.';
+  constructor(private endpoint: string) {}
+  async run(input: ISubAgentInput): Promise<ISubAgentResult> {
+    const res = await fetch(this.endpoint, {
+      method: 'POST',
+      body: JSON.stringify({ task: input.task }),
+      signal: input.signal,
+    });
+    const data = await res.json() as { text: string };
+    return { output: data.text };
+  }
+}
+```
+
+### Building a multi-agent SmartAgent
+
+Two patterns are supported depending on whether you prefer inline composition or explicit registry
+management (useful for dynamic / per-tenant wiring).
+
+**Pattern A — wrap existing SmartAgents inline:**
+
+```ts
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+
+const coderHandle = await new SmartAgentBuilder()
+  .withMainLlm(coderLlm)
+  .withMcpClients(mcpClients)
+  .withSystemPrompt('You are an ABAP coder.')
+  .build();
+
+const reviewerHandle = await new SmartAgentBuilder()
+  .withMainLlm(reviewerLlm)
+  .withSystemPrompt('Review code. Return JSON {approved, issues}.')
+  .build();
+
+const parent = await new SmartAgentBuilder()
+  .withMainLlm(mainLlm)
+  .withSubAgent('abap-coder', coderHandle.agent, { description: 'Writes ABAP code.' })
+  .withSubAgent('reviewer',   reviewerHandle.agent, { description: 'Reviews code.' })
+  .build();
+```
+
+`.withSubAgent` accepts either a raw `SmartAgent` (automatically wrapped via `SmartAgentSubAgent`) or
+any object that already implements `ISubAgent`.
+
+**Pattern B — pre-build a registry (dynamic / per-tenant composition):**
+
+```ts
+import { SmartAgentBuilder, SmartAgentSubAgent } from '@mcp-abap-adt/llm-agent-libs';
+import type { SubAgentRegistry } from '@mcp-abap-adt/llm-agent';
+
+const registry: SubAgentRegistry = new Map();
+registry.set('abap-coder', new SmartAgentSubAgent('abap-coder', coderHandle.agent,
+  { description: 'Writes ABAP code.' }));
+registry.set('remote-analyst', new RemoteAnalystSubAgent('https://analyst.example/api'));
+
+const parent = await new SmartAgentBuilder()
+  .withMainLlm(mainLlm)
+  .withSubAgents(registry)
+  .build();
+```
+
+The registry can hold **any** `ISubAgent` — `SmartAgentSubAgent`-wrapped instances and custom
+implementations coexist in the same map.
+
+### Activating the Coordinator
+
+Registering subagents is not enough on its own — calling `.withCoordinator()` opts the agent into
+Coordinator-driven execution. Without it, the subagent registry is inert.
+
+```ts
+import {
+  AutoActivation,
+  HybridDispatch,
+  ReplanOnErrorPlanning,
+  SelfDispatch,
+  SubAgentDispatch,
+} from '@mcp-abap-adt/llm-agent-libs';
+
+const parent = await new SmartAgentBuilder()
+  .withMainLlm(mainLlm)
+  .withSubAgent('abap-coder', coderHandle.agent, { description: 'Writes ABAP code.' })
+  .withSubAgent('reviewer',   reviewerHandle.agent, { description: 'Reviews code.' })
+  .withCoordinator({
+    planning:          new ReplanOnErrorPlanning(plannerLlm),
+    dispatch:          new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(mainLlm)),
+    activation:        new AutoActivation(),
+    plannerLlm,
+    maxSteps:          8,
+    maxRetriesPerStep: 1,
+    failPolicy:        'continue',
+  })
+  .build();
+```
+
+**Defaults when `.withCoordinator()` is called with no arguments:**
+
+| Field | Default |
+|---|---|
+| `planning` | `OneShotPlanning(mainLlm)` |
+| `dispatch` | `SubAgentDispatch()` |
+| `activation` | `AutoActivation()` |
+| `maxSteps` | 12 |
+| `maxRetriesPerStep` | 1 |
+| `failPolicy` | `'abort'` |
+
+`AutoActivation` engages the Coordinator when the registry is non-empty **or** when the active skill
+carries a `steps:` frontmatter block. Use `ExplicitActivation` to require manual opt-in per request.
+
+### Custom strategies (extending the Coordinator)
+
+All three strategy interfaces — `IPlanningStrategy`, `IDispatchStrategy`, and `IActivationStrategy`
+— follow the decorator pattern. Built-in strategies compose freely, and custom implementations only
+need to implement a single method.
+
+**Example — budget-aware dispatch that falls back to a cheaper model after a token threshold:**
+
+```ts
+import type {
+  IDispatchStrategy,
+  ICoordinatorContext,
+  PlanStep,
+  StepResult,
+} from '@mcp-abap-adt/llm-agent';
+
+class BudgetAwareDispatch implements IDispatchStrategy {
+  readonly name = 'budget-aware';
+  private spent = 0;
+  constructor(
+    private readonly maxTokens: number,
+    private readonly primary: IDispatchStrategy,
+    private readonly fallback: IDispatchStrategy,
+  ) {}
+  async dispatch(step: PlanStep, ctx: ICoordinatorContext): Promise<StepResult> {
+    const target = this.spent < this.maxTokens ? this.primary : this.fallback;
+    const result = await target.dispatch(step, ctx);
+    this.spent += result.usage?.totalTokens ?? 0;
+    return result;
+  }
+}
+```
+
+Wire it via the builder, composing freely with other strategies:
+
+```ts
+.withCoordinator({
+  dispatch: new BudgetAwareDispatch(
+    50_000,
+    new SubAgentDispatch(),
+    new SelfDispatch(cheapLlm),
+  ),
+  // planning and activation use defaults
+})
+```
+
+Strategies nest arbitrarily — `new BudgetAwareDispatch(n, new CacheDispatch(new SubAgentDispatch()), new SelfDispatch(cheapLlm))` is valid. The same decorator pattern applies to `IPlanningStrategy` and `IActivationStrategy`.
+
+### Heterogeneous LLM routing
+
+Each subagent is constructed through its own `SmartAgentBuilder` call with its own `withMainLlm(...)`,
+`withMcpClients(...)`, RAG stores, and classifier. The parent's `mainLlm`, the coordinator's
+`plannerLlm`, and each subagent's LLM are fully independent — they can come from different providers.
+
+```ts
+import { makeLlm, SmartAgentBuilder, ReplanOnErrorPlanning, SubAgentDispatch, AutoActivation } from '@mcp-abap-adt/llm-agent-libs';
+
+const plannerLlm  = await makeLlm({ provider: 'deepseek',   apiKey: process.env.DEEPSEEK_API_KEY!,   model: 'deepseek-chat' });
+const coderLlm    = await makeLlm({ provider: 'sap-ai-sdk', model: 'gpt-4o', resourceGroup: 'default' });
+const reviewerLlm = await makeLlm({ provider: 'anthropic',  apiKey: process.env.ANTHROPIC_API_KEY!,  model: 'claude-haiku-4-5' });
+
+const coderHandle    = await new SmartAgentBuilder().withMainLlm(coderLlm).build();
+const reviewerHandle = await new SmartAgentBuilder().withMainLlm(reviewerLlm).build();
+
+const parent = await new SmartAgentBuilder()
+  .withMainLlm(coderLlm)                // required by build(); unused when Coordinator activates
+  .withSubAgent('coder',    coderHandle.agent,    { description: 'Writes ABAP code.' })
+  .withSubAgent('reviewer', reviewerHandle.agent, { description: 'Reviews code, JSON output.' })
+  .withCoordinator({
+    planning:   new ReplanOnErrorPlanning(plannerLlm),   // DeepSeek — cheap
+    dispatch:   new SubAgentDispatch(),
+    activation: new AutoActivation(),
+    plannerLlm,
+  })
+  .build();
+```
+
+The result: planning uses DeepSeek (low cost), code generation uses SAP AI Core gpt-4o (quality),
+review uses Claude Haiku (fast). All three providers are exercised in a single end-to-end
+`parent.agent.process(task)` call.
+
+See `docs/PERFORMANCE.md` for cost analysis and token-budget tuning guidance.
