@@ -252,7 +252,6 @@ Minimal YAML to enable it:
 coordinator:
   planning: one-shot          # or replan-on-error
   dispatch: hybrid            # subagent + self fallback
-  activation: auto
   plannerLlm: helper
 
 subagents:
@@ -262,7 +261,7 @@ subagents:
     config: ./agents/reviewer.yaml
 ```
 
-The coordinator activates only when `subagents:` is non-empty or the active skill has structured `steps:` — otherwise the pipeline behaves as before (single `tool-loop`).
+The coordinator activates whenever a `coordinator:` block is present — the block itself is the opt-in signal. To fall back to `tool-loop` when there are no subagents or skill steps, set `coordinator.activation: auto`.
 
 See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.
 

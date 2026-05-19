@@ -964,8 +964,8 @@ pluggable:
   - `SelfDispatch` — call the agent's own LLM (no subagent needed).
   - `HybridDispatch` — try a primary, fall back to a secondary.
 - **`IActivationStrategy`** — when the coordinator activates at all.
-  - `AutoActivation` — activate when subagents exist OR skill has steps.
-  - `ExplicitActivation` — require `withCoordinator()` opt-in.
+  - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or setting a YAML `coordinator:` block is itself the opt-in signal.
+  - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
 
 ### Heterogeneous LLM routing
 
@@ -981,7 +981,6 @@ new SmartAgentBuilder()
   .withCoordinator({
     planning: new ReplanOnErrorPlanning(plannerLlm),
     dispatch: new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(main)),
-    activation: new AutoActivation(),
   })
   .build();
 ```
@@ -992,7 +991,6 @@ YAML usage:
 coordinator:
   planning: replan-on-error
   dispatch: hybrid
-  activation: auto
   plannerLlm: helper
 ```
 

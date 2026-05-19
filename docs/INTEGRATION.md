@@ -2464,7 +2464,7 @@ Coordinator-driven execution. Without it, the subagent registry is inert.
 
 ```ts
 import {
-  AutoActivation,
+  ExplicitActivation,
   HybridDispatch,
   ReplanOnErrorPlanning,
   SelfDispatch,
@@ -2478,7 +2478,6 @@ const parent = await new SmartAgentBuilder()
   .withCoordinator({
     planning:          new ReplanOnErrorPlanning(plannerLlm),
     dispatch:          new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(mainLlm)),
-    activation:        new AutoActivation(),
     plannerLlm,
     maxSteps:          8,
     maxRetriesPerStep: 1,
@@ -2493,13 +2492,12 @@ const parent = await new SmartAgentBuilder()
 |---|---|
 | `planning` | `OneShotPlanning(mainLlm)` |
 | `dispatch` | `SubAgentDispatch()` |
-| `activation` | `AutoActivation()` |
+| `activation` | `ExplicitActivation()` |
 | `maxSteps` | 12 |
 | `maxRetriesPerStep` | 1 |
 | `failPolicy` | `'abort'` |
 
-`AutoActivation` engages the Coordinator when the registry is non-empty **or** when the active skill
-carries a `steps:` frontmatter block. Use `ExplicitActivation` to require manual opt-in per request.
+`ExplicitActivation` (default) always activates the Coordinator when you call `withCoordinator()` — the method call itself is the opt-in signal. Pass `activation: new AutoActivation()` to opt into the conditional behaviour where the Coordinator stays inactive and the pipeline falls back to `tool-loop` when neither subagents are registered nor the active skill declares structured `steps:`.
 
 ### Custom strategies (extending the Coordinator)
 
@@ -2556,7 +2554,7 @@ Each subagent is constructed through its own `SmartAgentBuilder` call with its o
 `plannerLlm`, and each subagent's LLM are fully independent — they can come from different providers.
 
 ```ts
-import { makeLlm, SmartAgentBuilder, ReplanOnErrorPlanning, SubAgentDispatch, AutoActivation } from '@mcp-abap-adt/llm-agent-libs';
+import { makeLlm, SmartAgentBuilder, ReplanOnErrorPlanning, SubAgentDispatch } from '@mcp-abap-adt/llm-agent-libs';
 
 const plannerLlm  = await makeLlm({ provider: 'deepseek',   apiKey: process.env.DEEPSEEK_API_KEY!,   model: 'deepseek-chat' });
 const coderLlm    = await makeLlm({ provider: 'sap-ai-sdk', model: 'gpt-4o', resourceGroup: 'default' });
@@ -2572,7 +2570,6 @@ const parent = await new SmartAgentBuilder()
   .withCoordinator({
     planning:   new ReplanOnErrorPlanning(plannerLlm),   // DeepSeek — cheap
     dispatch:   new SubAgentDispatch(),
-    activation: new AutoActivation(),
     plannerLlm,
   })
   .build();

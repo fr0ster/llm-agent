@@ -426,6 +426,6 @@ Use `plannerLlm: helper` in YAML to assign a cheap model for planning while the 
 
 ### When NOT worth activating
 
-Simple single-shot requests get no benefit and pay the planner overhead. `AutoActivation` (the default) already gates this: the Coordinator stage stays inactive when there are no subagents registered and no active skill declares `steps:` in its frontmatter. Zero overhead for ordinary traffic.
+Simple single-shot requests pay the planner overhead unless the Coordinator stage is conditionally gated. To opt into automatic fallback (keep `tool-loop` when there are no subagents and no skill steps), pass `coordinator.activation: auto` in YAML or `new AutoActivation()` in the builder. Without that override the default `ExplicitActivation` always engages once `withCoordinator()` / a `coordinator:` YAML block is present.
 
 Cross-reference: see `docs/ARCHITECTURE.md` section `## Coordinator orchestration` for the strategy interfaces.

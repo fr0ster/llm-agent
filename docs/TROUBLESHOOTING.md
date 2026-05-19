@@ -248,16 +248,18 @@ docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({M
 
 ---
 
-### Coordinator does not activate even though "coordinator:" is set in YAML
+### Coordinator stays inactive even with explicit `coordinator:` block
 
-**Symptom.** A `coordinator_configured` event appears in `smart-server.log` at startup, but no `coordinator_plan` event fires when requests come in. `tool-loop iteration 1` warnings appear instead.
+**Symptom.** `coordinator_configured` event appears in `smart-server.log` at startup. Live requests show no `coordinator_plan` / `coordinator_step_*` events, but `tool-loop iteration 1` warnings do. Response content looks like a normal tool-loop reply.
 
-**Cause.** `AutoActivation` (the default) requires either subagents present in the registry **or** the active skill to declare `steps:` in its frontmatter. If neither condition is true the coordinator stays inactive and the normal tool-loop is used.
+**Cause.** The YAML or builder config set `activation: auto` (or `new AutoActivation()`). `AutoActivation` requires either subagents in the registry OR the active skill to declare `steps:` in its frontmatter. With neither, the pipeline keeps `tool-loop`.
 
 **Fix.**
-- Confirm the `subagents:` block in the parent YAML is non-empty and each entry has a `name:` and `config:` field.
-- Alternatively, set `coordinator.activation: explicit` to force activation regardless of registry state.
-- Verify subagents were instantiated with `grep subagent_built smart-server.log` — you should see one entry per subagent at startup.
+- Remove the `activation:` field entirely — the new default is `explicit` and always activates when a `coordinator:` block is present.
+- Or confirm `subagents:` is non-empty (`grep subagent_built smart-server.log` should show one per agent on startup).
+- Or wire in a skill with explicit `steps:` to satisfy `AutoActivation`.
+
+`AutoActivation` remains useful for mixed-traffic agents that should gracefully fall back to `tool-loop` when nothing to coordinate — it is not the default any more.
 
 ---
 
