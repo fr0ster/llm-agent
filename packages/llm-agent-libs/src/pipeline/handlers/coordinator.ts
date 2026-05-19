@@ -20,6 +20,7 @@ import type {
   IPlanningStrategy,
   Plan,
   StepResult,
+  SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -42,19 +43,17 @@ export class CoordinatorHandler implements IStageHandler {
     _rawConfig: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
-    if (!ctx.subAgents) {
-      ctx.error = new OrchestratorError(
-        'CoordinatorHandler: ctx.subAgents is undefined; pipeline must be built with withSubAgents() or coordinator activation',
-        'COORDINATOR_NO_REGISTRY',
-      );
-      return false;
-    }
+    // Normalise registry to an empty Map when no subagents are registered.
+    // SelfDispatch and other registry-free strategies must still run; the
+    // SubAgentDispatch strategy itself reports a clean StepResult when an
+    // unknown agent is requested, so we don't need a global gate here.
+    const registry: SubAgentRegistry = ctx.subAgents ?? new Map();
 
     const coordCtx: ICoordinatorContext = {
       inputText: ctx.inputText,
       systemPrompt: collectSystemPrompt(ctx),
       skillContent: collectSkillContent(ctx),
-      registry: ctx.subAgents,
+      registry,
       stepResults: {},
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
@@ -137,26 +136,54 @@ export class CoordinatorHandler implements IStageHandler {
       totalSteps++;
     }
 
-    if (totalSteps >= this.deps.maxSteps) {
+    const hasPending = plan.steps.some((s) => s.status === 'pending');
+    const truncatedByLimit = totalSteps >= this.deps.maxSteps && hasPending;
+    const failedSteps = plan.steps.filter((s) => s.status === 'failed');
+
+    if (truncatedByLimit) {
       ctx.options?.sessionLogger?.logStep('coordinator_max_steps', {
         maxSteps: this.deps.maxSteps,
+        pendingCount: plan.steps.filter((s) => s.status === 'pending').length,
       });
     }
 
-    const finalOutput = Object.values(coordCtx.stepResults)
+    const stepBlocks = Object.values(coordCtx.stepResults)
       .map((r) => `### ${r.stepId}\n${r.output}`)
       .join('\n\n');
+
+    const completionNote = (() => {
+      if (truncatedByLimit) {
+        const pending = plan.steps.filter((s) => s.status === 'pending').length;
+        return `\n\n_[Coordinator: max steps (${this.deps.maxSteps}) reached, ${pending} step(s) still pending.]_`;
+      }
+      if (failedSteps.length > 0 && this.deps.failPolicy === 'continue') {
+        return `\n\n_[Coordinator: ${failedSteps.length} step(s) failed under failPolicy=continue.]_`;
+      }
+      return '';
+    })();
+
+    const finalOutput = stepBlocks + completionNote;
 
     ctx.options?.sessionLogger?.logStep('coordinator_final', {
       stepCount: Object.keys(coordCtx.stepResults).length,
       outputLength: finalOutput.length,
+      truncated: truncatedByLimit,
+      failedSteps: failedSteps.length,
     });
 
-    // Stream the final output as a single content chunk followed by a stop
-    // chunk, mirroring the contract used by tool-loop so SSE consumers see
-    // a normal assistant response.
+    // Stream the final output as a single content chunk followed by a finish
+    // chunk. Mirrors tool-loop's contract so SSE consumers see a normal
+    // assistant response, but uses finishReason: 'length' when the plan was
+    // truncated by maxSteps — matching OpenAI's convention for limit-cut
+    // responses so clients can detect incompleteness.
     ctx.yield({ ok: true, value: { content: finalOutput } });
-    ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
+    ctx.yield({
+      ok: true,
+      value: {
+        content: '',
+        finishReason: truncatedByLimit ? 'length' : 'stop',
+      },
+    });
 
     return true;
   }
