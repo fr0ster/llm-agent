@@ -939,6 +939,55 @@ programmatically and pass a custom `SubAgentRegistry` via
 See `docs/examples/subagent-orchestration.yaml` for a worked example combining
 `repeat` with two subagent stages.
 
+## Coordinator orchestration
+
+The `coordinator` stage replaces `tool-loop` in `DefaultPipeline` and
+autonomously walks a multi-step plan. Three orthogonal strategies are
+pluggable:
+
+- **`IPlanningStrategy`** — how the plan is built and re-built.
+  - `OneShotPlanning` — call planner LLM once, never replan.
+  - `SkillStepsPlanning` — use explicit `steps:` from the active skill's frontmatter.
+  - `ReplanOnErrorPlanning` — replan when a step fails.
+- **`IDispatchStrategy`** — how an individual step is executed.
+  - `SubAgentDispatch` — route to a named subagent from the registry.
+  - `SelfDispatch` — call the agent's own LLM (no subagent needed).
+  - `HybridDispatch` — try a primary, fall back to a secondary.
+- **`IActivationStrategy`** — when the coordinator activates at all.
+  - `AutoActivation` — activate when subagents exist OR skill has steps.
+  - `ExplicitActivation` — require `withCoordinator()` opt-in.
+
+Embedded (programmatic) usage:
+
+```ts
+new SmartAgentBuilder()
+  .withMainLlm(main)
+  .withSubAgent('abap-coder', coderAgent, { description: 'Writes ABAP code.' })
+  .withSubAgent('reviewer',   reviewerAgent, { description: 'Reviews code.' })
+  .withCoordinator({
+    planning: new ReplanOnErrorPlanning(plannerLlm),
+    dispatch: new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(main)),
+    activation: new AutoActivation(),
+  })
+  .build();
+```
+
+YAML usage:
+
+```yaml
+coordinator:
+  planning: replan-on-error
+  dispatch: hybrid
+  activation: auto
+  plannerLlm: helper
+```
+
+The coordinator does NOT replace `DefaultPipeline`; it is one optional stage
+inside it. All earlier stages (classify, rag, tool-select, assemble) still run
+and feed the coordinator's planner context.
+
+See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
+
 ## Current Technical Debt (Explicit)
 
 - No known outstanding technical debt. Aggregate metrics, circuit breakers, health checks, and config hot-reload have been implemented.
