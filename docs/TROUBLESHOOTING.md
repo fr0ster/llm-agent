@@ -283,6 +283,19 @@ docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({M
 
 ---
 
+### `planning: skill-steps` returns "step has no agent" on first step
+
+**Symptom.** Response shows `### step-1` block but `ok: false, error: "SubAgentDispatch: step 'step-1' has no agent..."`. Subsequent steps may also fail. Plan source in logs is `skill-steps`.
+
+**Cause.** Skill steps don't declare `agent:` in their frontmatter, and `dispatch` is pinned to `subagent` (or you wired `new SubAgentDispatch()` manually).
+
+**Fix.**
+- Easiest: drop the explicit `dispatch:` from YAML — when `planning: skill-steps`, the loader defaults to `hybrid` which falls back to `SelfDispatch` for un-routed steps.
+- Or: add `agent: <name>` to each `steps[]` entry in the skill's frontmatter and keep `dispatch: subagent`.
+- Programmatic: use `new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(mainLlm))` instead of bare `new SubAgentDispatch()`.
+
+---
+
 ## When in doubt
 
 - `smart-server.log` — every chat request, every tool-loop iteration with `toolCount` and a content summary.

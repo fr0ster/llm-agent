@@ -2468,6 +2468,7 @@ import {
   HybridDispatch,
   ReplanOnErrorPlanning,
   SelfDispatch,
+  SkillStepsPlanning,
   SubAgentDispatch,
 } from '@mcp-abap-adt/llm-agent-libs';
 
@@ -2498,6 +2499,48 @@ const parent = await new SmartAgentBuilder()
 | `failPolicy` | `'abort'` |
 
 `ExplicitActivation` (default) always activates the Coordinator when you call `withCoordinator()` — the method call itself is the opt-in signal. Pass `activation: new AutoActivation()` to opt into the conditional behaviour where the Coordinator stays inactive and the pipeline falls back to `tool-loop` when neither subagents are registered nor the active skill declares structured `steps:`.
+
+### Skill-driven plans (SkillStepsPlanning)
+
+When the active skill declares structured `steps:` in its frontmatter,
+`SkillStepsPlanning` builds the plan directly from those entries — no
+planner-LLM call needed. Each step's optional `agent:` annotation is
+propagated to `PlanStep.agent` so `SubAgentDispatch` / `HybridDispatch`
+can route the step to a named subagent.
+
+Skill frontmatter:
+
+```yaml
+---
+name: create-and-test-abap
+steps:
+  - { id: create, goal: 'Create the program', agent: abap-coder, expectedTools: [CreateProgram] }
+  - { id: review, goal: 'Review the generated code', agent: code-reviewer }
+---
+```
+
+Builder:
+
+```ts
+.withCoordinator({
+  planning: new SkillStepsPlanning(),   // reads ctx.activeSkillMeta
+  dispatch: new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(mainLlm)),
+  activation: new ExplicitActivation(),
+})
+```
+
+YAML:
+
+```yaml
+coordinator:
+  planning: skill-steps          # NEW
+  dispatch: hybrid               # default for skill-steps; falls back to self for steps without `agent:`
+  activation: explicit
+```
+
+A custom resolver function can be passed to `new SkillStepsPlanning((ctx) => ...)`
+when the skill meta lives somewhere other than `ctx.activeSkillMeta`.
+The default reads `ctx.activeSkillMeta` populated by `CoordinatorHandler`.
 
 ### Custom strategies (extending the Coordinator)
 

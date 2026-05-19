@@ -263,6 +263,18 @@ subagents:
 
 The coordinator activates whenever a `coordinator:` block is present — the block itself is the opt-in signal. To fall back to `tool-loop` when there are no subagents or skill steps, set `coordinator.activation: auto`.
 
+**Skill-driven (no planner LLM):**
+
+Use `planning: skill-steps` when the active skill encodes the process as YAML `steps:` in its frontmatter — no planner LLM round-trip.
+
+```yaml
+coordinator:
+  planning: skill-steps    # plan comes from active skill's frontmatter `steps:`
+  # dispatch defaults to 'hybrid' for skill-steps — steps without `agent:`
+  # fall back to self-LLM via SelfDispatch.
+  activation: explicit
+```
+
 See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.
 
 ---

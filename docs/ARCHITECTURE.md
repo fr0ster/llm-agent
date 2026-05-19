@@ -957,7 +957,7 @@ pluggable:
 
 - **`IPlanningStrategy`** — how the plan is built and re-built.
   - `OneShotPlanning` — call planner LLM once, never replan.
-  - `SkillStepsPlanning` — use explicit `steps:` from the active skill's frontmatter.
+  - `SkillStepsPlanning` — build the plan directly from the active skill's `steps:` frontmatter. No planner-LLM call. Reads `ctx.activeSkillMeta` populated by `CoordinatorHandler` from `ctx.selectedSkills`. Reachable via YAML `planning: skill-steps`; when used, the loader defaults `dispatch` to `hybrid` so steps without an explicit `agent:` fall back to `SelfDispatch`.
   - `ReplanOnErrorPlanning` — replan when a step fails.
 - **`IDispatchStrategy`** — how an individual step is executed.
   - `SubAgentDispatch` — route to a named subagent from the registry.
@@ -966,6 +966,26 @@ pluggable:
 - **`IActivationStrategy`** — when the coordinator activates at all.
   - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or setting a YAML `coordinator:` block is itself the opt-in signal.
   - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
+
+### Runtime activation
+
+The coordinator/tool-loop choice is made per-request, not at build time. A
+`coordinator-activate` stage (auto-inserted by `DefaultPipeline` when a
+coordinator is configured) runs after `skill-select` and writes
+`ctx.coordinatorActive` by calling the configured `IActivationStrategy`
+with the real `selectedSkills` / `subAgents` state. Coordinator and
+tool-loop stages are then gated by `when: 'coordinatorActive'` and
+`when: '!coordinatorActive'` respectively. This is why `AutoActivation`'s
+skill-step-driven activation works — the gate honours runtime state.
+
+Stage order when a coordinator is configured:
+
+```
+... → skill-select → tool-select → assemble → coordinator-activate
+   → coordinator       (when: 'coordinatorActive')
+   → tool-loop         (when: '!coordinatorActive')
+   → history-upsert
+```
 
 ### Heterogeneous LLM routing
 
