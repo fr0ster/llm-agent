@@ -38,6 +38,7 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
         { role: 'user', content: ctx.inputText },
       ],
       [],
+      { signal: ctx.signal, sessionId: ctx.sessionId },
     );
     if (!response.ok) throw response.error;
 

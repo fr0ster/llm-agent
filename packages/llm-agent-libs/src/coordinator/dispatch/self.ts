@@ -40,6 +40,7 @@ export class SelfDispatch implements IDispatchStrategy {
           { role: 'user', content: userMsg },
         ],
         [],
+        { signal: ctx.signal, sessionId: ctx.sessionId },
       );
       if (!res.ok) throw res.error;
       return {
