@@ -53,6 +53,7 @@ export class CoordinatorHandler implements IStageHandler {
       inputText: ctx.inputText,
       systemPrompt: collectSystemPrompt(ctx),
       skillContent: collectSkillContent(ctx),
+      activeSkillMeta: collectActiveSkillMeta(ctx),
       registry,
       stepResults: {},
       signal: ctx.options?.signal,
@@ -202,6 +203,15 @@ function collectSkillContent(ctx: PipelineContext): string | undefined {
     return ctx.skillContent;
   }
   return undefined;
+}
+
+function collectActiveSkillMeta(
+  ctx: PipelineContext,
+): ICoordinatorContext['activeSkillMeta'] {
+  const withSteps = ctx.selectedSkills?.find(
+    (s) => (s.meta?.steps?.length ?? 0) > 0,
+  );
+  return withSteps?.meta;
 }
 
 function wrapError(err: unknown, code: string): OrchestratorError {

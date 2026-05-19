@@ -5,7 +5,10 @@
  * Custom handlers can be registered by supplying a custom `IPipeline` implementation.
  */
 
-import type { SubAgentRegistry } from '@mcp-abap-adt/llm-agent';
+import type {
+  IActivationStrategy,
+  SubAgentRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../stage-handler.js';
 import { AssembleHandler } from './assemble.js';
 import { BuildToolQueryHandler } from './build-tool-query.js';
@@ -14,6 +17,7 @@ import {
   CoordinatorHandler,
   type CoordinatorHandlerDeps,
 } from './coordinator.js';
+import { CoordinatorActivateHandler } from './coordinator-activate.js';
 import { ExpandHandler } from './expand.js';
 import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
@@ -37,6 +41,12 @@ export type StageHandlerRegistry = Map<string, IStageHandler>;
 export interface BuildHandlerRegistryOptions {
   subAgents?: SubAgentRegistry;
   coordinator?: CoordinatorHandlerDeps;
+  /**
+   * Activation strategy used by the `coordinator-activate` runtime stage to
+   * compute `ctx.coordinatorActive`. Required when `coordinator` is set —
+   * without it, coordinator activation cannot honour runtime skill state.
+   */
+  coordinatorActivation?: IActivationStrategy;
 }
 
 export function buildDefaultHandlerRegistry(
@@ -61,6 +71,12 @@ export function buildDefaultHandlerRegistry(
   }
   if (opts.coordinator) {
     registry.set('coordinator', new CoordinatorHandler(opts.coordinator));
+  }
+  if (opts.coordinatorActivation) {
+    registry.set(
+      'coordinator-activate',
+      new CoordinatorActivateHandler(opts.coordinatorActivation),
+    );
   }
   return registry;
 }

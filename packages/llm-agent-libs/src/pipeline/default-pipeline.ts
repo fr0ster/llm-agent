@@ -156,18 +156,25 @@ export class DefaultPipeline implements IPipeline {
     this.resolvedLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
 
+    const coordPlanning = this.coordinator?.planning;
+    const coordDispatch = this.coordinator?.dispatch;
+    const coordinatorConfigured =
+      coordPlanning != null && coordDispatch != null;
     const registry = buildDefaultHandlerRegistry({
       subAgents: this.subAgents,
       coordinator:
-        this.coordinator?.planning && this.coordinator?.dispatch
+        coordinatorConfigured && coordPlanning && coordDispatch
           ? {
-              planning: this.coordinator.planning,
-              dispatch: this.coordinator.dispatch,
-              maxSteps: this.coordinator.maxSteps ?? 12,
-              maxRetriesPerStep: this.coordinator.maxRetriesPerStep ?? 1,
-              failPolicy: this.coordinator.failPolicy ?? 'abort',
+              planning: coordPlanning,
+              dispatch: coordDispatch,
+              maxSteps: this.coordinator?.maxSteps ?? 12,
+              maxRetriesPerStep: this.coordinator?.maxRetriesPerStep ?? 1,
+              failPolicy: this.coordinator?.failPolicy ?? 'abort',
             }
           : undefined,
+      coordinatorActivation: coordinatorConfigured
+        ? this.coordinator?.activation
+        : undefined,
     });
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);
 
@@ -290,25 +297,38 @@ export class DefaultPipeline implements IPipeline {
       });
     }
 
-    const hasSubAgents = (this.subAgents?.size ?? 0) > 0;
-    const wantsCoordinator =
-      this.coordinator?.planning != null &&
-      this.coordinator?.dispatch != null &&
-      (this.coordinator.activation?.shouldActivate({
-        hasSubAgents,
-        hasStructuredSkill: false,
-      }) ??
-        false);
+    const coordinatorConfigured =
+      this.coordinator?.planning != null && this.coordinator?.dispatch != null;
 
     stages.push(
       { id: 'tool-select', type: 'tool-select' },
       { id: 'assemble', type: 'assemble' },
-      wantsCoordinator
-        ? { id: 'coordinator', type: 'coordinator' }
-        : { id: 'tool-loop', type: 'tool-loop' },
-      { id: 'history-upsert', type: 'history-upsert' },
     );
 
+    if (coordinatorConfigured) {
+      // Runtime activation: `coordinator-activate` evaluates the configured
+      // IActivationStrategy AFTER skill-select has run, so it can see the
+      // real `ctx.selectedSkills` state (which build-time stage selection
+      // cannot). Coordinator and tool-loop are both in the list, gated by
+      // `when:` predicates that the executor evaluates per-request.
+      stages.push(
+        { id: 'coordinator-activate', type: 'coordinator-activate' },
+        {
+          id: 'coordinator',
+          type: 'coordinator',
+          when: 'coordinatorActive',
+        },
+        {
+          id: 'tool-loop',
+          type: 'tool-loop',
+          when: '!coordinatorActive',
+        },
+      );
+    } else {
+      stages.push({ id: 'tool-loop', type: 'tool-loop' });
+    }
+
+    stages.push({ id: 'history-upsert', type: 'history-upsert' });
     return stages;
   }
 

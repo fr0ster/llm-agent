@@ -12,6 +12,7 @@ import {
   OneShotPlanning,
   ReplanOnErrorPlanning,
   SelfDispatch,
+  SkillStepsPlanning,
   SubAgentDispatch,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
@@ -22,7 +23,7 @@ import type {
 } from './smart-server.js';
 
 export interface YamlCoordinator {
-  planning?: 'one-shot' | 'replan-on-error';
+  planning?: 'one-shot' | 'replan-on-error' | 'skill-steps';
   dispatch?: 'subagent' | 'self' | 'hybrid';
   activation?: 'auto' | 'explicit';
   plannerLlm?: 'main' | 'planner' | 'helper';
@@ -37,9 +38,14 @@ export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
       return new OneShotPlanning(plannerLlm);
     case 'replan-on-error':
       return new ReplanOnErrorPlanning(plannerLlm);
+    case 'skill-steps':
+      // SkillStepsPlanning reads `ctx.activeSkillMeta` (populated by
+      // CoordinatorHandler from `ctx.selectedSkills`). No planner LLM
+      // needed — the plan comes directly from the skill's `steps:` block.
+      return new SkillStepsPlanning();
     default:
       throw new Error(
-        `Unknown coordinator.planning strategy: '${name}'. Allowed: one-shot, replan-on-error.`,
+        `Unknown coordinator.planning strategy: '${name}'. Allowed: one-shot, replan-on-error, skill-steps.`,
       );
   }
 }
@@ -261,10 +267,10 @@ log: smart-server.log                 # path to log file; omit for stdout
 #     config: ./agents/code-reviewer.yaml
 
 # coordinator:                        # Optional: enable autonomous plan-execute loop
-#   planning: one-shot                # one-shot | replan-on-error
+#   planning: one-shot                # one-shot | replan-on-error | skill-steps
 #   dispatch: subagent                # subagent | self | hybrid
-#   activation: auto                  # auto | explicit
-#   plannerLlm: main                  # main | planner | helper
+#   activation: explicit              # explicit (default) | auto
+#   plannerLlm: main                  # main | planner | helper (unused by skill-steps)
 #   maxSteps: 12
 #   maxRetriesPerStep: 1
 #   failPolicy: abort                 # abort | continue

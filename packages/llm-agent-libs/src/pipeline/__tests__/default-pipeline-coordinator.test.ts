@@ -12,7 +12,7 @@ import { makeDefaultDeps } from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
 
 // Mirrors helpers from sibling default-pipeline-* tests.
-type Stage = { id: string; type: string };
+type Stage = { id: string; type: string; when?: string };
 type PipelineWithStages = { stages: Stage[] };
 
 function buildDeps(overrides?: Partial<PipelineDeps>): PipelineDeps {
@@ -28,20 +28,22 @@ function getStages(pipeline: DefaultPipeline): Stage[] {
   return (pipeline as unknown as PipelineWithStages).stages;
 }
 
-function findLooperType(stages: Stage[]): string | undefined {
-  return stages.find((s) => s.type === 'coordinator' || s.type === 'tool-loop')
-    ?.type;
+function findStage(stages: Stage[], type: string): Stage | undefined {
+  return stages.find((s) => s.type === type);
 }
 
-describe('DefaultPipeline coordinator activation', () => {
-  it('no coordinator config → keeps tool-loop', () => {
+describe('DefaultPipeline coordinator stage wiring', () => {
+  it('no coordinator config → only tool-loop, no coordinator stages', () => {
     const pipeline = new DefaultPipeline();
     pipeline.initialize(buildDeps());
-    assert.equal(findLooperType(getStages(pipeline)), 'tool-loop');
+    const stages = getStages(pipeline);
+    assert.ok(findStage(stages, 'tool-loop'), 'tool-loop must be present');
+    assert.equal(findStage(stages, 'tool-loop')?.when, undefined);
+    assert.equal(findStage(stages, 'coordinator'), undefined);
+    assert.equal(findStage(stages, 'coordinator-activate'), undefined);
   });
 
-  it('ExplicitActivation + SelfDispatch without subagents → swaps to coordinator', () => {
-    // Reviewer scenario: registry-free SelfDispatch must reach the handler.
+  it('coordinator configured → coordinator-activate + both stages with when predicates', () => {
     const { deps } = makeDefaultDeps();
     const pipeline = new DefaultPipeline({
       coordinator: {
@@ -51,10 +53,19 @@ describe('DefaultPipeline coordinator activation', () => {
       },
     });
     pipeline.initialize(buildDeps());
-    assert.equal(findLooperType(getStages(pipeline)), 'coordinator');
+    const stages = getStages(pipeline);
+    assert.ok(
+      findStage(stages, 'coordinator-activate'),
+      'coordinator-activate stage must be wired in',
+    );
+    assert.equal(findStage(stages, 'coordinator')?.when, 'coordinatorActive');
+    assert.equal(findStage(stages, 'tool-loop')?.when, '!coordinatorActive');
   });
 
-  it('AutoActivation without subagents → stays on tool-loop (graceful fallback)', () => {
+  it('AutoActivation honours runtime ctx.coordinatorActive (gating via when)', () => {
+    // The activation strategy now runs at runtime via coordinator-activate
+    // stage, not at build time. Build-time only checks that the runtime
+    // wiring is in place.
     const { deps } = makeDefaultDeps();
     const pipeline = new DefaultPipeline({
       coordinator: {
@@ -64,36 +75,49 @@ describe('DefaultPipeline coordinator activation', () => {
       },
     });
     pipeline.initialize(buildDeps());
-    assert.equal(findLooperType(getStages(pipeline)), 'tool-loop');
+    const stages = getStages(pipeline);
+    assert.ok(findStage(stages, 'coordinator-activate'));
+    assert.equal(findStage(stages, 'coordinator')?.when, 'coordinatorActive');
+    assert.equal(findStage(stages, 'tool-loop')?.when, '!coordinatorActive');
   });
 
-  it('AutoActivation with subagents in registry → swaps to coordinator', () => {
-    const { deps } = makeDefaultDeps();
-    const registry = new Map();
-    registry.set('worker', {
-      name: 'worker',
-      description: 'does stuff',
-      async run() {
-        return { output: 'ok' };
-      },
-    });
-    const pipeline = new DefaultPipeline({
-      subAgents: registry,
-      coordinator: {
-        planning: new OneShotPlanning(deps.mainLlm),
-        dispatch: new SubAgentDispatch(),
-        activation: new AutoActivation(),
-      },
-    });
-    pipeline.initialize(buildDeps());
-    assert.equal(findLooperType(getStages(pipeline)), 'coordinator');
-  });
-
-  it('coordinator config but missing planning/dispatch → tool-loop fallback', () => {
+  it('coordinator config but missing planning/dispatch → no coordinator wiring', () => {
     const pipeline = new DefaultPipeline({
       coordinator: { activation: new ExplicitActivation() },
     });
     pipeline.initialize(buildDeps());
-    assert.equal(findLooperType(getStages(pipeline)), 'tool-loop');
+    const stages = getStages(pipeline);
+    assert.equal(findStage(stages, 'coordinator-activate'), undefined);
+    assert.equal(findStage(stages, 'coordinator'), undefined);
+    assert.equal(findStage(stages, 'tool-loop')?.when, undefined);
+  });
+
+  it('stage ordering: coordinator-activate runs after skill-select, before coordinator/tool-loop', () => {
+    const { deps } = makeDefaultDeps();
+    const pipeline = new DefaultPipeline({
+      coordinator: {
+        planning: new OneShotPlanning(deps.mainLlm),
+        dispatch: new SubAgentDispatch(),
+        activation: new ExplicitActivation(),
+      },
+    });
+    pipeline.initialize(buildDeps());
+    const stages = getStages(pipeline);
+    const skillSelectIdx = stages.findIndex((s) => s.id === 'skill-select');
+    const activateIdx = stages.findIndex(
+      (s) => s.id === 'coordinator-activate',
+    );
+    const coordIdx = stages.findIndex((s) => s.id === 'coordinator');
+    const toolLoopIdx = stages.findIndex((s) => s.id === 'tool-loop');
+    assert.ok(skillSelectIdx >= 0);
+    assert.ok(
+      activateIdx > skillSelectIdx,
+      'coordinator-activate must run AFTER skill-select so it can read selectedSkills',
+    );
+    assert.ok(coordIdx > activateIdx, 'coordinator after coordinator-activate');
+    assert.ok(
+      toolLoopIdx > activateIdx,
+      'tool-loop after coordinator-activate',
+    );
   });
 });

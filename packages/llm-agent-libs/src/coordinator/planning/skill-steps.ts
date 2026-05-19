@@ -9,7 +9,18 @@ import type {
 
 /**
  * Use explicit `steps:` from the active skill's frontmatter when present.
- * Throws if no steps are declared — chain with another planner as fallback.
+ *
+ * Reads `ctx.activeSkillMeta` — populated by `CoordinatorHandler` from the
+ * first selected skill that declares structured `steps:`. Throws if no
+ * structured skill is active so callers can wrap this strategy with a
+ * fallback (e.g. `OneShotPlanning`) when graceful degradation is needed.
+ *
+ * For YAML users: `coordinator.planning: skill-steps` activates this
+ * strategy directly — no resolver argument required.
+ *
+ * For programmatic users that need a custom resolver (e.g. reading the
+ * skill meta from a non-default source), pass a function via the
+ * constructor — it takes precedence over `ctx.activeSkillMeta`.
  */
 export class SkillStepsPlanning implements IPlanningStrategy {
   readonly name = 'skill-steps';
@@ -17,15 +28,16 @@ export class SkillStepsPlanning implements IPlanningStrategy {
   constructor(
     private readonly resolveSkillMeta: (
       ctx: ICoordinatorContext,
-    ) => ISkillMeta | undefined,
+    ) => ISkillMeta | undefined = (ctx) => ctx.activeSkillMeta,
   ) {}
 
   async buildInitialPlan(ctx: ICoordinatorContext): Promise<Plan> {
     const meta = this.resolveSkillMeta(ctx);
     if (!meta?.steps?.length) {
       throw new Error(
-        `SkillStepsPlanning: no explicit 'steps' in active skill. ` +
-          `Chain this strategy with a fallback (e.g. OneShotPlanning).`,
+        `SkillStepsPlanning: no active skill with structured 'steps:' found. ` +
+          `Chain this strategy with a fallback (e.g. OneShotPlanning) or ensure ` +
+          `the active skill declares 'steps:' in its frontmatter.`,
       );
     }
     const steps: PlanStep[] = meta.steps.map((s) => ({

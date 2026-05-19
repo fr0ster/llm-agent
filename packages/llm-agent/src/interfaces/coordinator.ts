@@ -1,4 +1,5 @@
 import type { ILlm } from './llm.js';
+import type { ISkillMeta } from './skill.js';
 import type {
   ISubAgent,
   ISubAgentResult,
@@ -36,6 +37,13 @@ export interface ICoordinatorContext {
   inputText: string;
   systemPrompt?: string;
   skillContent?: string;
+  /**
+   * Metadata of the first active skill that declares structured `steps:` in
+   * its frontmatter. Populated by CoordinatorHandler from `ctx.selectedSkills`.
+   * Consumed by SkillStepsPlanning to derive the plan from the skill itself
+   * instead of asking a planner LLM.
+   */
+  activeSkillMeta?: ISkillMeta;
   registry: SubAgentRegistry;
   plan?: Plan;
   stepResults: Record<string, StepResult>;

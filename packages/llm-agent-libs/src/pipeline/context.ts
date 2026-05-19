@@ -179,6 +179,13 @@ export interface PipelineContext {
   subResults?: Record<string, unknown>;
   /** Subagent registry exposed to runtime stages (coordinator, subagent). */
   subAgents?: SubAgentRegistry;
+  /**
+   * Runtime activation flag computed by the `coordinator-activate` stage from
+   * the configured IActivationStrategy with REAL ctx state (selectedSkills,
+   * subAgents). Coordinator and tool-loop stages gate on this via `when:`
+   * predicates so the activation decision honours runtime skill selection.
+   */
+  coordinatorActive?: boolean;
   /** Coordinator plan, if a coordinator stage ran. */
   plan?: Plan;
   /** Index of the step currently being executed by the coordinator. */
