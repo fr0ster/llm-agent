@@ -16,6 +16,7 @@
 import type {
   IClientAdapter,
   IContextAssembler,
+  ICoordinatorConfig,
   IHistoryMemory,
   IHistorySummarizer,
   ILlm,
@@ -28,6 +29,7 @@ import type {
   IQueryExpander,
   IRequestLogger,
   ISkillManager,
+  ISubAgent,
   ISubpromptClassifier,
   IToolCache,
   SmartAgentHandle as SmartAgentHandleBase,
@@ -65,6 +67,11 @@ import {
   ContextAssembler,
   type ContextAssemblerConfig,
 } from './context/context-assembler.js';
+import {
+  AutoActivation,
+  OneShotPlanning,
+  SubAgentDispatch,
+} from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
@@ -82,6 +89,7 @@ import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';
+import { SmartAgentSubAgent } from './subagent/smart-agent-subagent.js';
 import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
 
@@ -189,6 +197,7 @@ export class SmartAgentBuilder {
   private _embedder?: IEmbedder;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _subAgents?: SubAgentRegistry;
+  private _coordinator?: ICoordinatorConfig;
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
   private _llmCallStrategy?: ILlmCallStrategy;
@@ -500,6 +509,45 @@ export class SmartAgentBuilder {
    */
   withSubAgents(registry: SubAgentRegistry): this {
     this._subAgents = registry;
+    return this;
+  }
+
+  /**
+   * Enable the coordinator orchestration mode. When set, the pipeline swaps
+   * the tool-loop stage for a plan-then-dispatch stage.
+   */
+  withCoordinator(cfg: ICoordinatorConfig = {}): this {
+    this._coordinator = {
+      planning: cfg.planning,
+      dispatch: cfg.dispatch,
+      activation: cfg.activation ?? new AutoActivation(),
+      plannerLlm: cfg.plannerLlm,
+      maxSteps: cfg.maxSteps ?? 12,
+      maxRetriesPerStep: cfg.maxRetriesPerStep ?? 1,
+      failPolicy: cfg.failPolicy ?? 'abort',
+    };
+    return this;
+  }
+
+  /**
+   * Register a single sub-agent by name. Sugar for incremental registry
+   * building — avoids constructing a Map manually when adding one agent at a
+   * time. Accepts either a raw `ISubAgent` or a `SmartAgent` instance (which
+   * is automatically wrapped in `SmartAgentSubAgent`).
+   */
+  withSubAgent(
+    name: string,
+    agent: SmartAgent | ISubAgent,
+    opts?: { description?: string },
+  ): this {
+    if (!this._subAgents) this._subAgents = new Map();
+    const sub: ISubAgent =
+      'run' in agent && typeof agent.run === 'function'
+        ? (agent as ISubAgent)
+        : new SmartAgentSubAgent(name, agent as SmartAgent, {
+            description: opts?.description,
+          });
+    this._subAgents.set(name, sub);
     return this;
   }
 
@@ -1126,8 +1174,27 @@ export class SmartAgentBuilder {
     }
 
     // ---- Pipeline initialization -------------------------------------------
+    let resolvedCoordinator: ICoordinatorConfig | undefined;
+    if (this._coordinator) {
+      const plannerLlm = this._coordinator.plannerLlm ?? wrappedMainLlm;
+      if (!plannerLlm) {
+        throw new Error(
+          'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
+        );
+      }
+      resolvedCoordinator = {
+        ...this._coordinator,
+        planning: this._coordinator.planning ?? new OneShotPlanning(plannerLlm),
+        dispatch: this._coordinator.dispatch ?? new SubAgentDispatch(),
+      };
+    }
+
     const pipeline =
-      this._pipeline ?? new DefaultPipeline({ subAgents: this._subAgents });
+      this._pipeline ??
+      new DefaultPipeline({
+        subAgents: this._subAgents,
+        coordinator: resolvedCoordinator,
+      });
     pipeline.initialize({
       mainLlm: wrappedMainLlm,
       helperLlm,
