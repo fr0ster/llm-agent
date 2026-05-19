@@ -400,6 +400,9 @@ export class DefaultPipeline implements IPipeline {
 
       // Streaming callback
       yield: yieldChunk,
+
+      // Subagent registry for coordinator/subagent stages (read by handlers).
+      subAgents: this.subAgents,
     };
   }
 }
