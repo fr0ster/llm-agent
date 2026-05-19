@@ -424,6 +424,8 @@ Use `plannerLlm: helper` in YAML to assign a cheap model for planning while the 
 
 `OneShotPlanning` (default) issues a single planner call per request. `ReplanOnErrorPlanning` issues one additional call per step failure. For deterministic, well-defined flows `OneShotPlanning` is sufficient.
 
+- **`planning: skill-steps` eliminates the planner LLM call.** When the active skill encodes the process as structured `steps:` in its frontmatter, the plan is built directly from that list — zero planner-LLM tokens. Pair with `dispatch: hybrid` (the default when planning is `skill-steps`) so steps without an explicit `agent:` fall back to a self-LLM call.
+
 ### When NOT worth activating
 
 Simple single-shot requests pay the planner overhead unless the Coordinator stage is conditionally gated. To opt into automatic fallback (keep `tool-loop` when there are no subagents and no skill steps), pass `coordinator.activation: auto` in YAML or `new AutoActivation()` in the builder. Without that override the default `ExplicitActivation` always engages once `withCoordinator()` / a `coordinator:` YAML block is present.
