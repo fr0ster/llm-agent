@@ -2468,6 +2468,7 @@ import {
   HybridDispatch,
   ReplanOnErrorPlanning,
   SelfDispatch,
+  SkillStepsPlanning,
   SubAgentDispatch,
 } from '@mcp-abap-adt/llm-agent-libs';
 
@@ -2523,7 +2524,7 @@ Builder:
 ```ts
 .withCoordinator({
   planning: new SkillStepsPlanning(),   // reads ctx.activeSkillMeta
-  dispatch: new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(main)),
+  dispatch: new HybridDispatch(new SubAgentDispatch(), new SelfDispatch(mainLlm)),
   activation: new ExplicitActivation(),
 })
 ```
