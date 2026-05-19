@@ -231,6 +231,13 @@ export interface SmartServerConfig {
  */
 export interface SmartServerSubAgentConfig {
   name: string;
+  /**
+   * Human-readable capability description. Surfaced to the Coordinator's
+   * planner LLM so it can pick the right subagent per step. Optional, but
+   * highly recommended — without it the planner sees `(no description)` and
+   * routes by name alone.
+   */
+  description?: string;
   config: Omit<SmartServerConfig, 'log'>;
 }
 
@@ -539,8 +546,18 @@ export class SmartServer {
           fileLogger,
           mergedEmbedderFactories,
         );
-        registry.set(sub.name, new SmartAgentSubAgent(sub.name, subAgent));
-        log({ event: 'subagent_built', name: sub.name });
+        registry.set(
+          sub.name,
+          new SmartAgentSubAgent(sub.name, subAgent, {
+            description: sub.description,
+          }),
+        );
+        log({
+          event: 'subagent_built',
+          name: sub.name,
+          hasDescription:
+            typeof sub.description === 'string' && sub.description.length > 0,
+        });
       }
       builder = builder.withSubAgents(registry);
     }

@@ -41,6 +41,13 @@ coordinator:
 
 subagents:
   - name: abap-coder
+    description: |
+      Writes ABAP source code: reports, classes, function modules. Use for any
+      task that asks to create, refactor, or modify ABAP code in the system.
     config: ../../examples/subagents/abap-coder-sap-aicore.yaml
   - name: code-reviewer
+    description: |
+      Reviews ABAP code and returns a one-line JSON object
+      {"approved": boolean, "issues": string[]}. Use AFTER code generation to
+      verify correctness; do not use for generating new code.
     config: ../../examples/subagents/code-reviewer-sap-aicore.yaml

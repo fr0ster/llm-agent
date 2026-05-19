@@ -21,6 +21,10 @@ coordinator:
 
 subagents:
   - name: abap-coder
+    description: |
+      Writes ABAP source code: reports, classes, function modules.
     config: ../../examples/subagents/abap-coder-deepseek.yaml
   - name: code-reviewer
+    description: |
+      Reviews ABAP code; returns JSON {"approved": bool, "issues": string[]}.
     config: ../../examples/subagents/code-reviewer-deepseek.yaml

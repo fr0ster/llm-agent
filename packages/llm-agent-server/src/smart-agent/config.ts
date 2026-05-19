@@ -255,6 +255,9 @@ log: smart-server.log                 # path to log file; omit for stdout
 
 # subagents:                          # Optional: nested agents callable from pipeline
 #   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
+#     description: |                  # Optional. Shown to the Coordinator planner LLM
+#       Reviews code and returns      # so it can pick this agent for the right step.
+#       structured JSON.
 #     config: ./agents/code-reviewer.yaml
 
 # coordinator:                        # Optional: enable autonomous plan-execute loop
@@ -348,6 +351,12 @@ function parseSubAgents(
     }
     const name = (entry as { name: string }).name;
     const cfgRel = (entry as { config: string }).config;
+    const description = (entry as { description?: unknown }).description;
+    if (description !== undefined && typeof description !== 'string') {
+      throw new Error(
+        `subagents[].description must be a string when present (got ${JSON.stringify(description)})`,
+      );
+    }
     const subConfigPath = path.isAbsolute(cfgRel)
       ? cfgRel
       : path.resolve(baseDir, cfgRel);
@@ -402,7 +411,7 @@ function parseSubAgents(
     const subResolved = resolveSmartServerConfig(args, subYaml, env, {
       configPath: subConfigPath,
     });
-    out.push({ name, config: subResolved });
+    out.push({ name, description, config: subResolved });
   }
   return out;
 }
