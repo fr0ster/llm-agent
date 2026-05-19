@@ -67,6 +67,10 @@ Client (OpenAI-compatible)
         -> SmartAgent (orchestration loop)
            -> ILlm (main/helper/classifier via adapters)
            -> IPipeline (request orchestration — DefaultPipeline or consumer-defined)
+                -> coordinator stage (optional) -> SubAgentRegistry
+                                                   └── nested SmartAgent (per subagent)
+                                                         └── ILlm, IPipeline (DefaultPipeline)
+                                                         └── IMcpClient, IRag (per-subagent)
            -> IRag stores (tools / history — consumer-defined)
            -> IMcpClient[] (one or many MCP endpoints)
            -> Policy guards (tool policy + injection detector)
@@ -116,6 +120,10 @@ flowchart LR
   MCPS --> MCA("McpClientAdapter")
   MCA --> MCPW("MCPClientWrapper")
 ```
+
+### Multi-agent orchestration (overview)
+
+`DefaultPipeline` can operate in two modes depending on configuration. In the default mode, a single `tool-loop` stage handles all LLM interaction and MCP tool execution for a request. When `withCoordinator(...)` is called on the builder and the activation strategy fires, the `tool-loop` stage is replaced by a `coordinator` stage that autonomously drives N subagents through a planner LLM. Each subagent is a full `SmartAgent` with its own `pipeline.llm`, MCP clients, and RAG stores, independent of the parent agent. The coordinator decomposes the incoming request into a multi-step plan, dispatches each step to the appropriate subagent (or back to itself), and aggregates results. All earlier pipeline stages — classify, RAG retrieval, tool-select, assemble — still run and feed context into the coordinator's planner. See [Subagent orchestration](#subagent-orchestration) for the subagent infrastructure and [Coordinator orchestration](#coordinator-orchestration) for the autonomous planning driver.
 
 ## Inbound API Adapter Layer
 
@@ -921,6 +929,8 @@ packages/llm-agent-libs/src/
 
 ## Subagent orchestration
 
+This section describes the **subagent infrastructure**: the `subagent` stage handler, the `SubAgentRegistry`, and the YAML loader that constructs nested `SmartAgent` instances from per-agent config files. The [Coordinator orchestration](#coordinator-orchestration) section below describes the autonomous planning driver that uses this infrastructure to decompose requests and dispatch steps across registered subagents.
+
 Pipelines can invoke nested `SmartAgent` instances as a built-in stage. A top-level
 `subagents:` YAML block declares named subagents (each a full SmartAgent config in
 its own file); the `subagent` stage type runs one by name, with task and output
@@ -956,6 +966,10 @@ pluggable:
 - **`IActivationStrategy`** — when the coordinator activates at all.
   - `AutoActivation` — activate when subagents exist OR skill has steps.
   - `ExplicitActivation` — require `withCoordinator()` opt-in.
+
+### Heterogeneous LLM routing
+
+Every subagent carries its own `pipeline.llm.main` and optional `classifier` LLM, completely independent of the parent agent and of each other. The Coordinator's `plannerLlm` (one of `main`, `helper`, or `planner`) is also independent of any subagent's LLM. This lets you route different workloads to the most cost-effective model for each role. For example: parent classifier on Claude Haiku (cheap, fast intent detection), planner on DeepSeek (cost-effective reasoning), abap-coder subagent on SAP AI Core gpt-4o (domain-optimized generation), reviewer subagent on DeepSeek, doc-writer subagent on a local Ollama model. Cheap models handle routine orchestration decisions; expensive models are reserved for the actual generation steps where quality matters most. See `docs/PERFORMANCE.md` for token-cost analysis and model selection guidance.
 
 Embedded (programmatic) usage:
 
