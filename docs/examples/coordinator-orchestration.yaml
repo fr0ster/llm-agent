@@ -1,0 +1,53 @@
+# Coordinator orchestration — DeepSeek planner + SAP AI Core specialist agents.
+# The coordinator (planner LLM) decomposes the request into steps; each step is
+# dispatched to the best-matching subagent. Falls back to self-dispatch when no
+# specialist fits.
+#
+# Prerequisites:
+#   1. mcp-abap-adt-proxy listening on http://127.0.0.1:3001 (if subagents use MCP).
+#   2. DEEPSEEK_API_KEY and AICORE_SERVICE_KEY env variables set.
+
+port: 4004
+mode: smart
+
+agent:
+  healthTimeoutMs: 15000
+
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_MODEL:-gpt-4o}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0.7
+    helper:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      model: deepseek-chat
+      temperature: 0.1
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
+
+coordinator:
+  planning: replan-on-error
+  dispatch: hybrid
+  activation: auto
+  plannerLlm: helper
+  maxSteps: 8
+  maxRetriesPerStep: 1
+  failPolicy: continue
+
+subagents:
+  - name: abap-coder
+    description: |
+      Writes ABAP source code: reports, classes, function modules. Use for any
+      task that asks to create, refactor, or modify ABAP code in the system.
+    config: ../../examples/subagents/abap-coder-sap-aicore.yaml
+  - name: code-reviewer
+    description: |
+      Reviews ABAP code and returns a one-line JSON object
+      {"approved": boolean, "issues": string[]}. Use AFTER code generation to
+      verify correctness; do not use for generating new code.
+    config: ../../examples/subagents/code-reviewer-sap-aicore.yaml

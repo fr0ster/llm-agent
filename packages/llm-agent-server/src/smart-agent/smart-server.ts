@@ -217,6 +217,11 @@ export interface SmartServerConfig {
    * `SmartAgentBuilder.withSubAgents(...)`.
    */
   subAgentConfigs?: SmartServerSubAgentConfig[];
+  /**
+   * Raw coordinator YAML block. Translated to concrete strategy instances by
+   * `SmartServer.start()` once the parent LLMs are built.
+   */
+  coordinatorYaml?: import('./config.js').YamlCoordinator;
 }
 
 /**
@@ -226,6 +231,13 @@ export interface SmartServerConfig {
  */
 export interface SmartServerSubAgentConfig {
   name: string;
+  /**
+   * Human-readable capability description. Surfaced to the Coordinator's
+   * planner LLM so it can pick the right subagent per step. Optional, but
+   * highly recommended — without it the planner sees `(no description)` and
+   * routes by name alone.
+   */
+  description?: string;
   config: Omit<SmartServerConfig, 'log'>;
 }
 
@@ -303,10 +315,19 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import {
+  resolveCoordinatorActivation,
+  resolveCoordinatorDispatch,
+  resolveCoordinatorPlanning,
+} from './config.js';
+
 export {
   generateConfigTemplate,
   loadYamlConfig,
   type ResolveConfigArgs,
+  resolveCoordinatorActivation,
+  resolveCoordinatorDispatch,
+  resolveCoordinatorPlanning,
   resolveEnvVars,
   resolveSmartServerConfig,
   YAML_TEMPLATE,
@@ -525,10 +546,53 @@ export class SmartServer {
           fileLogger,
           mergedEmbedderFactories,
         );
-        registry.set(sub.name, new SmartAgentSubAgent(sub.name, subAgent));
-        log({ event: 'subagent_built', name: sub.name });
+        registry.set(
+          sub.name,
+          new SmartAgentSubAgent(sub.name, subAgent, {
+            description: sub.description,
+          }),
+        );
+        log({
+          event: 'subagent_built',
+          name: sub.name,
+          hasDescription:
+            typeof sub.description === 'string' && sub.description.length > 0,
+        });
       }
       builder = builder.withSubAgents(registry);
+    }
+
+    // ---- Coordinator (autonomous plan-execute loop) ------------------------
+    const coordCfg = this.cfg.coordinatorYaml;
+    if (coordCfg) {
+      // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
+      // 'helper' → helperLlm if present, else fall back to mainLlm.
+      const plannerLlm =
+        coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+      // For 'skill-steps' planning the default dispatch is 'hybrid' rather
+      // than 'subagent': skill-step `agent:` is optional, so steps without
+      // an explicit agent need a self-LLM fallback. Users can still pin
+      // dispatch: subagent explicitly when every step declares `agent:`.
+      const planningKind = coordCfg.planning ?? 'one-shot';
+      const dispatchKind =
+        coordCfg.dispatch ??
+        (planningKind === 'skill-steps' ? 'hybrid' : 'subagent');
+      builder = builder.withCoordinator({
+        planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
+        dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm),
+        // Default to 'explicit' — the presence of a `coordinator:` block in
+        // YAML is itself the opt-in signal. Users that want the auto-fallback
+        // semantics (no subagents and no skill steps → tool-loop) must set
+        // `activation: auto` explicitly.
+        activation: resolveCoordinatorActivation(
+          coordCfg.activation ?? 'explicit',
+        ),
+        plannerLlm,
+        maxSteps: coordCfg.maxSteps,
+        maxRetriesPerStep: coordCfg.maxRetriesPerStep,
+        failPolicy: coordCfg.failPolicy,
+      });
+      log({ event: 'coordinator_configured', config: coordCfg });
     }
 
     const agentHandle = await builder.build();

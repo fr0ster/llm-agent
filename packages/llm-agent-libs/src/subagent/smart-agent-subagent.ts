@@ -7,10 +7,15 @@ import type {
 import type { SmartAgent } from '../agent.js';
 
 export class SmartAgentSubAgent implements ISubAgent {
+  public readonly description?: string;
+
   constructor(
     public readonly name: string,
     private readonly agent: SmartAgent,
-  ) {}
+    opts?: { description?: string },
+  ) {
+    this.description = opts?.description;
+  }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
     const res = await this.agent.process(input.task, {

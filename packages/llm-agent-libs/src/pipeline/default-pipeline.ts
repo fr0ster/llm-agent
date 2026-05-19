@@ -26,6 +26,7 @@
 
 import type {
   CallOptions,
+  ICoordinatorConfig,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -44,6 +45,7 @@ import type {
 } from '../agent.js';
 import { LlmClassifier } from '../classifier/llm-classifier.js';
 import { ContextAssembler } from '../context/context-assembler.js';
+import { ExplicitActivation } from '../coordinator/activation/explicit.js';
 import type {
   IPipeline,
   PipelineDeps,
@@ -98,6 +100,13 @@ export interface DefaultPipelineOptions {
    * handler registry. When omitted or empty, no sub-agent handler is wired in.
    */
   subAgents?: SubAgentRegistry;
+  /**
+   * Optional coordinator configuration. When `planning` and `dispatch`
+   * strategies are both supplied and the `activation` strategy fires at
+   * build time, the trailing `tool-loop` stage is swapped for a
+   * `coordinator` stage.
+   */
+  coordinator?: ICoordinatorConfig;
 }
 
 export class DefaultPipeline implements IPipeline {
@@ -105,9 +114,11 @@ export class DefaultPipeline implements IPipeline {
   private executor!: PipelineExecutor;
   private stages!: StageDefinition[];
   private readonly subAgents?: SubAgentRegistry;
+  private readonly coordinator?: ICoordinatorConfig;
 
   constructor(options: DefaultPipelineOptions = {}) {
     this.subAgents = options.subAgents;
+    this.coordinator = options.coordinator;
   }
 
   // Cached defaults (created once in initialize, reused per request)
@@ -146,7 +157,31 @@ export class DefaultPipeline implements IPipeline {
     this.resolvedLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
 
-    const registry = buildDefaultHandlerRegistry(this.subAgents);
+    const coordPlanning = this.coordinator?.planning;
+    const coordDispatch = this.coordinator?.dispatch;
+    const coordinatorConfigured =
+      coordPlanning != null && coordDispatch != null;
+    const registry = buildDefaultHandlerRegistry({
+      subAgents: this.subAgents,
+      coordinator:
+        coordinatorConfigured && coordPlanning && coordDispatch
+          ? {
+              planning: coordPlanning,
+              dispatch: coordDispatch,
+              maxSteps: this.coordinator?.maxSteps ?? 12,
+              maxRetriesPerStep: this.coordinator?.maxRetriesPerStep ?? 1,
+              failPolicy: this.coordinator?.failPolicy ?? 'abort',
+            }
+          : undefined,
+      // Default to ExplicitActivation when caller passes a coordinator config
+      // without an activation strategy. Matches SmartAgentBuilder.withCoordinator
+      // semantics: presence of coordinator config IS the opt-in signal.
+      // Without this default, `_buildStages()` would emit a `coordinator-activate`
+      // stage whose handler is unregistered → unknown-stage runtime error.
+      coordinatorActivation: coordinatorConfigured
+        ? (this.coordinator?.activation ?? new ExplicitActivation())
+        : undefined,
+    });
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);
 
     // Fixed stage list — only tools + history RAG stores
@@ -268,13 +303,38 @@ export class DefaultPipeline implements IPipeline {
       });
     }
 
+    const coordinatorConfigured =
+      this.coordinator?.planning != null && this.coordinator?.dispatch != null;
+
     stages.push(
       { id: 'tool-select', type: 'tool-select' },
       { id: 'assemble', type: 'assemble' },
-      { id: 'tool-loop', type: 'tool-loop' },
-      { id: 'history-upsert', type: 'history-upsert' },
     );
 
+    if (coordinatorConfigured) {
+      // Runtime activation: `coordinator-activate` evaluates the configured
+      // IActivationStrategy AFTER skill-select has run, so it can see the
+      // real `ctx.selectedSkills` state (which build-time stage selection
+      // cannot). Coordinator and tool-loop are both in the list, gated by
+      // `when:` predicates that the executor evaluates per-request.
+      stages.push(
+        { id: 'coordinator-activate', type: 'coordinator-activate' },
+        {
+          id: 'coordinator',
+          type: 'coordinator',
+          when: 'coordinatorActive',
+        },
+        {
+          id: 'tool-loop',
+          type: 'tool-loop',
+          when: '!coordinatorActive',
+        },
+      );
+    } else {
+      stages.push({ id: 'tool-loop', type: 'tool-loop' });
+    }
+
+    stages.push({ id: 'history-upsert', type: 'history-upsert' });
     return stages;
   }
 
@@ -366,6 +426,9 @@ export class DefaultPipeline implements IPipeline {
 
       // Streaming callback
       yield: yieldChunk,
+
+      // Subagent registry for coordinator/subagent stages (read by handlers).
+      subAgents: this.subAgents,
     };
   }
 }

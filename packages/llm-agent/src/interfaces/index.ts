@@ -14,6 +14,17 @@ export type {
 } from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type {
+  IActivationStrategy,
+  ICoordinatorConfig,
+  ICoordinatorContext,
+  IDispatchStrategy,
+  IPlanningStrategy,
+  Plan,
+  PlanStep,
+  StepResult,
+  SubAgentWithDescription,
+} from './coordinator.js';
+export type {
   CircuitBreakerStatus,
   HealthComponentStatus,
   HealthStatus,
