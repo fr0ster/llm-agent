@@ -236,6 +236,51 @@ docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({M
 
 ---
 
+## Coordinator / multi-agent orchestration
+
+### Response body is "(no response)" and usage tokens are all zero
+
+**Symptom.** HTTP response `choices[0].message.content` is literally `"(no response)"` (or empty); `prompt_tokens`, `completion_tokens`, and `total_tokens` are all 0; `request_done ok:true` appears in `smart-server.log` after ~50–100 ms; no `coordinator_plan` or `coordinator_step_*` events appear between `request_start` and `request_done`.
+
+**Cause.** The Coordinator stage ran, found `ctx.subAgents` undefined (the subagent registry was not propagated to the runtime `PipelineContext`), set `ctx.error`, and returned `false`. The pipeline aborted silently because the executor does not escalate failed-stage errors as stream chunks.
+
+**Fix.** Ensure you are running version 12.0.6 or later — PR #129 includes the `_buildContext` fix. If you are on a fork, verify that `DefaultPipeline._buildContext()` assigns `ctx.subAgents = this.subAgents`.
+
+---
+
+### Coordinator does not activate even though "coordinator:" is set in YAML
+
+**Symptom.** A `coordinator_configured` event appears in `smart-server.log` at startup, but no `coordinator_plan` event fires when requests come in. `tool-loop iteration 1` warnings appear instead.
+
+**Cause.** `AutoActivation` (the default) requires either subagents present in the registry **or** the active skill to declare `steps:` in its frontmatter. If neither condition is true the coordinator stays inactive and the normal tool-loop is used.
+
+**Fix.**
+- Confirm the `subagents:` block in the parent YAML is non-empty and each entry has a `name:` and `config:` field.
+- Alternatively, set `coordinator.activation: explicit` to force activation regardless of registry state.
+- Verify subagents were instantiated with `grep subagent_built smart-server.log` — you should see one entry per subagent at startup.
+
+---
+
+### Final response has step blocks but token usage shows 0
+
+**Symptom.** The HTTP response content contains `### step-1`, `### step-2`, etc. with real subagent output, but `usage.prompt_tokens`, `usage.completion_tokens`, and `usage.total_tokens` are all 0.
+
+**Cause.** Each subagent's `process()` runs in its own session and emits its own usage to its own logs. The Coordinator captures `StepResult.usage` per step but does not aggregate it into the parent's final HTTP `usage` field.
+
+**Fix.** This is a known gap tracked in PR #129 follow-ups. Per-step token usage is observable via subagent-level session logs or tracer spans. HTTP-level aggregation is a planned future enhancement. Do not rely on the top-level `usage` field for cost accounting on Coordinator requests.
+
+---
+
+### `coordinator_step_*` events not in smart-server.log
+
+**Symptom.** `subagent_built` and `coordinator_configured` events appear in `smart-server.log`, but `coordinator_plan`, `coordinator_step_start`, and `coordinator_step_done` do not — even though the response clearly shows multi-step output.
+
+**Cause.** `CoordinatorHandler` emits these events via `ctx.options?.sessionLogger?.logStep(...)`. The smart-server's file-logger sink filters to higher-level `event:`-tagged entries and does not always include stage-level `logStep` calls.
+
+**Fix.** This is an observability gap tracked in PR #129 follow-ups. Confirm coordinator execution by inspecting the response content directly (look for `### step-N` blocks). To get structured span data, enable tracer spans in your YAML (`tracer: { enable: true }`) if your build supports it.
+
+---
+
 ## When in doubt
 
 - `smart-server.log` — every chat request, every tool-loop iteration with `toolCount` and a content summary.

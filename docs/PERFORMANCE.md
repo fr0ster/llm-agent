@@ -384,3 +384,48 @@ Metrics: type accuracy, count accuracy, per-type precision/recall across 20+ gol
 ```bash
 npm run test:all   # Runs all tests including RAG eval and classifier bench
 ```
+
+## Coordinator orchestration: when it pays off
+
+### Token cost model
+
+Each Coordinator request with N steps costs roughly `(1 + N) × T` tokens, where `T` is the baseline cost of a single pipeline pass (classify + rag + tool-select + one tool-loop iteration). On top of that, the planner LLM call adds ~500–1 500 tokens depending on how many subagents are registered and how much skill content each has.
+
+The break-even point is lower than it looks: each subagent has a **narrower tool selection** (only the tools relevant to its task), so individual subagent LLM calls have shorter prompts than a monolithic tool-loop that retrieved all tools.
+
+### When Coordinator is cheaper than a single tool-loop
+
+- **Multi-step workflows hitting per-call tool limits** — e.g. SAP AI Core enforces a 128-tool ceiling per request. A single tool-loop iteration touching 184 indexed tools requires truncation; a Coordinator dispatching focused steps with 5–10 tools each stays well under the limit.
+- **Tasks where different steps need disjoint tool subsets** — a "code + review + document" workflow benefits from each subagent only seeing its own tools.
+- **Long sequential chains** where the parent tool-loop would otherwise run 4–6 iterations (each paying full context cost).
+
+### Heterogeneous LLM routing
+
+Route each stage to the cheapest model that meets its quality bar:
+
+| Stage | Example model | Rationale |
+|---|---|---|
+| Parent classify | Claude Haiku | Fast, cheap; only classifies intent |
+| Coordinator planner | DeepSeek | Structured JSON output; inexpensive |
+| abap-coder subagent | SAP AI Core gpt-4o | ABAP generation quality matters |
+| reviewer subagent | DeepSeek | Structured JSON evaluation; fast |
+| doc-writer subagent | Ollama (local) | Free; markdown formatting is forgiving |
+
+Use `plannerLlm: helper` in YAML to assign a cheap model for planning while the parent and subagents use stronger ones.
+
+### Tuning knobs
+
+| YAML key | Default | Effect |
+|---|---|---|
+| `coordinator.maxSteps` | unlimited | Hard cap on generated step count |
+| `coordinator.maxRetriesPerStep` | 1 | How many times to retry a failed step |
+| `coordinator.failPolicy` | `abort` | `abort` stops the plan; `continue` skips the failed step |
+| `coordinator.plannerLlm` | `main` | `main` / `helper` / `planner` — which LLM the planner uses |
+
+`OneShotPlanning` (default) issues a single planner call per request. `ReplanOnErrorPlanning` issues one additional call per step failure. For deterministic, well-defined flows `OneShotPlanning` is sufficient.
+
+### When NOT worth activating
+
+Simple single-shot requests get no benefit and pay the planner overhead. `AutoActivation` (the default) already gates this: the Coordinator stage stays inactive when there are no subagents registered and no active skill declares `steps:` in its frontmatter. Zero overhead for ordinary traffic.
+
+Cross-reference: see `docs/ARCHITECTURE.md` section `## Coordinator orchestration` for the strategy interfaces.
