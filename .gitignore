@@ -26,6 +26,11 @@ docs/examples/**/*.d.ts.map
 .env.smoke
 .env.abap
 .env.smart-server
+.env.deepseek
+.env.aicore
+.env.*
+!.env.*.template
+!.env.template
 *.env
 
 # IDE
