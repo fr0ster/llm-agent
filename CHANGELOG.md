@@ -7,6 +7,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [12.1.1] — 2026-05-20
+
+### Security
+- **Removed leaked DeepSeek API key from git history.** A file `.env.deepseek` containing a real `DEEPSEEK_API_KEY` was accidentally committed in an earlier release and pushed to all branches. The key has been revoked at the provider, and the file was scrubbed from the entire history of all branches via `git filter-repo` followed by a force-push. **All commit SHAs prior to this release have changed** — anyone with a local clone must re-clone or `git reset --hard origin/<branch>`.
+- **`.gitignore`** updated to cover `.env.*` (with explicit allow-list for `.env.*.template`), preventing recurrence for any provider-specific env file (`.env.deepseek`, `.env.aicore`, …).
+
+---
+
+## [12.1.0] — 2026-05-20
+
+### Added
+- **Coordinator orchestration** — autonomous plan-execute-replan loop over subagents ([#129](https://github.com/fr0ster/llm-agent/pull/129)); coordinator docs synced with final post-merge behaviour ([#130](https://github.com/fr0ster/llm-agent/pull/130)).
+- **Subagent orchestration infrastructure** — `Registry` + `Loader` + `SubAgentHandler` foundation that the coordinator builds on ([#128](https://github.com/fr0ster/llm-agent/pull/128)).
+
+---
+
 ## [12.0.5] — 2026-05-08
 
 ### Chore
@@ -21,6 +37,33 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Closes
 - [#127](https://github.com/fr0ster/llm-agent/issues/127) — `llm-agent-libs` / `llm-agent-mcp` / `llm-agent-rag` missing `"default"` condition in exports — breaks CJS consumers
+
+---
+
+## [12.0.3] — 2026-04-28
+
+### Chore
+- Re-published all 15 packages with concrete pinned versions after a clean rebuild — workspace-protocol references replaced in the published tarballs. No code changes vs 12.0.2.
+
+---
+
+## [12.0.2] — 2026-04-28
+
+### Fixed
+- **Release scripts** now include `llm-agent-mcp`, `llm-agent-rag`, and `llm-agent-libs` in the publish list (they were missing from the 12.0.1 release manifest, so the npm registry didn't receive the new companion packages).
+
+---
+
+## [12.0.1] — 2026-04-28
+
+### Fixed
+- **`@mcp-abap-adt/llm-agent-rag`** auto-prefetches embedders for the `makeRag` openai/default branches so consumers don't need to call `prefetchEmbedderFactories` themselves before `makeRag` in those code paths.
+
+### Docs
+- Full documentation audit aligning every guide with the five-package layout: `ARCHITECTURE.md` SmartServer example replaced with `SmartAgentBuilder`; remaining `@mcp-abap-adt/llm-agent-server` library imports replaced across docs; plugin examples updated to import from the new packages and drop stale dist artifacts.
+
+### Closes
+- [#126](https://github.com/fr0ster/llm-agent/pull/126) — Complete v12 package split: `llm-agent-mcp` + `llm-agent-rag` + `llm-agent-libs`
 
 ---
 
@@ -46,6 +89,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Closes
 - [#123](https://github.com/fr0ster/llm-agent/issues/123) — Move library-grade exports out of `llm-agent-server` (or re-export from `llm-agent`)
+
+---
+
+## [11.1.2] — 2026-04-27
+
+### Chore
+- Dev and runtime dependencies bumped ([#121](https://github.com/fr0ster/llm-agent/pull/121)).
+- `.gitignore` updated to ignore `.claude/` local harness state.
+
+---
+
+## [11.1.1] — 2026-04-26
+
+### Fixed
+- **Streaming tool calls** correctly forwarded through the pipeline, and **MCP setup errors** are now surfaced to the caller instead of being swallowed ([#120](https://github.com/fr0ster/llm-agent/pull/120)).
+
+---
+
+## [11.1.0] — 2026-04-25
+
+### Fixed
+- **`@mcp-abap-adt/sap-aicore-embedder`** foundation models — pipeline `pipeline.rag.{store}` entries are now wired into the builder at runtime; embedder/RAG-backend peers are prefetched from pipeline entries; type-predicate narrowing for `peerBackend` propagates correctly.
+- **`@mcp-abap-adt/qdrant-rag`** fails fast when an existing collection's vector size mismatches the configured embedder (instead of producing silent runtime corruption).
+
+### Changed
+- **`examples/sap-ai-core`** — default `RAG_TYPE` is now in-memory; compose overrides switch to qdrant. Qdrant collections are namespaced by embedding model.
+
+### Added
+- `docs/TROUBLESHOOTING.md` — symptom→cause→fix index for the issues fixed in this release ([#117](https://github.com/fr0ster/llm-agent/pull/117)).
 
 ---
 
@@ -286,6 +358,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [8.0.1] — 2026-04-12
+
+### Fixed
+- Translation tests updated to match the per-store `translateQueryStores` API introduced in 8.0.0 (test-only change).
+
+---
+
 ## [8.0.0] — 2026-04-12
 
 ### Added
@@ -315,6 +394,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - **Session-scoped default history RAG** — prevent cross-session leaks.
 - **Removed dead tests** for removed RAG upsert flow.
+
+---
+
+## [6.0.2] — 2026-04-10
+
+### Removed
+- Dead tests for the removed RAG `upsert` flow and tracer span (test-only cleanup following the [#86](https://github.com/fr0ster/llm-agent/issues/86) fix).
+
+---
+
+## [6.0.1] — 2026-04-10
+
+### Fixed
+- **Default history RAG** is now scoped to the active session to prevent cross-session leaks ([#86](https://github.com/fr0ster/llm-agent/issues/86)).
 
 ---
 
@@ -381,6 +474,27 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [5.18.4] — 2026-04-08
+
+### Added
+- **Runtime reconfiguration API** for classifier, helper, and main LLM — providers can be swapped without restarting the server ([#76](https://github.com/fr0ster/llm-agent/issues/76)).
+
+---
+
+## [5.18.3] — 2026-04-08
+
+### Added
+- **Per-request LLM params forwarding** from OpenAI and Anthropic endpoints — clients can override temperature, top-p, etc. per call ([#74](https://github.com/fr0ster/llm-agent/issues/74)).
+
+---
+
+## [5.18.2] — 2026-04-08
+
+### Fixed
+- **Configurable health-check timeout** + `healthCheck` proxy in ILlm decorators (signal merging and decorator chain support) ([#71](https://github.com/fr0ster/llm-agent/issues/71)).
+
+---
+
 ## [5.18.1] — 2026-04-08
 
 ### Fixed
@@ -443,6 +557,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Removed
 - **IToolResultCompactor** — removed entirely. Tool-loop passes full tool results between iterations without compaction. Large tool results are the MCP server's responsibility to fix at source (e.g. TSV instead of XML). Compacting/truncating tool results hides the problem and breaks LLM context.
+
+---
+
+## [5.16.1] — 2026-04-07
+
+### Added
+- **`LlmToolResultCompactor`** and **`RagOnlyToolResultCompactor`** — pluggable `IToolResultCompactor` strategies for shrinking large tool outputs before they hit the next LLM round-trip ([#66](https://github.com/fr0ster/llm-agent/issues/66)).
+
+### Docs
+- `INTEGRATION.md` updated with `IToolResultCompactor` strategies, `ILlmCallStrategy`, and the rate limiter.
 
 ---
 
@@ -1064,6 +1188,13 @@ const assembler: IContextAssembler = {
 
 ---
 
+## [2.15.0] — 2026-03-22
+
+### Changed
+- **Token-free LLM health check via `getModels`** — health probes now hit the model-listing endpoint instead of issuing a token-consuming completion ([#13](https://github.com/fr0ster/llm-agent/issues/13)).
+
+---
+
 ## [2.14.1] — 2026-03-20
 
 ### Changed
@@ -1150,6 +1281,20 @@ const assembler: IContextAssembler = {
 ### Added
 
 - **Stand With Ukraine badge** in README.
+
+---
+
+## [2.11.0] — 2026-03-17
+
+### Added
+- **`ISkill` + `ISkillManager` interfaces** — skills are now first-class citizens, with `ISkillManager` wired into `SmartServer` YAML config.
+- **`docs/examples/skills/11-skills.yaml`** example + skills documentation across all guides.
+
+### Fixed
+- Fallback RAG query in skill-select.
+
+### Chore
+- `.claude/skills/` and `.agents/skills/` added to `.gitignore`.
 
 ---
 
@@ -1368,6 +1513,34 @@ multi-turn token budget, and three new developer guides.
 
 ---
 
+## [2.3.0] — 2026-03-02
+
+### Added
+- **RAG evaluation suite** — golden queries and ranking metrics (Phase 14.4).
+- **`ITracer` / `ISpan` abstraction** with OTEL adapter (Phase 14.3).
+- **CLI flags for RAG vector/keyword weights** (Phase 14.1).
+- **`test:tracer` step** in CI workflow.
+
+### Docs
+- New roadmap (Phases 17–20); archived completed roadmaps (Phases 1–16); Phase 14.2–14.4 marked done.
+
+---
+
+## [2.2.1] — 2026-03-01
+
+### Added
+- `helperLlm` test coverage for translation and summarization.
+- **Real incremental SSE streaming for Anthropic** provider.
+
+### Fixed
+- CI: removed references to deleted test files from CI workflow and scripts.
+
+### Chore
+- Removed permissive casts, dead tests, and stubs (tech-debt cleanup).
+- Removed unused `maxIterations` from `BaseAgentConfig`.
+
+---
+
 ## [2.2.0] — 2026-02-27
 
 ### Summary
@@ -1418,6 +1591,13 @@ and streaming.
 
 - `SapCoreAIProvider.streamChat()` now works (previously threw "not implemented").
 - Removed `"private": false` from `package.json` (npm treated it as private).
+
+---
+
+## [2.0.0-beta.0] — 2026-02-26
+
+### Docs
+- Noted deprecated legacy tests in the 2.0.0-beta.0 release notes (pre-release tag retained for traceability).
 
 ---
 
