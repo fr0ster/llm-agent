@@ -10,8 +10,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [12.1.1] — 2026-05-20
 
 ### Security
-- **Removed leaked DeepSeek API key from git history.** A file `.env.deepseek` containing a real `DEEPSEEK_API_KEY` was accidentally committed in an earlier release and pushed to all branches. The key has been revoked at the provider, and the file was scrubbed from the entire history of all branches via `git filter-repo` followed by a force-push. **All commit SHAs prior to this release have changed** — anyone with a local clone must re-clone or `git reset --hard origin/<branch>`.
-- **`.gitignore`** updated to cover `.env.*` (with explicit allow-list for `.env.*.template`), preventing recurrence for any provider-specific env file (`.env.deepseek`, `.env.aicore`, …).
+- **Provider-specific env files are no longer tracked.** Files matching `.env.*` (e.g. `.env.deepseek`, `.env.aicore`) are now ignored by `.gitignore`, with an explicit allow-list for `.env.*.template`. This closes a leak channel for provider credentials in repos that use per-provider env files alongside the main `.env`.
 
 ---
 
