@@ -171,6 +171,7 @@ export class DefaultPipeline implements IPipeline {
               maxSteps: this.coordinator?.maxSteps ?? 12,
               maxRetriesPerStep: this.coordinator?.maxRetriesPerStep ?? 1,
               failPolicy: this.coordinator?.failPolicy ?? 'abort',
+              maxLayer: this.coordinator?.maxLayer ?? 1,
             }
           : undefined,
       // Default to ExplicitActivation when caller passes a coordinator config
