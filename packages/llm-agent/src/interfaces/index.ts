@@ -112,6 +112,8 @@ export type {
   ISkillResource,
 } from './skill.js';
 export type {
+  IBriefing,
+  IBriefingArtifact,
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
