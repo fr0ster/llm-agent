@@ -60,7 +60,7 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.signal,
         );
         for (const r of results.slice(0, topKProject)) {
-          parts.push(this.contentOf(r));
+          parts.push(r.text);
           sources.push({
             kind: 'rag',
             ref: this.refOf(r, 'path') ?? 'unknown',
@@ -79,7 +79,7 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
           req.signal,
         );
         for (const r of results.slice(0, topKTool)) {
-          parts.push(this.contentOf(r));
+          parts.push(r.text);
           sources.push({
             kind: 'tool-rag',
             ref: this.refOf(r, 'tool') ?? 'unknown',
@@ -102,16 +102,5 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
     const meta = r.metadata as Record<string, unknown> | undefined;
     const value = meta?.[key];
     return typeof value === 'string' ? value : undefined;
-  }
-
-  /**
-   * Reads the snippet text from a RagResult. Supports both the declared
-   * `text` field and `content` (used by some upstream sources/tests).
-   */
-  private contentOf(r: RagResult): string {
-    const rec = r as unknown as Record<string, unknown>;
-    if (typeof rec.content === 'string') return rec.content;
-    if (typeof rec.text === 'string') return rec.text;
-    return '';
   }
 }

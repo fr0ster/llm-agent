@@ -56,10 +56,10 @@ describe('DefaultSubAgentContextBuilder', () => {
     const builder = new DefaultSubAgentContextBuilder({
       projectSource: makeSource([
         {
-          content: 'TokenManager handles JWT refresh',
+          text: 'TokenManager handles JWT refresh',
           score: 0.9,
           metadata: { path: 'src/auth/token.ts' },
-        } as unknown as RagResult,
+        } as RagResult,
       ]),
     });
     const res = await builder.build(makeReq());
@@ -71,17 +71,17 @@ describe('DefaultSubAgentContextBuilder', () => {
     const builder = new DefaultSubAgentContextBuilder({
       projectSource: makeSource([
         {
-          content: 'project fact',
+          text: 'project fact',
           score: 0.9,
           metadata: { path: 'a.ts' },
-        } as unknown as RagResult,
+        } as RagResult,
       ]),
       toolSource: makeSource([
         {
-          content: 'get_artifact(name) → string',
+          text: 'get_artifact(name) → string',
           score: 0.8,
           metadata: { tool: 'get_artifact' },
-        } as unknown as RagResult,
+        } as RagResult,
       ]),
     });
     const res = await builder.build(makeReq());
@@ -97,10 +97,10 @@ describe('DefaultSubAgentContextBuilder', () => {
     const builder = new DefaultSubAgentContextBuilder({
       projectSource: makeSource([
         {
-          content: longContent,
+          text: longContent,
           score: 0.9,
           metadata: { path: 'big.ts' },
-        } as unknown as RagResult,
+        } as RagResult,
       ]),
       maxContextChars: 500,
     });
@@ -120,10 +120,10 @@ describe('DefaultSubAgentContextBuilder', () => {
     const builder = new DefaultSubAgentContextBuilder({
       projectSource: makeSource([
         {
-          content: 'should not appear',
+          text: 'should not appear',
           score: 0.9,
           metadata: { path: 'x.ts' },
-        } as unknown as RagResult,
+        } as RagResult,
       ]),
     });
     const res = await builder.build(makeReq({ agent }));
