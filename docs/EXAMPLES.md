@@ -286,9 +286,6 @@ name: code-review
 description: Guidelines for reviewing pull requests
 user-invocable: true
 argument-hint: "<PR number or diff>"
-allowed-tools:
-  - gh_pr_view
-  - gh_pr_diff
 ---
 
 Review the code change with focus on:
@@ -308,7 +305,6 @@ Reference files are in $CLAUDE_SKILL_DIR/examples/.
 | `description` | `string` | Used for RAG matching — be descriptive |
 | `user-invocable` | `boolean` | Whether the user can invoke directly |
 | `argument-hint` | `string` | Hint for user invocation arguments |
-| `allowed-tools` | `string[]` | MCP tools this skill is allowed to use |
 | `disable-model-invocation` | `boolean` | Prevent model from auto-selecting this skill |
 | `model` | `string` | Preferred model for this skill |
 | `context` | `'inline' \| 'fork'` | How content is injected |

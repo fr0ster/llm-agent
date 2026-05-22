@@ -422,8 +422,6 @@ name: skill-name
 description: One-line description (used for RAG matching)
 user-invocable: true
 argument-hint: "<argument description>"
-allowed-tools:
-  - tool_name
 ---
 
 Skill instructions here. Use $ARGUMENTS for invocation args
