@@ -162,6 +162,7 @@ export {
 // SubAgent adapters
 // ---------------------------------------------------------------------------
 export { SmartAgentSubAgent } from './subagent/smart-agent-subagent.js';
+export { formatBriefing } from './subagent/format-briefing.js';
 
 // ---------------------------------------------------------------------------
 // Tracer

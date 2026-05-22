@@ -5,6 +5,7 @@ import type {
   LlmToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
+import { formatBriefing } from './format-briefing.js';
 
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
@@ -18,7 +19,8 @@ export class SmartAgentSubAgent implements ISubAgent {
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
-    const res = await this.agent.process(input.task, {
+    const prompt = formatBriefing(input.task, input.briefing);
+    const res = await this.agent.process(prompt, {
       sessionId: input.sessionId,
       signal: input.signal,
     });
@@ -29,7 +31,6 @@ export class SmartAgentSubAgent implements ISubAgent {
 
     const { content, toolCalls, usage } = res.value;
 
-    // Map SmartAgentResponse toolCalls (OpenAI wire format) → LlmToolCall[]
     const mappedToolCalls: LlmToolCall[] | undefined = toolCalls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,
