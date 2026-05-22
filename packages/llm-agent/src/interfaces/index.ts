@@ -120,6 +120,11 @@ export type {
   SubAgentKind,
   SubAgentRegistry,
 } from './subagent.js';
+export type {
+  ISubAgentContextBuilder,
+  SubAgentContextRequest,
+  SubAgentContextResult,
+} from './subagent-context.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
   AgentConfig,
