@@ -69,6 +69,7 @@ export class SubAgentHandler implements IStageHandler {
         task,
         sessionId: ctx.sessionId,
         signal,
+        layer: 1,
       });
     } catch (err) {
       ctx.error = new OrchestratorError(

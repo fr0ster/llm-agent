@@ -49,6 +49,12 @@ export interface ICoordinatorContext {
   stepResults: Record<string, StepResult>;
   signal?: AbortSignal;
   sessionId: string;
+  /**
+   * Dispatch depth of the current coordinator. Root coordinator is 0; child
+   * subagent coordinators increment per nested dispatch. Forward-declared for
+   * Task 4 of the nested-subagent-dispatch foundation plan.
+   */
+  layer?: number;
 }
 
 export interface IPlanningStrategy {
@@ -82,3 +88,21 @@ export interface ICoordinatorConfig {
 }
 
 export type SubAgentWithDescription = ISubAgent & { description: string };
+
+/**
+ * Minimal forward declaration. Task 4 of the nested-dispatch plan will
+ * move this near StepResult and extend StepResult with an epicFailTrace
+ * field. For now this only exists so ISubAgentResult can type-reference it.
+ */
+export interface EpicFailTrace {
+  layer: number;
+  stepId: string;
+  agentName: string;
+  attempts: Array<{
+    kind: 'transient' | 'replan' | 'hint';
+    error: string;
+    durationMs: number;
+  }>;
+  originalError: string;
+  childTrace?: EpicFailTrace;
+}

@@ -51,6 +51,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
         task,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
+        layer: (ctx.layer ?? 0) + 1,
       });
       return {
         stepId: step.id,
