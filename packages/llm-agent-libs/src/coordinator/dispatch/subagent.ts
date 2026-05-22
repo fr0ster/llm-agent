@@ -1,4 +1,5 @@
 import type {
+  EpicFailTrace,
   ICoordinatorContext,
   IDispatchStrategy,
   ISubAgentContextBuilder,
@@ -96,6 +97,30 @@ export class SubAgentDispatch implements IDispatchStrategy {
         signal: ctx.signal,
         layer: childLayer,
       });
+
+      // Epicfail propagation: do NOT retry, do NOT transform — preserve trace
+      // by attaching this layer's frame and passing it upward in StepResult.
+      if (res.errorClass === 'epicfail') {
+        const childTrace = res.epicFailTrace;
+        const wrappedTrace: EpicFailTrace = {
+          layer: ctx.layer ?? 0,
+          stepId: step.id,
+          agentName,
+          attempts: [],
+          originalError:
+            childTrace?.originalError ?? `epicfail from '${agentName}'`,
+          childTrace,
+        };
+        return {
+          stepId: step.id,
+          output: '',
+          durationMs: Date.now() - started,
+          ok: false,
+          error: `epicfail from '${agentName}': ${childTrace?.originalError ?? 'unknown'}`,
+          epicFailTrace: wrappedTrace,
+        };
+      }
+
       return {
         stepId: step.id,
         output: res.output,

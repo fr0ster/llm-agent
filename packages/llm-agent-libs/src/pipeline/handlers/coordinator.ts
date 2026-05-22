@@ -132,6 +132,8 @@ export class CoordinatorHandler implements IStageHandler {
       for (let attempt = 0; attempt <= this.deps.maxRetriesPerStep; attempt++) {
         result = await this.deps.dispatch.dispatch(step, coordCtx);
         if (result.ok) break;
+        // Epicfail is terminal — never retry it.
+        if (result.epicFailTrace) break;
       }
       if (!result) {
         ctx.error = new OrchestratorError(
@@ -149,6 +151,15 @@ export class CoordinatorHandler implements IStageHandler {
         outputLength: result.output.length,
         error: result.error,
       });
+
+      // Epicfail short-circuits the entire plan, regardless of failPolicy.
+      if (result.epicFailTrace) {
+        ctx.error = new OrchestratorError(
+          `coordinator: step ${step.id} returned epicfail: ${result.error ?? 'unknown'}`,
+          'COORDINATOR_EPICFAIL',
+        );
+        return false;
+      }
 
       if (!result.ok) {
         if (this.deps.planning.shouldReplan(coordCtx, result)) {
