@@ -1,3 +1,4 @@
+import type { EpicFailTrace } from './coordinator.js';
 import type { LlmToolCall, LlmUsage } from './types.js';
 
 /**
@@ -18,7 +19,12 @@ export type SubAgentKind = 'autonomous' | 'constrained';
  */
 export interface SubAgentCapabilities {
   kind: SubAgentKind;
-  /** Whether this agent is allowed to dispatch child subagents from inside its own plan. */
+  /**
+   * Whether this agent is, in principle, capable of dispatching child subagents
+   * from inside its own plan. Layer rules still apply on top of this flag — even
+   * a `canDispatchChildren: true` agent cannot dispatch children at layer >= 1
+   * by default (see `maxLayer` and the plan-validation gate in CoordinatorHandler).
+   */
   canDispatchChildren: boolean;
   /**
    * Context handling expectations:
@@ -29,18 +35,27 @@ export interface SubAgentCapabilities {
   contextPolicy: 'required' | 'optional' | 'forbidden';
 }
 
-/**
- * Minimal epicfail trace surfaced from a child subagent. The full Phase 2
- * trace shape (with class-based attempts) lives in @mcp-abap-adt/llm-agent
- * coordinator interfaces; see `EpicFailTrace`.
- */
 export interface ISubAgentInput {
   task: string;
-  /** Assembled context preamble (required when capabilities.contextPolicy === 'required'). */
+  /**
+   * Assembled context preamble (required when capabilities.contextPolicy === 'required').
+   *
+   * **Breaking change:** previously `Record<string, unknown>` (structured key-value
+   * bag); now a plain string preamble injected by `ISubAgentContextBuilder` (or by
+   * the dispatcher directly). Callers that previously passed structured data must
+   * either (a) serialize it themselves and pass the result, or (b) implement an
+   * `ISubAgentContextBuilder` and configure the dispatcher to use it.
+   */
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
-  /** Dispatch depth. Root is 0; each dispatch increments by 1. */
+  /**
+   * Dispatch depth. Root is 0; each dispatch increments by 1.
+   *
+   * **Breaking change in the nested-dispatch foundation:** previously absent;
+   * now required on every `sub.run()` call. Callers must pass `(ctx.layer ?? 0) + 1`
+   * (or `0` for direct test invocations).
+   */
   layer: number;
 }
 
@@ -55,9 +70,17 @@ export interface ISubAgentResult {
    */
   errorClass?: 'epicfail';
   /** Diagnostic trace populated when errorClass === 'epicfail'. */
-  epicFailTrace?: import('./coordinator.js').EpicFailTrace;
+  epicFailTrace?: EpicFailTrace;
 }
 
+/**
+ * The runtime contract for any subagent the coordinator can dispatch.
+ *
+ * **Breaking change in the nested-dispatch foundation:** `capabilities`
+ * is now REQUIRED on every implementation. Migration: declare a static
+ * `capabilities` field matching your subagent's execution model (autonomous
+ * for full-pipeline agents, constrained for leaf LLM-call agents).
+ */
 export interface ISubAgent {
   readonly name: string;
   readonly description?: string;
