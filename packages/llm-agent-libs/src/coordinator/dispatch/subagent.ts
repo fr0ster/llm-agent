@@ -4,8 +4,8 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { buildBriefingFromContext } from '../briefing.js';
 import { resolveTemplate } from '../../util/template.js';
+import { buildBriefingFromContext } from '../briefing.js';
 
 /**
  * Dispatch the step to a named subagent from the registry.

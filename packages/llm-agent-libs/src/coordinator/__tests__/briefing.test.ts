@@ -54,7 +54,9 @@ describe('buildBriefingFromContext', () => {
         [s1, s2],
       ),
     );
-    assert.deepEqual(b.known, ['s1 (Locate test file): Found in tests/foo.test.ts']);
+    assert.deepEqual(b.known, [
+      's1 (Locate test file): Found in tests/foo.test.ts',
+    ]);
     assert.deepEqual(b.tried, []);
   });
 

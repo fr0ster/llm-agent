@@ -40,15 +40,15 @@ export function buildBriefingFromContext(
       ctx.plan?.steps.find((s) => s.id === id)?.goal ?? '(no goal)';
 
     if (!r.ok) {
-      tried.push(
-        `${id} (${stepGoal}) — failed: ${r.error ?? 'unknown error'}`,
-      );
+      tried.push(`${id} (${stepGoal}) — failed: ${r.error ?? 'unknown error'}`);
       continue;
     }
 
     const trimmed = r.output.trim();
     if (trimmed.length === 0) {
-      tried.push(`${id} (${stepGoal}) — completed but produced no usable output`);
+      tried.push(
+        `${id} (${stepGoal}) — completed but produced no usable output`,
+      );
       continue;
     }
 

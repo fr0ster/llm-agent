@@ -48,7 +48,10 @@ describe('SelfDispatch briefing', () => {
     await new SelfDispatch(llm as unknown as ILlm).dispatch(s2, ctx);
 
     const u = llm.capturedUser ?? '';
-    assert.ok(u.includes('Already tried'), 'user message must surface dead-ends');
+    assert.ok(
+      u.includes('Already tried'),
+      'user message must surface dead-ends',
+    );
     assert.ok(u.includes('s1 (Grep src/) — failed: no matches'));
     assert.ok(u.includes('Task: Try another way'));
   });
