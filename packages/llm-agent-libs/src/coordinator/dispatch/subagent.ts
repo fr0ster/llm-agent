@@ -1,13 +1,25 @@
 import type {
   ICoordinatorContext,
   IDispatchStrategy,
+  ISubAgentContextBuilder,
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
 import { resolveTemplate } from '../../util/template.js';
 
+/**
+ * Dispatch the step to a named subagent from the registry.
+ * If step.agent is unset or absent from registry, returns ok=false StepResult.
+ *
+ * When constructed with an `ISubAgentContextBuilder`, the builder is invoked
+ * before `sub.run()` to assemble the `context` preamble. If the subagent's
+ * `contextPolicy === 'required'` and the builder returns empty context,
+ * dispatch returns a clean error instead of invoking the subagent.
+ */
 export class SubAgentDispatch implements IDispatchStrategy {
   readonly name = 'subagent';
+
+  constructor(private readonly contextBuilder?: ISubAgentContextBuilder) {}
 
   async dispatch(
     step: PlanStep,
@@ -45,13 +57,44 @@ export class SubAgentDispatch implements IDispatchStrategy {
       ? resolveTemplate(step.inputTemplate, renderCtx)
       : step.goal;
 
+    const childLayer = (ctx.layer ?? 0) + 1;
+
+    let context: string | undefined;
+    if (this.contextBuilder) {
+      const built = await this.contextBuilder.build({
+        task,
+        step,
+        agent: sub,
+        layer: childLayer,
+        inputText: ctx.inputText,
+        sessionId: ctx.sessionId,
+        signal: ctx.signal,
+      });
+      context = built.context.length > 0 ? built.context : undefined;
+    }
+
+    // Hard requirement: contextPolicy=required must have context populated.
+    if (
+      sub.capabilities.contextPolicy === 'required' &&
+      (context === undefined || context.length === 0)
+    ) {
+      return {
+        stepId: step.id,
+        output: '',
+        durationMs: 0,
+        ok: false,
+        error: `SubAgentDispatch: subagent '${agentName}' has contextPolicy=required but builder produced empty context`,
+      };
+    }
+
     const started = Date.now();
     try {
       const res = await sub.run({
         task,
+        context,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
-        layer: (ctx.layer ?? 0) + 1,
+        layer: childLayer,
       });
       return {
         stepId: step.id,
