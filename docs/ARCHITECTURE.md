@@ -18,9 +18,9 @@ The codebase is split across **five npm packages**:
 
 - **`@mcp-abap-adt/llm-agent-mcp`** — `MCPClientWrapper`, `McpClientAdapter`, factory (`createDefaultMcpClient`), and connection strategies (`LazyConnectionStrategy`, `PeriodicConnectionStrategy`, `NoopConnectionStrategy`). Depends on `llm-agent`.
 
-- **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` is **async** (`Promise<IRag>`); it auto-prefetches backends so no manual warm-up is needed for one-shot use. `resolveEmbedder` stays **synchronous** (call `prefetchEmbedderFactories([...])` once at startup for hot-path sync resolves). Embedder/RAG backend packages are optional peers — only install what you use. Depends on `llm-agent`.
+- **`@mcp-abap-adt/llm-agent-rag`** — RAG and embedder composition. `makeRag` is **async** (`Promise<IRag>`); it auto-prefetches backends so no manual warm-up is needed for one-shot use. `resolveEmbedder` stays **synchronous** (call `prefetchEmbedderFactories([...])` once at startup for hot-path sync resolves). Embedder/RAG backend packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all backends as regular deps; config selects which to activate.) Depends on `llm-agent`.
 
-- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers. `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
+- **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all providers as regular deps.) `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
 
 - **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server (`SmartServer`). **Not a library** — importing from this package as a library is not supported as of 12.0.1. Depends on `llm-agent-libs`.
 
@@ -325,8 +325,10 @@ Abstractions:
 - `ILlm` interface — in `@mcp-abap-adt/llm-agent`
 - `LlmAdapter` — in `@mcp-abap-adt/llm-agent-libs`; bridges legacy `BaseAgent` implementations to `ILlm`
 
-Concrete provider resolution is centralized in `makeLlm`/`makeDefaultLlm` (in `@mcp-abap-adt/llm-agent-libs`). LLM provider packages are optional peers:
+Concrete provider resolution is centralized in `makeLlm`/`makeDefaultLlm` (in `@mcp-abap-adt/llm-agent-libs`). LLM provider packages are optional peers of `llm-agent-libs` (library mode):
 - `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`
+
+At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all four as regular deps so `npm install -g @mcp-abap-adt/llm-agent-server` works without further peer install. Configuration (YAML/CLI) chooses which one to activate per request.
 
 Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`) are defined in:
 - `@mcp-abap-adt/llm-agent` (types only, no provider logic)
@@ -343,7 +345,7 @@ RAG store implementations (in `@mcp-abap-adt/llm-agent`):
 - `VectorRag` — hybrid search (vector + BM25), accepts strategy/preprocessors
 - `InMemoryRag` — text-only (token frequency), accepts preprocessors
 
-RAG/embedder backends (optional peer packages, used via `@mcp-abap-adt/llm-agent-rag` factories):
+RAG/embedder backends (optional peers of `@mcp-abap-adt/llm-agent-rag` for library mode; bundled as regular deps of `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0):
 - `@mcp-abap-adt/qdrant-rag` — external Qdrant vector database
 - `@mcp-abap-adt/hana-vector-rag` — SAP HANA vector store
 - `@mcp-abap-adt/pg-vector-rag` — Postgres + pgvector
@@ -633,13 +635,13 @@ packages/
       check.ts             # llm-agent-check CLI
       claude-via-agent.ts  # claude-via-agent convenience wrapper
 
-  # LLM provider packages (optional peers of llm-agent-libs)
+  # LLM provider packages (optional peers of llm-agent-libs; bundled deps of llm-agent-server ≥ 13.1.0)
   openai-llm/              # @mcp-abap-adt/openai-llm
   anthropic-llm/           # @mcp-abap-adt/anthropic-llm
   deepseek-llm/            # @mcp-abap-adt/deepseek-llm
   sap-aicore-llm/          # @mcp-abap-adt/sap-aicore-llm
 
-  # Embedder/RAG backend packages (optional peers of llm-agent-rag)
+  # Embedder/RAG backend packages (optional peers of llm-agent-rag; bundled deps of llm-agent-server ≥ 13.1.0)
   openai-embedder/         # @mcp-abap-adt/openai-embedder
   ollama-embedder/         # @mcp-abap-adt/ollama-embedder
   sap-aicore-embedder/     # @mcp-abap-adt/sap-aicore-embedder
