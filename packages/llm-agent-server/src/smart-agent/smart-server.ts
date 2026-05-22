@@ -619,6 +619,7 @@ export class SmartServer {
         maxSteps: coordCfg.maxSteps,
         maxRetriesPerStep: coordCfg.maxRetriesPerStep,
         failPolicy: coordCfg.failPolicy,
+        maxLayer: coordCfg.maxLayer,
       });
       log({ event: 'coordinator_configured', config: coordCfg });
     }

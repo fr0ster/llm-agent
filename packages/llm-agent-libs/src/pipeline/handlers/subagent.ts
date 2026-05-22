@@ -69,9 +69,8 @@ export class SubAgentHandler implements IStageHandler {
         task,
         sessionId: ctx.sessionId,
         signal,
-        // SubAgentHandler is the root-pipeline -> layer-1 boundary; children dispatched
-        // here are always at layer 1 from the consumer's perspective.
-        layer: 1,
+        // Increments from current pipeline layer, matching SubAgentDispatch convention.
+        layer: (ctx.layer ?? 0) + 1,
       });
     } catch (err) {
       ctx.error = new OrchestratorError(

@@ -30,6 +30,7 @@ export interface YamlCoordinator {
   maxSteps?: number;
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
+  maxLayer?: number;
 }
 
 export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
@@ -278,6 +279,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 #   maxSteps: 12
 #   maxRetriesPerStep: 1
 #   failPolicy: abort                 # abort | continue
+#   maxLayer: 1                       # Max nested-dispatch depth (default 1)
 `;
 
 export function resolveEnvVars(

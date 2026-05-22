@@ -535,6 +535,7 @@ export class SmartAgentBuilder {
       maxSteps: cfg.maxSteps ?? 12,
       maxRetriesPerStep: cfg.maxRetriesPerStep ?? 1,
       failPolicy: cfg.failPolicy ?? 'abort',
+      maxLayer: cfg.maxLayer,
     };
     return this;
   }
