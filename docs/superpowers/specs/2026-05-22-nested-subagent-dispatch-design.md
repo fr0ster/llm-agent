@@ -64,7 +64,7 @@ type SubAgentKind = 'autonomous' | 'constrained';
 
 interface SubAgentCapabilities {
   kind: SubAgentKind;
-  canRecurse: boolean;
+  canDispatchChildren: boolean;
   contextPolicy: 'required' | 'optional' | 'forbidden';
 }
 
@@ -82,7 +82,7 @@ interface ISubAgent {
 - Has its own system prompt, RAG stores, MCP graph, skills, classifier, and optional CoordinatorHandler.
 - Receives `{ task, context?, sessionId?, signal?, layer }`.
 - Treats `context` as an optional preamble to the task.
-- May dispatch child subagents when `layerConfig[layer]` allows autonomous execution.
+- May dispatch child subagents only when it is configured with its own coordinator/subagents and the current `maxLayer` allows another dispatch layer.
 - Uses its own internal `PipelineContext`; its internal `stepResults` are invisible to the parent.
 
 ### Constrained: DirectLlmSubAgent
@@ -91,7 +91,7 @@ interface ISubAgent {
 - Composes only `ILlm` plus a system prompt.
 - Has no RAG, MCP, skills, classifier, or coordinator.
 - Receives `{ task, context?, sessionId?, signal?, layer }`.
-- Cannot recurse.
+- Cannot dispatch child subagents.
 - Internally performs one LLM chat call: system prompt + context preamble + user task.
 - Usually uses `contextPolicy: 'required'`, but the policy is metadata rather than a hardcoded class rule. Some constrained agents may accept empty context when the task is self-contained.
 
@@ -326,7 +326,7 @@ When a child returns `errorClass: 'epicfail'`, the parent does not retry, replan
 | `SubAgentKind`, `SubAgentCapabilities` | `packages/llm-agent/src/interfaces/subagent.ts` | Typed registry metadata for validation. |
 | `layer` on `AgentCallOptions` / `CallOptions` | `packages/llm-agent/src/interfaces/types.ts` or current call-options source | Carries dispatch depth into `SmartAgent.process()`. |
 | `layer` field on `PipelineContext` | `packages/llm-agent-libs/src/pipeline/context.ts` | Tracks current invocation layer. |
-| `LayerConfig` | `packages/llm-agent/src/interfaces/coordinator.ts` | Public coordinator config contract. |
+| `maxLayer` on `ICoordinatorConfig` | `packages/llm-agent/src/interfaces/coordinator.ts` | Public coordinator depth limit. |
 | Plan validation gate | `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts` | Rejects plans that violate layer capability rules. |
 | `ISubAgentContextBuilder` | `packages/llm-agent-libs/src/subagent/context-builder.ts` | Builds bounded task context from RAG, MCP-RAG, and exact artifact refs. |
 | Default context builder | `packages/llm-agent-libs/src/subagent/default-context-builder.ts` | Implements current task -> RAG -> tool-RAG retrieval. |
@@ -375,8 +375,8 @@ This is a breaking TypeScript change for custom subagent implementers. Runtime J
 Compatibility strategy:
 
 - Provide `asAutonomousSubAgent(sub)` and `asConstrainedSubAgent(sub)` adapters for old implementations.
-- Default `SmartAgentSubAgent` capabilities to `{ kind: 'autonomous', canRecurse: true, contextPolicy: 'optional' }`.
-- Default `DirectLlmSubAgent` capabilities to `{ kind: 'constrained', canRecurse: false, contextPolicy: 'required' }`.
+- Default `SmartAgentSubAgent` capabilities to `{ kind: 'autonomous', canDispatchChildren: true, contextPolicy: 'optional' }`.
+- Default `DirectLlmSubAgent` capabilities to `{ kind: 'constrained', canDispatchChildren: false, contextPolicy: 'required' }`.
 - Keep `failPolicy` during Phase 1.
 
 ---
