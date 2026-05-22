@@ -157,6 +157,11 @@ export {
   CodexSkillManager,
   FileSystemSkillManager,
 } from './skills/index.js';
+export {
+  DefaultSubAgentContextBuilder,
+  type DefaultSubAgentContextBuilderConfig,
+  type SubAgentRetrievalSource,
+} from './subagent/default-context-builder.js';
 // ---------------------------------------------------------------------------
 // SubAgent adapters
 // ---------------------------------------------------------------------------
