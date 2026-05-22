@@ -1,0 +1,123 @@
+## Direct (non-docker) llm-agent against a local MCP server with SAP destination header.
+##
+## Usage:
+##   1. Make sure your .env has AICORE_SERVICE_KEY (and LLM_PROVIDER=sap-ai-sdk for clarity).
+##   2. Start an MCP server on the configured port (default 3001) — e.g. mcp-abap-adt.
+##   3. Run:
+##        node packages/llm-agent-server/dist/smart-agent/cli.js \
+##          --config examples/sap-ai-core-direct/smart-server.yaml \
+##          --log-stdout
+##   4. POST queries to http://localhost:4040/v1/chat/completions.
+##
+## The classifier and system prompts below are what makes SAP/ABAP queries
+## actually route through RAG → tool-select → tool-loop. Without the
+## "knowledge → action" reclassification the agent answers as plain chat
+## and never sees the MCP tools.
+
+port: ${PORT:-4040}
+host: ${HOST:-127.0.0.1}
+mode: smart
+
+pipeline:
+  llm:
+    main:
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      temperature: 0.3
+      maxTokens: 32768
+    classifier:
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
+      temperature: 0.1
+      maxTokens: 2048
+    helper:
+      provider: ${LLM_PROVIDER:-sap-ai-sdk}
+      model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
+      temperature: 0.1
+      maxTokens: 2048
+
+  ## Tool/skill RAG — in-memory store backed by SAP AI Core embedder.
+  ## The embedder is the critical bit: without it the toolsRag stays empty,
+  ## the LLM sees no available MCP tools and falls back to generic answers.
+  rag:
+    tools:
+      type: in-memory
+      embedder: ${RAG_EMBEDDER:-sap-ai-core}
+      scenario: ${RAG_SCENARIO:-foundation-models}
+      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+      vectorWeight: 0.7
+      keywordWeight: 0.3
+
+## MCP HTTP transport with SAP destination header for reverse-proxy routing
+## (mcp-abap-adt running behind a destination-aware gateway).
+mcp:
+  type: http
+  url: ${MCP_SERVER_URL:-http://localhost:3001/mcp/stream/http}
+  headers:
+    x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
+
+## Prompts — copy of the docker-sap-ai-core example, distilled to what matters
+## for ABAP tool-calling. The classifier MUST treat knowledge questions about
+## SAP/ABAP as "action" so RAG retrieval and tool-select run; otherwise the
+## agent never reaches the tool-loop.
+prompts:
+  system: >
+    Use MCP tools when they can accomplish the task. Answer or fulfill
+    requests when possible. When an action is impossible with available
+    tools — say so and do not attempt it.
+
+  ragTranslate: >
+    Translate the following text to English for vector search.
+    Output ONLY the translated text — no explanations, no commentary,
+    no opinions about feasibility. Preserve all technical terms, class
+    names, and identifiers exactly as they appear.
+
+  classifier: >
+    You are a Semantic Intent Analyzer. Decompose the user message into
+    logical tasks. For each task identify:
+      - "type": chat (greetings/math), action (tasks AND knowledge/fact
+        questions), state (context), feedback.
+      - "text": the actual task description.
+      - "context": the domain of the task (e.g., "sap-abap", "general").
+      - "dependency": "independent", "sequential", or an ID of a subprompt
+        this one depends on.
+
+    CRITICAL: Knowledge/factual questions (who, what, when, where, why, how)
+    MUST be classified as "action" — NOT "fact" — so the RAG pipeline
+    retrieves relevant context. Only assign "sap-abap" context if SAP terms
+    are present.
+
+    Example: "Прочитай структуру таблиці T100"
+    Result: [
+      {"type": "action", "text": "Read structure of table T100",
+       "context": "sap-abap", "dependency": "independent"}
+    ]
+
+    Return ONLY a JSON array.
+
+agent:
+  externalToolsValidationMode: permissive
+  maxIterations: 10
+  maxToolCalls: 30
+  ragRetrievalMode: always
+  ## ragQueryK = top-K tools surfaced from toolsRag per request. Default 5
+  ## can miss the right tool when the MCP catalog has >10 entries and the
+  ## query's embedding doesn't rank it. Bump to 20 to be safe for small
+  ## catalogs (typical mcp-abap-adt ≈ 10–20 tools).
+  ragQueryK: 20
+  historyRecencyWindow: 4
+  showReasoning: false
+  ragTranslationEnabled: true
+  toolReselectPerIteration: true
+  ## SAP AI Core Orchestration requires non-streaming for tool-use
+  ## (SSE errors when the model emits tool calls mid-stream).
+  llmCallStrategy: non-streaming
+  streamMode: final
+  reportUsage: true
+  ## SAP AI Core needs ≥5s for the startup LLM probe.
+  healthTimeoutMs: 15000
+  retry:
+    maxAttempts: 3
+    backoffMs: 2000
+    retryOn: [429, 500, 502, 503]
