@@ -20,7 +20,6 @@ export interface ISkillMeta {
   description: string;
   disableModelInvocation?: boolean;
   userInvocable?: boolean;
-  allowedTools?: string[];
   model?: string;
   context?: 'inline' | 'fork';
   argumentHint?: string;

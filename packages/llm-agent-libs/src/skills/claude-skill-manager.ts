@@ -7,7 +7,6 @@
  *
  * Handles Claude-specific frontmatter key mapping:
  * - `disable-model-invocation` → `disableModelInvocation`
- * - `allowed-tools` → `allowedTools`
  * - `user-invocable` → `userInvocable`
  * - `argument-hint` → `argumentHint`
  */
@@ -88,10 +87,6 @@ function normalizeClaudeMeta(meta: ISkillMeta): ISkillMeta {
       'disable-model-invocation'
     ] as boolean;
     delete (result as Record<string, unknown>)['disable-model-invocation'];
-  }
-  if ('allowed-tools' in result) {
-    result.allowedTools = result['allowed-tools'] as string[];
-    delete (result as Record<string, unknown>)['allowed-tools'];
   }
   if ('user-invocable' in result) {
     result.userInvocable = result['user-invocable'] as boolean;
