@@ -1214,10 +1214,7 @@ export class SmartAgentBuilder {
       // + embedder resources. `toolSource` comes from the toolsRag the parent
       // already uses for tool-loop retrieval. `projectSource` is left unset
       // until a dedicated project/domain RAG slot is exposed on the builder.
-      const toolSource = this.buildRetrievalSource(
-        this._toolsRag,
-        this._embedder,
-      );
+      const toolSource = this.buildRetrievalSource(toolsRag, this._embedder);
       const defaultContextBuilder = new DefaultSubAgentContextBuilder({
         toolSource,
       });

@@ -249,7 +249,8 @@ Even at depth 0→1, a clean error channel between layers is needed. The dispatc
 Concretely:
 
 - Add `errorClass?: 'epicfail'` and `epicFailTrace?: EpicFailTrace` to `ISubAgentResult`. No other classes yet.
-- When `SubAgentDispatch` calls `sub.run()` and gets a thrown error or a result with `errorClass: 'epicfail'`, it returns a `StepResult` with `ok: false`, `error: <message>`, and an attached trace frame. It does NOT attempt replan or retry beyond existing `maxRetriesPerStep`.
+- When `SubAgentDispatch` calls `sub.run()` and gets a result with `errorClass: 'epicfail'`, it returns a `StepResult` with `ok: false`, `error: <message>`, and `epicFailTrace` populated (with this layer's frame + child's trace as `childTrace`). It does NOT attempt replan or retry beyond existing `maxRetriesPerStep`.
+- Thrown errors from `sub.run()` continue to flow through the existing `try/catch → ok: false + error: string` path WITHOUT an `epicFailTrace`. Auto-classification of thrown errors into epicfail is deferred to Phase 2 of the error policy. Anyone needing trace-on-throw must explicitly produce an `errorClass: 'epicfail'` return inside their subagent (e.g. by catching and re-emitting as a structured ISubAgentResult).
 - The trace structure is the same as Phase 2 (see below) — `attempts[]` is empty in Phase 1 because no class-based retries exist yet.
 
 This is ~30-50 lines of code, decouples error propagation from the larger policy decisions, and prevents the depth 0→1→2 scenario (whenever someone opts into it) from silently swallowing failures.

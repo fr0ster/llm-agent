@@ -27,6 +27,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - `formatBriefing`, `buildBriefingFromContext` helpers (rolled back from PR #132).
 - All briefing wiring in dispatch strategies (rolled back from PR #132).
 
+### Known limitations
+- YAML `coordinator:` requires `SmartServerConfig.embedder` (DI-injected) for the subagent context-builder's `toolSource` to be wired. Embedders configured solely via YAML `rag.embedder` are not surfaced. Workaround: inject the embedder via DI.
+
 ---
 
 ## [12.1.1] — 2026-05-20

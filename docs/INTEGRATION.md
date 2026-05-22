@@ -2476,6 +2476,17 @@ plan immediately with `OrchestratorError('COORDINATOR_EPICFAIL', ...)`.
 Phase 1 supports EXPLICIT epicfail only; auto-conversion of thrown
 errors is deferred to Phase 2 of the error policy.
 
+**Known limitation (Phase 1):** when using the YAML `coordinator:` block,
+the subagent context-builder's `toolSource` is wired from
+`SmartServerConfig.embedder` (DI-injected). If the deployment configures
+its embedder solely via YAML `rag.embedder`, the embedder is encapsulated
+inside `makeRag()` and is not surfaced for context-building — constrained
+subagents will then fall back to empty context.
+
+Workaround: inject the embedder via `SmartServerConfig.embedder` in
+addition to (or instead of) the YAML `rag.embedder`. The programmatic
+`SmartAgentBuilder.withEmbedder(...)` path always works correctly.
+
 ### Building a multi-agent SmartAgent
 
 Two patterns are supported depending on whether you prefer inline composition or explicit registry
