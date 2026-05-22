@@ -30,10 +30,7 @@ import type {
   Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { SubAgentDispatch } from '../coordinator/dispatch/subagent.js';
-import type {
-  DefaultSubAgentContextBuilder,
-  DefaultSubAgentContextBuilderConfig,
-} from '../subagent/default-context-builder.js';
+import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
 
 function stubLlm(): ILlm {
   return {
@@ -125,9 +122,14 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       const dispatch = coordinator.dispatch as SubAgentDispatch | undefined;
       assert.ok(dispatch, 'expected coordinator.dispatch to be set');
 
-      const contextBuilder = dispatch.contextBuilder as
-        | DefaultSubAgentContextBuilder
-        | undefined;
+      // Cast to expose the private contextBuilder for inspection — this is a
+      // test-only escape hatch; the field is intentionally private in production.
+      const dispatchInternals = dispatch as unknown as {
+        contextBuilder?: {
+          config: DefaultSubAgentContextBuilderConfig;
+        };
+      };
+      const contextBuilder = dispatchInternals.contextBuilder;
       assert.ok(
         contextBuilder,
         'expected SubAgentDispatch.contextBuilder to be wired',
@@ -135,13 +137,8 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
 
       // Inspect the builder's `config.toolSource` — must be defined as a
       // result of the bugfix (auto-toolsRag flowing into buildRetrievalSource).
-      const config = (
-        contextBuilder as unknown as {
-          config: DefaultSubAgentContextBuilderConfig;
-        }
-      ).config;
       assert.equal(
-        typeof config.toolSource,
+        typeof contextBuilder.config.toolSource,
         'function',
         'expected context builder toolSource to be wired from auto-created toolsRag (bug fixed in a274ca6)',
       );
