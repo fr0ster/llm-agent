@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+---
+
+## [13.0.0] — 2026-05-22
+
 ### Added
 - `SubAgentKind`, `SubAgentCapabilities` types in `@mcp-abap-adt/llm-agent`. Every `ISubAgent` must now declare `capabilities`.
 - `ISubAgentContextBuilder` interface and `DefaultSubAgentContextBuilder` implementation with `SubAgentRetrievalSource` callback abstraction. The dispatcher builds bounded `context` from project source + tool source before each subagent invocation.
