@@ -49,6 +49,7 @@ import {
   type IRagProviderRegistry,
   type IRagRegistry,
   isBatchEmbedder,
+  QueryEmbedding,
   type RagCollectionMeta,
   type RagCollectionScope,
   SimpleRagProviderRegistry,
@@ -89,6 +90,10 @@ import type { IReranker } from './reranker/types.js';
 import { RateLimiterLlm } from './resilience/rate-limiter-llm.js';
 import { RetryLlm } from './resilience/retry-llm.js';
 import type { ISessionManager } from './session/types.js';
+import {
+  DefaultSubAgentContextBuilder,
+  type SubAgentRetrievalSource,
+} from './subagent/default-context-builder.js';
 import { SmartAgentSubAgent } from './subagent/smart-agent-subagent.js';
 import type { ITracer } from './tracer/types.js';
 import type { IOutputValidator } from './validator/types.js';
@@ -644,6 +649,23 @@ export class SmartAgentBuilder {
   // build()
   // -------------------------------------------------------------------------
 
+  /**
+   * Wraps an `IRag` + `IEmbedder` pair into a thin retrieval callback that
+   * `DefaultSubAgentContextBuilder` can consume. Returns `undefined` when
+   * either piece is missing so the context builder simply skips that source.
+   */
+  private buildRetrievalSource(
+    rag: IRag | undefined,
+    embedder: IEmbedder | undefined,
+  ): SubAgentRetrievalSource | undefined {
+    if (!rag || !embedder) return undefined;
+    return async (text, k, signal) => {
+      const embedding = new QueryEmbedding(text, embedder, { signal });
+      const queryRes = await rag.query(embedding, k, { signal });
+      return queryRes.ok ? queryRes.value : [];
+    };
+  }
+
   async build(): Promise<SmartAgentHandle> {
     const log = this._logger;
 
@@ -1187,10 +1209,23 @@ export class SmartAgentBuilder {
           'withCoordinator: requires either cfg.plannerLlm or withMainLlm() to be called',
         );
       }
+      // Construct a default context builder from this builder's available RAG
+      // + embedder resources. `toolSource` comes from the toolsRag the parent
+      // already uses for tool-loop retrieval. `projectSource` is left unset
+      // until a dedicated project/domain RAG slot is exposed on the builder.
+      const toolSource = this.buildRetrievalSource(
+        this._toolsRag,
+        this._embedder,
+      );
+      const defaultContextBuilder = new DefaultSubAgentContextBuilder({
+        toolSource,
+      });
       resolvedCoordinator = {
         ...this._coordinator,
         planning: this._coordinator.planning ?? new OneShotPlanning(plannerLlm),
-        dispatch: this._coordinator.dispatch ?? new SubAgentDispatch(),
+        dispatch:
+          this._coordinator.dispatch ??
+          new SubAgentDispatch(defaultContextBuilder),
       };
     }
 

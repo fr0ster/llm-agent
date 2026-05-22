@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ISubAgentContextBuilder } from '@mcp-abap-adt/llm-agent';
 import {
   AutoActivation,
   ExplicitActivation,
@@ -50,10 +50,14 @@ export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
   }
 }
 
-export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
+export function resolveCoordinatorDispatch(
+  name: string,
+  fallbackLlm?: ILlm,
+  contextBuilder?: ISubAgentContextBuilder,
+) {
   switch (name) {
     case 'subagent':
-      return new SubAgentDispatch();
+      return new SubAgentDispatch(contextBuilder);
     case 'self':
       if (!fallbackLlm) {
         throw new Error(
@@ -68,7 +72,7 @@ export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
         );
       }
       return new HybridDispatch(
-        new SubAgentDispatch(),
+        new SubAgentDispatch(contextBuilder),
         new SelfDispatch(fallbackLlm),
       );
     default:

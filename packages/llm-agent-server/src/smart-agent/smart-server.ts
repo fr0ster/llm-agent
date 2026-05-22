@@ -25,7 +25,9 @@ import type {
 import {
   AdapterValidationError,
   type ExternalToolValidationCode,
+  type IRag,
   normalizeAndValidateExternalTools,
+  QueryEmbedding,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type {
@@ -37,6 +39,7 @@ import {
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
+  DefaultSubAgentContextBuilder,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
@@ -437,12 +440,14 @@ export class SmartServer {
       builder = builder.withHelperLlm(helperLlm);
     }
 
+    let toolsRag: IRag | undefined;
     if (this.cfg.rag) {
       const ragOptions = {
         injectedEmbedder: this.cfg.embedder,
         extraFactories: mergedEmbedderFactories,
       };
-      builder = builder.setToolsRag(await makeRag(this.cfg.rag, ragOptions));
+      toolsRag = await makeRag(this.cfg.rag, ragOptions);
+      builder = builder.setToolsRag(toolsRag);
       builder = builder.setHistoryRag(
         await makeRag({ ...this.cfg.rag }, ragOptions),
       );
@@ -460,6 +465,7 @@ export class SmartServer {
       for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
         const rag = await makeRag(storeCfg, ragOptions);
         if (name === 'tools') {
+          toolsRag = rag;
           builder = builder.setToolsRag(rag);
         } else if (name === 'history') {
           builder = builder.setHistoryRag(rag);
@@ -577,9 +583,31 @@ export class SmartServer {
       const dispatchKind =
         coordCfg.dispatch ??
         (planningKind === 'skill-steps' ? 'hybrid' : 'subagent');
+
+      // Build the same kind of context builder SmartAgentBuilder uses, so
+      // YAML-configured deployments get the same default behavior. Requires
+      // a DI-injected embedder (this.cfg.embedder) — otherwise toolSource is
+      // skipped and constrained subagents fall back to empty context.
+      const mainEmbedder = this.cfg.embedder;
+      const toolSource =
+        mainEmbedder && toolsRag
+          ? async (text: string, k: number, signal?: AbortSignal) => {
+              const embedding = new QueryEmbedding(text, mainEmbedder, {
+                signal,
+              });
+              const r = await toolsRag.query(embedding, k, { signal });
+              return r.ok ? r.value : [];
+            }
+          : undefined;
+      const contextBuilder = new DefaultSubAgentContextBuilder({ toolSource });
+
       builder = builder.withCoordinator({
         planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
-        dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm),
+        dispatch: resolveCoordinatorDispatch(
+          dispatchKind,
+          plannerLlm,
+          contextBuilder,
+        ),
         // Default to 'explicit' — the presence of a `coordinator:` block in
         // YAML is itself the opt-in signal. Users that want the auto-fallback
         // semantics (no subagents and no skill steps → tool-loop) must set
