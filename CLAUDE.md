@@ -30,8 +30,12 @@ This monorepo publishes five npm packages forming the SmartAgent runtime:
 
 Dependency order: `llm-agent-server → llm-agent-libs → {llm-agent-mcp, llm-agent-rag} → llm-agent`.
 
-LLM provider packages (`@mcp-abap-adt/openai-llm`, etc.) are optional peers of `llm-agent-libs`.
-Embedder/RAG backend packages (`@mcp-abap-adt/qdrant-rag`, etc.) are optional peers of `llm-agent-rag`.
+LLM provider, embedder, and RAG backend packages are bundled as regular
+dependencies of `@mcp-abap-adt/llm-agent-server` so `npm install -g
+@mcp-abap-adt/llm-agent-server` works out-of-the-box. Selection happens
+via YAML/CLI config. (At the lower `llm-agent-libs` / `llm-agent-rag`
+package level they remain optional peers — embed-as-library users
+still install only what they need.)
 
 ### Key API notes
 

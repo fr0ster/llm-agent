@@ -11,6 +11,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [13.1.0] — 2026-05-23
+
+### Changed
+- `@mcp-abap-adt/llm-agent-server`: the 10 LLM provider, embedder, and RAG backend packages (anthropic-llm, deepseek-llm, openai-llm, sap-aicore-llm, openai-embedder, ollama-embedder, sap-aicore-embedder, qdrant-rag, hana-vector-rag, pg-vector-rag) are now regular `dependencies` instead of optional `peerDependencies`. Global install `npm install -g @mcp-abap-adt/llm-agent-server` now provides all providers out-of-the-box; configuration selects which one to activate per request.
+
+### Why
+- Previously `optional peerDependencies` were not auto-installed by npm, so the default global install crashed with `MissingProviderError` on the first request unless the user manually installed the corresponding peer. This release closes that UX gap and matches the documented "default server is the implementation, config selects" model.
+
+### Note on size
+- Global install now pulls ~10 additional packages totaling a few MB. Library-mode consumers (`@mcp-abap-adt/llm-agent-libs` or `@mcp-abap-adt/llm-agent-rag` directly) still see those as optional peers and install only what they need.
+
+---
+
 ## [13.0.0] — 2026-05-22
 
 ### Added
