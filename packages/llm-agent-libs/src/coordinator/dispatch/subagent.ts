@@ -4,6 +4,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { buildBriefingFromContext } from '../briefing.js';
 import { resolveTemplate } from '../../util/template.js';
 
 /**
@@ -49,11 +50,13 @@ export class SubAgentDispatch implements IDispatchStrategy {
     const task = step.inputTemplate
       ? resolveTemplate(step.inputTemplate, renderCtx)
       : step.goal;
+    const briefing = buildBriefingFromContext(step, ctx);
 
     const started = Date.now();
     try {
       const res = await sub.run({
         task,
+        briefing,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
       });
