@@ -23,6 +23,23 @@ export interface Plan {
   source: 'planner-llm' | 'skill-steps' | 'manual';
 }
 
+/**
+ * Trace frame for nested-dispatch failures. The parent appends its own
+ * frame and passes the result upward without other transformation.
+ */
+export interface EpicFailTrace {
+  layer: number;
+  stepId: string;
+  agentName: string;
+  attempts: Array<{
+    kind: 'transient' | 'replan' | 'hint';
+    error: string;
+    durationMs: number;
+  }>;
+  originalError: string;
+  childTrace?: EpicFailTrace;
+}
+
 export interface StepResult {
   stepId: string;
   output: string;
@@ -31,6 +48,12 @@ export interface StepResult {
   durationMs: number;
   ok: boolean;
   error?: string;
+  /**
+   * Populated when a child subagent returned `errorClass: 'epicfail'`.
+   * Carries the diagnostic trace upward unchanged so consumers see the
+   * full chain instead of a flattened error string.
+   */
+  epicFailTrace?: EpicFailTrace;
 }
 
 export interface ICoordinatorContext {
@@ -85,24 +108,12 @@ export interface ICoordinatorConfig {
   maxSteps?: number;
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
+  /**
+   * Maximum dispatch depth from this coordinator. Default 1: the
+   * coordinator may dispatch children (layer 1), but those children
+   * may not dispatch further unless they raise maxLayer themselves.
+   */
+  maxLayer?: number;
 }
 
 export type SubAgentWithDescription = ISubAgent & { description: string };
-
-/**
- * Minimal forward declaration. Task 4 of the nested-dispatch plan will
- * move this near StepResult and extend StepResult with an epicFailTrace
- * field. For now this only exists so ISubAgentResult can type-reference it.
- */
-export interface EpicFailTrace {
-  layer: number;
-  stepId: string;
-  agentName: string;
-  attempts: Array<{
-    kind: 'transient' | 'replan' | 'hint';
-    error: string;
-    durationMs: number;
-  }>;
-  originalError: string;
-  childTrace?: EpicFailTrace;
-}
