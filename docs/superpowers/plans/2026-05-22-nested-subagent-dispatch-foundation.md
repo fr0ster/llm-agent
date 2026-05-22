@@ -33,7 +33,7 @@
 - `packages/llm-agent-libs/src/coordinator/dispatch/self.ts` — Restore inline preamble (rollback of formatBriefing usage).
 - `packages/llm-agent-libs/src/coordinator/dispatch/hybrid.ts` — Propagate epicfail without transformation.
 - `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — Remove formatBriefing usage; pass `input.layer` to `agent.process({ layer })`. (Auto-conversion of caught errors into `errorClass: 'epicfail'` is NOT included in Phase 1 — see the Phase 5 disclaimer; thrown errors continue to flow as regular failures and only EXPLICIT `errorClass: 'epicfail'` returns trigger epicfail handling.)
-- `packages/llm-agent-libs/src/agent.ts` — `SmartAgent.process()` reads `options.layer` and threads into PipelineContext.
+- `packages/llm-agent-libs/src/pipeline/default-pipeline.ts` — `_buildContext()` reads `options.layer` into `PipelineContext`.
 - `packages/llm-agent-libs/src/index.ts` — Remove `formatBriefing`/`buildBriefingFromContext` exports; add `DirectLlmSubAgent`, `DefaultSubAgentContextBuilder`.
 - `docs/INTEGRATION.md` — Remove "Subagent briefing" subsection; add "Nested dispatch and DirectLlmSubAgent" subsection.
 - `CHANGELOG.md` — Replace briefing-related Unreleased entries with nested-dispatch entries.
@@ -1480,9 +1480,8 @@ function asRetrievalSource(
 ): SubAgentRetrievalSource | undefined {
   if (!rag || !embedder) return undefined;
   return async (text, k, signal) => {
-    const embRes = await embedder.embed(text, { signal });
-    if (!embRes.ok) return [];
-    const queryRes = await rag.query(embRes.value, k, { signal });
+    const embedding = new QueryEmbedding(text, embedder, { signal });
+    const queryRes = await rag.query(embedding, k, { signal });
     return queryRes.ok ? queryRes.value : [];
   };
 }
@@ -1906,9 +1905,8 @@ private buildRetrievalSource(
 ): SubAgentRetrievalSource | undefined {
   if (!rag || !embedder) return undefined;
   return async (text, k, signal) => {
-    const embRes = await embedder.embed(text, { signal });
-    if (!embRes.ok) return [];
-    const queryRes = await rag.query(embRes.value, k, { signal });
+    const embedding = new QueryEmbedding(text, embedder, { signal });
+    const queryRes = await rag.query(embedding, k, { signal });
     return queryRes.ok ? queryRes.value : [];
   };
 }
