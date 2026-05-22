@@ -32,7 +32,7 @@
 - `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts` — Remove briefing wiring; call context-builder; pass `layer + 1`; propagate epicfail.
 - `packages/llm-agent-libs/src/coordinator/dispatch/self.ts` — Restore inline preamble (rollback of formatBriefing usage).
 - `packages/llm-agent-libs/src/coordinator/dispatch/hybrid.ts` — Propagate epicfail without transformation.
-- `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — Remove formatBriefing usage; pass `input.layer` to `agent.process({ layer })`; emit `epicFailTrace` on caught errors at depth ≥ 1.
+- `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — Remove formatBriefing usage; pass `input.layer` to `agent.process({ layer })`. (Auto-conversion of caught errors into `errorClass: 'epicfail'` is NOT included in Phase 1 — see the Phase 5 disclaimer; thrown errors continue to flow as regular failures and only EXPLICIT `errorClass: 'epicfail'` returns trigger epicfail handling.)
 - `packages/llm-agent-libs/src/agent.ts` — `SmartAgent.process()` reads `options.layer` and threads into PipelineContext.
 - `packages/llm-agent-libs/src/index.ts` — Remove `formatBriefing`/`buildBriefingFromContext` exports; add `DirectLlmSubAgent`, `DefaultSubAgentContextBuilder`.
 - `docs/INTEGRATION.md` — Remove "Subagent briefing" subsection; add "Nested dispatch and DirectLlmSubAgent" subsection.
@@ -571,15 +571,17 @@ const res = await sub.run({
 
 The full context-builder wiring lands in Task 9; this step is the minimum to keep the build green.
 
-- [ ] **Step 5: Update tests that construct subagents**
+- [ ] **Step 5: Sweep all `sub.run` call sites and all `ISubAgent` implementations**
 
-Search test files for `new SmartAgentSubAgent(`:
+`ISubAgentInput.layer` is now required and `ISubAgent.capabilities` is required. Two greps must come back clean before build:
+
+**Grep 1 — every `ISubAgent` implementation must declare `capabilities`:**
 
 ```bash
-grep -rn "new SmartAgentSubAgent\|implements ISubAgent" packages/llm-agent-libs/src --include='*.ts'
+grep -rn "new SmartAgentSubAgent\|implements ISubAgent\|: ISubAgent\b" packages --include='*.ts'
 ```
 
-For each in-test `ISubAgent`-implementing class (e.g. `CapturingSubAgent`, `ScriptedSubAgent`, etc. — they were used in PR #128 / #129 tests which remain after rollback), add a `capabilities` field:
+For each in-test class (e.g. `CapturingSubAgent`, `ScriptedSubAgent`, etc. — these came from PR #128 / #129 tests that remain after rollback), add:
 
 ```typescript
 readonly capabilities: SubAgentCapabilities = {
@@ -589,7 +591,17 @@ readonly capabilities: SubAgentCapabilities = {
 };
 ```
 
-Also update every test call to `sub.run(...)` or `dispatch.dispatch(step, ctx)` to include `layer` somewhere — for direct `sub.run` callers add `layer: 0`; for `dispatch(step, ctx)` callers ensure the `ctx` (or `ICoordinatorContext` cast) carries `layer: 0` (or omit; default to 0).
+(Test fixtures typically can stay `canDispatchChildren: false` — they don't have their own coordinator.)
+
+**Grep 2 — every direct `sub.run(...)` or `<X>.run({...})` call site must pass `layer`:**
+
+```bash
+grep -rn "\.run({" packages --include='*.ts' | grep -v "\.run()\|node_modules"
+```
+
+For each match where the receiver is a subagent, ensure the object literal includes `layer: <value>` (use `0` for root-context tests, or `ctx.layer ?? 0` inside dispatch strategies). Production `SubAgentDispatch.dispatch` is updated in Step 4 above; this grep catches the test-side calls.
+
+Both greps must report no missing field BEFORE running build. Build is the safety net — TypeScript will catch a missed call site as "Property 'layer' is missing" or "Property 'capabilities' is missing".
 
 - [ ] **Step 6: Build**
 
@@ -1456,22 +1468,43 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
 }
 ```
 
-The dispatcher wires up sources from the parent's `SmartAgent` configuration. For example, when constructing `SubAgentDispatch` in `SmartAgentBuilder`, the builder might do:
+The dispatcher wires up sources from the parent's `SmartAgent` configuration. Two distinct sources: project/domain RAG → `projectSource`; tool-description RAG (i.e. the parent's `toolsRag`) → `toolSource`. Mixing them up biases context the wrong way.
+
+Example wiring inside `SmartAgentBuilder` (pseudocode — exact API depends on what the builder exposes):
 
 ```typescript
-const projectSource: SubAgentRetrievalSource | undefined = toolsRag && embedder
-  ? async (text, k, signal) => {
-      const embRes = await embedder.embed(text, { signal });
-      if (!embRes.ok) return [];
-      const queryRes = await toolsRag.query(embRes.value, k, { signal });
-      return queryRes.ok ? queryRes.value : [];
-    }
-  : undefined;
-const contextBuilder = new DefaultSubAgentContextBuilder({ projectSource, /* ... */ });
+// Helper that adapts an IRag + IEmbedder pair into the callback shape.
+function asRetrievalSource(
+  rag: IRag | undefined,
+  embedder: IEmbedder | undefined,
+): SubAgentRetrievalSource | undefined {
+  if (!rag || !embedder) return undefined;
+  return async (text, k, signal) => {
+    const embRes = await embedder.embed(text, { signal });
+    if (!embRes.ok) return [];
+    const queryRes = await rag.query(embRes.value, k, { signal });
+    return queryRes.ok ? queryRes.value : [];
+  };
+}
+
+// projectSource — from a domain/project RAG (NOT the tools RAG). The
+// parent may register one via .setProjectRag(...) or similar. Skip if not
+// configured — project context is optional.
+const projectSource = asRetrievalSource(this.projectRag, this.embedder);
+
+// toolSource — from the parent's toolsRag (which already indexes MCP tool
+// descriptions). This is the standard configured RAG used by the
+// parent's tool-loop.
+const toolSource = asRetrievalSource(this.toolsRag, this.embedder);
+
+const contextBuilder = new DefaultSubAgentContextBuilder({
+  projectSource,
+  toolSource,
+});
 const subAgentDispatch = new SubAgentDispatch(contextBuilder);
 ```
 
-This adapter code is NOT part of the builder itself — it lives wherever `SmartAgentBuilder.withSubAgents` wires together the parent's resources. The builder remains testable in isolation with callback fakes.
+This adapter code is NOT part of the builder itself — it lives in `SmartAgentBuilder.build()` (or wherever the coordinator's dispatch strategy is constructed). The builder remains testable in isolation with callback fakes.
 
 - [ ] **Step 4: Run test to verify pass**
 
@@ -1854,6 +1887,132 @@ git commit -m "feat(llm-agent-libs): SubAgentDispatch calls ISubAgentContextBuil
 
 ---
 
+### Task 9b: Production wiring of context builder in `SmartAgentBuilder` and `resolveCoordinatorDispatch`
+
+Without explicit wiring, `SmartAgentBuilder.build()` falls back to `new SubAgentDispatch()` with no context builder (see `packages/llm-agent-libs/src/builder.ts:1193`), so constrained subagents would fail at dispatch with "contextPolicy=required but builder produced empty context". Same applies to `resolveCoordinatorDispatch` in `smart-server.ts` (the YAML path).
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/builder.ts`
+- Modify: `packages/llm-agent-server/src/smart-agent/config.ts` (where `resolveCoordinatorDispatch` lives, per existing exports in smart-server.ts)
+
+- [ ] **Step 1: Helper to construct retrieval sources**
+
+In `packages/llm-agent-libs/src/builder.ts`, add a private helper inside the class:
+
+```typescript
+private buildRetrievalSource(
+  rag: IRag | undefined,
+  embedder: IEmbedder | undefined,
+): SubAgentRetrievalSource | undefined {
+  if (!rag || !embedder) return undefined;
+  return async (text, k, signal) => {
+    const embRes = await embedder.embed(text, { signal });
+    if (!embRes.ok) return [];
+    const queryRes = await rag.query(embRes.value, k, { signal });
+    return queryRes.ok ? queryRes.value : [];
+  };
+}
+```
+
+Add the necessary type imports at the top: `IRag`, `IEmbedder`, and `SubAgentRetrievalSource` from the appropriate packages.
+
+- [ ] **Step 2: Wire builder + context-aware dispatch into the fallback**
+
+In `SmartAgentBuilder.build()`, locate the line `dispatch: this._coordinator.dispatch ?? new SubAgentDispatch(),` (currently around `builder.ts:1193`) and replace with:
+
+```typescript
+// Construct a default context builder from this agent's available resources.
+// projectSource comes from the project/domain RAG (if exposed), toolSource
+// from the toolsRag used by the parent's tool-loop.
+const projectSource = this.buildRetrievalSource(
+  this._projectRag,        // may be undefined; helper handles it
+  this._embedder,
+);
+const toolSource = this.buildRetrievalSource(
+  this._toolsRag,
+  this._embedder,
+);
+const defaultContextBuilder = new DefaultSubAgentContextBuilder({
+  projectSource,
+  toolSource,
+});
+
+const dispatch =
+  this._coordinator.dispatch ?? new SubAgentDispatch(defaultContextBuilder);
+```
+
+Adjust the property names (`_projectRag`, `_toolsRag`, `_embedder`) to match whatever the existing builder uses. Read `builder.ts` around the constructor and `setToolsRag` / `setHistoryRag` / similar to identify the actual field names.
+
+If `_projectRag` does not exist as a builder field today, add a setter `setProjectRag(rag: IRag): this` that stores it. The setter is optional for users — the field defaults to undefined and the helper returns undefined when either argument is missing.
+
+- [ ] **Step 3: Same wiring in `resolveCoordinatorDispatch` (smart-server YAML path)**
+
+In `packages/llm-agent-server/src/smart-agent/config.ts`, locate `resolveCoordinatorDispatch`. It currently looks something like:
+
+```typescript
+export function resolveCoordinatorDispatch(kind: string, llm: ILlm): IDispatchStrategy {
+  if (kind === 'subagent') return new SubAgentDispatch();
+  // ... self, hybrid branches
+}
+```
+
+This function doesn't have access to RAG/embedder, so it cannot construct a real context builder itself. Two options:
+
+(a) **Accept an optional context-builder argument**: change signature to `resolveCoordinatorDispatch(kind: string, llm: ILlm, contextBuilder?: ISubAgentContextBuilder)` and have `smart-server.ts` build the context-builder before calling. Pass `contextBuilder` into `new SubAgentDispatch(contextBuilder)`.
+
+(b) **Move context-builder construction into smart-server.ts** alongside the existing `builder.withCoordinator(...)` block: construct `DefaultSubAgentContextBuilder` from `mainEmbedder` + `toolsRag` (already in scope around smart-server.ts:580), then pass it into a custom dispatch instance OR through option (a)'s argument.
+
+Go with (a): minimal signature change, keeps wiring decisions inside smart-server.ts. Update the call site:
+
+```typescript
+// Before:
+dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm),
+// After:
+dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm, contextBuilder),
+```
+
+where `contextBuilder` is constructed a few lines earlier from the parent agent's RAG + embedder via the same `buildRetrievalSource` pattern.
+
+- [ ] **Step 4: Test that wiring is reachable**
+
+Add a focused test `packages/llm-agent-libs/src/builder/__tests__/builder-context-builder-wiring.test.ts` (create directory if needed):
+
+```typescript
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { SmartAgentBuilder } from '../../builder.js';
+import { SubAgentDispatch } from '../../coordinator/dispatch/subagent.js';
+
+describe('SmartAgentBuilder wires DefaultSubAgentContextBuilder into SubAgentDispatch', () => {
+  it('build() produces a coordinator dispatch with a non-default builder when coordinator+subagents configured', async () => {
+    // Construct minimal builder with required fakes (mainLlm, etc.) — replicate
+    // the smallest-passing setup from existing builder tests, then call
+    // .withCoordinator({}) without an explicit dispatch and inspect the
+    // resulting handle / config to verify the dispatch is a SubAgentDispatch
+    // and that it has a defined contextBuilder (use a public getter or expose
+    // for-testing access if needed).
+    // ...exact construction is project-dependent; mirror the existing
+    // builder.test.ts pattern.
+  });
+});
+```
+
+Note: the existing builder test file's setup helpers should be reused. If this test ends up requiring extensive setup, defer to manual smoke testing and document in Task 13 Self-Review checklist.
+
+- [ ] **Step 5: Build + run tests**
+
+Run: `npm run build && npm --prefix packages/llm-agent-libs test && npm --prefix packages/llm-agent-server test`
+Expected: full suites pass.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add -A
+git commit -m "feat(llm-agent-libs,server): wire DefaultSubAgentContextBuilder into SmartAgentBuilder and resolveCoordinatorDispatch"
+```
+
+---
+
 ## Phase 4: Nested Dispatch Propagation
 
 ### Task 10: Pass `layer + 1` from `SmartAgentSubAgent` into the child `SmartAgent`
@@ -1946,12 +2105,14 @@ Expected: full suite passes (the 2 layer-propagation tests added here are green)
 
 ```bash
 git add -A
-git commit -m "feat(llm-agent-libs): SmartAgentSubAgent propagates layer + 1 to wrapped SmartAgent.process"
+git commit -m "feat(llm-agent-libs): SmartAgentSubAgent forwards input.layer to wrapped SmartAgent.process"
 ```
 
 ---
 
 ## Phase 5: Epicfail Primitive
+
+> **Scope disclaimer.** Phase 1 of the error policy handles EXPLICIT epicfail only — a child returning `{ errorClass: 'epicfail', epicFailTrace: ... }`. Thrown errors that don't carry this signal continue to flow through the existing failure path (`ok: false`, retriable by parent's `maxRetriesPerStep`, governed by `failPolicy`). Auto-converting deep thrown errors into epicfail traces requires error classification (transient vs subagent-fault vs ...), which is deliberately deferred to Phase 2 of the error policy per the spec. Anyone needing "trace on every thrown error at depth ≥ N" should explicitly throw a typed error in their subagent that produces an epicfail return, or wait for Phase 2.
 
 ### Task 11: Propagate epicfail through dispatch strategies
 
@@ -2385,8 +2546,9 @@ git commit -m "chore(docs): remove implemented nested-subagent-dispatch-foundati
 - ✅ `ISubAgentContextBuilder` interface + default implementation — Task 6, 7.
 - ✅ `DirectLlmSubAgent` — Task 8.
 - ✅ `SubAgentDispatch` calls context builder + passes `layer + 1` — Task 9.
-- ✅ `SmartAgentSubAgent` propagates layer to inner `SmartAgent.process()` — Task 10.
-- ✅ Epicfail primitive: `errorClass`, `EpicFailTrace`, propagation through dispatch strategies, coordinator-level short-circuit — Task 11.
+- ✅ Production wiring of context builder into `SmartAgentBuilder` and `resolveCoordinatorDispatch` — Task 9b.
+- ✅ `SmartAgentSubAgent` forwards `input.layer` to inner `SmartAgent.process()` — Task 10.
+- ✅ Epicfail primitive (EXPLICIT signal only): `errorClass`, `EpicFailTrace`, propagation through dispatch strategies, coordinator-level short-circuit + retry-loop break — Task 11. Thrown-error auto-conversion is OUT of scope per Phase 5 disclaimer.
 - ✅ Docs (INTEGRATION + CHANGELOG) — Task 12.
 - ✅ Verification + cleanup — Task 13.
 
