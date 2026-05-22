@@ -44,6 +44,7 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
+export { buildBriefingFromContext } from './coordinator/briefing.js';
 // ---------------------------------------------------------------------------
 // Coordinator strategies
 // ---------------------------------------------------------------------------
