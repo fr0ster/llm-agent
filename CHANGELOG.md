@@ -7,6 +7,28 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Added
+- `SubAgentKind`, `SubAgentCapabilities` types in `@mcp-abap-adt/llm-agent`. Every `ISubAgent` must now declare `capabilities`.
+- `ISubAgentContextBuilder` interface and `DefaultSubAgentContextBuilder` implementation with `SubAgentRetrievalSource` callback abstraction. The dispatcher builds bounded `context` from project source + tool source before each subagent invocation.
+- `DirectLlmSubAgent` — a constrained leaf-node subagent that runs one LLM call over injected context. No RAG, MCP, or recursion.
+- `layer: number` on `ISubAgentInput`, `CallOptions`, `PipelineContext`, and `ICoordinatorContext`. Threads dispatch depth through nested calls.
+- `maxLayer?` on `ICoordinatorConfig` (default 1) and `CoordinatorHandlerDeps`. Plan validation rejects plans that violate layer rules — autonomous subagents are forbidden at layer >= 1.
+- Minimal epicfail primitive: `errorClass: 'epicfail'` + `EpicFailTrace` on `ISubAgentResult` and `StepResult`. Coordinator aborts the plan on epicfail regardless of `failPolicy`; the retry loop breaks on epicfail so terminal errors are never retried.
+
+### Changed
+- `ISubAgent`, `ISubAgentInput`, `ISubAgentResult` shape: `capabilities` is required; `layer` is required on inputs; `context?: string` replaces the previous `Record<string, unknown>` shape (briefing mechanism from PR #132 was rolled back).
+- `SubAgentDispatch` constructor now accepts an optional `ISubAgentContextBuilder`. Dispatched subagents receive `layer = parent + 1`.
+- `SmartAgentSubAgent.run` forwards `input.layer` to the wrapped `SmartAgent.process()` (no increment — the parent dispatcher already incremented).
+
+### Removed
+- `IBriefing` / `IBriefingArtifact` interfaces (rolled back from PR #132).
+- `formatBriefing`, `buildBriefingFromContext` helpers (rolled back from PR #132).
+- All briefing wiring in dispatch strategies (rolled back from PR #132).
+
+---
+
 ## [12.1.1] — 2026-05-20
 
 ### Security

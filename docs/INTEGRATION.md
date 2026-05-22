@@ -2406,6 +2406,45 @@ class RemoteAnalystSubAgent implements ISubAgent {
 }
 ```
 
+### Nested dispatch and DirectLlmSubAgent
+
+`ISubAgent` now carries `capabilities: SubAgentCapabilities` declaring its
+`kind` (`'autonomous'` or `'constrained'`), `canDispatchChildren`, and
+`contextPolicy`. The Coordinator's plan validator uses these fields to
+reject plans that violate layer rules.
+
+**Layer rules (default `maxLayer: 1`):**
+
+- Root coordinator (layer 0) may dispatch any subagent type.
+- A subagent dispatched at layer >= 1 may target only `constrained`
+  subagents — never `autonomous`.
+- Coordinator at layer >= `maxLayer` cannot dispatch at all and must
+  execute through its normal pipeline.
+
+**Two subagent implementations ship in the box:**
+
+- `SmartAgentSubAgent` (autonomous) wraps a full `SmartAgent`. It has
+  `capabilities.kind = 'autonomous'`, `canDispatchChildren = true`,
+  `contextPolicy = 'optional'`. Use it when the subagent needs its own
+  RAG/MCP/skills/system prompt.
+- `DirectLlmSubAgent` (constrained) performs one LLM call over injected
+  context. `capabilities.kind = 'constrained'`, `canDispatchChildren =
+  false`, `contextPolicy = 'required'` by default. Use it for judgment/
+  synthesis steps where the orchestrator already has the materials.
+
+**Context assembly**: `ISubAgentContextBuilder` is the orthogonal
+component that produces the `context` string injected on each dispatch.
+The default `DefaultSubAgentContextBuilder` queries project source, then
+tool source, with a bounded character budget. Custom builders can be
+constructed and passed to `SubAgentDispatch`.
+
+**Epicfail**: when a subagent returns `errorClass: 'epicfail'`, the
+Coordinator does NOT retry or replan. It records the step as failed
+(preserving the `EpicFailTrace` on the `StepResult`) and aborts the
+plan immediately with `OrchestratorError('COORDINATOR_EPICFAIL', ...)`.
+Phase 1 supports EXPLICIT epicfail only; auto-conversion of thrown
+errors is deferred to Phase 2 of the error policy.
+
 ### Building a multi-agent SmartAgent
 
 Two patterns are supported depending on whether you prefer inline composition or explicit registry
