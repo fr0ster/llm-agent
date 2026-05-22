@@ -99,7 +99,9 @@ Expected: 7 `D` lines for the deleted files.
 
 - [ ] **Step 1: Restore `packages/llm-agent/src/interfaces/subagent.ts`**
 
-Replace the file contents EXACTLY with the pre-briefing version:
+Safety check first: before replacing, run `git log -1 --format=%H -- packages/llm-agent/src/interfaces/subagent.ts` and confirm the most recent commits touching this file are from the briefing branch (PR #132 commits). If you see unrelated changes from other branches, STOP and escalate — the rollback assumes only briefing-related diffs since baseline `0385bc11`.
+
+Replace the file contents with the pre-briefing version:
 
 ```typescript
 import type { LlmToolCall, LlmUsage } from './types.js';
@@ -371,7 +373,7 @@ Expected: clean across all 15 packages. No TS errors.
 - [ ] **Step 10: Run tests**
 
 Run: `npm --prefix packages/llm-agent-libs test` and `npm --prefix packages/llm-agent-server test`
-Expected: `llm-agent-libs` returns to **342 pass / 0 fail** (the pre-briefing baseline). `llm-agent-server` remains **40 pass / 0 fail**.
+Expected: both suites pass cleanly. `llm-agent-libs` returns to its pre-briefing baseline (any briefing-only tests are deleted, no new tests yet). `llm-agent-server` unchanged.
 
 If any test fails because it referenced briefing types or formatBriefing — that test belongs to the rolled-back work and should also be deleted as part of this rollback. Re-run after deletion.
 
@@ -550,7 +552,26 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 ```
 
-- [ ] **Step 4: Update tests that construct subagents**
+- [ ] **Step 4: Update `SubAgentDispatch` to pass `layer` on `sub.run()` (closes the compile gap)**
+
+`ISubAgentInput.layer` is now required. The only existing call site of `sub.run` is `SubAgentDispatch.dispatch`. Without updating it in the same commit, the project won't compile.
+
+In `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts`, change the `sub.run` call to pass `layer`:
+
+```typescript
+const res = await sub.run({
+  task,
+  sessionId: ctx.sessionId,
+  signal: ctx.signal,
+  layer: (ctx.layer ?? 0) + 1,
+});
+```
+
+(`ctx.layer` from `ICoordinatorContext.layer` is populated by `CoordinatorHandler` in Task 5. Until then `ctx.layer` is undefined and defaults to 0, so the child sees `layer: 1` — the root-dispatch case.)
+
+The full context-builder wiring lands in Task 9; this step is the minimum to keep the build green.
+
+- [ ] **Step 5: Update tests that construct subagents**
 
 Search test files for `new SmartAgentSubAgent(`:
 
@@ -568,23 +589,23 @@ readonly capabilities: SubAgentCapabilities = {
 };
 ```
 
-(Test fixtures don't need full SmartAgent wrap, so `canDispatchChildren: false` is fine — the planner won't actually dispatch from them.)
+Also update every test call to `sub.run(...)` or `dispatch.dispatch(step, ctx)` to include `layer` somewhere — for direct `sub.run` callers add `layer: 0`; for `dispatch(step, ctx)` callers ensure the `ctx` (or `ICoordinatorContext` cast) carries `layer: 0` (or omit; default to 0).
 
-- [ ] **Step 5: Build**
+- [ ] **Step 6: Build**
 
 Run: `npm run build`
-Expected: clean. (TypeScript will catch missing `capabilities` on any ISubAgent implementation; fix each as it surfaces.)
+Expected: clean. (TypeScript will catch missing `capabilities` or missing `layer` on any `sub.run` call; fix each as it surfaces.)
 
-- [ ] **Step 6: Test**
+- [ ] **Step 7: Test**
 
 Run: `npm --prefix packages/llm-agent-libs test`
-Expected: all tests pass (no behavioral change yet; capabilities is metadata-only at this point).
+Expected: full suite passes. No behavioral change yet — capabilities is metadata-only and `layer` is plumbed but no validator consumes it.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add -A
-git commit -m "feat(llm-agent): add SubAgentKind, SubAgentCapabilities, and required capabilities on ISubAgent"
+git commit -m "feat(llm-agent): add SubAgentKind, SubAgentCapabilities, required capabilities + layer on ISubAgent contract"
 ```
 
 ---
@@ -624,8 +645,9 @@ export interface CallOptions {
   };
   /**
    * Dispatch depth for nested subagent execution. Root consumer-facing
-   * calls default to 0. SmartAgentSubAgent passes `input.layer + 1` when
-   * forwarding to a child SmartAgent.
+   * calls default to 0. `SubAgentDispatch` increments to `input.layer + 1`
+   * when calling a child subagent's `run`; `SmartAgentSubAgent` then
+   * forwards that value as-is into the wrapped `SmartAgent.process()`.
    */
   layer?: number;
 }
@@ -673,9 +695,9 @@ export interface ICoordinatorConfig {
 }
 ```
 
-- [ ] **Step 4: Add `EpicFailTrace` to coordinator interfaces**
+- [ ] **Step 4: Add `EpicFailTrace` and extend `StepResult` with `epicFailTrace?`**
 
-In the same `coordinator.ts`, add at the end:
+In `coordinator.ts`, add the `EpicFailTrace` interface near the top (before `StepResult`) so `StepResult` can reference it:
 
 ```typescript
 /**
@@ -693,6 +715,26 @@ export interface EpicFailTrace {
   }>;
   originalError: string;
   childTrace?: EpicFailTrace;
+}
+```
+
+Then extend `StepResult` with the same trace field so the coordinator can surface it without losing structure when it converts an `ISubAgentResult` into a `StepResult`:
+
+```typescript
+export interface StepResult {
+  stepId: string;
+  output: string;
+  toolCalls?: ISubAgentResult['toolCalls'];
+  usage?: LlmUsage;
+  durationMs: number;
+  ok: boolean;
+  error?: string;
+  /**
+   * Populated when a child subagent returned `errorClass: 'epicfail'`.
+   * Carries the diagnostic trace upward unchanged so consumers see the
+   * full chain instead of a flattened error string.
+   */
+  epicFailTrace?: EpicFailTrace;
 }
 ```
 
@@ -716,19 +758,33 @@ In `packages/llm-agent-libs/src/pipeline/context.ts`, locate the "Coordinator / 
 }
 ```
 
-- [ ] **Step 6: Read `options.layer` in `SmartAgent.process()`**
+- [ ] **Step 6: Read `options.layer` into `PipelineContext` at construction**
 
-In `packages/llm-agent-libs/src/agent.ts`, find where the `PipelineContext` is constructed (search for `assembledMessages: []` or `inputText`). At that construction site, add:
+The `PipelineContext` is built in `packages/llm-agent-libs/src/pipeline/default-pipeline.ts` in the `_buildContext` method (around line 345), NOT in `agent.ts`. `agent.ts` mostly forwards options into the pipeline.
+
+In `_buildContext`, locate the returned `PipelineContext` object literal and add the `layer` field reading from the call options:
 
 ```typescript
-const ctx: PipelineContext = {
-  // ... existing fields ...
-  layer: options?.layer ?? 0,
-  // ... rest ...
-};
+private _buildContext(
+  textOrMessages: string | Message[],
+  options: CallOptions | undefined,
+  /* ... existing parameters ... */
+): PipelineContext {
+  return {
+    // ... existing fields ...
+    layer: options?.layer ?? 0,
+    // ... rest of mutable state ...
+  } as PipelineContext;
+}
 ```
 
-If there are multiple construction sites (`process` and `stream`), update both.
+If there are any other places where a `PipelineContext` is constructed (e.g. test helpers, `agent.ts` if it builds context directly), add `layer: options?.layer ?? 0` there too.
+
+Quick verification:
+```bash
+grep -rn "PipelineContext = {\|as PipelineContext\|: PipelineContext = " packages/llm-agent-libs/src --include='*.ts'
+```
+Update every construction site that doesn't already pull from options.
 
 - [ ] **Step 7: Build**
 
@@ -738,7 +794,7 @@ Expected: clean.
 - [ ] **Step 8: Test**
 
 Run: `npm --prefix packages/llm-agent-libs test`
-Expected: 342 pass / 0 fail. No behavior change yet — layer is plumbed but no validator consumes it.
+Expected: full suite passes. No behavior change yet — layer is plumbed but no validator consumes it.
 
 - [ ] **Step 9: Commit**
 
@@ -1045,7 +1101,7 @@ Expected: all 4 cases PASS.
 - [ ] **Step 6: Run full suite**
 
 Run: `npm --prefix packages/llm-agent-libs test`
-Expected: 346 pass / 0 fail (was 342; +4 from this task).
+Expected: full suite passes (the 4 layer-validation tests added here are green).
 
 - [ ] **Step 7: Commit**
 
@@ -1137,7 +1193,19 @@ git commit -m "feat(llm-agent): add ISubAgentContextBuilder interface and reques
 
 ---
 
-### Task 7: Implement `DefaultSubAgentContextBuilder` (TDD)
+### Task 7: Implement `DefaultSubAgentContextBuilder` with `SubAgentRetrievalSource` abstraction (TDD)
+
+**Design note (changed from initial plan):** the production `IRag` interface is `query(embedding: IQueryEmbedding, k: number, options?: CallOptions)`, NOT `retrieve(text)`. The builder cannot call IRag directly without an `IEmbedder` and without coupling itself to embedding internals. To keep the builder testable and decoupled, we abstract retrieval behind a thin callback type:
+
+```typescript
+type SubAgentRetrievalSource = (
+  text: string,
+  k: number,
+  signal?: AbortSignal,
+) => Promise<RagResult[]>;
+```
+
+The caller (`SmartAgentBuilder` or test setup) is responsible for wiring `text → embedding → IRag.query` into a closure that fits this signature. The builder itself doesn't know about embedders.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/subagent/default-context-builder.ts`
@@ -1151,25 +1219,18 @@ Create `packages/llm-agent-libs/src/subagent/__tests__/default-context-builder.t
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
-  IRag,
   ISubAgent,
   PlanStep,
   RagResult,
-  Result,
   SubAgentContextRequest,
 } from '@mcp-abap-adt/llm-agent';
-import { DefaultSubAgentContextBuilder } from '../default-context-builder.js';
+import {
+  DefaultSubAgentContextBuilder,
+  type SubAgentRetrievalSource,
+} from '../default-context-builder.js';
 
-function makeRag(results: RagResult[]): IRag {
-  return {
-    name: 'fake',
-    async retrieve(_query: string): Promise<Result<RagResult[], Error>> {
-      return { ok: true, value: results };
-    },
-    async upsert() {
-      return { ok: true, value: undefined } as Result<void, Error>;
-    },
-  } as unknown as IRag;
+function makeSource(results: RagResult[]): SubAgentRetrievalSource {
+  return async (_text, _k, _signal) => results;
 }
 
 function makeAgent(): ISubAgent {
@@ -1200,21 +1261,21 @@ function makeReq(overrides: Partial<SubAgentContextRequest> = {}): SubAgentConte
 }
 
 describe('DefaultSubAgentContextBuilder', () => {
-  it('returns empty context and empty sources when no RAGs are configured', async () => {
+  it('returns empty context and empty sources when no sources are configured', async () => {
     const builder = new DefaultSubAgentContextBuilder({});
     const res = await builder.build(makeReq());
     assert.equal(res.context, '');
     assert.deepEqual(res.sources, []);
   });
 
-  it('includes project RAG snippets when projectRag is provided', async () => {
+  it('includes project source snippets when projectSource is provided', async () => {
     const builder = new DefaultSubAgentContextBuilder({
-      projectRag: makeRag([
+      projectSource: makeSource([
         {
           content: 'TokenManager handles JWT refresh',
           score: 0.9,
           metadata: { path: 'src/auth/token.ts' },
-        },
+        } as unknown as RagResult,
       ]),
     });
     const res = await builder.build(makeReq());
@@ -1224,17 +1285,17 @@ describe('DefaultSubAgentContextBuilder', () => {
     ]);
   });
 
-  it('includes tool-RAG snippets after project RAG', async () => {
+  it('includes tool source snippets after project source', async () => {
     const builder = new DefaultSubAgentContextBuilder({
-      projectRag: makeRag([
-        { content: 'project fact', score: 0.9, metadata: { path: 'a.ts' } },
+      projectSource: makeSource([
+        { content: 'project fact', score: 0.9, metadata: { path: 'a.ts' } } as unknown as RagResult,
       ]),
-      toolRag: makeRag([
+      toolSource: makeSource([
         {
           content: 'get_artifact(name) → string',
           score: 0.8,
           metadata: { tool: 'get_artifact' },
-        },
+        } as unknown as RagResult,
       ]),
     });
     const res = await builder.build(makeReq());
@@ -1248,8 +1309,8 @@ describe('DefaultSubAgentContextBuilder', () => {
   it('bounds context by maxContextChars', async () => {
     const longContent = 'x'.repeat(2000);
     const builder = new DefaultSubAgentContextBuilder({
-      projectRag: makeRag([
-        { content: longContent, score: 0.9, metadata: { path: 'big.ts' } },
+      projectSource: makeSource([
+        { content: longContent, score: 0.9, metadata: { path: 'big.ts' } } as unknown as RagResult,
       ]),
       maxContextChars: 500,
     });
@@ -1257,7 +1318,7 @@ describe('DefaultSubAgentContextBuilder', () => {
     assert.ok(res.context.length <= 500 + 32);
   });
 
-  it('skips RAG calls when the agent has contextPolicy=forbidden', async () => {
+  it('skips retrieval calls when the agent has contextPolicy=forbidden', async () => {
     const agent: ISubAgent = {
       ...makeAgent(),
       capabilities: {
@@ -1267,8 +1328,8 @@ describe('DefaultSubAgentContextBuilder', () => {
       },
     };
     const builder = new DefaultSubAgentContextBuilder({
-      projectRag: makeRag([
-        { content: 'should not appear', score: 0.9, metadata: { path: 'x.ts' } },
+      projectSource: makeSource([
+        { content: 'should not appear', score: 0.9, metadata: { path: 'x.ts' } } as unknown as RagResult,
       ]),
     });
     const res = await builder.build(makeReq({ agent }));
@@ -1283,22 +1344,35 @@ describe('DefaultSubAgentContextBuilder', () => {
 Run: `npm --prefix packages/llm-agent-libs test -- --test-name-pattern=DefaultSubAgentContextBuilder`
 Expected: FAIL — module not found.
 
-- [ ] **Step 3: Implement `DefaultSubAgentContextBuilder`**
+- [ ] **Step 3: Implement `DefaultSubAgentContextBuilder` and `SubAgentRetrievalSource`**
 
 Create `packages/llm-agent-libs/src/subagent/default-context-builder.ts`:
 
 ```typescript
 import type {
-  IRag,
   ISubAgentContextBuilder,
   RagResult,
   SubAgentContextRequest,
   SubAgentContextResult,
 } from '@mcp-abap-adt/llm-agent';
 
+/**
+ * Thin retrieval callback used by the builder. The caller is responsible
+ * for converting `text` into whatever the underlying store needs
+ * (typically: embed via `IEmbedder`, then call `IRag.query(embedding, k)`),
+ * but the builder itself stays decoupled from embedder/RAG specifics.
+ */
+export type SubAgentRetrievalSource = (
+  text: string,
+  k: number,
+  signal?: AbortSignal,
+) => Promise<RagResult[]>;
+
 export interface DefaultSubAgentContextBuilderConfig {
-  projectRag?: IRag;
-  toolRag?: IRag;
+  /** Source of project/domain knowledge snippets. */
+  projectSource?: SubAgentRetrievalSource;
+  /** Source of tool-description / MCP-RAG snippets. */
+  toolSource?: SubAgentRetrievalSource;
   topKProject?: number;
   topKTool?: number;
   maxContextChars?: number;
@@ -1309,8 +1383,8 @@ const DEFAULT_TOP_K_TOOL = 3;
 const DEFAULT_MAX_CHARS = 4000;
 
 /**
- * Builds subagent context by querying project RAG, then tool-RAG. Skips
- * RAG queries entirely when the agent's contextPolicy is 'forbidden'.
+ * Builds subagent context by querying project source, then tool source.
+ * Skips retrieval entirely when the agent's contextPolicy is 'forbidden'.
  * Bounds the final context by character budget (cheap proxy for tokens).
  */
 export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
@@ -1328,31 +1402,41 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
     const topKTool = this.config.topKTool ?? DEFAULT_TOP_K_TOOL;
     const maxChars = this.config.maxContextChars ?? DEFAULT_MAX_CHARS;
 
-    if (this.config.projectRag) {
-      const res = await this.config.projectRag.retrieve(req.task);
-      if (res.ok) {
-        const top = res.value.slice(0, topKProject);
-        for (const r of top) {
+    if (this.config.projectSource) {
+      try {
+        const results = await this.config.projectSource(
+          req.task,
+          topKProject,
+          req.signal,
+        );
+        for (const r of results.slice(0, topKProject)) {
           parts.push(r.content);
           sources.push({
             kind: 'rag',
             ref: this.refOf(r, 'path') ?? 'unknown',
           });
         }
+      } catch {
+        // Retrieval errors are non-fatal — caller observes empty source.
       }
     }
 
-    if (this.config.toolRag) {
-      const res = await this.config.toolRag.retrieve(req.task);
-      if (res.ok) {
-        const top = res.value.slice(0, topKTool);
-        for (const r of top) {
+    if (this.config.toolSource) {
+      try {
+        const results = await this.config.toolSource(
+          req.task,
+          topKTool,
+          req.signal,
+        );
+        for (const r of results.slice(0, topKTool)) {
           parts.push(r.content);
           sources.push({
             kind: 'tool-rag',
             ref: this.refOf(r, 'tool') ?? 'unknown',
           });
         }
+      } catch {
+        // Same policy as projectSource.
       }
     }
 
@@ -1371,6 +1455,23 @@ export class DefaultSubAgentContextBuilder implements ISubAgentContextBuilder {
   }
 }
 ```
+
+The dispatcher wires up sources from the parent's `SmartAgent` configuration. For example, when constructing `SubAgentDispatch` in `SmartAgentBuilder`, the builder might do:
+
+```typescript
+const projectSource: SubAgentRetrievalSource | undefined = toolsRag && embedder
+  ? async (text, k, signal) => {
+      const embRes = await embedder.embed(text, { signal });
+      if (!embRes.ok) return [];
+      const queryRes = await toolsRag.query(embRes.value, k, { signal });
+      return queryRes.ok ? queryRes.value : [];
+    }
+  : undefined;
+const contextBuilder = new DefaultSubAgentContextBuilder({ projectSource, /* ... */ });
+const subAgentDispatch = new SubAgentDispatch(contextBuilder);
+```
+
+This adapter code is NOT part of the builder itself — it lives wherever `SmartAgentBuilder.withSubAgents` wires together the parent's resources. The builder remains testable in isolation with callback fakes.
 
 - [ ] **Step 4: Run test to verify pass**
 
@@ -1593,6 +1694,7 @@ Add to `packages/llm-agent-libs/src/index.ts`:
 export {
   DefaultSubAgentContextBuilder,
   type DefaultSubAgentContextBuilderConfig,
+  type SubAgentRetrievalSource,
 } from './subagent/default-context-builder.js';
 export {
   DirectLlmSubAgent,
@@ -1741,7 +1843,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
 - [ ] **Step 2: Build + run all tests**
 
 Run: `npm run build && npm --prefix packages/llm-agent-libs test`
-Expected: 350 pass / 0 fail (was 346; +4 from DefaultSubAgentContextBuilder).
+Expected: full suite passes (including the new context-builder tests from Task 7).
 
 - [ ] **Step 3: Commit**
 
@@ -1759,9 +1861,11 @@ git commit -m "feat(llm-agent-libs): SubAgentDispatch calls ISubAgentContextBuil
 **Files:**
 - Modify: `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts`
 
-- [ ] **Step 1: Update `SmartAgentSubAgent.run` to thread `input.layer + 1` through**
+- [ ] **Step 1: Update `SmartAgentSubAgent.run` to forward `input.layer` (no increment) into the wrapped SmartAgent**
 
-The current implementation (after Tasks 2+3) calls `this.agent.process(prompt, { sessionId, signal })`. Add `layer`:
+`input.layer` is already the layer at which THIS subagent runs (SubAgentDispatch incremented it before calling `sub.run`). The wrapped `SmartAgent` runs at the SAME layer — it does not increment again. Its own coordinator (if any) will increment when IT dispatches further.
+
+The current implementation (after Tasks 2+3) calls `this.agent.process(prompt, { sessionId, signal })`. Add `layer: input.layer` (NOT `input.layer + 1`):
 
 ```typescript
 async run(input: ISubAgentInput): Promise<ISubAgentResult> {
@@ -1773,7 +1877,7 @@ async run(input: ISubAgentInput): Promise<ISubAgentResult> {
   const res = await this.agent.process(prompt, {
     sessionId: input.sessionId,
     signal: input.signal,
-    layer: input.layer + 1,
+    layer: input.layer,
   });
 
   if (!res.ok) {
@@ -1812,18 +1916,18 @@ class FakeAgent {
 }
 
 describe('SmartAgentSubAgent layer propagation', () => {
-  it('passes input.layer + 1 to the wrapped SmartAgent', async () => {
+  it('forwards input.layer to the wrapped SmartAgent without incrementing', async () => {
     const inner = new FakeAgent();
     const sub = new SmartAgentSubAgent('w', inner as unknown as SmartAgent);
     await sub.run({ task: 't', layer: 1 });
-    assert.equal(inner.capturedLayer, 2);
+    assert.equal(inner.capturedLayer, 1);
   });
 
-  it('starts at layer 1 for root dispatch (input.layer === 0)', async () => {
+  it('forwards layer=2 when dispatched at layer 2', async () => {
     const inner = new FakeAgent();
     const sub = new SmartAgentSubAgent('w', inner as unknown as SmartAgent);
-    await sub.run({ task: 't', layer: 0 });
-    assert.equal(inner.capturedLayer, 1);
+    await sub.run({ task: 't', layer: 2 });
+    assert.equal(inner.capturedLayer, 2);
   });
 });
 ```
@@ -1836,7 +1940,7 @@ Expected: 2/2 PASS.
 - [ ] **Step 4: Run full suite**
 
 Run: `npm --prefix packages/llm-agent-libs test`
-Expected: 352 pass / 0 fail (+2 from this task).
+Expected: full suite passes (the 2 layer-propagation tests added here are green).
 
 - [ ] **Step 5: Commit**
 
@@ -1984,7 +2088,7 @@ describe('Coordinator epicfail propagation', () => {
 Run: `npm --prefix packages/llm-agent-libs test -- --test-name-pattern="epicfail propagation"`
 Expected: FAIL — current dispatch logic treats `errorClass: 'epicfail'` as a regular successful result with empty output.
 
-- [ ] **Step 3: Update `SubAgentDispatch` to surface epicfail**
+- [ ] **Step 3: Update `SubAgentDispatch` to surface epicfail with the trace preserved**
 
 In `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts`, after the `sub.run` call:
 
@@ -1997,14 +2101,26 @@ const res = await sub.run({
   layer: childLayer,
 });
 
-// Epicfail propagation: do NOT retry, do NOT transform.
+// Epicfail propagation: do NOT retry, do NOT transform — preserve the
+// trace by attaching this layer's frame and passing it upward in StepResult.
 if (res.errorClass === 'epicfail') {
+  const childTrace = res.epicFailTrace;
+  const wrappedTrace: EpicFailTrace = {
+    layer: ctx.layer ?? 0,
+    stepId: step.id,
+    agentName,
+    attempts: [],
+    originalError:
+      childTrace?.originalError ?? `epicfail from '${agentName}'`,
+    childTrace,
+  };
   return {
     stepId: step.id,
     output: '',
     durationMs: Date.now() - started,
     ok: false,
-    error: `epicfail from '${agentName}': ${res.epicFailTrace?.originalError ?? 'unknown'}`,
+    error: `epicfail from '${agentName}': ${childTrace?.originalError ?? 'unknown'}`,
+    epicFailTrace: wrappedTrace,
   };
 }
 
@@ -2017,6 +2133,8 @@ return {
   ok: true,
 };
 ```
+
+Make sure to import `EpicFailTrace` from `@mcp-abap-adt/llm-agent` at the top of the file.
 
 - [ ] **Step 4: Update `HybridDispatch` to pass-through epicfail**
 
@@ -2042,26 +2160,57 @@ async dispatch(
 
 (The `if (!result.ok ...)` block is a no-op behaviorally — both branches return `result` — but it's a documentation anchor; remove the redundant block if Biome complains, leaving only the comment as a top-of-method block-doc.)
 
-- [ ] **Step 5: Update `CoordinatorHandler` to abort on epicfail regardless of failPolicy**
+- [ ] **Step 5: Make the retry loop and post-retry block treat epicfail as terminal**
 
-In `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts`, find the step-execution loop. After a step result is recorded, add:
+In `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts`, the current step-execution code uses a retry loop:
 
 ```typescript
-const stepResult = await this.deps.dispatch.dispatch(step, coordCtx);
-coordCtx.stepResults[step.id] = stepResult;
-// Epicfail short-circuits the entire plan, regardless of failPolicy.
-if (
-  !stepResult.ok &&
-  typeof stepResult.error === 'string' &&
-  stepResult.error.startsWith('epicfail')
-) {
-  ctx.error = wrapError(
-    new Error(stepResult.error),
+let result: StepResult | undefined;
+for (let attempt = 0; attempt <= this.deps.maxRetriesPerStep; attempt++) {
+  result = await this.deps.dispatch.dispatch(step, coordCtx);
+  if (result.ok) break;
+}
+```
+
+This will retry an epicfail up to `maxRetriesPerStep` times — wrong. Add a break on epicfail INSIDE the loop:
+
+```typescript
+let result: StepResult | undefined;
+for (let attempt = 0; attempt <= this.deps.maxRetriesPerStep; attempt++) {
+  result = await this.deps.dispatch.dispatch(step, coordCtx);
+  if (result.ok) break;
+  // Epicfail is terminal — never retry it.
+  if (result.epicFailTrace) break;
+}
+```
+
+Then, AFTER the loop and after `coordCtx.stepResults[step.id] = result;`, short-circuit the entire plan if epicfail is in the result, BEFORE the `shouldReplan` / `failPolicy` branches:
+
+```typescript
+coordCtx.stepResults[step.id] = result;
+step.status = result.ok ? 'done' : 'failed';
+ctx.options?.sessionLogger?.logStep('coordinator_step_done', {
+  stepId: step.id,
+  ok: result.ok,
+  durationMs: result.durationMs,
+  outputLength: result.output.length,
+  error: result.error,
+});
+
+// Epicfail short-circuits the entire plan, regardless of failPolicy or
+// the planning strategy's shouldReplan decision. The trace is preserved
+// on the step result so the consumer can inspect it.
+if (result.epicFailTrace) {
+  ctx.error = new OrchestratorError(
+    `coordinator: step ${step.id} returned epicfail: ${result.error ?? 'unknown'}`,
     'COORDINATOR_EPICFAIL',
   );
   return false;
 }
-// ... existing failPolicy handling continues
+
+if (!result.ok) {
+  // ... existing shouldReplan / failPolicy handling continues unchanged
+}
 ```
 
 - [ ] **Step 6: Run targeted test**
@@ -2072,7 +2221,7 @@ Expected: PASS.
 - [ ] **Step 7: Run full suite**
 
 Run: `npm --prefix packages/llm-agent-libs test`
-Expected: 353 pass / 0 fail (+1 from this task).
+Expected: full suite passes (the epicfail propagation test added here is green).
 
 - [ ] **Step 8: Commit**
 
@@ -2192,7 +2341,7 @@ Expected: clean.
 npm --prefix packages/llm-agent-libs test
 npm --prefix packages/llm-agent-server test
 ```
-Expected: `llm-agent-libs` ≥ 353 / 0 fail (was 342 baseline; +11 from Tasks 5, 7, 8, 10, 11). `llm-agent-server` ≥ 40 / 0 fail.
+Expected: both suites pass cleanly. The `llm-agent-libs` test count should have increased relative to the pre-briefing baseline (new tests added across Tasks 5, 7, 8, 10, 11).
 
 - [ ] **Step 4: Smoke CLI**
 
