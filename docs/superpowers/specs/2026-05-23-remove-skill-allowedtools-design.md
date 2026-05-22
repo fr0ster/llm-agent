@@ -1,4 +1,4 @@
-# Remove `allowedTools` From `ISkillMeta` (v14.0.0)
+# Remove `allowedTools` From `ISkillMeta` (v13.2.0)
 
 > **Status:** Design, not implemented. After this spec is approved, the writing-plans skill produces the implementation plan.
 
@@ -50,10 +50,10 @@ The change is intentionally pure cleanup: no behavior change, no new behavior ad
 ### Modified
 
 **`CHANGELOG.md`:**
-- New section `## [14.0.0] — 2026-05-23` with `### Removed` block describing the field removal.
+- New section `## [13.2.0] — 2026-05-23` with `### Removed` block describing the field removal.
 - Highlight that runtime behavior is unchanged (the field was never enforced) but downstream TypeScript consumers must update their `ISkill` implementations if they declared the field.
 
-**All 15 packages: bump version `13.1.0` → `14.0.0`.** Internal `@mcp-abap-adt/*` dep ranges bumped to `^14.0.0`.
+**All 15 packages: bump version `13.1.0` → `13.2.0`.** Internal `@mcp-abap-adt/*` dep ranges bumped to `^13.2.0`.
 
 ### Documentation
 
@@ -67,9 +67,9 @@ Grep `docs/` for any other mentions of `allowedTools` and either remove (if they
 
 ## Semver
 
-`v14.0.0` (major) — `ISkillMeta` is a public type; removing a field is a breaking type change.
+`v13.2.0` (minor) — the field was never enforced at runtime, the project itself never used it in any real skill, and removing it has zero runtime impact. Strict semver would say major (public-type field removal), but the practical impact on downstream consumers is essentially nil: any user who declared `allowedTools` on a custom `ISkill` was relying on documentation that misled them; nothing else breaks.
 
-Justification for major even with zero runtime impact: strict semver matches our `12.0.0 → 13.0.0` precedent (also typed-contract change with no immediate runtime regression for callers that didn't use the removed feature). Keeps version semantics honest and skips the `13.x` line per project preference.
+Minor bump signals "non-breaking enhancement" with the caveat that TypeScript-strict consumers may see a compile error and need a 1-line fix. CHANGELOG documents this clearly.
 
 ---
 
@@ -80,16 +80,16 @@ Justification for major even with zero runtime impact: strict semver matches our
 | `ISkillMeta.allowedTools` | `packages/llm-agent/src/interfaces/skill.ts` | Removed. |
 | `allowed-tools` parser branch | `packages/llm-agent-libs/src/skills/claude-skill-manager.ts:~92-94` | Removed. |
 | Header JSDoc bullet | `packages/llm-agent-libs/src/skills/claude-skill-manager.ts:~10` | Removed. |
-| Version bumps | All 15 `packages/*/package.json` | `13.1.0` → `14.0.0`; internal deps `^14.0.0`. |
+| Version bumps | All 15 `packages/*/package.json` | `13.1.0` → `13.2.0`; internal deps `^13.2.0`. |
 | Lockfile | `package-lock.json` | Synced. |
-| CHANGELOG | `CHANGELOG.md` | New `[14.0.0]` section. |
+| CHANGELOG | `CHANGELOG.md` | New `[13.2.0]` section. |
 | Docs | `docs/INTEGRATION.md` and any other `docs/*.md` with `allowedTools` mentions | Removed or rephrased. |
 
 ---
 
 ## Implementation Boundaries
 
-This is a single coherent change — no need to phase it. One implementation plan, one release commit, one tag `v14.0.0`.
+This is a single coherent change — no need to phase it. One implementation plan, one release commit, one tag `v13.2.0`.
 
 The follow-on work (MCP-layer tool authorization, if ever needed) is a different feature for a different release; out of scope.
 
