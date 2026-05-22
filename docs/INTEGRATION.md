@@ -2362,19 +2362,34 @@ Any class that implements `ISubAgent` can be registered and invoked by the Coord
 models, or any async operation as a first-class participant in a multi-agent plan.
 
 ```ts
-import type { ISubAgent, ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISubAgent,
+  ISubAgentInput,
+  ISubAgentResult,
+  SubAgentCapabilities,
+} from '@mcp-abap-adt/llm-agent';
+
+interface SubAgentCapabilities {
+  kind: 'autonomous' | 'constrained';
+  canDispatchChildren: boolean;
+  contextPolicy: 'required' | 'optional' | 'forbidden';
+}
 
 interface ISubAgent {
   readonly name: string;
   readonly description?: string;
+  readonly capabilities: SubAgentCapabilities;
   run(input: ISubAgentInput): Promise<ISubAgentResult>;
 }
 
 interface ISubAgentInput {
   task: string;
+  /** Assembled context preamble (string, not a structured bag). */
+  context?: string;
   sessionId?: string;
   signal?: AbortSignal;
-  context?: Record<string, unknown>;
+  /** Dispatch depth. Root is 0; each dispatch increments by 1. */
+  layer: number;
 }
 
 interface ISubAgentResult {
@@ -2388,16 +2403,32 @@ interface ISubAgentResult {
 **Custom implementation — HTTP microservice subagent:**
 
 ```ts
-import type { ISubAgent, ISubAgentInput, ISubAgentResult } from '@mcp-abap-adt/llm-agent';
+import type {
+  ISubAgent,
+  ISubAgentInput,
+  ISubAgentResult,
+  SubAgentCapabilities,
+} from '@mcp-abap-adt/llm-agent';
 
 class RemoteAnalystSubAgent implements ISubAgent {
   readonly name = 'remote-analyst';
   readonly description = 'Calls external analyst microservice via HTTP.';
+  // External HTTP wrapper: no local plan dispatch, optional context preamble.
+  readonly capabilities: SubAgentCapabilities = {
+    kind: 'autonomous',
+    canDispatchChildren: false,
+    contextPolicy: 'optional',
+  };
   constructor(private endpoint: string) {}
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
+    // input.layer indicates dispatch depth; input.context is an optional
+    // string preamble assembled by the dispatcher.
+    const body = input.context
+      ? `${input.context}\n\n${input.task}`
+      : input.task;
     const res = await fetch(this.endpoint, {
       method: 'POST',
-      body: JSON.stringify({ task: input.task }),
+      body: JSON.stringify({ task: body, layer: input.layer }),
       signal: input.signal,
     });
     const data = await res.json() as { text: string };
@@ -2405,6 +2436,56 @@ class RemoteAnalystSubAgent implements ISubAgent {
   }
 }
 ```
+
+### Nested dispatch and DirectLlmSubAgent
+
+`ISubAgent` now carries `capabilities: SubAgentCapabilities` declaring its
+`kind` (`'autonomous'` or `'constrained'`), `canDispatchChildren`, and
+`contextPolicy`. The Coordinator's plan validator uses these fields to
+reject plans that violate layer rules.
+
+**Layer rules (default `maxLayer: 1`):**
+
+- Root coordinator (layer 0) may dispatch any subagent type.
+- A subagent dispatched at layer >= 1 may target only `constrained`
+  subagents — never `autonomous`.
+- Coordinator at layer >= `maxLayer` cannot dispatch at all and must
+  execute through its normal pipeline.
+
+**Two subagent implementations ship in the box:**
+
+- `SmartAgentSubAgent` (autonomous) wraps a full `SmartAgent`. It has
+  `capabilities.kind = 'autonomous'`, `canDispatchChildren = true`,
+  `contextPolicy = 'optional'`. Use it when the subagent needs its own
+  RAG/MCP/skills/system prompt.
+- `DirectLlmSubAgent` (constrained) performs one LLM call over injected
+  context. `capabilities.kind = 'constrained'`, `canDispatchChildren =
+  false`, `contextPolicy = 'required'` by default. Use it for judgment/
+  synthesis steps where the orchestrator already has the materials.
+
+**Context assembly**: `ISubAgentContextBuilder` is the orthogonal
+component that produces the `context` string injected on each dispatch.
+The default `DefaultSubAgentContextBuilder` queries project source, then
+tool source, with a bounded character budget. Custom builders can be
+constructed and passed to `SubAgentDispatch`.
+
+**Epicfail**: when a subagent returns `errorClass: 'epicfail'`, the
+Coordinator does NOT retry or replan. It records the step as failed
+(preserving the `EpicFailTrace` on the `StepResult`) and aborts the
+plan immediately with `OrchestratorError('COORDINATOR_EPICFAIL', ...)`.
+Phase 1 supports EXPLICIT epicfail only; auto-conversion of thrown
+errors is deferred to Phase 2 of the error policy.
+
+**Known limitation (Phase 1):** when using the YAML `coordinator:` block,
+the subagent context-builder's `toolSource` is wired from
+`SmartServerConfig.embedder` (DI-injected). If the deployment configures
+its embedder solely via YAML `rag.embedder`, the embedder is encapsulated
+inside `makeRag()` and is not surfaced for context-building — constrained
+subagents will then fall back to empty context.
+
+Workaround: inject the embedder via `SmartServerConfig.embedder` in
+addition to (or instead of) the YAML `rag.embedder`. The programmatic
+`SmartAgentBuilder.withEmbedder(...)` path always works correctly.
 
 ### Building a multi-agent SmartAgent
 

@@ -69,6 +69,8 @@ export class SubAgentHandler implements IStageHandler {
         task,
         sessionId: ctx.sessionId,
         signal,
+        // Increments from current pipeline layer, matching SubAgentDispatch convention.
+        layer: (ctx.layer ?? 0) + 1,
       });
     } catch (err) {
       ctx.error = new OrchestratorError(

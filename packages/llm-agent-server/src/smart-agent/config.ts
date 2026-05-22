@@ -4,7 +4,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ISubAgentContextBuilder } from '@mcp-abap-adt/llm-agent';
 import {
   AutoActivation,
   ExplicitActivation,
@@ -30,6 +30,7 @@ export interface YamlCoordinator {
   maxSteps?: number;
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
+  maxLayer?: number;
 }
 
 export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
@@ -50,10 +51,14 @@ export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
   }
 }
 
-export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
+export function resolveCoordinatorDispatch(
+  name: string,
+  fallbackLlm?: ILlm,
+  contextBuilder?: ISubAgentContextBuilder,
+) {
   switch (name) {
     case 'subagent':
-      return new SubAgentDispatch();
+      return new SubAgentDispatch(contextBuilder);
     case 'self':
       if (!fallbackLlm) {
         throw new Error(
@@ -68,7 +73,7 @@ export function resolveCoordinatorDispatch(name: string, fallbackLlm?: ILlm) {
         );
       }
       return new HybridDispatch(
-        new SubAgentDispatch(),
+        new SubAgentDispatch(contextBuilder),
         new SelfDispatch(fallbackLlm),
       );
     default:
@@ -274,6 +279,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 #   maxSteps: 12
 #   maxRetriesPerStep: 1
 #   failPolicy: abort                 # abort | continue
+#   maxLayer: 1                       # Max nested-dispatch depth (default 1)
 `;
 
 export function resolveEnvVars(

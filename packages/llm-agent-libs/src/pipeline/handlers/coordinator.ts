@@ -33,10 +33,32 @@ export interface CoordinatorHandlerDeps {
   maxSteps: number;
   maxRetriesPerStep: number;
   failPolicy: 'abort' | 'continue';
+  /** Maximum dispatch depth. Default 1. */
+  maxLayer: number;
 }
 
 export class CoordinatorHandler implements IStageHandler {
   constructor(private readonly deps: CoordinatorHandlerDeps) {}
+
+  private validatePlan(
+    plan: Plan,
+    layer: number,
+    registry: SubAgentRegistry,
+    maxLayer: number,
+  ): string | undefined {
+    if (layer >= maxLayer) {
+      return `Coordinator at layer ${layer} cannot dispatch (maxLayer=${maxLayer}).`;
+    }
+    for (const step of plan.steps) {
+      if (!step.agent) continue;
+      const sub = registry.get(step.agent);
+      if (!sub) continue;
+      if (layer >= 1 && sub.capabilities.kind === 'autonomous') {
+        return `Step '${step.id}' targets autonomous subagent '${step.agent}' but layer ${layer} only allows constrained subagents.`;
+      }
+    }
+    return undefined;
+  }
 
   async execute(
     ctx: PipelineContext,
@@ -58,6 +80,7 @@ export class CoordinatorHandler implements IStageHandler {
       stepResults: {},
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
+      layer: ctx.layer ?? 0,
     };
 
     let plan: Plan;
@@ -70,6 +93,22 @@ export class CoordinatorHandler implements IStageHandler {
     coordCtx.plan = plan;
     ctx.plan = plan;
     ctx.stepResults = coordCtx.stepResults;
+
+    // Validate plan against layer rules BEFORE executing any step.
+    const validationError = this.validatePlan(
+      plan,
+      ctx.layer ?? 0,
+      registry,
+      this.deps.maxLayer,
+    );
+    if (validationError) {
+      ctx.error = new OrchestratorError(
+        validationError,
+        'COORDINATOR_LAYER_VIOLATION',
+      );
+      return false;
+    }
+
     ctx.options?.sessionLogger?.logStep('coordinator_plan', {
       stepCount: plan.steps.length,
       source: plan.source,
@@ -93,6 +132,8 @@ export class CoordinatorHandler implements IStageHandler {
       for (let attempt = 0; attempt <= this.deps.maxRetriesPerStep; attempt++) {
         result = await this.deps.dispatch.dispatch(step, coordCtx);
         if (result.ok) break;
+        // Epicfail is terminal — never retry it.
+        if (result.epicFailTrace) break;
       }
       if (!result) {
         ctx.error = new OrchestratorError(
@@ -110,6 +151,15 @@ export class CoordinatorHandler implements IStageHandler {
         outputLength: result.output.length,
         error: result.error,
       });
+
+      // Epicfail short-circuits the entire plan, regardless of failPolicy.
+      if (result.epicFailTrace) {
+        ctx.error = new OrchestratorError(
+          `coordinator: step ${step.id} returned epicfail: ${result.error ?? 'unknown'}`,
+          'COORDINATOR_EPICFAIL',
+        );
+        return false;
+      }
 
       if (!result.ok) {
         if (this.deps.planning.shouldReplan(coordCtx, result)) {

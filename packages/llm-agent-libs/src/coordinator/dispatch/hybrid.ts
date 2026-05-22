@@ -22,8 +22,11 @@ export class HybridDispatch implements IDispatchStrategy {
     ctx: ICoordinatorContext,
   ): Promise<StepResult> {
     const needsFallback = !step.agent || !ctx.registry.has(step.agent);
-    return needsFallback
-      ? this.fallback.dispatch(step, ctx)
-      : this.primary.dispatch(step, ctx);
+    if (needsFallback) return this.fallback.dispatch(step, ctx);
+    // Epicfail from primary is terminal — never fall through to fallback.
+    // The shape itself (epicFailTrace marker on StepResult) is sufficient;
+    // since we only invoke primary here (no chained on-failure fallback),
+    // the result — including any epicfail — propagates unchanged.
+    return this.primary.dispatch(step, ctx);
   }
 }

@@ -6,10 +6,6 @@ import type {
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
 
-/**
- * Execute the step via the agent's own LLM (no subagent dispatched).
- * Useful when the registry is empty but the planner has produced steps.
- */
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
 

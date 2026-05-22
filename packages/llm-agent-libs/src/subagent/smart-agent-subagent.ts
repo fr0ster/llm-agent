@@ -3,11 +3,17 @@ import type {
   ISubAgentInput,
   ISubAgentResult,
   LlmToolCall,
+  SubAgentCapabilities,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
+  public readonly capabilities: SubAgentCapabilities = {
+    kind: 'autonomous',
+    canDispatchChildren: true,
+    contextPolicy: 'optional',
+  };
 
   constructor(
     public readonly name: string,
@@ -18,9 +24,14 @@ export class SmartAgentSubAgent implements ISubAgent {
   }
 
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
-    const res = await this.agent.process(input.task, {
+    const prompt =
+      input.context && input.context.length > 0
+        ? `${input.context}\n\n${input.task}`
+        : input.task;
+    const res = await this.agent.process(prompt, {
       sessionId: input.sessionId,
       signal: input.signal,
+      layer: input.layer,
     });
 
     if (!res.ok) {
@@ -29,7 +40,6 @@ export class SmartAgentSubAgent implements ISubAgent {
 
     const { content, toolCalls, usage } = res.value;
 
-    // Map SmartAgentResponse toolCalls (OpenAI wire format) → LlmToolCall[]
     const mappedToolCalls: LlmToolCall[] | undefined = toolCalls?.map((tc) => ({
       id: tc.id,
       name: tc.function.name,

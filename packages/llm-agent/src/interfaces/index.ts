@@ -14,6 +14,7 @@ export type {
 } from './builder.js';
 export type { ISubpromptClassifier } from './classifier.js';
 export type {
+  EpicFailTrace,
   IActivationStrategy,
   ICoordinatorConfig,
   ICoordinatorContext,
@@ -115,8 +116,15 @@ export type {
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
+  SubAgentCapabilities,
+  SubAgentKind,
   SubAgentRegistry,
 } from './subagent.js';
+export type {
+  ISubAgentContextBuilder,
+  SubAgentContextRequest,
+  SubAgentContextResult,
+} from './subagent-context.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
   AgentConfig,
