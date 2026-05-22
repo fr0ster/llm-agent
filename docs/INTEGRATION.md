@@ -2406,6 +2406,39 @@ class RemoteAnalystSubAgent implements ISubAgent {
 }
 ```
 
+### Subagent briefing
+
+When the Coordinator dispatches a step, it now sends a structured
+`briefing` alongside the `task` string. The briefing is built from
+`ICoordinatorContext` and contains:
+
+- `goal` — the original user input (the higher-level "why").
+- `known[]` — distilled outputs of successful prior steps.
+- `tried[]` — failed prior steps and successful-but-empty steps. The
+  subagent must NOT retry these approaches.
+- `constraints[]` — optional hard constraints.
+- `artifacts[]` — optional `{ ref, summary }` pointers.
+
+`SmartAgentSubAgent` renders the briefing into a canonical preamble before
+calling `SmartAgent.process()`:
+
+```
+Goal: <inputText>
+
+Known so far:
+- <stepId> (<stepGoal>): <truncated output>
+
+Already tried (do not repeat these approaches):
+- <stepId> (<stepGoal>) — failed: <error>
+
+Task: <step.goal or step.inputTemplate render>
+```
+
+Custom `ISubAgent` implementations receive the briefing in
+`ISubAgentInput.briefing` and may format it differently or pass through
+sections selectively. The shape is stable; consumers should ignore
+unknown future fields.
+
 ### Building a multi-agent SmartAgent
 
 Two patterns are supported depending on whether you prefer inline composition or explicit registry

@@ -7,6 +7,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
+## [Unreleased]
+
+### Added
+- Coordinator now passes a structured `briefing` to subagents containing the original goal, distilled successful step outputs (`known`), and a list of failed/empty-output prior steps (`tried`). Subagents see "Already tried" lines explicitly and avoid repeating dead-ends.
+- `IBriefing` and `IBriefingArtifact` interfaces exported from `@mcp-abap-adt/llm-agent`.
+- `formatBriefing(task, briefing?)` and `buildBriefingFromContext(step, ctx)` helpers exported from `@mcp-abap-adt/llm-agent-libs`.
+
+### Changed
+- `SelfDispatch` now uses the same `formatBriefing` formatter as the subagent path; the user message format changed from `Current step: …\nResults so far: …` to the canonical `Goal/Known/Tried/Task` shape.
+
+---
+
 ## [12.1.1] — 2026-05-20
 
 ### Security
