@@ -44,7 +44,6 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
-export { buildBriefingFromContext } from './coordinator/briefing.js';
 // ---------------------------------------------------------------------------
 // Coordinator strategies
 // ---------------------------------------------------------------------------
@@ -158,7 +157,6 @@ export {
   CodexSkillManager,
   FileSystemSkillManager,
 } from './skills/index.js';
-export { formatBriefing } from './subagent/format-briefing.js';
 // ---------------------------------------------------------------------------
 // SubAgent adapters
 // ---------------------------------------------------------------------------

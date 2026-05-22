@@ -5,17 +5,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { formatBriefing } from '../../subagent/format-briefing.js';
-import { buildBriefingFromContext } from '../briefing.js';
 
-/**
- * Execute the step via the agent's own LLM (no subagent dispatched).
- * Useful when the registry is empty but the planner has produced steps.
- *
- * Uses the same `formatBriefing` formatter as `SmartAgentSubAgent` so the
- * structure (Goal/Known/Tried/Constraints/Task) is identical between
- * self-dispatched and subagent-dispatched steps.
- */
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
 
@@ -32,8 +22,11 @@ export class SelfDispatch implements IDispatchStrategy {
       this.systemPrompt ??
       ctx.systemPrompt ??
       'You are an autonomous agent. Complete the user-assigned step concisely.';
-    const briefing = buildBriefingFromContext(step, ctx);
-    const userMsg = formatBriefing(step.goal, briefing);
+    const priorBlock =
+      Object.values(ctx.stepResults)
+        .map((r) => `- ${r.stepId}: ${r.output.slice(0, 300)}`)
+        .join('\n') || '(none)';
+    const userMsg = `Current step: ${step.goal}\n\nResults so far:\n${priorBlock}`;
 
     const started = Date.now();
     try {

@@ -5,13 +5,7 @@ import type {
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
 import { resolveTemplate } from '../../util/template.js';
-import { buildBriefingFromContext } from '../briefing.js';
 
-/**
- * Dispatch the step to a named subagent from the registry.
- * If step.agent is unset or absent from registry, returns ok=false StepResult —
- * chain with HybridDispatch for fallback behavior.
- */
 export class SubAgentDispatch implements IDispatchStrategy {
   readonly name = 'subagent';
 
@@ -50,13 +44,11 @@ export class SubAgentDispatch implements IDispatchStrategy {
     const task = step.inputTemplate
       ? resolveTemplate(step.inputTemplate, renderCtx)
       : step.goal;
-    const briefing = buildBriefingFromContext(step, ctx);
 
     const started = Date.now();
     try {
       const res = await sub.run({
         task,
-        briefing,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
       });
