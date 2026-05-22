@@ -20,7 +20,7 @@ import { resolveTemplate } from '../../util/template.js';
 export class SubAgentDispatch implements IDispatchStrategy {
   readonly name = 'subagent';
 
-  constructor(private readonly contextBuilder?: ISubAgentContextBuilder) {}
+  constructor(public readonly contextBuilder?: ISubAgentContextBuilder) {}
 
   async dispatch(
     step: PlanStep,
