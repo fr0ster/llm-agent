@@ -394,6 +394,55 @@ function checkLlmRole(
   // ollama: no credential check.
 }
 
+function checkRagStore(
+  label: string,
+  store:
+    | {
+        type?: unknown;
+        url?: unknown;
+        collectionName?: unknown;
+        embedder?: unknown;
+      }
+    | undefined,
+  issues: string[],
+): void {
+  if (!store) return;
+  const ragType = store.type as string | undefined;
+  if (!ragType) {
+    issues.push(
+      `${label}.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+    );
+  } else if (ragType === 'ollama' || ragType === 'openai') {
+    issues.push(
+      `${label}.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
+    );
+  } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
+    issues.push(
+      `${label}.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+    );
+  } else {
+    if (ragType === 'qdrant' && !store.url) {
+      issues.push(`${label}.url: required for ${label}.type qdrant`);
+    }
+    if (
+      (ragType === 'hana-vector' || ragType === 'pg-vector') &&
+      !store.collectionName
+    ) {
+      issues.push(
+        `${label}.collectionName: required for ${label}.type ${ragType}`,
+      );
+    }
+  }
+  // Blocklist (NOT allowlist): consumers can register custom embedder
+  // factories, so only known embedder-less providers are hard-rejected here.
+  const embedder = store.embedder as string | undefined;
+  if (embedder === 'deepseek' || embedder === 'anthropic') {
+    issues.push(
+      `${label}.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+    );
+  }
+}
+
 function validateResolvedConfig(
   resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
@@ -452,38 +501,14 @@ function validateResolvedConfig(
   }
 
   if (get(yaml, 'rag')) {
-    const ragType = get(yaml, 'rag', 'type') as string | undefined;
-    if (!ragType) {
-      issues.push(
-        'rag.type: required when a rag: block is present (one of: in-memory, qdrant, hana-vector, pg-vector)',
-      );
-    } else if (ragType === 'ollama' || ragType === 'openai') {
-      issues.push(
-        `rag.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
-      );
-    } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
-      issues.push(
-        `rag.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
-      );
-    } else {
-      if (ragType === 'qdrant' && !get(yaml, 'rag', 'url')) {
-        issues.push('rag.url: required for rag.type qdrant');
-      }
-      if (
-        (ragType === 'hana-vector' || ragType === 'pg-vector') &&
-        !get(yaml, 'rag', 'collectionName')
-      ) {
-        issues.push(`rag.collectionName: required for rag.type ${ragType}`);
-      }
-    }
-    // Blocklist (NOT allowlist): consumers can register custom embedder
-    // factories, so only known embedder-less providers are hard-rejected here.
-    // deepseek/anthropic are LLM providers with no embedding endpoint.
-    const embedder = get(yaml, 'rag', 'embedder') as string | undefined;
-    if (embedder === 'deepseek' || embedder === 'anthropic') {
-      issues.push(
-        `rag.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
-      );
+    checkRagStore('rag', get(yaml, 'rag') as Record<string, unknown>, issues);
+  }
+  const pipelineRag = get(yaml, 'pipeline', 'rag') as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  if (pipelineRag) {
+    for (const [name, store] of Object.entries(pipelineRag)) {
+      checkRagStore(`pipeline.rag.${name}`, store, issues);
     }
   }
 

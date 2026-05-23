@@ -33,6 +33,8 @@
  *   port: 4004
  *   llm:
  *     provider: deepseek
+ *     apiKey: ${DEEPSEEK_API_KEY}
+ *     model: deepseek-chat
  *   rag:
  *     type: in-memory
  *     embedder: ollama

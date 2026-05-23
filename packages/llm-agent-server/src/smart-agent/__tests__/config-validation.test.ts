@@ -253,6 +253,60 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
+  it('pipeline.rag store with type ollama is rejected with path + hint', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            pipeline: {
+              llm: {
+                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+              },
+              rag: { tools: { type: 'ollama' } },
+            },
+          },
+          {},
+        ),
+      /pipeline\.rag\.tools\.type.*embedder, not a store/i,
+    );
+  });
+
+  it('pipeline.rag qdrant store without url is rejected with path', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            pipeline: {
+              llm: {
+                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+              },
+              rag: { tools: { type: 'qdrant' } },
+            },
+          },
+          {},
+        ),
+      /pipeline\.rag\.tools\.url.*required/i,
+    );
+  });
+
+  it('accepts a valid pipeline.rag store', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        pipeline: {
+          llm: {
+            main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+          },
+          rag: { tools: { type: 'in-memory' } },
+        },
+      },
+      {},
+    );
+    assert.ok(cfg);
+  });
+
   it('accepts a valid pipeline schema config', () => {
     const cfg = resolveSmartServerConfig(
       {},
