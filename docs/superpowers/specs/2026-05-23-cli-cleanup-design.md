@@ -67,7 +67,7 @@ Removing the silent fallback does NOT make every listed field universally requir
 | `llm.apiKey` (or `pipeline.llm.main.apiKey`) | Provider is `openai`/`anthropic`/`deepseek` | Provider is `sap-ai-sdk` (uses `AICORE_SERVICE_KEY`) or `ollama` (key ignored by the local server) |
 | `llm.model` (or `pipeline.llm.main.model`) | Always (agent must know which model) | — |
 | `provider` (`llm.provider` flat OR `pipeline.llm.main.provider`) | **Always required** — both schemas. The flat path no longer silently defaults to `deepseek`; an absent provider is a startup error. | — |
-| `llm.url` (flat) / `pipeline.llm.main.baseURL` | Provider is `ollama` and the server is not on the default `http://localhost:11434` | `ollama` on default host, or providers with a built-in baseURL (`openai`/`anthropic`/`deepseek`/`sap-ai-sdk`) |
+| `llm.url` (flat) / `pipeline.llm.main.baseURL` | Never required — the validator cannot know where a user's Ollama server runs, only whether the field is set | Always optional. Absent → the provider's built-in default baseURL (`ollama` → `http://localhost:11434/v1`; other providers → their own SDK default). |
 | `mcp.type` | `mcp:` block is present in YAML | `mcp:` is omitted / `mcp.type: none` (MCP disabled — valid startup) |
 | `mcp.url` | `mcp.type: http` | Other `mcp.type` values (stdio, none) |
 | `mcp.command` | `mcp.type: stdio` | Other `mcp.type` values |
@@ -142,6 +142,11 @@ export class OllamaProvider extends OpenAIProvider {
 - `package.json` deps: `@mcp-abap-adt/openai-llm` (same as `deepseek-llm`). Version line with the rest (`14.0.0` at merge; bumped in the release PR).
 - Bundled as a regular dependency of `@mcp-abap-adt/llm-agent-server` (same rationale as v13.1.0 — global install works out-of-the-box). At `llm-agent-libs` level it stays an optional peer loaded via dynamic `import()`, exactly like the others.
 
+**Monorepo wiring (mirror the other provider packages exactly — easy to miss):**
+- `packages/llm-agent-libs/package.json`: add `@mcp-abap-adt/ollama-llm` to **`peerDependencies`**, to **`peerDependenciesMeta`** (`{ optional: true }`), AND to **`devDependencies`** (so `makeLlm`'s dynamic `import()` types resolve during local dev/typecheck). Today these three lists carry openai/anthropic/deepseek/sap-aicore (`package.json:42-67`); ollama must join all three.
+- Root `package.json` `build` AND `clean` scripts (`package.json:10-11`) manually enumerate every package passed to `tsc -b`. Add `packages/ollama-llm` to both lists, positioned **after `packages/openai-llm`** (it imports from it) and **before `packages/llm-agent-libs`** (which consumes it). Without this the new package is never compiled by the root build.
+- TypeScript project references: `packages/ollama-llm/tsconfig.json` references `../llm-agent` + `../openai-llm` (exactly as `deepseek-llm/tsconfig.json` does); `packages/llm-agent-libs/tsconfig.json` adds `{ "path": "../ollama-llm" }` to its `references` array (which already lists the other four providers).
+
 **`providers.ts` wiring:**
 - Add `'ollama'` to the `MakeLlmConfig.provider` union and to `pipeline.ts`'s provider union.
 - Add a `loadOllamaProvider()` dynamic-import loader mirroring `loadDeepSeekProvider()`, throwing `MissingProviderError('@mcp-abap-adt/ollama-llm', 'ollama')` if absent.
@@ -151,7 +156,7 @@ export class OllamaProvider extends OpenAIProvider {
 - `smart-server.ts` flat path stops hardcoding `makeDefaultLlm` (deepseek). It reads the resolved `llm.provider` (now required) and `llm.url`, and calls `makeLlm({ provider, apiKey, model, baseURL: url }, temperature)`.
 - `makeDefaultLlm` may stay as a thin helper but is no longer the implicit flat-path default; if kept it's only an explicit convenience, never a silent fallback.
 
-**Validation:** provider enum becomes `openai|anthropic|deepseek|sap-ai-sdk|ollama`. `apiKey` is NOT required for `ollama` (Rule 2). `llm.url` optional for ollama only when the server is on the default host.
+**Validation:** provider enum becomes `openai|anthropic|deepseek|sap-ai-sdk|ollama`. `apiKey` is NOT required for `ollama` (Rule 2). `llm.url` is always optional; absent → the provider default `http://localhost:11434/v1`.
 
 **`examples/docker-ollama` fix:** now loads correctly through the flat path (`provider: ollama` + `url` + `model`, no apiKey). `npm run dev:ollama` works. README stays accurate.
 
@@ -349,6 +354,9 @@ CLI surface change is breaking. Batched into v15.0.0 alongside #135/#136/#137. T
 | Flat `llm:` path provider/url | `packages/llm-agent-server/src/smart-agent/smart-server.ts` (flat-path branches ~363/378/799) | Stop hardcoding `makeDefaultLlm` (deepseek). Read resolved `llm.provider` (required) + `llm.url`, call `makeLlm`. |
 | **New package** `@mcp-abap-adt/ollama-llm` | `packages/ollama-llm/` | Thin `OllamaProvider extends OpenAIProvider` (clone of `deepseek-llm`). Default `baseURL` `http://localhost:11434/v1`, placeholder `apiKey`. |
 | Provider resolution | `packages/llm-agent-libs/src/providers.ts` + `packages/llm-agent-server/src/smart-agent/pipeline.ts` | Add `'ollama'` to provider union, `loadOllamaProvider()` loader, `case 'ollama'` in `makeLlm` switch. |
+| libs provider contract | `packages/llm-agent-libs/package.json` | Add `@mcp-abap-adt/ollama-llm` to `peerDependencies`, `peerDependenciesMeta` (optional), AND `devDependencies` — all three, mirroring the other four providers (`:42-67`). |
+| Root build/clean | `package.json:10-11` | Add `packages/ollama-llm` to both `tsc -b` lists, after `openai-llm`, before `llm-agent-libs`. |
+| TS project refs | `packages/ollama-llm/tsconfig.json` (new) + `packages/llm-agent-libs/tsconfig.json` | New tsconfig refs `../llm-agent` + `../openai-llm`; libs tsconfig adds `../ollama-llm`. |
 | Server bundling | `packages/llm-agent-server/package.json` | Add `@mcp-abap-adt/ollama-llm` as a regular dependency (out-of-the-box global install). |
 | Provider credential validation | `packages/llm-agent-server/src/smart-agent/config.ts` (post-load checks) | Add provider-specific required-field checks (apiKey for openai/anthropic/deepseek; AICORE_SERVICE_KEY for sap-ai-sdk; none for ollama). |
 | YAML validation error formatter | same file (`loadYamlConfig` + neighbors) | Convert raw validation errors into the human-readable batched-report format. |
