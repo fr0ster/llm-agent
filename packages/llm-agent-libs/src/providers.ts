@@ -20,7 +20,7 @@ import { NonStreamingLlm } from './adapters/non-streaming-llm.js';
 // ---------------------------------------------------------------------------
 
 export interface MakeLlmConfig {
-  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
+  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   apiKey?: string;
   /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
   baseURL?: string;
@@ -89,6 +89,28 @@ async function loadDeepSeek() {
   } catch (err) {
     if (isMissingOptionalPeer(err, pkg))
       throw new MissingProviderError(pkg, 'deepseek');
+    throw err;
+  }
+}
+
+async function loadOllama() {
+  const pkg = '@mcp-abap-adt/ollama-llm';
+  try {
+    const mod = await import(pkg);
+    return mod.OllamaProvider as new (opts: {
+      apiKey?: string;
+      baseURL?: string;
+      model?: string;
+      temperature?: number;
+      maxTokens?: number;
+    }) => {
+      model: string;
+      getModels?: () => Promise<string[]>;
+      getEmbeddingModels?: () => Promise<string[]>;
+    } & import('@mcp-abap-adt/llm-agent').LLMProvider;
+  } catch (err) {
+    if (isMissingOptionalPeer(err, pkg))
+      throw new MissingProviderError(pkg, 'ollama');
     throw err;
   }
 }
@@ -164,6 +186,23 @@ export async function makeLlm(
     case 'deepseek': {
       const DeepSeekProvider = await loadDeepSeek();
       const provider = new DeepSeekProvider({
+        apiKey: cfg.apiKey,
+        baseURL: cfg.baseURL,
+        model: cfg.model,
+        temperature,
+        maxTokens,
+      });
+      llm = new LlmAdapter(new LlmProviderBridge(provider), {
+        model: provider.model,
+        getModels: () => provider.getModels?.() ?? Promise.resolve([]),
+        getEmbeddingModels: () =>
+          provider.getEmbeddingModels?.() ?? Promise.resolve([]),
+      });
+      break;
+    }
+    case 'ollama': {
+      const OllamaProvider = await loadOllama();
+      const provider = new OllamaProvider({
         apiKey: cfg.apiKey,
         baseURL: cfg.baseURL,
         model: cfg.model,

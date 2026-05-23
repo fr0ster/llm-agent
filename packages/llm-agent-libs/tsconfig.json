@@ -14,6 +14,7 @@
     { "path": "../openai-llm" },
     { "path": "../anthropic-llm" },
     { "path": "../deepseek-llm" },
+    { "path": "../ollama-llm" },
     { "path": "../sap-aicore-llm" }
   ]
 }

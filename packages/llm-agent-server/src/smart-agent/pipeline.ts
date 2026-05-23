@@ -12,7 +12,7 @@ import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 // ---------------------------------------------------------------------------
 
 export interface PipelineLlmProviderConfig {
-  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
+  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   /** API key. Required for openai/anthropic/deepseek; optional for sap-ai-sdk. */
   apiKey?: string;
   /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
