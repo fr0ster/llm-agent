@@ -11,16 +11,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ---
 
-## [13.2.0] — 2026-05-23
+## [14.0.0] — 2026-05-23
 
-### Removed
-- `ISkillMeta.allowedTools` and the `allowed-tools` frontmatter mapping in `ClaudeSkillManager`. The field was never enforced at runtime, was incorrectly borrowed from Claude Code's subagent format (subagents are a different abstraction from skills), and the project's real skills never used it. Skill authors who want to recommend specific MCP tools should mention them in the SKILL.md body — the LLM reads the prose, sees the recommendation, and selects from the full MCP catalog.
+### Breaking changes
+- **`ISkillMeta.allowedTools` removed** along with the `allowed-tools` frontmatter mapping in `ClaudeSkillManager`. The field was never enforced at runtime, was incorrectly borrowed from Claude Code's subagent format (subagents are a different abstraction from skills), and the project's real skills never used it. Custom `ISkill` implementations that declared `allowedTools` will get a TypeScript compile error on upgrade — delete the declaration; runtime behavior is unchanged (the field was never read by any handler).
 
-### Note for downstream TypeScript consumers
-- If you have a custom `ISkill` implementation that declares `allowedTools`, delete that declaration. Runtime behavior is unchanged (the field was never read by any handler).
+  Skill authors who want to recommend specific MCP tools should mention them in the SKILL.md body — the LLM reads the prose, sees the recommendation, and selects from the full MCP catalog. Tool authorization (read-only, sandbox, per-tenant restrictions) is a separate MCP-transport-layer concern, not a skill concern.
 
 ### Documentation
-- Removed `allowed-tools` from skill examples in `docs/EXAMPLES.md` and `docs/ARCHITECTURE.md`; removed the field reference row from the EXAMPLES.md frontmatter-fields table.
+- Removed `allowed-tools` from skill examples in `docs/EXAMPLES.md` and `docs/ARCHITECTURE.md` and from the commented sample in `docs/examples/11-skills.yaml`. Removed the field reference row from the EXAMPLES.md frontmatter-fields table.
 
 ---
 
