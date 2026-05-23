@@ -160,7 +160,7 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('rag.type ollama requires url and model', () => {
+  it('rag.type ollama is rejected with a migration hint', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
@@ -168,7 +168,88 @@ describe('config validation — fail loud, human-readable', () => {
           { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'ollama' } },
           {},
         ),
-      /rag\.(url|model).*required/i,
+      /rag\.type.*embedder, not a store/i,
+    );
+  });
+
+  it('rag.type qdrant requires url', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'qdrant' } },
+          {},
+        ),
+      /rag\.url.*required.*qdrant/i,
+    );
+  });
+
+  it('rag.type in-memory needs nothing', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {},
+    );
+    assert.equal(cfg.rag?.type, 'in-memory');
+  });
+
+  it('rag.embedder deepseek is rejected (no embedder)', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { type: 'in-memory', embedder: 'deepseek' },
+          },
+          {},
+        ),
+      /rag\.embedder.*no embedder/i,
+    );
+  });
+
+  it('rag.type hana-vector requires collectionName', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { type: 'hana-vector' },
+          },
+          {},
+        ),
+      /rag\.collectionName.*required.*hana-vector/i,
+    );
+  });
+
+  it('rag.type pg-vector requires collectionName', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { type: 'pg-vector' },
+          },
+          {},
+        ),
+      /rag\.collectionName.*required.*pg-vector/i,
+    );
+  });
+
+  it('rag.embedder anthropic is rejected (no embedder)', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { type: 'in-memory', embedder: 'anthropic' },
+          },
+          {},
+        ),
+      /rag\.embedder.*no embedder/i,
     );
   });
 

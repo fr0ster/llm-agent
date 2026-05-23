@@ -104,6 +104,13 @@ const VALID_PROVIDERS = [
   'ollama',
 ] as const;
 
+const VALID_RAG_TYPES = [
+  'in-memory',
+  'qdrant',
+  'hana-vector',
+  'pg-vector',
+] as const;
+
 export class ConfigValidationError extends Error {
   constructor(issues: string[]) {
     super(
@@ -159,8 +166,8 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory | qdrant | hana-vector | pg-vector
-  # embedder: ollama                  # Embedder to use: ollama | openai | sap-ai-core | <custom>
+  type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
+  embedder: ollama                    # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
   # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
@@ -447,14 +454,36 @@ function validateResolvedConfig(
   if (get(yaml, 'rag')) {
     const ragType = get(yaml, 'rag', 'type') as string | undefined;
     if (!ragType) {
-      issues.push('rag.type: required when a rag: block is present');
-    } else if (ragType === 'ollama') {
-      if (!get(yaml, 'rag', 'url')) {
-        issues.push('rag.url: required for rag.type ollama');
+      issues.push(
+        'rag.type: required when a rag: block is present (one of: in-memory, qdrant, hana-vector, pg-vector)',
+      );
+    } else if (ragType === 'ollama' || ragType === 'openai') {
+      issues.push(
+        `rag.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
+      );
+    } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
+      issues.push(
+        `rag.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+      );
+    } else {
+      if (ragType === 'qdrant' && !get(yaml, 'rag', 'url')) {
+        issues.push('rag.url: required for rag.type qdrant');
       }
-      if (!get(yaml, 'rag', 'model')) {
-        issues.push('rag.model: required for rag.type ollama');
+      if (
+        (ragType === 'hana-vector' || ragType === 'pg-vector') &&
+        !get(yaml, 'rag', 'collectionName')
+      ) {
+        issues.push(`rag.collectionName: required for rag.type ${ragType}`);
       }
+    }
+    // Blocklist (NOT allowlist): consumers can register custom embedder
+    // factories, so only known embedder-less providers are hard-rejected here.
+    // deepseek/anthropic are LLM providers with no embedding endpoint.
+    const embedder = get(yaml, 'rag', 'embedder') as string | undefined;
+    if (embedder === 'deepseek' || embedder === 'anthropic') {
+      issues.push(
+        `rag.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+      );
     }
   }
 
@@ -629,7 +658,6 @@ export function resolveSmartServerConfig(
     rag: get(yaml, 'rag')
       ? {
           type: get(yaml, 'rag', 'type') as
-            | 'ollama'
             | 'in-memory'
             | 'qdrant'
             | 'hana-vector'

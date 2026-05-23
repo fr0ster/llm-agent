@@ -73,17 +73,11 @@ export interface SmartServerLlmConfig {
 }
 
 export interface SmartServerRagConfig {
-  type?:
-    | 'ollama'
-    | 'openai'
-    | 'in-memory'
-    | 'qdrant'
-    | 'hana-vector'
-    | 'pg-vector';
+  type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
   /**
    * Embedder name — resolved from the embedder factory registry.
-   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
-   * When omitted, defaults to 'ollama'.
+   * Built-in: 'ollama', 'openai', 'sap-ai-core'. Consumers can register custom factories.
+   * When omitted, defaults to 'ollama' for stores that require one.
    */
   embedder?: string;
   url?: string;

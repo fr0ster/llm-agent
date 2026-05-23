@@ -254,9 +254,7 @@ const config: SmartServerConfig = {
   const embedderNames = new Set<string>();
   const pushEmbedderFor = (cfg: { type?: string; embedder?: string }): void => {
     if (cfg.type && cfg.type !== 'in-memory') {
-      embedderNames.add(
-        cfg.embedder ?? (cfg.type === 'openai' ? 'openai' : 'ollama'),
-      );
+      embedderNames.add(cfg.embedder ?? 'ollama');
     } else if (cfg.embedder) {
       // in-memory + explicit embedder upgrades to VectorRag — still needs the peer
       embedderNames.add(cfg.embedder);
