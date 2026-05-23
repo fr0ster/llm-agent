@@ -43,6 +43,9 @@ docs/examples/**/*.d.ts.map
 # Root-level YAML configs (local test configs, not part of the package)
 /*.yaml
 
+# Generated server config template (first-run / tests)
+/packages/**/smart-server.yaml
+
 # OS
 .DS_Store
 Thumbs.db

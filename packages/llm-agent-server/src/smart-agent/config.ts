@@ -96,6 +96,32 @@ export function resolveCoordinatorActivation(name: string) {
   }
 }
 
+const VALID_PROVIDERS = [
+  'openai',
+  'anthropic',
+  'deepseek',
+  'sap-ai-sdk',
+  'ollama',
+] as const;
+
+const VALID_RAG_TYPES = [
+  'in-memory',
+  'qdrant',
+  'hana-vector',
+  'pg-vector',
+] as const;
+
+export class ConfigValidationError extends Error {
+  constructor(issues: string[]) {
+    super(
+      `Configuration error in smart-server.yaml:\n${issues
+        .map((i) => `  - ${i}`)
+        .join('\n')}\nSet these fields in your YAML and restart.`,
+    );
+    this.name = 'ConfigValidationError';
+  }
+}
+
 export type YamlConfig = Record<string, unknown>;
 
 export interface ResolveConfigArgs {
@@ -133,14 +159,15 @@ host: 0.0.0.0
 mode: smart
 
 llm:
-  apiKey: \${DEEPSEEK_API_KEY}
+  provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
+  apiKey: \${DEEPSEEK_API_KEY}        # not required for ollama / sap-ai-sdk
   model: deepseek-chat
   temperature: 0.7
   classifierTemperature: 0.1
 
 rag:
-  type: ollama                        # ollama | in-memory | qdrant | hana-vector | pg-vector
-  # embedder: ollama                  # Embedder to use: ollama | openai | sap-ai-core | <custom>
+  type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
+  embedder: ollama                    # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
   model: nomic-embed-text
   # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
@@ -322,6 +349,172 @@ const get = (obj: unknown, ...keys: string[]): unknown =>
     return undefined;
   }, obj);
 
+function checkLlmRole(
+  label: string,
+  role: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  requireModel: boolean,
+  env: NodeJS.ProcessEnv,
+  issues: string[],
+): void {
+  const provider = role?.provider as string | undefined;
+  if (!provider) {
+    issues.push(
+      `${label}.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+    );
+    return;
+  }
+  // `as readonly string[]` is required so .includes() accepts an arbitrary
+  // string; do not "simplify" — it preserves the const-tuple narrowing.
+  if (!(VALID_PROVIDERS as readonly string[]).includes(provider)) {
+    issues.push(
+      `${label}.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+    );
+    return;
+  }
+  if (requireModel && !role?.model) {
+    issues.push(`${label}.model: required (string)`);
+  }
+  if (
+    provider === 'openai' ||
+    provider === 'anthropic' ||
+    provider === 'deepseek'
+  ) {
+    if (!role?.apiKey) {
+      issues.push(
+        `${provider} requires ${label}.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
+      );
+    }
+  } else if (provider === 'sap-ai-sdk') {
+    if (!env.AICORE_SERVICE_KEY) {
+      issues.push(
+        'sap-ai-sdk requires the AICORE_SERVICE_KEY env var to be set with the SAP AI Core service-key JSON content. None found.',
+      );
+    }
+  }
+  // ollama: no credential check.
+}
+
+function checkRagStore(
+  label: string,
+  store:
+    | {
+        type?: unknown;
+        url?: unknown;
+        collectionName?: unknown;
+        embedder?: unknown;
+      }
+    | undefined,
+  issues: string[],
+): void {
+  if (!store) return;
+  const ragType = store.type as string | undefined;
+  if (!ragType) {
+    issues.push(
+      `${label}.type: required (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+    );
+  } else if (ragType === 'ollama' || ragType === 'openai') {
+    issues.push(
+      `${label}.type: "${ragType}" is an embedder, not a store — use \`type: in-memory\` with \`embedder: ${ragType}\` (or a real store: qdrant, hana-vector, pg-vector)`,
+    );
+  } else if (!(VALID_RAG_TYPES as readonly string[]).includes(ragType)) {
+    issues.push(
+      `${label}.type: "${ragType}" is invalid (one of: in-memory, qdrant, hana-vector, pg-vector)`,
+    );
+  } else {
+    if (ragType === 'qdrant' && !store.url) {
+      issues.push(`${label}.url: required for ${label}.type qdrant`);
+    }
+    if (
+      (ragType === 'hana-vector' || ragType === 'pg-vector') &&
+      !store.collectionName
+    ) {
+      issues.push(
+        `${label}.collectionName: required for ${label}.type ${ragType}`,
+      );
+    }
+  }
+  // Blocklist (NOT allowlist): consumers can register custom embedder
+  // factories, so only known embedder-less providers are hard-rejected here.
+  const embedder = store.embedder as string | undefined;
+  if (embedder === 'deepseek' || embedder === 'anthropic') {
+    issues.push(
+      `${label}.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+    );
+  }
+}
+
+function validateResolvedConfig(
+  resolved: Omit<SmartServerConfig, 'log'>,
+  yaml: YamlConfig,
+  env: NodeJS.ProcessEnv,
+): void {
+  const issues: string[] = [];
+  const usingPipeline = !!get(yaml, 'pipeline', 'llm', 'main');
+
+  if (usingPipeline) {
+    const llmCfg = get(yaml, 'pipeline', 'llm') as
+      | Record<
+          string,
+          { provider?: unknown; apiKey?: unknown; model?: unknown }
+        >
+      | undefined;
+    checkLlmRole('pipeline.llm.main', llmCfg?.main, true, env, issues);
+    if (llmCfg?.classifier) {
+      checkLlmRole(
+        'pipeline.llm.classifier',
+        llmCfg.classifier,
+        false,
+        env,
+        issues,
+      );
+    }
+    if (llmCfg?.helper) {
+      checkLlmRole('pipeline.llm.helper', llmCfg.helper, false, env, issues);
+    }
+  } else {
+    checkLlmRole(
+      'llm',
+      {
+        provider: resolved.llm.provider,
+        apiKey: resolved.llm.apiKey,
+        model: resolved.llm.model,
+      },
+      true,
+      env,
+      issues,
+    );
+  }
+
+  if (get(yaml, 'mcp')) {
+    const mcpType = get(yaml, 'mcp', 'type') as string | undefined;
+    if (mcpType && !['http', 'stdio', 'none'].includes(mcpType)) {
+      issues.push(
+        `mcp.type: "${mcpType}" is invalid (one of: http, stdio, none)`,
+      );
+    }
+    if (mcpType === 'http' && !get(yaml, 'mcp', 'url')) {
+      issues.push('mcp.url: required when mcp.type is http');
+    }
+    if (mcpType === 'stdio' && !get(yaml, 'mcp', 'command')) {
+      issues.push('mcp.command: required when mcp.type is stdio');
+    }
+  }
+
+  if (get(yaml, 'rag')) {
+    checkRagStore('rag', get(yaml, 'rag') as Record<string, unknown>, issues);
+  }
+  const pipelineRag = get(yaml, 'pipeline', 'rag') as
+    | Record<string, Record<string, unknown>>
+    | undefined;
+  if (pipelineRag) {
+    for (const [name, store] of Object.entries(pipelineRag)) {
+      checkRagStore(`pipeline.rag.${name}`, store, issues);
+    }
+  }
+
+  if (issues.length > 0) throw new ConfigValidationError([...new Set(issues)]);
+}
+
 /**
  * Recursively parse the top-level `subagents:` block from a YAML config.
  *
@@ -443,110 +636,80 @@ export function resolveSmartServerConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
 ): Omit<SmartServerConfig, 'log'> {
-  const flatApiKey =
-    (args['llm-api-key'] as string) ??
-    get(yaml, 'llm', 'apiKey') ??
-    env.DEEPSEEK_API_KEY ??
-    '';
+  const flatApiKey = (get(yaml, 'llm', 'apiKey') as string) ?? '';
   const pipelineApiKey = get(yaml, 'pipeline', 'llm', 'main', 'apiKey') as
     | string
     | undefined;
   const apiKey = flatApiKey || pipelineApiKey || '';
-  if (!apiKey && !get(yaml, 'pipeline', 'llm', 'main'))
-    throw new Error('LLM API key is required');
 
-  const mcpUrl =
-    (args['mcp-url'] as string) ?? get(yaml, 'mcp', 'url') ?? env.MCP_ENDPOINT;
-  const mcpCommand =
-    (args['mcp-command'] as string) ??
-    get(yaml, 'mcp', 'command') ??
-    env.MCP_COMMAND;
+  const mcpUrl = get(yaml, 'mcp', 'url') as string | undefined;
+  const mcpCommand = get(yaml, 'mcp', 'command') as string | undefined;
   const mcpTypeRaw =
-    (args['mcp-type'] as string) ??
-    get(yaml, 'mcp', 'type') ??
+    (get(yaml, 'mcp', 'type') as string) ??
     (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null);
   const mcpType = (mcpTypeRaw === 'none' ? null : mcpTypeRaw) as
     | 'http'
     | 'stdio'
     | null;
 
-  const promptSystem =
-    (args['prompt-system'] as string) ??
-    get(yaml, 'prompts', 'system') ??
-    env.PROMPT_SYSTEM ??
-    null;
+  const promptSystem = (get(yaml, 'prompts', 'system') as string) ?? null;
   const promptClassifier =
-    (args['prompt-classifier'] as string) ??
-    get(yaml, 'prompts', 'classifier') ??
-    env.PROMPT_CLASSIFIER ??
-    null;
+    (get(yaml, 'prompts', 'classifier') as string) ?? null;
   const promptReasoning = get(yaml, 'prompts', 'reasoning') ?? null;
   const promptRagTranslate = get(yaml, 'prompts', 'ragTranslate') ?? null;
   const promptHistorySummary = get(yaml, 'prompts', 'historySummary') ?? null;
 
-  return {
+  const resolved: Omit<SmartServerConfig, 'log'> = {
     port: Number(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),
     host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
     llm: {
+      provider: get(yaml, 'llm', 'provider') as
+        | 'deepseek'
+        | 'openai'
+        | 'anthropic'
+        | 'sap-ai-sdk'
+        | 'ollama'
+        | undefined,
       apiKey,
-      model:
-        (args['llm-model'] as string) ??
-        get(yaml, 'llm', 'model') ??
-        env.DEEPSEEK_MODEL ??
-        'deepseek-chat',
-      temperature: Number(
-        (args['llm-temperature'] as string) ??
-          get(yaml, 'llm', 'temperature') ??
-          0.7,
-      ),
+      url: get(yaml, 'llm', 'url') as string | undefined,
+      model: get(yaml, 'llm', 'model') as string | undefined,
+      temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
       classifierTemperature: Number(
         get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
       ),
     },
-    rag: {
-      type: ((args['rag-type'] as string) ??
-        get(yaml, 'rag', 'type') ??
-        'ollama') as
-        | 'ollama'
-        | 'in-memory'
-        | 'qdrant'
-        | 'hana-vector'
-        | 'pg-vector',
-      embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
-      url:
-        (args['rag-url'] as string) ??
-        get(yaml, 'rag', 'url') ??
-        env.OLLAMA_URL ??
-        'http://localhost:11434',
-      model:
-        (args['rag-model'] as string) ??
-        get(yaml, 'rag', 'model') ??
-        env.OLLAMA_EMBED_MODEL ??
-        'nomic-embed-text',
-      collectionName:
-        (args['rag-collection-name'] as string) ??
-        get(yaml, 'rag', 'collectionName') ??
-        undefined,
-      dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
-      vectorWeight: Number(
-        args['rag-vector-weight'] ?? get(yaml, 'rag', 'vectorWeight') ?? 0.7,
-      ),
-      keywordWeight: Number(
-        args['rag-keyword-weight'] ?? get(yaml, 'rag', 'keywordWeight') ?? 0.3,
-      ),
-      ...(get(yaml, 'rag', 'resourceGroup') !== undefined
-        ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
-        : {}),
-      ...(get(yaml, 'rag', 'scenario') !== undefined
-        ? {
-            scenario: String(get(yaml, 'rag', 'scenario')) as
-              | 'orchestration'
-              | 'foundation-models',
-          }
-        : {}),
-    },
+    rag: get(yaml, 'rag')
+      ? {
+          type: get(yaml, 'rag', 'type') as
+            | 'in-memory'
+            | 'qdrant'
+            | 'hana-vector'
+            | 'pg-vector'
+            | undefined,
+          embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
+          url: get(yaml, 'rag', 'url') as string | undefined,
+          model: get(yaml, 'rag', 'model') as string | undefined,
+          collectionName:
+            (args['rag-collection-name'] as string) ??
+            get(yaml, 'rag', 'collectionName') ??
+            undefined,
+          dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
+          vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
+          keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
+          ...(get(yaml, 'rag', 'resourceGroup') !== undefined
+            ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
+            : {}),
+          ...(get(yaml, 'rag', 'scenario') !== undefined
+            ? {
+                scenario: String(get(yaml, 'rag', 'scenario')) as
+                  | 'orchestration'
+                  | 'foundation-models',
+              }
+            : {}),
+        }
+      : undefined,
     mcp: mcpType
       ? {
           type: mcpType,
@@ -702,10 +865,7 @@ export function resolveSmartServerConfig(
               : {}),
           }
         : undefined,
-    mode: ((args.mode as string) ??
-      get(yaml, 'mode') ??
-      env.SMART_AGENT_MODE ??
-      'hybrid') as SmartServerMode,
+    mode: (get(yaml, 'mode') as SmartServerMode) ?? undefined,
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
@@ -739,4 +899,6 @@ export function resolveSmartServerConfig(
         }
       : {}),
   };
+  validateResolvedConfig(resolved, yaml, env);
+  return resolved;
 }

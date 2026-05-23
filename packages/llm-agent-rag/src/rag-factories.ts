@@ -101,44 +101,6 @@ export const ragBackendNames = Object.freeze(
 ) as readonly string[];
 
 // ---------------------------------------------------------------------------
-// OllamaRag dynamic loader
-// ---------------------------------------------------------------------------
-
-function isMissingOptionalPeer(err: unknown, pkg: string): boolean {
-  if (!(err instanceof Error)) return false;
-  // Node ESM resolver
-  if ((err as NodeJS.ErrnoException).code === 'ERR_MODULE_NOT_FOUND')
-    return true;
-  // CJS / generic
-  if (
-    err.message.includes(pkg) &&
-    err.message.toLowerCase().includes('cannot find')
-  )
-    return true;
-  return false;
-}
-
-async function loadOllamaRag(): Promise<
-  new (
-    opts: Record<string, unknown>,
-  ) => IRag
-> {
-  try {
-    const mod = await import('@mcp-abap-adt/ollama-embedder');
-    return (
-      mod as unknown as {
-        OllamaRag: new (opts: Record<string, unknown>) => IRag;
-      }
-    ).OllamaRag;
-  } catch (err) {
-    if (isMissingOptionalPeer(err, '@mcp-abap-adt/ollama-embedder')) {
-      throw new MissingProviderError('@mcp-abap-adt/ollama-embedder', 'ollama');
-    }
-    throw err;
-  }
-}
-
-// ---------------------------------------------------------------------------
 // High-level async embedder resolution (config-based)
 // ---------------------------------------------------------------------------
 
@@ -213,13 +175,7 @@ export function resolveEmbedder(
 // ---------------------------------------------------------------------------
 
 export interface RagResolutionConfig {
-  type?:
-    | 'ollama'
-    | 'openai'
-    | 'in-memory'
-    | 'qdrant'
-    | 'hana-vector'
-    | 'pg-vector';
+  type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
   embedder?: string;
   url?: string;
   apiKey?: string;
@@ -366,53 +322,7 @@ export async function makeRag(
     });
   }
 
-  if (cfg.type === 'openai') {
-    const embedderName = cfg.embedder ?? 'openai';
-    if (!options?.injectedEmbedder) {
-      await prefetchEmbedderFactories([embedderName]);
-    }
-    const embedder = resolveEmbedder(
-      { ...cfg, embedder: embedderName },
-      options,
-    );
-    return new VectorRag(embedder, {
-      dedupThreshold: cfg.dedupThreshold,
-      vectorWeight: cfg.vectorWeight,
-      keywordWeight: cfg.keywordWeight,
-      strategy: cfg.strategy,
-      queryPreprocessors: cfg.queryPreprocessors,
-      documentEnrichers: cfg.documentEnrichers,
-    });
-  }
-
-  // Default: 'ollama'
-  // Use convenience OllamaRag when no custom embedder is involved
-  if (!options?.injectedEmbedder && !cfg.embedder) {
-    const OllamaRag = await loadOllamaRag();
-    return new OllamaRag({
-      ollamaUrl: cfg.url,
-      model: cfg.model,
-      timeoutMs: cfg.timeoutMs,
-      dedupThreshold: cfg.dedupThreshold,
-      vectorWeight: cfg.vectorWeight,
-      keywordWeight: cfg.keywordWeight,
-      strategy: cfg.strategy,
-      queryPreprocessors: cfg.queryPreprocessors,
-      documentEnrichers: cfg.documentEnrichers,
-    });
-  }
-
-  const embedderName = cfg.embedder ?? 'ollama';
-  if (!options?.injectedEmbedder) {
-    await prefetchEmbedderFactories([embedderName]);
-  }
-  const embedder = resolveEmbedder({ ...cfg, embedder: embedderName }, options);
-  return new VectorRag(embedder, {
-    dedupThreshold: cfg.dedupThreshold,
-    vectorWeight: cfg.vectorWeight,
-    keywordWeight: cfg.keywordWeight,
-    strategy: cfg.strategy,
-    queryPreprocessors: cfg.queryPreprocessors,
-    documentEnrichers: cfg.documentEnrichers,
-  });
+  throw new Error(
+    `Unknown rag.type "${String(cfg.type)}". Use one of: in-memory, qdrant, hana-vector, pg-vector.`,
+  );
 }

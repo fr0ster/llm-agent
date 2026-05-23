@@ -10,7 +10,8 @@ llm:
   maxTokens: 8192
 
 rag:
-  type: ollama
+  type: in-memory
+  embedder: ollama
   url: ${OLLAMA_URL:-http://localhost:11434}
   model: nomic-embed-text
   vectorWeight: 0.7

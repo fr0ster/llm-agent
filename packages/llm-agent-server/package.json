@@ -29,7 +29,6 @@
     "start": "node dist/smart-agent/cli.js",
     "start:smart": "node dist/smart-agent/cli.js --config smart-server.yaml",
     "dev": "tsx src/smart-agent/cli.ts",
-    "dev:llm": "tsx src/smart-agent/cli.ts --llm-only",
     "release:check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
@@ -41,6 +40,7 @@
     "@mcp-abap-adt/llm-agent-mcp": "^14.0.0",
     "@mcp-abap-adt/llm-agent-rag": "^14.0.0",
     "@mcp-abap-adt/ollama-embedder": "^14.0.0",
+    "@mcp-abap-adt/ollama-llm": "^14.0.0",
     "@mcp-abap-adt/openai-embedder": "^14.0.0",
     "@mcp-abap-adt/openai-llm": "^14.0.0",
     "@mcp-abap-adt/pg-vector-rag": "^14.0.0",

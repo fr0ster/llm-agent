@@ -12,7 +12,7 @@ import type { SapAICoreCredentials } from '@mcp-abap-adt/sap-aicore-llm';
 // ---------------------------------------------------------------------------
 
 export interface PipelineLlmProviderConfig {
-  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk';
+  provider: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   /** API key. Required for openai/anthropic/deepseek; optional for sap-ai-sdk. */
   apiKey?: string;
   /** Custom base URL for OpenAI-compatible endpoints (Azure OpenAI, Ollama, vLLM, etc.). */
@@ -30,18 +30,12 @@ export interface PipelineLlmProviderConfig {
 }
 
 export interface PipelineRagStoreConfig {
-  /** 'ollama' | 'openai' | 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector'. Default: 'ollama' */
-  type?:
-    | 'ollama'
-    | 'openai'
-    | 'in-memory'
-    | 'qdrant'
-    | 'hana-vector'
-    | 'pg-vector';
+  /** 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector'. */
+  type?: 'in-memory' | 'qdrant' | 'hana-vector' | 'pg-vector';
   /**
    * Embedder name — resolved from the embedder factory registry.
-   * Built-in: 'ollama', 'openai'. Consumers can register custom factories.
-   * When omitted, defaults to 'ollama'.
+   * Built-in: 'ollama', 'openai', 'sap-ai-core'. Consumers can register custom factories.
+   * When omitted, defaults to 'ollama' for stores that require one.
    */
   embedder?: string;
   /** Base URL for embedding service or Qdrant server */

@@ -81,7 +81,7 @@ const reply = await agent.chat(messages);
 
 ## CLI changes
 
-CLI commands (`llm-agent`, `llm-agent-check`, `claude-via-agent`) are unchanged from v10. They're still shipped by `@mcp-abap-adt/llm-agent-server`. The `--llm-only` mode now uses `SmartAgent` with `mcp.type: 'none'` (no behavioral change for consumers).
+CLI commands (`llm-agent`, `llm-agent-check`, `claude-via-agent`) are unchanged from v10. They're still shipped by `@mcp-abap-adt/llm-agent-server`. LLM-only mode (no MCP) is configured via `mcp.type: none` or by omitting the `mcp:` block in `smart-server.yaml`.
 
 ## MissingProviderError
 

@@ -43,6 +43,7 @@
     "@mcp-abap-adt/openai-llm": "^14.0.0",
     "@mcp-abap-adt/anthropic-llm": "^14.0.0",
     "@mcp-abap-adt/deepseek-llm": "^14.0.0",
+    "@mcp-abap-adt/ollama-llm": "^14.0.0",
     "@mcp-abap-adt/sap-aicore-llm": "^14.0.0"
   },
   "peerDependenciesMeta": {
@@ -55,6 +56,9 @@
     "@mcp-abap-adt/deepseek-llm": {
       "optional": true
     },
+    "@mcp-abap-adt/ollama-llm": {
+      "optional": true
+    },
     "@mcp-abap-adt/sap-aicore-llm": {
       "optional": true
     }
@@ -63,6 +67,7 @@
     "@mcp-abap-adt/openai-llm": "^14.0.0",
     "@mcp-abap-adt/anthropic-llm": "^14.0.0",
     "@mcp-abap-adt/deepseek-llm": "^14.0.0",
+    "@mcp-abap-adt/ollama-llm": "^14.0.0",
     "@mcp-abap-adt/sap-aicore-llm": "^14.0.0"
   },
   "publishConfig": {

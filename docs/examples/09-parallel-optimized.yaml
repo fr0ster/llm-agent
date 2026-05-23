@@ -31,7 +31,8 @@ llm:
   classifierTemperature: 0.1
 
 rag:
-  type: ollama
+  type: in-memory
+  embedder: ollama
   url: http://localhost:11434
   model: nomic-embed-text
   dedupThreshold: 0.92

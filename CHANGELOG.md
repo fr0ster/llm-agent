@@ -9,6 +9,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking changes
+- **`rag.type` is now store-only.** Accepts `in-memory`, `qdrant`, `hana-vector`, `pg-vector`. The former `rag.type: ollama` / `rag.type: openai` were embedders mislabelled as stores — they are removed and now error on startup with a migration hint. Use `rag.type: in-memory` with `rag.embedder: ollama` (or `openai`) instead. `in-memory` with no `embedder` is BM25 keyword-only; with an embedder it is a hybrid vector store. `rag.embedder` accepts embedding-capable providers (`ollama`, `openai`, `sap-ai-core`); `deepseek`/`anthropic` have no embedder and are rejected.
+- **CLI flag set trimmed to runtime/process overrides only.** Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`, `--llm-only`. These duplicated YAML fields (or, for `--llm-only`, were a no-op dead flag) and are no longer accepted — passing them exits non-zero with an `unknown flag` error. Configure agent behavior in `smart-server.yaml`; disable MCP via `mcp.type: none` or by omitting the `mcp:` block.
+- **Flat `llm:` schema now requires an explicit `provider`.** Previously a flat config silently defaulted to `deepseek` and ignored `llm.url`. A flat `llm:` block without `provider` is now a startup error.
+- **Omitting the `rag:` block now disables RAG.** Previously a config without a `rag:` block silently fell back to a default Ollama-backed vector store (and could require Ollama/embedder peers). RAG is now active only when a `rag:` block is present.
+- **Added CLI env flags:** `--secrets-dir <folder>` (default `~/.config/mcp-abap-adt/`), `--env` (load `*.env` from secrets-dir), `--env-path <file>` (explicit `.env`). Mirrors the convention used by `mcp-abap-adt-proxy`.
+- **YAML validation hardened:** missing required fields / invalid provider / empty credentials produce a single human-readable startup error instead of a stack trace.
+
+### Added
+- **New LLM provider `ollama`** (package `@mcp-abap-adt/ollama-llm`), a thin OpenAI-compatible wrapper over Ollama's `/v1` endpoint (default `http://localhost:11434/v1`). Set `provider: ollama` in YAML; no API key required. Bundled with `@mcp-abap-adt/llm-agent-server`. Fixes the previously-broken `examples/docker-ollama` config.
+
 ---
 
 ## [14.0.0] — 2026-05-23
