@@ -452,7 +452,7 @@ builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 | `IEmbedder` | Text → vector embedding; `embed()` returns `IEmbedResult { vector: number[]; usage?: { promptTokens: number; totalTokens: number } }` | `OllamaEmbedder`, `OpenAiEmbedder`, or custom via DI |
 | `ISubpromptClassifier` | Intent/subprompt decomposition | `LlmClassifier` |
 | `IContextAssembler` | Builds final model context window | `ContextAssembler` |
-| `IRag` (`tools`/`history` + consumer-defined) | Retrieval and memory stores | `VectorRag`, `QdrantRag`, `OllamaRag`, or `InMemoryRag` |
+| `IRag` (`tools`/`history` + consumer-defined) | Retrieval and memory stores | `InMemoryRag` (BM25), `VectorRag` (in-memory + embedder), `QdrantRag`, `HanaVectorRag`, or `PgVectorRag` |
 | `IMcpClient` | Tool catalog and tool execution | `McpClientAdapter(MCPClientWrapper)` |
 | `IMcpConnectionStrategy` | Per-request MCP reconnection / health recovery | `NoopConnectionStrategy` (no-op, default); `LazyConnectionStrategy` / `PeriodicConnectionStrategy` for auto-reconnect |
 | `IToolPolicy` | Allow/deny policy checks | `ToolPolicyGuard` (optional) |

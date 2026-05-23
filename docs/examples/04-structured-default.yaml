@@ -21,7 +21,8 @@ llm:
   temperature: 0.7
 
 rag:
-  type: ollama
+  type: in-memory
+  embedder: ollama
   url: http://localhost:11434
   model: nomic-embed-text
 

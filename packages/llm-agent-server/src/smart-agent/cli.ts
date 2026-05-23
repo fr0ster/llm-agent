@@ -34,7 +34,8 @@
  *   llm:
  *     provider: deepseek
  *   rag:
- *     type: ollama
+ *     type: in-memory
+ *     embedder: ollama
  *     url: http://localhost:11434
  *     model: nomic-embed-text
  *   mcp:

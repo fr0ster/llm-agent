@@ -78,7 +78,8 @@ llm:
   temperature: 0.7
 
 rag:
-  type: ollama            # ollama (neural) | in-memory (keyword, no Ollama required)
+  type: in-memory         # in-memory | qdrant | hana-vector | pg-vector
+  embedder: ollama        # ollama | openai | sap-ai-core (omit embedder for BM25 keyword-only)
   url: http://localhost:11434
   model: nomic-embed-text
 
@@ -96,8 +97,7 @@ log: smart-server.log     # omit for stdout
 
 > **`llm.provider` is required.** Supported values: `deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`. The `ollama` provider needs no API key and defaults to `http://localhost:11434/v1`. To run fully locally (Ollama for both LLM and embeddings, no API keys), see `examples/docker-ollama/`.
 
-> **No Ollama?** Set `rag.type: in-memory` — tool selection uses keyword matching instead of
-> neural embeddings. Everything else works identically.
+> **No Ollama?** Omit `rag.embedder` (or remove the `rag:` block) — tool selection uses BM25 keyword matching instead of neural embeddings. Everything else works identically.
 
 ---
 
@@ -199,7 +199,8 @@ pipeline:
 
   rag:
     tools:
-      type: ollama              # neural embeddings for tool/skill selection
+      type: in-memory           # store: in-memory | qdrant | hana-vector | pg-vector
+      embedder: ollama          # embedder: ollama | openai | sap-ai-core (neural embeddings for tool/skill selection)
     history:
       type: in-memory           # semantic conversation history (optional)
 
@@ -287,7 +288,7 @@ Run Ollama locally and pull the model:
 ```bash
 ollama pull nomic-embed-text
 ```
-Or switch to `rag.type: in-memory` to skip Ollama entirely.
+Or omit `rag.embedder` (BM25 keyword-only) — or remove the `rag:` block entirely — to run without Ollama.
 
 ### Cannot connect to MCP server
 Verify the endpoint is reachable and the MCP server is running. The agent continues without tools
