@@ -45,7 +45,6 @@ import {
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
-  makeDefaultLlm,
   makeLlm,
   SessionLogger,
   SmartAgentBuilder,
@@ -62,7 +61,11 @@ import type { PipelineConfig } from './pipeline.js';
 // ---------------------------------------------------------------------------
 
 export interface SmartServerLlmConfig {
+  /** Provider id for the flat schema. Required when no pipeline.llm.main is set. */
+  provider?: 'deepseek' | 'openai' | 'anthropic' | 'sap-ai-sdk' | 'ollama';
   apiKey: string;
+  /** Custom base URL (OpenAI-compatible endpoints: Ollama, Azure, vLLM). */
+  url?: string;
   model?: string;
   temperature?: number;
   maxTokens?: number;
@@ -360,9 +363,15 @@ export class SmartServer {
     );
     const mainLlm = pipeline?.llm?.main
       ? await makeLlm(pipeline.llm.main, mainTemp)
-      : await makeDefaultLlm(
-          this.cfg.llm.apiKey,
-          this.cfg.llm.model ?? 'deepseek-chat',
+      : await makeLlm(
+          {
+            // ?? 'deepseek' is a TS type-narrowing net only; the config validator
+            // rejects a missing flat-schema provider before this runs.
+            provider: this.cfg.llm.provider ?? 'deepseek',
+            apiKey: this.cfg.llm.apiKey,
+            baseURL: this.cfg.llm.url,
+            model: this.cfg.llm.model,
+          },
           mainTemp,
         );
 
@@ -375,9 +384,15 @@ export class SmartServer {
       ? await makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
         ? await makeLlm(pipeline.llm.main, classifierTemp)
-        : await makeDefaultLlm(
-            this.cfg.llm.apiKey,
-            this.cfg.llm.model ?? 'deepseek-chat',
+        : await makeLlm(
+            {
+              // ?? 'deepseek' is a TS type-narrowing net only; the config validator
+              // rejects a missing flat-schema provider before this runs.
+              provider: this.cfg.llm.provider ?? 'deepseek',
+              apiKey: this.cfg.llm.apiKey,
+              baseURL: this.cfg.llm.url,
+              model: this.cfg.llm.model,
+            },
             classifierTemp,
           );
 
@@ -796,9 +811,15 @@ export class SmartServer {
     );
     const mainLlm = subPipeline?.llm?.main
       ? await makeLlm(subPipeline.llm.main, mainTemp)
-      : await makeDefaultLlm(
-          subCfg.llm.apiKey,
-          subCfg.llm.model ?? 'deepseek-chat',
+      : await makeLlm(
+          {
+            // ?? 'deepseek' is a TS type-narrowing net only; the config validator
+            // rejects a missing flat-schema provider before this runs.
+            provider: subCfg.llm.provider ?? 'deepseek',
+            apiKey: subCfg.llm.apiKey,
+            baseURL: subCfg.llm.url,
+            model: subCfg.llm.model,
+          },
           mainTemp,
         );
 
@@ -811,9 +832,15 @@ export class SmartServer {
       ? await makeLlm(subPipeline.llm.classifier, classifierTemp)
       : subPipeline?.llm?.main
         ? await makeLlm(subPipeline.llm.main, classifierTemp)
-        : await makeDefaultLlm(
-            subCfg.llm.apiKey,
-            subCfg.llm.model ?? 'deepseek-chat',
+        : await makeLlm(
+            {
+              // ?? 'deepseek' is a TS type-narrowing net only; the config validator
+              // rejects a missing flat-schema provider before this runs.
+              provider: subCfg.llm.provider ?? 'deepseek',
+              apiKey: subCfg.llm.apiKey,
+              baseURL: subCfg.llm.url,
+              model: subCfg.llm.model,
+            },
             classifierTemp,
           );
 

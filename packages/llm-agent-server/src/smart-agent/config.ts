@@ -490,17 +490,17 @@ export function resolveSmartServerConfig(
     ),
     host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
     llm: {
+      provider: get(yaml, 'llm', 'provider') as
+        | 'deepseek'
+        | 'openai'
+        | 'anthropic'
+        | 'sap-ai-sdk'
+        | 'ollama'
+        | undefined,
       apiKey,
-      model:
-        (args['llm-model'] as string) ??
-        get(yaml, 'llm', 'model') ??
-        env.DEEPSEEK_MODEL ??
-        'deepseek-chat',
-      temperature: Number(
-        (args['llm-temperature'] as string) ??
-          get(yaml, 'llm', 'temperature') ??
-          0.7,
-      ),
+      url: get(yaml, 'llm', 'url') as string | undefined,
+      model: get(yaml, 'llm', 'model') as string | undefined,
+      temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
       classifierTemperature: Number(
         get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
       ),
