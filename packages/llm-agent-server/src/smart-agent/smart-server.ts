@@ -55,6 +55,7 @@ import {
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { PipelineConfig } from './pipeline.js';
+import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -433,6 +434,14 @@ export class SmartServer {
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
 
+    // Resolve the embedder ONCE so the same instance feeds both makeRag and the
+    // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
+    const resolvedEmbedder = await resolveAgentEmbedder(
+      this.cfg.rag,
+      this.cfg.embedder,
+      mergedEmbedderFactories,
+    );
+
     // ---- Build agent via Builder (interface-only) -------------------------
     let builder = new SmartAgentBuilder({
       mcp: pipeline?.mcp ?? this.cfg.mcp,
@@ -452,7 +461,7 @@ export class SmartServer {
     let toolsRag: IRag | undefined;
     if (this.cfg.rag) {
       const ragOptions = {
-        injectedEmbedder: this.cfg.embedder,
+        injectedEmbedder: resolvedEmbedder,
         extraFactories: mergedEmbedderFactories,
       };
       toolsRag = await makeRag(this.cfg.rag, ragOptions);
@@ -594,10 +603,12 @@ export class SmartServer {
         (planningKind === 'skill-steps' ? 'hybrid' : 'subagent');
 
       // Build the same kind of context builder SmartAgentBuilder uses, so
-      // YAML-configured deployments get the same default behavior. Requires
-      // a DI-injected embedder (this.cfg.embedder) — otherwise toolSource is
+      // YAML-configured deployments get the same default behavior. Uses the
+      // embedder resolved above — DI-injected (this.cfg.embedder) when present,
+      // otherwise constructed from `rag.embedder` (#137). Stays undefined for
+      // bare in-memory BM25 stores (no embedder), in which case toolSource is
       // skipped and constrained subagents fall back to empty context.
-      const mainEmbedder = this.cfg.embedder;
+      const mainEmbedder = resolvedEmbedder;
       const toolSource =
         mainEmbedder && toolsRag
           ? async (text: string, k: number, signal?: AbortSignal) => {
