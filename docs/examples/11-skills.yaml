@@ -29,9 +29,6 @@
 #   description: Guidelines for reviewing pull requests
 #   user-invocable: true
 #   argument-hint: "<PR number or diff>"
-#   allowed-tools:
-#     - gh_pr_view
-#     - gh_pr_diff
 #   ---
 #
 #   Review the code change with focus on:
