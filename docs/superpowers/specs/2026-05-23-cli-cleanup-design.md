@@ -24,7 +24,7 @@ This change brings the CLI to runtime metadata only: where to find the YAML, whi
 ## Non-Goals
 
 - This is NOT adding `--llm-provider` or any auto-detect logic. The earlier framing of issue #134 proposed that; brainstorming pivoted to "YAML is the source of truth, CLI is metadata" as the cleaner model.
-- This does NOT change YAML schema (no new fields, no removed fields). It changes CLI parsing AND config loading/validation semantics — specifically, the env-var fallbacks and hardcoded defaults that today silently fill in missing YAML fields for agent behavior.
+- No YAML field names are added or removed, but **validation semantics become stricter**. This PR changes CLI parsing AND config loading/validation semantics — specifically, the env-var fallbacks and hardcoded defaults that today silently fill in missing YAML fields for agent-identity values (credentials, model, provider, urls). Schema defaults for non-secret behavioral tuning params (temperatures, weights, timeouts) stay legal.
 - This does NOT change the first-run "generate YAML template" behavior. That stays.
 - This does NOT touch the bundled provider/embedder packages from v13.1.0; they remain bundled.
 - This does NOT wire service-key file discovery, sessions relocation, or proxy-config reading. The `--secrets-dir` flag reserves the convention root but only the `*.env` half is consumed in this PR. Service-key file discovery is reserved for a separate follow-up issue.
@@ -33,25 +33,62 @@ This change brings the CLI to runtime metadata only: where to find the YAML, whi
 
 ## Changes
 
-### Env-var and default-value fallbacks for agent behavior REMOVED
+### Three field categories — what must come from YAML
 
-The current `resolveSmartServerConfig` in `packages/llm-agent-server/src/smart-agent/config.ts` reads several env vars directly AND falls back to hardcoded defaults when YAML is incomplete. These silently fill in agent-behavior fields the YAML doesn't specify, defeating the "fail loud on bad YAML" guarantee.
+Fields in `resolveSmartServerConfig` fall into three categories with different rules:
 
-Remove the following direct reads / hardcoded defaults from `config.ts`:
+**Category A — Identity / credentials / endpoints. Must come from YAML (or its `${VAR}` substitution). No direct env-var fallback. No hardcoded default. Empty after substitution → startup error.**
 
-| Removed pattern | Approximate location | Rationale |
+| Field | Current direct env-var fallback (REMOVE) | Current hardcoded default (REMOVE) | Location |
+|---|---|---|---|
+| `llm.apiKey` | `env.DEEPSEEK_API_KEY` | — | `config.ts:449` |
+| `llm.model` | `env.DEEPSEEK_MODEL` | `'deepseek-chat'` | `config.ts:497-498` |
+| `rag.type` | — | `'ollama'` | `config.ts:511` |
+| `rag.url` | `env.OLLAMA_URL` | `'http://localhost:11434'` | `config.ts:521-522` |
+| `rag.model` | `env.OLLAMA_EMBED_MODEL` | `'nomic-embed-text'` | `config.ts:526-527` |
+| `mcp.url` | `env.MCP_ENDPOINT` | — | `config.ts:459` |
+| `mcp.command` | `env.MCP_COMMAND` | — | `config.ts:463` |
+| `prompts.system` | `env.PROMPT_SYSTEM` | — | `config.ts:476` |
+| `prompts.classifier` | `env.PROMPT_CLASSIFIER` | — | `config.ts:481` |
+| `mode` | `env.SMART_AGENT_MODE` | — | `config.ts:707` |
+
+For each: remove the `?? env.X` and any hardcoded literal. If YAML doesn't provide a value (after `${VAR}` substitution), startup fails with a human-readable error pointing at the missing field. If user wants the OLD `env.OLLAMA_URL` behavior, they write `rag.url: ${OLLAMA_URL}` in YAML — the substitution path stays.
+
+**Category B — Non-secret behavioral tuning params. Schema defaults are LEGAL (not a "silent fallback" — they're documented defaults). No env-var fallback.**
+
+These are scalar knobs that don't change provider/model/credential identity. A missing value is safely covered by the schema default.
+
+| Field | Hardcoded default (KEEP as schema default) | Location |
 |---|---|---|
-| `env.DEEPSEEK_MODEL ?? 'deepseek-chat'` fallback for `llm.model` | `config.ts:497-498` | Agent behavior must come from YAML's `llm.model` (or `pipeline.llm.main.model`). Empty → startup error. |
-| `env.MCP_ENDPOINT` fallback for `mcp.url` | `config.ts:459` | `mcp.url` is YAML; if user wants `MCP_ENDPOINT` from env, they write `mcp.url: ${MCP_ENDPOINT}` in YAML. |
-| `env.OLLAMA_URL` fallback for `rag.url` | `config.ts:521` | Same — use `${OLLAMA_URL}` substitution in YAML. |
-| `env.PROMPT_SYSTEM` fallback for `prompts.system` | `config.ts:476` | Same — `prompts.system: ${PROMPT_SYSTEM}` or hardcode the value in YAML. |
-| `env.SMART_AGENT_MODE` fallback for `mode` | `config.ts:707` | Same — `mode: ${SMART_AGENT_MODE}` or fix value in YAML. |
-| Hardcoded `'ollama'` default for embedder type | `config.ts:511` | Must be specified in YAML when applicable. |
-| Hardcoded `'deepseek-chat'` default for model | `config.ts:497` | Already covered above. |
+| `llm.temperature` | `0.7` | `config.ts:502` |
+| `llm.classifierTemperature` | `0.1` | `config.ts:505` |
+| `rag.dedupThreshold` | `0.92` | `config.ts:532` |
+| `rag.vectorWeight` | `0.7` | `config.ts:534` |
+| `rag.keywordWeight` | `0.3` | `config.ts:537` |
+| `agent.externalToolsValidationMode` | `'permissive'` | `config.ts:569` |
+| `agent.maxIterations` | `10` | `config.ts:570` |
+| `agent.maxToolCalls` | `30` | `config.ts:571` |
+| `agent.toolUnavailableTtlMs` | `600000` | `config.ts:573` |
+| `agent.ragQueryK` | `10` | `config.ts:575` |
 
-After this PR, the **only** env-substitution mechanism for agent-behavior values is YAML's `${VAR}` placeholder syntax (which is loaded from `process.env` AFTER env loading flags run). Runtime/process fields (`port`, `host`, log path, etc.) keep their existing defaults — those are NOT agent behavior.
+Rule: schema defaults stay. No env-var fallbacks are added for these. They were never env-driven before either (verified by grep), so no removal needed.
 
-This is what makes the "fail loud on bad YAML" promise real: with these fallbacks gone, an incomplete YAML can no longer be silently propped up by env vars or hardcoded constants.
+**Category C — Runtime / process. CLI flag + YAML + env all legal sources. Defaults stay.**
+
+| Field | Sources | Default |
+|---|---|---|
+| `port` | CLI `--port`, YAML `port`, `env.PORT` | `4004` |
+| `host` | CLI `--host`, YAML `host` | `'0.0.0.0'` |
+| log path | CLI `--log-file`/`--log-stdout`, YAML `log` | filename `smart-server.log` in cwd |
+| plugin dir | CLI `--plugin-dir`, YAML `pluginDir` | — |
+
+These are deployment knobs, not agent behavior. The full sources list stays; only the agent-behavior list above is restricted.
+
+### What this enforces
+
+- **Category A removals close the "silent fallback" hole** described in the Goal section. An incomplete YAML for any Category A field → clear startup error, not a quiet env-var or default value the user didn't put there.
+- **Category B schema defaults remain** so users can write minimal YAML without enumerating every tuning param. These are not "silent" — they're documented in the YAML schema + template.
+- **Legacy `llm.apiKey + llm.model` schema validation** (from the credential validation section above) MUST require `apiKey` to be explicitly set in YAML — typically as `apiKey: ${DEEPSEEK_API_KEY}`. The agent no longer reads `process.env.DEEPSEEK_API_KEY` directly. Shell-env alone is not a config source; YAML must reference it.
 
 ### CLI flags REMOVED
 
