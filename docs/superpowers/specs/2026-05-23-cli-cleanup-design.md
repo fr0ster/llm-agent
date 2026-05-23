@@ -6,7 +6,9 @@
 
 ## Goal
 
-Reduce the `llm-agent` CLI to its essential runtime-metadata role and make `smart-server.yaml` the single source of configuration. Remove all CLI flags that duplicate YAML fields. When YAML is missing or invalid, the agent fails loud on startup with a clear, human-readable error — no silent defaults, no auto-detect magic.
+Reduce the `llm-agent` CLI to its essential runtime-metadata role and make `smart-server.yaml` the single source of agent-behavior configuration. Remove CLI flags that configure **agent behavior** (LLM, RAG, MCP, prompts, mode, reasoning). Keep CLI flags that are **runtime / process overrides** (config path, env loading, port/host, logging, plugin discovery) — these are deployment knobs, not agent-behavior decisions, and they're useful from the command line for ad-hoc operations even though some have YAML counterparts.
+
+When YAML is missing or invalid, the agent fails loud on startup with a clear, human-readable error — no silent defaults, no auto-detect magic.
 
 ## Why
 
@@ -82,20 +84,28 @@ These are runtime-metadata-only: they tell the agent where to find configuration
 
 When the YAML loads, missing-required and bad-type errors must produce a single-line human-readable message — not a stack trace.
 
-Required fields:
-- Either `llm.apiKey` + `llm.model` (legacy flat schema), OR `pipeline.llm.main.provider` + `pipeline.llm.main.model` (modern pipeline schema). At least one of these two must be complete.
-- If `provider` is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
+Required fields (all checked after env substitution):
 
-Error format:
+1. **Either** `llm.apiKey` + `llm.model` (legacy flat schema), **or** `pipeline.llm.main.provider` + `pipeline.llm.main.model` (modern pipeline schema). At least one of these two must be complete.
+2. If `provider` is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
+3. **Provider-specific credential validation:**
+   - For `openai`, `anthropic`, `deepseek`: `apiKey` (or `pipeline.llm.main.apiKey`) is required AFTER env substitution. The expected pattern is `apiKey: ${OPENAI_API_KEY}` (or analogous) in YAML, with the env variable populated via `--env-path`, `--env`, or the OS shell. An empty/missing resolved value is a startup error: "Provider `openai` requires `pipeline.llm.main.apiKey` to resolve to a non-empty value (typically via `${OPENAI_API_KEY}` env reference)."
+   - For `sap-ai-sdk`: `apiKey` is **optional** in YAML. Credentials come through SAP AI Core's own conventions:
+     - `AICORE_SERVICE_KEY` env var with the service-key JSON content, OR
+     - `~/.config/mcp-abap-adt/service-keys/aicore.json` style file discovery (out of scope for this PR; reserved by the `--secrets-dir` convention, wired later).
+     The startup check for `sap-ai-sdk` validates that one of these mechanisms produces a usable credential; if neither does, the same human-readable error: "Provider `sap-ai-sdk` requires `AICORE_SERVICE_KEY` env var with the service-key JSON, or a service-key file under `<secrets-dir>/service-keys/`. None found."
+
+Error format (multi-error case batched into one report):
 
 ```
 Configuration error in smart-server.yaml:
   - pipeline.llm.main.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk)
   - pipeline.llm.main.model: required (string)
+  - pipeline.llm.main.apiKey: must resolve to non-empty (env var ANTHROPIC_API_KEY appears empty/unset)
 Set these fields in your YAML and restart.
 ```
 
-Existing Zod schema (if used) should generate this format; otherwise a small handler maps validation errors to this style.
+Existing Zod schema (if used) should generate the structural part of this format; a small post-Zod handler does the env-substituted credential checks and merges error lists.
 
 ### Env-loading semantics
 
@@ -126,35 +136,67 @@ The template content stays as-is — no field changes in this spec.
 
 ### Documentation
 
-Update:
-- `docs/QUICK_START.md` — the CLI-flag table is the most stale piece. Replace with the trimmed flag list above. Add a one-paragraph note: "All agent configuration lives in `smart-server.yaml`. The CLI flags above are runtime overrides for testing convenience only."
+Update — known files:
+- `docs/QUICK_START.md` — the CLI-flag table is the most stale piece. Replace with the trimmed flag list above. Add a one-paragraph note: "Agent behavior lives in `smart-server.yaml`. The CLI flags listed above are runtime/process overrides — config-file path, env loading, port/host, logging — not agent-behavior knobs."
 - `CLAUDE.md` — if it lists the CLI flags anywhere, sync to the trimmed list.
 - `cli.ts` JSDoc header at the top of the file — same.
 
-No CHANGELOG entry in this PR (entries accumulate in `[Unreleased]` and consolidate into `[15.0.0]` later, per the batch-release decision). When the batch release happens, the `[15.0.0]` section should call out CLI flag removal under `### Breaking changes` with the full removed-flags list for migration reference.
+Sweep — broader search to catch references outside the known files:
+
+```bash
+rg -n '\-\-(llm-api-key|llm-model|llm-temperature|rag-type|rag-url|rag-model|rag-vector-weight|rag-keyword-weight|mcp-type|mcp-url|mcp-command|mcp-args|mode|prompt-system|prompt-classifier|agent-show-reasoning)' \
+  docs README.md CLAUDE.md packages \
+  --glob '!*.test.ts' --glob '!dist/**' --glob '!node_modules/**'
+```
+
+Any hit found by this command must be updated (remove or rephrase). Likely candidates: plugin docs, integration docs, sample configs, examples that show old CLI invocations.
+
+### CHANGELOG entry — added in THIS PR
+
+This is a breaking change to a public surface. Per the project's commit-before-review and "agent pushes after CHANGELOG/docs sync" rules, an entry MUST land in `CHANGELOG.md` `[Unreleased]` as part of this PR:
+
+```markdown
+### Breaking changes
+- CLI flag set trimmed to runtime/process overrides only. Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`. These previously duplicated YAML fields and are no longer accepted — passing them produces a non-zero exit with `unknown flag` error. Configure all agent behavior in `smart-server.yaml`.
+- Added: `--secrets-dir <folder>` (default `~/.config/mcp-abap-adt/`), `--env` (load `*.env` from secrets-dir), `--env-path <file>` (explicit `.env` path). Mirrors the convention used in `mcp-abap-adt-proxy` and the rest of the sibling tools.
+- YAML validation hardened: missing required fields / invalid provider / empty credentials produce a single human-readable error on startup instead of a stack trace.
+```
+
+The later batch-release PR will move this from `[Unreleased]` into `[15.0.0]` (alongside #135/#136/#137 entries).
 
 ### Tests
 
-Add to `packages/llm-agent-server/src/__tests__/` (or wherever existing CLI tests live):
+Add the cases listed below to `packages/llm-agent-server/src/__tests__/` (or wherever existing CLI tests live):
 
 1. Removed-flag rejection: passing `--llm-api-key X` produces a non-zero exit with "unknown flag" or equivalent. No silent ignore.
 2. Bad YAML — missing required field: produces a human-readable error with the field path, NOT a stack trace.
 3. Bad YAML — invalid provider value: produces a human-readable error listing valid options.
-4. Kept flags still work: `--port`, `--config`, `--log-stdout` etc. continue to function as before.
-5. `--env-path <file>` loads variables from the specified file.
-6. `--env` scans `<secrets-dir>` for `*.env` and loads them in alphabetical order.
-7. `--secrets-dir <folder>` redirects the `--env` scan to the given folder.
-8. Pre-existing `process.env` values take precedence over any file-loaded value (no override).
-9. Implicit `.env` fallback works when neither `--env` nor `--env-path` is given.
+4. Provider credential validation — openai/anthropic/deepseek: `provider: openai` with no resolvable `apiKey` produces a clear error pointing at the env-var name to set.
+5. Provider credential validation — sap-ai-sdk: missing `AICORE_SERVICE_KEY` (and no service-key file mechanism wired yet) produces the SAP-specific error message.
+6. Kept flags still work: `--port`, `--config`, `--log-stdout` etc. continue to function as before.
+7. `--env-path <file>` loads variables from the specified file.
+8. `--env` scans `<secrets-dir>` for `*.env` and loads them in alphabetical order.
+9. `--secrets-dir <folder>` redirects the `--env` scan to the given folder.
+10. Pre-existing `process.env` values take precedence over any file-loaded value (no override).
+11. Implicit `.env` fallback works when neither `--env` nor `--env-path` is given.
+
+### CLI parser strictness
+
+`node:util.parseArgs` is currently called with `strict: false` in `cli.ts`, which silently ignores unknown flags. The Removed-flag rejection test above requires the OPPOSITE behavior. Pick ONE of:
+
+(a) **Switch to `strict: true`**. Node's parseArgs in strict mode throws on unknown flags and produces a clean error message via its own machinery. Cleanest; preferred.
+
+(b) **Manual unknown-flag detection**. After parseArgs, inspect any leftover `positionals` or compare known-flag set against received arg names and bail with custom error. More code; only justified if strict mode breaks something else (e.g. tooling that injects extra args via env).
+
+Implementation plan should pick (a) unless a concrete blocker surfaces; (b) is a fallback.
 
 ---
 
 ## Semver
 
-CLI surface change is breaking. Batched into v15.0.0 alongside #135/#136/#137. This PR alone:
-- Does NOT bump versions.
-- Adds entries to `CHANGELOG.md [Unreleased]`.
-- The version bump + `[15.0.0]` section creation happens in a later release PR once the batch is complete.
+CLI surface change is breaking. Batched into v15.0.0 alongside #135/#136/#137. This PR:
+- Does NOT bump versions (no `13.x → 15.0.0` in package.json files).
+- DOES add an entry to `CHANGELOG.md [Unreleased]` under `### Breaking changes` (see "CHANGELOG entry" section above). The breaking surface change must be captured at the time it lands; the later release PR consolidates `[Unreleased]` into the dated `[15.0.0]` section.
 
 ---
 
