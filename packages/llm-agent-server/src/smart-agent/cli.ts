@@ -44,6 +44,7 @@
  */
 
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { parseArgs } from 'node:util';
 import {
@@ -113,11 +114,58 @@ if (args.help) {
 }
 
 // ---------------------------------------------------------------------------
-// Load .env — Task 7 wires --secrets-dir / --env / --env-path loading logic.
-// For now, silently try .env in cwd as a fallback; ok if it doesn't exist.
+// Load env — order: shell > --env-path > --env (*.env in secrets-dir) > .env
+// All loads use override:false so shell-exported values always win.
 // ---------------------------------------------------------------------------
 
-configDotenv({ path: path.resolve('.env') });
+const secretsDir =
+  (args['secrets-dir'] as string | undefined) ??
+  path.join(os.homedir(), '.config', 'mcp-abap-adt');
+const envPath = args['env-path'] as string | undefined;
+const envScan = args.env === true;
+
+if (envPath) {
+  const result = configDotenv({ path: path.resolve(envPath), override: false });
+  if (!result.parsed) {
+    process.stderr.write(`Warning: could not load env file: ${envPath}\n`);
+  }
+}
+if (envScan) {
+  let entries: string[] = [];
+  try {
+    entries = fs
+      .readdirSync(secretsDir)
+      .filter((f) => f.endsWith('.env'))
+      .sort();
+  } catch {
+    process.stderr.write(`Warning: secrets-dir not readable: ${secretsDir}\n`);
+  }
+  for (const f of entries) {
+    const full = path.join(secretsDir, f);
+    const result = configDotenv({ path: full, override: false });
+    if (!result.parsed) {
+      process.stderr.write(`Warning: could not load env file: ${full}\n`);
+    }
+  }
+}
+if (!envPath && !envScan) {
+  // Implicit .env in cwd — only when neither flag is given. ok if absent.
+  configDotenv({ path: path.resolve('.env'), override: false });
+}
+
+// ---------------------------------------------------------------------------
+// Test escape-hatch: print requested env var(s) and exit.
+// Activated by __CLI_PRINT_ENV=VAR1,VAR2 — test-only, never set in production.
+// ---------------------------------------------------------------------------
+
+if (process.env.__CLI_PRINT_ENV) {
+  for (const name of process.env.__CLI_PRINT_ENV
+    .split(',')
+    .map((s) => s.trim())) {
+    process.stdout.write(`${name}=${process.env[name] ?? ''}\n`);
+  }
+  process.exit(0);
+}
 
 // ---------------------------------------------------------------------------
 // Config file: template generation or loading
