@@ -198,6 +198,83 @@ describe('config validation — fail loud, human-readable', () => {
       /pipeline\.llm\.main\.provider.*required/i,
     );
   });
+
+  it('omitted rag block leaves rag undefined (RAG disabled)', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      { llm: { provider: 'ollama', model: 'm' } },
+      {},
+    );
+    assert.equal(cfg.rag, undefined);
+  });
+
+  it('a present rag block is still resolved', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      { llm: { provider: 'ollama', model: 'm' }, rag: { type: 'in-memory' } },
+      {},
+    );
+    assert.equal(cfg.rag?.type, 'in-memory');
+  });
+
+  it('pipeline main openai without apiKey is rejected even if a flat llm.apiKey exists', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: {
+              provider: 'deepseek',
+              apiKey: 'flat-key',
+              model: 'deepseek-chat',
+            },
+            pipeline: {
+              llm: { main: { provider: 'openai', model: 'gpt-4o' } },
+            },
+          },
+          {},
+        ),
+      /openai requires pipeline\.llm\.main\.apiKey/i,
+    );
+  });
+
+  it('pipeline classifier with an invalid provider is rejected', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            pipeline: {
+              llm: {
+                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+                classifier: { provider: 'cohere', model: 'c' },
+              },
+            },
+          },
+          {},
+        ),
+      /pipeline\.llm\.classifier\.provider.*invalid/i,
+    );
+  });
+
+  it('pipeline helper missing its apiKey is rejected', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            pipeline: {
+              llm: {
+                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+                helper: { provider: 'anthropic', model: 'claude' },
+              },
+            },
+          },
+          {},
+        ),
+      /anthropic requires pipeline\.llm\.helper\.apiKey/i,
+    );
+  });
 });
 
 describe('first-run YAML template', () => {

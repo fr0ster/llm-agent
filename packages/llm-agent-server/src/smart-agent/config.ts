@@ -342,48 +342,39 @@ const get = (obj: unknown, ...keys: string[]): unknown =>
     return undefined;
   }, obj);
 
-function validateResolvedConfig(
-  resolved: Omit<SmartServerConfig, 'log'>,
-  yaml: YamlConfig,
+function checkLlmRole(
+  label: string,
+  role: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  requireModel: boolean,
   env: NodeJS.ProcessEnv,
+  issues: string[],
 ): void {
-  const issues: string[] = [];
-  const usingPipeline = !!get(yaml, 'pipeline', 'llm', 'main');
-
-  const provider = usingPipeline
-    ? (get(yaml, 'pipeline', 'llm', 'main', 'provider') as string | undefined)
-    : resolved.llm.provider;
-
+  const provider = role?.provider as string | undefined;
   if (!provider) {
     issues.push(
-      usingPipeline
-        ? 'pipeline.llm.main.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)'
-        : 'llm.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)',
+      `${label}.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
     );
-  } else if (
-    // `as readonly string[]` is required so .includes() accepts an arbitrary
-    // string; do not "simplify" — it preserves the const-tuple narrowing.
-    !(VALID_PROVIDERS as readonly string[]).includes(provider)
-  ) {
+    return;
+  }
+  // `as readonly string[]` is required so .includes() accepts an arbitrary
+  // string; do not "simplify" — it preserves the const-tuple narrowing.
+  if (!(VALID_PROVIDERS as readonly string[]).includes(provider)) {
     issues.push(
-      usingPipeline
-        ? `pipeline.llm.main.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`
-        : `llm.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+      `${label}.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
     );
+    return;
   }
-
-  if (!resolved.llm.model && !get(yaml, 'pipeline', 'llm', 'main', 'model')) {
-    issues.push('llm.model: required (string)');
+  if (requireModel && !role?.model) {
+    issues.push(`${label}.model: required (string)`);
   }
-
   if (
     provider === 'openai' ||
     provider === 'anthropic' ||
     provider === 'deepseek'
   ) {
-    if (!resolved.llm.apiKey) {
+    if (!role?.apiKey) {
       issues.push(
-        `${provider} requires llm.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
+        `${provider} requires ${label}.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
       );
     }
   } else if (provider === 'sap-ai-sdk') {
@@ -394,6 +385,49 @@ function validateResolvedConfig(
     }
   }
   // ollama: no credential check.
+}
+
+function validateResolvedConfig(
+  resolved: Omit<SmartServerConfig, 'log'>,
+  yaml: YamlConfig,
+  env: NodeJS.ProcessEnv,
+): void {
+  const issues: string[] = [];
+  const usingPipeline = !!get(yaml, 'pipeline', 'llm', 'main');
+
+  if (usingPipeline) {
+    const llmCfg = get(yaml, 'pipeline', 'llm') as
+      | Record<
+          string,
+          { provider?: unknown; apiKey?: unknown; model?: unknown }
+        >
+      | undefined;
+    checkLlmRole('pipeline.llm.main', llmCfg?.main, true, env, issues);
+    if (llmCfg?.classifier) {
+      checkLlmRole(
+        'pipeline.llm.classifier',
+        llmCfg.classifier,
+        false,
+        env,
+        issues,
+      );
+    }
+    if (llmCfg?.helper) {
+      checkLlmRole('pipeline.llm.helper', llmCfg.helper, false, env, issues);
+    }
+  } else {
+    checkLlmRole(
+      'llm',
+      {
+        provider: resolved.llm.provider,
+        apiKey: resolved.llm.apiKey,
+        model: resolved.llm.model,
+      },
+      true,
+      env,
+      issues,
+    );
+  }
 
   if (get(yaml, 'mcp')) {
     const mcpType = get(yaml, 'mcp', 'type') as string | undefined;
@@ -424,7 +458,7 @@ function validateResolvedConfig(
     }
   }
 
-  if (issues.length > 0) throw new ConfigValidationError(issues);
+  if (issues.length > 0) throw new ConfigValidationError([...new Set(issues)]);
 }
 
 /**
@@ -592,35 +626,37 @@ export function resolveSmartServerConfig(
         get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
       ),
     },
-    rag: {
-      type: get(yaml, 'rag', 'type') as
-        | 'ollama'
-        | 'in-memory'
-        | 'qdrant'
-        | 'hana-vector'
-        | 'pg-vector'
-        | undefined,
-      embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
-      url: get(yaml, 'rag', 'url') as string | undefined,
-      model: get(yaml, 'rag', 'model') as string | undefined,
-      collectionName:
-        (args['rag-collection-name'] as string) ??
-        get(yaml, 'rag', 'collectionName') ??
-        undefined,
-      dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
-      vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
-      keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
-      ...(get(yaml, 'rag', 'resourceGroup') !== undefined
-        ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
-        : {}),
-      ...(get(yaml, 'rag', 'scenario') !== undefined
-        ? {
-            scenario: String(get(yaml, 'rag', 'scenario')) as
-              | 'orchestration'
-              | 'foundation-models',
-          }
-        : {}),
-    },
+    rag: get(yaml, 'rag')
+      ? {
+          type: get(yaml, 'rag', 'type') as
+            | 'ollama'
+            | 'in-memory'
+            | 'qdrant'
+            | 'hana-vector'
+            | 'pg-vector'
+            | undefined,
+          embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
+          url: get(yaml, 'rag', 'url') as string | undefined,
+          model: get(yaml, 'rag', 'model') as string | undefined,
+          collectionName:
+            (args['rag-collection-name'] as string) ??
+            get(yaml, 'rag', 'collectionName') ??
+            undefined,
+          dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
+          vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
+          keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
+          ...(get(yaml, 'rag', 'resourceGroup') !== undefined
+            ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
+            : {}),
+          ...(get(yaml, 'rag', 'scenario') !== undefined
+            ? {
+                scenario: String(get(yaml, 'rag', 'scenario')) as
+                  | 'orchestration'
+                  | 'foundation-models',
+              }
+            : {}),
+        }
+      : undefined,
     mcp: mcpType
       ? {
           type: mcpType,
