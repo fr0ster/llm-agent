@@ -96,6 +96,25 @@ export function resolveCoordinatorActivation(name: string) {
   }
 }
 
+const VALID_PROVIDERS = [
+  'openai',
+  'anthropic',
+  'deepseek',
+  'sap-ai-sdk',
+  'ollama',
+] as const;
+
+export class ConfigValidationError extends Error {
+  constructor(issues: string[]) {
+    super(
+      `Configuration error in smart-server.yaml:\n${issues
+        .map((i) => `  - ${i}`)
+        .join('\n')}\nSet these fields in your YAML and restart.`,
+    );
+    this.name = 'ConfigValidationError';
+  }
+}
+
 export type YamlConfig = Record<string, unknown>;
 
 export interface ResolveConfigArgs {
@@ -322,6 +341,91 @@ const get = (obj: unknown, ...keys: string[]): unknown =>
     return undefined;
   }, obj);
 
+function validateResolvedConfig(
+  resolved: Omit<SmartServerConfig, 'log'>,
+  yaml: YamlConfig,
+  env: NodeJS.ProcessEnv,
+): void {
+  const issues: string[] = [];
+  const usingPipeline = !!get(yaml, 'pipeline', 'llm', 'main');
+
+  const provider = usingPipeline
+    ? (get(yaml, 'pipeline', 'llm', 'main', 'provider') as string | undefined)
+    : resolved.llm.provider;
+
+  if (!provider) {
+    issues.push(
+      usingPipeline
+        ? 'pipeline.llm.main.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)'
+        : 'llm.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)',
+    );
+  } else if (
+    // `as readonly string[]` is required so .includes() accepts an arbitrary
+    // string; do not "simplify" — it preserves the const-tuple narrowing.
+    !(VALID_PROVIDERS as readonly string[]).includes(provider)
+  ) {
+    issues.push(
+      usingPipeline
+        ? `pipeline.llm.main.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`
+        : `llm.provider: "${provider}" is invalid (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)`,
+    );
+  }
+
+  if (!resolved.llm.model && !get(yaml, 'pipeline', 'llm', 'main', 'model')) {
+    issues.push('llm.model: required (string)');
+  }
+
+  if (
+    provider === 'openai' ||
+    provider === 'anthropic' ||
+    provider === 'deepseek'
+  ) {
+    if (!resolved.llm.apiKey) {
+      issues.push(
+        `${provider} requires llm.apiKey to resolve to a non-empty value (typically via \${${provider.toUpperCase()}_API_KEY} env reference).`,
+      );
+    }
+  } else if (provider === 'sap-ai-sdk') {
+    if (!env.AICORE_SERVICE_KEY) {
+      issues.push(
+        'sap-ai-sdk requires the AICORE_SERVICE_KEY env var to be set with the SAP AI Core service-key JSON content. None found.',
+      );
+    }
+  }
+  // ollama: no credential check.
+
+  if (get(yaml, 'mcp')) {
+    const mcpType = get(yaml, 'mcp', 'type') as string | undefined;
+    if (mcpType && !['http', 'stdio', 'none'].includes(mcpType)) {
+      issues.push(
+        `mcp.type: "${mcpType}" is invalid (one of: http, stdio, none)`,
+      );
+    }
+    if (mcpType === 'http' && !get(yaml, 'mcp', 'url')) {
+      issues.push('mcp.url: required when mcp.type is http');
+    }
+    if (mcpType === 'stdio' && !get(yaml, 'mcp', 'command')) {
+      issues.push('mcp.command: required when mcp.type is stdio');
+    }
+  }
+
+  if (get(yaml, 'rag')) {
+    const ragType = get(yaml, 'rag', 'type') as string | undefined;
+    if (!ragType) {
+      issues.push('rag.type: required when a rag: block is present');
+    } else if (ragType === 'ollama') {
+      if (!get(yaml, 'rag', 'url')) {
+        issues.push('rag.url: required for rag.type ollama');
+      }
+      if (!get(yaml, 'rag', 'model')) {
+        issues.push('rag.model: required for rag.type ollama');
+      }
+    }
+  }
+
+  if (issues.length > 0) throw new ConfigValidationError(issues);
+}
+
 /**
  * Recursively parse the top-level `subagents:` block from a YAML config.
  *
@@ -448,8 +552,6 @@ export function resolveSmartServerConfig(
     | string
     | undefined;
   const apiKey = flatApiKey || pipelineApiKey || '';
-  if (!apiKey && !get(yaml, 'pipeline', 'llm', 'main'))
-    throw new Error('LLM API key is required');
 
   const mcpUrl = get(yaml, 'mcp', 'url') as string | undefined;
   const mcpCommand = get(yaml, 'mcp', 'command') as string | undefined;
@@ -468,7 +570,7 @@ export function resolveSmartServerConfig(
   const promptRagTranslate = get(yaml, 'prompts', 'ragTranslate') ?? null;
   const promptHistorySummary = get(yaml, 'prompts', 'historySummary') ?? null;
 
-  return {
+  const resolved: Omit<SmartServerConfig, 'log'> = {
     port: Number(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),
@@ -707,4 +809,6 @@ export function resolveSmartServerConfig(
         }
       : {}),
   };
+  validateResolvedConfig(resolved, yaml, env);
+  return resolved;
 }
