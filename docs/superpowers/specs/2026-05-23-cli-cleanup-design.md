@@ -33,13 +33,15 @@ This change brings the CLI to runtime metadata only: where to find the YAML, whi
 
 ## Changes
 
-### Three field categories — what must come from YAML
+### Two orthogonal rules: "no silent fallback" vs "required"
 
-Fields in `resolveSmartServerConfig` fall into three categories with different rules:
+The change has two distinct concerns that I previously conflated. Splitting them:
 
-**Category A — Identity / credentials / endpoints. Must come from YAML (or its `${VAR}` substitution). No direct env-var fallback. No hardcoded default. Empty after substitution → startup error.**
+**Rule 1 — No silent fallback (REMOVAL semantic, applies broadly).**
 
-| Field | Current direct env-var fallback (REMOVE) | Current hardcoded default (REMOVE) | Location |
+Direct `process.env.X` reads and hardcoded defaults are removed for every agent-behavior field listed below. The ONLY way for env values to reach config is through YAML's `${VAR}` substitution syntax. Missing from YAML ≠ silently filled from env or constant.
+
+| Field | Direct env-var fallback (REMOVE) | Hardcoded default (REMOVE) | Location |
 |---|---|---|---|
 | `llm.apiKey` | `env.DEEPSEEK_API_KEY` | — | `config.ts:449` |
 | `llm.model` | `env.DEEPSEEK_MODEL` | `'deepseek-chat'` | `config.ts:497-498` |
@@ -52,7 +54,28 @@ Fields in `resolveSmartServerConfig` fall into three categories with different r
 | `prompts.classifier` | `env.PROMPT_CLASSIFIER` | — | `config.ts:481` |
 | `mode` | `env.SMART_AGENT_MODE` | — | `config.ts:707` |
 
-For each: remove the `?? env.X` and any hardcoded literal. If YAML doesn't provide a value (after `${VAR}` substitution), startup fails with a human-readable error pointing at the missing field. If user wants the OLD `env.OLLAMA_URL` behavior, they write `rag.url: ${OLLAMA_URL}` in YAML — the substitution path stays.
+If a user wants the old `env.X` behavior, they write `field: ${X}` in YAML — the substitution path stays. The implicit direct read goes away.
+
+**Rule 2 — Required-ness is conditional on YAML shape, not universal.**
+
+Removing the silent fallback does NOT make every listed field universally required. Required-ness depends on what's actually configured. The agent's startup validator applies these conditional rules AFTER env substitution:
+
+| Field | Required when… | Optional when… |
+|---|---|---|
+| `llm.apiKey` (or `pipeline.llm.main.apiKey`) | Provider is `openai`/`anthropic`/`deepseek` | Provider is `sap-ai-sdk` (uses `AICORE_SERVICE_KEY` instead) |
+| `llm.model` (or `pipeline.llm.main.model`) | Always (agent must know which model) | — |
+| `pipeline.llm.main.provider` | Modern pipeline schema is used | Legacy flat `llm:` schema is used |
+| `mcp.type` | `mcp:` block is present in YAML | `mcp:` is omitted / `mcp.type: none` (MCP disabled — valid startup) |
+| `mcp.url` | `mcp.type: http` | Other `mcp.type` values (stdio, none) |
+| `mcp.command` | `mcp.type: stdio` | Other `mcp.type` values |
+| `rag.type` | A flat `rag:` block exists at top level | No `rag:` block (only `pipeline.rag.*` is used, or RAG fully disabled) |
+| `rag.url` | `rag.type` is a backend that needs a URL (`ollama`, `qdrant`, etc.) | `rag.type: in-memory` — no URL needed |
+| `rag.model` | `rag.type` is a backend that needs an embedder model (`ollama`, embedder-driven backends) | `rag.type: in-memory` (pure BM25 — no embedder) |
+| `prompts.system` | Never (always optional) | Always — the assembler has a default system prompt |
+| `prompts.classifier` | Never (always optional) | Always — the classifier handler has a default prompt |
+| `mode` | Never (always optional) | Always — the assembler defaults to `smart` mode |
+
+A missing **optional** field is accepted; the agent uses its built-in default (which lives in the consuming handler, NOT in `resolveSmartServerConfig`). A missing **required** field is a clear startup error with the field path.
 
 **Category B — Non-secret behavioral tuning params. Schema defaults are LEGAL (not a "silent fallback" — they're documented defaults). No env-var fallback.**
 
@@ -142,14 +165,17 @@ These are runtime-metadata-only: they tell the agent where to find configuration
 
 When the YAML loads, missing-required and bad-type errors must produce a single human-readable report (one report per startup attempt, possibly listing multiple lines of issues) — not a stack trace.
 
-Required fields (all checked after env substitution):
+Required fields (all checked after env substitution). The full conditional matrix lives in the "Required-ness is conditional" table earlier; this section calls out the multi-field invariants that span across LLM/MCP/RAG blocks:
 
-1. **Either** `llm.apiKey` + `llm.model` (legacy flat schema), **or** `pipeline.llm.main.provider` + `pipeline.llm.main.model` (modern pipeline schema). At least one of these two must be complete.
-2. If `provider` is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
+1. **At least ONE complete LLM identity** — either `llm.apiKey` + `llm.model` (legacy flat schema), OR `pipeline.llm.main.provider` + `pipeline.llm.main.model` (modern pipeline schema). At least one of these two pairs must be complete.
+2. **Provider value enum check** — if any `provider` field is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
 3. **Provider-specific credential validation:**
    - For `openai`, `anthropic`, `deepseek`: `apiKey` (or `pipeline.llm.main.apiKey`) is required AFTER env substitution. The expected pattern is `apiKey: ${OPENAI_API_KEY}` (or analogous) in YAML, with the env variable populated via `--env-path`, `--env`, or the OS shell. An empty/missing resolved value is a startup error: "Provider `openai` requires `pipeline.llm.main.apiKey` to resolve to a non-empty value (typically via `${OPENAI_API_KEY}` env reference)."
    - For `sap-ai-sdk`: `apiKey` is **optional** in YAML. Credentials come through `AICORE_SERVICE_KEY` env var (JSON string content of the SAP AI Core service key). The startup check validates that `AICORE_SERVICE_KEY` resolves to non-empty after env loading; if not, the human-readable error: "Provider `sap-ai-sdk` requires the `AICORE_SERVICE_KEY` env var to be set with the SAP AI Core service-key JSON content. None found."
      - **Future work, out of scope here:** service-key *file* discovery under `<secrets-dir>/service-keys/` (so users can store the JSON as a file rather than a JSON-stringified env var). The `--secrets-dir` flag reserves the convention; the file-reading wiring is a separate issue.
+4. **MCP block conditional fields** — if `mcp:` is present in YAML, `mcp.type` must be one of `http|stdio|none`. If `mcp.type: http`, `mcp.url` must be present. If `mcp.type: stdio`, `mcp.command` must be present. `mcp.type: none` (or `mcp:` absent) → MCP disabled, startup succeeds without any further mcp.* checks.
+5. **RAG block conditional fields** — if a flat `rag:` block exists, `rag.type` must be present. If `rag.type` is a vector-backed backend (`ollama`, `qdrant`, `hana-vector`, `pg-vector`), `rag.url` is required for those backends that need one (ollama, qdrant; HANA/pg accept connection-string variants — defer per-backend specifics to the existing schema). If `rag.type` requires an embedder model (`ollama`), `rag.model` is required. `rag.type: in-memory` → no URL or model needed; BM25 keyword search only.
+6. **Optional fields** — `prompts.system`, `prompts.classifier`, `mode`: absence is accepted; the consuming handlers (assembler, classifier) carry their own documented default behavior. Removing the env-fallback only stops `env.PROMPT_SYSTEM` etc. from silently populating these — it does NOT make them required.
 
 Error format (multi-error case batched into one report):
 
