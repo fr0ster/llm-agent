@@ -11,44 +11,28 @@
  *   npm run start:smart [-- options]
  *
  * Options:
- *   --env <path>                 .env file to load (default: .env in cwd if exists)
- *   --config <path>              YAML config file (default: smart-server.yaml if exists)
+ *   --config, -c <path>          YAML config file (default: smart-server.yaml if exists)
  *                                If path does not exist, writes a config template and exits.
- *   --port <number>              HTTP port (default: 4004)
+ *   --secrets-dir <folder>       Secrets root (default: ~/.config/mcp-abap-adt/)
+ *   --env                        Load *.env files from secrets-dir
+ *   --env-path <file>            Load a specific .env file
+ *   --port, -p <number>          HTTP port (default: 4004)
  *   --host <string>              Bind host (default: 0.0.0.0)
- *   --llm-api-key <key>          DeepSeek API key
- *   --llm-model <model>          DeepSeek model (default: deepseek-chat)
- *   --llm-temperature <n>        Temperature 0..2 (default: 0.7)
- *   --rag-type <type>            ollama | in-memory (default: ollama)
- *   --rag-url <url>              Ollama URL (default: http://localhost:11434)
- *   --rag-model <model>          Embed model (default: nomic-embed-text)
- *   --rag-vector-weight <n>      Semantic similarity weight 0..1 (default: 0.7)
- *   --rag-keyword-weight <n>     Lexical matching weight 0..1 (default: 0.3)
- *   --mcp-type <type>            http | stdio (default: http if --mcp-url set)
- *   --mcp-url <url>              MCP HTTP endpoint
- *   --mcp-command <cmd>          MCP stdio command
- *   --mcp-args <args>            MCP stdio args (space-separated string)
- *   --mode <mode>                smart | passthrough | hybrid (default: hybrid)
- *                                  smart       — all requests via SmartAgent (RAG tool selection)
- *                                  passthrough — all requests directly to LLM (no agent)
- *                                  hybrid      — Cline → passthrough, others → SmartAgent
- *   --prompt-system <text>       System preamble for ContextAssembler
- *   --prompt-classifier <text>   Override classifier system prompt
- *   --agent-show-reasoning       Instruct the agent to explain its strategy
  *   --plugin-dir <path>          Additional plugin directory (loaded after defaults)
  *   --log-file <path>            Log file path (default: smart-server.log)
  *   --log-stdout                 Log to stdout instead of file
- *   --help                       Show this help
+ *   --help, -h                   Show this help
+ *   --version, -v                Print package version
  *
  * Secrets vs settings:
- *   Secrets (API keys) go in .env, settings go in YAML config.
- *   Priority: CLI args > YAML config > env vars (.env + process env) > defaults.
+ *   Secrets (API keys) go in .env / secrets-dir, settings go in YAML config.
+ *   Priority: YAML config > env vars > defaults.
+ *   To disable MCP, omit the `mcp:` block or set `mcp.type: none` in YAML.
  *
  * YAML config example (smart-server.yaml):
  *   port: 4004
  *   llm:
- *     apiKey: ${DEEPSEEK_API_KEY}   # resolved from .env
- *     model: deepseek-chat
+ *     provider: deepseek
  *   rag:
  *     type: ollama
  *     url: http://localhost:11434
@@ -56,9 +40,6 @@
  *   mcp:
  *     type: http
  *     url: http://localhost:3000/mcp/stream/http
- *   prompts:
- *     system: "You are a helpful assistant specialized in SAP ABAP development."
- *     classifier: null   # use default classifier prompt
  *   log: smart-server.log
  */
 
@@ -83,37 +64,34 @@ import { SmartServer } from './smart-server.js';
 // CLI arg parsing — must happen before dotenv so --env is available
 // ---------------------------------------------------------------------------
 
-const { values: args } = parseArgs({
-  options: {
-    env: { type: 'string' },
-    config: { type: 'string', short: 'c' },
-    port: { type: 'string', short: 'p' },
-    host: { type: 'string' },
-    'llm-api-key': { type: 'string' },
-    'llm-model': { type: 'string' },
-    'llm-temperature': { type: 'string' },
-    'rag-type': { type: 'string' },
-    'rag-url': { type: 'string' },
-    'rag-model': { type: 'string' },
-    'rag-vector-weight': { type: 'string' },
-    'rag-keyword-weight': { type: 'string' },
-    'mcp-type': { type: 'string' },
-    'mcp-url': { type: 'string' },
-    'mcp-command': { type: 'string' },
-    'mcp-args': { type: 'string' },
-    mode: { type: 'string' },
-    'prompt-system': { type: 'string' },
-    'prompt-classifier': { type: 'string' },
-    'agent-show-reasoning': { type: 'boolean' },
-    'plugin-dir': { type: 'string' },
-    'log-file': { type: 'string' },
-    'log-stdout': { type: 'boolean' },
-    help: { type: 'boolean', short: 'h' },
-    version: { type: 'boolean', short: 'v' },
-  },
-  allowPositionals: false,
-  strict: false,
-});
+function parseCliArgs() {
+  try {
+    return parseArgs({
+      options: {
+        config: { type: 'string', short: 'c' },
+        'secrets-dir': { type: 'string' },
+        env: { type: 'boolean' },
+        'env-path': { type: 'string' },
+        port: { type: 'string', short: 'p' },
+        host: { type: 'string' },
+        'plugin-dir': { type: 'string' },
+        'log-file': { type: 'string' },
+        'log-stdout': { type: 'boolean' },
+        help: { type: 'boolean', short: 'h' },
+        version: { type: 'boolean', short: 'v' },
+      },
+      allowPositionals: false,
+      strict: true,
+    }).values;
+  } catch (err) {
+    process.stderr.write(
+      `${(err as Error).message}\nRun with --help for usage.\n`,
+    );
+    process.exit(1);
+  }
+}
+
+const args = parseCliArgs();
 
 if (args.version) {
   const pkg = JSON.parse(
@@ -135,19 +113,11 @@ if (args.help) {
 }
 
 // ---------------------------------------------------------------------------
-// Load .env — explicit --env path, or .env in cwd if it exists
+// Load .env — Task 7 wires --secrets-dir / --env / --env-path loading logic.
+// For now, silently try .env in cwd as a fallback; ok if it doesn't exist.
 // ---------------------------------------------------------------------------
 
-const envArg = args.env as string | undefined;
-if (envArg) {
-  const result = configDotenv({ path: path.resolve(envArg) });
-  if (!result.parsed) {
-    process.stderr.write(`Warning: could not load env file: ${envArg}\n`);
-  }
-} else {
-  // Silently try .env in cwd; ok if it doesn't exist
-  configDotenv({ path: path.resolve('.env') });
-}
+configDotenv({ path: path.resolve('.env') });
 
 // ---------------------------------------------------------------------------
 // Config file: template generation or loading
