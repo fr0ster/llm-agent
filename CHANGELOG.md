@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [15.0.0] — 2026-05-23
+
 ### Breaking changes
 - **`rag.type` is now store-only.** Accepts `in-memory`, `qdrant`, `hana-vector`, `pg-vector`. The former `rag.type: ollama` / `rag.type: openai` were embedders mislabelled as stores — they are removed and now error on startup with a migration hint. Use `rag.type: in-memory` with `rag.embedder: ollama` (or `openai`) instead. `in-memory` with no `embedder` is BM25 keyword-only; with an embedder it is a hybrid vector store. `rag.embedder` accepts embedding-capable providers (`ollama`, `openai`, `sap-ai-core`); `deepseek`/`anthropic` have no embedder and are rejected.
 - **CLI flag set trimmed to runtime/process overrides only.** Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`, `--llm-only`. These duplicated YAML fields (or, for `--llm-only`, were a no-op dead flag) and are no longer accepted — passing them exits non-zero with an `unknown flag` error. Configure agent behavior in `smart-server.yaml`; disable MCP via `mcp.type: none` or by omitting the `mcp:` block.
