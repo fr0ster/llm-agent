@@ -24,13 +24,34 @@ This change brings the CLI to runtime metadata only: where to find the YAML, whi
 ## Non-Goals
 
 - This is NOT adding `--llm-provider` or any auto-detect logic. The earlier framing of issue #134 proposed that; brainstorming pivoted to "YAML is the source of truth, CLI is metadata" as the cleaner model.
-- This does NOT change YAML schema (no new fields, no removed fields). It only changes the CLI parser.
+- This does NOT change YAML schema (no new fields, no removed fields). It changes CLI parsing AND config loading/validation semantics — specifically, the env-var fallbacks and hardcoded defaults that today silently fill in missing YAML fields for agent behavior.
 - This does NOT change the first-run "generate YAML template" behavior. That stays.
 - This does NOT touch the bundled provider/embedder packages from v13.1.0; they remain bundled.
+- This does NOT wire service-key file discovery, sessions relocation, or proxy-config reading. The `--secrets-dir` flag reserves the convention root but only the `*.env` half is consumed in this PR. Service-key file discovery is reserved for a separate follow-up issue.
 
 ---
 
 ## Changes
+
+### Env-var and default-value fallbacks for agent behavior REMOVED
+
+The current `resolveSmartServerConfig` in `packages/llm-agent-server/src/smart-agent/config.ts` reads several env vars directly AND falls back to hardcoded defaults when YAML is incomplete. These silently fill in agent-behavior fields the YAML doesn't specify, defeating the "fail loud on bad YAML" guarantee.
+
+Remove the following direct reads / hardcoded defaults from `config.ts`:
+
+| Removed pattern | Approximate location | Rationale |
+|---|---|---|
+| `env.DEEPSEEK_MODEL ?? 'deepseek-chat'` fallback for `llm.model` | `config.ts:497-498` | Agent behavior must come from YAML's `llm.model` (or `pipeline.llm.main.model`). Empty → startup error. |
+| `env.MCP_ENDPOINT` fallback for `mcp.url` | `config.ts:459` | `mcp.url` is YAML; if user wants `MCP_ENDPOINT` from env, they write `mcp.url: ${MCP_ENDPOINT}` in YAML. |
+| `env.OLLAMA_URL` fallback for `rag.url` | `config.ts:521` | Same — use `${OLLAMA_URL}` substitution in YAML. |
+| `env.PROMPT_SYSTEM` fallback for `prompts.system` | `config.ts:476` | Same — `prompts.system: ${PROMPT_SYSTEM}` or hardcode the value in YAML. |
+| `env.SMART_AGENT_MODE` fallback for `mode` | `config.ts:707` | Same — `mode: ${SMART_AGENT_MODE}` or fix value in YAML. |
+| Hardcoded `'ollama'` default for embedder type | `config.ts:511` | Must be specified in YAML when applicable. |
+| Hardcoded `'deepseek-chat'` default for model | `config.ts:497` | Already covered above. |
+
+After this PR, the **only** env-substitution mechanism for agent-behavior values is YAML's `${VAR}` placeholder syntax (which is loaded from `process.env` AFTER env loading flags run). Runtime/process fields (`port`, `host`, log path, etc.) keep their existing defaults — those are NOT agent behavior.
+
+This is what makes the "fail loud on bad YAML" promise real: with these fallbacks gone, an incomplete YAML can no longer be silently propped up by env vars or hardcoded constants.
 
 ### CLI flags REMOVED
 
@@ -82,7 +103,7 @@ These are runtime-metadata-only: they tell the agent where to find configuration
 
 ### YAML validation hardened
 
-When the YAML loads, missing-required and bad-type errors must produce a single-line human-readable message — not a stack trace.
+When the YAML loads, missing-required and bad-type errors must produce a single human-readable report (one report per startup attempt, possibly listing multiple lines of issues) — not a stack trace.
 
 Required fields (all checked after env substitution):
 
@@ -90,10 +111,8 @@ Required fields (all checked after env substitution):
 2. If `provider` is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
 3. **Provider-specific credential validation:**
    - For `openai`, `anthropic`, `deepseek`: `apiKey` (or `pipeline.llm.main.apiKey`) is required AFTER env substitution. The expected pattern is `apiKey: ${OPENAI_API_KEY}` (or analogous) in YAML, with the env variable populated via `--env-path`, `--env`, or the OS shell. An empty/missing resolved value is a startup error: "Provider `openai` requires `pipeline.llm.main.apiKey` to resolve to a non-empty value (typically via `${OPENAI_API_KEY}` env reference)."
-   - For `sap-ai-sdk`: `apiKey` is **optional** in YAML. Credentials come through SAP AI Core's own conventions:
-     - `AICORE_SERVICE_KEY` env var with the service-key JSON content, OR
-     - `~/.config/mcp-abap-adt/service-keys/aicore.json` style file discovery (out of scope for this PR; reserved by the `--secrets-dir` convention, wired later).
-     The startup check for `sap-ai-sdk` validates that one of these mechanisms produces a usable credential; if neither does, the same human-readable error: "Provider `sap-ai-sdk` requires `AICORE_SERVICE_KEY` env var with the service-key JSON, or a service-key file under `<secrets-dir>/service-keys/`. None found."
+   - For `sap-ai-sdk`: `apiKey` is **optional** in YAML. Credentials come through `AICORE_SERVICE_KEY` env var (JSON string content of the SAP AI Core service key). The startup check validates that `AICORE_SERVICE_KEY` resolves to non-empty after env loading; if not, the human-readable error: "Provider `sap-ai-sdk` requires the `AICORE_SERVICE_KEY` env var to be set with the SAP AI Core service-key JSON content. None found."
+     - **Future work, out of scope here:** service-key *file* discovery under `<secrets-dir>/service-keys/` (so users can store the JSON as a file rather than a JSON-stringified env var). The `--secrets-dir` flag reserves the convention; the file-reading wiring is a separate issue.
 
 Error format (multi-error case batched into one report):
 
@@ -172,7 +191,7 @@ Add the cases listed below to `packages/llm-agent-server/src/__tests__/` (or whe
 2. Bad YAML — missing required field: produces a human-readable error with the field path, NOT a stack trace.
 3. Bad YAML — invalid provider value: produces a human-readable error listing valid options.
 4. Provider credential validation — openai/anthropic/deepseek: `provider: openai` with no resolvable `apiKey` produces a clear error pointing at the env-var name to set.
-5. Provider credential validation — sap-ai-sdk: missing `AICORE_SERVICE_KEY` (and no service-key file mechanism wired yet) produces the SAP-specific error message.
+5. Provider credential validation — sap-ai-sdk: missing/empty `AICORE_SERVICE_KEY` produces the SAP-specific error message naming the env var (no mention of file mechanism, since not wired in this PR).
 6. Kept flags still work: `--port`, `--config`, `--log-stdout` etc. continue to function as before.
 7. `--env-path <file>` loads variables from the specified file.
 8. `--env` scans `<secrets-dir>` for `*.env` and loads them in alphabetical order.
@@ -204,10 +223,12 @@ CLI surface change is breaking. Batched into v15.0.0 alongside #135/#136/#137. T
 
 | Component | Path | Change |
 |---|---|---|
-| CLI argument parser | `packages/llm-agent-server/src/smart-agent/cli.ts` | Remove ~16 flag handlers; keep the 8 listed above. |
-| CLI usage/help string | same file (top JSDoc + `--help` output) | Trim to match. |
-| YAML validation error formatter | `packages/llm-agent-server/src/smart-agent/config.ts` (`loadYamlConfig` + neighbors) | Convert raw validation errors into the human-readable format above. |
-| Tests | `packages/llm-agent-server/src/__tests__/cli-*.test.ts` (existing or new) | Add the 4 cases listed above. |
+| CLI argument parser | `packages/llm-agent-server/src/smart-agent/cli.ts` | Remove ~16 flag handlers; keep the 11 listed above (8 existing + 3 new env-related). Switch parseArgs to `strict: true`. |
+| CLI usage/help string | same file (top JSDoc + `--help` output) | Trim to match new flag set. |
+| Env-var and default fallbacks | `packages/llm-agent-server/src/smart-agent/config.ts` (`resolveSmartServerConfig`) | Remove direct env reads + hardcoded defaults for agent-behavior fields (see table above). Runtime/process defaults stay. |
+| Provider credential validation | `packages/llm-agent-server/src/smart-agent/config.ts` (post-load checks) | Add provider-specific required-field checks (apiKey resolution for openai/anthropic/deepseek; AICORE_SERVICE_KEY non-empty for sap-ai-sdk). |
+| YAML validation error formatter | same file (`loadYamlConfig` + neighbors) | Convert raw validation errors into the human-readable batched-report format. |
+| Tests | `packages/llm-agent-server/src/__tests__/cli-*.test.ts` (existing or new) | Add the 11 cases listed in the Tests section above. |
 | `docs/QUICK_START.md` | docs | Replace CLI-flag table with trimmed list + paragraph. |
 | `CLAUDE.md` | top-level | Sync any CLI-flag references. |
 | `CHANGELOG.md` | `[Unreleased]` | Add an entry under a new "### Breaking changes" subsection. |
