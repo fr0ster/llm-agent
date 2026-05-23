@@ -152,7 +152,8 @@ host: 0.0.0.0
 mode: smart
 
 llm:
-  apiKey: \${DEEPSEEK_API_KEY}
+  provider: deepseek                  # deepseek | openai | anthropic | sap-ai-sdk | ollama
+  apiKey: \${DEEPSEEK_API_KEY}        # not required for ollama / sap-ai-sdk
   model: deepseek-chat
   temperature: 0.7
   classifierTemperature: 0.1

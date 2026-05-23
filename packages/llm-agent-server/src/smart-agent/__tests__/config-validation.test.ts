@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { resolveSmartServerConfig } from '../config.js';
+import { parse } from 'yaml';
+import { resolveSmartServerConfig, YAML_TEMPLATE } from '../config.js';
 
 describe('resolveSmartServerConfig — flat llm provider/url', () => {
   it('reads provider and url from YAML', () => {
@@ -196,5 +197,15 @@ describe('config validation — fail loud, human-readable', () => {
         ),
       /pipeline\.llm\.main\.provider.*required/i,
     );
+  });
+});
+
+describe('first-run YAML template', () => {
+  it('passes validation once the apiKey env is filled', () => {
+    // Mirrors first-run UX: template is generated, user fills DEEPSEEK_API_KEY.
+    const filled = YAML_TEMPLATE.replace(/\$\{DEEPSEEK_API_KEY\}/g, 'sk-test');
+    const cfg = resolveSmartServerConfig({}, parse(filled), {});
+    assert.equal(cfg.llm.provider, 'deepseek');
+    assert.ok(cfg.llm.apiKey);
   });
 });
