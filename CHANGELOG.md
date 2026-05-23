@@ -9,6 +9,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking changes
+- **Embedder and LLM provider `model` no longer have hardcoded defaults.** `model` must be set explicitly in every embedder (`OllamaEmbedder`, `OpenAiEmbedder`) and LLM provider (`OpenAIProvider`, `DeepSeekProvider`, `AnthropicProvider`) config. A missing `model` now throws a clear error at construction time. The server-path validator already required `llm.model` since v15.0.0; this extends the same fail-loud behavior to embedders and to direct library use of providers.
+- **`rag.model` is now required when an embedder is used.** The server config validator rejects any `rag` block that uses a vector store (`qdrant`, `hana-vector`, `pg-vector`) or sets `embedder` on an `in-memory` store without an explicit `rag.model`. A bare `type: in-memory` with no `embedder` (BM25 keyword-only) requires no model and is unaffected.
+
+### Changed
+- **Shipped examples and template use multilingual `bge-m3` ollama embedder** (was `nomic-embed-text`). Run `ollama pull bge-m3` before first start. Persistent vector stores (qdrant/hana-vector/pg-vector) built with a previous embedder must be **re-indexed** — embedding dimensions differ (nomic-embed-text: 768 → bge-m3: 1024).
+
 ## [15.0.0] — 2026-05-23
 
 ### Breaking changes

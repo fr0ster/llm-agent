@@ -13,7 +13,7 @@ rag:
   type: in-memory
   embedder: ollama
   url: ${OLLAMA_URL:-http://localhost:11434}
-  model: nomic-embed-text
+  model: bge-m3
   vectorWeight: 0.7
   keywordWeight: 0.3
 

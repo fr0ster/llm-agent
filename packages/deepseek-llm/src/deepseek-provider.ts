@@ -19,10 +19,13 @@ export class DeepSeekProvider extends OpenAIProvider {
   protected override readonly providerName: string = 'DeepSeek';
 
   constructor(config: DeepSeekConfig) {
+    if (!config.model) {
+      throw new Error("DeepSeek provider requires a 'model'");
+    }
     super({
       ...config,
       baseURL: config.baseURL || 'https://api.deepseek.com/v1',
-      model: config.model || 'deepseek-chat',
+      model: config.model,
     } as OpenAIConfig);
   }
 

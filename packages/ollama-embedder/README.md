@@ -22,7 +22,7 @@ import { OllamaEmbedder, OllamaRag } from '@mcp-abap-adt/ollama-embedder';
 // Direct embedder usage
 const embedder = new OllamaEmbedder({
   ollamaUrl: 'http://localhost:11434',
-  model: 'nomic-embed-text',
+  model: 'bge-m3',
 });
 
 const result = await embedder.embed('Hello world');
@@ -31,7 +31,7 @@ console.log(result.vector);
 // Convenience RAG wrapper
 const rag = new OllamaRag({
   ollamaUrl: 'http://localhost:11434',
-  model: 'nomic-embed-text',
+  model: 'bge-m3',
 });
 
 const searchResults = await rag.query('What is Ollama?', documents);

@@ -18,7 +18,7 @@ rag:
   type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
   embedder: ollama                    # Embedder: ollama | openai | sap-ai-core (omit for BM25 keyword-only)
   url: http://localhost:11434
-  model: nomic-embed-text
+  model: bge-m3
   # collectionName: llm-agent         # Qdrant collection name (qdrant type only)
   dedupThreshold: 0.92
   vectorWeight: 0.7                   # Semantic similarity weight (0..1)

@@ -93,7 +93,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
   it('returns 404 when Anthropic adapter is disabled', async () => {
     const server = new SmartServer({
       port: 0,
-      llm: { apiKey: 'test-key' },
+      llm: { provider: 'deepseek', apiKey: 'test-key', model: 'deepseek-chat' },
       skipModelValidation: true,
       disableBuiltInAdapters: true,
       apiAdapters: [],
@@ -116,7 +116,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
   it('returns 400 for invalid JSON on /v1/messages', async () => {
     const server = new SmartServer({
       port: 0,
-      llm: { apiKey: 'test-key' },
+      llm: { provider: 'deepseek', apiKey: 'test-key', model: 'deepseek-chat' },
       skipModelValidation: true,
       apiAdapters: [makeFakeAdapter()],
     });
@@ -169,7 +169,7 @@ describe('SmartServer — Anthropic /v1/messages route', () => {
   it('routes /messages (without /v1 prefix) to Anthropic adapter', async () => {
     const server = new SmartServer({
       port: 0,
-      llm: { apiKey: 'test-key' },
+      llm: { provider: 'deepseek', apiKey: 'test-key', model: 'deepseek-chat' },
       skipModelValidation: true,
       disableBuiltInAdapters: true,
       apiAdapters: [],

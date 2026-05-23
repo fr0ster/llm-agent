@@ -9,20 +9,23 @@ import {
 export interface OllamaEmbedderConfig {
   /** Default: 'http://localhost:11434' */
   ollamaUrl?: string;
-  /** Default: 'nomic-embed-text' */
-  model?: string;
+  /** Required: embedding model name (e.g. 'bge-m3'). No default — must be set explicitly. */
+  model: string;
   /** Per-request timeout in milliseconds. Default: 30 000 */
   timeoutMs?: number;
 }
 
 export class OllamaEmbedder implements IEmbedderBatch {
   private readonly ollamaUrl: string;
-  private readonly model: string;
+  readonly model: string;
   private readonly timeoutMs: number;
 
-  constructor(config: OllamaEmbedderConfig = {}) {
+  constructor(config: OllamaEmbedderConfig) {
+    if (!config?.model) {
+      throw new Error("OllamaEmbedder requires a 'model' (e.g. 'bge-m3')");
+    }
     this.ollamaUrl = config.ollamaUrl ?? 'http://localhost:11434';
-    this.model = config.model ?? 'nomic-embed-text';
+    this.model = config.model;
     this.timeoutMs = config.timeoutMs ?? 30_000;
   }
 
@@ -125,7 +128,7 @@ export class OllamaEmbedder implements IEmbedderBatch {
  * OllamaRag — convenience adapter that combines OllamaEmbedder with VectorRag.
  */
 export class OllamaRag extends VectorRag {
-  constructor(config: OllamaEmbedderConfig & VectorRagConfig = {}) {
+  constructor(config: OllamaEmbedderConfig & VectorRagConfig) {
     const embedder = new OllamaEmbedder(config);
     super(embedder, config);
   }

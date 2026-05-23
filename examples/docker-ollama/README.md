@@ -21,7 +21,7 @@ Client → :4004/v1/chat/completions → llm-agent → Ollama (LLM + embeddings)
 
    ```bash
    ollama pull qwen2.5:14b         # LLM (or any model you prefer)
-   ollama pull nomic-embed-text     # embeddings
+   ollama pull bge-m3               # embeddings (multilingual)
    ```
 
 2. **Start:**
@@ -78,7 +78,7 @@ Works with Cline, Continue, Goose, Cursor, and any OpenAI SDK.
 
 - Ollama inference speed depends on your GPU. CPU-only mode works but is slow for large models.
 - For CPU-only machines, use smaller models like `llama3.1:8b` or `qwen2.5:7b`.
-- Embedding calls (`nomic-embed-text`) are lightweight and fast even on CPU.
+- Embedding calls (`bge-m3`) are lightweight and fast even on CPU.
 
 ## Logs / Stop
 

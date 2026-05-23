@@ -172,7 +172,7 @@ async function main() {
 
   const embedder = new OllamaEmbedder({
     url: OLLAMA_URL,
-    model: 'nomic-embed-text',
+    model: 'bge-m3',
   });
   const helperLlm = makeDefaultLlm(
     DEEPSEEK_API_KEY as string,

@@ -410,6 +410,64 @@ describe('config validation — fail loud, human-readable', () => {
       /anthropic requires pipeline\.llm\.helper\.apiKey/i,
     );
   });
+
+  it('rag block with embedder but no model is rejected', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: { type: 'in-memory', embedder: 'ollama' },
+          },
+          {},
+        ),
+      /rag\.model.*required/i,
+    );
+  });
+
+  it('rag block with embedder and model passes', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
+      },
+      {},
+    );
+    assert.equal(cfg.rag?.type, 'in-memory');
+  });
+
+  it('bare in-memory rag (no embedder, no model) still passes (BM25)', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm: { provider: 'ollama', model: 'm' },
+        rag: { type: 'in-memory' },
+      },
+      {},
+    );
+    assert.equal(cfg.rag?.type, 'in-memory');
+  });
+
+  it('qdrant rag without model is rejected', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: { provider: 'ollama', model: 'm' },
+            rag: {
+              type: 'qdrant',
+              url: 'http://localhost:6333',
+              collectionName: 'test',
+            },
+          },
+          {},
+        ),
+      /rag\.model.*required/i,
+    );
+  });
 });
 
 describe('first-run YAML template', () => {

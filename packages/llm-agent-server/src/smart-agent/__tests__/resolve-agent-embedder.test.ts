@@ -31,7 +31,12 @@ describe('resolveAgentEmbedder', () => {
   it('builds an embedder from rag.embedder for YAML-only configs (#137)', async () => {
     // in-memory + explicit embedder → hybrid vector store needs an embedder.
     const result = await resolveAgentEmbedder(
-      { type: 'in-memory', embedder: 'ollama', url: 'http://localhost:11434' },
+      {
+        type: 'in-memory',
+        embedder: 'ollama',
+        url: 'http://localhost:11434',
+        model: 'bge-m3',
+      },
       undefined,
       {},
     );
@@ -42,7 +47,7 @@ describe('resolveAgentEmbedder', () => {
   it('builds an embedder for a vector store even without explicit rag.embedder', async () => {
     // qdrant/hana/pg always use an embedder; default is ollama.
     const result = await resolveAgentEmbedder(
-      { type: 'qdrant', url: 'http://localhost:6333' },
+      { type: 'qdrant', url: 'http://localhost:6333', model: 'bge-m3' },
       undefined,
       {},
     );
