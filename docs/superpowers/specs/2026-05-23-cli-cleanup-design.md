@@ -55,11 +55,17 @@ All of these duplicate YAML fields and are removed from `packages/llm-agent-serv
 
 No deprecation cycle — these are removed outright. Any startup script invoking them will fail at argument-parse time with a clear "unknown flag" error.
 
-### CLI flags KEPT
+### CLI flags KEPT / ADDED
 
 ```
 --config <path>           Path to YAML config (default: smart-server.yaml in cwd)
---env <path>              Path to .env file (default: .env in cwd)
+--secrets-dir <folder>    Override secrets root (default: ~/.config/mcp-abap-adt/).
+                          Convention-shared with mcp-abap-adt-proxy etc.;
+                          holds service keys, *.env, proxy/, sessions/.
+--env                     Load all `*.env` files found in <secrets-dir>.
+                          No argument; presence enables the directory scan.
+--env-path <file>         Load the specific `.env` file at this path.
+                          Overrides --env when both are passed.
 --port <number>           Override YAML port — handy for ad-hoc testing
 --host <string>           Override YAML host
 --log-stdout              Toggle: log to stdout instead of file
@@ -68,7 +74,9 @@ No deprecation cycle — these are removed outright. Any startup script invoking
 --help                    Show usage
 ```
 
-These are runtime-metadata-only: they tell the agent where to find configuration, where to write output, what port to bind. They don't configure agent behavior.
+The 3 new env-related flags (`--secrets-dir`, `--env`, `--env-path`) mirror the convention already established in sibling tools (`mcp-abap-adt-proxy`, etc.) so deployment scripts share a single mental model across the family.
+
+These are runtime-metadata-only: they tell the agent where to find configuration, secrets, and where to write output. They don't configure agent behavior beyond environment loading.
 
 ### YAML validation hardened
 
@@ -88,6 +96,27 @@ Set these fields in your YAML and restart.
 ```
 
 Existing Zod schema (if used) should generate this format; otherwise a small handler maps validation errors to this style.
+
+### Env-loading semantics
+
+Resolution order (highest priority wins for any specific variable):
+
+1. **Pre-existing `process.env`** — what the OS/shell already exported. Never overwritten.
+2. **`--env-path <file>`** — when given, that single file is loaded via `dotenv.config({ path: <file>, override: false })`.
+3. **`--env`** — when given, every `*.env` file under `<secrets-dir>` is loaded in alphabetical order (`dotenv.config({ path: <secrets-dir>/foo.env, override: false })` for each). Later files don't override earlier (first-wins-after-shell).
+4. **Implicit `.env` in cwd** — kept as a fallback ONLY when neither `--env` nor `--env-path` is given. Matches existing dotenv default behavior so projects that just `llm-agent` in their repo with a local `.env` keep working.
+
+YAML `${VAR}` substitution reads from `process.env` after the above loading. No change to that mechanism.
+
+#### What lives in `<secrets-dir>` beyond `*.env`
+
+The sibling tools (`mcp-abap-adt-proxy`, etc.) place additional structured artifacts under `<secrets-dir>`:
+
+- `service-keys/` — service account JSON files (AICORE_SERVICE_KEY content, etc.)
+- `proxy/` — proxy config files
+- `sessions/` — session state storage
+
+**This PR only wires the env-loading half of the convention.** Service-keys file discovery, sessions relocation, and proxy-config integration follow in separate issues (not yet filed). Adding the `--secrets-dir` flag now reserves the convention and lets users override the root location consistently across the family of tools, even while llm-agent itself only consumes the `*.env` subset for now.
 
 ### First-run template generation
 
@@ -111,7 +140,12 @@ Add to `packages/llm-agent-server/src/__tests__/` (or wherever existing CLI test
 1. Removed-flag rejection: passing `--llm-api-key X` produces a non-zero exit with "unknown flag" or equivalent. No silent ignore.
 2. Bad YAML — missing required field: produces a human-readable error with the field path, NOT a stack trace.
 3. Bad YAML — invalid provider value: produces a human-readable error listing valid options.
-4. Kept flags still work: `--port`, `--config`, `--env`, `--log-stdout` etc. continue to function as before.
+4. Kept flags still work: `--port`, `--config`, `--log-stdout` etc. continue to function as before.
+5. `--env-path <file>` loads variables from the specified file.
+6. `--env` scans `<secrets-dir>` for `*.env` and loads them in alphabetical order.
+7. `--secrets-dir <folder>` redirects the `--env` scan to the given folder.
+8. Pre-existing `process.env` values take precedence over any file-loaded value (no override).
+9. Implicit `.env` fallback works when neither `--env` nor `--env-path` is given.
 
 ---
 
