@@ -39,3 +39,20 @@ describe('resolveSmartServerConfig — flat llm provider/url', () => {
     assert.equal(absent.llm.model, undefined);
   });
 });
+
+describe('resolveSmartServerConfig — no silent env/default fallbacks', () => {
+  it('does not read DEEPSEEK_API_KEY / OLLAMA_URL / MCP_ENDPOINT from env', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      { llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' } },
+      {
+        DEEPSEEK_API_KEY: 'env-key',
+        OLLAMA_URL: 'http://env-host:11434',
+        MCP_ENDPOINT: 'http://env-mcp/mcp',
+      } as NodeJS.ProcessEnv,
+    );
+    assert.equal(cfg.llm.apiKey, 'sk-x'); // not 'env-key'
+    assert.equal(cfg.rag?.url, undefined); // not the env value
+    assert.equal(cfg.mcp?.url, undefined); // no mcp block in YAML → env ignored
+  });
+});

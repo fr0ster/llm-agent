@@ -443,11 +443,7 @@ export function resolveSmartServerConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
 ): Omit<SmartServerConfig, 'log'> {
-  const flatApiKey =
-    (args['llm-api-key'] as string) ??
-    get(yaml, 'llm', 'apiKey') ??
-    env.DEEPSEEK_API_KEY ??
-    '';
+  const flatApiKey = (get(yaml, 'llm', 'apiKey') as string) ?? '';
   const pipelineApiKey = get(yaml, 'pipeline', 'llm', 'main', 'apiKey') as
     | string
     | undefined;
@@ -455,31 +451,19 @@ export function resolveSmartServerConfig(
   if (!apiKey && !get(yaml, 'pipeline', 'llm', 'main'))
     throw new Error('LLM API key is required');
 
-  const mcpUrl =
-    (args['mcp-url'] as string) ?? get(yaml, 'mcp', 'url') ?? env.MCP_ENDPOINT;
-  const mcpCommand =
-    (args['mcp-command'] as string) ??
-    get(yaml, 'mcp', 'command') ??
-    env.MCP_COMMAND;
+  const mcpUrl = get(yaml, 'mcp', 'url') as string | undefined;
+  const mcpCommand = get(yaml, 'mcp', 'command') as string | undefined;
   const mcpTypeRaw =
-    (args['mcp-type'] as string) ??
-    get(yaml, 'mcp', 'type') ??
+    (get(yaml, 'mcp', 'type') as string) ??
     (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null);
   const mcpType = (mcpTypeRaw === 'none' ? null : mcpTypeRaw) as
     | 'http'
     | 'stdio'
     | null;
 
-  const promptSystem =
-    (args['prompt-system'] as string) ??
-    get(yaml, 'prompts', 'system') ??
-    env.PROMPT_SYSTEM ??
-    null;
+  const promptSystem = (get(yaml, 'prompts', 'system') as string) ?? null;
   const promptClassifier =
-    (args['prompt-classifier'] as string) ??
-    get(yaml, 'prompts', 'classifier') ??
-    env.PROMPT_CLASSIFIER ??
-    null;
+    (get(yaml, 'prompts', 'classifier') as string) ?? null;
   const promptReasoning = get(yaml, 'prompts', 'reasoning') ?? null;
   const promptRagTranslate = get(yaml, 'prompts', 'ragTranslate') ?? null;
   const promptHistorySummary = get(yaml, 'prompts', 'historySummary') ?? null;
@@ -506,36 +490,23 @@ export function resolveSmartServerConfig(
       ),
     },
     rag: {
-      type: ((args['rag-type'] as string) ??
-        get(yaml, 'rag', 'type') ??
-        'ollama') as
+      type: get(yaml, 'rag', 'type') as
         | 'ollama'
         | 'in-memory'
         | 'qdrant'
         | 'hana-vector'
-        | 'pg-vector',
+        | 'pg-vector'
+        | undefined,
       embedder: (get(yaml, 'rag', 'embedder') as string) ?? undefined,
-      url:
-        (args['rag-url'] as string) ??
-        get(yaml, 'rag', 'url') ??
-        env.OLLAMA_URL ??
-        'http://localhost:11434',
-      model:
-        (args['rag-model'] as string) ??
-        get(yaml, 'rag', 'model') ??
-        env.OLLAMA_EMBED_MODEL ??
-        'nomic-embed-text',
+      url: get(yaml, 'rag', 'url') as string | undefined,
+      model: get(yaml, 'rag', 'model') as string | undefined,
       collectionName:
         (args['rag-collection-name'] as string) ??
         get(yaml, 'rag', 'collectionName') ??
         undefined,
       dedupThreshold: Number(get(yaml, 'rag', 'dedupThreshold') ?? 0.92),
-      vectorWeight: Number(
-        args['rag-vector-weight'] ?? get(yaml, 'rag', 'vectorWeight') ?? 0.7,
-      ),
-      keywordWeight: Number(
-        args['rag-keyword-weight'] ?? get(yaml, 'rag', 'keywordWeight') ?? 0.3,
-      ),
+      vectorWeight: Number(get(yaml, 'rag', 'vectorWeight') ?? 0.7),
+      keywordWeight: Number(get(yaml, 'rag', 'keywordWeight') ?? 0.3),
       ...(get(yaml, 'rag', 'resourceGroup') !== undefined
         ? { resourceGroup: String(get(yaml, 'rag', 'resourceGroup')) }
         : {}),
@@ -702,10 +673,7 @@ export function resolveSmartServerConfig(
               : {}),
           }
         : undefined,
-    mode: ((args.mode as string) ??
-      get(yaml, 'mode') ??
-      env.SMART_AGENT_MODE ??
-      'hybrid') as SmartServerMode,
+    mode: (get(yaml, 'mode') as SmartServerMode) ?? undefined,
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
