@@ -23,10 +23,10 @@ This change brings the CLI to runtime metadata only: where to find the YAML, whi
 
 ## Non-Goals
 
-- This is NOT adding `--llm-provider` or any auto-detect logic. The earlier framing of issue #134 proposed that; brainstorming pivoted to "YAML is the source of truth, CLI is metadata" as the cleaner model.
+- This is NOT adding a `--llm-provider` CLI flag or any auto-detect logic. The earlier framing of issue #134 proposed that; brainstorming pivoted to "YAML is the source of truth, CLI is metadata" as the cleaner model. Provider selection lives in YAML (`llm.provider` / `pipeline.llm.main.provider`).
 - No YAML field names are added or removed, but **validation semantics become stricter**. This PR changes CLI parsing AND config loading/validation semantics — specifically, the env-var fallbacks and hardcoded defaults that today silently fill in missing YAML fields for agent-identity values (credentials, model, provider, urls). Schema defaults for non-secret behavioral tuning params (temperatures, weights, timeouts) stay legal.
 - This does NOT change the first-run "generate YAML template" behavior. That stays.
-- This does NOT touch the bundled provider/embedder packages from v13.1.0; they remain bundled.
+- This DOES add one new bundled provider package — `@mcp-abap-adt/ollama-llm` — to make `provider: ollama` real (see "Ollama LLM provider" below). The other bundled provider/embedder packages from v13.1.0 are untouched and remain bundled.
 - This does NOT wire service-key file discovery, sessions relocation, or proxy-config reading. The `--secrets-dir` flag reserves the convention root but only the `*.env` half is consumed in this PR. Service-key file discovery is reserved for a separate follow-up issue.
 
 ---
@@ -43,6 +43,8 @@ Direct `process.env.X` reads and hardcoded defaults are removed for every agent-
 
 | Field | Direct env-var fallback (REMOVE) | Hardcoded default (REMOVE) | Location |
 |---|---|---|---|
+| `llm.provider` (flat schema) | — | `'deepseek'` (the flat `llm:` path silently calls `makeDefaultLlm` → deepseek, ignoring `llm.provider` AND `llm.url` entirely) | `smart-server.ts:363,378,799` |
+| `llm.url` (flat schema) | — | ignored (never read in flat path) | `smart-server.ts` flat path |
 | `llm.apiKey` | `env.DEEPSEEK_API_KEY` | — | `config.ts:449` |
 | `llm.model` | `env.DEEPSEEK_MODEL` | `'deepseek-chat'` | `config.ts:497-498` |
 | `rag.type` | — | `'ollama'` | `config.ts:511` |
@@ -62,9 +64,10 @@ Removing the silent fallback does NOT make every listed field universally requir
 
 | Field | Required when… | Optional when… |
 |---|---|---|
-| `llm.apiKey` (or `pipeline.llm.main.apiKey`) | Provider is `openai`/`anthropic`/`deepseek` | Provider is `sap-ai-sdk` (uses `AICORE_SERVICE_KEY` instead) |
+| `llm.apiKey` (or `pipeline.llm.main.apiKey`) | Provider is `openai`/`anthropic`/`deepseek` | Provider is `sap-ai-sdk` (uses `AICORE_SERVICE_KEY`) or `ollama` (key ignored by the local server) |
 | `llm.model` (or `pipeline.llm.main.model`) | Always (agent must know which model) | — |
-| `pipeline.llm.main.provider` | Modern pipeline schema is used | Legacy flat `llm:` schema is used |
+| `provider` (`llm.provider` flat OR `pipeline.llm.main.provider`) | **Always required** — both schemas. The flat path no longer silently defaults to `deepseek`; an absent provider is a startup error. | — |
+| `llm.url` (flat) / `pipeline.llm.main.baseURL` | Provider is `ollama` and the server is not on the default `http://localhost:11434` | `ollama` on default host, or providers with a built-in baseURL (`openai`/`anthropic`/`deepseek`/`sap-ai-sdk`) |
 | `mcp.type` | `mcp:` block is present in YAML | `mcp:` is omitted / `mcp.type: none` (MCP disabled — valid startup) |
 | `mcp.url` | `mcp.type: http` | Other `mcp.type` values (stdio, none) |
 | `mcp.command` | `mcp.type: stdio` | Other `mcp.type` values |
@@ -111,7 +114,46 @@ These are deployment knobs, not agent behavior. The full sources list stays; onl
 
 - **Category A removals close the "silent fallback" hole** described in the Goal section. An incomplete YAML for any Category A field → clear startup error, not a quiet env-var or default value the user didn't put there.
 - **Category B schema defaults remain** so users can write minimal YAML without enumerating every tuning param. These are not "silent" — they're documented in the YAML schema + template.
-- **Legacy `llm.apiKey + llm.model` schema validation** (from the credential validation section above) MUST require `apiKey` to be explicitly set in YAML — typically as `apiKey: ${DEEPSEEK_API_KEY}`. The agent no longer reads `process.env.DEEPSEEK_API_KEY` directly. Shell-env alone is not a config source; YAML must reference it.
+- **Flat `llm:` schema validation** (from the credential validation section above) MUST require an explicit `provider` and `model`. For credential-bearing providers (`openai`/`anthropic`/`deepseek`) `apiKey` must be set in YAML — typically `apiKey: ${OPENAI_API_KEY}`. The agent no longer reads `process.env.DEEPSEEK_API_KEY` directly, and the flat path no longer silently defaults `provider` to `deepseek`. Shell-env alone is not a config source; YAML must reference it. For `ollama`/`sap-ai-sdk`, `apiKey` is not required (Rule 2).
+
+### Ollama LLM provider (new, in-scope)
+
+Today `provider: ollama` is not a real LLM provider — the union is `openai|anthropic|deepseek|sap-ai-sdk`, and the flat `llm:` path ignores `provider`/`url` and always builds DeepSeek. So `examples/docker-ollama/smart-server.yaml` (which sets `llm.provider: ollama`, no `apiKey`) is **already broken**: it throws `LLM API key is required` at startup, and `npm run dev:ollama` cannot work. This PR fixes that, because once YAML is the single source the flat path MUST honor `llm.provider`/`llm.url`, and `ollama` must be a valid value for the example to load.
+
+Ollama exposes an OpenAI-compatible API at `/v1`. We already have the exact precedent: `DeepSeekProvider extends OpenAIProvider` overriding only `baseURL` (`deepseek-llm/src/deepseek-provider.ts:24`). Ollama is the same shape, so we mirror that — a thin package, no new SDK.
+
+**New package `@mcp-abap-adt/ollama-llm`** (clone of `deepseek-llm` structure):
+
+```ts
+// packages/ollama-llm/src/ollama-provider.ts
+import { type OpenAIConfig, OpenAIProvider } from '@mcp-abap-adt/openai-llm';
+
+export class OllamaProvider extends OpenAIProvider {
+  constructor(config: OpenAIConfig) {
+    super({
+      ...config,
+      baseURL: config.baseURL || 'http://localhost:11434/v1',
+      apiKey: config.apiKey || 'ollama', // ollama ignores it; OpenAI SDK requires non-empty
+    });
+  }
+}
+```
+
+- `package.json` deps: `@mcp-abap-adt/openai-llm` (same as `deepseek-llm`). Version line with the rest (`14.0.0` at merge; bumped in the release PR).
+- Bundled as a regular dependency of `@mcp-abap-adt/llm-agent-server` (same rationale as v13.1.0 — global install works out-of-the-box). At `llm-agent-libs` level it stays an optional peer loaded via dynamic `import()`, exactly like the others.
+
+**`providers.ts` wiring:**
+- Add `'ollama'` to the `MakeLlmConfig.provider` union and to `pipeline.ts`'s provider union.
+- Add a `loadOllamaProvider()` dynamic-import loader mirroring `loadDeepSeekProvider()`, throwing `MissingProviderError('@mcp-abap-adt/ollama-llm', 'ollama')` if absent.
+- Add a `case 'ollama':` to the `makeLlm` switch building `OllamaProvider` with `{ apiKey, model, baseURL: url }`.
+
+**Flat `llm:` path (the silent-default fix):**
+- `smart-server.ts` flat path stops hardcoding `makeDefaultLlm` (deepseek). It reads the resolved `llm.provider` (now required) and `llm.url`, and calls `makeLlm({ provider, apiKey, model, baseURL: url }, temperature)`.
+- `makeDefaultLlm` may stay as a thin helper but is no longer the implicit flat-path default; if kept it's only an explicit convenience, never a silent fallback.
+
+**Validation:** provider enum becomes `openai|anthropic|deepseek|sap-ai-sdk|ollama`. `apiKey` is NOT required for `ollama` (Rule 2). `llm.url` optional for ollama only when the server is on the default host.
+
+**`examples/docker-ollama` fix:** now loads correctly through the flat path (`provider: ollama` + `url` + `model`, no apiKey). `npm run dev:ollama` works. README stays accurate.
 
 ### CLI flags REMOVED
 
@@ -134,7 +176,13 @@ All of these duplicate YAML fields and are removed from `packages/llm-agent-serv
 --prompt-system                     (YAML: prompts.system)
 --prompt-classifier                 (YAML: prompts.classifier)
 --agent-show-reasoning              (YAML: agent.showReasoning)
+--llm-only                          (YAML: omit `mcp:` block or set `mcp.type: none`)
 ```
+
+`--llm-only` is **dead code** today: it is not in the `parseArgs` options block, is never read as `args['llm-only']`, and there is no `MCP_DISABLED` handling in `src/`. It currently "works" only because `strict: false` silently swallows it — so `npm run dev:llm` is identical to `npm run dev` (MCP stays enabled). MCP is actually disabled via `mcp.type: none` or an omitted `mcp:` block. Under `strict: true` parseArgs would throw `unknown option --llm-only`. It is therefore **removed**, and the LLM-only mode is documented as a YAML choice. Companion edits:
+- `package.json` (root) `dev:llm` → point at a config with no MCP, or drop the script.
+- `packages/llm-agent-server/package.json` `dev:llm` → same.
+- `CLAUDE.md`: the `dev:llm` line and the `MCP_DISABLED` env-table row are stale — `MCP_DISABLED` isn't read anywhere in `src/`. Replace with "omit `mcp:` / `mcp.type: none`".
 
 No deprecation cycle — these are removed outright. Any startup script invoking them will fail at argument-parse time with a clear "unknown flag" error.
 
@@ -154,7 +202,8 @@ No deprecation cycle — these are removed outright. Any startup script invoking
 --log-stdout              Toggle: log to stdout instead of file
 --log-file <path>         Override YAML log file path
 --plugin-dir <path>       Additional plugin directory (loaded after defaults)
---help                    Show usage
+--help, -h                Show usage
+--version, -v             Print package name@version and exit
 ```
 
 The 3 new env-related flags (`--secrets-dir`, `--env`, `--env-path`) mirror the convention already established in sibling tools (`mcp-abap-adt-proxy`, etc.) so deployment scripts share a single mental model across the family.
@@ -167,12 +216,13 @@ When the YAML loads, missing-required and bad-type errors must produce a single 
 
 Required fields (all checked after env substitution). The full conditional matrix lives in the "Required-ness is conditional" table earlier; this section calls out the multi-field invariants that span across LLM/MCP/RAG blocks:
 
-1. **At least ONE complete LLM identity** — either `llm.apiKey` + `llm.model` (legacy flat schema), OR `pipeline.llm.main.provider` + `pipeline.llm.main.model` (modern pipeline schema). At least one of these two pairs must be complete.
-2. **Provider value enum check** — if any `provider` field is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk`.
+1. **At least ONE complete LLM identity** — either `llm.provider` + `llm.model` (+ `apiKey` per Rule 2) in the flat schema, OR `pipeline.llm.main.provider` + `pipeline.llm.main.model` in the modern pipeline schema. At least one of these must be complete. Note: the flat schema now requires an explicit `provider` (no implicit deepseek), so a bare `apiKey` + `model` without `provider` is no longer a valid identity.
+2. **Provider value enum check** — if any `provider` field is set, it must be one of `openai|anthropic|deepseek|sap-ai-sdk|ollama`.
 3. **Provider-specific credential validation:**
    - For `openai`, `anthropic`, `deepseek`: `apiKey` (or `pipeline.llm.main.apiKey`) is required AFTER env substitution. The expected pattern is `apiKey: ${OPENAI_API_KEY}` (or analogous) in YAML, with the env variable populated via `--env-path`, `--env`, or the OS shell. An empty/missing resolved value is a startup error: "Provider `openai` requires `pipeline.llm.main.apiKey` to resolve to a non-empty value (typically via `${OPENAI_API_KEY}` env reference)."
    - For `sap-ai-sdk`: `apiKey` is **optional** in YAML. Credentials come through `AICORE_SERVICE_KEY` env var (JSON string content of the SAP AI Core service key). The startup check validates that `AICORE_SERVICE_KEY` resolves to non-empty after env loading; if not, the human-readable error: "Provider `sap-ai-sdk` requires the `AICORE_SERVICE_KEY` env var to be set with the SAP AI Core service-key JSON content. None found."
      - **Future work, out of scope here:** service-key *file* discovery under `<secrets-dir>/service-keys/` (so users can store the JSON as a file rather than a JSON-stringified env var). The `--secrets-dir` flag reserves the convention; the file-reading wiring is a separate issue.
+   - For `ollama`: `apiKey` is **optional** (the local Ollama server ignores it; the provider injects a placeholder). No credential check. `llm.url` / `baseURL` is optional too — absent means the default `http://localhost:11434/v1`.
 4. **MCP block conditional fields** — if `mcp:` is present in YAML, `mcp.type` must be one of `http|stdio|none`. If `mcp.type: http`, `mcp.url` must be present. If `mcp.type: stdio`, `mcp.command` must be present. `mcp.type: none` (or `mcp:` absent) → MCP disabled, startup succeeds without any further mcp.* checks.
 5. **RAG block conditional fields** — if a flat `rag:` block exists, `rag.type` must be present. If `rag.type` is a vector-backed backend (`ollama`, `qdrant`, `hana-vector`, `pg-vector`), `rag.url` is required for those backends that need one (ollama, qdrant; HANA/pg accept connection-string variants — defer per-backend specifics to the existing schema). If `rag.type` requires an embedder model (`ollama`), `rag.model` is required. `rag.type: in-memory` → no URL or model needed; BM25 keyword search only.
 6. **Optional fields** — `prompts.system`, `prompts.classifier`, `mode`: absence is accepted; the consuming handlers (assembler, classifier) carry their own documented default behavior. Removing the env-fallback only stops `env.PROMPT_SYSTEM` etc. from silently populating these — it does NOT make them required.
@@ -181,7 +231,7 @@ Error format (multi-error case batched into one report):
 
 ```
 Configuration error in smart-server.yaml:
-  - pipeline.llm.main.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk)
+  - pipeline.llm.main.provider: required (one of: openai, anthropic, deepseek, sap-ai-sdk, ollama)
   - pipeline.llm.main.model: required (string)
   - pipeline.llm.main.apiKey: must resolve to non-empty (env var ANTHROPIC_API_KEY appears empty/unset)
 Set these fields in your YAML and restart.
@@ -226,7 +276,7 @@ Update — known files:
 Sweep — broader search to catch references outside the known files:
 
 ```bash
-rg -n '\-\-(llm-api-key|llm-model|llm-temperature|rag-type|rag-url|rag-model|rag-vector-weight|rag-keyword-weight|mcp-type|mcp-url|mcp-command|mcp-args|mode|prompt-system|prompt-classifier|agent-show-reasoning)' \
+rg -n '\-\-(llm-api-key|llm-model|llm-temperature|rag-type|rag-url|rag-model|rag-vector-weight|rag-keyword-weight|mcp-type|mcp-url|mcp-command|mcp-args|mode|prompt-system|prompt-classifier|agent-show-reasoning|llm-only)' \
   docs README.md CLAUDE.md packages \
   --glob '!*.test.ts' --glob '!dist/**' --glob '!node_modules/**'
 ```
@@ -239,16 +289,20 @@ This is a breaking change to a public surface. Per the project's commit-before-r
 
 ```markdown
 ### Breaking changes
-- CLI flag set trimmed to runtime/process overrides only. Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`. These previously duplicated YAML fields and are no longer accepted — passing them produces a non-zero exit with `unknown flag` error. Configure all agent behavior in `smart-server.yaml`.
+- CLI flag set trimmed to runtime/process overrides only. Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`, `--llm-only`. These previously duplicated YAML fields (or, in the case of `--llm-only`, were a no-op dead flag) and are no longer accepted — passing them produces a non-zero exit with `unknown flag` error. Configure all agent behavior in `smart-server.yaml`; disable MCP via `mcp.type: none` or by omitting the `mcp:` block.
+- Flat `llm:` schema now requires an explicit `provider`. Previously a flat config silently defaulted to `deepseek` (and ignored `llm.url`). A flat `llm:` block without `provider` is now a startup error.
 - Added: `--secrets-dir <folder>` (default `~/.config/mcp-abap-adt/`), `--env` (load `*.env` from secrets-dir), `--env-path <file>` (explicit `.env` path). Mirrors the convention used in `mcp-abap-adt-proxy` and the rest of the sibling tools.
 - YAML validation hardened: missing required fields / invalid provider / empty credentials produce a single human-readable error on startup instead of a stack trace.
+
+### Added
+- New LLM provider `ollama` (package `@mcp-abap-adt/ollama-llm`), a thin OpenAI-compatible wrapper over Ollama's `/v1` endpoint (default `http://localhost:11434/v1`). Set `provider: ollama` in YAML; no API key required. Bundled with `@mcp-abap-adt/llm-agent-server`. Fixes the previously-broken `examples/docker-ollama` config and `npm run dev:ollama`.
 ```
 
 The later batch-release PR will move this from `[Unreleased]` into `[15.0.0]` (alongside #135/#136/#137 entries).
 
 ### Tests
 
-Add the cases listed below to `packages/llm-agent-server/src/__tests__/` (or wherever existing CLI tests live):
+Add the cases listed below to `packages/llm-agent-server/src/smart-agent/__tests__/` (where the existing server/CLI tests already live):
 
 1. Removed-flag rejection: passing `--llm-api-key X` produces a non-zero exit with "unknown flag" or equivalent. No silent ignore.
 2. Bad YAML — missing required field: produces a human-readable error with the field path, NOT a stack trace.
@@ -261,6 +315,9 @@ Add the cases listed below to `packages/llm-agent-server/src/__tests__/` (or whe
 9. `--secrets-dir <folder>` redirects the `--env` scan to the given folder.
 10. Pre-existing `process.env` values take precedence over any file-loaded value (no override).
 11. Implicit `.env` fallback works when neither `--env` nor `--env-path` is given.
+12. Removed-flag rejection — `--llm-only`: passing it produces a non-zero exit with "unknown flag" (regression guard for the dead-flag removal). LLM-only mode is reachable only via `mcp.type: none` / omitted `mcp:`.
+13. Flat schema requires explicit `provider`: a flat `llm:` block with `apiKey` + `model` but NO `provider` is a startup error (no implicit deepseek default). With `provider: deepseek` explicit it loads.
+14. Ollama provider — no apiKey needed: a config with `provider: ollama` + `model` (no `apiKey`) passes validation and constructs an `OllamaProvider` (baseURL defaulting to `http://localhost:11434/v1` when `url` omitted). No "API key required" error.
 
 ### CLI parser strictness
 
@@ -286,15 +343,21 @@ CLI surface change is breaking. Batched into v15.0.0 alongside #135/#136/#137. T
 
 | Component | Path | Change |
 |---|---|---|
-| CLI argument parser | `packages/llm-agent-server/src/smart-agent/cli.ts` | Remove ~16 flag handlers; keep the 11 listed above (8 existing + 3 new env-related). Switch parseArgs to `strict: true`. |
+| CLI argument parser | `packages/llm-agent-server/src/smart-agent/cli.ts` | Remove 17 flag handlers (16 behavior flags + dead `--llm-only`); keep the 11 listed above (8 existing + 3 new env-related). Switch parseArgs to `strict: true`. |
 | CLI usage/help string | same file (top JSDoc + `--help` output) | Trim to match new flag set. |
 | Env-var and default fallbacks | `packages/llm-agent-server/src/smart-agent/config.ts` (`resolveSmartServerConfig`) | Remove direct env reads + hardcoded defaults for agent-behavior fields (see table above). Runtime/process defaults stay. |
-| Provider credential validation | `packages/llm-agent-server/src/smart-agent/config.ts` (post-load checks) | Add provider-specific required-field checks (apiKey resolution for openai/anthropic/deepseek; AICORE_SERVICE_KEY non-empty for sap-ai-sdk). |
+| Flat `llm:` path provider/url | `packages/llm-agent-server/src/smart-agent/smart-server.ts` (flat-path branches ~363/378/799) | Stop hardcoding `makeDefaultLlm` (deepseek). Read resolved `llm.provider` (required) + `llm.url`, call `makeLlm`. |
+| **New package** `@mcp-abap-adt/ollama-llm` | `packages/ollama-llm/` | Thin `OllamaProvider extends OpenAIProvider` (clone of `deepseek-llm`). Default `baseURL` `http://localhost:11434/v1`, placeholder `apiKey`. |
+| Provider resolution | `packages/llm-agent-libs/src/providers.ts` + `packages/llm-agent-server/src/smart-agent/pipeline.ts` | Add `'ollama'` to provider union, `loadOllamaProvider()` loader, `case 'ollama'` in `makeLlm` switch. |
+| Server bundling | `packages/llm-agent-server/package.json` | Add `@mcp-abap-adt/ollama-llm` as a regular dependency (out-of-the-box global install). |
+| Provider credential validation | `packages/llm-agent-server/src/smart-agent/config.ts` (post-load checks) | Add provider-specific required-field checks (apiKey for openai/anthropic/deepseek; AICORE_SERVICE_KEY for sap-ai-sdk; none for ollama). |
 | YAML validation error formatter | same file (`loadYamlConfig` + neighbors) | Convert raw validation errors into the human-readable batched-report format. |
-| Tests | `packages/llm-agent-server/src/__tests__/cli-*.test.ts` (existing or new) | Add the 11 cases listed in the Tests section above. |
+| Tests | `packages/llm-agent-server/src/smart-agent/__tests__/cli-*.test.ts` (existing dir) | Add the cases listed in the Tests section above. |
+| `dev` scripts | `package.json` (root) + `packages/llm-agent-server/package.json` | `dev:llm`: drop or repoint to a no-MCP config (no `--llm-only`). `dev:ollama` now actually works. |
+| `examples/docker-ollama` | `examples/docker-ollama/smart-server.yaml` (+ README if needed) | Now loads via the fixed flat path. Verify it starts without an apiKey. |
 | `docs/QUICK_START.md` | docs | Replace CLI-flag table with trimmed list + paragraph. |
-| `CLAUDE.md` | top-level | Sync any CLI-flag references. |
-| `CHANGELOG.md` | `[Unreleased]` | Add an entry under a new "### Breaking changes" subsection. |
+| `CLAUDE.md` | top-level | Sync CLI-flag references; fix the stale `dev:llm` line and remove the `MCP_DISABLED` env-table row (not read in `src/`). |
+| `CHANGELOG.md` | `[Unreleased]` | Add entries under "### Breaking changes" + "### Added" (ollama provider). |
 
 ---
 
@@ -307,8 +370,8 @@ Single coherent change, one PR, one feature branch (`chore/cli-cleanup`). No nee
 ## Self-Review
 
 1. **Placeholder scan:** no TBDs. All flag names listed explicitly. Error format example concrete.
-2. **Internal consistency:** "Removed flags" and "Kept flags" together cover the current CLI flag set per the help text. No overlap, no orphan.
-3. **Scope check:** Single-concern PR — CLI cleanup. Doc updates are direct consequences (the docs reference the removed flags). Test additions are direct consequences. No drift.
-4. **Ambiguity check:** Validation error format is shown with a concrete example, so error-message implementation can match. Required-fields rule explicitly covers both legacy flat and modern pipeline schemas, which co-exist in the current YAML loader.
+2. **Internal consistency:** "Removed flags" (incl. `--llm-only`) and "Kept flags" (incl. `--version`/`--help`) together cover the current CLI flag set per `cli.ts` options + `--version`/`--help` handlers. No overlap, no orphan.
+3. **Scope check:** Core concern is CLI cleanup → "YAML is the single source." The ollama provider is a *coupled consequence*, not drift: making the flat `llm:` path honor `provider`/`url` (required by the single-source thesis) forces `provider: ollama` to become real, which in turn fixes the already-broken `docker-ollama` example. Doc/test/CHANGELOG updates are direct consequences. The one genuinely additive piece (`@mcp-abap-adt/ollama-llm`) is a 4-line clone of `deepseek-llm` — minimal surface, explicitly user-requested.
+4. **Ambiguity check:** Validation error format is shown with a concrete example, so error-message implementation can match. Required-fields rule explicitly covers both flat and pipeline schemas (which co-exist), the conditional Rule-2 matrix names every field's required/optional condition, and provider credential rules cover all five providers incl. ollama (no key).
 
 No issues found. Spec ready for plan.
