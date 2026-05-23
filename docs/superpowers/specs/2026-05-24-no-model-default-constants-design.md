@@ -8,13 +8,12 @@
 
 #136 originally proposed swapping the default embedder `nomic-embed-text` → `bge-m3` (multilingual) because non-English (UA/DE) queries surfaced the wrong MCP tools.
 
-Investigation reframed it:
+Investigation reframed it into two independent decisions:
 
-1. **The pipeline already translates non-English RAG queries to English before retrieval** (`packages/llm-agent/src/rag/preprocessor.ts`, enabled by default in `default-pipeline.ts` via `ragTranslateEnabled != false`). MCP tool descriptions are English; the query is translated to English; so tool-selection is effectively EN↔EN and `nomic-embed-text` is adequate. A multilingual embedder is **not** needed for tool selection.
-2. A multilingual embedder **does** matter for a **non-English document RAG corpus** (a realistic case the user can generate) — but that is the user's explicit choice per corpus, not a global default.
-3. The deeper issue is the **hardcoded model-default constant** itself. The correct embedder depends on the corpus language, so there should be **no default** — the model must be specified explicitly, and a missing model fails loud (consistent with the #134 fail-loud / "no silent defaults" philosophy).
+1. **The shipped/recommended embedder should be multilingual (`bge-m3`) — always.** It robustly covers non-English **document** corpora, residual non-English after translation, and SAP-native German terms embedded in otherwise-English text. The query-translation step stays as a complementary normalization: before tool search the helper prompt translates the query to English, then we vectorize (with the multilingual embedder) and search RAG (`packages/llm-agent/src/rag/preprocessor.ts`, enabled by default via `ragTranslateEnabled != false`). Multilingual embedder + translate together = robust both for tool-selection and for non-English document corpora.
+2. **No hardcoded model-default constant.** The model must be specified explicitly; a missing model fails loud (consistent with the #134 fail-loud / "no silent defaults" philosophy). "Multilingual always" is achieved by shipping `bge-m3` **explicitly** in the examples/template — NOT by a code constant. Code has no default; the recommended config does.
 
-So #136 becomes: **remove model-default constants (embedders AND LLM providers); require the model explicitly; fail loud when absent.** `bge-m3` is documented as the multilingual recommendation for non-English document corpora, not baked in as a default.
+So #136 becomes: **(a) remove model-default constants (embedders AND LLM providers), require the model explicitly, fail loud; (b) make the shipped examples/template use the multilingual `bge-m3` ollama embedder explicitly.**
 
 ## Scope
 
@@ -34,21 +33,22 @@ So #136 becomes: **remove model-default constants (embedders AND LLM providers);
 In `config.ts` `validateResolvedConfig` (the `checkRagStore` helper added in #134/PR139), require `rag.model` (or the store's `model`) when the store actually uses an embedder — i.e. `rag.type` is a vector store OR (`in-memory` AND `embedder` set). This produces a clean batched startup error (`rag.model: required when an embedder is used`) instead of a deep constructor throw.
 - `llm.model` is already required by the #134 validator (server path) — no change needed there; removing the provider constants makes direct library use fail loud too.
 
-### 4. Examples / template
-- Keep examples explicit (they already set `model:` everywhere). The flat-template and example YAMLs that use the **ollama embedder** keep `model: nomic-embed-text` (fine for English tool-selection with translate on). Do NOT force `bge-m3` into examples.
-- The first-run `YAML_TEMPLATE` (config.ts) already specifies `model: nomic-embed-text` explicitly — keep it (it's explicit, not a code default).
-- No example relies on an implicit code default, so removing the constants does not break the shipped examples (verify by build + the example-validates checks).
+### 4. Examples / template — switch ollama embedder model to `bge-m3` (multilingual always)
+- Replace `model: nomic-embed-text` → `model: bge-m3` in every YAML where the **ollama embedder** is used: the first-run `YAML_TEMPLATE` (config.ts), `examples/docker-ollama/`, `examples/docker-deepseek/` (its rag block uses the ollama embedder), and the `docs/examples/*.yaml` + `pipelines/*.yaml` that reference `nomic-embed-text`.
+- Leave non-ollama embedder configs unchanged: SAP AI Core (`text-embedding-3-small`) and openai-embedder examples keep their explicit models.
+- These are explicit `model:` values (not a code default) — the code still has no default; the shipped configs are simply multilingual out-of-the-box.
+- READMEs / `ollama pull` instructions: update `ollama pull nomic-embed-text` → `ollama pull bge-m3` where they appear (`examples/docker-ollama/README.md`, `examples/docker-deepseek/README.md`, QUICK_START).
 
 ### 5. Docs
-- `docs/PERFORMANCE.md` (and a short note in `docs/QUICK_START.md`): add embedder-model guidance —
-  - the embedder `model` is explicit (no default);
-  - for **English** corpora (MCP tool descriptions, especially with `ragTranslateEnabled` on) `nomic-embed-text` is adequate;
-  - for **non-English document** corpora use a multilingual embedder such as `bge-m3` (`ollama pull bge-m3`);
-  - **dimension caveat:** changing the embedder model changes vector dimensions (e.g. nomic 768 vs bge-m3 1024); persistent stores (qdrant/hana/pg) require a **re-index** when switching. In-memory rebuilds each run.
-- Note that translation (`ragTranslateEnabled`, default on) is why English tool-search works for non-English queries — so a multilingual embedder is a document-corpus concern, not a tool-selection one.
+- `docs/PERFORMANCE.md` (+ short note in `docs/QUICK_START.md`): embedder-model guidance —
+  - the embedder `model` is explicit (no code default);
+  - the recommended ollama embedder is the **multilingual `bge-m3`** (`ollama pull bge-m3`) — used in all shipped examples. It covers non-English document corpora, residual non-English, and SAP-native German terms;
+  - tool-selection additionally benefits from the **query-translation** step (`ragTranslateEnabled`, default on): the query is translated to English before vectorization and RAG search. Translate + multilingual embedder are complementary, not either/or;
+  - **dimension caveat:** the embedder model determines vector dimensions (nomic-embed-text 768 vs bge-m3 1024). Switching models requires a **re-index** of persistent stores (qdrant/hana/pg); in-memory rebuilds each run. The `docs/PERFORMANCE.md` benchmark line ("Ollama nomic-embed-text") should be updated or annotated accordingly.
 
 ### 6. CHANGELOG (`[Unreleased]`)
 - **Breaking:** embedder and LLM provider `model` no longer have hardcoded defaults — `model` must be set explicitly (server path already required `llm.model` since v15.0.0; this extends the same to embedders and to direct library use of providers). Missing model now fails loud.
+- **Changed:** shipped examples/template now use the multilingual `bge-m3` ollama embedder instead of `nomic-embed-text`. Run `ollama pull bge-m3`. Persistent vector stores (qdrant/hana/pg) built with a previous embedder must be **re-indexed** (embedding dimensions differ: 768 → 1024).
 
 ## Out of scope
 - No change of the actual default model value (we remove the default, not swap it). `bge-m3` is a documented recommendation only.
