@@ -37,7 +37,7 @@ llm-agent-server
 ```
 
 Optional peer dependencies (not in the graph above):
-- `llm-agent-libs` → `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`
+- `llm-agent-libs` → `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`, `@mcp-abap-adt/ollama-llm`
 - `llm-agent-rag` → `@mcp-abap-adt/openai-embedder`, `@mcp-abap-adt/ollama-embedder`, `@mcp-abap-adt/sap-aicore-embedder`, `@mcp-abap-adt/qdrant-rag`, `@mcp-abap-adt/hana-vector-rag`, `@mcp-abap-adt/pg-vector-rag`
 
 ### Key API notes (since 12.0.1)
@@ -189,7 +189,7 @@ To run the HTTP server (OpenAI-compatible `/v1/chat/completions`), use the CLI b
 ```bash
 npx llm-agent --config smart-server.yaml
 # or
-npm run dev:llm
+npm run dev
 ```
 
 ## Request Processing Flow
@@ -326,11 +326,11 @@ Abstractions:
 - `LlmAdapter` — in `@mcp-abap-adt/llm-agent-libs`; bridges legacy `BaseAgent` implementations to `ILlm`
 
 Concrete provider resolution is centralized in `makeLlm`/`makeDefaultLlm` (in `@mcp-abap-adt/llm-agent-libs`). LLM provider packages are optional peers of `llm-agent-libs` (library mode):
-- `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`
+- `@mcp-abap-adt/openai-llm`, `@mcp-abap-adt/anthropic-llm`, `@mcp-abap-adt/deepseek-llm`, `@mcp-abap-adt/sap-aicore-llm`, `@mcp-abap-adt/ollama-llm`
 
-At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all four as regular deps so `npm install -g @mcp-abap-adt/llm-agent-server` works without further peer install. Configuration (YAML/CLI) chooses which one to activate per request.
+At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all five as regular deps so `npm install -g @mcp-abap-adt/llm-agent-server` works without further peer install. Configuration (YAML/CLI) chooses which one to activate per request.
 
-Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`) are defined in:
+Pipeline config types (`deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`) are defined in:
 - `@mcp-abap-adt/llm-agent` (types only, no provider logic)
 
 ### 4. RAG Layer
@@ -638,6 +638,7 @@ packages/
   anthropic-llm/           # @mcp-abap-adt/anthropic-llm
   deepseek-llm/            # @mcp-abap-adt/deepseek-llm
   sap-aicore-llm/          # @mcp-abap-adt/sap-aicore-llm
+  ollama-llm/              # @mcp-abap-adt/ollama-llm
 
   # Embedder/RAG backend packages (optional peers of llm-agent-rag; bundled deps of llm-agent-server ≥ 13.1.0)
   openai-embedder/         # @mcp-abap-adt/openai-embedder

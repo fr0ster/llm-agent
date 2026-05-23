@@ -29,7 +29,6 @@
     "start": "node dist/smart-agent/cli.js",
     "start:smart": "node dist/smart-agent/cli.js --config smart-server.yaml",
     "dev": "tsx src/smart-agent/cli.ts",
-    "dev:llm": "tsx src/smart-agent/cli.ts --llm-only",
     "release:check": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {

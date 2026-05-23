@@ -72,6 +72,7 @@ port: 3001
 mode: hybrid      # smart | passthrough | hybrid (default)
 
 llm:
+  provider: deepseek      # deepseek | openai | anthropic | sap-ai-sdk | ollama
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -92,6 +93,8 @@ agent:
 
 log: smart-server.log     # omit for stdout
 ```
+
+> **`llm.provider` is required.** Supported values: `deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`. The `ollama` provider needs no API key and defaults to `http://localhost:11434/v1`. To run fully locally (Ollama for both LLM and embeddings, no API keys), see `examples/docker-ollama/`.
 
 > **No Ollama?** Set `rag.type: in-memory` — tool selection uses keyword matching instead of
 > neural embeddings. Everything else works identically.
@@ -146,30 +149,25 @@ Endpoints exposed by the server:
 
 ## CLI Reference
 
-All YAML settings can be overridden with flags:
+The CLI accepts runtime and process-level flags only. Agent behavior (LLM provider, model, RAG, MCP, prompts, mode) lives in `smart-server.yaml`. The flags below are runtime/process overrides — config-file path, env loading, port/host, logging — not agent-behavior knobs.
 
 ```bash
-llm-agent --port 3002 --llm-api-key sk-xxx --rag-type in-memory --mode smart
+llm-agent --port 3002 --config /path/to/my-config.yaml
 ```
 
-| Flag                      | Description                                      |
-|---------------------------|--------------------------------------------------|
-| `--config <path>`         | YAML config file (default: `smart-server.yaml`)  |
-| `--env <path>`            | `.env` file (default: `.env` in cwd)             |
-| `--port <n>`              | HTTP port                                        |
-| `--host <addr>`           | Bind address                                     |
-| `--llm-api-key <key>`     | LLM API key                                      |
-| `--llm-model <model>`     | LLM model name                                   |
-| `--llm-temperature <n>`   | Temperature (0–2)                                |
-| `--rag-type <type>`       | `ollama` or `in-memory`                          |
-| `--rag-url <url>`         | Ollama base URL                                  |
-| `--mcp-url <url>`         | MCP HTTP endpoint                                |
-| `--mcp-command <cmd>`     | MCP stdio command                                |
-| `--mode <mode>`           | `smart`, `passthrough`, or `hybrid`              |
-| `--prompt-system <text>`  | System preamble for the agent                    |
-| `--log-file <path>`       | Log file path                                    |
-| `--log-stdout`            | Log to stdout instead of file                    |
-| `--help`                  | Show full help                                   |
+| Flag                      | Description                                                        |
+|---------------------------|--------------------------------------------------------------------|
+| `--config <path>`         | YAML config file (default: `smart-server.yaml`)                   |
+| `--secrets-dir <folder>`  | Directory to load `*.env` files from (default: `~/.config/mcp-abap-adt/`) |
+| `--env`                   | Load `*.env` files from `--secrets-dir`                           |
+| `--env-path <file>`       | Explicit `.env` file to load                                       |
+| `--port <number>`         | HTTP port                                                          |
+| `--host <string>`         | Bind address                                                       |
+| `--plugin-dir <path>`     | Additional plugin directory                                        |
+| `--log-file <path>`       | Log file path                                                      |
+| `--log-stdout`            | Log to stdout instead of file                                      |
+| `--help`                  | Show full help                                                      |
+| `--version`               | Print version and exit                                             |
 
 Generate a config template without starting the server:
 
@@ -189,7 +187,7 @@ flat config above.
 pipeline:
   llm:
     main:
-      provider: deepseek        # deepseek | openai | anthropic
+      provider: deepseek        # deepseek | openai | anthropic | sap-ai-sdk | ollama
       apiKey: ${DEEPSEEK_API_KEY}
       model: deepseek-chat
       temperature: 0.7
@@ -282,7 +280,7 @@ See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinato
 ## Troubleshooting
 
 ### "LLM API key is required"
-Set `DEEPSEEK_API_KEY` in `.env`, or `llm.apiKey` in `smart-server.yaml`, or `pipeline.llm.main.apiKey`.
+Set the provider credential in `.env` (e.g. `DEEPSEEK_API_KEY`), or `llm.apiKey` in `smart-server.yaml`, or `pipeline.llm.main.apiKey`. The `ollama` provider requires no API key.
 
 ### Ollama embed errors
 Run Ollama locally and pull the model:
@@ -306,9 +304,10 @@ clients set `mode: smart`.
 The original single-turn CLI is still available for quick LLM + MCP testing without the full server:
 
 ```bash
-# LLM only
-DEEPSEEK_API_KEY=sk-xxx npm run dev:llm
-
 # LLM + MCP (single-turn, no SmartAgent)
-DEEPSEEK_API_KEY=sk-xxx MCP_ENDPOINT=http://localhost:4004/mcp/stream/http npm run dev
+DEEPSEEK_API_KEY=sk-xxx npm run dev
+
+# LLM only: in smart-server.yaml, omit the `mcp:` block or set `mcp.type: none`.
+# Then run: npm run dev
+npm run dev
 ```

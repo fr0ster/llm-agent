@@ -88,7 +88,7 @@ See [docs/MIGRATION-v11.md](docs/MIGRATION-v11.md) if you are upgrading from v10
 npm run build
 
 # Run tests
-npm run test:all
+npm run test
 
 # Development with hot-reload
 npm run dev
@@ -96,12 +96,11 @@ npm run dev
 # Smart server production entrypoint
 npm run start
 
-# Legacy compatibility aliases
-npm run start:smart
-npm run dev:llm
-npm run start:llm
+# Use specific example configs
+npm run dev:ollama        # examples/docker-ollama (fully local, no API keys)
+npm run dev:deepseek      # examples/docker-deepseek
+npm run dev:sap-ai-core   # examples/docker-sap-ai-core
 npm run test
-npm run test:llm
 ```
 
 ## License

@@ -161,7 +161,6 @@ npm run dev                 # default smart-server.yaml at the repo root
 npm run dev:ollama          # examples/docker-ollama/smart-server.yaml
 npm run dev:deepseek        # examples/docker-deepseek/smart-server.yaml
 npm run dev:sap-ai-core     # examples/docker-sap-ai-core/smart-server.yaml
-npm run dev:llm             # default + --llm-only
 npm run dev -- --config <path>   # any custom path
 ```
 

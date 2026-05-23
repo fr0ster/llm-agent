@@ -7,7 +7,6 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ```bash
 npm run build          # Compile TypeScript → dist/
 npm run dev            # Run CLI with MCP via tsx (hot reload)
-npm run dev:llm        # Run CLI in LLM-only mode (no MCP)
 npm run lint           # Lint & auto-fix with Biome
 npm run lint:check     # Check lint without fixing
 npm run format         # Format with Biome
@@ -78,13 +77,14 @@ Copy `.env.template` to `.env`. Key variables:
 
 | Variable | Purpose |
 |----------|---------|
-| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` |
+| `LLM_PROVIDER` | `openai` / `anthropic` / `deepseek` / `sap-ai-sdk` / `ollama` |
 | `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `DEEPSEEK_API_KEY` | Provider credentials |
 | `AICORE_SERVICE_KEY` | SAP AI Core service key JSON (for `sap-ai-sdk` provider) |
 | `SAP_AI_MODEL`, `SAP_AI_RESOURCE_GROUP` | SAP AI SDK model name and resource group |
 | `MCP_ENDPOINT` | MCP server URL (default: `http://localhost:4004/mcp/stream/http`) |
-| `MCP_DISABLED` | `true` to skip MCP (LLM-only mode) |
 | `DEBUG_LLM_REASON` | `true` to log LLM reasoning |
+
+> To run without MCP, omit the `mcp:` block or set `mcp.type: none` in `smart-server.yaml`.
 
 ## Docs
 

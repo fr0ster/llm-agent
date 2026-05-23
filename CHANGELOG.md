@@ -9,6 +9,15 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Breaking changes
+- **CLI flag set trimmed to runtime/process overrides only.** Removed: `--llm-api-key`, `--llm-model`, `--llm-temperature`, `--rag-type`, `--rag-url`, `--rag-model`, `--rag-vector-weight`, `--rag-keyword-weight`, `--mcp-type`, `--mcp-url`, `--mcp-command`, `--mcp-args`, `--mode`, `--prompt-system`, `--prompt-classifier`, `--agent-show-reasoning`, `--llm-only`. These duplicated YAML fields (or, for `--llm-only`, were a no-op dead flag) and are no longer accepted — passing them exits non-zero with an `unknown flag` error. Configure agent behavior in `smart-server.yaml`; disable MCP via `mcp.type: none` or by omitting the `mcp:` block.
+- **Flat `llm:` schema now requires an explicit `provider`.** Previously a flat config silently defaulted to `deepseek` and ignored `llm.url`. A flat `llm:` block without `provider` is now a startup error.
+- **Added CLI env flags:** `--secrets-dir <folder>` (default `~/.config/mcp-abap-adt/`), `--env` (load `*.env` from secrets-dir), `--env-path <file>` (explicit `.env`). Mirrors the convention used by `mcp-abap-adt-proxy`.
+- **YAML validation hardened:** missing required fields / invalid provider / empty credentials produce a single human-readable startup error instead of a stack trace.
+
+### Added
+- **New LLM provider `ollama`** (package `@mcp-abap-adt/ollama-llm`), a thin OpenAI-compatible wrapper over Ollama's `/v1` endpoint (default `http://localhost:11434/v1`). Set `provider: ollama` in YAML; no API key required. Bundled with `@mcp-abap-adt/llm-agent-server`. Fixes the previously-broken `examples/docker-ollama` config.
+
 ---
 
 ## [14.0.0] — 2026-05-23
