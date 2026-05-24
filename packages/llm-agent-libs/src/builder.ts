@@ -32,6 +32,7 @@ import type {
   ISubAgent,
   ISubpromptClassifier,
   IToolCache,
+  IToolSelectionStrategy,
   SmartAgentHandle as SmartAgentHandleBase,
   SmartAgentRagStores,
   SubAgentRegistry,
@@ -200,6 +201,7 @@ export class SmartAgentBuilder {
   private _apiAdapters: Map<string, ILlmApiAdapter> = new Map();
   private _modelProvider?: IModelProvider;
   private _embedder?: IEmbedder;
+  private _toolSelectionStrategy?: IToolSelectionStrategy;
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
@@ -435,6 +437,12 @@ export class SmartAgentBuilder {
   /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
   withEmbedder(embedder: IEmbedder): this {
     this._embedder = embedder;
+    return this;
+  }
+
+  /** Set the strategy that filters scored RAG results for tool exposure. */
+  withToolSelectionStrategy(strategy: IToolSelectionStrategy): this {
+    this._toolSelectionStrategy = strategy;
     return this;
   }
 
@@ -1246,6 +1254,7 @@ export class SmartAgentBuilder {
       ragRegistry,
       ragProviderRegistry,
       embedder: this._embedder,
+      toolSelectionStrategy: this._toolSelectionStrategy,
       reranker: this._reranker,
       queryExpander: this._queryExpander,
       toolPolicy: this._toolPolicy,
