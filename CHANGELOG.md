@@ -12,6 +12,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Added
 - **Pluggable tool-selection strategy** (`agent.toolSelection` / `SmartAgentBuilder.withToolSelectionStrategy`). `top-k` (default, unchanged behavior) exposes the K nearest tools by semantic distance; `threshold` (`minScore`) exposes only tools at/above a cosine-score cutoff, so off-topic queries surface no tools. Tool exposure is now driven purely by RAG semantic distance — SAP-specific classifier routing rules were removed from the examples. (#135)
 
+### Fixed
+- **Multi-store YAML deployments (`pipeline.rag.tools`) now wire the subagent context-builder's embedder.** The flat-`rag:` fix (#137) didn't reach the `pipeline.rag.{name}` path: a YAML-only multi-store config (no flat `rag:`, no DI embedder) left the context-builder's tool-retrieval source empty, so constrained subagents failed with empty context. The `tools` store now resolves and shares an embedder the same way the flat path does; other named stores keep their own configured embedder. (#141)
+
 ## [16.0.0] — 2026-05-24
 
 ### Breaking changes

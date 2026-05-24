@@ -55,7 +55,10 @@ import {
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { PipelineConfig } from './pipeline.js';
-import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
+import {
+  resolveAgentEmbedder,
+  resolveToolsStoreEmbedder,
+} from './resolve-agent-embedder.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -440,7 +443,7 @@ export class SmartServer {
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
-    const resolvedEmbedder = await resolveAgentEmbedder(
+    let resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
       this.cfg.embedder,
       mergedEmbedderFactories,
@@ -480,11 +483,28 @@ export class SmartServer {
     // map to the agent's built-in slots; everything else is registered as a
     // named collection that the registry projection exposes via ragStores[name].
     if (pipeline?.rag) {
-      const ragOptions = {
-        injectedEmbedder: this.cfg.embedder,
-        extraFactories: mergedEmbedderFactories,
-      };
       for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
+        // The `tools` store feeds the subagent context-builder's toolSource
+        // (mainEmbedder below). If the flat `rag:` block produced no embedder
+        // (YAML-only multi-store deployments), resolve one from this store's
+        // own config so the tools store and the context-builder share a single
+        // embedder instance (#141, mirrors the flat-path fix in #137). Other
+        // stores keep the raw DI embedder and are never overridden.
+        if (name === 'tools') {
+          resolvedEmbedder = await resolveToolsStoreEmbedder(
+            resolvedEmbedder,
+            storeCfg as SmartServerRagConfig,
+            this.cfg.embedder,
+            mergedEmbedderFactories,
+          );
+        }
+        const ragOptions = {
+          injectedEmbedder:
+            name === 'tools'
+              ? (resolvedEmbedder ?? this.cfg.embedder)
+              : this.cfg.embedder,
+          extraFactories: mergedEmbedderFactories,
+        };
         const rag = await makeRag(storeCfg, ragOptions);
         if (name === 'tools') {
           toolsRag = rag;
