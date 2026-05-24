@@ -394,6 +394,7 @@ export class DefaultPipeline implements IPipeline {
       pendingToolResults: new PendingToolResultsRegistry(),
       skillManager: this.deps.skillManager,
       embedder: this.deps.embedder,
+      toolSelectionStrategy: this.deps.toolSelectionStrategy,
       historyMemory: this.deps.historyMemory,
       historySummarizer: this.deps.historySummarizer,
       llmCallStrategy: this.resolvedLlmCallStrategy,

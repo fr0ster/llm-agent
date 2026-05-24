@@ -8,11 +8,6 @@
 ##          --config examples/sap-ai-core-direct/smart-server.yaml \
 ##          --log-stdout
 ##   4. POST queries to http://localhost:4040/v1/chat/completions.
-##
-## The classifier and system prompts below are what makes SAP/ABAP queries
-## actually route through RAG → tool-select → tool-loop. Without the
-## "knowledge → action" reclassification the agent answers as plain chat
-## and never sees the MCP tools.
 
 port: ${PORT:-4040}
 host: ${HOST:-127.0.0.1}
@@ -57,10 +52,9 @@ mcp:
   headers:
     x-sap-destination: ${SAP_DESTINATION:-S4HANA_E19}
 
-## Prompts — copy of the docker-sap-ai-core example, distilled to what matters
-## for ABAP tool-calling. The classifier MUST treat knowledge questions about
-## SAP/ABAP as "action" so RAG retrieval and tool-select run; otherwise the
-## agent never reaches the tool-loop.
+## Prompts — custom system and ragTranslate prompts.
+## Tool exposure is driven entirely by RAG semantic distance + the tool-selection
+## strategy; no domain-specific classifier rules are needed.
 prompts:
   system: >
     Use MCP tools when they can accomplish the task. Answer or fulfill
@@ -72,29 +66,6 @@ prompts:
     Output ONLY the translated text — no explanations, no commentary,
     no opinions about feasibility. Preserve all technical terms, class
     names, and identifiers exactly as they appear.
-
-  classifier: >
-    You are a Semantic Intent Analyzer. Decompose the user message into
-    logical tasks. For each task identify:
-      - "type": chat (greetings/math), action (tasks AND knowledge/fact
-        questions), state (context), feedback.
-      - "text": the actual task description.
-      - "context": the domain of the task (e.g., "sap-abap", "general").
-      - "dependency": "independent", "sequential", or an ID of a subprompt
-        this one depends on.
-
-    CRITICAL: Knowledge/factual questions (who, what, when, where, why, how)
-    MUST be classified as "action" — NOT "fact" — so the RAG pipeline
-    retrieves relevant context. Only assign "sap-abap" context if SAP terms
-    are present.
-
-    Example: "Прочитай структуру таблиці T100"
-    Result: [
-      {"type": "action", "text": "Read structure of table T100",
-       "context": "sap-abap", "dependency": "independent"}
-    ]
-
-    Return ONLY a JSON array.
 
 agent:
   externalToolsValidationMode: permissive

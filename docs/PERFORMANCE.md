@@ -72,6 +72,48 @@ agent:
 - **Higher values (15–20):** Better recall, larger context, higher latency and token cost.
 - Works best with a reranker — retrieve broadly (high k), then rerank to the top few.
 
+## Tool Selection (Semantic Distance)
+
+Tools are chosen by semantic distance over the `tools` RAG store. After retrieval, a pluggable **tool-selection strategy** filters the result set before the tools are exposed to the LLM. No domain classifier rules are needed — tool exposure is driven purely by RAG semantic distance.
+
+### Strategies
+
+| Strategy | YAML | Behaviour |
+|----------|------|-----------|
+| `top-k` (default) | `strategy: top-k` | Expose the K nearest tools; K is controlled by `agent.ragQueryK`. Unchanged from prior behavior. |
+| `threshold` | `strategy: threshold` | Expose only tools whose cosine score is ≥ `minScore`. An off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat. |
+
+### YAML configuration
+
+```yaml
+agent:
+  toolSelection:
+    strategy: threshold
+    minScore: 0.4
+```
+
+For the default `top-k` behavior, omit the `toolSelection` block (or set `strategy: top-k`).
+
+### Builder / DI
+
+```typescript
+import { ScoreThresholdToolSelection } from '@mcp-abap-adt/llm-agent-libs';
+
+const { agent } = await new SmartAgentBuilder({ /* ... */ })
+  .withToolSelectionStrategy(new ScoreThresholdToolSelection(0.4))
+  .build();
+```
+
+DI wins over YAML: a strategy injected via `withToolSelectionStrategy()` overrides any `agent.toolSelection` block.
+
+### Calibrating `minScore`
+
+`minScore` is embedder-specific — the cosine score range depends on the embedding model and corpus. **Tune empirically; 0.3–0.5 is a reasonable starting band for bge-m3 cosine scores**, but the right value depends on your tool descriptions and query distribution. Collect real queries, inspect the scores logged by `ToolSelectHandler`, and adjust until off-topic queries reliably fall below the cutoff.
+
+### Domain-neutral tool exposure
+
+Because filtering is score-based, no SAP-specific or domain-specific classifier rules are needed to route queries to the right tools. The `threshold` strategy gates tool exposure automatically: if no tool is semantically close enough, the LLM acts as plain chat without any MCP calls.
+
 ### dedupThreshold
 
 Cosine similarity threshold for deduplication on upsert:

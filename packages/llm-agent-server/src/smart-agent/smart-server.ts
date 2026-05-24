@@ -134,6 +134,8 @@ export interface SmartServerAgentConfig {
   classificationEnabled?: boolean;
   /** LLM call strategy for tool-loop. 'streaming' (default) | 'non-streaming' | 'fallback'. */
   llmCallStrategy?: 'streaming' | 'non-streaming' | 'fallback';
+  /** Tool-selection strategy over RAG results. Default: top-k. */
+  toolSelection?: { strategy: string; minScore?: number };
 }
 
 export interface SmartServerPromptsConfig {
@@ -320,6 +322,7 @@ import {
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorPlanning,
+  resolveToolSelectionStrategy,
 } from './config.js';
 
 export {
@@ -331,6 +334,7 @@ export {
   resolveCoordinatorPlanning,
   resolveEnvVars,
   resolveSmartServerConfig,
+  resolveToolSelectionStrategy,
   YAML_TEMPLATE,
   type YamlConfig,
 } from './config.js';
@@ -537,6 +541,16 @@ export class SmartServer {
       if (factory) {
         builder = builder.withLlmCallStrategy(factory());
       }
+    }
+
+    // Tool-selection strategy (from agent.toolSelection config)
+    const toolSelectionCfg = this.cfg.agent?.toolSelection;
+    if (toolSelectionCfg?.strategy) {
+      builder = builder.withToolSelectionStrategy(
+        resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
+          minScore: toolSelectionCfg.minScore,
+        }),
+      );
     }
 
     // MCP clients (DI > plugin; YAML fallback handled by builder)

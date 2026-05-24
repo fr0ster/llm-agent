@@ -95,6 +95,8 @@ agent:
 log: smart-server.log     # omit for stdout
 ```
 
+> **Tool selection strategy:** By default, the agent exposes the K nearest tools by semantic distance (`top-k`, K = `agent.ragQueryK`). To make off-topic queries surface no tools at all, switch to `threshold` mode with a cosine-score cutoff: add `agent.toolSelection: { strategy: threshold, minScore: 0.4 }` to your config. See [docs/PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance) for calibration guidance.
+
 > **`llm.provider` is required.** Supported values: `deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`. The `ollama` provider needs no API key and defaults to `http://localhost:11434/v1`. To run fully locally (Ollama for both LLM and embeddings, no API keys), see `examples/docker-ollama/`.
 
 > **`rag.model` is required when an embedder is used.** There is no default — `model` must be set explicitly. The shipped examples use `bge-m3` (multilingual, 1024 dimensions, covers English and non-English corpora). Run `ollama pull bge-m3` before first start. If you previously used `nomic-embed-text` (768 dimensions) with a persistent store (qdrant/hana-vector/pg-vector), you must **re-index** — dimensions changed.

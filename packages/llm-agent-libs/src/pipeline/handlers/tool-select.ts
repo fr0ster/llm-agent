@@ -18,6 +18,7 @@ import { QueryEmbedding, TextOnlyEmbedding } from '@mcp-abap-adt/llm-agent';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { DEFAULT_TOOL_SELECTION } from '../tool-selection/index.js';
 
 export class ToolSelectHandler implements IStageHandler {
   async execute(
@@ -90,9 +91,13 @@ export class ToolSelectHandler implements IStageHandler {
       });
     }
 
-    // Select tools based on RAG results
+    // Filter RAG results by the configured relevance strategy (default: top-k).
+    const strategy = ctx.toolSelectionStrategy ?? DEFAULT_TOOL_SELECTION;
+    const relevant = strategy.select(allRagResults);
+
+    // Select tools based on the strategy-filtered RAG results
     const ragToolNames = new Set(
-      allRagResults
+      relevant
         .map((r) => r.metadata.id as string)
         .filter((id) => id?.startsWith('tool:'))
         .map((id) => id.slice(5).replace(/:.*$/, '')),
@@ -134,6 +139,7 @@ export class ToolSelectHandler implements IStageHandler {
       selectedCount: ctx.selectedTools.length,
       selectedNames: ctx.selectedTools.map((t) => t.name),
       activeCount: ctx.activeTools.length,
+      toolSelectionStrategy: strategy.name,
     });
 
     return true;

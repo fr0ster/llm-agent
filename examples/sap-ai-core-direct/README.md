@@ -56,20 +56,20 @@ curl -s -X POST http://localhost:4040/v1/chat/completions \
 ```
 
 A correctly working setup should:
-1. Classify the query as `action / sap-abap` (per the classifier prompt).
-2. Translate it for RAG retrieval.
-3. Retrieve the relevant MCP tool (e.g. `GetTable`/`GetTableContents`).
-4. Call the tool with `x-sap-destination: S4HANA_E19` header.
-5. Return T100 column metadata in the response.
+1. Translate the query to English for RAG retrieval (`ragTranslateEnabled`, on by default).
+2. Retrieve the relevant MCP tool by semantic distance (e.g. `GetTable`/`GetTableContents`).
+3. Call the tool with `x-sap-destination: S4HANA_E19` header.
+4. Return T100 column metadata in the response.
 
-## Why the classifier prompt matters
+## Why the embedder matters (and why no SAP classifier rules are needed)
 
-Without the explicit "knowledge → action" reclassification in
-`prompts.classifier`, the agent treats SAP queries as plain chat, skips the
-RAG retrieval stage, never sees the MCP tools, and falls back to generic
-SQL-style answers (`DESCRIBE T100`, etc.).
+Tool exposure is driven entirely by **RAG semantic distance** over the tools
+store plus the configured tool-selection strategy (see `agent.toolSelection`
+in `docs/PERFORMANCE.md`) — **not** by domain-specific classifier rules. SAP
+queries reach the tools without any `prompts.classifier` override; that is why
+this example no longer ships one.
 
-Without an `embedder` block under `pipeline.rag.tools`, the in-memory
-toolsRag stays empty — same outcome.
-
-Both are required for tool-calling to actually fire.
+What *does* matter: the `embedder` under `pipeline.rag.tools`. Without it the
+in-memory toolsRag stays empty, no tool is within semantic range, and the
+agent falls back to generic SQL-style answers (`DESCRIBE T100`, etc.). The
+embedder is required for tool-calling to fire.
