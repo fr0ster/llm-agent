@@ -29,7 +29,7 @@ A strategy that filters scored RAG results down to the subset considered relevan
 Location: `packages/llm-agent/src/interfaces/tool-selection-strategy.ts` (contracts package, alongside other `I*` strategy interfaces). Re-exported from the package index.
 
 ```ts
-import type { RagResult } from './rag.js';
+import type { RagResult } from './types.js'; // RagResult is defined/exported in types.ts (rag.ts only imports it)
 
 /**
  * Decides which scored RAG results are relevant enough to drive tool exposure.
@@ -69,11 +69,17 @@ const ragToolNames = new Set(
 
 Everything else in the handler (mode `hard` fallback to all tools, external tools, availability filtering, logging) is unchanged. Add the strategy name + kept/dropped counts to the `tools_selected` log step for diagnosability.
 
-`ctx.toolSelectionStrategy` is a new optional field on `PipelineContext`, populated by the builder; when absent the handler uses a module-level `TopKToolSelection` singleton (so the contract has no hard dependency on wiring).
+**Wiring path** (mirror how `embedder`/`toolsRag` already reach the context — do all four steps, not just the field):
+1. Add `toolSelectionStrategy?: IToolSelectionStrategy` to `PipelineContext` (`packages/llm-agent-libs/src/pipeline/context.ts`).
+2. Add `toolSelectionStrategy?: IToolSelectionStrategy` to `PipelineDeps` (the deps object `DefaultPipeline.initialize(deps)` receives).
+3. `DefaultPipeline._buildContext` copies `this.deps.toolSelectionStrategy` into `ctx.toolSelectionStrategy` (next to where it sets `embedder: this.deps.embedder`, ~line 396).
+4. `SmartAgentBuilder` stores `this._toolSelectionStrategy` (set by `withToolSelectionStrategy`) and passes it in the `pipeline.initialize({ ... })` call (~line 1236, alongside `embedder: this._embedder`).
+
+When absent at every layer, `ToolSelectHandler` falls back to a module-level `TopKToolSelection` singleton, so the contract has no hard dependency on the wiring and behavior is unchanged by default.
 
 ### 4. Selection via YAML or builder (mirrors coordinator strategies)
 
-- **Builder DI:** `SmartAgentBuilder.withToolSelectionStrategy(strategy: IToolSelectionStrategy)`. Stored on the builder, threaded into `PipelineContext.toolSelectionStrategy` at build time. DI wins over YAML.
+- **Builder DI:** `SmartAgentBuilder.withToolSelectionStrategy(strategy: IToolSelectionStrategy)`. Stored as `this._toolSelectionStrategy`, threaded through `PipelineDeps` into the context (see "Wiring path" above). DI wins over YAML.
 - **YAML:** `agent.toolSelection` block, resolved by a new `resolveToolSelectionStrategy(name, params)` factory in `packages/llm-agent-server/src/smart-agent/config.ts` (mirror of `resolveCoordinatorPlanning`):
   ```yaml
   agent:
@@ -105,7 +111,9 @@ The classifier keeps its role (multi-step splitting, structural intent) but no l
 - **Factory** (`config.ts` tests): `resolveToolSelectionStrategy('top-k')` / `('threshold', {minScore})` return the right instances; unknown name throws; `threshold` without `minScore` throws.
 - **tool-select handler**: with a `ScoreThresholdToolSelection`, a results set mixing high/low scores exposes only the high-score `tool:` matches; with `TopKToolSelection` all `tool:` matches are exposed (regression guard).
 - **Builder/DI precedence**: `withToolSelectionStrategy` wins over YAML.
-- **Domain-neutral acceptance**: a config using the default (non-SAP) classifier prompt + the canonical query `"Прочитай структуру таблиці T100"` selects the T100 tool via semantic RAG — i.e. without any SAP-specific classifier rules. (Use a stub embedder/RAG so the test is deterministic and offline.)
+- **Domain-neutral acceptance** (use a stub embedder/RAG so the test is deterministic and offline — stub the RAG store to return controlled `tool:` results with controlled `score`s per query):
+  - **Positive:** the canonical query `"Прочитай структуру таблиці T100"` (stubbed to score the T100 tool above threshold) selects the T100 tool via semantic RAG using the default (non-SAP) classifier prompt — i.e. without any SAP-specific classifier rules.
+  - **Negative (proves the new semantic-distance "no tools" behavior):** with `ScoreThresholdToolSelection(minScore)`, an off-topic chat query (stubbed so all tool results score *below* `minScore`) exposes **zero** MCP tools, while the T100 query (above threshold) exposes the expected tool. This is the case that distinguishes the new behavior from plain top-K (where almost any query surfaces some nearest tool).
 
 ## Acceptance criteria (from #135)
 1. Tool exposure is driven by RAG semantic distance via a pluggable strategy, not classifier domain rules.
