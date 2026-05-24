@@ -105,6 +105,11 @@ export {
   type StageDefinition,
   type StageType,
 } from './pipeline/index.js';
+export {
+  DEFAULT_TOOL_SELECTION,
+  ScoreThresholdToolSelection,
+  TopKToolSelection,
+} from './pipeline/tool-selection/index.js';
 export type {
   IPluginLoader,
   LoadedPlugins,
