@@ -26,7 +26,10 @@ describe('factory registry — MissingProviderError', () => {
   });
   it('prefetchEmbedderFactories resolves installed peer', async () => {
     await prefetchEmbedderFactories(['openai']);
-    const e = resolvePrefetchedEmbedder('openai', { apiKey: 'test' });
+    const e = resolvePrefetchedEmbedder('openai', {
+      apiKey: 'test',
+      model: 'text-embedding-3-small',
+    });
     assert.ok(e);
   });
 });

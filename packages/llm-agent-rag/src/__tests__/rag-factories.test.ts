@@ -60,6 +60,7 @@ describe('rag-factories', () => {
         url: 'http://localhost:6333',
         collectionName: 'test',
         embedder: 'ollama',
+        model: 'bge-m3',
       });
     } catch (err) {
       assert.ok(
@@ -75,7 +76,12 @@ describe('rag-factories', () => {
     // Verify it does NOT throw MissingProviderError — actual OpenAI network
     // failure is fine; the test only guards against missing-provider regression.
     try {
-      await makeRag({ type: 'in-memory', embedder: 'openai', apiKey: 'test' });
+      await makeRag({
+        type: 'in-memory',
+        embedder: 'openai',
+        apiKey: 'test',
+        model: 'text-embedding-3-small',
+      });
     } catch (err) {
       assert.ok(
         !(err instanceof MissingProviderError),

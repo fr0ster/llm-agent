@@ -13,7 +13,7 @@ Client → :4004/v1/chat/completions → llm-agent → DeepSeek API (LLM)
 ## Prerequisites
 
 - Docker & Docker Compose
-- [Ollama](https://ollama.ai) running locally with `nomic-embed-text` model pulled
+- [Ollama](https://ollama.ai) running locally with `bge-m3` model pulled
 - DeepSeek API key
 - (Optional) MCP server for tool execution
 
@@ -22,7 +22,7 @@ Client → :4004/v1/chat/completions → llm-agent → DeepSeek API (LLM)
 1. **Pull the embedding model** (if not already):
 
    ```bash
-   ollama pull nomic-embed-text
+   ollama pull bge-m3
    ```
 
 2. **Set environment variables** (`.env` or export):

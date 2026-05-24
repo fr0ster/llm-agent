@@ -169,7 +169,7 @@ rag:
   type: in-memory                     # in-memory | qdrant | hana-vector | pg-vector
   embedder: ollama                    # Embedder to use: ollama | openai | sap-ai-core | <custom>
   url: http://localhost:11434
-  model: nomic-embed-text
+  model: bge-m3
   # resourceGroup: default            # SAP AI Core resource group (sap-ai-core embedder)
   # scenario: orchestration           # SAP AI Core scenario: orchestration (default) | foundation-models
   # collectionName: llm-agent         # Collection/table name (qdrant | hana-vector | pg-vector)
@@ -402,6 +402,7 @@ function checkRagStore(
         url?: unknown;
         collectionName?: unknown;
         embedder?: unknown;
+        model?: unknown;
       }
     | undefined,
   issues: string[],
@@ -439,6 +440,18 @@ function checkRagStore(
   if (embedder === 'deepseek' || embedder === 'anthropic') {
     issues.push(
       `${label}.embedder: "${embedder}" provider has no embedder; embedding-capable providers are ollama, openai, sap-ai-core`,
+    );
+  }
+  // Require model when an embedder is used: vector stores always use an
+  // embedder; in-memory uses one only when embedder is explicitly set.
+  const usesEmbedder =
+    ragType === 'qdrant' ||
+    ragType === 'hana-vector' ||
+    ragType === 'pg-vector' ||
+    (ragType === 'in-memory' && embedder != null);
+  if (usesEmbedder && !store.model) {
+    issues.push(
+      `${label}.model: required when an embedder is used (e.g. bge-m3 for ollama)`,
     );
   }
 }

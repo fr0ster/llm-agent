@@ -39,7 +39,7 @@
  *     type: in-memory
  *     embedder: ollama
  *     url: http://localhost:11434
- *     model: nomic-embed-text
+ *     model: bge-m3
  *   mcp:
  *     type: http
  *     url: http://localhost:3000/mcp/stream/http

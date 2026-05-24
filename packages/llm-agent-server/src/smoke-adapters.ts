@@ -50,6 +50,14 @@ if (!deepseekKey) {
   process.exit(1);
 }
 
+const deepseekModel = process.env.DEEPSEEK_MODEL;
+if (!deepseekModel) {
+  console.error(
+    '❌ DEEPSEEK_MODEL is not set in .env.smoke (no default — set it explicitly, e.g. deepseek-chat)',
+  );
+  process.exit(1);
+}
+
 const abapEnvRelPath = process.env.ABAP_ENV_PATH || '.env.abap';
 const abapEnvAbsPath = join(__dirname, '..', abapEnvRelPath);
 if (!existsSync(abapEnvAbsPath)) {
@@ -82,9 +90,7 @@ function fail(label: string, detail?: string) {
 
 async function main() {
   console.log('🔬 Phase 2 Adapter Smoke Test\n');
-  console.log(
-    `   LLM:  DeepSeek (${process.env.DEEPSEEK_MODEL || 'deepseek-chat'})`,
-  );
+  console.log(`   LLM:  DeepSeek (${deepseekModel})`);
   console.log(`   MCP:  mcp-abap-adt --env-path ${abapEnvAbsPath}`);
   console.log();
 
@@ -97,7 +103,7 @@ async function main() {
 
   const llmProvider = new DeepSeekProvider({
     apiKey: String(deepseekKey),
-    model: process.env.DEEPSEEK_MODEL || 'deepseek-chat',
+    model: deepseekModel,
   });
 
   const llmAdapter = new LlmAdapter(new LlmProviderBridge(llmProvider), {

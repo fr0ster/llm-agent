@@ -15,9 +15,12 @@ describe('OpenAIProvider — constructor', () => {
     );
   });
 
-  it('sets default model to gpt-4o-mini', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test' });
-    assert.equal(p.model, 'gpt-4o-mini');
+  it('throws when model is missing', () => {
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
+      () => new OpenAIProvider({ apiKey: 'sk-test' } as any),
+      /model/i,
+    );
   });
 
   it('uses custom model when provided', () => {
@@ -26,7 +29,7 @@ describe('OpenAIProvider — constructor', () => {
   });
 
   it('sets Authorization header', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test' });
+    const p = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers.Authorization, 'Bearer sk-test');
   });
@@ -34,6 +37,7 @@ describe('OpenAIProvider — constructor', () => {
   it('sets OpenAI-Organization header when provided', () => {
     const p = new OpenAIProvider({
       apiKey: 'sk-test',
+      model: 'gpt-4o',
       organization: 'org-abc',
     });
     const headers = p.client.defaults.headers as Record<string, unknown>;
@@ -43,6 +47,7 @@ describe('OpenAIProvider — constructor', () => {
   it('sets OpenAI-Project header when provided', () => {
     const p = new OpenAIProvider({
       apiKey: 'sk-test',
+      model: 'gpt-4o',
       project: 'proj-xyz',
     });
     const headers = p.client.defaults.headers as Record<string, unknown>;
@@ -50,7 +55,7 @@ describe('OpenAIProvider — constructor', () => {
   });
 
   it('does not set org/project headers when not provided', () => {
-    const p = new OpenAIProvider({ apiKey: 'sk-test' });
+    const p = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers['OpenAI-Organization'], undefined);
     assert.equal(headers['OpenAI-Project'], undefined);
@@ -59,6 +64,7 @@ describe('OpenAIProvider — constructor', () => {
   it('uses custom baseURL', () => {
     const p = new OpenAIProvider({
       apiKey: 'sk-test',
+      model: 'gpt-4o',
       baseURL: 'https://custom.api/v1',
     });
     assert.equal(p.client.defaults.baseURL, 'https://custom.api/v1');
@@ -70,7 +76,7 @@ describe('OpenAIProvider — constructor', () => {
 // ---------------------------------------------------------------------------
 
 describe('OpenAIProvider — formatMessages', () => {
-  const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+  const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 
@@ -206,6 +212,7 @@ describe('OpenAIProvider — chat error handling', () => {
   it('wraps API errors with "OpenAI API error:" prefix', async () => {
     const provider = new OpenAIProvider({
       apiKey: 'sk-test',
+      model: 'gpt-4o',
       baseURL: 'http://localhost:1',
     });
     await assert.rejects(
@@ -226,6 +233,7 @@ describe('OpenAIProvider — streamChat error handling', () => {
   it('wraps streaming errors with "OpenAI Streaming error:" prefix', async () => {
     const provider = new OpenAIProvider({
       apiKey: 'sk-test',
+      model: 'gpt-4o',
       baseURL: 'http://localhost:1',
     });
     await assert.rejects(
@@ -360,7 +368,7 @@ describe('OpenAIProvider — chat() options forwarding', () => {
 
 describe('OpenAIProvider — chat() usage', () => {
   it('returns usage from response', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: {
@@ -381,7 +389,7 @@ describe('OpenAIProvider — chat() usage', () => {
   });
 
   it('returns undefined usage when not present', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: {
@@ -399,7 +407,7 @@ describe('OpenAIProvider — chat() usage', () => {
 
 describe('OpenAIProvider — streamChat() usage', () => {
   it('sends stream_options with include_usage: true', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     let capturedBody: Record<string, unknown> = {};
     // @ts-expect-error — stub axios for test
     provider.client.post = async (
@@ -422,7 +430,7 @@ describe('OpenAIProvider — streamChat() usage', () => {
   });
 
   it('forwards tool_calls deltas in normalized form (regression: #119)', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: (async function* () {
@@ -461,7 +469,7 @@ describe('OpenAIProvider — streamChat() usage', () => {
   });
 
   it('yields usage-only chunk at end of stream', async () => {
-    const provider = new OpenAIProvider({ apiKey: 'sk-test' });
+    const provider = new OpenAIProvider({ apiKey: 'sk-test', model: 'gpt-4o' });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: (async function* () {

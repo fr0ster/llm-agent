@@ -10,14 +10,21 @@ import { AnthropicProvider } from '../anthropic-provider.js';
 describe('AnthropicProvider — constructor', () => {
   it('throws when apiKey is missing', () => {
     assert.throws(
-      () => new AnthropicProvider({ apiKey: '' }),
+      () =>
+        new AnthropicProvider({
+          apiKey: '',
+          model: 'claude-3-5-sonnet-20241022',
+        }),
       /API key is required/,
     );
   });
 
-  it('sets default model to claude-3-5-sonnet-20241022', () => {
-    const p = new AnthropicProvider({ apiKey: 'sk-test' });
-    assert.equal(p.model, 'claude-3-5-sonnet-20241022');
+  it('throws when model is missing', () => {
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
+      () => new AnthropicProvider({ apiKey: 'sk-test' } as any),
+      /model/i,
+    );
   });
 
   it('uses custom model when provided', () => {
@@ -29,25 +36,35 @@ describe('AnthropicProvider — constructor', () => {
   });
 
   it('sets x-api-key header', () => {
-    const p = new AnthropicProvider({ apiKey: 'sk-ant-test' });
+    const p = new AnthropicProvider({
+      apiKey: 'sk-ant-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers['x-api-key'], 'sk-ant-test');
   });
 
   it('sets anthropic-version header', () => {
-    const p = new AnthropicProvider({ apiKey: 'sk-test' });
+    const p = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers['anthropic-version'], '2023-06-01');
   });
 
   it('uses default baseURL', () => {
-    const p = new AnthropicProvider({ apiKey: 'sk-test' });
+    const p = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
     assert.equal(p.client.defaults.baseURL, 'https://api.anthropic.com/v1');
   });
 
   it('uses custom baseURL', () => {
     const p = new AnthropicProvider({
       apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
       baseURL: 'https://proxy.example.com/v1',
     });
     assert.equal(p.client.defaults.baseURL, 'https://proxy.example.com/v1');
@@ -59,7 +76,10 @@ describe('AnthropicProvider — constructor', () => {
 // ---------------------------------------------------------------------------
 
 describe('AnthropicProvider — formatMessages', () => {
-  const provider = new AnthropicProvider({ apiKey: 'sk-test' });
+  const provider = new AnthropicProvider({
+    apiKey: 'sk-test',
+    model: 'claude-3-5-sonnet-20241022',
+  });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 
@@ -95,6 +115,7 @@ describe('AnthropicProvider — chat error handling', () => {
   it('wraps API errors with "Anthropic API error:" prefix', async () => {
     const provider = new AnthropicProvider({
       apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
       baseURL: 'http://localhost:1',
     });
     await assert.rejects(
@@ -249,7 +270,10 @@ describe('AnthropicProvider — chat() options forwarding', () => {
 
 describe('AnthropicProvider — streamChat', () => {
   it('is a callable function (no longer throws)', () => {
-    const provider = new AnthropicProvider({ apiKey: 'sk-test' });
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
     assert.equal(typeof provider.streamChat, 'function');
   });
 });
@@ -260,7 +284,10 @@ describe('AnthropicProvider — streamChat', () => {
 
 describe('AnthropicProvider — chat() usage', () => {
   it('returns usage from response', async () => {
-    const provider = new AnthropicProvider({ apiKey: 'sk-test' });
+    const provider = new AnthropicProvider({
+      apiKey: 'sk-test',
+      model: 'claude-3-5-sonnet-20241022',
+    });
     // @ts-expect-error — stub axios for test
     provider.client.post = async () => ({
       data: {

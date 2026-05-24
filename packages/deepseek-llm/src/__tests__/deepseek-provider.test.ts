@@ -10,14 +10,17 @@ import { DeepSeekProvider } from '../deepseek-provider.js';
 describe('DeepSeekProvider — constructor', () => {
   it('throws when apiKey is missing', () => {
     assert.throws(
-      () => new DeepSeekProvider({ apiKey: '' }),
+      () => new DeepSeekProvider({ apiKey: '', model: 'deepseek-chat' }),
       /API key is required/,
     );
   });
 
-  it('sets default model to deepseek-chat', () => {
-    const p = new DeepSeekProvider({ apiKey: 'sk-test' });
-    assert.equal(p.model, 'deepseek-chat');
+  it('throws when model is missing', () => {
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: intentional missing model for test
+      () => new DeepSeekProvider({ apiKey: 'sk-test' } as any),
+      /model/i,
+    );
   });
 
   it('uses custom model when provided', () => {
@@ -29,13 +32,19 @@ describe('DeepSeekProvider — constructor', () => {
   });
 
   it('sets Authorization header', () => {
-    const p = new DeepSeekProvider({ apiKey: 'sk-deep' });
+    const p = new DeepSeekProvider({
+      apiKey: 'sk-deep',
+      model: 'deepseek-chat',
+    });
     const headers = p.client.defaults.headers as Record<string, unknown>;
     assert.equal(headers.Authorization, 'Bearer sk-deep');
   });
 
   it('uses default baseURL', () => {
-    const p = new DeepSeekProvider({ apiKey: 'sk-test' });
+    const p = new DeepSeekProvider({
+      apiKey: 'sk-test',
+      model: 'deepseek-chat',
+    });
     assert.equal(p.client.defaults.baseURL, 'https://api.deepseek.com/v1');
   });
 });
@@ -45,7 +54,10 @@ describe('DeepSeekProvider — constructor', () => {
 // ---------------------------------------------------------------------------
 
 describe('DeepSeekProvider — formatMessages', () => {
-  const provider = new DeepSeekProvider({ apiKey: 'sk-test' });
+  const provider = new DeepSeekProvider({
+    apiKey: 'sk-test',
+    model: 'deepseek-chat',
+  });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 
@@ -133,6 +145,7 @@ describe('DeepSeekProvider — chat error handling', () => {
   it('wraps API errors with "DeepSeek API error:" prefix', async () => {
     const provider = new DeepSeekProvider({
       apiKey: 'sk-test',
+      model: 'deepseek-chat',
       baseURL: 'http://localhost:1',
     });
     await assert.rejects(
@@ -153,6 +166,7 @@ describe('DeepSeekProvider — streamChat error handling', () => {
   it('wraps streaming errors with "DeepSeek Streaming error:" prefix', async () => {
     const provider = new DeepSeekProvider({
       apiKey: 'sk-test',
+      model: 'deepseek-chat',
       baseURL: 'http://localhost:1',
     });
     await assert.rejects(
@@ -211,7 +225,10 @@ describe('chat() options forwarding', () => {
 
 describe('DeepSeekProvider — streamChat() inherits usage', () => {
   it('sends stream_options with include_usage: true', async () => {
-    const provider = new DeepSeekProvider({ apiKey: 'sk-test' });
+    const provider = new DeepSeekProvider({
+      apiKey: 'sk-test',
+      model: 'deepseek-chat',
+    });
     let capturedBody: Record<string, unknown> = {};
     // @ts-expect-error — stub axios for test
     provider.client.post = async (

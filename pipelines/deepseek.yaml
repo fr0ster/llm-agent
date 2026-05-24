@@ -30,17 +30,17 @@ pipeline:
       type: in-memory
       embedder: ollama
       url: http://localhost:11434
-      model: nomic-embed-text
+      model: bge-m3
     feedback:
       type: in-memory
       embedder: ollama
       url: http://localhost:11434
-      model: nomic-embed-text
+      model: bge-m3
     state:
       type: in-memory
       embedder: ollama
       url: http://localhost:11434
-      model: nomic-embed-text
+      model: bge-m3
 
 agent:
   externalToolsValidationMode: permissive

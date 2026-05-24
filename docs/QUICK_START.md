@@ -81,7 +81,7 @@ rag:
   type: in-memory         # in-memory | qdrant | hana-vector | pg-vector
   embedder: ollama        # ollama | openai | sap-ai-core (omit embedder for BM25 keyword-only)
   url: http://localhost:11434
-  model: nomic-embed-text
+  model: bge-m3
 
 mcp:
   type: http
@@ -96,6 +96,8 @@ log: smart-server.log     # omit for stdout
 ```
 
 > **`llm.provider` is required.** Supported values: `deepseek`, `openai`, `anthropic`, `sap-ai-sdk`, `ollama`. The `ollama` provider needs no API key and defaults to `http://localhost:11434/v1`. To run fully locally (Ollama for both LLM and embeddings, no API keys), see `examples/docker-ollama/`.
+
+> **`rag.model` is required when an embedder is used.** There is no default — `model` must be set explicitly. The shipped examples use `bge-m3` (multilingual, 1024 dimensions, covers English and non-English corpora). Run `ollama pull bge-m3` before first start. If you previously used `nomic-embed-text` (768 dimensions) with a persistent store (qdrant/hana-vector/pg-vector), you must **re-index** — dimensions changed.
 
 > **No Ollama?** Omit `rag.embedder` (or remove the `rag:` block) — tool selection uses BM25 keyword matching instead of neural embeddings. Everything else works identically.
 
@@ -286,7 +288,7 @@ Set the provider credential in `.env` (e.g. `DEEPSEEK_API_KEY`), or `llm.apiKey`
 ### Ollama embed errors
 Run Ollama locally and pull the model:
 ```bash
-ollama pull nomic-embed-text
+ollama pull bge-m3
 ```
 Or omit `rag.embedder` (BM25 keyword-only) — or remove the `rag:` block entirely — to run without Ollama.
 

@@ -9,12 +9,11 @@ import { SapCoreAIProvider } from '../sap-core-ai-provider.js';
 
 describe('SapCoreAIProvider — constructor', () => {
   it('does NOT throw when apiKey is missing (SAP SDK handles auth)', () => {
-    assert.doesNotThrow(() => new SapCoreAIProvider({}));
+    assert.doesNotThrow(() => new SapCoreAIProvider({ model: 'gpt-4o' }));
   });
 
-  it('sets default model to gpt-4o', () => {
-    const p = new SapCoreAIProvider({});
-    assert.equal(p.model, 'gpt-4o');
+  it('throws when model is missing (no default constant)', () => {
+    assert.throws(() => new SapCoreAIProvider({}), /requires a 'model'/);
   });
 
   it('uses custom model when provided', () => {
@@ -23,12 +22,15 @@ describe('SapCoreAIProvider — constructor', () => {
   });
 
   it('sets resourceGroup when provided', () => {
-    const p = new SapCoreAIProvider({ resourceGroup: 'default' });
+    const p = new SapCoreAIProvider({
+      model: 'gpt-4o',
+      resourceGroup: 'default',
+    });
     assert.equal(p.resourceGroup, 'default');
   });
 
   it('resourceGroup is undefined when not provided', () => {
-    const p = new SapCoreAIProvider({});
+    const p = new SapCoreAIProvider({ model: 'gpt-4o' });
     assert.equal(p.resourceGroup, undefined);
   });
 });
@@ -45,7 +47,7 @@ describe('SapCoreAIProvider — credentials / destination', () => {
       tokenServiceUrl: 'https://auth.example.com/oauth/token',
       servicUrl: 'https://api.ai.example.com',
     };
-    const p = new SapCoreAIProvider({ credentials: creds });
+    const p = new SapCoreAIProvider({ model: 'gpt-4o', credentials: creds });
 
     // biome-ignore lint/suspicious/noExplicitAny: access private field for testing
     const dest = (p as any).destination;
@@ -58,7 +60,7 @@ describe('SapCoreAIProvider — credentials / destination', () => {
   });
 
   it('destination is undefined when no credentials provided', () => {
-    const p = new SapCoreAIProvider({});
+    const p = new SapCoreAIProvider({ model: 'gpt-4o' });
     // biome-ignore lint/suspicious/noExplicitAny: access private field for testing
     assert.equal((p as any).destination, undefined);
   });
@@ -69,7 +71,7 @@ describe('SapCoreAIProvider — credentials / destination', () => {
 // ---------------------------------------------------------------------------
 
 describe('SapCoreAIProvider — formatMessages', () => {
-  const provider = new SapCoreAIProvider({});
+  const provider = new SapCoreAIProvider({ model: 'gpt-4o' });
   // biome-ignore lint/suspicious/noExplicitAny: access private method for testing
   const fmt = (msgs: Message[]) => (provider as any).formatMessages(msgs);
 

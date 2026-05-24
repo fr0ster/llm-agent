@@ -101,7 +101,7 @@ rag:
   type: in-memory
   embedder: ollama
   url: http://localhost:11434
-  model: nomic-embed-text
+  model: bge-m3
 
 # MCP is optional — uncomment to enable tool discovery alongside skills.
 # mcp:

@@ -1821,7 +1821,7 @@ const metrics = new InMemoryMetrics();
 
 // Create concrete implementations (composition root responsibility)
 const myLlm = new GeminiLlm(process.env.GEMINI_KEY!, 'gemini-pro');
-const embedder = new OllamaEmbedder({ model: 'nomic-embed-text' });
+const embedder = new OllamaEmbedder({ model: 'bge-m3' }); // model is required; bge-m3 is multilingual (1024 dims)
 const factsRag = new QdrantRag({
   url: 'http://qdrant:6333',
   collectionName: 'facts',

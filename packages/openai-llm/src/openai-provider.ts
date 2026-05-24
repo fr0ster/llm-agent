@@ -29,7 +29,10 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
     super(config);
     this.validateConfig();
 
-    this.model = config.model || 'gpt-4o-mini';
+    if (!config.model) {
+      throw new Error("OpenAI provider requires a 'model'");
+    }
+    this.model = config.model;
 
     const headers: Record<string, string> = {
       Authorization: `Bearer ${config.apiKey}`,

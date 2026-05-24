@@ -4,6 +4,36 @@ This guide covers tuning strategies for RAG retrieval, BM25 indexing, model sele
 
 All tunable parameters can be set in `smart-server.yaml` and many support hot-reload via `ConfigWatcher` — no restart needed.
 
+## Embedder Model Selection
+
+The embedder model must be set **explicitly** in `rag.model` — there is no default. A missing `model` is a startup error.
+
+### Recommended: `bge-m3` (multilingual)
+
+All shipped examples use `bge-m3` (BAAI/bge-m3 via Ollama):
+
+```yaml
+rag:
+  embedder: ollama
+  model: bge-m3
+```
+
+```bash
+ollama pull bge-m3
+```
+
+`bge-m3` is multilingual (1024-dimensional vectors). It covers English and non-English document corpora, SAP-native German terms, and residual non-English content after the query-translation step.
+
+### Query translation is complementary
+
+`ragTranslateEnabled` (default: on) translates non-ASCII queries to English before vectorization and RAG search. Using a multilingual embedder (`bge-m3`) **plus** translation provides robust retrieval for both non-English queries and non-English document corpora — the two are not either/or.
+
+### Dimension caveat — re-index persistent stores when switching models
+
+The embedding dimensions are model-specific: `nomic-embed-text` produces 768-dimensional vectors; `bge-m3` produces 1024-dimensional vectors. Switching models requires a **full re-index** of any persistent vector store (qdrant, hana-vector, pg-vector). In-memory stores rebuild on each restart automatically.
+
+---
+
 ## RAG Retrieval Tuning
 
 ### vectorWeight / keywordWeight
@@ -87,7 +117,9 @@ const rag = new VectorRag(embedder, {
 });
 ```
 
-### Benchmarks (159 ABAP MCP tools, Ollama nomic-embed-text)
+### Benchmarks (159 ABAP MCP tools, Ollama bge-m3)
+
+> **Note:** benchmarks were run with `nomic-embed-text` (768 dimensions). The shipped examples now use `bge-m3` (multilingual, 1024 dimensions). Relative strategy rankings remain valid; absolute scores may differ slightly with `bge-m3`.
 
 | Strategy | MRR | Notes |
 |----------|-----|-------|
@@ -367,7 +399,7 @@ Test with real LLM translation + real embeddings against live MCP server:
 node --import tsx/esm scripts/e2e-rag-search.ts
 ```
 
-Requires: DeepSeek API key, Ollama with `nomic-embed-text`, MCP server on localhost:3001.
+Requires: DeepSeek API key, Ollama with `bge-m3`, MCP server on localhost:3001.
 
 ### Classifier benchmark
 

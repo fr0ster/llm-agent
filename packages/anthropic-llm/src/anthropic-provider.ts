@@ -26,7 +26,10 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
     super(config);
     this.validateConfig();
 
-    this.model = config.model || 'claude-3-5-sonnet-20241022';
+    if (!config.model) {
+      throw new Error("Anthropic provider requires a 'model'");
+    }
+    this.model = config.model;
 
     this.client = axios.create({
       baseURL: config.baseURL || 'https://api.anthropic.com/v1',

@@ -34,7 +34,7 @@ rag:
   type: in-memory
   embedder: ollama
   url: http://localhost:11434
-  model: nomic-embed-text
+  model: bge-m3
   dedupThreshold: 0.92
   vectorWeight: 0.7
   keywordWeight: 0.3

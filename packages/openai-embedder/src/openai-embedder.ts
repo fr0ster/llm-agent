@@ -6,8 +6,8 @@ export interface OpenAiEmbedderConfig {
   apiKey: string;
   /** API base URL. Default: 'https://api.openai.com/v1' */
   baseURL?: string;
-  /** Embedding model. Default: 'text-embedding-3-small' */
-  model?: string;
+  /** Required: embedding model name (e.g. 'text-embedding-3-small'). No default — must be set explicitly. */
+  model: string;
   /** Per-request timeout in milliseconds. Default: 30 000 */
   timeoutMs?: number;
 }
@@ -15,21 +15,23 @@ export interface OpenAiEmbedderConfig {
 export class OpenAiEmbedder implements IEmbedderBatch {
   private readonly baseURL: string;
   private readonly apiKey: string;
-  private readonly model: string;
+  readonly model: string;
   private readonly timeoutMs: number;
 
   constructor(config: OpenAiEmbedderConfig) {
+    if (!config.apiKey) {
+      throw new Error('OpenAI API key is required for embedding');
+    }
+    if (!config.model) {
+      throw new Error("OpenAIEmbedder requires a 'model'");
+    }
     this.apiKey = config.apiKey;
     this.baseURL = (config.baseURL ?? 'https://api.openai.com/v1').replace(
       /\/$/,
       '',
     );
-    this.model = config.model ?? 'text-embedding-3-small';
+    this.model = config.model;
     this.timeoutMs = config.timeoutMs ?? 30_000;
-
-    if (!this.apiKey) {
-      throw new Error('OpenAI API key is required for embedding');
-    }
   }
 
   async embed(text: string, options?: CallOptions): Promise<IEmbedResult> {

@@ -37,7 +37,7 @@ export interface SapAICoreCredentials {
 }
 
 export interface SapCoreAIConfig extends LLMProviderConfig {
-  /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Default: 'gpt-4o' */
+  /** Model name (e.g. 'gpt-4o', 'claude-3-5-sonnet'). Required — the constructor throws if absent (no default). */
   model?: string;
   /** Temperature for generation. Default: 0.7 */
   temperature?: number;
@@ -154,7 +154,10 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
   constructor(config: SapCoreAIConfig) {
     super(config);
     // Skip validateConfig() — SAP SDK handles auth via AICORE_SERVICE_KEY env var
-    this.model = config.model || 'gpt-4o';
+    if (!config.model) {
+      throw new Error("SAP AI Core provider requires a 'model'");
+    }
+    this.model = config.model;
     this.resourceGroup = config.resourceGroup;
     this.log = config.log;
 
