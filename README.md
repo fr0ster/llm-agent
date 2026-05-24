@@ -76,7 +76,7 @@ See [docs/MIGRATION-v11.md](docs/MIGRATION-v11.md) if you are upgrading from v10
 - [QUICK_START.md](docs/QUICK_START.md) — end-to-end guide: install, config, connect IDE
 - [ARCHITECTURE.md](docs/ARCHITECTURE.md) — architecture reference: thin proxy layer + SmartAgent/SmartServer/pipeline
 - [INTEGRATION.md](docs/INTEGRATION.md) — custom interface implementation guide with code examples
-- [PERFORMANCE.md](docs/PERFORMANCE.md) — RAG, BM25, model selection, token budget tuning
+- [PERFORMANCE.md](docs/PERFORMANCE.md) — RAG, BM25, tool-selection strategy (`top-k`/`threshold`), model selection, token budget tuning
 - [CLIENT_SETUP.md](docs/CLIENT_SETUP.md) — connection instructions for Claude CLI, Cline, and Goose
 - [SAP_AI_CORE.md](docs/SAP_AI_CORE.md) — SAP AI Core operational guidance and troubleshooting
 - [DEPLOYMENT.md](docs/DEPLOYMENT.md) — production deployment patterns (Docker, systemd, serverless)

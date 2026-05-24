@@ -9,6 +9,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [16.1.1] — 2026-05-25
+
+### Documentation
+- **Documented the pluggable tool-selection strategy across the doc set** (the #135 feature shipped in 16.1.0 was only partially documented). Added the `IToolSelectionStrategy` custom-implementation guide to `docs/INTEGRATION.md`, an `agent.toolSelection` YAML example to `docs/EXAMPLES.md`, a note at the `tool-select` stage in `docs/ARCHITECTURE.md`, and a `README.md` pointer. No code changes.
+
 ## [16.1.0] — 2026-05-25
 
 ### Added
