@@ -4,16 +4,22 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import type { ILlm, ISubAgentContextBuilder } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILlm,
+  ISubAgentContextBuilder,
+  IToolSelectionStrategy,
+} from '@mcp-abap-adt/llm-agent';
 import {
   AutoActivation,
   ExplicitActivation,
   HybridDispatch,
   OneShotPlanning,
   ReplanOnErrorPlanning,
+  ScoreThresholdToolSelection,
   SelfDispatch,
   SkillStepsPlanning,
   SubAgentDispatch,
+  TopKToolSelection,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
 import type {
@@ -92,6 +98,29 @@ export function resolveCoordinatorActivation(name: string) {
     default:
       throw new Error(
         `Unknown coordinator.activation strategy: '${name}'. Allowed: auto, explicit.`,
+      );
+  }
+}
+
+export function resolveToolSelectionStrategy(
+  name: string,
+  params?: { minScore?: number },
+): IToolSelectionStrategy {
+  switch (name) {
+    case 'top-k':
+      return new TopKToolSelection();
+    case 'threshold': {
+      const minScore = params?.minScore;
+      if (typeof minScore !== 'number') {
+        throw new Error(
+          "agent.toolSelection.strategy 'threshold' requires a numeric 'minScore'",
+        );
+      }
+      return new ScoreThresholdToolSelection(minScore);
+    }
+    default:
+      throw new Error(
+        `Unknown agent.toolSelection.strategy '${name}'. Allowed: top-k, threshold.`,
       );
   }
 }
@@ -854,6 +883,14 @@ export function resolveSmartServerConfig(
               backoffMs?: number;
               retryOn?: number[];
               retryOnMidStream?: string[];
+            },
+          }
+        : {}),
+      ...(get(yaml, 'agent', 'toolSelection') !== undefined
+        ? {
+            toolSelection: get(yaml, 'agent', 'toolSelection') as {
+              strategy: string;
+              minScore?: number;
             },
           }
         : {}),
