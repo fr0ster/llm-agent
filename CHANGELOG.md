@@ -19,6 +19,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Fixed
 - **YAML-only deployments now wire the subagent context-builder's embedder from `rag.embedder`.** Previously the context-builder's tool-retrieval source required a DI-injected embedder (`SmartServerConfig.embedder`); a YAML-only config (embedder via `rag.embedder`) left it empty, so constrained subagents failed with "empty context". The embedder is now resolved once and shared between the RAG and the context-builder. (#137)
 
+## [15.0.1] — 2026-05-24
+
+### Fixed
+- **`@mcp-abap-adt/llm-agent-server@15.0.0` was uninstallable** (npm 404). It declares a hard dependency on `@mcp-abap-adt/ollama-llm`, which was not published in the v15.0.0 release — the new package was missing from `scripts/publish-all.sh`. This patch adds `ollama-llm` to the publish list and republishes the full set at `15.0.1`. (#142)
+
 ## [15.0.0] — 2026-05-23
 
 ### Breaking changes
