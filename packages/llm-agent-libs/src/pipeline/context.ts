@@ -35,6 +35,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
   McpTool,
@@ -103,6 +104,7 @@ export interface PipelineContext {
   readonly pendingToolResults: PendingToolResultsRegistry;
   readonly skillManager: ISkillManager | undefined;
   readonly embedder: IEmbedder | undefined;
+  readonly toolSelectionStrategy: IToolSelectionStrategy | undefined;
   readonly historyMemory: IHistoryMemory | undefined;
   readonly historySummarizer: IHistorySummarizer | undefined;
   readonly llmCallStrategy: ILlmCallStrategy;

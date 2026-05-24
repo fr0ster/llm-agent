@@ -28,6 +28,7 @@ import type {
   ISkillManager,
   ISubpromptClassifier,
   IToolCache,
+  IToolSelectionStrategy,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -89,6 +90,8 @@ export interface PipelineDeps {
   skillManager?: ISkillManager;
   /** Optional embedder for on-the-fly embedding operations. */
   embedder?: IEmbedder;
+  /** Strategy that filters scored RAG results for tool exposure. Default: top-k. */
+  toolSelectionStrategy?: IToolSelectionStrategy;
   /** Optional persistent history memory across sessions. */
   historyMemory?: IHistoryMemory;
   /** Optional history summarizer to compress long conversations. */
