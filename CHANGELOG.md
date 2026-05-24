@@ -9,6 +9,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+- **Pluggable tool-selection strategy** (`agent.toolSelection` / `SmartAgentBuilder.withToolSelectionStrategy`). `top-k` (default, unchanged behavior) exposes the K nearest tools by semantic distance; `threshold` (`minScore`) exposes only tools at/above a cosine-score cutoff, so off-topic queries surface no tools. Tool exposure is now driven purely by RAG semantic distance — SAP-specific classifier routing rules were removed from the examples. (#135)
+
 ## [16.0.0] — 2026-05-24
 
 ### Breaking changes
