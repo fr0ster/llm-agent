@@ -77,7 +77,7 @@ When `credentials` is provided, the SDK builds an OAuth2ClientCredentials destin
 
 | Field | Type | Default | Description |
 |-------|------|---------|-------------|
-| `model` | `string` | `'gpt-4o'` | Model name deployed on SAP AI Core |
+| `model` | `string` | **required** | Model name deployed on SAP AI Core (no default — constructor throws if absent) |
 | `temperature` | `number` | `0.7` | Generation temperature |
 | `maxTokens` | `number` | `16384` | Max tokens for generation |
 | `resourceGroup` | `string` | — | SAP AI Core resource group |

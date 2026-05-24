@@ -149,7 +149,7 @@ async function main() {
   console.log(`${tools.length} MCP tools loaded`);
   const embedder = new OllamaEmbedder({
     url: OLLAMA_URL,
-    model: 'nomic-embed-text',
+    model: 'bge-m3',
   });
   const helperLlm = makeDefaultLlm(DEEPSEEK_API_KEY, 'deepseek-chat', 0.1);
   const translatePP = new TranslatePreprocessor(helperLlm);
