@@ -19,6 +19,7 @@ PACKAGES=(
   llm-agent-mcp
   llm-agent-rag
   openai-llm
+  ollama-llm
   anthropic-llm
   deepseek-llm
   sap-aicore-llm

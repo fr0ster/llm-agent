@@ -9,6 +9,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [15.0.1] — 2026-05-24
+
+### Fixed
+- **`@mcp-abap-adt/llm-agent-server@15.0.0` was uninstallable** (npm 404). It declares a hard dependency on `@mcp-abap-adt/ollama-llm`, which was not published in the v15.0.0 release — the new package was missing from `scripts/publish-all.sh`. This patch adds `ollama-llm` to the publish list and republishes the full set at `15.0.1`. (#142)
+
 ## [15.0.0] — 2026-05-23
 
 ### Breaking changes
