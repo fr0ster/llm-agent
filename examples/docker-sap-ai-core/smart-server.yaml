@@ -121,7 +121,9 @@ mcp:
 # Default `./sessions` is relative to the launch CWD; in docker-compose set LOG_DIR=/app/sessions.
 logDir: ${LOG_DIR:-./sessions}
 
-# Custom classifier prompt: classify knowledge questions as "action" so RAG is triggered.
+# Custom prompts — system and ragTranslate overrides only.
+# Tool exposure is driven entirely by RAG semantic distance + the tool-selection
+# strategy; no domain-specific classifier rules are needed.
 prompts:
   system: >
     Use MCP tools when they can accomplish the task. Answer or fulfill requests when possible.
@@ -132,35 +134,6 @@ prompts:
     Output ONLY the translated text — no explanations, no commentary,
     no opinions about feasibility. Preserve all technical terms, class names,
     and identifiers exactly as they appear.
-
-  classifier: >
-    You are a Semantic Intent Analyzer. Decompose the user message into logical tasks.
-    For each task, identify:
-      - "type": chat (greetings/math), action (tasks AND knowledge/fact questions), state (context), feedback.
-      - "text": the actual task description.
-      - "context": the domain of the task (e.g., "sap-abap", "math", "general").
-      - "dependency": "independent", "sequential" (must run after previous action), or an ID of a subprompt this one depends on.
-
-    CRITICAL RULES:
-    1. If a message contains multiple sequential steps (e.g., "Do A and then check B"), SPLIT them into separate "action" subprompts with "dependency": "sequential" on the later steps.
-    2. If tasks are independent (e.g., "Check weather AND add 5+5"), SPLIT them with "dependency": "independent".
-    3. If a task is an atomic operation with a conditional fallback (e.g., "Do A, if it fails do B"), keep it as a SINGLE subprompt — the fallback is part of the same instruction.
-    4. Be strictly neutral. Only assign "sap-abap" context if SAP terms are present.
-    5. IMPORTANT: Knowledge/factual questions (who, what, when, where, why, how) MUST be classified as "action" — NOT "fact". This ensures the RAG pipeline retrieves relevant context.
-
-    Example: "Read table T100 and check its transport history. Also tell me a joke."
-    Result: [
-      {"type": "action", "text": "Read content of table T100", "context": "sap-abap", "dependency": "independent"},
-      {"type": "action", "text": "Check transport history of table T100", "context": "sap-abap", "dependency": "sequential"},
-      {"type": "chat", "text": "Tell a joke", "context": "general", "dependency": "independent"}
-    ]
-
-    Example: "Who won the Super Bowl in 2026?"
-    Result: [
-      {"type": "action", "text": "Who won the Super Bowl in 2026?", "context": "general", "dependency": "independent"}
-    ]
-
-    Return ONLY a JSON array.
 
 agent:
   externalToolsValidationMode: permissive
