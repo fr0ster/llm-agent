@@ -16,6 +16,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ### Changed
 - **Shipped examples and template use multilingual `bge-m3` ollama embedder** (was `nomic-embed-text`). Run `ollama pull bge-m3` before first start. Persistent vector stores (qdrant/hana-vector/pg-vector) built with a previous embedder must be **re-indexed** — embedding dimensions differ (nomic-embed-text: 768 → bge-m3: 1024).
 
+### Fixed
+- **YAML-only deployments now wire the subagent context-builder's embedder from `rag.embedder`.** Previously the context-builder's tool-retrieval source required a DI-injected embedder (`SmartServerConfig.embedder`); a YAML-only config (embedder via `rag.embedder`) left it empty, so constrained subagents failed with "empty context". The embedder is now resolved once and shared between the RAG and the context-builder. (#137)
+
 ## [15.0.0] — 2026-05-23
 
 ### Breaking changes
