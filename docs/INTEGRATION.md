@@ -1069,6 +1069,67 @@ for (const tool of tools) {
 // RAG search finds either variant; tool name extracted by stripping suffix
 ```
 
+## IToolSelectionStrategy
+
+**File:** `packages/llm-agent/src/interfaces/tool-selection-strategy.ts`
+
+Decides which scored RAG results are relevant enough to drive tool exposure. The `tool-select` stage queries the tools store, then hands the scored results to the strategy; the kept subset is what the pipeline extracts `tool:`-prefixed ids from. Tool exposure is therefore a pure function of semantic distance — no classifier or domain rules gate it.
+
+```ts
+interface IToolSelectionStrategy {
+  readonly name: string;
+  select(results: RagResult[]): RagResult[]; // RagResult.score is cosine in [0,1]
+}
+```
+
+The interface is pure and side-effect-free, so it can be unit-tested in isolation.
+
+### Built-in strategies
+
+| Strategy | Class | Behavior |
+|----------|-------|----------|
+| `top-k` (default) | `TopKToolSelection` | Passthrough — keeps all results. The top-K cap is already applied at the store query, so this reproduces the historical behavior. |
+| `threshold` | `ScoreThresholdToolSelection(minScore)` | Keeps only results with `score >= minScore`. A query whose nearest tools all fall below the cutoff yields an empty set → no tools surfaced → the LLM answers as plain chat. |
+
+### Selecting a strategy
+
+YAML (server config) — see also [docs/PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance):
+
+```yaml
+agent:
+  toolSelection:
+    strategy: threshold   # or: top-k (default — omit the block entirely)
+    minScore: 0.4         # required for threshold; embedder-specific (tune empirically)
+```
+
+Builder (DI) — wins over any YAML `agent.toolSelection` block:
+
+```ts
+import { ScoreThresholdToolSelection } from '@mcp-abap-adt/llm-agent-libs';
+
+builder.withToolSelectionStrategy(new ScoreThresholdToolSelection(0.4));
+```
+
+### Example: Custom strategy (keep a relative margin below the top hit)
+
+```ts
+import type { IToolSelectionStrategy, RagResult } from '@mcp-abap-adt/llm-agent';
+
+// Keep the best hit plus anything within `margin` of its score, so a clearly
+// dominant tool isn't diluted by weaker near-matches.
+class RelativeMarginToolSelection implements IToolSelectionStrategy {
+  readonly name = 'relative-margin';
+  constructor(private readonly margin = 0.1) {}
+  select(results: RagResult[]): RagResult[] {
+    if (results.length === 0) return results;
+    const best = Math.max(...results.map((r) => r.score));
+    return results.filter((r) => r.score >= best - this.margin);
+  }
+}
+
+builder.withToolSelectionStrategy(new RelativeMarginToolSelection(0.08));
+```
+
 ## ISubpromptClassifier
 
 **File:** `packages/llm-agent/src/interfaces/classifier.ts`

@@ -397,6 +397,22 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
+## Tool selection strategy
+
+Controls which tools the agent exposes, based on their semantic distance to the query — no classifier or domain rules.
+
+```yaml
+agent:
+  toolSelection:
+    strategy: threshold   # top-k (default) | threshold
+    minScore: 0.4         # required for threshold; embedder-specific
+```
+
+- `top-k` (default) — expose the K nearest tools (`K = agent.ragQueryK`). Omit the `toolSelection` block to keep this behavior.
+- `threshold` — expose only tools with cosine score `>= minScore`; an off-topic query whose nearest tools all fall below the cutoff surfaces **no tools**, so the LLM answers as plain chat.
+
+A strategy injected programmatically via `SmartAgentBuilder.withToolSelectionStrategy(...)` overrides this YAML block. See [docs/PERFORMANCE.md](PERFORMANCE.md#tool-selection-semantic-distance) for calibrating `minScore` and [docs/INTEGRATION.md](INTEGRATION.md#itoolselectionstrategy) for writing a custom strategy.
+
 ## External tools validation mode
 
 ```yaml

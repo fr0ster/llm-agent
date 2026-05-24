@@ -722,7 +722,7 @@ Key components:
 | `expand` | `ExpandHandler` | Expand query with synonyms |
 | `rag-query` | `RagQueryHandler` | Query a single RAG store (`config.store`) |
 | `rerank` | `RerankHandler` | Re-score RAG results |
-| `tool-select` | `ToolSelectHandler` | Select MCP tools from RAG results |
+| `tool-select` | `ToolSelectHandler` | Select MCP tools from RAG results via the configured `IToolSelectionStrategy` (`top-k` default / `threshold`) |
 | `skill-select` | `SkillSelectHandler` | Select skills from RAG results, load content into `ctx.skillContent` |
 | `assemble` | `AssembleHandler` | Build final LLM context; appends skill content as `## Active Skills` section |
 | `tool-loop` | `ToolLoopHandler` | Streaming LLM + tool execution loop |
