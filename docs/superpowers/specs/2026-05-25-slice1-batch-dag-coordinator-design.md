@@ -104,7 +104,10 @@ export interface InterpretResult {
 
 ```ts
 // interfaces/planner.ts  (NEW)
-export interface PlannerCatalogEntry { name: string; description: string }
+// description is OPTIONAL — mirrors the existing `subagents[].description` (which
+// is optional). LlmDagPlanner falls back to '(no description)' in its catalog
+// block, same as the linear planner's agents list.
+export interface PlannerCatalogEntry { name: string; description?: string }
 
 export interface PlannerInput {
   prompt: string;
