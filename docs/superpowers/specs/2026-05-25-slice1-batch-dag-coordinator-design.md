@@ -219,13 +219,19 @@ worker catalog is the **existing top-level `subagents:`** (the current
 `coordinator.subagents` shape):
 
 ```yaml
-subagents:                  # EXISTING top-level catalog (shared; each entry a pipeline)
-  summarizer: { ...pipeline (llm/rag/mcp/prompt)... }
+subagents:                       # EXISTING top-level catalog — an ARRAY of entries,
+  - name: summarizer             #   each { name, description?, config: <path> } where
+    description: Summarizes ...  #   `config` points to that subagent's own pipeline YAML.
+    config: ../subagents/summarizer.yaml
 
 coordinator:
-  planner:     { type: llm }    # presence → DAG mode; LLM defaults to planner/main
-  # interpreter: { type: dag }  # optional; defaults to DagPlanInterpreter
+  planner:     { type: llm }     # presence → DAG mode; LLM defaults to planner/main
+  # interpreter: { type: dag }   # optional; defaults to DagPlanInterpreter
 ```
+
+(The existing `subagents:` parser — array of `{ name, description?, config }`,
+each `config` a path to a nested pipeline YAML — is reused as-is; no new worker
+syntax is introduced. `node.agent` matches a subagent `name`.)
 
 `InterpretContext.workers` is built from that existing registry; this slice adds
 **no new subagent config shape** (backward-compat: existing `subagents:` configs

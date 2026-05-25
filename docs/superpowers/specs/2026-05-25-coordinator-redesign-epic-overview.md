@@ -186,8 +186,9 @@ not be self-sufficient).
 **Coordinator config shape (DAG path), sketch:**
 
 ```yaml
-subagents:                          # EXISTING top-level catalog (shared; each a pipeline)
-  <name>: { ...pipeline... }
+subagents:                          # EXISTING top-level catalog — ARRAY of
+  - name: <worker>                  #   { name, description?, config: <path-to-pipeline-yaml> }
+    config: ../subagents/<worker>.yaml
 
 coordinator:
   planner:  <builtin or subagent>   # IPlanner — builds the DAG (presence → DAG mode)
