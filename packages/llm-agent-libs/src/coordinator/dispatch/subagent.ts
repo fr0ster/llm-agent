@@ -6,7 +6,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
-import { resolveTemplate } from '../../util/template.js';
+import { composeTask } from './compose-task.js';
 
 /**
  * Dispatch the step to a named subagent from the registry.
@@ -48,15 +48,7 @@ export class SubAgentDispatch implements IDispatchStrategy {
         })`,
       };
     }
-    const renderCtx: Record<string, unknown> = {
-      inputText: ctx.inputText,
-      stepResults: ctx.stepResults,
-      step: step,
-      goal: step.goal,
-    };
-    const task = step.inputTemplate
-      ? resolveTemplate(step.inputTemplate, renderCtx)
-      : step.goal;
+    const task = composeTask(step, ctx);
 
     const childLayer = (ctx.layer ?? 0) + 1;
 
