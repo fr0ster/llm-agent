@@ -137,10 +137,16 @@ spirit of the linear `composeTask`, but DAG-scoped). Produces the worker `task`:
 ### `coordinator/dag/dag-plan-interpreter.ts`
 `DagPlanInterpreter implements IInterpreter<DagPlan, InterpretResult>`:
 - **Validate the DAG once → throw `COORDINATOR_PLAN_INVALID`** on a structural
-  error the plan can't recover from: a `dependsOn` id that doesn't exist; a
-  **cycle** (topological sort detects it); or a node whose `agent` can't be
-  resolved (see worker resolution below). These are malformed-plan errors, not
-  execution failures.
+  error the plan can't recover from:
+  - **empty `nodes`** (`nodes.length === 0`) — a DAG plan must have ≥1 node; the
+    trivial/single-pipeline case is a 1-node plan, not an empty one;
+  - **duplicate node `id`s** — they would collide in `Record<string, NodeResult>`,
+    in dependency resolution, and in aggregation;
+  - a `dependsOn` id that doesn't exist;
+  - a **cycle** (topological sort detects it);
+  - a node whose `agent` can't be resolved (see worker resolution below).
+
+  These are malformed-plan errors, not execution failures.
 - **Worker resolution (F4):** a node's worker is `workers.get(node.agent)` when
   `agent` is set; when `agent` is **absent**, it resolves to the sole worker
   **iff `workers.size === 1`** (the progressive-complexity single-pipeline
@@ -150,12 +156,19 @@ spirit of the linear `composeTask`, but DAG-scoped). Produces the worker `task`:
   and not yet run); dispatch all ready nodes **concurrently** (`Promise.all`);
   for each, `composeNodeTask(...)` → resolved worker
   `worker.run({ task, sessionId, signal, layer: ctx.layer + 1 })` (workers stay
-  non-root leaves) → record a `NodeResult` with `status: 'done' | 'failed'`.
-- **Failure handling (F2, no throw):** if a node returns `ok:false` (→ `failed`),
-  its transitive dependents can never become ready — mark them `skipped`; finish
-  any still-runnable independent nodes; then **return** an `InterpretResult` with
-  `ok: false` and an `error` summary (e.g. which node failed). Node failures do
-  NOT throw — they are a returned result. (Replan-on-failure is slice 3.)
+  non-root leaves). **`ISubAgent.run` returns `ISubAgentResult` (no `ok` field);
+  failures surface as a thrown error or `errorClass: 'epicfail'`** — so each
+  dispatch is wrapped: resolves cleanly → `NodeResult.status: 'done'` with
+  `result.output`; **throws** (caught) → `status: 'failed'` with the error
+  message; a resolved result carrying `errorClass: 'epicfail'` → also `'failed'`
+  (slice 1 records it as a node failure; cross-DAG epicfail propagation is out of
+  scope). The interpreter never lets a worker error escape as an unhandled throw.
+- **Failure handling (F2, no throw from the interpreter):** once a node is
+  `failed`, its transitive dependents can never become ready — mark them
+  `skipped`; finish any still-runnable independent nodes; then **return** an
+  `InterpretResult` with `ok: false` and an `error` summary (which node failed).
+  Node failures are a returned result, not an interpreter throw. (Replan-on-failure
+  is slice 3.)
 - **Aggregate (success):** concatenate **terminal nodes'** outputs (nodes that
   are no other node's dependency) in deterministic id order into
   `InterpretResult.output`; for a 1-node plan it is just that node's output
@@ -200,15 +213,23 @@ interface when the second implementation appears).
 
 ## Config interpretation (package `@mcp-abap-adt/llm-agent-server`)
 
-New optional `coordinator` fields, **distinct names** from the linear ones:
+New optional `coordinator` fields, **distinct names** from the linear ones. The
+worker catalog is the **existing top-level `subagents:`** (the current
+`SubAgentRegistry` config — shared with the linear coordinator, NOT a new
+`coordinator.subagents` shape):
 
 ```yaml
+subagents:                  # EXISTING top-level catalog (shared; each entry a pipeline)
+  summarizer: { ...pipeline (llm/rag/mcp/prompt)... }
+
 coordinator:
-  planner:     { type: llm, plannerLlm: main }     # selects LlmDagPlanner
-  interpreter: { type: dag }                        # selects DagPlanInterpreter (default)
-  subagents:                                        # worker catalog; each is a pipeline
-    summarizer: { ...pipeline (llm/rag/mcp/prompt)... }
+  planner:     { type: llm }    # presence → DAG mode; LLM defaults to planner/main
+  # interpreter: { type: dag }  # optional; defaults to DagPlanInterpreter
 ```
+
+`InterpretContext.workers` is built from that existing registry; this slice adds
+**no new subagent config shape** (backward-compat: existing `subagents:` configs
+load unchanged).
 
 - **The DAG selector is the presence of `coordinator.planner`.** `subagents` is
   **NOT** a selector — it is shared (the existing linear coordinator already
@@ -223,8 +244,23 @@ coordinator:
   (one worker pipeline).
 - **Old `planning`/`dispatch`** (and no `planner`) → the existing linear
   coordinator, unchanged.
-- **Mixing** old (`planning`/`dispatch`) and new (`planner`/`interpreter`) in one
-  `coordinator` block → **fail-loud** config-validation error (no silent fallback).
+- **Mixing / stray linear-only fields → fail-loud (no silent partial config).**
+  In DAG mode (`coordinator.planner` present), the **linear-only** fields are
+  rejected with a clear validation error, because they are meaningless or have a
+  different shape here:
+  - `planning`, `dispatch` — linear strategy selectors (replaced by `planner`/`interpreter`);
+  - `maxSteps`, `maxRetriesPerStep`, `failPolicy` — linear step-loop knobs (the
+    DAG interpreter has no step loop in slice 1);
+  - `maxLayer` — nesting control (nested dispatch is being removed in slice 3);
+  - top-level `coordinator.plannerLlm` — the DAG planner's LLM lives in
+    `coordinator.planner` (e.g. `planner.plannerLlm`), so a sibling `plannerLlm`
+    is ambiguous → reject.
+  - **`activation`** (`explicit`/`auto`) is the one **shared** field — it governs
+    whether the coordinator engages at all, orthogonal to the engine — so it is
+    **allowed** in DAG mode.
+
+  Conversely, a linear `coordinator` (no `planner`) rejects the new DAG-only
+  fields (`planner`/`interpreter`) the same way. Each rejection names the field.
 
 ## Files touched
 
@@ -245,10 +281,10 @@ Untouched (must not change): linear `coordinator.ts` interfaces, linear
 
 Unit (`node --test` via tsx):
 - `compose-node-task`: bare goal / +objective / +dep outputs (data-flow) / +needsInput material.
-- `DagPlanInterpreter`: linear chain (sequential), diamond (parallel middle), single-node (raw output), missing-dep id → throw, cycle → throw, a node failure skips dependents and surfaces failure.
+- `DagPlanInterpreter`: linear chain (sequential), diamond (parallel middle), single-node (raw output); validation throws on empty `nodes`, duplicate ids, missing-dep id, cycle, and unresolvable `agent` (absent agent with >1 worker); a worker that **throws** → that node `failed` + dependents `skipped` + `ok:false`; absent `agent` with exactly one worker resolves to it.
 - `LlmDagPlanner` (fake LLM): parses a DAG; single-node case; malformed JSON / missing goal → throw.
 - `DagCoordinatorHandler` (fake planner + fake workers): end-to-end prompt → DAG → aggregated output streamed raw; planner error → `COORDINATOR_PLAN_FAILED`; interpreter failure → `COORDINATOR_STEP_FAILED`.
-- Config: new `planner`/`subagents` fields → DAG coordinator wired; old `planning` → linear (unchanged); mixing → fail-loud; **existing `docs/examples/coordinator-orchestration*.yaml` still parse + validate** (backward-compat regression guard).
+- Config: `coordinator.planner` present → DAG coordinator wired (workers from existing top-level `subagents:`); old `planning` → linear (unchanged); a linear-only field (`maxSteps`/`failPolicy`/`plannerLlm`/…) in DAG mode → fail-loud naming the field; `activation` allowed in DAG mode; **existing `docs/examples/coordinator-orchestration*.yaml` still parse + validate** (backward-compat regression guard).
 
 Smoke (needs LLM): a multi-step prompt fans out into a DAG and aggregates; a simple prompt yields a single-node plan answered by one pipeline.
 

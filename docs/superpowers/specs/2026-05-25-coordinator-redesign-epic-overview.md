@@ -186,12 +186,13 @@ not be self-sufficient).
 **Coordinator config shape (DAG path), sketch:**
 
 ```yaml
+subagents:                          # EXISTING top-level catalog (shared; each a pipeline)
+  <name>: { ...pipeline... }
+
 coordinator:
-  planner:  <subagent or builtin>   # IPlanner — builds the DAG
+  planner:  <builtin or subagent>   # IPlanner — builds the DAG (presence → DAG mode)
   # reviewer: <subagent>            # IReviewStrategy — slice 2 (presence = gate on)
-  interpreter: <builtin>            # IInterpreter — runs the DAG (default impl)
-  subagents:                        # catalog of worker pipelines (each its own llm/rag/mcp/prompt)
-    <name>: { ...pipeline... }
+  # interpreter: <builtin>          # IInterpreter — optional; defaults to the DAG interpreter
 ```
 
 Presence of `coordinator.planner` selects the DAG path (`subagents` is shared
