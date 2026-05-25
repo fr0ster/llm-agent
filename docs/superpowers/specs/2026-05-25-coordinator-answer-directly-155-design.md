@@ -54,7 +54,13 @@ a planner's stray prose as the user's answer).
 - **Keep fail-loud for the other malformed cases (unchanged from #145):**
   - invalid JSON (existing `extractJson` throw),
   - a step present but missing a non-empty `goal` (existing throw),
-  - both `clarification` and `steps` set — ambiguous (existing throw).
+  - `clarification` combined with a `steps` **array of any length** (incl. `[]`)
+    — ambiguous mixed output → throw. This tightens the #145 condition (which
+    only threw on a non-empty steps array): for a clean three-way union the
+    planner must return exactly one of `{clarification}` (alone, no `steps` key),
+    `{steps: [...]}`, or `{steps: []}` (answer-directly). So
+    `{"clarification":"...","steps":[]}` throws rather than silently winning as a
+    clarification.
 - **Prompt:** add an instruction — "If the request needs no decomposition (it can
   be answered directly without breaking it into steps), return an empty `steps`
   array and no `clarification`."
@@ -133,7 +139,7 @@ contains `ctx.inputText`, not that it is byte-identical.
 trivial prompt → LLM planner returns parseable `{ steps: [] }` (source
 `planner-llm`) → `validatePlan` passes (empty steps, layer ok) → handler
 synthesizes `direct-1 { goal: inputText }` → configured dispatch (`hybrid` by
-default) routes the agentless step to `SelfDispatch` (agent's main LLM) → answer
+default) routes the agentless step to `SelfDispatch` (resolved planner/main LLM) → answer
 → streamed raw → `stop`.
 
 ## Error handling
@@ -153,12 +159,13 @@ default) routes the agentless step to `SelfDispatch` (agent's main LLM) → answ
   **keep** the existing `{"objective":"x"}` (no steps array) → throws test
   (now the malformed/missing-array case); **add** a `{"steps":[]}` → returns a
   plan with `steps.length === 0` and no throw test; keep the missing-goal and
-  clarification+steps throw tests.
+  clarification+steps throw tests (and extend the latter to cover
+  `{"clarification":"...","steps":[]}` → throws, per the tightened union).
 - `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts` — add the
   answer-directly short-circuit (after `validatePlan`, gated on
   `source === 'planner-llm'` + empty steps).
 - `packages/llm-agent-libs/src/builder.ts` — default coordinator `dispatch` to
-  `HybridDispatch(SubAgentDispatch, SelfDispatch(mainLlm))` (was bare
+  `HybridDispatch(SubAgentDispatch, SelfDispatch(plannerLlm))` (was bare
   `SubAgentDispatch`).
 - `packages/llm-agent-server/src/smart-agent/smart-server.ts` — default
   `dispatchKind` to `'hybrid'` for all planning kinds (was `subagent` except
