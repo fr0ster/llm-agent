@@ -57,6 +57,16 @@ export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
   }
 }
 
+/**
+ * Default coordinator dispatch kind. Omitted → 'hybrid' for ALL planning kinds:
+ * agentless steps — the synthesized answer-directly step (#155) and skill steps
+ * without an explicit `agent:` — need a self-LLM fallback. Pin 'subagent'
+ * explicitly for strict subagent-only routing.
+ */
+export function resolveCoordinatorDispatchKind(explicit?: string): string {
+  return explicit ?? 'hybrid';
+}
+
 export function resolveCoordinatorDispatch(
   name: string,
   fallbackLlm?: ILlm,
