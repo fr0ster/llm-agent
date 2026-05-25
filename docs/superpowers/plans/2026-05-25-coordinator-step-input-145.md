@@ -153,7 +153,7 @@ function step(overrides: Partial<PlanStep> = {}): PlanStep {
 describe('composeTask', () => {
   it('returns bare goal when no objective, needsInput, or inputTemplate', () => {
     const task = composeTask(step(), ctx());
-    assert.equal(task, 'Task: Summarize it');
+    assert.equal(task, 'Summarize it');
   });
 
   it('prepends the plan objective when present', () => {
@@ -209,25 +209,32 @@ import { resolveTemplate } from '../../util/template.js';
  * inserted verbatim and losslessly.
  *
  * - `step.inputTemplate` (advanced override) wins and is resolved as-is.
+ * - No-regression path: when there is no objective and no needsInput (and no
+ *   template), the task reduces to the bare `step.goal` — unchanged behavior.
  * - Otherwise: "Task: <goal>", then "Overall objective: <objective>" when the
  *   plan carries one, then the client request as delimited data when
  *   `step.needsInput` is true.
  */
 export function composeTask(step: PlanStep, ctx: ICoordinatorContext): string {
-  const renderCtx: Record<string, unknown> = {
-    goal: step.goal,
-    objective: ctx.plan?.objective ?? '',
-    inputText: ctx.inputText,
-    stepResults: ctx.stepResults,
-    step,
-  };
-
   if (step.inputTemplate) {
+    const renderCtx: Record<string, unknown> = {
+      goal: step.goal,
+      objective: ctx.plan?.objective ?? '',
+      inputText: ctx.inputText,
+      stepResults: ctx.stepResults,
+      step,
+    };
     return resolveTemplate(step.inputTemplate, renderCtx);
   }
 
-  const parts: string[] = [`Task: ${step.goal}`];
   const objective = ctx.plan?.objective;
+
+  // No-regression path: nothing to compose → bare goal (unchanged behavior).
+  if (!objective && !step.needsInput) {
+    return step.goal;
+  }
+
+  const parts: string[] = [`Task: ${step.goal}`];
   if (objective) {
     parts.push(`Overall objective: ${objective}`);
   }
@@ -252,13 +259,78 @@ git commit -m "feat(libs): #145 deterministic composeTask helper (objective + go
 
 ---
 
-## Task 3: Wire `composeTask` into both dispatch strategies
+## Task 3: Wire `composeTask` into both dispatch strategies (TDD)
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts:51-59`
 - Modify: `packages/llm-agent-libs/src/coordinator/dispatch/self.ts`
+- Test: `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`
 
-- [ ] **Step 1: Use `composeTask` in `SubAgentDispatch`**
+- [ ] **Step 1: Write the failing capture test**
+
+Create `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`. A fake subagent records the `task` it receives, so we verify the composed task end-to-end (deterministic, no LLM, no log leakage):
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type {
+  ICoordinatorContext,
+  ISubAgent,
+  ISubAgentInput,
+  PlanStep,
+} from '@mcp-abap-adt/llm-agent';
+import { SubAgentDispatch } from '../subagent.js';
+
+describe('SubAgentDispatch task composition', () => {
+  it('passes objective + verbatim material in the composed task', async () => {
+    const captured: { task?: string } = {};
+    const fakeSub: ISubAgent = {
+      capabilities: {
+        kind: 'constrained',
+        canDispatchChildren: false,
+        contextPolicy: 'optional',
+      },
+      run: async (input: ISubAgentInput) => {
+        captured.task = input.task;
+        return { output: 'done' };
+      },
+    } as unknown as ISubAgent;
+
+    const ctx = {
+      inputText: 'RELEASE-TASKS-BLOB',
+      registry: new Map([['summarizer', fakeSub]]),
+      stepResults: {},
+      sessionId: 't',
+      plan: {
+        steps: [],
+        objective: 'Ship the release',
+        createdAt: 0,
+        source: 'planner-llm',
+      },
+    } as unknown as ICoordinatorContext;
+
+    const step: PlanStep = {
+      id: 's1',
+      goal: 'Summarize',
+      agent: 'summarizer',
+      needsInput: true,
+      status: 'pending',
+    };
+
+    const res = await new SubAgentDispatch().dispatch(step, ctx);
+    assert.equal(res.ok, true);
+    assert.match(captured.task ?? '', /RELEASE-TASKS-BLOB/);
+    assert.match(captured.task ?? '', /Overall objective: Ship the release/);
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd packages/llm-agent-libs && npx tsx --test src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`
+Expected: FAIL — current code sets `task = step.goal` (no template), so `captured.task` is `"Summarize"` and the material/objective assertions fail.
+
+- [ ] **Step 3: Use `composeTask` in `SubAgentDispatch`**
 
 In `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts`, remove the local `renderCtx`/`resolveTemplate` task block and the now-unused `resolveTemplate` import. Replace the block:
 
@@ -286,7 +358,7 @@ Change the import line `import { resolveTemplate } from '../../util/template.js'
 import { composeTask } from './compose-task.js';
 ```
 
-- [ ] **Step 2: Use `composeTask` in `SelfDispatch`**
+- [ ] **Step 4: Use `composeTask` in `SelfDispatch`**
 
 In `packages/llm-agent-libs/src/coordinator/dispatch/self.ts`, add the import after the existing type import:
 
@@ -314,17 +386,17 @@ with:
     const userMsg = `${composeTask(step, ctx)}\n\nResults so far:\n${priorBlock}`;
 ```
 
-- [ ] **Step 3: Build to verify both strategies compile**
+- [ ] **Step 5: Build to verify both strategies compile**
 
 Run: `npm run build`
 Expected: build succeeds; no unused-import errors from Biome/TS.
 
-- [ ] **Step 4: Run the dispatch test suite**
+- [ ] **Step 6: Run the dispatch test suite to verify it passes**
 
 Run: `cd packages/llm-agent-libs && npx tsx --test 'src/coordinator/dispatch/__tests__/*.test.ts'`
-Expected: PASS (composeTask tests still green; dispatch modules import cleanly).
+Expected: PASS — composeTask (5) + subagent-dispatch capture (1) green.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add packages/llm-agent-libs/src/coordinator/dispatch/self.ts packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts
@@ -381,6 +453,14 @@ describe('OneShotPlanning parsing', () => {
     assert.equal(plan.clarification, 'What should I summarize?');
     assert.equal(plan.steps.length, 0);
   });
+
+  it('throws when output has neither steps nor clarification', async () => {
+    const llm = llmReturning('{"objective":"x"}');
+    await assert.rejects(
+      () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
+      /neither steps nor a clarification/,
+    );
+  });
 });
 ```
 
@@ -416,7 +496,21 @@ In `packages/llm-agent-libs/src/coordinator/planning/one-shot.ts`, replace the p
       };
     }
 
-    const steps: PlanStep[] = (parsed.steps ?? []).map((s, i) => ({
+    // Without a clarification, a usable plan must carry at least one valid step.
+    // An empty/malformed plan must fail loud (→ COORDINATOR_PLAN_FAILED) rather
+    // than silently produce blank coordinator output.
+    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+      throw new Error(
+        `Planner returned neither steps nor a clarification: ${jsonText.slice(0, 200)}`,
+      );
+    }
+    for (const s of parsed.steps) {
+      if (typeof s.goal !== 'string' || s.goal.trim() === '') {
+        throw new Error(`Planner step is missing a goal: ${JSON.stringify(s)}`);
+      }
+    }
+
+    const steps: PlanStep[] = parsed.steps.map((s, i) => ({
       id: s.id ?? `step-${i + 1}`,
       goal: s.goal,
       agent: s.agent,
@@ -457,7 +551,7 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd packages/llm-agent-libs && npx tsx --test src/coordinator/planning/__tests__/one-shot.test.ts`
-Expected: PASS — 2 tests.
+Expected: PASS — 3 tests.
 
 - [ ] **Step 6: Commit**
 
@@ -489,8 +583,18 @@ In `rebuildPlan`, replace the parse-and-return block (from `const parsed = JSON.
       }>;
       rationale?: string;
     };
+    // A replan must yield at least one valid step; an empty/malformed result
+    // fails loud (→ COORDINATOR_REPLAN_FAILED) instead of stalling silently.
+    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+      throw new Error(`Replan returned no steps: ${jsonText.slice(0, 200)}`);
+    }
+    for (const s of parsed.steps) {
+      if (typeof s.goal !== 'string' || s.goal.trim() === '') {
+        throw new Error(`Replan step is missing a goal: ${JSON.stringify(s)}`);
+      }
+    }
     return {
-      steps: (parsed.steps ?? []).map((s, i) => ({
+      steps: parsed.steps.map((s, i) => ({
         id: s.id ?? `replan-${i + 1}`,
         goal: s.goal,
         agent: s.agent,
@@ -745,18 +849,23 @@ Expected: all workspace tests pass, including the four coordinator suites touche
 
 - [ ] **Step 4: Manual smoke against the #145 repro (optional, needs a running LLM)**
 
-With a configured `smart-server.yaml` (a `summarizer` constrained subagent + `coordinator` activation), send:
+The deterministic proof that the material reaches the subagent is the Task 3
+capture test (a fake subagent records `input.task`). This smoke step verifies
+the user-visible behavior only — we do NOT log the composed task or raw user
+material (avoids leaking user data into logs).
+
+With a configured `smart-server.yaml` (a `summarizer` constrained subagent +
+`coordinator` activation), send:
 
 ```
 Summarize this into a checklist: Our release needs a DB migration, a feature flag
 rollout, a smoke test on staging, and a customer email. Keep it tight.
 ```
 
-Expected: the summarizer's step now receives the release-tasks text (the
-`Input (user-provided data):` block is present in `coordinator_step_start`
-logging via the composed task), and the response is a real checklist — not
-"could you share the text?". An ambiguous request (e.g. "summarize") returns a
-clarification instead.
+Expected: the response is a real checklist covering the four release tasks — not
+"could you share the text?". Then send an ambiguous request (e.g. just
+"summarize") and confirm the coordinator returns a clarification question
+instead of dispatching.
 
 - [ ] **Step 5: Final commit (only if lint produced changes)**
 
