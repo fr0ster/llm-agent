@@ -41,10 +41,17 @@ a planner's stray prose as the user's answer).
 
 ### 1. One-shot planner (`coordinator/planning/one-shot.ts`)
 
-- **Remove the throw on "no steps and no clarification."** An empty `steps`
-  array with no `clarification` is now a valid result: the planner returns a
-  `Plan` with `steps: []` (no clarification). This is the answer-directly signal.
-- **Keep fail-loud for genuinely malformed output:**
+- **Narrow the empty-output throw to an explicit empty array (F2).** The signal
+  is specifically `Array.isArray(parsed.steps) && parsed.steps.length === 0` — an
+  explicit empty `steps: []`, which the planner emits when it deliberately
+  decides no decomposition is needed. The validation splits the #145 single
+  throw into two:
+  - `!Array.isArray(parsed.steps)` (steps key missing / not an array, e.g.
+    `{"objective":"x"}`) → **still throws** `COORDINATOR_PLAN_FAILED` — that is
+    incomplete/malformed output, not a deliberate "answer directly".
+  - `parsed.steps.length === 0` (explicit `[]`) → **no throw**: return a `Plan`
+    with `steps: []` and no clarification. This is the answer-directly signal.
+- **Keep fail-loud for the other malformed cases (unchanged from #145):**
   - invalid JSON (existing `extractJson` throw),
   - a step present but missing a non-empty `goal` (existing throw),
   - both `clarification` and `steps` set — ambiguous (existing throw).
@@ -75,7 +82,11 @@ see the existing comment in smart-server.ts). Answer-directly introduces the sam
 
 - `smart-server.ts`: `dispatchKind = coordCfg.dispatch ?? 'hybrid'` (drop the
   `planningKind === 'skill-steps' ? 'hybrid' : 'subagent'` split — hybrid for all).
-- `builder.ts`: default `this._coordinator.dispatch ?? new HybridDispatch(new SubAgentDispatch(defaultContextBuilder), new SelfDispatch(mainLlm))`.
+  The hybrid's self leg uses the already-resolved planner/main LLM.
+- `builder.ts`: default `this._coordinator.dispatch ?? new HybridDispatch(new SubAgentDispatch(defaultContextBuilder), new SelfDispatch(plannerLlm))`.
+  Use the **already-resolved `plannerLlm`** (`this._coordinator.plannerLlm ?? wrappedMainLlm`,
+  guaranteed non-null at this point — the builder throws otherwise) — NOT
+  `mainLlm`, which can be undefined in a valid `plannerLlm`-only configuration (F1).
 - Users who require strict subagent routing can still pin `dispatch: subagent`
   explicitly; for such a config a trivial prompt surfaces a visible
   `COORDINATOR_STEP_FAILED` (never a silent `(no response)`) — a deliberate,
@@ -134,12 +145,15 @@ default) routes the agentless step to `SelfDispatch` (agent's main LLM) → answ
 
 ## Files touched
 
-- `packages/llm-agent-libs/src/coordinator/planning/one-shot.ts` — drop the
-  empty-output throw (empty = valid answer-directly); prompt instruction.
+- `packages/llm-agent-libs/src/coordinator/planning/one-shot.ts` — split the
+  #145 empty-output throw: `!Array.isArray(steps)` keeps throwing; explicit
+  `steps: []` returns an empty-steps plan (answer-directly signal); prompt
+  instruction to emit an empty `steps` array when no decomposition is needed.
 - `packages/llm-agent-libs/src/coordinator/planning/__tests__/one-shot.test.ts` —
-  revise the #145 "throws when output has neither steps nor clarification" test
-  to assert it now returns an empty-steps plan (no throw); keep the missing-goal
-  and clarification+steps throw tests.
+  **keep** the existing `{"objective":"x"}` (no steps array) → throws test
+  (now the malformed/missing-array case); **add** a `{"steps":[]}` → returns a
+  plan with `steps.length === 0` and no throw test; keep the missing-goal and
+  clarification+steps throw tests.
 - `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts` — add the
   answer-directly short-circuit (after `validatePlan`, gated on
   `source === 'planner-llm'` + empty steps).
