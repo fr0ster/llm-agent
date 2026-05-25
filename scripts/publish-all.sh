@@ -35,7 +35,6 @@ PACKAGES=(
 
 PUBLISHED=0
 SKIPPED=0
-FAILED=()
 
 for pkg in "${PACKAGES[@]}"; do
   echo
@@ -50,16 +49,26 @@ for pkg in "${PACKAGES[@]}"; do
     continue
   fi
 
-  if npm publish --workspace "$name" --access public; then
-    PUBLISHED=$((PUBLISHED + 1))
-  else
-    FAILED+=("$name@$version")
+  # Publish in dependency order. Abort immediately on ANY failure. A single
+  # failed publish (404/401/403 because the npm login / 2FA session dropped, or
+  # a network error) means continuing would publish dependents on top of an
+  # unpublished dependency — producing a broken, uninstallable release set
+  # (the #142 class of bug). Fail fast instead of collecting failures.
+  npm publish --workspace "$name" --access public
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    echo >&2
+    echo "ERROR: 'npm publish' failed for $name@$version (exit $status)." >&2
+    echo "Aborting: the remaining packages will NOT be published." >&2
+    echo "A 404/401/403 here usually means the npm login / 2FA session dropped —" >&2
+    echo "re-authenticate ('npm whoami' to check, 'npm login' to renew) and re-run." >&2
+    echo "Already-published packages are detected and skipped on the next run." >&2
+    echo >&2
+    echo "Published before failure: $PUBLISHED  Skipped: $SKIPPED" >&2
+    exit "$status"
   fi
+  PUBLISHED=$((PUBLISHED + 1))
 done
 
 echo
-echo "Published: $PUBLISHED  Skipped: $SKIPPED  Failed: ${#FAILED[@]}"
-if [ "${#FAILED[@]}" -gt 0 ]; then
-  printf '  - %s\n' "${FAILED[@]}"
-  exit 1
-fi
+echo "Published: $PUBLISHED  Skipped: $SKIPPED"
