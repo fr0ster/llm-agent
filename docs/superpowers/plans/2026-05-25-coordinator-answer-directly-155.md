@@ -22,6 +22,8 @@ Spec: `docs/superpowers/specs/2026-05-25-coordinator-answer-directly-155-design.
 Tests:
 - `packages/llm-agent-libs/src/coordinator/planning/__tests__/one-shot.test.ts` — extend.
 - `packages/llm-agent-libs/src/pipeline/handlers/__tests__/coordinator-answer-direct.test.ts` — new.
+- `packages/llm-agent-libs/src/__tests__/builder-coordinator-dispatch-default.test.ts` — new (default dispatch = HybridDispatch).
+- `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts` — new (factory contract lock).
 
 ---
 
@@ -55,6 +57,15 @@ Then add two new tests inside the existing `describe('OneShotPlanning parsing', 
     assert.equal(plan.steps.length, 0);
     assert.equal(plan.clarification, undefined);
     assert.equal(plan.source, 'planner-llm');
+  });
+
+  it('returns an empty-steps plan even when an objective is present (steps:[] wins)', async () => {
+    const llm = llmReturning('{"objective":"Answer directly","steps":[]}');
+    const plan = await new OneShotPlanning(llm).buildInitialPlan(makeCtx());
+    assert.equal(plan.steps.length, 0);
+    assert.equal(plan.clarification, undefined);
+    // objective may be retained here; the handler clears it for the direct
+    // dispatch (see coordinator-answer-direct.test.ts) so the answer stays clean.
   });
 
   it('throws when clarification is combined with an empty steps array', async () => {
@@ -185,11 +196,15 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { CoordinatorHandler } from '../coordinator.js';
 
-function emptyPlanPlanning(source: Plan['source']): IPlanningStrategy {
+function emptyPlanPlanning(
+  source: Plan['source'],
+  objective?: string,
+): IPlanningStrategy {
   return {
     name: 'empty',
     buildInitialPlan: async (): Promise<Plan> => ({
       steps: [],
+      objective,
       createdAt: 0,
       source,
     }),
@@ -200,15 +215,15 @@ function emptyPlanPlanning(source: Plan['source']): IPlanningStrategy {
 
 function capturingDispatch(result: StepResult): {
   strategy: IDispatchStrategy;
-  calls: PlanStep[];
+  calls: Array<{ step: PlanStep; objective: string | undefined }>;
 } {
-  const calls: PlanStep[] = [];
+  const calls: Array<{ step: PlanStep; objective: string | undefined }> = [];
   return {
     calls,
     strategy: {
       name: 'capture',
-      dispatch: async (step: PlanStep) => {
-        calls.push(step);
+      dispatch: async (step: PlanStep, ctx: { plan?: Plan }) => {
+        calls.push({ step, objective: ctx.plan?.objective });
         return result;
       },
     },
@@ -240,7 +255,7 @@ describe('CoordinatorHandler answer-directly', () => {
       durationMs: 1,
     });
     const handler = new CoordinatorHandler({
-      planning: emptyPlanPlanning('planner-llm'),
+      planning: emptyPlanPlanning('planner-llm', 'Some objective'),
       dispatch: dispatch.strategy,
       maxSteps: 10,
       maxRetriesPerStep: 0,
@@ -252,7 +267,11 @@ describe('CoordinatorHandler answer-directly', () => {
 
     assert.equal(ok, true);
     assert.equal(dispatch.calls.length, 1);
-    assert.equal(dispatch.calls[0].goal, 'What is 17 + 25?');
+    assert.equal(dispatch.calls[0].step.id, 'direct-1');
+    assert.equal(dispatch.calls[0].step.goal, 'What is 17 + 25?');
+    assert.equal(dispatch.calls[0].step.status, 'pending');
+    // objective is cleared for the direct dispatch → composeTask yields bare goal
+    assert.equal(dispatch.calls[0].objective, undefined);
     assert.equal(yields[0].value.content, '42'); // raw, no "### direct-1"
     assert.equal(yields[1].value.finishReason, 'stop');
   });
@@ -342,7 +361,16 @@ In `execute`, immediately AFTER the `validatePlan` block (the `if (validationErr
         goal: ctx.inputText,
         status: 'pending',
       };
-      const result = await this.deps.dispatch.dispatch(directStep, coordCtx);
+      // Dispatch with a context whose plan carries NO objective, so composeTask
+      // yields the bare original request (a clean direct answer) instead of
+      // "Task: <input>\n\nOverall objective: ...". An empty plan (no
+      // decomposition) has no shared objective to align around, even if the
+      // planner emitted one alongside the empty steps array.
+      const directCtx: ICoordinatorContext = {
+        ...coordCtx,
+        plan: { ...plan, objective: undefined },
+      };
+      const result = await this.deps.dispatch.dispatch(directStep, directCtx);
       if (!result.ok) {
         ctx.error = new OrchestratorError(
           `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
@@ -377,12 +405,81 @@ git commit -m "feat(libs): #155 CoordinatorHandler self-answers an empty planner
 
 ---
 
-## Task 3: Builder default dispatch → hybrid
+## Task 3: Builder default dispatch → hybrid (TDD)
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/builder.ts`
+- Test: `packages/llm-agent-libs/src/__tests__/builder-coordinator-dispatch-default.test.ts`
 
-- [ ] **Step 1: Add `HybridDispatch` and `SelfDispatch` to the imports**
+- [ ] **Step 1: Write the failing test**
+
+Create `packages/llm-agent-libs/src/__tests__/builder-coordinator-dispatch-default.test.ts` (introspection pattern mirrors the existing `builder-context-builder-wiring.test.ts`):
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type {
+  CallOptions,
+  ILlm,
+  LlmStreamChunk,
+  LlmTool,
+  Result,
+} from '@mcp-abap-adt/llm-agent';
+import { HybridDispatch } from '../coordinator/dispatch/hybrid.js';
+
+function stubLlm(): ILlm {
+  return {
+    async chat(_m: unknown[], _t?: LlmTool[], _o?: CallOptions) {
+      return {
+        ok: true as const,
+        value: { content: 'ok', toolCalls: [], finishReason: 'stop' as const },
+      };
+    },
+    async *streamChat(
+      _m: unknown[],
+      _t?: LlmTool[],
+      _o?: CallOptions,
+    ): AsyncGenerator<Result<LlmStreamChunk, Error>> {
+      yield {
+        ok: true as const,
+        value: { content: 'ok', finishReason: 'stop' as const },
+      };
+    },
+  };
+}
+
+describe('SmartAgentBuilder — default coordinator dispatch', () => {
+  it('defaults coordinator dispatch to HybridDispatch when not specified', async () => {
+    const { SmartAgentBuilder } = await import('../builder.js');
+    const handle = await new SmartAgentBuilder({ skipModelValidation: true })
+      .withMainLlm(stubLlm())
+      .withCoordinator({})
+      .build();
+    try {
+      const pipeline = (
+        handle.agent as unknown as { deps: { pipeline: unknown } }
+      ).deps.pipeline;
+      const coordinator = (
+        pipeline as unknown as { coordinator?: { dispatch?: unknown } }
+      ).coordinator;
+      assert.ok(coordinator, 'expected pipeline.coordinator to be set');
+      assert.ok(
+        coordinator.dispatch instanceof HybridDispatch,
+        'expected default coordinator dispatch to be HybridDispatch',
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd packages/llm-agent-libs && npx tsx --test src/__tests__/builder-coordinator-dispatch-default.test.ts`
+Expected: FAIL — the current default is `new SubAgentDispatch(...)`, not a `HybridDispatch`.
+
+- [ ] **Step 3: Add `HybridDispatch` and `SelfDispatch` to the imports**
 
 Find the import block that currently brings in `OneShotPlanning` and `SubAgentDispatch` (around line 74) and add `HybridDispatch` and `SelfDispatch` to it (same `@mcp-abap-adt/llm-agent-libs` coordinator export source as `SubAgentDispatch`):
 
@@ -395,7 +492,7 @@ Find the import block that currently brings in `OneShotPlanning` and `SubAgentDi
 
 (Keep alphabetical/existing ordering as the file uses; the key point is all four are imported from the same module `SubAgentDispatch` currently comes from.)
 
-- [ ] **Step 2: Default the coordinator dispatch to hybrid**
+- [ ] **Step 4: Default the coordinator dispatch to hybrid**
 
 In the `resolvedCoordinator` construction, replace:
 
@@ -418,15 +515,16 @@ with:
 
 `plannerLlm` is already resolved just above (`this._coordinator.plannerLlm ?? wrappedMainLlm`, guaranteed non-null — the builder throws otherwise). An agentless step (including the synthesized `direct-1`) now falls back to `SelfDispatch`.
 
-- [ ] **Step 3: Build to verify it compiles**
+- [ ] **Step 5: Build, then run the test to verify it passes**
 
-Run: `npm run build`
-Expected: build succeeds; `HybridDispatch`/`SelfDispatch` resolve from the import.
+Run: `npm run build` (clean), then:
+`cd packages/llm-agent-libs && npx tsx --test src/__tests__/builder-coordinator-dispatch-default.test.ts`
+Expected: PASS — default coordinator dispatch is now a `HybridDispatch`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-libs/src/builder.ts
+git add packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/__tests__/builder-coordinator-dispatch-default.test.ts
 git commit -m "feat(libs): #155 default coordinator dispatch to hybrid (agentless steps self-answer)"
 ```
 
@@ -436,8 +534,51 @@ git commit -m "feat(libs): #155 default coordinator dispatch to hybrid (agentles
 
 **Files:**
 - Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts`
+- Test: `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
 
-- [ ] **Step 1: Default `dispatchKind` to `'hybrid'` for all planning kinds**
+- [ ] **Step 1: Lock the dispatch factory the default relies on**
+
+Create `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts` (characterization test — `resolveCoordinatorDispatch` already behaves this way; the test locks the `'hybrid'` contract that the new default selects):
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { ILlm } from '@mcp-abap-adt/llm-agent';
+import {
+  HybridDispatch,
+  SelfDispatch,
+  SubAgentDispatch,
+} from '@mcp-abap-adt/llm-agent-libs';
+import { resolveCoordinatorDispatch } from '../config.js';
+
+const fakeLlm = {} as unknown as ILlm;
+
+describe('resolveCoordinatorDispatch', () => {
+  it('builds a HybridDispatch (subagent + self fallback) for "hybrid"', () => {
+    assert.ok(resolveCoordinatorDispatch('hybrid', fakeLlm) instanceof HybridDispatch);
+  });
+
+  it('builds a SubAgentDispatch for "subagent"', () => {
+    assert.ok(resolveCoordinatorDispatch('subagent') instanceof SubAgentDispatch);
+  });
+
+  it('builds a SelfDispatch for "self"', () => {
+    assert.ok(resolveCoordinatorDispatch('self', fakeLlm) instanceof SelfDispatch);
+  });
+
+  it('throws for "hybrid" without an LLM', () => {
+    assert.throws(
+      () => resolveCoordinatorDispatch('hybrid'),
+      /requires a planner or main LLM/,
+    );
+  });
+});
+```
+
+Run: `cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
+Expected: PASS — 4 tests (the factory already builds these; this locks the contract).
+
+- [ ] **Step 2: Default `dispatchKind` to `'hybrid'` for all planning kinds**
 
 Replace:
 
@@ -461,15 +602,15 @@ with:
 
 (`resolveCoordinatorDispatch('hybrid', plannerLlm, contextBuilder)` already builds `HybridDispatch(SubAgentDispatch, SelfDispatch(plannerLlm))` — `plannerLlm` is passed at the existing call site and is required by the `'hybrid'` branch.)
 
-- [ ] **Step 2: Build to verify it compiles**
+- [ ] **Step 3: Build to verify it compiles**
 
 Run: `npm run build`
 Expected: build succeeds.
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
-git add packages/llm-agent-server/src/smart-agent/smart-server.ts
+git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts
 git commit -m "feat(server): #155 default coordinator dispatchKind to hybrid (was subagent)"
 ```
 
