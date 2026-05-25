@@ -9,6 +9,9 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Changed
+- **Supported Node bumped to ≥ 22** (`engines.node` `>=18` → `>=22`, `npm` `>=10`). Node 18 is EOL and 20 reaches EOL in April 2026. CI now runs the matrix on Node **22 and 24** (both active LTS), and the GitHub Actions are bumped to `actions/checkout@v5` / `actions/setup-node@v5` (Node 24 action runtime). Repo/dev policy only — published packages declare no `engines`, so installs are unaffected.
+
 ## [16.2.0] — 2026-05-25
 
 ### Added
