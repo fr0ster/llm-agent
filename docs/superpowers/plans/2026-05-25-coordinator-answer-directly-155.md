@@ -557,7 +557,11 @@ with:
           ),
 ```
 
-`plannerLlm` is already resolved just above (`this._coordinator.plannerLlm ?? wrappedMainLlm`, guaranteed non-null — the builder throws otherwise). An agentless step (including the synthesized `direct-1`) now falls back to `SelfDispatch`.
+`plannerLlm` is already resolved just above as `this._coordinator.plannerLlm ?? wrappedMainLlm`. An agentless step (including the synthesized `direct-1`) now falls back to `SelfDispatch`.
+
+**Why `plannerLlm` and not `mainLlm`:**
+- `build()` already requires a main LLM (it throws `Main LLM is required. Call .withMainLlm(llm)` at `builder.ts:683` if absent), so `wrappedMainLlm` — and therefore `plannerLlm` — is always defined here. There is no "planner-only" build to guard against; do NOT add a no-`withMainLlm()` test (it cannot build).
+- `plannerLlm` is preferred over the raw `mainLlm` for two reasons: (1) it honors an **explicit** `coordinator.plannerLlm` when the caller set one (the self-answer should use the coordinator's designated LLM, not bypass it); (2) `wrappedMainLlm` is the **wrapped** instance (circuit-breaker / retry / rate-limiter applied at lines ~825–1105), whereas the raw `mainLlm` (line 682) would skip that resilience wrapping.
 
 - [ ] **Step 5: Build, then run the test to verify it passes**
 
