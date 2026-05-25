@@ -106,9 +106,21 @@ programmatic front-end over the same interfaces (a different surface, the same
 instruction set).
 
 In this frame, this epic's DAG redesign is simply **new opcodes** (graph `Plan`,
-DAG planner / coordinator / executor) the interpreter can instantiate when the
+DAG planner / coordinator / interpreter) the interpreter can instantiate when the
 YAML asks for them; the existing opcodes (linear coordinator) remain. No superset
 interface — just a larger instruction set.
+
+**"Interpreter" is a family, not one interface.** Both the build-time
+config/pipeline interpreter (reads YAML/builder description → instantiates the
+pipeline) and the run-time **`IInterpreter`** (reads a `Plan` DAG → executes it,
+dispatching workers) belong to the same concept: *take a declarative structure
+and bring it to life*. They share the **vocabulary**, not a single TypeScript
+signature — they operate at different levels (`interpret(Yaml)→Pipeline` vs
+`interpret(Plan)→Results`) and a merged generic `IInterpreter<D,R>` would buy
+only cosmetic unity with no shared behavior. This epic implements the run-time
+plan `IInterpreter` (slice 1); formalizing the config/pipeline interpreter as an
+interface (over the existing YAML reader + `SmartAgentBuilder`) is a **deferred,
+orthogonal axis** — not in scope here.
 
 ## Target architecture — interfaces and implementations
 
@@ -117,7 +129,8 @@ interface — just a larger instruction set.
 | `Plan` (graph type) | DAG: task nodes; edges = `dependsOn` + data-flow | — (type) |
 | `IPlanner` (planner-subagent) | prompt + agent catalog → DAG `Plan` | DAG planner (new); linear (degenerate) |
 | `IReviewStrategy` (reviewer-subagent) | prompt + DAG → `{pass} \| {needsClarification}` | LLM critic; noop |
-| `ICoordinator` | thin supervisor + staged pipeline | **batch/single-shot**; **dialog/resumable** |
+| `IInterpreter` (run-time) | interprets a `Plan` (DAG): topological/parallel walk, dispatches workers, composes each node's input from its deps' outputs | DAG interpreter (new) |
+| `ICoordinator` | thin **sequencer**: planner → (reviewer gate) → interpreter; uniform supervision | **batch/single-shot**; **dialog/resumable** |
 | `IErrorStrategy` | reaction to a node failure | abort; replan-node-by-leaf-signal |
 | `ISubAgent` (exists) | leaf workers; planner & reviewer are also `ISubAgent` | existing + new |
 | gate/clarification contract | `{pass} \| {needsClarification, question, resume}` | terminal (batch); ask-and-resume (dialog) |
@@ -152,12 +165,31 @@ the interface/type contracts are introduced *inside* the first slice that needs
 them, together with the code that uses them (a "contracts-only" sub-project would
 not be self-sufficient).
 
-1. **Batch DAG coordinator (MVP)** — the graph `Plan` type (`dependsOn` +
-   data-flow), `IPlanner` (DAG planner), a topological/parallel executor that
-   feeds each node its dependencies' outputs, and the batch `ICoordinator`
-   (single-shot). End-to-end: prompt → DAG → execute → aggregated result.
-   Honors progressive-complexity (default leans to a single-node plan). The
-   contracts needed by this slice are defined here.
+1. **Batch DAG coordinator (MVP)** — the graph `Plan` type (`PlanNode` with
+   `dependsOn` + data-flow), `IPlanner` (DAG planner, typed adapter over
+   `ISubAgent`), the run-time **`IInterpreter`** (topological/parallel walk over
+   the DAG; feeds each node its dependencies' outputs; dispatches workers via
+   `IDispatchStrategy`), and the batch `ICoordinator` (thin sequencer:
+   planner → interpreter; no reviewer yet). End-to-end: prompt → DAG → interpret
+   → aggregated result. Honors progressive-complexity (default leans to a
+   single-node plan). The new contracts (graph `Plan`, `IPlanner`,
+   `IInterpreter`, `ICoordinator`) are defined here as **new, distinct** types —
+   the linear `Plan`/`PlanStep`/`CoordinatorHandler` stay untouched.
+
+**Coordinator config shape (DAG path), sketch:**
+
+```yaml
+coordinator:
+  planner:  <subagent or builtin>   # IPlanner — builds the DAG
+  # reviewer: <subagent>            # IReviewStrategy — slice 2 (presence = gate on)
+  interpreter: <builtin>            # IInterpreter — runs the DAG (default impl)
+  subagents:                        # catalog of worker pipelines (each its own llm/rag/mcp/prompt)
+    <name>: { ...pipeline... }
+```
+
+Presence of these new fields (`planner`/`interpreter`/`subagents`) selects the
+DAG path; the old `coordinator.planning`/`dispatch` fields select the linear
+coordinator; mixing both is a fail-loud validation error.
 2. **Plan reviewer gate** — `IReviewStrategy` (LLM critic) + the review stage
    between planning and execution (gate, fail-loud). Additive on top of slice 1.
 3. **Replan-by-leaf-signal + remove nested dispatch** — `IErrorStrategy` +
