@@ -25,9 +25,16 @@ export class OneShotPlanning implements IPlanningStrategy {
       : '';
 
     const systemPrompt = `You are a planner. Decompose the user request into ordered steps.
+The dispatched executor sees ONLY the step you author (its "goal" plus the shared
+"objective", and the user's input as delimited data when you set "needsInput").
+It never sees the raw user request as an instruction. So set "needsInput": true on
+any step that must act on the user's provided material (text to summarize, code to
+review, etc.).
+Emit a plan-level "objective" (the shared purpose) so all steps stay aligned.
 For each step, choose the best agent from the list (or omit "agent" if no specialist fits).
-Respond with ONLY a JSON object of shape:
-{"steps":[{"id":"step-1","goal":"...","agent":"optional-name"}],"rationale":"..."}
+If the request is too ambiguous to plan, respond with ONLY {"clarification":"<your question>"}.
+Otherwise respond with ONLY a JSON object of shape:
+{"objective":"...","steps":[{"id":"step-1","goal":"...","agent":"optional-name","needsInput":false}],"rationale":"..."}
 
 Available agents:
 ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
@@ -44,18 +51,51 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
 
     const jsonText = extractJson(response.value.content);
     const parsed = JSON.parse(jsonText) as {
-      steps: Array<{ id?: string; goal: string; agent?: string }>;
+      objective?: string;
+      clarification?: string;
+      steps?: Array<{
+        id?: string;
+        goal: string;
+        agent?: string;
+        needsInput?: boolean;
+      }>;
       rationale?: string;
     };
+
+    if (parsed.clarification && (parsed.steps?.length ?? 0) === 0) {
+      return {
+        steps: [],
+        clarification: parsed.clarification,
+        createdAt: Date.now(),
+        source: 'planner-llm',
+      };
+    }
+
+    // Without a clarification, a usable plan must carry at least one valid step.
+    // An empty/malformed plan must fail loud (→ COORDINATOR_PLAN_FAILED) rather
+    // than silently produce blank coordinator output.
+    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+      throw new Error(
+        `Planner returned neither steps nor a clarification: ${jsonText.slice(0, 200)}`,
+      );
+    }
+    for (const s of parsed.steps) {
+      if (typeof s.goal !== 'string' || s.goal.trim() === '') {
+        throw new Error(`Planner step is missing a goal: ${JSON.stringify(s)}`);
+      }
+    }
+
     const steps: PlanStep[] = parsed.steps.map((s, i) => ({
       id: s.id ?? `step-${i + 1}`,
       goal: s.goal,
       agent: s.agent,
+      needsInput: s.needsInput,
       status: 'pending',
     }));
 
     return {
       steps,
+      objective: parsed.objective,
       rationale: parsed.rationale,
       createdAt: Date.now(),
       source: 'planner-llm',
