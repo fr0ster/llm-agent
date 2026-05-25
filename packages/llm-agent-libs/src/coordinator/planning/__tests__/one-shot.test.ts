@@ -40,7 +40,7 @@ describe('OneShotPlanning parsing', () => {
     const llm = llmReturning('{"objective":"x"}');
     await assert.rejects(
       () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
-      /neither steps nor a clarification/,
+      /no steps array/,
     );
   });
 
@@ -60,7 +60,30 @@ describe('OneShotPlanning parsing', () => {
     );
     await assert.rejects(
       () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
-      /both a clarification and steps/,
+      /both a clarification and a steps array/,
+    );
+  });
+
+  it('returns an empty-steps plan for explicit steps:[] (answer-directly signal)', async () => {
+    const llm = llmReturning('{"steps":[]}');
+    const plan = await new OneShotPlanning(llm).buildInitialPlan(makeCtx());
+    assert.equal(plan.steps.length, 0);
+    assert.equal(plan.clarification, undefined);
+    assert.equal(plan.source, 'planner-llm');
+  });
+
+  it('returns an empty-steps plan even when an objective is present (steps:[] wins)', async () => {
+    const llm = llmReturning('{"objective":"Answer directly","steps":[]}');
+    const plan = await new OneShotPlanning(llm).buildInitialPlan(makeCtx());
+    assert.equal(plan.steps.length, 0);
+    assert.equal(plan.clarification, undefined);
+  });
+
+  it('throws when clarification is combined with an empty steps array', async () => {
+    const llm = llmReturning('{"clarification":"huh?","steps":[]}');
+    await assert.rejects(
+      () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
+      /both a clarification and a steps array/,
     );
   });
 });
