@@ -94,6 +94,21 @@ export class CoordinatorHandler implements IStageHandler {
     ctx.plan = plan;
     ctx.stepResults = coordCtx.stepResults;
 
+    // Clarification gate: the planner decided the request is too ambiguous to
+    // plan. Stream the question and dispatch nothing — the Coordinator asking
+    // back, not a subagent failing on empty material.
+    if (plan.clarification) {
+      ctx.options?.sessionLogger?.logStep('coordinator_clarification', {
+        length: plan.clarification.length,
+      });
+      ctx.yield({ ok: true, value: { content: plan.clarification } });
+      ctx.yield({
+        ok: true,
+        value: { content: '', finishReason: 'stop' },
+      });
+      return true;
+    }
+
     // Validate plan against layer rules BEFORE executing any step.
     const validationError = this.validatePlan(
       plan,
