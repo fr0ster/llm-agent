@@ -43,4 +43,24 @@ describe('OneShotPlanning parsing', () => {
       /neither steps nor a clarification/,
     );
   });
+
+  it('throws when a step has no goal', async () => {
+    const llm = llmReturning(
+      '{"objective":"x","steps":[{"id":"s1","goal":""}]}',
+    );
+    await assert.rejects(
+      () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
+      /missing a goal/,
+    );
+  });
+
+  it('throws when output has both clarification and steps', async () => {
+    const llm = llmReturning(
+      '{"clarification":"huh?","steps":[{"id":"s1","goal":"do X"}]}',
+    );
+    await assert.rejects(
+      () => new OneShotPlanning(llm).buildInitialPlan(makeCtx()),
+      /both a clarification and steps/,
+    );
+  });
 });

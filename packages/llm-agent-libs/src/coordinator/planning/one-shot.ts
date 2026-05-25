@@ -62,7 +62,12 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
       rationale?: string;
     };
 
-    if (parsed.clarification && (parsed.steps?.length ?? 0) === 0) {
+    if (parsed.clarification) {
+      if ((parsed.steps?.length ?? 0) > 0) {
+        throw new Error(
+          `Planner returned both a clarification and steps (ambiguous): ${jsonText.slice(0, 200)}`,
+        );
+      }
       return {
         steps: [],
         clarification: parsed.clarification,
