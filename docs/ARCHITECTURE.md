@@ -968,6 +968,29 @@ pluggable:
   - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or setting a YAML `coordinator:` block is itself the opt-in signal.
   - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
 
+### Task composition & clarification
+
+The coordinator is the sole author of each executor's `task`; the raw client
+request is never forwarded to a subagent as a controlling instruction. The
+planner emits **intent** per step — a specific `goal`, a plan-level `objective`
+(the shared purpose, so subagents act as a team), and a `needsInput` flag — and
+the coordinator deterministically composes the final `task` string:
+
+- bare `goal` when nothing else applies (no regression);
+- `Task: <goal>` + `Overall objective: <objective>` when the plan carries an objective;
+- the client request embedded **verbatim as delimited data** when `needsInput` is `true`.
+
+Ad-hoc client material reaches a subagent only through this composed `task`
+(never via RAG/MCP-RAG `context`, which only carries retrieved knowledge).
+`PlanStep.inputTemplate` (with `{{goal}}`/`{{objective}}`/`{{inputText}}`
+placeholders) is an advanced override; `SkillStepsPlanning` reads the same
+fields from skill `steps:` frontmatter plus an optional skill-level `objective`.
+
+If the request is too ambiguous to plan, the initial planner returns a
+`clarification` instead of steps; the coordinator streams that question to the
+consumer and dispatches nothing. Malformed plans (no steps and no clarification,
+or a step missing a `goal`) fail loud rather than producing blank output.
+
 ### Runtime activation
 
 The coordinator/tool-loop choice is made per-request, not at build time. A

@@ -9,6 +9,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [16.2.0] — 2026-05-25
+
+### Added
+- **The Coordinator now authors the complete subagent task.** Previously a dispatched step received only the planner's paraphrased `goal`, so content-bearing steps (summarize/review a provided blob) ran on material they were never given. The planner now emits structured intent — a per-step `goal`, a plan-level `objective` (shared purpose), and a `needsInput` flag — and the Coordinator deterministically composes the executor `task` (goal + objective + the client request embedded verbatim as delimited data when `needsInput` is set). Material travels via `task`, never via RAG `context`. New optional fields: `Plan.objective`, `PlanStep.needsInput`, `ISkillMeta.objective`, and step-level `needsInput`/`inputTemplate` (all type-level non-breaking). (#145)
+- **Clarification gate.** When the request is too ambiguous to plan, the initial planner returns a `clarification` instead of steps; the Coordinator streams the question to the consumer and dispatches nothing — the Coordinator deciding to ask back, rather than a subagent failing on empty material. (#145)
+
+### Fixed
+- **`SelfDispatch` no longer drops the client input.** Both dispatch paths (`SelfDispatch` and `SubAgentDispatch`) now compose the task through one shared deterministic helper, so the self path carries the material and shared objective just like the subagent path. (#145)
+- **Planners fail loud on empty/malformed output** (no steps and no clarification, or a step missing a `goal`) instead of silently producing a blank coordinator response (→ `COORDINATOR_PLAN_FAILED` / `COORDINATOR_REPLAN_FAILED`). (#145)
+
+### Changed
+- **Behavior change (planner-LLM paths):** planner-authored plans now always carry a shared `objective`, so every dispatched step's `task` gains an `Overall objective:` framing line — intentional "team, not a crowd" alignment. Steps with neither `objective`, `needsInput`, nor `inputTemplate` keep the bare `goal` (no regression); `SkillStepsPlanning` plans without an objective are unaffected. (#145)
+
 ## [16.1.1] — 2026-05-25
 
 ### Documentation
