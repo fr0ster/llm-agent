@@ -63,7 +63,9 @@ export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
  * without an explicit `agent:` — need a self-LLM fallback. Pin 'subagent'
  * explicitly for strict subagent-only routing.
  */
-export function resolveCoordinatorDispatchKind(explicit?: string): string {
+export function resolveCoordinatorDispatchKind(
+  explicit?: 'subagent' | 'self' | 'hybrid',
+): 'subagent' | 'self' | 'hybrid' {
   return explicit ?? 'hybrid';
 }
 

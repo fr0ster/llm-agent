@@ -21,6 +21,11 @@ describe('resolveCoordinatorDispatchKind (default selection)', () => {
   it('honors an explicit dispatch kind', () => {
     assert.equal(resolveCoordinatorDispatchKind('subagent'), 'subagent');
   });
+
+  it('passes through "self" and "hybrid"', () => {
+    assert.equal(resolveCoordinatorDispatchKind('self'), 'self');
+    assert.equal(resolveCoordinatorDispatchKind('hybrid'), 'hybrid');
+  });
 });
 
 describe('resolveCoordinatorDispatch (factory)', () => {
@@ -45,6 +50,13 @@ describe('resolveCoordinatorDispatch (factory)', () => {
   it('throws for "hybrid" without an LLM', () => {
     assert.throws(
       () => resolveCoordinatorDispatch('hybrid'),
+      /requires a planner or main LLM/,
+    );
+  });
+
+  it('throws for "self" without an LLM', () => {
+    assert.throws(
+      () => resolveCoordinatorDispatch('self'),
       /requires a planner or main LLM/,
     );
   });

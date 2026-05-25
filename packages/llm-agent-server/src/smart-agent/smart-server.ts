@@ -628,10 +628,6 @@ export class SmartServer {
       // 'helper' → helperLlm if present, else fall back to mainLlm.
       const plannerLlm =
         coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
-      // For 'skill-steps' planning the default dispatch is 'hybrid' rather
-      // than 'subagent': skill-step `agent:` is optional, so steps without
-      // an explicit agent need a self-LLM fallback. Users can still pin
-      // dispatch: subagent explicitly when every step declares `agent:`.
       const planningKind = coordCfg.planning ?? 'one-shot';
       const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 
