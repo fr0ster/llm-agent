@@ -71,7 +71,9 @@ import {
 } from './context/context-assembler.js';
 import {
   ExplicitActivation,
+  HybridDispatch,
   OneShotPlanning,
+  SelfDispatch,
   SubAgentDispatch,
 } from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
@@ -1231,7 +1233,10 @@ export class SmartAgentBuilder {
         planning: this._coordinator.planning ?? new OneShotPlanning(plannerLlm),
         dispatch:
           this._coordinator.dispatch ??
-          new SubAgentDispatch(defaultContextBuilder),
+          new HybridDispatch(
+            new SubAgentDispatch(defaultContextBuilder),
+            new SelfDispatch(plannerLlm),
+          ),
       };
     }
 
