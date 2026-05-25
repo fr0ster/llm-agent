@@ -83,7 +83,9 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
     // A missing / non-array `steps` is malformed → fail loud
     // (→ COORDINATOR_PLAN_FAILED). An explicit empty array `steps: []` is the
     // answer-directly signal and is allowed through (the for-loop below is a
-    // no-op for it, and the empty plan is returned for the handler to self-answer).
+    // no-op for it). The empty plan is consumed by the CoordinatorHandler
+    // answer-directly branch (#155 Task 2), which self-dispatches the original
+    // request; this planner only produces the signal.
     if (!Array.isArray(parsed.steps)) {
       throw new Error(
         `Planner returned no steps array and no clarification: ${jsonText.slice(0, 200)}`,

@@ -77,6 +77,7 @@ describe('OneShotPlanning parsing', () => {
     const plan = await new OneShotPlanning(llm).buildInitialPlan(makeCtx());
     assert.equal(plan.steps.length, 0);
     assert.equal(plan.clarification, undefined);
+    assert.equal(plan.objective, 'Answer directly');
   });
 
   it('throws when clarification is combined with an empty steps array', async () => {
