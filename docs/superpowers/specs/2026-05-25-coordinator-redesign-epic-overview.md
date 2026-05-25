@@ -22,9 +22,16 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
   subagent-spawns-subagent machinery (`maxLayer`, layer validation, cross-layer
   epicfail propagation — #128–#132) is removed; dynamic decomposition relocates
   to coordinator re-plan-by-leaf-signal.
-- **Planner and reviewer are themselves `ISubAgent`s** under the same
-  supervision/restart-with-clarification model as worker subagents. The
-  coordinator special-cases none of them.
+- **Planner and reviewer are supervised as `ISubAgent`s.** Decision (to keep
+  slice specs from diverging): `IPlanner` / `IReviewStrategy` are **typed
+  adapters composed *over* `ISubAgent`** — they do NOT extend or replace it. A
+  role implementation owns an `ISubAgent` and adds only typed input-construction
+  (prompt + agent catalog → `task`/`context`) and typed output-parsing (the
+  subagent's `output` → `Plan` / verdict). The coordinator dispatches and
+  supervises every role — planner, reviewer, worker — through the **one**
+  `ISubAgent` path (same restart-with-clarification, same error handling); the
+  role interface only wraps that path with typing. The coordinator special-cases
+  none of them.
 - **Externalizing the planner is cheap here** because its input is small and
   bounded (prompt + agent catalog), unlike an interactive ReAct loop whose
   planning needs the whole live context (why Claude Code plans inline; see
@@ -38,7 +45,8 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
   dependencies rather than "all prior steps".
 - **Progressive complexity — the default does not over-engineer.** The
   planner/coordinator chooses the *simplest viable* plan shape:
-  - trivial → **answer-directly** (single self-step; shipped in #155);
+  - trivial → **answer-directly** (self-dispatched direct step; behavior shipped
+    in #155, currently as an empty `steps: []` + synthetic `direct-1`);
   - simple → **single-node plan = one subagent-pipeline** handles the whole task
     (the default server variant — fanning out is NOT required);
   - complex → **multi-node DAG** of subagents, only when decomposition is
@@ -101,8 +109,14 @@ not be self-sufficient).
    between planning and execution (gate, fail-loud). Additive on top of slice 1.
 3. **Replan-by-leaf-signal + remove nested dispatch** — `IErrorStrategy` +
    leaf-signal on `StepResult`; coordinator re-plans a failed node into a finer
-   sub-graph; remove the #128–#132 nested-dispatch machinery. Self-sufficient
-   behavior change.
+   sub-graph; remove/migrate the #128–#132 nested-dispatch surface. That surface
+   is not only the orchestration machinery (`maxLayer`, layer validation,
+   cross-layer epicfail propagation) but also the **public-API fields** that
+   encode nesting: `ISubAgentInput.layer`, `SubAgentCapabilities.canDispatchChildren`,
+   and the `SubAgentCapabilities.kind` `'autonomous' | 'constrained'` distinction
+   (which collapses once subagents are always leaves). This slice marks them
+   removed/deprecated/migrated (implementation detail deferred to the slice spec).
+   Self-sufficient behavior change.
 4. **Dialog / resumable coordinator** — second `ICoordinator` implementation:
    pause-on-clarification + resume across turns (the resumable-gate back-end).
 
@@ -121,5 +135,7 @@ are introduced in the slice that first needs them.
 
 - Builds on #145 (coordinator authors the task) and #155 (answer-directly,
   default hybrid dispatch).
-- Removes the nested-dispatch foundation (#128–#132): `maxLayer`, layer
-  validation, cross-layer epicfail propagation.
+- Removes the nested-dispatch foundation (#128–#132): orchestration (`maxLayer`,
+  layer validation, cross-layer epicfail propagation) AND the public-API surface
+  that encodes nesting (`ISubAgentInput.layer`, `SubAgentCapabilities.canDispatchChildren`,
+  the `kind: 'autonomous' | 'constrained'` distinction). Scoped to slice 3.
