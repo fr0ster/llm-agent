@@ -319,6 +319,34 @@ describe('CoordinatorHandler answer-directly', () => {
     await handler.execute(ctx, {}, {} as never);
     assert.equal(dispatch.calls.length, 0); // manual empty plan → no direct dispatch
   });
+
+  it('blocks answer-directly at layer >= maxLayer (no dispatch)', async () => {
+    const { ctx } = makeCtx('hi');
+    (ctx as unknown as { layer?: number }).layer = 1; // nested at max depth
+    const dispatch = capturingDispatch({
+      stepId: 'x',
+      output: '',
+      ok: true,
+      durationMs: 1,
+    });
+    const handler = new CoordinatorHandler({
+      planning: emptyPlanPlanning('planner-llm'),
+      dispatch: dispatch.strategy,
+      maxSteps: 10,
+      maxRetriesPerStep: 0,
+      failPolicy: 'abort',
+      maxLayer: 1,
+    });
+
+    const ok = await handler.execute(ctx, {}, {} as never);
+    // validatePlan errors first (layer >= maxLayer), so answer-directly never runs.
+    assert.equal(ok, false);
+    assert.equal(
+      (ctx as unknown as { error?: { code?: string } }).error?.code,
+      'COORDINATOR_LAYER_VIOLATION',
+    );
+    assert.equal(dispatch.calls.length, 0);
+  });
 });
 ```
 
@@ -392,7 +420,7 @@ In `execute`, immediately AFTER the `validatePlan` block (the `if (validationErr
 - [ ] **Step 5: Run the test to verify it passes**
 
 Run: `cd packages/llm-agent-libs && npx tsx --test src/pipeline/handlers/__tests__/coordinator-answer-direct.test.ts`
-Expected: PASS — 3 tests.
+Expected: PASS — 4 tests.
 
 - [ ] **Step 6: Build + commit**
 
@@ -449,11 +477,13 @@ function stubLlm(): ILlm {
 }
 
 describe('SmartAgentBuilder — default coordinator dispatch', () => {
-  it('defaults coordinator dispatch to HybridDispatch when not specified', async () => {
+  it('defaults to HybridDispatch whose self leg uses the resolved plannerLlm', async () => {
     const { SmartAgentBuilder } = await import('../builder.js');
+    const mainStub = stubLlm();
+    const plannerStub = stubLlm(); // distinct instance from mainStub
     const handle = await new SmartAgentBuilder({ skipModelValidation: true })
-      .withMainLlm(stubLlm())
-      .withCoordinator({})
+      .withMainLlm(mainStub)
+      .withCoordinator({ plannerLlm: plannerStub })
       .build();
     try {
       const pipeline = (
@@ -466,6 +496,17 @@ describe('SmartAgentBuilder — default coordinator dispatch', () => {
       assert.ok(
         coordinator.dispatch instanceof HybridDispatch,
         'expected default coordinator dispatch to be HybridDispatch',
+      );
+      // The hybrid's self leg (fallback) must use the resolved plannerLlm, NOT
+      // mainLlm — locks the F1 design (mainLlm may be undefined in a valid
+      // planner-only config). Test-only cast to read the private fields.
+      const fallback = (
+        coordinator.dispatch as unknown as { fallback?: { llm?: unknown } }
+      ).fallback;
+      assert.equal(
+        fallback?.llm,
+        plannerStub,
+        'hybrid self leg must use the resolved plannerLlm',
       );
     } finally {
       await handle.close();
@@ -530,15 +571,21 @@ git commit -m "feat(libs): #155 default coordinator dispatch to hybrid (agentles
 
 ---
 
-## Task 4: Smart-server default dispatchKind → hybrid
+## Task 4: Smart-server default dispatchKind → hybrid (extract + TDD)
+
+The default-kind selection is currently inline in `smart-server.ts`, so it is not
+unit-testable. Extract it into a pure exported helper in `config.ts`, use that in
+`smart-server.ts`, and test the helper (omitted → `hybrid`) plus the factory it
+feeds.
 
 **Files:**
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts`
+- Modify: `packages/llm-agent-server/src/smart-agent/config.ts` (add helper)
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` (use helper)
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
 
-- [ ] **Step 1: Lock the dispatch factory the default relies on**
+- [ ] **Step 1: Write the failing test**
 
-Create `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts` (characterization test — `resolveCoordinatorDispatch` already behaves this way; the test locks the `'hybrid'` contract that the new default selects):
+Create `packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`:
 
 ```ts
 import assert from 'node:assert/strict';
@@ -549,11 +596,24 @@ import {
   SelfDispatch,
   SubAgentDispatch,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { resolveCoordinatorDispatch } from '../config.js';
+import {
+  resolveCoordinatorDispatch,
+  resolveCoordinatorDispatchKind,
+} from '../config.js';
 
 const fakeLlm = {} as unknown as ILlm;
 
-describe('resolveCoordinatorDispatch', () => {
+describe('resolveCoordinatorDispatchKind (default selection)', () => {
+  it('defaults to hybrid when coordinator.dispatch is omitted', () => {
+    assert.equal(resolveCoordinatorDispatchKind(undefined), 'hybrid');
+  });
+
+  it('honors an explicit dispatch kind', () => {
+    assert.equal(resolveCoordinatorDispatchKind('subagent'), 'subagent');
+  });
+});
+
+describe('resolveCoordinatorDispatch (factory)', () => {
   it('builds a HybridDispatch (subagent + self fallback) for "hybrid"', () => {
     assert.ok(resolveCoordinatorDispatch('hybrid', fakeLlm) instanceof HybridDispatch);
   });
@@ -575,10 +635,28 @@ describe('resolveCoordinatorDispatch', () => {
 });
 ```
 
-Run: `cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
-Expected: PASS — 4 tests (the factory already builds these; this locks the contract).
+- [ ] **Step 2: Run the test to verify it fails**
 
-- [ ] **Step 2: Default `dispatchKind` to `'hybrid'` for all planning kinds**
+Run: `cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
+Expected: FAIL — `resolveCoordinatorDispatchKind` is not exported yet (import error).
+
+- [ ] **Step 3: Add the helper to `config.ts`**
+
+In `packages/llm-agent-server/src/smart-agent/config.ts`, add (next to `resolveCoordinatorDispatch`):
+
+```ts
+/**
+ * Default coordinator dispatch kind. Omitted → 'hybrid' for ALL planning kinds:
+ * agentless steps — the synthesized answer-directly step (#155) and skill steps
+ * without an explicit `agent:` — need a self-LLM fallback. Pin 'subagent'
+ * explicitly for strict subagent-only routing.
+ */
+export function resolveCoordinatorDispatchKind(explicit?: string): string {
+  return explicit ?? 'hybrid';
+}
+```
+
+- [ ] **Step 4: Use the helper in `smart-server.ts`**
 
 Replace:
 
@@ -593,25 +671,23 @@ with:
 
 ```ts
       const planningKind = coordCfg.planning ?? 'one-shot';
-      // Default to 'hybrid' for all planning kinds: agentless steps — including
-      // the synthesized answer-directly step (#155) and skill steps without an
-      // explicit `agent:` — need a self-LLM fallback. Pin `dispatch: subagent`
-      // explicitly for strict subagent-only routing.
-      const dispatchKind = coordCfg.dispatch ?? 'hybrid';
+      const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 ```
 
-(`resolveCoordinatorDispatch('hybrid', plannerLlm, contextBuilder)` already builds `HybridDispatch(SubAgentDispatch, SelfDispatch(plannerLlm))` — `plannerLlm` is passed at the existing call site and is required by the `'hybrid'` branch.)
+Add `resolveCoordinatorDispatchKind` to the existing `resolveCoordinatorDispatch`
+import in `smart-server.ts` (lines ~326/336 import the config helpers).
 
-- [ ] **Step 3: Build to verify it compiles**
+- [ ] **Step 5: Build, then run the test to verify it passes**
 
-Run: `npm run build`
-Expected: build succeeds.
+Run: `npm run build` (clean), then:
+`cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts`
+Expected: PASS — 6 tests.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts
-git commit -m "feat(server): #155 default coordinator dispatchKind to hybrid (was subagent)"
+git add packages/llm-agent-server/src/smart-agent/config.ts packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/coordinator-dispatch-resolver.test.ts
+git commit -m "feat(server): #155 default coordinator dispatchKind to hybrid via resolveCoordinatorDispatchKind"
 ```
 
 ---
