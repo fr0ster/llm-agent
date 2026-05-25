@@ -27,7 +27,12 @@ describe('composeTask', () => {
 
   it('prepends the plan objective when present', () => {
     const c = ctx({
-      plan: { steps: [], objective: 'Ship the release', createdAt: 0, source: 'planner-llm' },
+      plan: {
+        steps: [],
+        objective: 'Ship the release',
+        createdAt: 0,
+        source: 'planner-llm',
+      },
     });
     const task = composeTask(step(), c);
     assert.match(task, /Task: Summarize it/);
@@ -47,7 +52,12 @@ describe('composeTask', () => {
 
   it('inputTemplate overrides and expands {{...}} placeholders', () => {
     const c = ctx({
-      plan: { steps: [], objective: 'OBJ', createdAt: 0, source: 'planner-llm' },
+      plan: {
+        steps: [],
+        objective: 'OBJ',
+        createdAt: 0,
+        source: 'planner-llm',
+      },
     });
     const task = composeTask(
       step({ inputTemplate: '{{goal}} || {{objective}} || {{inputText}}' }),
