@@ -194,8 +194,9 @@ coordinator:
     <name>: { ...pipeline... }
 ```
 
-Presence of these new fields (`planner`/`interpreter`/`subagents`) selects the
-DAG path; the old `coordinator.planning`/`dispatch` fields select the linear
+Presence of `coordinator.planner` selects the DAG path (`subagents` is shared
+with the linear coordinator and is NOT a selector; `interpreter` defaults when
+omitted); the old `coordinator.planning`/`dispatch` fields select the linear
 coordinator; mixing both is a fail-loud validation error.
 2. **Plan reviewer gate** — `IReviewStrategy` (LLM critic) + the review stage
    between planning and execution (gate, fail-loud). Additive on top of slice 1.

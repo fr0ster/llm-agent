@@ -77,19 +77,27 @@ export interface InterpretContext {
   workers: ReadonlyMap<string, ISubAgent>;
   sessionId: string;
   signal?: AbortSignal;
+  /** Dispatch depth of THIS coordinator (root = 0). Workers are dispatched at
+   *  `layer + 1` so they remain non-root leaves under the current layer rules
+   *  (until slice 3 removes the nested API). */
+  layer: number;
 }
 
 export interface NodeResult {
   nodeId: string;
   output: string;
-  ok: boolean;
+  status: 'done' | 'failed' | 'skipped';
   error?: string;
   durationMs: number;
 }
 
 export interface InterpretResult {
   nodeResults: Record<string, NodeResult>;
-  /** Final aggregated text streamed to the consumer. */
+  /** false if any node failed or was skipped (unreachable due to a failed dep). */
+  ok: boolean;
+  /** Set when `ok` is false — a human-readable summary of the failure. */
+  error?: string;
+  /** Final aggregated text (only meaningful when ok). */
   output: string;
 }
 ```
@@ -128,30 +136,49 @@ spirit of the linear `composeTask`, but DAG-scoped). Produces the worker `task`:
 
 ### `coordinator/dag/dag-plan-interpreter.ts`
 `DagPlanInterpreter implements IInterpreter<DagPlan, InterpretResult>`:
-- Validate the DAG once: every `dependsOn` id exists; **no cycles** (topological
-  sort; a cycle → throw `COORDINATOR_PLAN_INVALID`).
-- Loop: compute the **ready set** (nodes whose deps are all done & ok and not yet
-  run); dispatch all ready nodes **concurrently** (`Promise.all`); for each,
-  `composeNodeTask(...)` → look up the worker `ISubAgent` (`node.agent` or the
-  single default worker) → `worker.run({ task, sessionId, signal, layer: 0 })`
-  → record `NodeResult`.
-- If a node fails (`ok:false`), its dependents become unreachable; mark them
-  skipped, finish the rest, and the interpret result is a failure
-  (`COORDINATOR_STEP_FAILED` surfaced by the coordinator). (Replan-on-failure is
-  slice 3.)
-- Aggregate: concatenate **terminal nodes'** outputs (nodes that are no node's
-  dependency) in deterministic id order into `InterpretResult.output`. For a
-  1-node plan this is just that node's output (clean, no headers).
+- **Validate the DAG once → throw `COORDINATOR_PLAN_INVALID`** on a structural
+  error the plan can't recover from: a `dependsOn` id that doesn't exist; a
+  **cycle** (topological sort detects it); or a node whose `agent` can't be
+  resolved (see worker resolution below). These are malformed-plan errors, not
+  execution failures.
+- **Worker resolution (F4):** a node's worker is `workers.get(node.agent)` when
+  `agent` is set; when `agent` is **absent**, it resolves to the sole worker
+  **iff `workers.size === 1`** (the progressive-complexity single-pipeline
+  default). An absent `agent` with **more than one** worker is ambiguous →
+  `COORDINATOR_PLAN_INVALID` (caught in validation). No implicit "first worker".
+- **Execute:** loop computing the **ready set** (nodes whose deps are all `done`
+  and not yet run); dispatch all ready nodes **concurrently** (`Promise.all`);
+  for each, `composeNodeTask(...)` → resolved worker
+  `worker.run({ task, sessionId, signal, layer: ctx.layer + 1 })` (workers stay
+  non-root leaves) → record a `NodeResult` with `status: 'done' | 'failed'`.
+- **Failure handling (F2, no throw):** if a node returns `ok:false` (→ `failed`),
+  its transitive dependents can never become ready — mark them `skipped`; finish
+  any still-runnable independent nodes; then **return** an `InterpretResult` with
+  `ok: false` and an `error` summary (e.g. which node failed). Node failures do
+  NOT throw — they are a returned result. (Replan-on-failure is slice 3.)
+- **Aggregate (success):** concatenate **terminal nodes'** outputs (nodes that
+  are no other node's dependency) in deterministic id order into
+  `InterpretResult.output`; for a 1-node plan it is just that node's output
+  (clean, no headers). `ok: true`.
 - Parallelism is unbounded ready-set concurrency for the MVP (a `maxParallel`
-  bound is deferred — note in out-of-scope).
+  bound is deferred — see out-of-scope).
 
 ### `coordinator/dag/llm-dag-planner.ts`
 `LlmDagPlanner implements IPlanner` — builds a planner system prompt listing the
 worker catalog and instructing a JSON `DagPlan` (nodes with `id`/`goal`/`agent?`/
-`dependsOn?`/`needsInput?` + `objective`), calls its LLM (or planner `ISubAgent`),
-parses + validates the JSON into a `DagPlan`. Fails loud on malformed JSON or a
-node missing a `goal`. Progressive-complexity: the prompt tells it to emit a
-**single node** when no decomposition is needed.
+`dependsOn?`/`needsInput?` + `objective`), **calls an `ILlm` directly**, parses +
+validates the JSON into a `DagPlan`. Fails loud on malformed JSON or a node
+missing a `goal`. Progressive-complexity: the prompt tells it to emit a **single
+node** when no decomposition is needed.
+
+**Documented MVP exception (F5):** the epic invariant is "planner is supervised
+through the `ISubAgent` path." Slice 1 has no supervision/restart machinery yet
+(that arrives with replan in slice 3 / dialog in slice 4), so `LlmDagPlanner`
+calls the `ILlm` **directly** rather than wrapping a planner `ISubAgent`. This is
+one model for the slice (not "LLM or ISubAgent"). The `IPlanner` interface is the
+stable seam; reconciling the concrete planner onto the supervised `ISubAgent`
+path is deferred to the slice that introduces supervision. This exception is
+called out so it is not mistaken for the end state.
 
 ### `pipeline/handlers/dag-coordinator.ts`
 `DagCoordinatorHandler implements IStageHandler` — the batch DAG coordinator
@@ -159,9 +186,13 @@ node missing a `goal`. Progressive-complexity: the prompt tells it to emit a
 1. Build `PlannerInput` from `ctx.inputText` + the worker catalog.
 2. `plan = await planner.plan(input)` (wrap errors → `COORDINATOR_PLAN_FAILED`).
 3. (Reviewer gate — slice 2 — skipped here.)
-4. `result = await interpreter.interpret(plan, interpretCtx)`.
-5. Stream `result.output` raw + finish `stop`; on interpreter failure set
-   `ctx.error` (`COORDINATOR_STEP_FAILED`) and return false.
+4. `result = await interpreter.interpret(plan, { inputText: ctx.inputText,
+   workers, sessionId: ctx.sessionId, signal, layer: ctx.layer ?? 0 })`.
+   A structural-plan error throws `COORDINATOR_PLAN_INVALID` — caught and set on
+   `ctx.error`, return false.
+5. If `result.ok === false` → set `ctx.error` = `OrchestratorError(result.error,
+   'COORDINATOR_STEP_FAILED')`, return false. Otherwise stream `result.output`
+   raw + an empty finish chunk (`finishReason: 'stop'`), return true.
 
 No `ICoordinator` interface is extracted yet — that happens in slice 4 when the
 dialog implementation provides the second impl (epic rule: introduce the
@@ -179,14 +210,21 @@ coordinator:
     summarizer: { ...pipeline (llm/rag/mcp/prompt)... }
 ```
 
-- **Presence of `planner` (and/or `subagents`/`interpreter`)** → the server
-  interprets the DAG coordinator (wires `DagCoordinatorHandler`).
-- **Old `planning`/`dispatch`** (no new fields) → the existing linear coordinator,
-  unchanged.
-- **Mixing** old (`planning`) and new (`planner`) in one `coordinator` block →
-  **fail-loud** config-validation error (no silent fallback).
-- A bare worker config with a single `subagents` entry is the
-  progressive-complexity default (one pipeline).
+- **The DAG selector is the presence of `coordinator.planner`.** `subagents` is
+  **NOT** a selector — it is shared (the existing linear coordinator already
+  dispatches to a subagent catalog), so its presence alone says nothing about
+  which coordinator. `interpreter` is optional and, when omitted, defaults to
+  `DagPlanInterpreter`.
+- **`planner` is therefore required to enter DAG mode** (its presence is the
+  signal). Its content may be minimal: `planner: { type: llm }` defaults the
+  planner LLM to the resolved planner/main LLM (same resolution as today's
+  `coordinator.plannerLlm`). So the minimal DAG config is `coordinator.planner`
+  + a single-entry `subagents` catalog — the progressive-complexity default
+  (one worker pipeline).
+- **Old `planning`/`dispatch`** (and no `planner`) → the existing linear
+  coordinator, unchanged.
+- **Mixing** old (`planning`/`dispatch`) and new (`planner`/`interpreter`) in one
+  `coordinator` block → **fail-loud** config-validation error (no silent fallback).
 
 ## Files touched
 
