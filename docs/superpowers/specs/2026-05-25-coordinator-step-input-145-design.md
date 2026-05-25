@@ -126,9 +126,11 @@ Output schema becomes (sample):
   `buildInitialPlan` maps this to a `Plan` with empty `steps` and `clarification`
   set.
 - `CoordinatorHandler`: after `buildInitialPlan`, if `plan.clarification` is set,
-  yield it as the assistant response (`finishReason: 'stop'`) and return
-  **without dispatching any step** — the Coordinator deciding to ask back, not a
-  subagent failing on empty material.
+  return **without dispatching any step**, mirroring the existing final-output
+  streaming contract: first `ctx.yield({ content: clarification })`, then a
+  separate empty finish chunk `ctx.yield({ content: '', finishReason: 'stop' })`.
+  This is the Coordinator deciding to ask back, not a subagent failing on empty
+  material.
 - Scope: clarification is produced at initial planning only. Replan
   (`rebuildPlan`) is about step failures and does not emit clarification here.
 
@@ -187,10 +189,18 @@ same fields or they keep the #145 defect:
 - Smoke: reproduce the #145 case (summarize-this-blob) and confirm the executor
   now receives the material; confirm an ambiguous request returns a clarification.
 
-## Backward compatibility
+## Backward compatibility & deliberate behavior change
 
 - `Plan.objective`, `Plan.clarification`, `PlanStep.needsInput`, and the new
-  skill-meta fields are all optional → non-breaking.
-- Steps without `needsInput`/`inputTemplate` and plans without `objective` keep
-  `task = goal` (no regression).
+  skill-meta fields are all optional → **type-level** non-breaking.
+- **Deliberate behavior change (planner-LLM paths):** the planner now always
+  emits `objective`, and the task helper always prepends it, so every
+  planner-authored step's `task` changes shape from a bare `goal` to
+  `Task: … / Overall objective: …` — including steps with `needsInput=false`.
+  This is intended: it is the "team, not a crowd" alignment the design exists
+  for, not a regression. Documented here explicitly so it is not mistaken for an
+  accidental side effect of the #145 fix.
+- **Unchanged paths:** `SkillStepsPlanning` plans without `ISkillMeta.objective`,
+  and any step with neither `objective`, `needsInput`, nor `inputTemplate`, keep
+  `task = goal`.
 - `ISubAgent` contract (`{task, context}`) is unchanged.
