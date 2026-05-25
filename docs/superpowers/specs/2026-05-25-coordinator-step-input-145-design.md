@@ -97,14 +97,25 @@ keeping its "Results so far" block. `context` (RAG + MCP-RAG) is unchanged; the
 `one-shot.ts` and `replan-on-error.ts`:
 
 - Tell the planner that the dispatched executor sees **only** the step the
-  planner authors (its specific `goal` + the composed `objective`/input), never
-  the raw user request — so it must set `needsInput: true` on steps that act on
-  provided material.
+  planner authors (its specific `goal` + the composed `objective`/input). The
+  raw user request never reaches the executor as a controlling instruction — it
+  appears only as delimited data, and only when the step sets `needsInput: true`.
+  So the planner must set `needsInput: true` on steps that act on provided
+  material.
 - Emit a plan-level `objective` (the shared "why") so subagents stay aligned.
 - `goal` is the per-step specific task, not the overall purpose.
 
-Output schema becomes
-`{"objective":"...","steps":[{"id","goal","agent","needsInput"}],"rationale"}`.
+Output schema becomes (sample):
+```json
+{
+  "objective": "Ship the release checklist",
+  "steps": [
+    { "id": "step-1", "goal": "Summarize into a tight checklist", "agent": "summarizer", "needsInput": true }
+  ],
+  "rationale": "Single summarization step over the provided release tasks"
+}
+```
+`agent` and `needsInput` are optional per step.
 `needsInput` parsing applies to both initial and replan output;
 `objective` is parsed on both paths (replan re-states it).
 
@@ -130,8 +141,9 @@ same fields or they keep the #145 defect:
   (`interfaces/skill.ts`).
 - Add an optional `objective?: string` to `ISkillMeta` for the shared goal.
 - `SkillStepsPlanning` maps these into `PlanStep.needsInput` / `inputTemplate`
-  and `Plan.objective` (falling back to the skill name/description for objective
-  when unset).
+  and `Plan.objective`. No fallback: when `ISkillMeta.objective` is unset, the
+  plan carries no objective and existing skill-driven steps keep `task = goal`
+  (preserves backward compatibility — no silent behavior change).
 
 ## Out of scope (separate strategic epic)
 
