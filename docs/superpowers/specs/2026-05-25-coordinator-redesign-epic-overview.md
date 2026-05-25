@@ -90,7 +90,16 @@ one the YAML declares**:
   selecting implementations by config.
 
 This is why "YAML is the complete pipeline description" is a hard invariant: the
-server is its interpreter. It also explains why the server bundles all
+server is its interpreter.
+
+**Selection is interpretation, not a flag.** Which implementation is instantiated
+is decided by **which components the YAML declares** (presence-based), never by a
+meta-selector field. Old fields (`coordinator.planning: one-shot`, `dispatch: …`)
+→ the linear coordinator; new DAG declarations (e.g. `coordinator.planner: <subagent>`
++ a subagent catalog) → the DAG coordinator; no `coordinator:` → tool-loop. New
+DAG fields use names distinct from the old ones (no overlap, so no tiebreaker is
+needed); a config that mixes both old and new is a fail-loud validation error
+(not a silent fallback). It also explains why the server bundles all
 provider/embedder/RAG implementations (#13.1.0) — the interpreter needs every
 opcode on hand to run any YAML out-of-the-box. The library/builder is the
 programmatic front-end over the same interfaces (a different surface, the same
