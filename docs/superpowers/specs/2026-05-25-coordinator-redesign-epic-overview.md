@@ -36,6 +36,18 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
   by the coordinator from its dependencies' outputs (+ original material when
   needed) — the #145 "coordinator builds the task" principle, scoped to actual
   dependencies rather than "all prior steps".
+- **Progressive complexity — the default does not over-engineer.** The
+  planner/coordinator chooses the *simplest viable* plan shape:
+  - trivial → **answer-directly** (single self-step; shipped in #155);
+  - simple → **single-node plan = one subagent-pipeline** handles the whole task
+    (the default server variant — fanning out is NOT required);
+  - complex → **multi-node DAG** of subagents, only when decomposition is
+    genuinely warranted.
+
+  DAG fan-out is an *escalation on demand*, never forced. The DAG `Plan` type
+  must therefore represent a 1-node plan as naturally as an N-node graph, and the
+  default server config leans toward minimal decomposition. The plan reviewer
+  validates whatever shape results (incl. a 1-node plan) against the prompt.
 
 ## Target architecture — interfaces and implementations
 
