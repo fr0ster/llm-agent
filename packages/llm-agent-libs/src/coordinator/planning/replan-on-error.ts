@@ -59,8 +59,11 @@ ${remainingBlock}
 Available agents:
 ${agentsBlock || '(none — use self-dispatch)'}
 
+Set "needsInput": true on any step that must act on the user's provided material.
+Re-state the shared "objective".
+
 Respond with ONLY a JSON object:
-{"steps":[{"id":"...","goal":"...","agent":"optional"}],"rationale":"..."}`;
+{"objective":"...","steps":[{"id":"...","goal":"...","agent":"optional","needsInput":false}],"rationale":"..."}`;
 
     // Use the same ILlm.chat(messages, tools, options) signature as one-shot.ts.
     const response = await this.plannerLlm.chat(
@@ -75,16 +78,34 @@ Respond with ONLY a JSON object:
 
     const jsonText = extractJson(response.value.content);
     const parsed = JSON.parse(jsonText) as {
-      steps: Array<{ id?: string; goal: string; agent?: string }>;
+      objective?: string;
+      steps?: Array<{
+        id?: string;
+        goal: string;
+        agent?: string;
+        needsInput?: boolean;
+      }>;
       rationale?: string;
     };
+    // A replan must yield at least one valid step; an empty/malformed result
+    // fails loud (→ COORDINATOR_REPLAN_FAILED) instead of stalling silently.
+    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+      throw new Error(`Replan returned no steps: ${jsonText.slice(0, 200)}`);
+    }
+    for (const s of parsed.steps) {
+      if (typeof s.goal !== 'string' || s.goal.trim() === '') {
+        throw new Error(`Replan step is missing a goal: ${JSON.stringify(s)}`);
+      }
+    }
     return {
       steps: parsed.steps.map((s, i) => ({
         id: s.id ?? `replan-${i + 1}`,
         goal: s.goal,
         agent: s.agent,
+        needsInput: s.needsInput,
         status: 'pending',
       })),
+      objective: parsed.objective,
       rationale: parsed.rationale,
       createdAt: Date.now(),
       source: 'planner-llm',

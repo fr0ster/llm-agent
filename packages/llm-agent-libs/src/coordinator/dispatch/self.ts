@@ -5,6 +5,7 @@ import type {
   PlanStep,
   StepResult,
 } from '@mcp-abap-adt/llm-agent';
+import { composeTask } from './compose-task.js';
 
 export class SelfDispatch implements IDispatchStrategy {
   readonly name = 'self';
@@ -26,7 +27,7 @@ export class SelfDispatch implements IDispatchStrategy {
       Object.values(ctx.stepResults)
         .map((r) => `- ${r.stepId}: ${r.output.slice(0, 300)}`)
         .join('\n') || '(none)';
-    const userMsg = `Current step: ${step.goal}\n\nResults so far:\n${priorBlock}`;
+    const userMsg = `${composeTask(step, ctx)}\n\nResults so far:\n${priorBlock}`;
 
     const started = Date.now();
     try {

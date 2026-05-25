@@ -45,10 +45,13 @@ export class SkillStepsPlanning implements IPlanningStrategy {
       goal: s.goal,
       agent: s.agent,
       expectedTools: s.expectedTools,
+      needsInput: s.needsInput,
+      inputTemplate: s.inputTemplate,
       status: 'pending',
     }));
     return {
       steps,
+      objective: meta.objective,
       rationale: `Steps declared by skill '${meta.name}'`,
       createdAt: Date.now(),
       source: 'skill-steps',

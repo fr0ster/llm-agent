@@ -35,7 +35,13 @@ export interface ISkillMeta {
      */
     agent?: string;
     expectedTools?: string[];
+    /** Mirrors PlanStep.needsInput — embed client material as delimited data. */
+    needsInput?: boolean;
+    /** Mirrors PlanStep.inputTemplate — advanced override for task composition. */
+    inputTemplate?: string;
   }>;
+  /** Shared objective forwarded to every step (mirrors Plan.objective). */
+  objective?: string;
   /** Vendor-specific extensions (hooks, agent, etc.). */
   [key: string]: unknown;
 }
