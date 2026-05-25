@@ -159,6 +159,19 @@ same fields or they keep the #145 defect:
   `needsInput` embeds the whole request as delimited data. True material
   extraction (without lossy LLM rewriting) is deferred to the strategic epic.
 
+### Forward compatibility with the result reviewer
+
+This patch is a deliberate foundation for the result reviewer planned in the
+strategic epic (a critic that checks the aggregated final output against the
+original consumer prompt, treating it as an object of analysis rather than an
+instruction to execute). No reviewer is built here, but nothing is precluded:
+the Coordinator already retains everything such a reviewer needs — the original
+request (`coordCtx.inputText`), the shared `plan.objective`, the per-step results
+(`coordCtx.stepResults`), and the assembled `finalOutput` in `CoordinatorHandler`.
+The deterministic, lossless task composition (planner decides intent; Coordinator
+composes verbatim) keeps these inputs faithful, so the result reviewer slots in
+later without rework.
+
 ## Files touched
 
 - `packages/llm-agent/src/interfaces/coordinator.ts` — add `Plan.objective?`,
