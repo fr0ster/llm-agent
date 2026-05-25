@@ -110,17 +110,24 @@ DAG planner / coordinator / interpreter) the interpreter can instantiate when th
 YAML asks for them; the existing opcodes (linear coordinator) remain. No superset
 interface — just a larger instruction set.
 
-**"Interpreter" is a family, not one interface.** Both the build-time
-config/pipeline interpreter (reads YAML/builder description → instantiates the
-pipeline) and the run-time **`IInterpreter`** (reads a `Plan` DAG → executes it,
-dispatching workers) belong to the same concept: *take a declarative structure
-and bring it to life*. They share the **vocabulary**, not a single TypeScript
-signature — they operate at different levels (`interpret(Yaml)→Pipeline` vs
-`interpret(Plan)→Results`) and a merged generic `IInterpreter<D,R>` would buy
-only cosmetic unity with no shared behavior. This epic implements the run-time
-plan `IInterpreter` (slice 1); formalizing the config/pipeline interpreter as an
-interface (over the existing YAML reader + `SmartAgentBuilder`) is a **deferred,
-orthogonal axis** — not in scope here.
+**One interface `IInterpreter`, two implementations.** A single generic shape:
+
+```
+IInterpreter<TInput, TOutput> { interpret(input: TInput, ctx): Promise<TOutput> }
+```
+
+Two implementations of that one interface:
+- **YAML interpreter** — `IInterpreter<Yaml, Pipeline>`: interprets the YAML
+  description → instantiates the pipeline. (This is the server; **already exists**
+  — recognized as this interface, not rewritten in this epic.)
+- **Plan interpreter** — `IInterpreter<Plan, Result>`: interprets the `Plan` DAG
+  the planner built → executes it, dispatching workers. (**New, slice 1.**)
+
+They nest self-similarly: the YAML interpreter produces a pipeline that contains
+a coordinator that invokes the plan interpreter — the same interface applied at
+two levels. **Scope (YAGNI):** slice 1 implements the plan interpreter; the YAML
+interpreter already exists and is only *recognized* as `IInterpreter` (formalizing
+the server under the generic signature is deferred, not rewritten here).
 
 ## Target architecture — interfaces and implementations
 
@@ -129,7 +136,7 @@ orthogonal axis** — not in scope here.
 | `Plan` (graph type) | DAG: task nodes; edges = `dependsOn` + data-flow | — (type) |
 | `IPlanner` (planner-subagent) | prompt + agent catalog → DAG `Plan` | DAG planner (new); linear (degenerate) |
 | `IReviewStrategy` (reviewer-subagent) | prompt + DAG → `{pass} \| {needsClarification}` | LLM critic; noop |
-| `IInterpreter` (run-time) | interprets a `Plan` (DAG): topological/parallel walk, dispatches workers, composes each node's input from its deps' outputs | DAG interpreter (new) |
+| `IInterpreter<TInput,TOutput>` | interprets a declarative description → executes it | **YAML interpreter** `<Yaml,Pipeline>` (the server; exists); **Plan interpreter** `<Plan,Result>` (new, slice 1 — topological/parallel DAG walk, dispatches workers, composes each node's input from its deps' outputs) |
 | `ICoordinator` | thin **sequencer**: planner → (reviewer gate) → interpreter; uniform supervision | **batch/single-shot**; **dialog/resumable** |
 | `IErrorStrategy` | reaction to a node failure | abort; replan-node-by-leaf-signal |
 | `ISubAgent` (exists) | leaf workers; planner & reviewer are also `ISubAgent` | existing + new |
