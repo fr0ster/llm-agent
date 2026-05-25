@@ -155,6 +155,7 @@ export class CoordinatorHandler implements IStageHandler {
         );
         return false;
       }
+      coordCtx.stepResults[directStep.id] = result;
       ctx.options?.sessionLogger?.logStep('coordinator_answer_direct', {
         stepId: directStep.id,
         outputLength: result.output.length,

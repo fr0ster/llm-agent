@@ -48,9 +48,17 @@ function makeCtx(inputText: string) {
     ok: boolean;
     value: { content: string; finishReason?: string };
   }> = [];
+  const logged: Array<{ step: string; payload: Record<string, unknown> }> = [];
   const ctx = {
     inputText,
     sessionId: 't',
+    options: {
+      sessionLogger: {
+        logStep: (step: string, payload: Record<string, unknown>) => {
+          logged.push({ step, payload });
+        },
+      },
+    },
     yield: (c: {
       ok: boolean;
       value: { content: string; finishReason?: string };
@@ -58,12 +66,12 @@ function makeCtx(inputText: string) {
       yields.push(c);
     },
   } as unknown as Parameters<CoordinatorHandler['execute']>[0];
-  return { ctx, yields };
+  return { ctx, yields, logged };
 }
 
 describe('CoordinatorHandler answer-directly', () => {
   it('self-dispatches the original request and streams the answer raw', async () => {
-    const { ctx, yields } = makeCtx('What is 17 + 25?');
+    const { ctx, yields, logged } = makeCtx('What is 17 + 25?');
     const dispatch = capturingDispatch({
       stepId: 'direct-1',
       output: '42',
@@ -89,6 +97,15 @@ describe('CoordinatorHandler answer-directly', () => {
     assert.equal(dispatch.calls[0].objective, undefined);
     assert.equal(yields[0].value.content, '42');
     assert.equal(yields[1].value.finishReason, 'stop');
+
+    const direct = logged.find((l) => l.step === 'coordinator_answer_direct');
+    assert.ok(direct, 'expected a coordinator_answer_direct log entry');
+    assert.deepEqual(Object.keys(direct.payload).sort(), [
+      'outputLength',
+      'stepId',
+    ]);
+    assert.equal(direct.payload.stepId, 'direct-1');
+    assert.equal(direct.payload.outputLength, 2); // '42'.length
   });
 
   it('surfaces COORDINATOR_STEP_FAILED when the direct dispatch fails', async () => {
