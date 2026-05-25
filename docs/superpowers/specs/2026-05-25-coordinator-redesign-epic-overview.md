@@ -83,19 +83,32 @@ roles, so a **plan-and-execute DAG with an externalized planner** fits and buys
 uniform supervision + pluggability. Both models keep subagents as **leaves**
 (no deep nesting) — our removal of nested dispatch aligns with that.
 
-## Decomposition (each its own spec → plan → implementation cycle)
+## Decomposition (vertical, self-sufficient slices)
 
-1. **Contracts** — define all `I*` interfaces + graph `Plan` (deps + data-flow) +
-   leaf-signal + resumable-gate outcome. Seams only, no behavior. (Foundation.)
-2. **DAG planner** implementation + graph executor (topological order, parallel
-   independent nodes, dependency data-flow into dependent nodes).
-3. **Plan reviewer** implementation (`IReviewStrategy` LLM critic; gate, fail-loud).
-4. **Replan-by-leaf-signal** (`IErrorStrategy`) + **removal of nested dispatch**.
-5. **Batch coordinator** (`ICoordinator` single-shot).
-6. **Dialog coordinator** (`ICoordinator` resumable, pause-on-clarification).
+Each slice ships a **working, testable capability on its own** and leaves the
+system runnable. Decomposition is by vertical slice, NOT by horizontal layer —
+the interface/type contracts are introduced *inside* the first slice that needs
+them, together with the code that uses them (a "contracts-only" sub-project would
+not be self-sufficient).
 
-Order: 1 first (foundation). 2–4 build the engine. 5 then 6 are the two
-coordinator implementations. Sequencing of 2–6 is revisited per sub-project.
+1. **Batch DAG coordinator (MVP)** — the graph `Plan` type (`dependsOn` +
+   data-flow), `IPlanner` (DAG planner), a topological/parallel executor that
+   feeds each node its dependencies' outputs, and the batch `ICoordinator`
+   (single-shot). End-to-end: prompt → DAG → execute → aggregated result.
+   Honors progressive-complexity (default leans to a single-node plan). The
+   contracts needed by this slice are defined here.
+2. **Plan reviewer gate** — `IReviewStrategy` (LLM critic) + the review stage
+   between planning and execution (gate, fail-loud). Additive on top of slice 1.
+3. **Replan-by-leaf-signal + remove nested dispatch** — `IErrorStrategy` +
+   leaf-signal on `StepResult`; coordinator re-plans a failed node into a finer
+   sub-graph; remove the #128–#132 nested-dispatch machinery. Self-sufficient
+   behavior change.
+4. **Dialog / resumable coordinator** — second `ICoordinator` implementation:
+   pause-on-clarification + resume across turns (the resumable-gate back-end).
+
+Order: 1 → 2 → 3 → 4 (each shippable independently). Sequencing revisited per
+slice; remaining interfaces (e.g. `ICoordinator` second impl, `IReviewStrategy`)
+are introduced in the slice that first needs them.
 
 ## Out of scope / deferred
 
