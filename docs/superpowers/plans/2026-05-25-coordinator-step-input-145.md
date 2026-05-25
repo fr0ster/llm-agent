@@ -26,7 +26,10 @@ Spec: `docs/superpowers/specs/2026-05-25-coordinator-step-input-145-design.md`
 
 Tests:
 - `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/compose-task.test.ts` — NEW.
+- `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts` — NEW.
+- `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/self-dispatch.test.ts` — NEW.
 - `packages/llm-agent-libs/src/coordinator/planning/__tests__/one-shot.test.ts` — NEW.
+- `packages/llm-agent-libs/src/coordinator/planning/__tests__/replan-on-error.test.ts` — NEW.
 - `packages/llm-agent-libs/src/coordinator/planning/__tests__/skill-steps.test.ts` — extend.
 - `packages/llm-agent-libs/src/pipeline/handlers/__tests__/coordinator-clarification.test.ts` — NEW.
 
