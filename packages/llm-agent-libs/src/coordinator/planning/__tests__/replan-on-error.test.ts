@@ -38,4 +38,14 @@ describe('ReplanOnErrorPlanning.rebuildPlan parsing', () => {
       /Replan returned no steps/,
     );
   });
+
+  it('throws when a replan step has no goal', async () => {
+    const llm = llmReturning(
+      '{"objective":"x","steps":[{"id":"r1","goal":""}]}',
+    );
+    await assert.rejects(
+      () => new ReplanOnErrorPlanning(llm).rebuildPlan(makeCtx(), []),
+      /missing a goal/,
+    );
+  });
 });
