@@ -90,9 +90,11 @@ see the existing comment in smart-server.ts). Answer-directly introduces the sam
   `planningKind === 'skill-steps' ? 'hybrid' : 'subagent'` split — hybrid for all).
   The hybrid's self leg uses the already-resolved planner/main LLM.
 - `builder.ts`: default `this._coordinator.dispatch ?? new HybridDispatch(new SubAgentDispatch(defaultContextBuilder), new SelfDispatch(plannerLlm))`.
-  Use the **already-resolved `plannerLlm`** (`this._coordinator.plannerLlm ?? wrappedMainLlm`,
-  guaranteed non-null at this point — the builder throws otherwise) — NOT
-  `mainLlm`, which can be undefined in a valid `plannerLlm`-only configuration (F1).
+  Use the **already-resolved `plannerLlm`** (`this._coordinator.plannerLlm ?? wrappedMainLlm`) —
+  NOT the raw `mainLlm`. `build()` always requires a main LLM (it throws
+  otherwise), so both are defined; `plannerLlm` is preferred because it honors an
+  explicit coordinator planner LLM and is the *wrapped* instance (circuit-breaker
+  / retry), whereas raw `mainLlm` would bypass that wrapping.
 - Users who require strict subagent routing can still pin `dispatch: subagent`
   explicitly; for such a config a trivial prompt surfaces a visible
   `COORDINATOR_STEP_FAILED` (never a silent `(no response)`) — a deliberate,

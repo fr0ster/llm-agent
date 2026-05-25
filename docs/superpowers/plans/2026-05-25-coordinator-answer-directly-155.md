@@ -407,6 +407,7 @@ In `execute`, immediately AFTER the `validatePlan` block (the `if (validationErr
         return false;
       }
       ctx.options?.sessionLogger?.logStep('coordinator_answer_direct', {
+        stepId: directStep.id,
         outputLength: result.output.length,
       });
       ctx.yield({ ok: true, value: { content: result.output } });
@@ -497,9 +498,11 @@ describe('SmartAgentBuilder — default coordinator dispatch', () => {
         coordinator.dispatch instanceof HybridDispatch,
         'expected default coordinator dispatch to be HybridDispatch',
       );
-      // The hybrid's self leg (fallback) must use the resolved plannerLlm, NOT
-      // mainLlm — locks the F1 design (mainLlm may be undefined in a valid
-      // planner-only config). Test-only cast to read the private fields.
+      // The hybrid's self leg (fallback) must use the coordinator's resolved
+      // plannerLlm (here the explicit plannerStub), NOT the raw mainLlm. build()
+      // always requires a main LLM (so there is no planner-only build to test);
+      // the point is that an explicit plannerLlm wins over mainLlm for the self
+      // answer. Test-only cast to read the private fields.
       const fallback = (
         coordinator.dispatch as unknown as { fallback?: { llm?: unknown } }
       ).fallback;
