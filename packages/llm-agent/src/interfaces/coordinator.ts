@@ -12,12 +12,28 @@ export interface PlanStep {
   goal: string;
   agent?: string;
   inputTemplate?: string;
+  /**
+   * When true, the Coordinator embeds the client request (`ctx.inputText`)
+   * verbatim as delimited data inside the composed `task`. Default false —
+   * no material is forwarded unless the planner asks for it.
+   */
+  needsInput?: boolean;
   expectedTools?: string[];
   status: 'pending' | 'in_progress' | 'done' | 'failed';
 }
 
 export interface Plan {
   steps: PlanStep[];
+  /**
+   * Shared objective for the whole plan ("why"), authored once by the planner.
+   * Forwarded into every dispatched step's `task` so subagents act as a team.
+   */
+  objective?: string;
+  /**
+   * Set by the initial planner when it cannot form an unambiguous plan. When
+   * present, the Coordinator streams it to the consumer and dispatches nothing.
+   */
+  clarification?: string;
   rationale?: string;
   createdAt: number;
   source: 'planner-llm' | 'skill-steps' | 'manual';
