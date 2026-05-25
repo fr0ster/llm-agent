@@ -19,6 +19,7 @@ import type {
   IDispatchStrategy,
   IPlanningStrategy,
   Plan,
+  PlanStep,
   StepResult,
   SubAgentRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -122,6 +123,46 @@ export class CoordinatorHandler implements IStageHandler {
         'COORDINATOR_LAYER_VIOLATION',
       );
       return false;
+    }
+
+    // Answer-directly: the LLM planner returned an explicit empty step list
+    // (no decomposition needed). Synthesize a single agentless step carrying the
+    // original request and self-answer it instead of running an empty plan.
+    // Placed AFTER validatePlan so layer rules still apply (a nested coordinator
+    // at layer >= maxLayer is blocked by validatePlan before reaching here).
+    // Gated on source 'planner-llm' so manual/skill-steps empty plans keep their
+    // current semantics.
+    if (plan.source === 'planner-llm' && plan.steps.length === 0) {
+      const directStep: PlanStep = {
+        id: 'direct-1',
+        goal: ctx.inputText,
+        status: 'pending',
+      };
+      // Dispatch with a context whose plan carries NO objective, so composeTask
+      // yields the bare original request (a clean direct answer) instead of
+      // "Task: <input>\n\nOverall objective: ...". An empty plan (no
+      // decomposition) has no shared objective to align around, even if the
+      // planner emitted one alongside the empty steps array.
+      const directCtx: ICoordinatorContext = {
+        ...coordCtx,
+        plan: { ...plan, objective: undefined },
+      };
+      const result = await this.deps.dispatch.dispatch(directStep, directCtx);
+      if (!result.ok) {
+        ctx.error = new OrchestratorError(
+          `coordinator: answer-directly dispatch failed: ${result.error ?? 'unknown'}`,
+          'COORDINATOR_STEP_FAILED',
+        );
+        return false;
+      }
+      coordCtx.stepResults[directStep.id] = result;
+      ctx.options?.sessionLogger?.logStep('coordinator_answer_direct', {
+        stepId: directStep.id,
+        outputLength: result.output.length,
+      });
+      ctx.yield({ ok: true, value: { content: result.output } });
+      ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
+      return true;
     }
 
     ctx.options?.sessionLogger?.logStep('coordinator_plan', {

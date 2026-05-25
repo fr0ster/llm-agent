@@ -33,6 +33,7 @@ review, etc.).
 Emit a plan-level "objective" (the shared purpose) so all steps stay aligned.
 For each step, choose the best agent from the list (or omit "agent" if no specialist fits).
 If the request is too ambiguous to plan, respond with ONLY {"clarification":"<your question>"}.
+If the request needs no decomposition (it can be answered directly without breaking it into steps), return an empty steps array: {"steps":[]}.
 Otherwise respond with ONLY a JSON object of shape:
 {"objective":"...","steps":[{"id":"step-1","goal":"...","agent":"optional-name","needsInput":false}],"rationale":"..."}
 
@@ -62,10 +63,13 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
       rationale?: string;
     };
 
+    // A clarification must stand alone. Combined with any steps array (incl. [])
+    // it is ambiguous mixed output → fail loud, keeping a clean three-way union:
+    // {clarification} | {steps:[...]} | {steps:[]} (answer-directly).
     if (parsed.clarification) {
-      if ((parsed.steps?.length ?? 0) > 0) {
+      if (Array.isArray(parsed.steps)) {
         throw new Error(
-          `Planner returned both a clarification and steps (ambiguous): ${jsonText.slice(0, 200)}`,
+          `Planner returned both a clarification and a steps array (ambiguous): ${jsonText.slice(0, 200)}`,
         );
       }
       return {
@@ -76,12 +80,15 @@ ${agentsBlock || '(none — use self-dispatch)'}${skillBlock}`;
       };
     }
 
-    // Without a clarification, a usable plan must carry at least one valid step.
-    // An empty/malformed plan must fail loud (→ COORDINATOR_PLAN_FAILED) rather
-    // than silently produce blank coordinator output.
-    if (!Array.isArray(parsed.steps) || parsed.steps.length === 0) {
+    // A missing / non-array `steps` is malformed → fail loud
+    // (→ COORDINATOR_PLAN_FAILED). An explicit empty array `steps: []` is the
+    // answer-directly signal and is allowed through (the for-loop below is a
+    // no-op for it). The empty plan is consumed by the CoordinatorHandler
+    // answer-directly branch (#155 Task 2), which self-dispatches the original
+    // request; this planner only produces the signal.
+    if (!Array.isArray(parsed.steps)) {
       throw new Error(
-        `Planner returned neither steps nor a clarification: ${jsonText.slice(0, 200)}`,
+        `Planner returned no steps array and no clarification: ${jsonText.slice(0, 200)}`,
       );
     }
     for (const s of parsed.steps) {

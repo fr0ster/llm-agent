@@ -324,6 +324,7 @@ const CORS_HEADERS = {
 import {
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
+  resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
   resolveToolSelectionStrategy,
 } from './config.js';
@@ -627,14 +628,8 @@ export class SmartServer {
       // 'helper' → helperLlm if present, else fall back to mainLlm.
       const plannerLlm =
         coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
-      // For 'skill-steps' planning the default dispatch is 'hybrid' rather
-      // than 'subagent': skill-step `agent:` is optional, so steps without
-      // an explicit agent need a self-LLM fallback. Users can still pin
-      // dispatch: subagent explicitly when every step declares `agent:`.
       const planningKind = coordCfg.planning ?? 'one-shot';
-      const dispatchKind =
-        coordCfg.dispatch ??
-        (planningKind === 'skill-steps' ? 'hybrid' : 'subagent');
+      const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 
       // Build the same kind of context builder SmartAgentBuilder uses, so
       // YAML-configured deployments get the same default behavior. Uses the

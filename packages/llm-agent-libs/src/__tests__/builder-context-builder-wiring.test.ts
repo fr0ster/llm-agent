@@ -29,7 +29,6 @@ import type {
   LlmTool,
   Result,
 } from '@mcp-abap-adt/llm-agent';
-import type { SubAgentDispatch } from '../coordinator/dispatch/subagent.js';
 import type { DefaultSubAgentContextBuilderConfig } from '../subagent/default-context-builder.js';
 
 function stubLlm(): ILlm {
@@ -119,12 +118,16 @@ describe('SmartAgentBuilder — auto-toolsRag → subagent context-builder wirin
       ).coordinator;
       assert.ok(coordinator, 'expected pipeline.coordinator to be set');
 
-      const dispatch = coordinator.dispatch as SubAgentDispatch | undefined;
-      assert.ok(dispatch, 'expected coordinator.dispatch to be set');
+      // The default coordinator dispatch is now a HybridDispatch; the
+      // SubAgentDispatch (which carries the context builder) is its `primary` leg.
+      const hybrid = coordinator.dispatch as unknown as { primary?: unknown };
+      assert.ok(
+        hybrid?.primary,
+        'expected HybridDispatch.primary (SubAgentDispatch) to be set',
+      );
 
-      // Cast to expose the private contextBuilder for inspection — this is a
-      // test-only escape hatch; the field is intentionally private in production.
-      const dispatchInternals = dispatch as unknown as {
+      // Cast to expose the private contextBuilder for inspection — test-only.
+      const dispatchInternals = hybrid.primary as unknown as {
         contextBuilder?: {
           config: DefaultSubAgentContextBuilderConfig;
         };
