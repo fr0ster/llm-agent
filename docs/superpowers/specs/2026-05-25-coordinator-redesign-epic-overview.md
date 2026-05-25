@@ -15,6 +15,16 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
 
 ## Invariants (the principles this epic holds)
 
+- **YAML is the complete description of the pipeline — this does NOT change.**
+  Hard config-contract invariant carried from the existing versions. The redesign
+  must express everything it introduces *within* that one full YAML pipeline
+  description: the **coordinator is a stage inside the pipeline** (it replaces
+  `tool-loop` when configured, exactly as today — NOT a pipeline-less top-level
+  entity), and the **planner / reviewer / worker subagents are declared in the
+  same YAML** (a subagent catalog; each subagent is itself a pipeline with its
+  own llm/rag/mcp/prompt). A plain YAML with no `coordinator` block is the
+  simplest case — one pipeline processing the prompt (today's behavior),
+  unchanged.
 - **Coordinator is the brain; subagents are hands.** Decomposition is a brain
   function. A leaf that needs finer decomposition **signals the coordinator**
   (which re-plans that node) rather than spawning its own subagent.
