@@ -325,10 +325,57 @@ describe('SubAgentDispatch task composition', () => {
 });
 ```
 
-- [ ] **Step 2: Run the test to verify it fails**
+Also create `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/self-dispatch.test.ts` — the self path had the identical defect, so it needs its own capture test (a fake `ILlm.chat` records the messages):
 
-Run: `cd packages/llm-agent-libs && npx tsx --test src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`
-Expected: FAIL — current code sets `task = step.goal` (no template), so `captured.task` is `"Summarize"` and the material/objective assertions fail.
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { ICoordinatorContext, ILlm, PlanStep } from '@mcp-abap-adt/llm-agent';
+import { SelfDispatch } from '../self.js';
+
+describe('SelfDispatch task composition', () => {
+  it('passes the composed task (with material + objective) into the user message', async () => {
+    const captured: { messages?: Array<{ role: string; content: unknown }> } = {};
+    const llm = {
+      chat: async (messages: Array<{ role: string; content: unknown }>) => {
+        captured.messages = messages;
+        return { ok: true, value: { content: 'done' } };
+      },
+    } as unknown as ILlm;
+
+    const ctx = {
+      inputText: 'RELEASE-TASKS-BLOB',
+      registry: new Map(),
+      stepResults: {},
+      sessionId: 't',
+      plan: {
+        steps: [],
+        objective: 'Ship the release',
+        createdAt: 0,
+        source: 'planner-llm',
+      },
+    } as unknown as ICoordinatorContext;
+
+    const step: PlanStep = {
+      id: 's1',
+      goal: 'Summarize',
+      needsInput: true,
+      status: 'pending',
+    };
+
+    const res = await new SelfDispatch(llm).dispatch(step, ctx);
+    assert.equal(res.ok, true);
+    const userMsg = captured.messages?.find((m) => m.role === 'user');
+    assert.match(String(userMsg?.content ?? ''), /RELEASE-TASKS-BLOB/);
+    assert.match(String(userMsg?.content ?? ''), /Overall objective: Ship the release/);
+  });
+});
+```
+
+- [ ] **Step 2: Run both tests to verify they fail**
+
+Run: `cd packages/llm-agent-libs && npx tsx --test 'src/coordinator/dispatch/__tests__/*-dispatch.test.ts'`
+Expected: FAIL — current code sets `task = step.goal` (subagent) / `Current step: ${goal}` (self), so neither carries the material/objective and the assertions fail.
 
 - [ ] **Step 3: Use `composeTask` in `SubAgentDispatch`**
 
@@ -394,12 +441,15 @@ Expected: build succeeds; no unused-import errors from Biome/TS.
 - [ ] **Step 6: Run the dispatch test suite to verify it passes**
 
 Run: `cd packages/llm-agent-libs && npx tsx --test 'src/coordinator/dispatch/__tests__/*.test.ts'`
-Expected: PASS — composeTask (5) + subagent-dispatch capture (1) green.
+Expected: PASS — composeTask (5) + subagent-dispatch capture (1) + self-dispatch capture (1) green.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/llm-agent-libs/src/coordinator/dispatch/self.ts packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts
+git add packages/llm-agent-libs/src/coordinator/dispatch/self.ts \
+  packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts \
+  packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts \
+  packages/llm-agent-libs/src/coordinator/dispatch/__tests__/self-dispatch.test.ts
 git commit -m "fix(libs): #145 both dispatch paths compose task via composeTask (self no longer drops inputText)"
 ```
 
@@ -562,12 +612,63 @@ git commit -m "feat(libs): #145 one-shot planner emits objective/needsInput + cl
 
 ---
 
-## Task 5: Replan planner — parse objective/needsInput
+## Task 5: Replan planner — parse objective/needsInput (TDD)
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/coordinator/planning/replan-on-error.ts`
+- Test: `packages/llm-agent-libs/src/coordinator/planning/__tests__/replan-on-error.test.ts`
 
-- [ ] **Step 1: Update the parse + return in `replan-on-error.ts`**
+- [ ] **Step 1: Write the failing test**
+
+Create `packages/llm-agent-libs/src/coordinator/planning/__tests__/replan-on-error.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { ICoordinatorContext, ILlm } from '@mcp-abap-adt/llm-agent';
+import { ReplanOnErrorPlanning } from '../replan-on-error.js';
+
+function makeCtx(): ICoordinatorContext {
+  return {
+    inputText: 'do stuff',
+    registry: new Map(),
+    stepResults: {},
+    sessionId: 't',
+  } as unknown as ICoordinatorContext;
+}
+
+function llmReturning(content: string): ILlm {
+  return {
+    chat: async () => ({ ok: true, value: { content } }),
+  } as unknown as ILlm;
+}
+
+describe('ReplanOnErrorPlanning.rebuildPlan parsing', () => {
+  it('parses objective and per-step needsInput', async () => {
+    const llm = llmReturning(
+      '{"objective":"Recover","steps":[{"id":"r1","goal":"Retry","needsInput":true}],"rationale":"R"}',
+    );
+    const plan = await new ReplanOnErrorPlanning(llm).rebuildPlan(makeCtx(), []);
+    assert.equal(plan.objective, 'Recover');
+    assert.equal(plan.steps[0].needsInput, true);
+  });
+
+  it('throws when replan output has no steps', async () => {
+    const llm = llmReturning('{"objective":"x"}');
+    await assert.rejects(
+      () => new ReplanOnErrorPlanning(llm).rebuildPlan(makeCtx(), []),
+      /Replan returned no steps/,
+    );
+  });
+});
+```
+
+- [ ] **Step 2: Run the test to verify it fails**
+
+Run: `cd packages/llm-agent-libs && npx tsx --test src/coordinator/planning/__tests__/replan-on-error.test.ts`
+Expected: FAIL — `plan.objective`/`needsInput` undefined and the malformed case does not yet throw.
+
+- [ ] **Step 3: Update the parse + return in `replan-on-error.ts`**
 
 In `rebuildPlan`, replace the parse-and-return block (from `const parsed = JSON.parse(...)` through the closing `return { ... }`) with:
 
@@ -608,7 +709,7 @@ In `rebuildPlan`, replace the parse-and-return block (from `const parsed = JSON.
     };
 ```
 
-- [ ] **Step 2: Update the replan system prompt in `replan-on-error.ts`**
+- [ ] **Step 4: Update the replan system prompt in `replan-on-error.ts`**
 
 In the `systemPrompt` template, replace the final instruction lines (the `Respond with ONLY a JSON object:` block) with:
 
@@ -622,16 +723,20 @@ Respond with ONLY a JSON object:
 
 (Leave the earlier interpolated context — `Original user request`, `Results so far`, `Previously remaining steps`, `Available agents` — unchanged.)
 
-- [ ] **Step 3: Build to verify it compiles**
+- [ ] **Step 5: Build, then run the test to verify it passes**
 
 Run: `npm run build`
 Expected: build succeeds.
 
-- [ ] **Step 4: Commit**
+Run: `cd packages/llm-agent-libs && npx tsx --test src/coordinator/planning/__tests__/replan-on-error.test.ts`
+Expected: PASS — 2 tests.
+
+- [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-libs/src/coordinator/planning/replan-on-error.ts
-git commit -m "feat(libs): #145 replan planner emits objective/needsInput"
+git add packages/llm-agent-libs/src/coordinator/planning/replan-on-error.ts \
+  packages/llm-agent-libs/src/coordinator/planning/__tests__/replan-on-error.test.ts
+git commit -m "feat(libs): #145 replan planner emits objective/needsInput + fail-loud validation"
 ```
 
 ---
