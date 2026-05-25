@@ -85,4 +85,34 @@ describe('SkillStepsPlanning', () => {
     });
     assert.equal(result, false);
   });
+
+  it('maps objective, needsInput, and inputTemplate from skill meta', async () => {
+    const meta: ISkillMeta = {
+      name: 'summarize-skill',
+      description: 'one-step summary',
+      objective: 'Produce a tight checklist',
+      steps: [
+        {
+          id: 'sum',
+          goal: 'Summarize',
+          needsInput: true,
+          inputTemplate: '{{goal}}::{{inputText}}',
+        },
+      ],
+    };
+    const plan = await new SkillStepsPlanning().buildInitialPlan(makeCtx(meta));
+    assert.equal(plan.objective, 'Produce a tight checklist');
+    assert.equal(plan.steps[0].needsInput, true);
+    assert.equal(plan.steps[0].inputTemplate, '{{goal}}::{{inputText}}');
+  });
+
+  it('leaves objective undefined when skill meta omits it (no fallback)', async () => {
+    const meta: ISkillMeta = {
+      name: 'no-objective',
+      description: '',
+      steps: [{ id: 'a', goal: 'Do a thing' }],
+    };
+    const plan = await new SkillStepsPlanning().buildInitialPlan(makeCtx(meta));
+    assert.equal(plan.objective, undefined);
+  });
 });
