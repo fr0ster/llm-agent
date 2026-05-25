@@ -30,63 +30,108 @@ the Coordinator side, consistent with our architecture.
 
 ## Principles (held)
 
-- The Coordinator is the **sole author** of each executor's prompt. The raw
-  client prompt is never forwarded wholesale to a subagent.
+- **The Coordinator generates each subagent's `task`** and forwards `context`
+  (RAG + MCP-RAG). The subagent never receives the raw client request as its
+  controlling instruction.
+- A subagent is given two things so the subagents act as a **team, not a crowd**:
+  its **specific task** (what this step does) and the **overall objective**
+  (why, within the shared goal).
 - **We build context ourselves.** Consumers give us external tools + the
   request; the Coordinator decides what each executor sees.
 - The Coordinator is accountable to the consumer for the result (it already
   collects results and propagates epicfail traces upward).
-- No silent defaults (v16.0.0 discipline): material reaches an executor only
-  when the planner decides it should.
+- No silent defaults (v16.0.0 discipline): client material reaches an executor
+  only when the planner marks the step as needing it.
+- Ad-hoc client material (a blob to summarize) is **not** in any RAG/MCP-RAG
+  store, so it cannot arrive via `context`. It reaches the subagent only by
+  being embedded — verbatim, as delimited data — inside the Coordinator-generated
+  `task`.
+
+## Data model
+
+- `Plan.objective?: string` — the **overall objective** shared across the whole
+  plan, authored by the planner once. Optional (non-breaking). Forwarded into
+  every dispatched step's `task` as orientation.
+- `PlanStep.goal` — kept, with sharpened semantics: the **specific task** of the
+  step (work-order), not the "why".
+- `PlanStep.needsInput?: boolean` — when `true`, the composed `task` embeds the
+  client request (`{{inputText}}`) as delimited data. Default `false` → no
+  material is forwarded (no silent default).
+- `PlanStep.inputTemplate?: string` — retained as an advanced override; when set
+  it wins over `needsInput` and is resolved as-is.
+- `Plan.clarification?: string` — set by the initial planner when it cannot form
+  an unambiguous plan; short-circuits dispatch (see §3).
 
 ## Design
 
-### 1. Material goes into `task`, not `context`
+### 1. Coordinator-generated task: objective + specific task + material-as-data
 
-The planner authors `task` = instruction + material. `context` stays exactly
-what it is today: the RAG/project preamble built by
-`DefaultSubAgentContextBuilder`. This dissolves the `contextPolicy` problem
-(material reaches even a `forbidden`-context agent and self-dispatch uniformly,
-because it travels in `task`) and means **the context-builder is not touched**.
+A single shared helper composes the executor `task`, used by **both**
+`SelfDispatch` and `SubAgentDispatch` so they behave identically:
 
-### 2. Per-step input signal + shared task composition
+- if `step.inputTemplate` → `resolveTemplate(step.inputTemplate, renderCtx)`
+  (advanced override).
+- else compose from parts:
+  ```
+  Task: {{goal}}
 
-- Add `PlanStep.needsInput?: boolean` (default false). The planner sets it for
-  steps that operate on provided client material.
-- Keep the existing `PlanStep.inputTemplate?: string` as an advanced override.
-- A single shared helper composes the executor task, used by **both**
-  `SelfDispatch` and `SubAgentDispatch` so they behave identically:
-  - if `step.inputTemplate` → `resolveTemplate(step.inputTemplate, ctx)`
-  - else if `step.needsInput` → `resolveTemplate(DEFAULT_INPUT_TEMPLATE, ctx)`
-    where `DEFAULT_INPUT_TEMPLATE = "{goal}\n\nInput:\n{inputText}"`
-  - else → `step.goal` (current behavior, no regression)
-- `SelfDispatch` switches from its ad-hoc `userMsg` to the composed task while
-  keeping its "Results so far" block.
+  Overall objective: {{objective}}        # included only when objective is set
+
+  Input (user-provided data):             # included only when needsInput === true
+  ---
+  {{inputText}}
+  ---
+  ```
+  rendered via `resolveTemplate` with `renderCtx = { goal, objective, inputText,
+  stepResults, step }`. Placeholders use the `{{path}}` syntax that
+  `util/template.ts` actually expands (NOT `{path}`).
+- if neither `objective`, `needsInput`, nor `inputTemplate` apply → `task`
+  reduces to `step.goal` (current behavior, no regression).
+
+`SelfDispatch` switches from its ad-hoc `userMsg` to the composed `task` while
+keeping its "Results so far" block. `context` (RAG + MCP-RAG) is unchanged; the
+`DefaultSubAgentContextBuilder` is not touched.
+
+### 2. Planner authors objective + specific tasks + needsInput
+
+`one-shot.ts` and `replan-on-error.ts`:
+
+- Tell the planner that the dispatched executor sees **only** the step the
+  planner authors (its specific `goal` + the composed `objective`/input), never
+  the raw user request — so it must set `needsInput: true` on steps that act on
+  provided material.
+- Emit a plan-level `objective` (the shared "why") so subagents stay aligned.
+- `goal` is the per-step specific task, not the overall purpose.
+
+Output schema becomes
+`{"objective":"...","steps":[{"id","goal","agent","needsInput"}],"rationale"}`.
+`needsInput` parsing applies to both initial and replan output;
+`objective` is parsed on both paths (replan re-states it).
 
 ### 3. Clarification gate (lightweight, no reviewer LLM)
 
-- Add `Plan.clarification?: string`.
-- The planner may return `{"clarification":"..."}` instead of `{"steps":[...]}`
-  when the request is ambiguous/underspecified. `buildInitialPlan` maps this to
-  a `Plan` with empty `steps` and `clarification` set.
+- The initial planner may return `{"clarification":"..."}` instead of
+  `{"steps":[...]}` when the request is ambiguous/underspecified.
+  `buildInitialPlan` maps this to a `Plan` with empty `steps` and `clarification`
+  set.
 - `CoordinatorHandler`: after `buildInitialPlan`, if `plan.clarification` is set,
   yield it as the assistant response (`finishReason: 'stop'`) and return
-  **without dispatching any step**. This is a valid, successful response to the
-  consumer — the Coordinator deciding to ask back, not a subagent failing on
-  empty material.
+  **without dispatching any step** — the Coordinator deciding to ask back, not a
+  subagent failing on empty material.
 - Scope: clarification is produced at initial planning only. Replan
-  (`rebuildPlan`) is about step failures and does not emit clarification in this
-  patch.
+  (`rebuildPlan`) is about step failures and does not emit clarification here.
 
-### 4. Planner prompt changes (`one-shot.ts`, `replan-on-error.ts`)
+### 4. SkillStepsPlanning parity
 
-- Tell the planner that the dispatched executor sees **only** the step it
-  authors (its `goal` plus any input we compose), never the raw user request —
-  so it must set `needsInput: true` on steps that act on provided material.
-- Allow the initial planner to emit `{"clarification":"..."}` instead of steps
-  when it cannot form an unambiguous plan.
-- `needsInput` parsing applies to both initial and replan step output;
-  `clarification` parsing applies to initial only.
+Structured skill steps bypass the planner-LLM entirely, so they must carry the
+same fields or they keep the #145 defect:
+
+- Add `needsInput?: boolean` and `inputTemplate?: string` to `ISkillMeta.steps`
+  (`interfaces/skill.ts`).
+- Add an optional `objective?: string` to `ISkillMeta` for the shared goal.
+- `SkillStepsPlanning` maps these into `PlanStep.needsInput` / `inputTemplate`
+  and `Plan.objective` (falling back to the skill name/description for objective
+  when unset).
 
 ## Out of scope (separate strategic epic)
 
@@ -96,34 +141,44 @@ because it travels in `task`) and means **the context-builder is not touched**.
 - A second, specialized Coordinator implementation (e.g. SAP-ABAP vs generic
   MCP). Only the existing seam is kept; no new implementation.
 - Any change to `DefaultSubAgentContextBuilder` or `req.inputText` usage.
+- Extracting a separate "material" sub-string from the request: in this patch
+  `needsInput` embeds the whole request as delimited data. True material
+  extraction (without lossy LLM rewriting) is deferred to the strategic epic.
 
 ## Files touched
 
-- `packages/llm-agent/src/interfaces/coordinator.ts` — add `PlanStep.needsInput?`,
-  `Plan.clarification?`.
+- `packages/llm-agent/src/interfaces/coordinator.ts` — add `Plan.objective?`,
+  `Plan.clarification?`, `PlanStep.needsInput?`.
+- `packages/llm-agent/src/interfaces/skill.ts` — add `ISkillMeta.objective?` and
+  `needsInput?` / `inputTemplate?` to `ISkillMeta.steps`.
 - `packages/llm-agent-libs/src/coordinator/dispatch/compose-task.ts` (new) —
-  shared task-composition helper + `DEFAULT_INPUT_TEMPLATE`.
+  shared task-composition helper using `{{...}}` placeholders.
 - `packages/llm-agent-libs/src/coordinator/dispatch/self.ts` — use composed task.
 - `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts` — use composed task.
-- `packages/llm-agent-libs/src/coordinator/planning/one-shot.ts` — prompt +
-  `clarification` + `needsInput` parsing.
-- `packages/llm-agent-libs/src/coordinator/planning/replan-on-error.ts` — prompt +
-  `needsInput` parsing.
+- `packages/llm-agent-libs/src/coordinator/planning/one-shot.ts` — prompt,
+  `objective`, `clarification`, `needsInput` parsing.
+- `packages/llm-agent-libs/src/coordinator/planning/replan-on-error.ts` — prompt,
+  `objective`, `needsInput` parsing.
+- `packages/llm-agent-libs/src/coordinator/planning/skill-steps.ts` — map
+  `objective` / `needsInput` / `inputTemplate`.
 - `packages/llm-agent-libs/src/pipeline/handlers/coordinator.ts` — handle
   `plan.clarification` (yield + stop, no dispatch).
 
 ## Testing
 
-- Unit (existing `node --test` convention, `__tests__` dirs): task-composition
-  helper covers all three branches (template / needsInput / plain goal); a
-  `needsInput` step embeds `inputText` verbatim; clarification short-circuits
-  the handler without dispatching.
+- Unit (existing `node --test` convention, `__tests__` dirs):
+  - task-composition helper: all branches (inputTemplate override / objective+goal /
+    needsInput embeds `{{inputText}}` verbatim with delimiters / plain goal);
+  - verifies `{{...}}` placeholders are expanded, not passed literally;
+  - clarification short-circuits the handler without dispatching;
+  - skill-steps map `needsInput`/`inputTemplate`/`objective`.
 - Smoke: reproduce the #145 case (summarize-this-blob) and confirm the executor
-  now receives the material; confirm an ambiguous request returns a clarification
-  instead of a hollow subagent answer.
+  now receives the material; confirm an ambiguous request returns a clarification.
 
 ## Backward compatibility
 
-- `PlanStep.needsInput` and `Plan.clarification` are optional → non-breaking.
-- Steps without `needsInput`/`inputTemplate` keep `task = goal` (no regression).
+- `Plan.objective`, `Plan.clarification`, `PlanStep.needsInput`, and the new
+  skill-meta fields are all optional → non-breaking.
+- Steps without `needsInput`/`inputTemplate` and plans without `objective` keep
+  `task = goal` (no regression).
 - `ISubAgent` contract (`{task, context}`) is unchanged.
