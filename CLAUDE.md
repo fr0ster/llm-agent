@@ -69,7 +69,7 @@ still install only what they need.)
 - **Biome** for lint/format (not ESLint/Prettier): 2 spaces, single quotes, always semicolons
 - **Conventional Commits**: `feat:`, `fix:`, `refactor:`, `chore:`, `docs:`
 - TypeScript strict mode; avoid `any` (Biome warns)
-- Node ≥ 18 required
+- Node ≥ 22 required (CI runs on 22 and 24)
 
 ## Environment
 
