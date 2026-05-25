@@ -76,6 +76,31 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
   default server config leans toward minimal decomposition. The plan reviewer
   validates whatever shape results (incl. a 1-node plan) against the prompt.
 
+## Server role: reference YAML pipeline interpreter
+
+The default server (`SmartServer`) is, officially, the **reference interpreter of
+pipelines described in YAML**. It does not "have a pipeline" — it **interprets the
+one the YAML declares**:
+
+- **YAML** = the complete pipeline description (the program).
+- **Interfaces** = the instruction set / extension points.
+- **Implementations** = the available "opcodes" (planners, coordinators,
+  dispatchers, subagents, LLM / embedder / RAG / MCP backends).
+- The server reads the YAML and **instantiates the described pipeline graph**,
+  selecting implementations by config.
+
+This is why "YAML is the complete pipeline description" is a hard invariant: the
+server is its interpreter. It also explains why the server bundles all
+provider/embedder/RAG implementations (#13.1.0) — the interpreter needs every
+opcode on hand to run any YAML out-of-the-box. The library/builder is the
+programmatic front-end over the same interfaces (a different surface, the same
+instruction set).
+
+In this frame, this epic's DAG redesign is simply **new opcodes** (graph `Plan`,
+DAG planner / coordinator / executor) the interpreter can instantiate when the
+YAML asks for them; the existing opcodes (linear coordinator) remain. No superset
+interface — just a larger instruction set.
+
 ## Target architecture — interfaces and implementations
 
 | Interface | Role | Implementations (now / later) |
