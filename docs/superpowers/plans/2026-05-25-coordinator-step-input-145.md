@@ -268,8 +268,9 @@ git commit -m "feat(libs): #145 deterministic composeTask helper (objective + go
 - Modify: `packages/llm-agent-libs/src/coordinator/dispatch/subagent.ts:51-59`
 - Modify: `packages/llm-agent-libs/src/coordinator/dispatch/self.ts`
 - Test: `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`
+- Test: `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/self-dispatch.test.ts`
 
-- [ ] **Step 1: Write the failing capture test**
+- [ ] **Step 1: Write the failing capture tests**
 
 Create `packages/llm-agent-libs/src/coordinator/dispatch/__tests__/subagent-dispatch.test.ts`. A fake subagent records the `task` it receives, so we verify the composed task end-to-end (deterministic, no LLM, no log leakage):
 
