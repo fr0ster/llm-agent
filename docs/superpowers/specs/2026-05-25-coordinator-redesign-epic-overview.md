@@ -25,6 +25,15 @@ provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
   own llm/rag/mcp/prompt). A plain YAML with no `coordinator` block is the
   simplest case — one pipeline processing the prompt (today's behavior),
   unchanged.
+  - **Tracked constraint (the thing we must not break): backward compatibility
+    with existing YAML configs.** Every existing YAML must keep loading and
+    behaving as before. New schema is **additive and optional only** — no
+    renames, no new *required* fields, no changes to the meaning of existing
+    fields. The existing `coordinator:` block (#145/#155: planning / dispatch /
+    activation / plannerLlm / …) stays valid; DAG/subagent fields are added
+    alongside as optional. **Verification per slice:** the existing example
+    configs (`docs/examples/coordinator-orchestration*.yaml`, etc.) must still
+    parse and pass config validation — a regression guard in every slice.
 - **Coordinator is the brain; subagents are hands.** Decomposition is a brain
   function. A leaf that needs finer decomposition **signals the coordinator**
   (which re-plans that node) rather than spawning its own subagent.
