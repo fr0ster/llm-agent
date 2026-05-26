@@ -1,0 +1,63 @@
+# DAG worker: ABAP analyst with its OWN MCP (3001) + tool-loop.
+# This is the crux of #157 vs the DAG coordinator: a DAG worker is a FULL
+# pipeline that does its own RAG tool-select + tool-loop against live MCP —
+# NOT a toolless llm.chat() like the linear coordinator's SelfDispatch.
+
+mode: smart
+
+agent:
+  maxIterations: 8
+  ragQueryK: 10
+  healthTimeoutMs: 15000
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+systemPrompt: |
+  You are an ABAP repository analyst. ALWAYS use the available SAP MCP tools to
+  inspect the requested object in the live system (package tree, package contents,
+  semantic analysis, symbols). NEVER fabricate object contents — call the tools to
+  get real data. When asked to export results to a file, call the create_file tool
+  to write a Markdown (.md) file with the analysis.
+
+pipeline:
+  llm:
+    main:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      endpoint: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+      model: ${DEEPSEEK_MODEL:-deepseek-chat}
+      temperature: 0.2
+    classifier:
+      provider: deepseek
+      apiKey: ${DEEPSEEK_API_KEY}
+      endpoint: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+      model: ${DEEPSEEK_MODEL:-deepseek-chat}
+      temperature: 0.1
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://localhost:3001/mcp/stream/http}
+
+  version: "1"
+  stages:
+    - id: classify
+      type: classify
+    - id: rag-retrieval
+      type: parallel
+      stages:
+        - id: rag-tools
+          type: rag-query
+          config: { store: tools, k: 10 }
+      after:
+        - id: tool-select
+          type: tool-select
+    - id: assemble
+      type: assemble
+    - id: tool-loop
+      type: tool-loop
+      config:
+        maxIterations: 8

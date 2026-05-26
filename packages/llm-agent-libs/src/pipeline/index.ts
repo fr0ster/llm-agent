@@ -11,10 +11,14 @@ export { evaluateCondition } from './condition-evaluator.js';
 // Context
 export type { PipelineContext } from './context.js';
 // Default pipeline
-export { DefaultPipeline } from './default-pipeline.js';
-
+export {
+  DefaultPipeline,
+  type DefaultPipelineOptions,
+} from './default-pipeline.js';
 // Executor
 export { PipelineExecutor } from './executor.js';
+// DAG coordinator handler deps (used by withDagCoordinator builder method)
+export type { DagCoordinatorHandlerDeps } from './handlers/dag-coordinator.js';
 // Handler registry
 // Individual handlers (for subclassing or direct use)
 export {

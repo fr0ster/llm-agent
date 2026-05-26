@@ -37,6 +37,75 @@ export interface YamlCoordinator {
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
   maxLayer?: number;
+  planner?:
+    | { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' }
+    | Record<string, unknown>;
+  interpreter?: { type?: string } | Record<string, unknown>;
+}
+
+const LINEAR_ONLY = [
+  'planning',
+  'dispatch',
+  'maxSteps',
+  'maxRetriesPerStep',
+  'failPolicy',
+  'maxLayer',
+  'plannerLlm',
+];
+const DAG_ONLY = ['planner', 'interpreter'];
+
+/** Fail-loud guard: a coordinator block is either DAG (has `planner`) or linear,
+ *  never mixed. `activation` is shared and always allowed. */
+export function assertCoordinatorConfigShape(
+  coord: Record<string, unknown>,
+): void {
+  const isDag = coord.planner !== undefined;
+  if (isDag) {
+    // `planner` is the DAG selector — a malformed or unknown planner must fail
+    // loud rather than silently wiring the default LlmDagPlanner.
+    const planner = coord.planner;
+    if (
+      typeof planner !== 'object' ||
+      planner === null ||
+      Array.isArray(planner)
+    ) {
+      throw new Error(
+        `coordinator.planner must be an object (e.g. { type: llm }), got: ${JSON.stringify(planner)}`,
+      );
+    }
+    const plannerKind = (planner as { type?: unknown }).type;
+    if (plannerKind !== undefined && plannerKind !== 'llm') {
+      throw new Error(
+        `coordinator.planner: unknown type '${String(plannerKind)}' (only 'llm' is supported)`,
+      );
+    }
+    const plannerLlmSel = (planner as { plannerLlm?: unknown }).plannerLlm;
+    if (
+      plannerLlmSel !== undefined &&
+      plannerLlmSel !== 'main' &&
+      plannerLlmSel !== 'planner' &&
+      plannerLlmSel !== 'helper'
+    ) {
+      throw new Error(
+        `coordinator.planner.plannerLlm must be one of main | planner | helper, got: ${String(plannerLlmSel)}`,
+      );
+    }
+    for (const f of LINEAR_ONLY) {
+      if (coord[f] !== undefined) {
+        throw new Error(
+          `coordinator: '${f}' is a linear-only field and cannot be combined with 'planner' (DAG mode)`,
+        );
+      }
+    }
+  } else {
+    for (const f of DAG_ONLY) {
+      if (coord[f] !== undefined) {
+        throw new Error(
+          `coordinator: '${f}' is a DAG-only field; a linear coordinator uses 'planning'/'dispatch'`,
+        );
+      }
+    }
+  }
 }
 
 export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {

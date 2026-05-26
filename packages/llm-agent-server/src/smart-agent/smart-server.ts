@@ -39,12 +39,14 @@ import {
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
+  DagPlanInterpreter,
   DefaultSubAgentContextBuilder,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
+  LlmDagPlanner,
   makeLlm,
   SessionLogger,
   SmartAgentBuilder,
@@ -322,6 +324,7 @@ const CORS_HEADERS = {
 // ---------------------------------------------------------------------------
 
 import {
+  assertCoordinatorConfigShape,
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
@@ -596,8 +599,9 @@ export class SmartServer {
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
     // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
     // outputs (embedder factories, plugins) but with its own LLM/RAG/MCP/etc.
+    // Hoisted so the DAG branch below can reuse the same instances.
+    const registry: SubAgentRegistry = new Map();
     if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
-      const registry: SubAgentRegistry = new Map();
       for (const sub of this.cfg.subAgentConfigs) {
         const subAgent = await this.buildSubAgent(
           sub.name,
@@ -624,53 +628,109 @@ export class SmartServer {
     // ---- Coordinator (autonomous plan-execute loop) ------------------------
     const coordCfg = this.cfg.coordinatorYaml;
     if (coordCfg) {
-      // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
-      // 'helper' → helperLlm if present, else fall back to mainLlm.
-      const plannerLlm =
-        coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
-      const planningKind = coordCfg.planning ?? 'one-shot';
-      const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
+      // Fail loud if the config mixes DAG and linear fields.
+      assertCoordinatorConfigShape(coordCfg as Record<string, unknown>);
 
-      // Build the same kind of context builder SmartAgentBuilder uses, so
-      // YAML-configured deployments get the same default behavior. Uses the
-      // embedder resolved above — DI-injected (this.cfg.embedder) when present,
-      // otherwise constructed from `rag.embedder` (#137). Stays undefined for
-      // bare in-memory BM25 stores (no embedder), in which case toolSource is
-      // skipped and constrained subagents fall back to empty context.
-      const mainEmbedder = resolvedEmbedder;
-      const toolSource =
-        mainEmbedder && toolsRag
-          ? async (text: string, k: number, signal?: AbortSignal) => {
-              const embedding = new QueryEmbedding(text, mainEmbedder, {
-                signal,
-              });
-              const r = await toolsRag.query(embedding, k, { signal });
-              return r.ok ? r.value : [];
-            }
-          : undefined;
-      const contextBuilder = new DefaultSubAgentContextBuilder({ toolSource });
+      if (coordCfg.planner !== undefined) {
+        // DAG mode: `planner` field present → use DagCoordinatorHandler.
+        // planner shape/type already validated by assertCoordinatorConfigShape.
+        // Validate interpreter.type if present — only 'dag' is supported.
+        const interpKind = (
+          coordCfg.interpreter as { type?: string } | undefined
+        )?.type;
+        if (interpKind !== undefined && interpKind !== 'dag') {
+          throw new Error(
+            `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
+          );
+        }
+        // Resolve the planner LLM. Honor `coordinator.planner.plannerLlm` when
+        // set; otherwise fall back to the same resolution as linear mode
+        // ('main' → mainLlm, 'planner' or 'helper' → helperLlm ?? mainLlm).
+        const plannerBlock = coordCfg.planner as {
+          type?: string;
+          plannerLlm?: 'main' | 'planner' | 'helper';
+        };
+        const plannerLlmKey = plannerBlock?.plannerLlm;
+        const plannerLlm =
+          plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
 
-      builder = builder.withCoordinator({
-        planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
-        dispatch: resolveCoordinatorDispatch(
-          dispatchKind,
+        const planner = new LlmDagPlanner(plannerLlm);
+        const interpreter = new DagPlanInterpreter();
+        // Reuse the registry built above — same ISubAgent instances already
+        // passed to builder.withSubAgents(). No second buildSubAgent calls.
+        // DAG mode plans against the worker catalog, so an empty registry
+        // would plan against nothing and fail per-request in the interpreter.
+        // Fail loud at startup instead.
+        if (registry.size === 0) {
+          throw new Error(
+            'coordinator.planner is set (DAG mode) but no workers are configured. ' +
+              'Add at least one entry under the top-level `subagents:` block.',
+          );
+        }
+        const workers = registry;
+        const activation = resolveCoordinatorActivation(
+          (coordCfg.activation ?? 'explicit') as string,
+        );
+
+        builder = builder.withDagCoordinator({
+          planner,
+          interpreter,
+          workers,
+          activation,
+        });
+        log({ event: 'dag_coordinator_configured', config: coordCfg });
+      } else {
+        // Linear mode: existing path unchanged.
+        // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
+        // 'helper' → helperLlm if present, else fall back to mainLlm.
+        const plannerLlm =
+          coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+        const planningKind = coordCfg.planning ?? 'one-shot';
+        const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
+
+        // Build the same kind of context builder SmartAgentBuilder uses, so
+        // YAML-configured deployments get the same default behavior. Uses the
+        // embedder resolved above — DI-injected (this.cfg.embedder) when present,
+        // otherwise constructed from `rag.embedder` (#137). Stays undefined for
+        // bare in-memory BM25 stores (no embedder), in which case toolSource is
+        // skipped and constrained subagents fall back to empty context.
+        const mainEmbedder = resolvedEmbedder;
+        const toolSource =
+          mainEmbedder && toolsRag
+            ? async (text: string, k: number, signal?: AbortSignal) => {
+                const embedding = new QueryEmbedding(text, mainEmbedder, {
+                  signal,
+                });
+                const r = await toolsRag.query(embedding, k, { signal });
+                return r.ok ? r.value : [];
+              }
+            : undefined;
+        const contextBuilder = new DefaultSubAgentContextBuilder({
+          toolSource,
+        });
+
+        builder = builder.withCoordinator({
+          planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
+          dispatch: resolveCoordinatorDispatch(
+            dispatchKind,
+            plannerLlm,
+            contextBuilder,
+          ),
+          // Default to 'explicit' — the presence of a `coordinator:` block in
+          // YAML is itself the opt-in signal. Users that want the auto-fallback
+          // semantics (no subagents and no skill steps → tool-loop) must set
+          // `activation: auto` explicitly.
+          activation: resolveCoordinatorActivation(
+            coordCfg.activation ?? 'explicit',
+          ),
           plannerLlm,
-          contextBuilder,
-        ),
-        // Default to 'explicit' — the presence of a `coordinator:` block in
-        // YAML is itself the opt-in signal. Users that want the auto-fallback
-        // semantics (no subagents and no skill steps → tool-loop) must set
-        // `activation: auto` explicitly.
-        activation: resolveCoordinatorActivation(
-          coordCfg.activation ?? 'explicit',
-        ),
-        plannerLlm,
-        maxSteps: coordCfg.maxSteps,
-        maxRetriesPerStep: coordCfg.maxRetriesPerStep,
-        failPolicy: coordCfg.failPolicy,
-        maxLayer: coordCfg.maxLayer,
-      });
-      log({ event: 'coordinator_configured', config: coordCfg });
+          maxSteps: coordCfg.maxSteps,
+          maxRetriesPerStep: coordCfg.maxRetriesPerStep,
+          failPolicy: coordCfg.failPolicy,
+          maxLayer: coordCfg.maxLayer,
+        });
+        log({ event: 'coordinator_configured', config: coordCfg });
+      }
     }
 
     const agentHandle = await builder.build();

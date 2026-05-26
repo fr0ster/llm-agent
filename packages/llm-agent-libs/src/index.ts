@@ -49,8 +49,10 @@ export {
 // ---------------------------------------------------------------------------
 export {
   AutoActivation,
+  DagPlanInterpreter,
   ExplicitActivation,
   HybridDispatch,
+  LlmDagPlanner,
   OneShotPlanning,
   ReplanOnErrorPlanning,
   SelfDispatch,
@@ -97,7 +99,9 @@ export {
   type BuiltInStageType,
   buildDefaultHandlerRegistry,
   type ControlFlowType,
+  type DagCoordinatorHandlerDeps,
   DefaultPipeline,
+  type DefaultPipelineOptions,
   evaluateCondition,
   type IStageHandler,
   type PipelineContext,

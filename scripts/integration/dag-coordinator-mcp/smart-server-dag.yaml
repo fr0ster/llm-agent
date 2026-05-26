@@ -1,0 +1,39 @@
+# DAG-coordinator server. Top-level is pipeline-less re: tools — the
+# coordinator sequences planner -> interpreter, and the worker subagent
+# carries MCP. `coordinator.planner` present => DagCoordinatorHandler.
+# activation: explicit => coordinator always on (deterministic DAG path).
+
+port: 4014
+host: 0.0.0.0
+mode: smart
+
+llm:
+  provider: deepseek
+  apiKey: ${DEEPSEEK_API_KEY}
+  endpoint: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
+  model: ${DEEPSEEK_MODEL:-deepseek-chat}
+  temperature: 0.5
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  activation: explicit
+  planner:
+    type: llm
+    plannerLlm: main
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects (packages, tables, classes, function modules)
+      by calling live SAP MCP tools, and exports the analysis to a Markdown file
+      via the create_file tool. Use for any request to inspect/analyze an ABAP
+      object or export results to a file.
+    config: ./abap-analyst.yaml
+
+logDir: ./.run/sessions
+log: ./.run/server.log

@@ -25,6 +25,7 @@ export type {
   StepResult,
   SubAgentWithDescription,
 } from './coordinator.js';
+export type { DagPlan, PlanNode } from './dag-plan.js';
 export type {
   CircuitBreakerStatus,
   HealthComponentStatus,
@@ -35,6 +36,12 @@ export type {
   HistoryTurn,
   IHistorySummarizer,
 } from './history-summarizer.js';
+export type {
+  IInterpreter,
+  InterpretContext,
+  InterpretResult,
+  NodeResult,
+} from './interpreter.js';
 export type { ILlm } from './llm.js';
 export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
@@ -66,6 +73,11 @@ export type {
   StageDefinition,
   StageType,
 } from './pipeline.js';
+export type {
+  IPlanner,
+  PlannerCatalogEntry,
+  PlannerInput,
+} from './planner.js';
 export type {
   IPluginLoader,
   IRagStoreConfig,
