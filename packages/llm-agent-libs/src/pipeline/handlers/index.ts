@@ -18,6 +18,10 @@ import {
   type CoordinatorHandlerDeps,
 } from './coordinator.js';
 import { CoordinatorActivateHandler } from './coordinator-activate.js';
+import {
+  DagCoordinatorHandler,
+  type DagCoordinatorHandlerDeps,
+} from './dag-coordinator.js';
 import { ExpandHandler } from './expand.js';
 import { HistoryUpsertHandler } from './history-upsert.js';
 import { RagQueryHandler } from './rag-query.js';
@@ -41,6 +45,12 @@ export type StageHandlerRegistry = Map<string, IStageHandler>;
 export interface BuildHandlerRegistryOptions {
   subAgents?: SubAgentRegistry;
   coordinator?: CoordinatorHandlerDeps;
+  /**
+   * DAG coordinator deps. When set, registers `DagCoordinatorHandler` under
+   * the `coordinator` stage slot. Mutually exclusive with `coordinator` —
+   * `dagCoordinator` takes precedence when both are supplied.
+   */
+  dagCoordinator?: DagCoordinatorHandlerDeps;
   /**
    * Activation strategy used by the `coordinator-activate` runtime stage to
    * compute `ctx.coordinatorActive`. Required when `coordinator` is set —
@@ -69,7 +79,9 @@ export function buildDefaultHandlerRegistry(
   if (opts.subAgents && opts.subAgents.size > 0) {
     registry.set('subagent', new SubAgentHandler(opts.subAgents));
   }
-  if (opts.coordinator) {
+  if (opts.dagCoordinator) {
+    registry.set('coordinator', new DagCoordinatorHandler(opts.dagCoordinator));
+  } else if (opts.coordinator) {
     registry.set('coordinator', new CoordinatorHandler(opts.coordinator));
   }
   if (opts.coordinatorActivation) {

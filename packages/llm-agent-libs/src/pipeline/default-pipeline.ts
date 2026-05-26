@@ -61,6 +61,7 @@ import { NoopTracer } from '../tracer/noop-tracer.js';
 import { NoopValidator } from '../validator/noop-validator.js';
 import type { PipelineContext } from './context.js';
 import { PipelineExecutor } from './executor.js';
+import type { DagCoordinatorHandlerDeps } from './handlers/dag-coordinator.js';
 import { buildDefaultHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
 
@@ -107,6 +108,12 @@ export interface DefaultPipelineOptions {
    * `coordinator` stage.
    */
   coordinator?: ICoordinatorConfig;
+  /**
+   * DAG coordinator deps. When set, registers `DagCoordinatorHandler` under
+   * the `coordinator` stage slot and wires `coordinator-activate`.
+   * Mutually exclusive with `coordinator` — `dagCoordinator` takes precedence.
+   */
+  dagCoordinator?: DagCoordinatorHandlerDeps;
 }
 
 export class DefaultPipeline implements IPipeline {
@@ -115,10 +122,12 @@ export class DefaultPipeline implements IPipeline {
   private stages!: StageDefinition[];
   private readonly subAgents?: SubAgentRegistry;
   private readonly coordinator?: ICoordinatorConfig;
+  private readonly dagCoordinator?: DagCoordinatorHandlerDeps;
 
   constructor(options: DefaultPipelineOptions = {}) {
     this.subAgents = options.subAgents;
     this.coordinator = options.coordinator;
+    this.dagCoordinator = options.dagCoordinator;
   }
 
   // Cached defaults (created once in initialize, reused per request)
@@ -161,6 +170,7 @@ export class DefaultPipeline implements IPipeline {
     const coordDispatch = this.coordinator?.dispatch;
     const coordinatorConfigured =
       coordPlanning != null && coordDispatch != null;
+    const anyCoordinator = coordinatorConfigured || this.dagCoordinator != null;
     const registry = buildDefaultHandlerRegistry({
       subAgents: this.subAgents,
       coordinator:
@@ -174,12 +184,13 @@ export class DefaultPipeline implements IPipeline {
               maxLayer: this.coordinator?.maxLayer ?? 1,
             }
           : undefined,
+      dagCoordinator: this.dagCoordinator,
       // Default to ExplicitActivation when caller passes a coordinator config
       // without an activation strategy. Matches SmartAgentBuilder.withCoordinator
       // semantics: presence of coordinator config IS the opt-in signal.
       // Without this default, `_buildStages()` would emit a `coordinator-activate`
       // stage whose handler is unregistered → unknown-stage runtime error.
-      coordinatorActivation: coordinatorConfigured
+      coordinatorActivation: anyCoordinator
         ? (this.coordinator?.activation ?? new ExplicitActivation())
         : undefined,
     });
@@ -306,13 +317,15 @@ export class DefaultPipeline implements IPipeline {
 
     const coordinatorConfigured =
       this.coordinator?.planning != null && this.coordinator?.dispatch != null;
+    const anyCoordinatorStage =
+      coordinatorConfigured || this.dagCoordinator != null;
 
     stages.push(
       { id: 'tool-select', type: 'tool-select' },
       { id: 'assemble', type: 'assemble' },
     );
 
-    if (coordinatorConfigured) {
+    if (anyCoordinatorStage) {
       // Runtime activation: `coordinator-activate` evaluates the configured
       // IActivationStrategy AFTER skill-select has run, so it can see the
       // real `ctx.selectedSkills` state (which build-time stage selection
