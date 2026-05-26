@@ -41,6 +41,7 @@ export interface YamlCoordinator {
     | { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' }
     | Record<string, unknown>;
   interpreter?: { type?: string } | Record<string, unknown>;
+  reviewer?: { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' };
 }
 
 const LINEAR_ONLY = [
@@ -52,7 +53,33 @@ const LINEAR_ONLY = [
   'maxLayer',
   'plannerLlm',
 ];
-const DAG_ONLY = ['planner', 'interpreter'];
+const DAG_ONLY = ['planner', 'interpreter', 'reviewer'];
+
+/** Validate a `{ type?: 'llm'; plannerLlm?: main|planner|helper }` role block. */
+function assertLlmRoleShape(label: string, role: unknown): void {
+  if (typeof role !== 'object' || role === null || Array.isArray(role)) {
+    throw new Error(
+      `coordinator.${label} must be an object (e.g. { type: llm }), got: ${JSON.stringify(role)}`,
+    );
+  }
+  const kind = (role as { type?: unknown }).type;
+  if (kind !== undefined && kind !== 'llm') {
+    throw new Error(
+      `coordinator.${label}: unknown type '${String(kind)}' (only 'llm' is supported)`,
+    );
+  }
+  const sel = (role as { plannerLlm?: unknown }).plannerLlm;
+  if (
+    sel !== undefined &&
+    sel !== 'main' &&
+    sel !== 'planner' &&
+    sel !== 'helper'
+  ) {
+    throw new Error(
+      `coordinator.${label}.plannerLlm must be one of main | planner | helper, got: ${String(sel)}`,
+    );
+  }
+}
 
 /** Fail-loud guard: a coordinator block is either DAG (has `planner`) or linear,
  *  never mixed. `activation` is shared and always allowed. */
@@ -61,34 +88,9 @@ export function assertCoordinatorConfigShape(
 ): void {
   const isDag = coord.planner !== undefined;
   if (isDag) {
-    // `planner` is the DAG selector — a malformed or unknown planner must fail
-    // loud rather than silently wiring the default LlmDagPlanner.
-    const planner = coord.planner;
-    if (
-      typeof planner !== 'object' ||
-      planner === null ||
-      Array.isArray(planner)
-    ) {
-      throw new Error(
-        `coordinator.planner must be an object (e.g. { type: llm }), got: ${JSON.stringify(planner)}`,
-      );
-    }
-    const plannerKind = (planner as { type?: unknown }).type;
-    if (plannerKind !== undefined && plannerKind !== 'llm') {
-      throw new Error(
-        `coordinator.planner: unknown type '${String(plannerKind)}' (only 'llm' is supported)`,
-      );
-    }
-    const plannerLlmSel = (planner as { plannerLlm?: unknown }).plannerLlm;
-    if (
-      plannerLlmSel !== undefined &&
-      plannerLlmSel !== 'main' &&
-      plannerLlmSel !== 'planner' &&
-      plannerLlmSel !== 'helper'
-    ) {
-      throw new Error(
-        `coordinator.planner.plannerLlm must be one of main | planner | helper, got: ${String(plannerLlmSel)}`,
-      );
+    assertLlmRoleShape('planner', coord.planner);
+    if (coord.reviewer !== undefined) {
+      assertLlmRoleShape('reviewer', coord.reviewer);
     }
     for (const f of LINEAR_ONLY) {
       if (coord[f] !== undefined) {
