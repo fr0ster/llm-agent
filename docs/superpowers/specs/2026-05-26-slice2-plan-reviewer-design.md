@@ -42,14 +42,35 @@ resume token in this slice.
 ### Part 1 — Reconcile the planner onto `ISubAgent` (remove slice-1 debt)
 
 `LlmDagPlanner` (in `llm-agent-libs/src/coordinator/dag/llm-dag-planner.ts`) stops
-calling `ILlm` directly. Internally it now **owns a `DirectLlmSubAgent`**:
+calling `ILlm` directly. Internally it now **owns a `DirectLlmSubAgent`**.
 
-- constructed with `name: 'planner'`, the existing planner system prompt, and
-  `contextPolicy: 'optional'` (the task is self-contained — prompt + catalog);
-- `plan()` composes the task string (user prompt + agent catalog) exactly as the
-  current prompt builder does, calls `subagent.run({ task, sessionId, signal })`,
-  then runs the **same** JSON-extraction + validation already present
-  (objective/rationale/node-field-type checks from the slice-1 review).
+**Prompt split (important).** `DirectLlmSubAgent.systemPrompt` is *static* (set
+once at construction), whereas slice 1 builds the system prompt *per call* with the
+agent catalog embedded at the end. The refactor therefore splits the current
+single prompt into two halves:
+
+- **static `systemPrompt`** = the planner *instructions* only (the "You are a
+  planner… emit JSON with these fields…" text), with the `Available workers:` /
+  catalog portion **removed**;
+- **per-call `task`** = the dynamic data: the agent catalog block + the user
+  prompt. The catalog moves out of the system prompt into the task.
+
+So:
+- construct `DirectLlmSubAgent` with `name: 'planner'`, the static planner
+  instructions as `systemPrompt`, and `contextPolicy: 'optional'` (the task is
+  self-contained — catalog + prompt);
+- `plan()` composes the `task` (catalog block + user prompt), calls
+  `subagent.run({ task, sessionId, signal, layer: 0 })`, then runs the **same**
+  JSON-extraction + validation already present (objective/rationale/node-field-type
+  checks from the slice-1 review).
+
+`layer: 0` — role subagents are invoked once at the coordinator level; they are not
+DAG nodes (the interpreter dispatches workers at `ctx.layer + 1`), so layer 0 is
+correct and avoids plumbing `ctx.layer` through `PlannerInput`.
+
+The combined prompt the model sees (system + task) is **semantically equivalent**
+to slice 1 — same instructions, same catalog, same user prompt — only the
+system/user split changes. Planner-parity tests (below) guard this.
 
 Public contract unchanged: `IPlanner`, `new LlmDagPlanner(llm)`, and the YAML
 config (`coordinator.planner: { type: llm, plannerLlm? }`) are all identical. The
@@ -80,14 +101,17 @@ export interface IReviewStrategy {
 Implementations in `llm-agent-libs/src/coordinator/dag/`:
 
 - **`LlmReviewStrategy implements IReviewStrategy`** — owns a `DirectLlmSubAgent`
-  critic (`name: 'reviewer'`, `contextPolicy: 'optional'`, a critic system
-  prompt). `review()` composes a task (user prompt + the plan serialized as JSON +
-  the agent catalog), calls `run()`, and parses the critic's output. Output
-  protocol: the critic returns ONLY a JSON object — `{"pass": true}` or
-  `{"pass": false, "feedback": "<why + what to clarify>"}`. Parsing mirrors the
-  planner: regex-extract the JSON object, `JSON.parse` inside try/catch (malformed
-  → throw a clear error), validate `pass` is boolean and `feedback` is a string
-  when `pass === false`.
+  critic. Same static/dynamic prompt split as the planner: the **static
+  `systemPrompt`** holds the critic instructions ("You are a plan reviewer… respond
+  with ONLY `{\"pass\":…}`…"); the **per-call `task`** holds the dynamic data — the
+  user prompt + the plan serialized as JSON + the agent catalog. Constructed with
+  `name: 'reviewer'`, `contextPolicy: 'optional'`. `review()` composes the task,
+  calls `subagent.run({ task, sessionId, signal, layer: 0 })`, and parses the
+  critic's output. Output protocol: the critic returns ONLY a JSON object —
+  `{"pass": true}` or `{"pass": false, "feedback": "<why + what to clarify>"}`.
+  Parsing mirrors the planner: regex-extract the JSON object, `JSON.parse` inside
+  try/catch (malformed → throw a clear error), validate `pass` is a boolean and
+  `feedback` is a non-empty string when `pass === false`.
 - **`NoopReviewStrategy implements IReviewStrategy`** — always returns
   `{ pass: true }`. For explicit opt-out and tests. (Absence of a reviewer in the
   handler simply skips the gate; Noop is the explicit always-pass strategy.)
