@@ -102,10 +102,10 @@ export interface DefaultPipelineOptions {
    */
   subAgents?: SubAgentRegistry;
   /**
-   * Optional coordinator configuration. When `planning` and `dispatch`
-   * strategies are both supplied and the `activation` strategy fires at
-   * build time, the trailing `tool-loop` stage is swapped for a
-   * `coordinator` stage.
+   * Optional coordinator configuration. When a coordinator (`planning`+`dispatch`,
+   * or a `dagCoordinator`) is configured, a `coordinator-activate` runtime stage
+   * decides per-request (via the activation strategy) whether the `coordinator`
+   * stage runs in place of `tool-loop`.
    */
   coordinator?: ICoordinatorConfig;
   /**
@@ -191,7 +191,9 @@ export class DefaultPipeline implements IPipeline {
       // Without this default, `_buildStages()` would emit a `coordinator-activate`
       // stage whose handler is unregistered → unknown-stage runtime error.
       coordinatorActivation: anyCoordinator
-        ? (this.coordinator?.activation ?? new ExplicitActivation())
+        ? (this.coordinator?.activation ??
+          this.dagCoordinator?.activation ??
+          new ExplicitActivation())
         : undefined,
     });
     this.executor = new PipelineExecutor(registry, this.resolvedTracer);

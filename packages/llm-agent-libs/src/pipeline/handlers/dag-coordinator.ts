@@ -1,5 +1,6 @@
 import type {
   DagPlan,
+  IActivationStrategy,
   IInterpreter,
   InterpretResult,
   IPlanner,
@@ -14,6 +15,10 @@ export interface DagCoordinatorHandlerDeps {
   planner: IPlanner;
   interpreter: IInterpreter<DagPlan, InterpretResult>;
   workers: ReadonlyMap<string, ISubAgent>;
+  /** Activation strategy (shared concept with the linear coordinator). When
+   *  omitted, the pipeline defaults to ExplicitActivation. The handler itself
+   *  does not read this; the pipeline uses it to wire `coordinator-activate`. */
+  activation?: IActivationStrategy;
 }
 
 export class DagCoordinatorHandler implements IStageHandler {
