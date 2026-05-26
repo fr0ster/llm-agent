@@ -36,7 +36,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         signal: ctx.options?.signal,
       });
     } catch (err) {
-      ctx.error = wrap(err, 'COORDINATOR_PLAN_FAILED');
+      ctx.error = new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED');
       return false;
     }
 
@@ -50,7 +50,15 @@ export class DagCoordinatorHandler implements IStageHandler {
         layer: ctx.layer ?? 0,
       });
     } catch (err) {
-      ctx.error = wrap(err, 'COORDINATOR_PLAN_INVALID');
+      // Structural plan errors: preserve a COORDINATOR_PLAN_INVALID code the
+      // interpreter set; otherwise default to it.
+      ctx.error =
+        err instanceof OrchestratorError
+          ? err
+          : new OrchestratorError(
+              errMsg(err),
+              codeOf(err) ?? 'COORDINATOR_PLAN_INVALID',
+            );
       return false;
     }
 
@@ -72,9 +80,9 @@ export class DagCoordinatorHandler implements IStageHandler {
   }
 }
 
-function wrap(err: unknown, code: string): OrchestratorError {
-  if (err instanceof OrchestratorError) return err;
-  const e = err as { code?: string; message?: string };
-  const finalCode = e?.code === 'COORDINATOR_PLAN_INVALID' ? e.code : code;
-  return new OrchestratorError(e?.message ?? String(err), finalCode);
+function errMsg(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+function codeOf(err: unknown): string | undefined {
+  return (err as { code?: string } | null)?.code;
 }

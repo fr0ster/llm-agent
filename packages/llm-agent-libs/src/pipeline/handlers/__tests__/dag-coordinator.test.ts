@@ -50,7 +50,7 @@ describe('DagCoordinatorHandler', () => {
   });
 
   it('maps interpreter ok:false to COORDINATOR_STEP_FAILED', async () => {
-    const { ctx } = makeCtx('hi');
+    const { ctx, yields } = makeCtx('hi');
     const h = new DagCoordinatorHandler({
       planner: planner([{ id: 'n1', goal: 'g' }]),
       interpreter: interp({
@@ -67,10 +67,11 @@ describe('DagCoordinatorHandler', () => {
       (ctx as unknown as { error?: { code?: string } }).error?.code,
       'COORDINATOR_STEP_FAILED',
     );
+    assert.equal(yields.length, 0);
   });
 
   it('maps a planner throw to COORDINATOR_PLAN_FAILED', async () => {
-    const { ctx } = makeCtx('hi');
+    const { ctx, yields } = makeCtx('hi');
     const h = new DagCoordinatorHandler({
       planner: {
         name: 'p',
@@ -86,6 +87,31 @@ describe('DagCoordinatorHandler', () => {
     assert.equal(
       (ctx as unknown as { error?: { code?: string } }).error?.code,
       'COORDINATOR_PLAN_FAILED',
+    );
+    assert.equal(yields.length, 0);
+  });
+
+  it('preserves COORDINATOR_PLAN_INVALID from an interpreter throw', async () => {
+    const { ctx } = makeCtx('hi');
+    const throwingInterp = {
+      name: 'i',
+      interpret: async () => {
+        const e = Object.assign(new Error('bad plan'), {
+          code: 'COORDINATOR_PLAN_INVALID',
+        });
+        throw e;
+      },
+    } as unknown as IInterpreter<DagPlan, InterpretResult>;
+    const h = new DagCoordinatorHandler({
+      planner: planner([{ id: 'n1', goal: 'g' }]),
+      interpreter: throwingInterp,
+      workers: new Map(),
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, false);
+    assert.equal(
+      (ctx as unknown as { error?: { code?: string } }).error?.code,
+      'COORDINATOR_PLAN_INVALID',
     );
   });
 });
