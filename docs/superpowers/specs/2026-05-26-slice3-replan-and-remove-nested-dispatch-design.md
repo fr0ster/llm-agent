@@ -75,6 +75,11 @@ export interface ErrorContext {
    *  original user input) — so a replan can re-plan with full context, not just
    *  the bare goal. */
   task: string;
+  /** Replans still allowed in this interpret run (maxReplans - replansUsed,
+   *  computed by the interpreter). A replan-capable strategy MUST return
+   *  `{ action: 'abort' }` without doing any work (no planner/LLM call) when this
+   *  is <= 0 — so an exhausted budget never spends a planner call. */
+  remainingReplans: number;
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
@@ -111,9 +116,12 @@ slice needs more reactions; no forward-compat machinery is added now.)
   `NeedsDecompositionError` (the explicit "decompose me" signal); **any other error
   → `{ action: 'abort' }`** (a transient MCP/LLM failure is not fixed by
   decomposition and must not trigger a replan storm). On a `NeedsDecompositionError`:
-  call `planner.plan({ prompt: ctx.task + '\n\nThis task needs decomposition: ' +
-  error.reason, agents, sessionId, signal })` — the **composed task** (not the bare
-  goal) plus the reason — to get a sub-`DagPlan`, return `{ action: 'replan', subPlan }`.
+  **first** check `ctx.remainingReplans` — if `<= 0`, return `{ action: 'abort' }`
+  immediately (NO planner call, so an exhausted budget never spends an LLM call);
+  otherwise call `planner.plan({ prompt: ctx.task + '\n\nThis task needs
+  decomposition: ' + error.reason, agents, sessionId, signal })` — the **composed
+  task** (not the bare goal) plus the reason — to get a sub-`DagPlan`, return
+  `{ action: 'replan', subPlan }`.
   The strategy exposes `maxReplans` (a getter/readonly field) so the interpreter can
   read the budget ceiling, but does NOT track how many replans have happened.
 
@@ -146,9 +154,14 @@ slice needs more reactions; no forward-compat machinery is added now.)
 - A **per-invocation replan budget**: `interpret()` creates a local counter at the
   start of each call, initialized from the strategy's `maxReplans` ceiling (read
   once; default **4** when the strategy doesn't expose one — e.g. `AbortErrorStrategy`).
-  Each applied replan increments a local `replansUsed`; when `replansUsed >=
-  maxReplans` the interpreter treats further `{ action: 'replan' }` reactions as
-  `abort`. The counter is **local to the interpret run** — never mutable state on
+  Each applied replan increments a local `replansUsed`. The interpreter passes
+  `remainingReplans = maxReplans - replansUsed` into `ErrorContext` on **every**
+  `onNodeFailure` call, so a replan-capable strategy sees the exhausted budget
+  **before** doing any work and returns `abort` without a planner/LLM call (see
+  A.3). As a defensive backstop the interpreter also ignores a `{ action: 'replan' }`
+  it receives when `replansUsed >= maxReplans` (treats it as `abort`) — but the
+  contract is that the strategy already short-circuited, so no wasted planner call
+  occurs. The counter is **local to the interpret run** — never mutable state on
   the (singleton) strategy — so concurrent or repeated `interpret()` calls don't
   share or leak a budget. Prevents infinite replan loops.
 
@@ -266,9 +279,11 @@ Error codes from slices 1–2 (`COORDINATOR_PLAN_INVALID`, `COORDINATOR_STEP_FAI
 - **`ReplanErrorStrategy`** — reaction **by error type** only (the strategy is
   stateless, it does NOT track budget): `NeedsDecompositionError` → calls planner
   with `ctx.task`+reason → `{ action: 'replan', subPlan }`; a generic error (e.g.
-  plain `Error`) → `{ action: 'abort' }` (no planner call). Plus: it **exposes**
-  `maxReplans` (config readback) — but exhaustion behavior is NOT tested here (it's
-  the interpreter's; see the per-run-budget test).
+  plain `Error`) → `{ action: 'abort' }` (no planner call); `NeedsDecompositionError`
+  **with `ctx.remainingReplans <= 0`** → `{ action: 'abort' }` **and the planner
+  mock is asserted NOT called** (no wasted LLM call on an exhausted budget). Plus:
+  it **exposes** `maxReplans` (config readback) — but the per-run exhaustion *count*
+  is the interpreter's (see the per-run-budget test).
 - **Interpreter replan** — a worker that throws `NeedsDecompositionError` with a
   replan strategy expands into a sub-graph and the run completes with the
   sub-graph's output; dependents of the failed node consume the sub-graph
