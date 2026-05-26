@@ -117,6 +117,11 @@ export type {
   ToolCallEntry,
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
+export type {
+  IReviewStrategy,
+  ReviewInput,
+  ReviewVerdict,
+} from './review.js';
 export type { ISessionManager } from './session.js';
 export type {
   ISkill,
