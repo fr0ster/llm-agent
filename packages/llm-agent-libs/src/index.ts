@@ -48,6 +48,7 @@ export {
 // Coordinator strategies
 // ---------------------------------------------------------------------------
 export {
+  AbortErrorStrategy,
   AutoActivation,
   DagPlanInterpreter,
   ExplicitActivation,
@@ -56,6 +57,7 @@ export {
   LlmReviewStrategy,
   NoopReviewStrategy,
   OneShotPlanning,
+  ReplanErrorStrategy,
   ReplanOnErrorPlanning,
   SelfDispatch,
   SkillStepsPlanning,
