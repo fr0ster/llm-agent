@@ -83,6 +83,7 @@ import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { IMetrics } from './metrics/types.js';
 import { DefaultPipeline } from './pipeline/default-pipeline.js';
+import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordinator.js';
 import type { IPluginLoader } from './plugins/types.js';
 import type {
   IPromptInjectionDetector,
@@ -207,6 +208,7 @@ export class SmartAgentBuilder {
   private _connectionStrategy?: IMcpConnectionStrategy;
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
+  private _dagCoordinator?: DagCoordinatorHandlerDeps;
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
   private _llmCallStrategy?: ILlmCallStrategy;
@@ -547,6 +549,18 @@ export class SmartAgentBuilder {
       failPolicy: cfg.failPolicy ?? 'abort',
       maxLayer: cfg.maxLayer,
     };
+    return this;
+  }
+
+  /**
+   * Enable DAG coordinator mode. Mutually exclusive with {@link withCoordinator}
+   * — when both are called, `withDagCoordinator` takes precedence (DAG wins).
+   *
+   * The `deps.workers` map provides the sub-agents the DAG interpreter will
+   * dispatch to. Pass the same registry you supply to `withSubAgents()`.
+   */
+  withDagCoordinator(deps: DagCoordinatorHandlerDeps): this {
+    this._dagCoordinator = deps;
     return this;
   }
 
@@ -1245,6 +1259,7 @@ export class SmartAgentBuilder {
       new DefaultPipeline({
         subAgents: this._subAgents,
         coordinator: resolvedCoordinator,
+        dagCoordinator: this._dagCoordinator,
       });
     pipeline.initialize({
       mainLlm: wrappedMainLlm,

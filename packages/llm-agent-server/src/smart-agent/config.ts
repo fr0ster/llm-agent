@@ -39,6 +39,42 @@ export interface YamlCoordinator {
   maxLayer?: number;
 }
 
+const LINEAR_ONLY = [
+  'planning',
+  'dispatch',
+  'maxSteps',
+  'maxRetriesPerStep',
+  'failPolicy',
+  'maxLayer',
+  'plannerLlm',
+];
+const DAG_ONLY = ['planner', 'interpreter'];
+
+/** Fail-loud guard: a coordinator block is either DAG (has `planner`) or linear,
+ *  never mixed. `activation` is shared and always allowed. */
+export function assertCoordinatorConfigShape(
+  coord: Record<string, unknown>,
+): void {
+  const isDag = coord.planner !== undefined;
+  if (isDag) {
+    for (const f of LINEAR_ONLY) {
+      if (coord[f] !== undefined) {
+        throw new Error(
+          `coordinator: '${f}' is a linear-only field and cannot be combined with 'planner' (DAG mode)`,
+        );
+      }
+    }
+  } else {
+    for (const f of DAG_ONLY) {
+      if (coord[f] !== undefined) {
+        throw new Error(
+          `coordinator: '${f}' is a DAG-only field; a linear coordinator uses 'planning'/'dispatch'`,
+        );
+      }
+    }
+  }
+}
+
 export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
   switch (name) {
     case 'one-shot':
