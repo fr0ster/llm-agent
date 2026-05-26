@@ -22,7 +22,22 @@ export interface DagCoordinatorHandlerDeps {
 }
 
 export class DagCoordinatorHandler implements IStageHandler {
-  constructor(private readonly deps: DagCoordinatorHandlerDeps) {}
+  constructor(private readonly deps: DagCoordinatorHandlerDeps) {
+    // The DAG interpreter passes data-flow (dependency outputs + user input)
+    // through the composed task text, never through the ISubAgentInput.context
+    // field. A worker with contextPolicy='required' (the DirectLlmSubAgent
+    // default) would therefore always fail at dispatch. Reject it at startup
+    // with a clear message instead of failing per-request.
+    for (const [name, w] of deps.workers) {
+      if (w.capabilities?.contextPolicy === 'required') {
+        throw new Error(
+          `DagCoordinatorHandler: worker '${name}' has contextPolicy='required', ` +
+            'but the DAG interpreter supplies node data via the composed task text, ' +
+            "not the context field. Use a worker with contextPolicy 'optional' or 'forbidden'.",
+        );
+      }
+    }
+  }
 
   async execute(
     ctx: PipelineContext,

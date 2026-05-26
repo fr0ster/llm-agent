@@ -114,4 +114,30 @@ describe('DagCoordinatorHandler', () => {
       'COORDINATOR_PLAN_INVALID',
     );
   });
+
+  it("rejects a worker with contextPolicy='required' at construction", () => {
+    const worker = (policy: 'required' | 'optional') =>
+      ({
+        name: 'w',
+        capabilities: { contextPolicy: policy },
+        run: async () => ({ output: '' }),
+      }) as unknown as import('@mcp-abap-adt/llm-agent').ISubAgent;
+    assert.throws(
+      () =>
+        new DagCoordinatorHandler({
+          planner: planner([{ id: 'n1', goal: 'g' }]),
+          interpreter: interp({ nodeResults: {}, ok: true, output: 'x' }),
+          workers: new Map([['w', worker('required')]]),
+        }),
+      /contextPolicy='required'/,
+    );
+    assert.doesNotThrow(
+      () =>
+        new DagCoordinatorHandler({
+          planner: planner([{ id: 'n1', goal: 'g' }]),
+          interpreter: interp({ nodeResults: {}, ok: true, output: 'x' }),
+          workers: new Map([['w', worker('optional')]]),
+        }),
+    );
+  });
 });

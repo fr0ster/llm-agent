@@ -48,8 +48,8 @@ ${catalog || '(none)'}`;
     // Field values come straight from untrusted JSON, so they are typed as
     // `unknown` and validated below before being narrowed to PlanNode.
     let parsed: {
-      objective?: string;
-      rationale?: string;
+      objective?: unknown;
+      rationale?: unknown;
       nodes?: Array<{
         id?: unknown;
         goal?: unknown;
@@ -67,6 +67,24 @@ ${catalog || '(none)'}`;
     }
     if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
       throw new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`);
+    }
+    // Plan-level fields also come from untrusted JSON — reject non-string values
+    // rather than leaking them into the typed DagPlan.
+    if (
+      parsed.objective !== undefined &&
+      typeof parsed.objective !== 'string'
+    ) {
+      throw new Error(
+        `Planner objective must be a string: ${JSON.stringify(parsed.objective)}`,
+      );
+    }
+    if (
+      parsed.rationale !== undefined &&
+      typeof parsed.rationale !== 'string'
+    ) {
+      throw new Error(
+        `Planner rationale must be a string: ${JSON.stringify(parsed.rationale)}`,
+      );
     }
     const nodes: PlanNode[] = parsed.nodes.map((n, i) => {
       if (typeof n.goal !== 'string' || n.goal.trim() === '') {
@@ -109,8 +127,8 @@ ${catalog || '(none)'}`;
     });
     return {
       nodes,
-      objective: parsed.objective,
-      rationale: parsed.rationale,
+      objective: parsed.objective as string | undefined,
+      rationale: parsed.rationale as string | undefined,
       createdAt: Date.now(),
     };
   }

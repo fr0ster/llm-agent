@@ -85,6 +85,26 @@ describe('LlmDagPlanner', () => {
     );
   });
 
+  it('throws on a non-string objective', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(
+          llm('{"objective":42,"nodes":[{"id":"a","goal":"X"}]}'),
+        ).plan(input),
+      /objective must be a string/,
+    );
+  });
+
+  it('throws on a non-string rationale', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(
+          llm('{"rationale":{},"nodes":[{"id":"a","goal":"X"}]}'),
+        ).plan(input),
+      /rationale must be a string/,
+    );
+  });
+
   it('throws the LLM error when the call is not ok', async () => {
     const failing = {
       chat: async () => ({ ok: false, error: new Error('quota') }),
