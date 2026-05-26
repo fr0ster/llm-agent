@@ -85,6 +85,10 @@ export type ErrorReaction =
 
 export interface IErrorStrategy {
   readonly name: string;
+  /** Replan budget ceiling for an interpret run. Read once by the interpreter,
+   *  which owns the per-run counter. Omitted (e.g. AbortErrorStrategy) → the
+   *  interpreter uses its default ceiling (4). The strategy never counts. */
+  readonly maxReplans?: number;
   onNodeFailure(
     node: PlanNode,
     error: unknown,
@@ -118,14 +122,27 @@ slice needs more reactions; no forward-compat machinery is added now.)
 - `InterpretContext` gains `errorStrategy: IErrorStrategy` (always populated by the
   handler; defaults to `AbortErrorStrategy`). `InterpretContext.layer` is **removed**
   (see §B).
-- In the per-node `try/catch`, on a caught error (and on an `errorClass: 'epicfail'`
-  result), instead of immediately recording `failed`, call
-  `ctx.errorStrategy.onNodeFailure(node, error, { task, agents, sessionId, signal })`,
-  where `task` is the composed node task already built for the failed node and
-  `agents` is built from `ctx.workers` (same catalog the planner sees):
-  - `{ action: 'abort' }` → record the node `failed` (current behavior).
-  - `{ action: 'replan', subPlan }` → **splice** the sub-plan in place of the node
-    (see A.5) and continue the wave loop; do NOT record the node as `failed`.
+- **Wave model — collect, then apply serially.** A wave still runs its ready nodes
+  concurrently (`Promise.all`), but a node's `run()` rejection/`epicfail` is no
+  longer turned into a plan mutation *inside* the concurrent map. Instead each
+  ready node's settled outcome is recorded as either `success(output)` or
+  `failure(node, error, task)` into a per-wave outcomes list. **After the whole
+  wave settles**, the interpreter processes outcomes **sequentially** (single-
+  threaded, deterministic order — e.g. plan-node order):
+  - success → record `done` (as today).
+  - failure → call `ctx.errorStrategy.onNodeFailure(node, error, { task, agents,
+    sessionId, signal })` (`task` = the composed task already built for that node;
+    `agents` from `ctx.workers`):
+    - `{ action: 'abort' }` → record the node `failed`.
+    - `{ action: 'replan', subPlan }` (and budget remaining) → **splice** the
+      sub-plan in place of the node (A.5), incrementing the per-run counter; do NOT
+      record `failed`.
+  This serialization means concurrent failures in the same wave never mutate
+  `plan.nodes`, the replan counter, or validation state simultaneously — all
+  splices for a wave are applied one-by-one, and graph **re-validation runs once**
+  after the wave's splices are applied, before the next ready-set is computed.
+  (Within a wave, independent failures are still all handled; they're just applied
+  in sequence rather than racing.)
 - A **per-invocation replan budget**: `interpret()` creates a local counter at the
   start of each call, initialized from the strategy's `maxReplans` ceiling (read
   once; default **4** when the strategy doesn't expose one — e.g. `AbortErrorStrategy`).
@@ -246,10 +263,12 @@ Error codes from slices 1–2 (`COORDINATOR_PLAN_INVALID`, `COORDINATOR_STEP_FAI
 
 - **`NeedsDecompositionError`** — constructs with `reason`; `instanceof Error`.
 - **`AbortErrorStrategy`** — always `{ action: 'abort' }`.
-- **`ReplanErrorStrategy`** — `NeedsDecompositionError` → calls planner with
-  goal+reason → `{ action: 'replan', subPlan }`; a generic error (e.g. plain
-  `Error`) → `{ action: 'abort' }` (no planner call); budget exhausted → `{ action:
-  'abort' }` even for `NeedsDecompositionError`.
+- **`ReplanErrorStrategy`** — reaction **by error type** only (the strategy is
+  stateless, it does NOT track budget): `NeedsDecompositionError` → calls planner
+  with `ctx.task`+reason → `{ action: 'replan', subPlan }`; a generic error (e.g.
+  plain `Error`) → `{ action: 'abort' }` (no planner call). Plus: it **exposes**
+  `maxReplans` (config readback) — but exhaustion behavior is NOT tested here (it's
+  the interpreter's; see the per-run-budget test).
 - **Interpreter replan** — a worker that throws `NeedsDecompositionError` with a
   replan strategy expands into a sub-graph and the run completes with the
   sub-graph's output; dependents of the failed node consume the sub-graph
@@ -262,6 +281,10 @@ Error codes from slices 1–2 (`COORDINATOR_PLAN_INVALID`, `COORDINATOR_STEP_FAI
 - **Per-run budget** — two separate `interpret()` calls each get a fresh replan
   budget (no leakage between runs through the singleton strategy); within one run,
   the (maxReplans+1)-th replan signal aborts.
+- **Concurrent-wave failures** — a wave with two nodes that both throw
+  `NeedsDecompositionError` is handled deterministically: both failures are
+  collected, then splices applied one-by-one (no interleaved mutation), and the run
+  completes with both sub-graphs spliced. (Asserts serial application, not a race.)
 - **Nested-dispatch removal** — the linear `CoordinatorHandler` no longer rejects
   a plan for layer/kind reasons (the prior layer-gate tests are removed/updated to
   assert the gate is gone); subagents build without `kind`/`canDispatchChildren`;
