@@ -13,6 +13,34 @@ interface with multiple implementations selected by config/DI — the project's
 established pattern (`IToolSelectionStrategy` #135, the LLM/embedder/RAG
 provider axes, the existing `IPlanning/IDispatch/IActivation` strategies).
 
+## Terminology (locked vocabulary)
+
+These four nouns are distinct levels. Most design confusion comes from collapsing
+them — keep them separate.
+
+| Term | Definition |
+|------|------------|
+| **Pipeline** | The declarative *description* we interpret. Two kinds: the authored **YAML pipeline** and the planner-produced **Plan** (`DagPlan`). A Pipeline is composed of **N ≥ 1 subagents**. It is data, not behaviour. |
+| **Interpreter** (`IInterpreter<TPipeline,TResult>`) | The thing that *executes* a Pipeline (data → running behaviour). Two implementations of one interface: the **YAML interpreter** (the server; YAML → running pipeline) and the **Plan interpreter** (`DagPlan` → executed node results). |
+| **Subagent** (`ISubAgent`) | A *node* a Pipeline is composed of — the unit the interpreter dispatches. The interpreter schedules it **synchronously** (sequentially) or **asynchronously** (a parallel wave, `Promise.all` then await). A subagent may itself be a whole interpreted Pipeline (recursion: interpret → package as subagent → use as a node in a bigger Pipeline). |
+| **Component** | The internal building blocks a subagent is assembled from — stages, strategies, handlers (`IStageHandler`, `IPlanningStrategy`, `IDispatchStrategy`, …). A finer granularity than a subagent; not formalized as one interface. |
+
+Consequences:
+
+- **`sync` vs `async` is a scheduling decision of the Interpreter, not an attribute
+  of a subagent.** Every `ISubAgent.run()` returns a `Promise`; the interpreter
+  decides await-one-by-one vs `Promise.all`. (Already true in slice 1.)
+- **A Pipeline of N = 1 subagent is the classic single-agent path** (today's
+  behaviour; its `classify→rag→tool-loop` internals are *components*). N > 1 with
+  orchestration is the coordinator path. The coordinator is **not a different kind
+  of entity** — it is the Interpreter that handles N > 1. This is the
+  progressive-complexity invariant, and it is *why* old and new configs are one
+  uniform model (backward compatibility is a consequence, not a special case).
+- **Planner and reviewer are subagents** that respectively *produce* a Pipeline
+  (planner → `Plan`) and *judge* a Pipeline (reviewer → verdict). `IPlanner` /
+  `IReviewStrategy` are **typed adapters over `ISubAgent`** (see the invariant
+  below), never a separate execution contract.
+
 ## Invariants (the principles this epic holds)
 
 - **YAML is the complete description of the pipeline — this does NOT change.**
