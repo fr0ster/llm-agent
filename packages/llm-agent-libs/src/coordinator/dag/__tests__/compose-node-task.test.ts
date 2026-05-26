@@ -35,4 +35,20 @@ describe('composeNodeTask', () => {
     const t = composeNodeTask(node({ needsInput: true }), plan(), 'RAW', {});
     assert.match(t, /Input \(user-provided data\):\n---\nRAW\n---/);
   });
+
+  it('combines dep outputs and user input when both present', () => {
+    const t = composeNodeTask(
+      node({ dependsOn: ['a'], needsInput: true }),
+      plan(),
+      'RAW',
+      { a: 'OUT_A' },
+    );
+    assert.match(t, /Input from a:\n---\nOUT_A\n---/);
+    assert.match(t, /Input \(user-provided data\):\n---\nRAW\n---/);
+  });
+
+  it('uses empty string when a declared dependency has no output', () => {
+    const t = composeNodeTask(node({ dependsOn: ['x'] }), plan(), 'RAW', {});
+    assert.match(t, /Input from x:\n---\n\n---/);
+  });
 });

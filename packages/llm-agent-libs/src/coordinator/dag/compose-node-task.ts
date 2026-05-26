@@ -17,6 +17,8 @@ export function composeNodeTask(
   }
   const parts: string[] = [`Task: ${node.goal}`];
   if (plan.objective) parts.push(`Overall objective: ${plan.objective}`);
+  // '---' is a prose-level fence (no escaping); content containing a literal
+  // '---' line is rare enough to accept — the output is an LLM prompt, not parsed.
   for (const depId of deps) {
     parts.push(`Input from ${depId}:\n---\n${depOutputs[depId] ?? ''}\n---`);
   }
