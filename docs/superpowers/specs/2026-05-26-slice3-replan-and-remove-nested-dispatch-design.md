@@ -138,9 +138,10 @@ slice needs more reactions; no forward-compat machinery is added now.)
   wave settles**, the interpreter processes outcomes **sequentially** (single-
   threaded, deterministic order — e.g. plan-node order):
   - success → record `done` (as today).
-  - failure → call `ctx.errorStrategy.onNodeFailure(node, error, { task, agents,
-    sessionId, signal })` (`task` = the composed task already built for that node;
-    `agents` from `ctx.workers`):
+  - failure → call `ctx.errorStrategy.onNodeFailure(node, error, { task,
+    remainingReplans, agents, sessionId, signal })` (`task` = the composed task
+    already built for that node; `remainingReplans` = `maxReplans - replansUsed`
+    computed by the interpreter at this point; `agents` from `ctx.workers`):
     - `{ action: 'abort' }` → record the node `failed`.
     - `{ action: 'replan', subPlan }` (and budget remaining) → **splice** the
       sub-plan in place of the node (A.5), incrementing the per-run counter; do NOT
