@@ -115,6 +115,69 @@ describe('DagCoordinatorHandler', () => {
     );
   });
 
+  it('passes through to interpret when the reviewer passes', async () => {
+    const { ctx, yields } = makeCtx('hi');
+    const h = new DagCoordinatorHandler({
+      planner: planner([{ id: 'n1', goal: 'g' }]),
+      interpreter: interp({ nodeResults: {}, ok: true, output: '42' }),
+      workers: new Map(),
+      reviewer: { name: 'r', review: async () => ({ pass: true }) },
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, true);
+    assert.equal(yields[0].value.content, '42');
+  });
+
+  it('rejects the plan as COORDINATOR_PLAN_REJECTED when the reviewer fails', async () => {
+    const { ctx, yields } = makeCtx('hi');
+    let interpreted = false;
+    const h = new DagCoordinatorHandler({
+      planner: planner([{ id: 'n1', goal: 'g' }]),
+      interpreter: {
+        name: 'i',
+        interpret: async () => {
+          interpreted = true;
+          return { nodeResults: {}, ok: true, output: 'x' };
+        },
+      },
+      workers: new Map(),
+      reviewer: {
+        name: 'r',
+        review: async () => ({ pass: false, feedback: 'no reader worker' }),
+      },
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, false);
+    assert.equal(interpreted, false);
+    const err = (
+      ctx as unknown as { error?: { code?: string; message?: string } }
+    ).error;
+    assert.equal(err?.code, 'COORDINATOR_PLAN_REJECTED');
+    assert.match(err?.message ?? '', /no reader worker/);
+    assert.equal(yields.length, 0);
+  });
+
+  it('maps a reviewer throw to COORDINATOR_REVIEW_FAILED', async () => {
+    const { ctx } = makeCtx('hi');
+    const h = new DagCoordinatorHandler({
+      planner: planner([{ id: 'n1', goal: 'g' }]),
+      interpreter: interp({ nodeResults: {}, ok: true, output: 'x' }),
+      workers: new Map(),
+      reviewer: {
+        name: 'r',
+        review: async () => {
+          throw new Error('critic boom');
+        },
+      },
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, false);
+    assert.equal(
+      (ctx as unknown as { error?: { code?: string } }).error?.code,
+      'COORDINATOR_REVIEW_FAILED',
+    );
+  });
+
   it("rejects a worker with contextPolicy='required' at construction", () => {
     const worker = (policy: 'required' | 'optional') =>
       ({
