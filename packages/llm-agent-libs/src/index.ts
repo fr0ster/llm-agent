@@ -49,8 +49,10 @@ export {
 // ---------------------------------------------------------------------------
 export {
   AutoActivation,
+  DagPlanInterpreter,
   ExplicitActivation,
   HybridDispatch,
+  LlmDagPlanner,
   OneShotPlanning,
   ReplanOnErrorPlanning,
   SelfDispatch,

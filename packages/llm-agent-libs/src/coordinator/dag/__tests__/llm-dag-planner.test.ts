@@ -46,4 +46,11 @@ describe('LlmDagPlanner', () => {
       /missing a goal/,
     );
   });
+
+  it('throws the LLM error when the call is not ok', async () => {
+    const failing = {
+      chat: async () => ({ ok: false, error: new Error('quota') }),
+    } as unknown as ILlm;
+    await assert.rejects(() => new LlmDagPlanner(failing).plan(input), /quota/);
+  });
 });

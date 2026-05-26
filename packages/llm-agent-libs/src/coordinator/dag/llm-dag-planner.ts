@@ -25,7 +25,7 @@ Each node: {"id","goal","agent"(optional worker name),"dependsOn"(optional ids),
 Use "dependsOn" to express order/data-flow; independent nodes run in parallel.
 If the request needs no decomposition, emit a SINGLE node.
 Emit a plan-level "objective". Respond with ONLY:
-{"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"optional","dependsOn":[],"needsInput":false}]}
+{"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}
 
 Available workers:
 ${catalog || '(none)'}`;
@@ -45,8 +45,9 @@ ${catalog || '(none)'}`;
       throw new Error(
         `Planner output did not contain a JSON object: ${res.value.content.slice(0, 200)}`,
       );
-    const parsed = JSON.parse(match[0]) as {
+    let parsed: {
       objective?: string;
+      rationale?: string;
       nodes?: Array<{
         id?: string;
         goal?: string;
@@ -55,6 +56,13 @@ ${catalog || '(none)'}`;
         needsInput?: boolean;
       }>;
     };
+    try {
+      parsed = JSON.parse(match[0]);
+    } catch {
+      throw new Error(
+        `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
+      );
+    }
     if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
       throw new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`);
     }
@@ -70,6 +78,11 @@ ${catalog || '(none)'}`;
         needsInput: n.needsInput,
       };
     });
-    return { nodes, objective: parsed.objective, createdAt: Date.now() };
+    return {
+      nodes,
+      objective: parsed.objective,
+      rationale: parsed.rationale,
+      createdAt: Date.now(),
+    };
   }
 }
