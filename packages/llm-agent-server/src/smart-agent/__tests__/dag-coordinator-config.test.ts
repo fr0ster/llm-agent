@@ -52,4 +52,9 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /interpreter/,
     );
   });
+  it('accepts a DAG coordinator without an activation field', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({ planner: { type: 'llm' } }),
+    );
+  });
 });

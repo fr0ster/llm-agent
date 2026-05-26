@@ -631,16 +631,24 @@ export class SmartServer {
       // Fail loud if the config mixes DAG and linear fields.
       assertCoordinatorConfigShape(coordCfg as Record<string, unknown>);
 
-      if ((coordCfg as Record<string, unknown>).planner !== undefined) {
+      if (coordCfg.planner !== undefined) {
         // DAG mode: `planner` field present → use DagCoordinatorHandler.
+        // Validate interpreter.type if present — only 'dag' is supported.
+        const interpKind = (
+          coordCfg.interpreter as { type?: string } | undefined
+        )?.type;
+        if (interpKind !== undefined && interpKind !== 'dag') {
+          throw new Error(
+            `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
+          );
+        }
         // Resolve the planner LLM. Honor `coordinator.planner.plannerLlm` when
         // set; otherwise fall back to the same resolution as linear mode
-        // (default 'main' → mainLlm, 'planner'/'helper' → helperLlm ?? mainLlm).
-        const dagCfg = coordCfg as Record<string, unknown>;
-        const plannerBlock = dagCfg.planner as
-          | Record<string, unknown>
+        // ('main' → mainLlm, 'planner' or 'helper' → helperLlm ?? mainLlm).
+        const plannerBlock = coordCfg.planner as
+          | { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' }
           | undefined;
-        const plannerLlmKey = plannerBlock?.plannerLlm as string | undefined;
+        const plannerLlmKey = plannerBlock?.plannerLlm;
         const plannerLlm =
           plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
 
