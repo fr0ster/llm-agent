@@ -47,6 +47,44 @@ describe('LlmDagPlanner', () => {
     );
   });
 
+  it('throws on a non-string node id', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(llm('{"nodes":[{"id":1,"goal":"X"}]}')).plan(input),
+      /non-string id/,
+    );
+  });
+
+  it('throws on a non-string node agent', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(
+          llm('{"nodes":[{"id":"a","goal":"X","agent":5}]}'),
+        ).plan(input),
+      /non-string agent/,
+    );
+  });
+
+  it('throws on a dependsOn that is not an array of strings', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(
+          llm('{"nodes":[{"id":"a","goal":"X","dependsOn":[1]}]}'),
+        ).plan(input),
+      /dependsOn must be an array of strings/,
+    );
+  });
+
+  it('throws on a non-boolean needsInput', async () => {
+    await assert.rejects(
+      () =>
+        new LlmDagPlanner(
+          llm('{"nodes":[{"id":"a","goal":"X","needsInput":"yes"}]}'),
+        ).plan(input),
+      /needsInput must be a boolean/,
+    );
+  });
+
   it('throws the LLM error when the call is not ok', async () => {
     const failing = {
       chat: async () => ({ ok: false, error: new Error('quota') }),

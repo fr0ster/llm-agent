@@ -633,6 +633,7 @@ export class SmartServer {
 
       if (coordCfg.planner !== undefined) {
         // DAG mode: `planner` field present → use DagCoordinatorHandler.
+        // planner shape/type already validated by assertCoordinatorConfigShape.
         // Validate interpreter.type if present — only 'dag' is supported.
         const interpKind = (
           coordCfg.interpreter as { type?: string } | undefined
@@ -645,9 +646,10 @@ export class SmartServer {
         // Resolve the planner LLM. Honor `coordinator.planner.plannerLlm` when
         // set; otherwise fall back to the same resolution as linear mode
         // ('main' → mainLlm, 'planner' or 'helper' → helperLlm ?? mainLlm).
-        const plannerBlock = coordCfg.planner as
-          | { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' }
-          | undefined;
+        const plannerBlock = coordCfg.planner as {
+          type?: string;
+          plannerLlm?: 'main' | 'planner' | 'helper';
+        };
         const plannerLlmKey = plannerBlock?.plannerLlm;
         const plannerLlm =
           plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
@@ -656,6 +658,15 @@ export class SmartServer {
         const interpreter = new DagPlanInterpreter();
         // Reuse the registry built above — same ISubAgent instances already
         // passed to builder.withSubAgents(). No second buildSubAgent calls.
+        // DAG mode plans against the worker catalog, so an empty registry
+        // would plan against nothing and fail per-request in the interpreter.
+        // Fail loud at startup instead.
+        if (registry.size === 0) {
+          throw new Error(
+            'coordinator.planner is set (DAG mode) but no workers are configured. ' +
+              'Add at least one entry under the top-level `subagents:` block.',
+          );
+        }
         const workers = registry;
         const activation = resolveCoordinatorActivation(
           (coordCfg.activation ?? 'explicit') as string,

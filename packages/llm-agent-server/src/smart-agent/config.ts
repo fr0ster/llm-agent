@@ -61,6 +61,24 @@ export function assertCoordinatorConfigShape(
 ): void {
   const isDag = coord.planner !== undefined;
   if (isDag) {
+    // `planner` is the DAG selector — a malformed or unknown planner must fail
+    // loud rather than silently wiring the default LlmDagPlanner.
+    const planner = coord.planner;
+    if (
+      typeof planner !== 'object' ||
+      planner === null ||
+      Array.isArray(planner)
+    ) {
+      throw new Error(
+        `coordinator.planner must be an object (e.g. { type: llm }), got: ${JSON.stringify(planner)}`,
+      );
+    }
+    const plannerKind = (planner as { type?: unknown }).type;
+    if (plannerKind !== undefined && plannerKind !== 'llm') {
+      throw new Error(
+        `coordinator.planner: unknown type '${String(plannerKind)}' (only 'llm' is supported)`,
+      );
+    }
     for (const f of LINEAR_ONLY) {
       if (coord[f] !== undefined) {
         throw new Error(

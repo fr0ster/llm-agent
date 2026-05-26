@@ -57,4 +57,27 @@ describe('coordinator config shape (DAG vs linear)', () => {
       assertCoordinatorConfigShape({ planner: { type: 'llm' } }),
     );
   });
+  it('accepts a DAG coordinator with an empty planner object (type defaults)', () => {
+    assert.doesNotThrow(() => assertCoordinatorConfigShape({ planner: {} }));
+  });
+  it('rejects an unknown planner.type', () => {
+    assert.throws(
+      () => assertCoordinatorConfigShape({ planner: { type: 'bogus' } }),
+      /unknown type 'bogus'/,
+    );
+  });
+  it('rejects a non-object planner', () => {
+    assert.throws(
+      () => assertCoordinatorConfigShape({ planner: 'llm' }),
+      /must be an object/,
+    );
+    assert.throws(
+      () => assertCoordinatorConfigShape({ planner: null }),
+      /must be an object/,
+    );
+    assert.throws(
+      () => assertCoordinatorConfigShape({ planner: ['llm'] }),
+      /must be an object/,
+    );
+  });
 });

@@ -45,15 +45,17 @@ ${catalog || '(none)'}`;
       throw new Error(
         `Planner output did not contain a JSON object: ${res.value.content.slice(0, 200)}`,
       );
+    // Field values come straight from untrusted JSON, so they are typed as
+    // `unknown` and validated below before being narrowed to PlanNode.
     let parsed: {
       objective?: string;
       rationale?: string;
       nodes?: Array<{
-        id?: string;
-        goal?: string;
-        agent?: string;
-        dependsOn?: string[];
-        needsInput?: boolean;
+        id?: unknown;
+        goal?: unknown;
+        agent?: unknown;
+        dependsOn?: unknown;
+        needsInput?: unknown;
       }>;
     };
     try {
@@ -70,12 +72,39 @@ ${catalog || '(none)'}`;
       if (typeof n.goal !== 'string' || n.goal.trim() === '') {
         throw new Error(`Planner node is missing a goal: ${JSON.stringify(n)}`);
       }
+      // Reject malformed field types up front — the interpreter relies on these
+      // matching the exported PlanNode shape (otherwise they surface as opaque
+      // TypeErrors mid-dispatch).
+      if (n.id !== undefined && typeof n.id !== 'string') {
+        throw new Error(
+          `Planner node has a non-string id: ${JSON.stringify(n)}`,
+        );
+      }
+      if (n.agent !== undefined && typeof n.agent !== 'string') {
+        throw new Error(
+          `Planner node has a non-string agent: ${JSON.stringify(n)}`,
+        );
+      }
+      if (
+        n.dependsOn !== undefined &&
+        (!Array.isArray(n.dependsOn) ||
+          n.dependsOn.some((d) => typeof d !== 'string'))
+      ) {
+        throw new Error(
+          `Planner node dependsOn must be an array of strings: ${JSON.stringify(n)}`,
+        );
+      }
+      if (n.needsInput !== undefined && typeof n.needsInput !== 'boolean') {
+        throw new Error(
+          `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
+        );
+      }
       return {
-        id: n.id ?? `n${i + 1}`,
+        id: (n.id as string | undefined) ?? `n${i + 1}`,
         goal: n.goal,
-        agent: n.agent,
-        dependsOn: n.dependsOn,
-        needsInput: n.needsInput,
+        agent: n.agent as string | undefined,
+        dependsOn: n.dependsOn as string[] | undefined,
+        needsInput: n.needsInput as boolean | undefined,
       };
     });
     return {
