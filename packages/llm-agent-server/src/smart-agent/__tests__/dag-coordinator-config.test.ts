@@ -66,6 +66,24 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /unknown type 'bogus'/,
     );
   });
+  it('accepts valid planner.plannerLlm selectors', () => {
+    for (const sel of ['main', 'planner', 'helper']) {
+      assert.doesNotThrow(() =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm', plannerLlm: sel },
+        }),
+      );
+    }
+  });
+  it('rejects an unknown planner.plannerLlm', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm', plannerLlm: 'bogus' },
+        }),
+      /plannerLlm must be one of main \| planner \| helper/,
+    );
+  });
   it('rejects a non-object planner', () => {
     assert.throws(
       () => assertCoordinatorConfigShape({ planner: 'llm' }),

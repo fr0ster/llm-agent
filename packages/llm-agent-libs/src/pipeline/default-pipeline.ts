@@ -190,9 +190,13 @@ export class DefaultPipeline implements IPipeline {
       // semantics: presence of coordinator config IS the opt-in signal.
       // Without this default, `_buildStages()` would emit a `coordinator-activate`
       // stage whose handler is unregistered → unknown-stage runtime error.
+      // DAG wins the handler slot when both are configured, so its activation
+      // strategy takes precedence too — otherwise the DAG handler could be gated
+      // by the linear coordinator's activation. (Matches handler precedence in
+      // handlers/index.ts and SmartAgentBuilder.withDagCoordinator.)
       coordinatorActivation: anyCoordinator
-        ? (this.coordinator?.activation ??
-          this.dagCoordinator?.activation ??
+        ? (this.dagCoordinator?.activation ??
+          this.coordinator?.activation ??
           new ExplicitActivation())
         : undefined,
     });

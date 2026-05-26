@@ -79,6 +79,17 @@ export function assertCoordinatorConfigShape(
         `coordinator.planner: unknown type '${String(plannerKind)}' (only 'llm' is supported)`,
       );
     }
+    const plannerLlmSel = (planner as { plannerLlm?: unknown }).plannerLlm;
+    if (
+      plannerLlmSel !== undefined &&
+      plannerLlmSel !== 'main' &&
+      plannerLlmSel !== 'planner' &&
+      plannerLlmSel !== 'helper'
+    ) {
+      throw new Error(
+        `coordinator.planner.plannerLlm must be one of main | planner | helper, got: ${String(plannerLlmSel)}`,
+      );
+    }
     for (const f of LINEAR_ONLY) {
       if (coord[f] !== undefined) {
         throw new Error(
