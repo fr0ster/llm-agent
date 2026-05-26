@@ -77,6 +77,7 @@ describe('DagPlanInterpreter', () => {
       ctx([['only', w]]),
     );
     assert.equal(r.ok, true);
+    assert.equal(r.output, 'ok');
   });
 
   it('marks a failed node and skips its dependents (ok=false)', async () => {
@@ -95,6 +96,23 @@ describe('DagPlanInterpreter', () => {
     assert.equal(r.ok, false);
     assert.equal(r.nodeResults.a.status, 'failed');
     assert.equal(r.nodeResults.b.status, 'skipped');
+  });
+
+  it('treats an epicfail worker result as a failed node (ok=false)', async () => {
+    const w = worker(
+      'w',
+      async () =>
+        ({ output: '', errorClass: 'epicfail' }) as unknown as {
+          output: string;
+        },
+    );
+    const r = await new DagPlanInterpreter().interpret(
+      dag([{ id: 'n1', goal: 'g', agent: 'w' }]),
+      ctx([['w', w]]),
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.nodeResults.n1.status, 'failed');
+    assert.equal(r.nodeResults.n1.error, 'epicfail');
   });
 
   it('throws COORDINATOR_PLAN_INVALID on empty / duplicate / missing-dep / cycle / unresolvable-agent', async () => {

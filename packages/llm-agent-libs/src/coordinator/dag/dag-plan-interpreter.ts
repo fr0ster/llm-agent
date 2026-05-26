@@ -48,6 +48,9 @@ export class DagPlanInterpreter
               signal: ctx.signal,
               layer: ctx.layer + 1,
             });
+            // Slice 1 records an epicfail worker result as a plain node failure.
+            // Cross-DAG epicfail-trace propagation (res.epicFailTrace) is
+            // intentionally out of scope here (see slice-1 spec) — deferred.
             if (res.errorClass === 'epicfail') {
               results[n.id] = {
                 nodeId: n.id,
