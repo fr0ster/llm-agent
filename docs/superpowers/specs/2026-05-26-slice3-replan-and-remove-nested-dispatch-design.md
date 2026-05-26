@@ -57,12 +57,24 @@ out of scope here).
 
 ### A.2 `IErrorStrategy` (new contract)
 
+**Ownership note:** `IErrorStrategy` is an **interpreter (execution) strategy**, not
+a coordinator policy. It is invoked by the `DagPlanInterpreter` — the component that
+actually executes the Pipeline/DAG and can exist and run **without any coordinator**
+(e.g. a direct `interpret(plan, ctx)` call). The coordinator's only role is to pass
+the *configured* strategy through into `InterpretContext`; it does not call the
+strategy itself. This keeps the failure-reaction decision next to the execution that
+produces the failure.
+
 ```ts
 // packages/llm-agent/src/interfaces/error-strategy.ts
 import type { DagPlan, PlanNode } from './dag-plan.js';
 import type { PlannerCatalogEntry } from './planner.js';
 
 export interface ErrorContext {
+  /** The composed task the failed node was given (goal + dependency outputs +
+   *  original user input) — so a replan can re-plan with full context, not just
+   *  the bare goal. */
+  task: string;
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
@@ -89,14 +101,17 @@ slice needs more reactions; no forward-compat machinery is added now.)
 - **`AbortErrorStrategy`** — always `{ action: 'abort' }`. This is the slice-1/2
   behavior (a failed node fails the plan). It is the **default** when no error
   strategy is configured.
-- **`ReplanErrorStrategy`** — owns an `IPlanner` and a `maxReplans` budget. It
-  replans **only** for `NeedsDecompositionError` (the explicit "decompose me"
-  signal); **any other error → `{ action: 'abort' }`** (a transient MCP/LLM failure
-  is not fixed by decomposition and must not trigger a replan storm). On a
-  `NeedsDecompositionError`: call `planner.plan({ prompt: <node.goal> + '\n\n' +
-  error.reason, agents, sessionId, signal })` to get a sub-`DagPlan`, return
-  `{ action: 'replan', subPlan }`. When the budget is exhausted it returns
-  `{ action: 'abort' }` (logged).
+- **`ReplanErrorStrategy`** — owns an `IPlanner` and a `maxReplans` **config**
+  value only (a constant, NOT a mutable counter — the strategy is a stateless
+  singleton; see A.4 for where the per-run counter lives). It replans **only** for
+  `NeedsDecompositionError` (the explicit "decompose me" signal); **any other error
+  → `{ action: 'abort' }`** (a transient MCP/LLM failure is not fixed by
+  decomposition and must not trigger a replan storm). On a `NeedsDecompositionError`:
+  call `planner.plan({ prompt: ctx.task + '\n\nThis task needs decomposition: ' +
+  error.reason, agents, sessionId, signal })` — the **composed task** (not the bare
+  goal) plus the reason — to get a sub-`DagPlan`, return `{ action: 'replan', subPlan }`.
+  The strategy exposes `maxReplans` (a getter/readonly field) so the interpreter can
+  read the budget ceiling, but does NOT track how many replans have happened.
 
 ### A.4 Interpreter changes (`DagPlanInterpreter`)
 
@@ -105,15 +120,20 @@ slice needs more reactions; no forward-compat machinery is added now.)
   (see §B).
 - In the per-node `try/catch`, on a caught error (and on an `errorClass: 'epicfail'`
   result), instead of immediately recording `failed`, call
-  `ctx.errorStrategy.onNodeFailure(node, error, { agents, sessionId, signal })`,
-  where `agents` is built from `ctx.workers` (same catalog the planner sees):
+  `ctx.errorStrategy.onNodeFailure(node, error, { task, agents, sessionId, signal })`,
+  where `task` is the composed node task already built for the failed node and
+  `agents` is built from `ctx.workers` (same catalog the planner sees):
   - `{ action: 'abort' }` → record the node `failed` (current behavior).
   - `{ action: 'replan', subPlan }` → **splice** the sub-plan in place of the node
     (see A.5) and continue the wave loop; do NOT record the node as `failed`.
-- A **global replan budget** is tracked on the interpret run (an integer counter,
-  default from the strategy's `maxReplans`, default value **4**). Each applied
-  replan decrements it; at zero the next failure aborts. Prevents infinite replan
-  loops.
+- A **per-invocation replan budget**: `interpret()` creates a local counter at the
+  start of each call, initialized from the strategy's `maxReplans` ceiling (read
+  once; default **4** when the strategy doesn't expose one — e.g. `AbortErrorStrategy`).
+  Each applied replan increments a local `replansUsed`; when `replansUsed >=
+  maxReplans` the interpreter treats further `{ action: 'replan' }` reactions as
+  `abort`. The counter is **local to the interpret run** — never mutable state on
+  the (singleton) strategy — so concurrent or repeated `interpret()` calls don't
+  share or leak a budget. Prevents infinite replan loops.
 
 ### A.5 Splice semantics
 
@@ -121,8 +141,14 @@ Given failed node `X` and a returned `subPlan` (its nodes `S = {s1..sk}`):
 
 1. Namespace the sub-plan node ids to avoid collisions (prefix with `X.id + ':'`),
    rewriting intra-sub-plan `dependsOn` accordingly.
-2. Sub-plan nodes whose (namespaced) `dependsOn` is empty inherit `X`'s
-   `dependsOn` (so the sub-graph starts where `X` started).
+2. Sub-plan **root** nodes (those whose namespaced `dependsOn` is empty) inherit
+   `X`'s `dependsOn` (so the sub-graph starts where `X` started) **and** `X`'s
+   `needsInput` flag — otherwise a node that originally consumed the user input
+   would silently lose it after decomposition. (Belt-and-suspenders: the replan
+   prompt handed to the planner already embeds `X`'s composed task — goal + the
+   original input/dep context — so the sub-planner is aware of the available input;
+   inheriting `needsInput` onto the roots guarantees the data is actually fed at
+   interpret time regardless of how the sub-planner set the flag.)
 3. Every node that depended on `X` is rewritten to depend on the **terminal**
    nodes of the sub-plan (sub-plan nodes that nothing in `S` depends on) — so
    `X`'s consumers now consume the sub-graph's outputs.
@@ -155,8 +181,20 @@ The recursive subagent-spawns-subagent surface is removed; subagents are leaves.
   `SubAgentKind = 'autonomous' | 'constrained'` type. `SubAgentCapabilities` keeps
   only `contextPolicy`.
 - `ISubAgentInput`: remove the required `layer` field.
-- `InterpretContext` (`interpreter.ts`) and `ICoordinatorContext` (`coordinator.ts`):
-  remove the `layer` field. (`InterpretContext` instead gains `errorStrategy`.)
+- `InterpretContext` (`interpreter.ts`): remove `layer`; add `errorStrategy`.
+- `ICoordinatorContext` (`coordinator.ts`): remove `layer`.
+- `CallOptions` (`types.ts`): remove `layer?`.
+- `SubAgentContextRequest` (`subagent-context.ts`): remove `layer`.
+- `EpicFailTrace` (`coordinator.ts`): remove `layer` and `childTrace?` — these are
+  the **cross-layer epicfail propagation** chain (#128–#132). `EpicFailTrace` keeps
+  its non-nesting fields; the `errorClass: 'epicfail'` discriminator and the
+  `epicFailTrace?` result field themselves are retained (a flat trace, no chain).
+
+Complete public-API removal list (the breaking surface): `SubAgentKind`,
+`SubAgentCapabilities.kind`, `SubAgentCapabilities.canDispatchChildren`,
+`ISubAgentInput.layer`, `InterpretContext.layer`, `ICoordinatorContext.layer`,
+`CallOptions.layer`, `SubAgentContextRequest.layer`, `EpicFailTrace.layer`,
+`EpicFailTrace.childTrace`.
 
 ### B.2 Call-site removals (`llm-agent-libs`)
 
@@ -166,6 +204,9 @@ The recursive subagent-spawns-subagent surface is removed; subagents are leaves.
 - `coordinator/dispatch/subagent.ts`: drop `childLayer`/`layer` plumbing.
 - `pipeline/handlers/subagent.ts`: drop `layer: (ctx.layer ?? 0) + 1`.
 - `pipeline/default-pipeline.ts`: drop `layer: options?.layer ?? 0`.
+- `pipeline/context.ts`: remove `PipelineContext.layer?` and any reads of it.
+- Any code that builds/propagates `EpicFailTrace.layer`/`childTrace` (the
+  cross-layer chain) — stop populating them; an epicfail trace is now flat.
 - `subagent/smart-agent-subagent.ts`: drop `kind`/`canDispatchChildren` from its
   `capabilities`; drop `layer: input.layer` plumbing.
 - `subagent/direct-llm-subagent.ts`: drop `kind`/`canDispatchChildren` from its
@@ -215,9 +256,12 @@ Error codes from slices 1–2 (`COORDINATOR_PLAN_INVALID`, `COORDINATOR_STEP_FAI
   terminals; abort strategy (default) still fails the node as before; an invalid
   sub-plan → `COORDINATOR_PLAN_INVALID`; infinite-replan guard: a sub-plan that
   itself keeps signalling stops at the budget and aborts.
-- **Splice** — id-namespacing avoids collisions; empty-dep sub-nodes inherit the
-  failed node's deps; terminal sub-nodes feed the failed node's consumers (a
-  focused unit test on the splice helper with a small graph).
+- **Splice** — id-namespacing avoids collisions; root sub-nodes inherit the failed
+  node's `dependsOn` **and** `needsInput`; terminal sub-nodes feed the failed node's
+  consumers (a focused unit test on the splice helper with a small graph).
+- **Per-run budget** — two separate `interpret()` calls each get a fresh replan
+  budget (no leakage between runs through the singleton strategy); within one run,
+  the (maxReplans+1)-th replan signal aborts.
 - **Nested-dispatch removal** — the linear `CoordinatorHandler` no longer rejects
   a plan for layer/kind reasons (the prior layer-gate tests are removed/updated to
   assert the gate is gone); subagents build without `kind`/`canDispatchChildren`;
