@@ -599,8 +599,9 @@ export class SmartServer {
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
     // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
     // outputs (embedder factories, plugins) but with its own LLM/RAG/MCP/etc.
+    // Hoisted so the DAG branch below can reuse the same instances.
+    const registry: SubAgentRegistry = new Map();
     if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
-      const registry: SubAgentRegistry = new Map();
       for (const sub of this.cfg.subAgentConfigs) {
         const subAgent = await this.buildSubAgent(
           sub.name,
@@ -645,31 +646,9 @@ export class SmartServer {
 
         const planner = new LlmDagPlanner(plannerLlm);
         const interpreter = new DagPlanInterpreter();
-        // Use the subagent registry built above (passed via builder.withSubAgents).
-        // The registry is stored on the builder as `_subAgents`; we surface it
-        // here by reading from the coordCfg block's workers, which are the
-        // same sub-agents already built. Since _subAgents is private, we rebuild
-        // a workers map from subAgentConfigs (already resolved above).
-        const workers: Map<
-          string,
-          import('@mcp-abap-adt/llm-agent').ISubAgent
-        > = new Map();
-        if (this.cfg.subAgentConfigs) {
-          for (const sub of this.cfg.subAgentConfigs) {
-            const subAgent = await this.buildSubAgent(
-              sub.name,
-              sub.config,
-              fileLogger,
-              mergedEmbedderFactories,
-            );
-            workers.set(
-              sub.name,
-              new SmartAgentSubAgent(sub.name, subAgent, {
-                description: sub.description,
-              }),
-            );
-          }
-        }
+        // Reuse the registry built above — same ISubAgent instances already
+        // passed to builder.withSubAgents(). No second buildSubAgent calls.
+        const workers = registry;
         const activation = resolveCoordinatorActivation(
           (coordCfg.activation ?? 'explicit') as string,
         );

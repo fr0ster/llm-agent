@@ -37,6 +37,8 @@ export interface YamlCoordinator {
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
   maxLayer?: number;
+  planner?: { type?: string; plannerLlm?: string } | Record<string, unknown>;
+  interpreter?: { type?: string } | Record<string, unknown>;
 }
 
 const LINEAR_ONLY = [
