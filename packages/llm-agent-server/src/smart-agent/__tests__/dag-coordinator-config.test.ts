@@ -98,4 +98,42 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /must be an object/,
     );
   });
+  it('accepts a DAG coordinator with a reviewer', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        reviewer: { type: 'llm', plannerLlm: 'helper' },
+      }),
+    );
+  });
+  it('rejects an unknown reviewer.type', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          reviewer: { type: 'bogus' },
+        }),
+      /reviewer: unknown type 'bogus'/,
+    );
+  });
+  it('rejects a bad reviewer.plannerLlm', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          reviewer: { type: 'llm', plannerLlm: 'bogus' },
+        }),
+      /reviewer\.plannerLlm must be one of/,
+    );
+  });
+  it('rejects reviewer in a linear coordinator', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planning: 'one-shot',
+          reviewer: { type: 'llm' },
+        }),
+      /reviewer/,
+    );
+  });
 });

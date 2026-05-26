@@ -4,7 +4,9 @@ import type {
   IInterpreter,
   InterpretResult,
   IPlanner,
+  IReviewStrategy,
   ISubAgent,
+  ReviewVerdict,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -19,6 +21,10 @@ export interface DagCoordinatorHandlerDeps {
    *  omitted, the pipeline defaults to ExplicitActivation. The handler itself
    *  does not read this; the pipeline uses it to wire `coordinator-activate`. */
   activation?: IActivationStrategy;
+  /** Optional plan reviewer. When present, the coordinator runs it as a gate
+   *  between planning and execution; a non-pass verdict fails loud (batch).
+   *  Absent → no gate. */
+  reviewer?: IReviewStrategy;
 }
 
 export class DagCoordinatorHandler implements IStageHandler {
@@ -58,6 +64,35 @@ export class DagCoordinatorHandler implements IStageHandler {
     } catch (err) {
       ctx.error = new OrchestratorError(errMsg(err), 'COORDINATOR_PLAN_FAILED');
       return false;
+    }
+
+    if (this.deps.reviewer) {
+      let verdict: ReviewVerdict;
+      try {
+        verdict = await this.deps.reviewer.review({
+          prompt: ctx.inputText,
+          plan,
+          agents: [...this.deps.workers.values()].map((w) => ({
+            name: w.name,
+            description: w.description,
+          })),
+          sessionId: ctx.sessionId,
+          signal: ctx.options?.signal,
+        });
+      } catch (err) {
+        ctx.error = new OrchestratorError(
+          errMsg(err),
+          'COORDINATOR_REVIEW_FAILED',
+        );
+        return false;
+      }
+      if (!verdict.pass) {
+        ctx.error = new OrchestratorError(
+          verdict.feedback,
+          'COORDINATOR_PLAN_REJECTED',
+        );
+        return false;
+      }
     }
 
     let result: InterpretResult;

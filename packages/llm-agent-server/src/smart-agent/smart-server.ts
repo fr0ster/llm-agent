@@ -15,6 +15,7 @@ import type {
   IModelProvider,
   IModelResolver,
   IRequestLogger,
+  IReviewStrategy,
   ISkillManager,
   Message,
   NormalizedRequest,
@@ -47,6 +48,7 @@ import {
   HealthChecker,
   type HotReloadableConfig,
   LlmDagPlanner,
+  LlmReviewStrategy,
   makeLlm,
   SessionLogger,
   SmartAgentBuilder,
@@ -655,6 +657,20 @@ export class SmartServer {
           plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
 
         const planner = new LlmDagPlanner(plannerLlm);
+
+        // Optional plan reviewer (presence of `coordinator.reviewer` = gate on).
+        let reviewer: IReviewStrategy | undefined;
+        if (coordCfg.reviewer !== undefined) {
+          const reviewerBlock = coordCfg.reviewer as {
+            plannerLlm?: 'main' | 'planner' | 'helper';
+          };
+          const reviewerLlm =
+            reviewerBlock.plannerLlm === 'main'
+              ? mainLlm
+              : (helperLlm ?? mainLlm);
+          reviewer = new LlmReviewStrategy(reviewerLlm);
+        }
+
         const interpreter = new DagPlanInterpreter();
         // Reuse the registry built above — same ISubAgent instances already
         // passed to builder.withSubAgents(). No second buildSubAgent calls.
@@ -677,6 +693,7 @@ export class SmartServer {
           interpreter,
           workers,
           activation,
+          reviewer,
         });
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {

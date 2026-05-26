@@ -2,6 +2,8 @@ export { AutoActivation } from './activation/auto.js';
 export { ExplicitActivation } from './activation/explicit.js';
 export { DagPlanInterpreter } from './dag/dag-plan-interpreter.js';
 export { LlmDagPlanner } from './dag/llm-dag-planner.js';
+export { LlmReviewStrategy } from './dag/llm-review-strategy.js';
+export { NoopReviewStrategy } from './dag/noop-review-strategy.js';
 export { HybridDispatch } from './dispatch/hybrid.js';
 export { SelfDispatch } from './dispatch/self.js';
 export { SubAgentDispatch } from './dispatch/subagent.js';
