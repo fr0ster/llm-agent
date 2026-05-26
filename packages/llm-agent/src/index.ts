@@ -2,6 +2,7 @@
 export * from './errors/index.js';
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
+export { NeedsDecompositionError } from './needs-decomposition-error.js';
 export * from './rag/index.js';
 export * from './types.js';
 
