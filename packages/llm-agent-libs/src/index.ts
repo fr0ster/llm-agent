@@ -53,6 +53,7 @@ export {
   ExplicitActivation,
   HybridDispatch,
   LlmDagPlanner,
+  LlmReviewStrategy,
   OneShotPlanning,
   ReplanOnErrorPlanning,
   SelfDispatch,
