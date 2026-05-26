@@ -201,4 +201,24 @@ describe('DagPlanInterpreter', () => {
       /COORDINATOR_PLAN_INVALID/,
     );
   });
+
+  it("rejects a worker with contextPolicy='required'", async () => {
+    const required = {
+      name: 'needy',
+      capabilities: {
+        kind: 'constrained',
+        canDispatchChildren: false,
+        contextPolicy: 'required',
+      },
+      run: async () => ({ output: 'x' }),
+    } as unknown as ISubAgent;
+    await assert.rejects(
+      () =>
+        I().interpret(
+          dag([{ id: 'a', goal: 'g', agent: 'needy' }]),
+          ctx([['needy', required]]),
+        ),
+      /COORDINATOR_PLAN_INVALID.*contextPolicy='required'/s,
+    );
+  });
 });

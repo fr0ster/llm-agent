@@ -147,7 +147,19 @@ export class DagPlanInterpreter
             `COORDINATOR_PLAN_INVALID: node '${n.id}' depends on unknown '${d}'`,
           );
       }
-      this.resolveWorker(n, ctx);
+      const worker = this.resolveWorker(n, ctx);
+      // The interpreter feeds node data (dependency outputs + user input) through
+      // the composed task text, never the ISubAgentInput.context field. A worker
+      // with contextPolicy='required' would fail opaquely inside run(); reject the
+      // whole plan up front instead. (DagCoordinatorHandler also guards this at
+      // startup, but the interpreter enforces its own contract for direct callers.)
+      if (worker.capabilities?.contextPolicy === 'required') {
+        throw new PlanInvalidError(
+          `COORDINATOR_PLAN_INVALID: node '${n.id}' targets worker '${worker.name}' with ` +
+            "contextPolicy='required', but the DAG interpreter supplies node data via the " +
+            'composed task text, not the context field',
+        );
+      }
     }
     this.assertAcyclic(plan);
   }
