@@ -115,6 +115,47 @@ describe('DagPlanInterpreter', () => {
     assert.equal(r.nodeResults.n1.error, 'epicfail');
   });
 
+  it('runs a diamond: parallel middle nodes fan in to a terminal', async () => {
+    const order: string[] = [];
+    const w = worker('w', async (i) => {
+      // tag each node by a unique marker in its goal-derived task
+      if (i.task.includes('ROOT')) {
+        order.push('a');
+        return { output: 'A' };
+      }
+      if (i.task.includes('LEFT')) {
+        order.push('b');
+        return { output: 'B' };
+      }
+      if (i.task.includes('RIGHT')) {
+        order.push('c');
+        return { output: 'C' };
+      }
+      // terminal: must see both B and C
+      order.push('d');
+      return {
+        output: `D(${i.task.includes('B') ? 'B' : '?'}+${i.task.includes('C') ? 'C' : '?'})`,
+      };
+    });
+    const r = await I().interpret(
+      dag([
+        { id: 'a', goal: 'ROOT', agent: 'w' },
+        { id: 'b', goal: 'LEFT', agent: 'w', dependsOn: ['a'] },
+        { id: 'c', goal: 'RIGHT', agent: 'w', dependsOn: ['a'] },
+        { id: 'd', goal: 'merge', agent: 'w', dependsOn: ['b', 'c'] },
+      ]),
+      ctx([['w', w]]),
+    );
+    assert.equal(r.ok, true);
+    assert.equal(r.nodeResults.b.status, 'done');
+    assert.equal(r.nodeResults.c.status, 'done');
+    // d's task embedded both dependency outputs (fan-in data-flow)
+    assert.equal(r.output, 'D(B+C)');
+    // a ran before b/c which ran before d (topological order)
+    assert.equal(order[0], 'a');
+    assert.equal(order[3], 'd');
+  });
+
   it('throws COORDINATOR_PLAN_INVALID on empty / duplicate / missing-dep / cycle / unresolvable-agent', async () => {
     const w = worker('w', async () => ({ output: 'ok' }));
     const c = ctx([
