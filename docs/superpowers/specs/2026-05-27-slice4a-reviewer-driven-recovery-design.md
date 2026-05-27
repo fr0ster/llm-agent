@@ -20,11 +20,18 @@ autonomously, 4a **fails loud** (abort); 4b will add the pause.
 
 ## Scope & compatibility
 
-**Additive, no breaking change** (the new reviewer method is optional; new
-`errorStrategy: { type: reviewer }`, a `revise` `ErrorReaction` variant, two
-`ErrorContext` fields). Existing strategies (`abort`, `replan`) and `ReviewVerdict`
-are unchanged. It lands before the epic's pending release, so it ships inside the
-**same pending major (17.0.0)** as slice 3 — but 4a itself breaks nothing.
+**YAML and runtime-behavior backward-compat: fully preserved.** Existing example
+configs validate and load unchanged; `abort`/`replan` error strategies behave
+exactly as in slice 3; `ReviewVerdict` and `review()` are unchanged.
+
+**Programmatic-API note (honest):** the new reviewer method is **optional**
+(no implementor break) and the two new `ErrorContext` fields are **optional** (no
+literal break). The one genuinely additive-but-not-invisible change is that
+`ErrorReaction` gains a `revise` union member — external code with an *exhaustive*
+`switch` over `ErrorReaction` would need a new case. This is the normal cost of
+extending a discriminated union; everything else is non-breaking. 4a lands before
+the epic's release, so it ships inside the **same pending major (17.0.0)** as
+slice 3 regardless.
 
 **Tracked invariant (must not break): backward compatibility with existing YAML.**
 Every existing example config (`docs/examples/*.yaml`, `examples/**`) must keep
@@ -109,15 +116,17 @@ export interface ErrorContext {
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
-  // NEW (4a): the current plan + completed results, so a reviewer-driven
-  // strategy can replan the remainder against current state.
-  plan: DagPlan;
-  completedResults: NodeResult[];
+  // NEW (4a), OPTIONAL: the current plan + completed results, so a reviewer-driven
+  // strategy can replan the remainder against current state. Optional so external
+  // ErrorContext literals don't break; the interpreter ALWAYS populates them.
+  plan?: DagPlan;
+  completedResults?: NodeResult[];
 }
 ```
 
-Existing strategies (`AbortErrorStrategy`, `ReplanErrorStrategy`) ignore the new
-fields — no behavior change.
+Optional → existing strategies (`AbortErrorStrategy`, `ReplanErrorStrategy`) and any
+external `ErrorContext` literal are unaffected. `ReviewerErrorStrategy` aborts if
+`plan`/`completedResults` are absent (defensive; the interpreter always sets them).
 
 ### A.3 `ReviewerErrorStrategy implements IErrorStrategy`
 
@@ -126,9 +135,10 @@ new ReviewerErrorStrategy(reviewer: IReviewStrategy, maxReplans = 4)
 ```
 - `maxReplans` is the per-run revision-budget ceiling (reuses slice-3's interpreter
   counter — a revise consumes the same budget as a replan).
-- `onNodeFailure(node, error, ctx)`: if `ctx.remainingReplans <= 0` **or** the
-  reviewer does not implement `reviewExecutionFailure` → `{action:'abort'}` (no
-  reviewer call). Otherwise build `ExecutionFailureInput` from `ctx.plan`,
+- `onNodeFailure(node, error, ctx)`: if `ctx.remainingReplans <= 0`, the reviewer
+  does not implement `reviewExecutionFailure`, **or** `ctx.plan`/`ctx.completedResults`
+  are absent → `{action:'abort'}` (no reviewer call). Otherwise build
+  `ExecutionFailureInput` from `ctx.plan`,
   `ctx.completedResults`, `node.id`, `errMsg(error)`, `ctx.agents`, and call
   `reviewer.reviewExecutionFailure(...)`. Map `{action:'abort'}` →
   `{action:'abort'}`; `{action:'revise', revisedPlan}` →
@@ -137,26 +147,44 @@ new ReviewerErrorStrategy(reviewer: IReviewStrategy, maxReplans = 4)
 ### A.4 Interpreter — pass trace, handle `revise`
 
 In `DagPlanInterpreter`:
-- When building `ErrorContext` for `onNodeFailure`, also pass `plan: { ...plan, nodes: liveNodes }` and `completedResults: Object.values(results)`.
-- Handle the `revise` reaction in the serial apply phase (alongside `replan`):
-  ```
-  if (reaction.action === 'revise' && remainingReplans > 0) {
-    liveNodes = reaction.revisedPlan.nodes;   // swap the whole remaining plan
-    // start the revised plan from scratch — completed work lives in the world
-    // (and was given to the reviewer as trace); old results are dropped.
-    for (const key of Object.keys(results)) delete results[key];
-    done.clear();
-    replansUsed++;
-    splicedThisWave = true;
-    break;   // a whole-plan swap supersedes the rest of this wave's outcomes
-  }
-  ```
-  (`break` exits the per-wave outcome loop: the old plan's other outcomes are moot
-  once the plan is replaced.) `replan` (local splice, slice 3) keeps its existing
-  behavior and does NOT break the loop.
-- After the wave, the existing `if (splicedThisWave) this.validate(...)` re-validates
-  the swapped graph (empty/dup/missing-dep/cycle/unresolvable/contextPolicy) → an
-  invalid revised plan fails loud as `COORDINATOR_PLAN_INVALID`. Guard: an empty
+
+- **Introduce a mutable `currentPlan: DagPlan`** (initialized to the input `plan`).
+  It is the single source of truth for the plan as it evolves through splices and
+  revises. Replace every use of the original `plan` parameter inside the run with
+  `currentPlan`: `composeNodeTask(n, currentPlan, ...)` (so `objective` reflects the
+  revised plan), `this.validate(currentPlan, ctx)`, and the `ErrorContext.plan`
+  passed to the strategy. (This also fixes a latent slice-3 staleness where
+  `composeNodeTask` used the original `plan.objective` after a splice.)
+- The wave's `ready` filter and the tail (skip/aggregate/terminals) iterate
+  `currentPlan.nodes` (which equals the previous `liveNodes`). `liveNodes` and
+  `currentPlan` are kept in sync — prefer a single `currentPlan` and drop the
+  separate `liveNodes` variable; a splice/revise reassigns `currentPlan`.
+- When building `ErrorContext` for `onNodeFailure`, pass `plan: currentPlan` and
+  `completedResults: Object.values(results)`.
+
+**Same-wave reaction precedence (deterministic).** In the serial apply phase,
+process the wave's outcomes in **plan-node order**:
+1. record all `done` outcomes first;
+2. then iterate `failed` outcomes in plan-node order, calling
+   `errorStrategy.onNodeFailure` for each:
+   - `abort` → record that node `failed`;
+   - `replan` (local splice, slice 3) → splice into `currentPlan`, continue (does
+     NOT supersede other outcomes — local edits compose);
+   - `revise` (whole-remainder swap) → **this supersedes the entire wave**: discard
+     ALL results recorded so far this run (including any `abort`s already recorded
+     this wave — those nodes no longer exist in the revised plan), `currentPlan =
+     reaction.revisedPlan`, clear `done`, `replansUsed++`, and **`break`** out of
+     the outcome loop. The first `revise` in plan-node order wins; later outcomes of
+     the same wave are not consulted (no further strategy/LLM calls).
+
+This makes the abort-then-revise case deterministic: a `revise` anywhere in the
+wave wins and cleanly resets the run state, so a previously-recorded abort is
+intentionally superseded (its node is gone from the revised plan), never left in an
+inconsistent half-state.
+
+- After the wave, the existing `if (splicedThisWave) this.validate(currentPlan, ctx)`
+  re-validates the new graph (empty/dup/missing-dep/cycle/unresolvable/contextPolicy)
+  → an invalid revised plan fails loud as `COORDINATOR_PLAN_INVALID`. Guard: an empty
   `revisedPlan.nodes` is rejected the same way the empty-sub-plan guard rejects an
   empty replan (`COORDINATOR_PLAN_INVALID`).
 
