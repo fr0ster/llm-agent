@@ -123,6 +123,8 @@ export type {
 } from './request-logger.js';
 export type { IReranker } from './reranker.js';
 export type {
+  ExecutionFailureInput,
+  ExecutionReviewDecision,
   IReviewStrategy,
   ReviewInput,
   ReviewVerdict,
