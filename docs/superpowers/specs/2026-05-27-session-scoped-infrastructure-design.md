@@ -74,7 +74,7 @@ The substrate B and C build on.
 
 - Two sessions do not see each other's session-scoped records.
 - Evict clears only session-scope; user/global persist.
-- No-cookie request → ephemeral graph, nothing accumulates.
+- A no-cookie request gets a **unique** minted session id, runs in that minted graph, and its state persists within it (no shared `'default'` bucket); a no-jar client that never returns the cookie creates separate, never-continued sessions that are reaped by TTL/LRU.
 - Token-logger sums per session and resets on evict.
 
 ---
