@@ -282,4 +282,56 @@ describe('DagPlanInterpreter', () => {
     );
     assert.equal(r.ok, false);
   });
+
+  it('gives each interpret() run a fresh replan budget (no cross-call leak)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const small = worker('small', async () => ({ output: 'ok' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    // Shared singleton strategy with a 1-replan ceiling; each run needs 1 replan.
+    const strat = new ReplanErrorStrategy(planner, 1);
+    const make = () =>
+      ctx([['big', big], ['small', small]], strat);
+    const r1 = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      make(),
+    );
+    const r2 = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      make(),
+    );
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true); // would be false if the budget leaked across runs
+  });
+
+  it('applies replans serially for two NeedsDecomposition failures in one wave', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const small = worker('small', async () => ({ output: 'S' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    // A and B are independent roots → same first wave; both throw, both replan.
+    const r = await I().interpret(
+      dag([
+        { id: 'A', goal: 'big', agent: 'big' },
+        { id: 'B', goal: 'big', agent: 'big' },
+      ]),
+      ctx([['big', big], ['small', small]], new ReplanErrorStrategy(planner, 4)),
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.output, 'S\n\nS'); // both spliced sub-graphs ran
+  });
 });
