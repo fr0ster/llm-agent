@@ -6,7 +6,10 @@ import type {
   ISubAgent,
   ISubAgentInput,
 } from '@mcp-abap-adt/llm-agent';
+import { NeedsDecompositionError } from '@mcp-abap-adt/llm-agent';
+import { AbortErrorStrategy } from '../abort-error-strategy.js';
 import { DagPlanInterpreter } from '../dag-plan-interpreter.js';
+import { ReplanErrorStrategy } from '../replan-error-strategy.js';
 
 function worker(
   name: string,
@@ -23,12 +26,16 @@ function worker(
   } as ISubAgent;
 }
 
-function ctx(workers: Array<[string, ISubAgent]>): InterpretContext {
+function ctx(
+  workers: Array<[string, ISubAgent]>,
+  errorStrategy: import('@mcp-abap-adt/llm-agent').IErrorStrategy = new AbortErrorStrategy(),
+): InterpretContext {
   return {
     inputText: 'RAW',
     workers: new Map(workers),
     sessionId: 't',
     layer: 0,
+    errorStrategy,
   };
 }
 
@@ -220,5 +227,64 @@ describe('DagPlanInterpreter', () => {
         ),
       /COORDINATOR_PLAN_INVALID.*contextPolicy='required'/s,
     );
+  });
+
+  it('replans a node that throws NeedsDecompositionError into a sub-graph', async () => {
+    let calls = 0;
+    const big = worker('big', async () => {
+      calls++;
+      if (calls === 1) throw new NeedsDecompositionError('split me');
+      return { output: 'unreachable' };
+    });
+    const small = worker('small', async () => ({ output: 'done-small' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    const c = ctx(
+      [
+        ['big', big],
+        ['small', small],
+      ],
+      new ReplanErrorStrategy(planner, 4),
+    );
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      c,
+    );
+    assert.equal(r.ok, true);
+    assert.match(r.output, /done-small/);
+  });
+
+  it('default AbortErrorStrategy still fails the node (slice-1 behavior)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split me');
+    });
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      ctx([['big', big]]),
+    );
+    assert.equal(r.ok, false);
+  });
+
+  it('stops replanning at the budget (infinite-signal guard)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('always too big');
+    });
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 'again', goal: 'big', agent: 'big' }],
+        createdAt: 0,
+      }),
+    };
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      ctx([['big', big]], new ReplanErrorStrategy(planner, 2)),
+    );
+    assert.equal(r.ok, false);
   });
 });

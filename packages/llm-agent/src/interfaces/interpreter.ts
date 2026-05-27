@@ -1,3 +1,4 @@
+import type { IErrorStrategy } from './error-strategy.js';
 import type { ISubAgent } from './subagent.js';
 
 export interface IInterpreter<TInput, TOutput> {
@@ -17,6 +18,9 @@ export interface InterpretContext {
    * derived from the optional `ICoordinatorContext.layer`.
    */
   layer: number;
+  /** Reaction to a node failure (abort | replan). Always populated by the
+   *  caller; defaults to AbortErrorStrategy. */
+  errorStrategy: IErrorStrategy;
 }
 
 export interface NodeResult {

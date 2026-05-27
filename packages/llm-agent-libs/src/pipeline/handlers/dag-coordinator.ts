@@ -9,6 +9,7 @@ import type {
   ReviewVerdict,
 } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { AbortErrorStrategy } from '../../coordinator/index.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -103,6 +104,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         sessionId: ctx.sessionId,
         signal: ctx.options?.signal,
         layer: ctx.layer ?? 0,
+        errorStrategy: new AbortErrorStrategy(),
       });
     } catch (err) {
       // Structural plan errors: preserve a COORDINATOR_PLAN_INVALID code the
