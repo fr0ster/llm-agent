@@ -37,7 +37,7 @@ The substrate B and C build on.
 
 ### A.1 Identity
 
-- **`sessionId` — standard HTTP cookie, server-issued.** On first contact with no valid session cookie, the server mints a session id and returns `Set-Cookie` (with `Max-Age`). A cookie-aware HTTP client returns it automatically on subsequent requests — **transparent to consumer application code**. This is the maximally standard mechanism (RFC 6265) requiring zero consumer modification.
+- **`sessionId` — standard HTTP cookie, server-issued.** On any request with no valid session cookie, the server mints a **unique** session id and returns `Set-Cookie` (with `Max-Age`), and **that request already runs in the minted session's graph — its state persists** (there is no separate one-shot/ephemeral path). A cookie-aware HTTP client returns the cookie automatically on subsequent requests and **continues the same session**; a client that never returns it (no jar) mints a fresh, never-continued session each time. This is the maximally standard mechanism (RFC 6265) requiring zero consumer modification. Because every no-cookie request gets a **unique** id, there is no shared `'default'`/"eternal" bucket — never-continued sessions are reaped by TTL/LRU (A.4).
 - **`userId` — only in authorization-enabled builds**, derived from the auth token. The **default server has no authorization**, so `userId` is absent and user-scope lies dormant (mechanism present, partition empty).
 - **Custom headers are reserved for the non-standard only** — e.g. ABAP connection parameters (login/password or JWT), and only for implementations that need them. Custom-header handling is a **pluggable extension** the default server does not require; the core knows nothing about ABAP credentials.
 - Internal abstraction: `SessionIdentity { sessionId: string; userId?: string; /* extensible */ }`.
@@ -46,8 +46,8 @@ The substrate B and C build on.
 
 ### A.2 Per-session graph
 
-- Registry `Map<sessionId, SessionGraph>` on the server; **lazy build** on first request for a new/absent session cookie.
-- `SessionGraph` owns: coordinator, interpreter, roles, workers, token-logger, SessionManager.
+- Registry `Map<sessionId, SessionGraph>` on the server; **lazy build** on first request for a new/absent session cookie (the minting request, A.1, runs in this newly built graph).
+- `SessionGraph` owns the per-session runtime: coordinator, interpreter, roles, workers, token-logger, SessionManager, **and the already-session-keyed runtime stores** — `ToolAvailabilityRegistry` (`packages/llm-agent-libs/src/policy/tool-availability-registry.ts`) and `PendingToolResultsRegistry` (`packages/llm-agent-libs/src/policy/pending-tool-results-registry.ts`). These are currently built **per-request** in `default-pipeline.ts` (~line 411) even though both are keyed by `sessionId`; moving them into the SessionGraph is required so **pending async tool results and temporary tool blocklists survive subsequent requests in the same session**. Audit for any other sessionId-keyed runtime state and hoist it here too.
 - Lives across that cookie's requests.
 
 ### A.3 RAG factory
@@ -60,14 +60,15 @@ The substrate B and C build on.
 ### A.4 Lifecycle
 
 - **Evict by idle-TTL** (default **2 hours**, configurable) **+ LRU cap on live session count** (configurable). All such limits must be configurable.
-- On evict: dispose the graph → **clear session-scoped RAG records** for that `sessionId` → flush/reset the token-logger.
+- **Active-request pin (refcount).** Each in-flight request increments the SessionGraph's refcount; it is decremented when the request completes. **Neither idle-TTL nor LRU eviction may dispose a graph with refcount > 0** — eviction selects only idle (refcount 0) sessions, or marks a session for disposal and drains: the graph is disposed (and its session RAG cleared, token-logger flushed) only after the last in-flight request finishes. This prevents tearing down RAG/logger/interpreter under a live run, which A.5's inter-request concurrency makes possible.
+- On evict (of an unpinned graph): dispose the graph → **clear session-scoped RAG records** for that `sessionId` → flush/reset the token-logger.
 - **user-scoped and global RAG records survive** session eviction (user-scope is longer-lived, especially in auth builds; global is permanent).
-- A request with no cookie (default `'default'` problem) resolves to an **ephemeral per-request graph** that is disposed immediately after the response — nothing accumulates, nothing "eternal". A real session exists only once a cookie is issued and returned.
+- There is **no separate ephemeral/one-shot path** (see A.1): every request runs in a real session graph; never-continued sessions (no-jar clients) simply become idle and are reaped by TTL/LRU. Nothing is "eternal" because each no-cookie request gets a unique id rather than sharing a `'default'` bucket.
 
 ### A.5 Concurrency
 
 - **Intra-plan parallelism:** the planner decides at plan-build time which subagents may run in parallel; the interpreter dispatches them concurrently and `await`s completion. This is the existing DAG-interpreter behavior — kept.
-- **Inter-request concurrency on the same session:** allowed (no forced serialization), **provided the shared session state is concurrency-safe** — token-logger appends are additive, session-RAG upserts atomic. This is a binding design constraint on every piece of shared session state.
+- **Inter-request concurrency on the same session:** allowed (no forced serialization), **provided the shared session state is concurrency-safe** — token-logger appends are additive, session-RAG upserts atomic. This is a binding design constraint on every piece of shared session state. Concurrent requests each pin the graph via the A.4 refcount, so eviction cannot dispose it mid-run.
 
 ### A.6 Provability (tests)
 
@@ -111,6 +112,7 @@ Shared by the coordinator **and all workers** (replacing each worker's own `Defa
 
 ### C.2 Two accounting axes in the logger
 - **Request-scoped delta** (for response `usage`) — **keyed by request id**, because inter-request concurrency (A.5) makes a single mutable `requestLlmCalls` + `startRequest()`-reset unsafe (the current `DefaultRequestLogger.startRequest()` clears `requestLlmCalls`, which a concurrent or nested call would stomp).
+  - **Request id = the existing `traceId`.** The server already mints `traceId` per request and threads it through `options.trace.traceId` (`smart-server.ts` ~1342/1390). The design adopts this as the request id; no new id is introduced. **Contract:** every `logLlmCall` (coordinator, classifier, translate, embedding, and every worker tool-loop) must record under the active `traceId`, and the SessionGraph must thread `traceId` into worker dispatch so worker-side log calls attribute to the same request. `getSummary` gains a per-`traceId` view (request delta) alongside the session-cumulative view. Worker pipelines therefore receive `traceId` in `ISubAgentInput`/call options.
 - **Session-cumulative** — the per-session sum, for `/v1/usage` (selectable by `sessionId`).
 
 ### C.3 Non-zero per-response usage
