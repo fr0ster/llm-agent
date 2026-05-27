@@ -285,12 +285,16 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
             return { ended: true };
           }
           if (err instanceof NeedInfoSignal) {
-            if (!this.deps.stateOracle || ++roundTrips > maxRoundTrips) {
+            if (!this.deps.stateOracle) {
               throw new OrchestratorError(
-                this.deps.stateOracle
-                  ? 'coordinator: round-trip budget exhausted'
-                  : `coordinator: role requested info but no stateOracle is configured: ${err.query}`,
+                `coordinator: role requested info but no stateOracle is configured: ${err.query}`,
                 'COORDINATOR_NEEDINFO_UNRESOLVED',
+              );
+            }
+            if (++roundTrips > maxRoundTrips) {
+              throw new OrchestratorError(
+                'coordinator: round-trip budget exhausted',
+                'COORDINATOR_BUDGET_EXHAUSTED',
               );
             }
             const ans = await this.deps.stateOracle.run({
@@ -521,7 +525,29 @@ git commit -m "feat(slice4b): wire coordinator.stateOracle (excluded from worker
 
 **Files:** `dag-coordinator.ts` (`buildAncestorContext`), `compose-node-task.ts`; tests.
 
-- [ ] **Step 1: `buildAncestorContext(ctx)`** — implement the helper in `dag-coordinator.ts`: derive `objective` from `ctx.inputText` (the current request) and reconstruct `clarifications` from the conversation history available on `ctx` (pair a prior assistant clarification question with the following user answer). If history isn't accessible, return `{ objective: ctx.inputText, clarifications: [], oracleObservations: [] }`. (Inspect `PipelineContext` for the history field — e.g. `ctx.assembledMessages` / client history; pair `assistant`→`user` turns where the assistant turn looks like a question. Keep it conservative: only include clear Q/A pairs.)
+- [ ] **Step 1: `buildAncestorContext(ctx)`** — implement the helper in
+  `dag-coordinator.ts`. **No history heuristic** (a loose "assistant question → next
+  user answer" scan would pull unrelated/sibling questions from earlier in the
+  conversation, violating the node-+-ancestors rule). The MVP returns:
+
+  ```ts
+  function buildAncestorContext(ctx: PipelineContext): ContextPath {
+    return { objective: ctx.inputText, clarifications: [], oracleObservations: [] };
+  }
+  ```
+
+  `objective` = the current request; `clarifications` is **`[]`** unless a *reliable
+  structured marker* identifies a coordinator-emitted clarification turn — there is
+  none in this slice (the runtime stores plain assistant text, no clarify marker),
+  so we deliberately prefer `[]` over leakage. `oracleObservations` is populated
+  WITHIN the turn by `runRole`'s needInfo round-trip (that path is safe — same-turn,
+  path-scoped). Cross-turn clarification reconstruction (a structured
+  `coordinator_clarify` marker on the assistant turn + the next user answer) is a
+  documented follow-up, out of scope here.
+
+  Note for the implementer: the user's answer still reaches the planner — it is
+  `ctx.inputText` (the next turn's request) and thus the `objective`. We only avoid
+  *fabricating* a clarifications list by heuristic.
 
 - [ ] **Step 2: composeNodeTask ancestor path** — in `compose-node-task.ts`, accept the ancestor objective/clarifications and prepend them (objective already partly present via `plan.objective`; add the clarifications/oracleObservations text). Keep dependency outputs (dependsOn) and exclude siblings (already the case). Update the interpreter call site to pass the ancestor info (thread `ctx.ancestorContext` if added to `InterpretContext`, or pass via the plan objective). Minimal: add `ancestorContext?: ContextPath` to `InterpretContext`, set it from the coordinator, and have `composeNodeTask` render it.
 
