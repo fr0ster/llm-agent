@@ -17,25 +17,25 @@ This epic introduces **session-scoped infrastructure**: a per-session object gra
 
 The design separates two axes that were previously conflated:
 
-1. **Object lifecycle / ownership.** Classes are shared code, but **instances are per-session**: a session owns live instances of the pipeline, interpreter, coordinator, roles (planner/reviewer/state-oracle), workers, the per-session MCP server (handler registration + server instance, per the MCP standard), token-logger, SessionManager, history-memory, and the sessionId-keyed registries. The **pipeline itself is per-session because different sessions may run different pipelines.** These per-session instances are **built cheaply by injecting shared global resources** (below) rather than rebuilding them — so a per-session graph does NOT re-connect MCP or re-vectorize the tools catalog.
+1. **Object lifecycle / ownership.** Classes are shared code, but **instances are per-session**: a session owns live instances of the pipeline, interpreter, coordinator, roles (planner/reviewer/state-oracle), workers, the per-session MCP server (handler registration + server instance, per the MCP standard), token-logger, SessionManager, history-memory, and the sessionId-keyed registries. The **pipeline itself is per-session because different sessions may run different pipelines.** These per-session instances are **built cheaply by injecting shared global resources** (below) rather than rebuilding them — so a per-session graph does NOT re-vectorize the tools catalog or rebuild LLM/embedder clients. (The MCP **client** is resolved per session via `mcpClientFactory`, defaulting to the shared global client; re-connecting only when per-session credentials require it.)
 2. **RAG scope (access parameter over shared storage).** RAG objects are not per-session data copies; they are shared stores over a shared backend (Qdrant / Vectorized Custom Store / …). `scope` (`global|user|session`) is a static store-config dimension; **isolation is applied per call by the existing `rag-query` scope filter** (`ragFilter.sessionId`/`ragFilter.userId`), with the identity **values** taken from `ctx.sessionId` / `ctx.options.userId`. The per-session graph's only RAG responsibility is to (a) guarantee `ctx.sessionId` equals the cookie session id, and (b) create/close session-scoped collections via the existing registry — it does NOT build separate identity-bound view objects.
 
 ### Global vs per-session resources
 
 | Resource | Lifecycle | Notes |
 |---|---|---|
-| Upstream MCP client (SAP ADT, …) | **GLOBAL** | one connection, shared by reference; expensive to establish |
-| Vectorized MCP **tools-catalog RAG** | **GLOBAL** | ~hundreds of tool embeddings — the most expensive build step; vectorized once, shared |
-| LLM / embedder clients | **GLOBAL** | constructed once, injected |
+| Vectorized MCP **tools-catalog RAG** | **GLOBAL** | ~hundreds of tool embeddings — the most expensive build step; **vectorized once, shared by all** (tool SCHEMAS are identical across sessions). This is the strict global invariant. |
+| LLM / embedder clients (top-level AND per-worker) | **GLOBAL** | constructed once, cached, injected by reference |
 | RAG provider/registry, global+user collections | **GLOBAL** | shared backend; scope filter selects partitions |
+| **MCP client** (executes tool calls) | **per-session-CAPABLE** | resolved via `mcpClientFactory(identity)`; default impl returns the **shared global client** (no per-session creds, e.g. the default server); a creds-aware build returns a **per-session client** (per-session ABAP login/pass/JWT from custom headers). Even when per-session, the tools-catalog RAG is NOT re-vectorized — only the connection differs. |
 | **Pipeline** (may differ per session) | per-session instance | built from injected globals |
-| Interpreter / coordinator / roles / workers | per-session instance | wired to shared LLM + tools-RAG + MCP |
+| Interpreter / coordinator / roles / workers | per-session instance | wired to shared LLM + tools-catalog RAG + the session's MCP client |
 | **MCP server** (handlers + instance) | per-session instance | per the MCP standard; cheap (handler registration) |
 | Session-scoped RAG collections | per-session | created via `createCollection(scope:session, sessionId)` |
 | Token-logger / history-memory | per-session | session's spend / recency cache |
 | `ToolAvailabilityRegistry` / `PendingToolResultsRegistry` | per-session | today per-request; hoist to the session graph |
 
-The key efficiency invariant: **per-session build injects the global heavy resources (upstream MCP, vectorized tools-catalog RAG, LLM/embedder clients) by reference and never rebuilds them.** Only the lightweight composition (pipeline/interpreter/coordinator wiring + per-session MCP server handler registration + state allocation) happens per session.
+The key efficiency invariant: **per-session build injects the global heavy resources (vectorized tools-catalog RAG, LLM/embedder clients) by reference and never rebuilds them** — in particular the tools catalog is NEVER re-vectorized per session. Only the lightweight composition (pipeline/interpreter/coordinator wiring + per-session MCP server handler registration + state allocation) happens per session. The MCP **client** is resolved per session via `mcpClientFactory(identity)`: it defaults to the shared global client and is only a fresh connection when per-session credentials require it (still no re-vectorization).
 
 ---
 
@@ -56,7 +56,7 @@ The substrate B and C build on.
 ### A.2 Per-session graph
 
 - Registry `Map<sessionId, SessionGraph>` on the server; **lazy build** on first request for a new/absent session cookie (the minting request, A.1, runs in this newly built graph).
-- A **`SessionGraphFactory`** builds a `SessionGraph` from the injected global resources (upstream MCP client, vectorized tools-catalog RAG, LLM/embedder clients, RAG provider/registry). This is the central new composition path: it assembles a per-session **pipeline + interpreter + coordinator + roles + workers + per-session MCP server** **without** re-connecting MCP or re-vectorizing tools — those globals are passed by reference.
+- A **`SessionGraphFactory`** builds a `SessionGraph` from the injected global resources (vectorized tools-catalog RAG, LLM/embedder clients, RAG provider/registry) plus a per-session MCP client obtained from an injected **`mcpClientFactory(identity)`** (default: the shared global client). This is the central new composition path: it assembles a per-session **pipeline + interpreter + coordinator + roles + workers + per-session MCP server** **without** re-vectorizing tools or rebuilding LLM clients — those globals are passed by reference; only the MCP client may be per-session (and only re-connects when credentials require it).
 - `SessionGraph` owns the per-session runtime: the pipeline/interpreter/coordinator/roles/workers instances, the per-session MCP server, token-logger, SessionManager, history-memory, **and the already-session-keyed runtime stores** — `ToolAvailabilityRegistry` (`packages/llm-agent-libs/src/policy/tool-availability-registry.ts`) and `PendingToolResultsRegistry` (`packages/llm-agent-libs/src/policy/pending-tool-results-registry.ts`). These two are currently built **per-request** in `default-pipeline.ts` (~line 411) even though both are keyed by `sessionId`; moving them into the SessionGraph is required so **pending async tool results and temporary tool blocklists survive subsequent requests in the same session**. Audit for any other sessionId-keyed runtime state and hoist it here too.
 - Because the pipeline is a per-session instance, **different sessions may run different pipelines**; the default server builds them from one config, but the capability to vary per session is first-class.
 - Lives across that cookie's requests.
