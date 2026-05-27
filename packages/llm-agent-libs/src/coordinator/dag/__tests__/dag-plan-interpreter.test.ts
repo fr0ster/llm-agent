@@ -18,8 +18,6 @@ function worker(
   return {
     name,
     capabilities: {
-      kind: 'constrained',
-      canDispatchChildren: false,
       contextPolicy: 'optional',
     },
     run: run as ISubAgent['run'],
@@ -213,8 +211,6 @@ describe('DagPlanInterpreter', () => {
     const required = {
       name: 'needy',
       capabilities: {
-        kind: 'constrained',
-        canDispatchChildren: false,
         contextPolicy: 'required',
       },
       run: async () => ({ output: 'x' }),

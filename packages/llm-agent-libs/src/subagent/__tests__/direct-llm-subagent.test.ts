@@ -18,13 +18,11 @@ class CapturingLlm {
 }
 
 describe('DirectLlmSubAgent', () => {
-  it('declares constrained capabilities', () => {
+  it('declares capabilities with contextPolicy=required by default', () => {
     const llm = new CapturingLlm() as unknown as ILlm;
     const sub = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: 'You are a code reviewer.',
     });
-    assert.equal(sub.capabilities.kind, 'constrained');
-    assert.equal(sub.capabilities.canDispatchChildren, false);
     assert.equal(sub.capabilities.contextPolicy, 'required');
   });
 

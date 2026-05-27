@@ -42,21 +42,13 @@ export class CoordinatorHandler implements IStageHandler {
   constructor(private readonly deps: CoordinatorHandlerDeps) {}
 
   private validatePlan(
-    plan: Plan,
+    _plan: Plan,
     layer: number,
-    registry: SubAgentRegistry,
+    _registry: SubAgentRegistry,
     maxLayer: number,
   ): string | undefined {
     if (layer >= maxLayer) {
       return `Coordinator at layer ${layer} cannot dispatch (maxLayer=${maxLayer}).`;
-    }
-    for (const step of plan.steps) {
-      if (!step.agent) continue;
-      const sub = registry.get(step.agent);
-      if (!sub) continue;
-      if (layer >= 1 && sub.capabilities.kind === 'autonomous') {
-        return `Step '${step.id}' targets autonomous subagent '${step.agent}' but layer ${layer} only allows constrained subagents.`;
-      }
     }
     return undefined;
   }

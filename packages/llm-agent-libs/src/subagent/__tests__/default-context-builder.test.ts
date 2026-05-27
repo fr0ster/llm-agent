@@ -19,8 +19,6 @@ function makeAgent(): ISubAgent {
   return {
     name: 'worker',
     capabilities: {
-      kind: 'constrained',
-      canDispatchChildren: false,
       contextPolicy: 'required',
     },
     async run() {
@@ -112,8 +110,6 @@ describe('DefaultSubAgentContextBuilder', () => {
     const agent: ISubAgent = {
       ...makeAgent(),
       capabilities: {
-        kind: 'autonomous',
-        canDispatchChildren: false,
         contextPolicy: 'forbidden',
       },
     };

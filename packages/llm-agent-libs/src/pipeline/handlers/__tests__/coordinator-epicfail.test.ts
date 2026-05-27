@@ -29,8 +29,6 @@ function makeSpan(): ISpan {
 class EpicFailingSubAgent implements ISubAgent {
   readonly name = 'failer';
   readonly capabilities = {
-    kind: 'autonomous' as const,
-    canDispatchChildren: false,
     contextPolicy: 'optional' as const,
   };
   async run(input: ISubAgentInput) {

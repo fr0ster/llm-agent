@@ -10,8 +10,6 @@ import type { SmartAgent } from '../agent.js';
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
   public readonly capabilities: SubAgentCapabilities = {
-    kind: 'autonomous',
-    canDispatchChildren: true,
     contextPolicy: 'optional',
   };
 

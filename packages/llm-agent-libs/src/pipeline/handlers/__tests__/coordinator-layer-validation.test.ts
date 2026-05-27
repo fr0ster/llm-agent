@@ -24,16 +24,11 @@ function makeSpan(): ISpan {
   } as unknown as ISpan;
 }
 
-function makeSubAgent(
-  name: string,
-  kind: 'autonomous' | 'constrained',
-): ISubAgent {
+function makeSubAgent(name: string): ISubAgent {
   return {
     name,
     capabilities: {
-      kind,
-      canDispatchChildren: kind === 'autonomous',
-      contextPolicy: kind === 'constrained' ? 'required' : 'optional',
+      contextPolicy: 'optional',
     },
     async run() {
       return { output: 'ok' };
@@ -110,12 +105,12 @@ function makeDeps(
 }
 
 describe('CoordinatorHandler layer validation', () => {
-  it('allows autonomous subagents at layer 0', async () => {
+  it('allows subagents at layer 0', async () => {
     const subAgents = new Map<string, ISubAgent>([
-      ['auto', makeSubAgent('auto', 'autonomous')],
+      ['worker', makeSubAgent('worker')],
     ]);
     const planning = makePlanning([
-      { id: 's1', goal: 'g', agent: 'auto', status: 'pending' },
+      { id: 's1', goal: 'g', agent: 'worker', status: 'pending' },
     ]);
     const { ctx } = makeCtx({ layer: 0, subAgents });
     const handler = new CoordinatorHandler(
@@ -126,32 +121,12 @@ describe('CoordinatorHandler layer validation', () => {
     assert.equal(ctx.error, undefined);
   });
 
-  it('rejects a plan that targets an autonomous subagent at layer >= 1', async () => {
+  it('allows subagents at layer 1 when maxLayer=2', async () => {
     const subAgents = new Map<string, ISubAgent>([
-      ['auto', makeSubAgent('auto', 'autonomous')],
+      ['worker', makeSubAgent('worker')],
     ]);
     const planning = makePlanning([
-      { id: 's1', goal: 'g', agent: 'auto', status: 'pending' },
-    ]);
-    const { ctx } = makeCtx({ layer: 1, subAgents });
-    const handler = new CoordinatorHandler(
-      makeDeps(planning, makeDispatch(), 2),
-    );
-    const ok = await handler.execute(ctx, {}, makeSpan());
-    assert.equal(ok, false);
-    assert.ok(ctx.error);
-    assert.match(
-      String(ctx.error?.message ?? ''),
-      /layer 1.*autonomous|autonomous.*layer 1/i,
-    );
-  });
-
-  it('allows constrained subagents at any layer below maxLayer', async () => {
-    const subAgents = new Map<string, ISubAgent>([
-      ['c', makeSubAgent('c', 'constrained')],
-    ]);
-    const planning = makePlanning([
-      { id: 's1', goal: 'g', agent: 'c', status: 'pending' },
+      { id: 's1', goal: 'g', agent: 'worker', status: 'pending' },
     ]);
     const { ctx } = makeCtx({ layer: 1, subAgents });
     const handler = new CoordinatorHandler(
@@ -164,10 +139,10 @@ describe('CoordinatorHandler layer validation', () => {
 
   it('rejects any dispatch when layer >= maxLayer', async () => {
     const subAgents = new Map<string, ISubAgent>([
-      ['c', makeSubAgent('c', 'constrained')],
+      ['worker', makeSubAgent('worker')],
     ]);
     const planning = makePlanning([
-      { id: 's1', goal: 'g', agent: 'c', status: 'pending' },
+      { id: 's1', goal: 'g', agent: 'worker', status: 'pending' },
     ]);
     const { ctx } = makeCtx({ layer: 2, subAgents });
     const handler = new CoordinatorHandler(

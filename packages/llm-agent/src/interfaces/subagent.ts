@@ -2,30 +2,10 @@ import type { EpicFailTrace } from './coordinator.js';
 import type { LlmToolCall, LlmUsage } from './types.js';
 
 /**
- * High-level subagent execution model.
- *
- * - `autonomous`: runs the full SmartAgent pipeline (own RAG, MCP, skills,
- *   classifier, optional CoordinatorHandler). At layer 0 it may dispatch
- *   children; at deeper layers it must not.
- * - `constrained`: a leaf-node subagent that performs a single LLM call
- *   over injected context. Never dispatches children.
- */
-export type SubAgentKind = 'autonomous' | 'constrained';
-
-/**
  * Typed metadata that the planner/validator can read without invoking the
- * agent. Used to enforce layer rules and to decide whether to call the
- * context builder before dispatch.
+ * agent. Used to decide whether to call the context builder before dispatch.
  */
 export interface SubAgentCapabilities {
-  kind: SubAgentKind;
-  /**
-   * Whether this agent is, in principle, capable of dispatching child subagents
-   * from inside its own plan. Layer rules still apply on top of this flag — even
-   * a `canDispatchChildren: true` agent cannot dispatch children at layer >= 1
-   * by default (see `maxLayer` and the plan-validation gate in CoordinatorHandler).
-   */
-  canDispatchChildren: boolean;
   /**
    * Context handling expectations:
    * - 'required': dispatch must populate `input.context`; missing context is an error.
@@ -76,10 +56,8 @@ export interface ISubAgentResult {
 /**
  * The runtime contract for any subagent the coordinator can dispatch.
  *
- * **Breaking change in the nested-dispatch foundation:** `capabilities`
- * is now REQUIRED on every implementation. Migration: declare a static
- * `capabilities` field matching your subagent's execution model (autonomous
- * for full-pipeline agents, constrained for leaf LLM-call agents).
+ * Implementations must declare a `capabilities` field describing their
+ * context-handling policy.
  */
 export interface ISubAgent {
   readonly name: string;

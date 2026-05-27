@@ -139,7 +139,6 @@ export type {
   ISubAgentInput,
   ISubAgentResult,
   SubAgentCapabilities,
-  SubAgentKind,
   SubAgentRegistry,
 } from './subagent.js';
 export type {
