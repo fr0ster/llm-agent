@@ -311,6 +311,24 @@ describe('DagPlanInterpreter', () => {
     assert.equal(r2.ok, true); // would be false if the budget leaked across runs
   });
 
+  it('fails loud (COORDINATOR_PLAN_INVALID) when a replan produces an empty sub-plan', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const planner = {
+      name: 'p',
+      plan: async () => ({ nodes: [], createdAt: 0 }), // empty sub-plan
+    };
+    await assert.rejects(
+      () =>
+        I().interpret(
+          dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+          ctx([['big', big]], new ReplanErrorStrategy(planner, 4)),
+        ),
+      /COORDINATOR_PLAN_INVALID/,
+    );
+  });
+
   it('applies replans serially for two NeedsDecomposition failures in one wave', async () => {
     const big = worker('big', async () => {
       throw new NeedsDecompositionError('split');

@@ -114,6 +114,15 @@ export class DagPlanInterpreter
           },
         );
         if (reaction.action === 'replan' && remainingReplans > 0) {
+          // Fail loud on an empty sub-plan: splicing it would silently drop the
+          // failed node (terminals=[]; consumers rewired to nothing), leaving a
+          // smaller graph that still passes re-validation. An empty replan is an
+          // invalid plan, not a no-op.
+          if (reaction.subPlan.nodes.length === 0) {
+            throw new PlanInvalidError(
+              `COORDINATOR_PLAN_INVALID: replan for node '${o.node.id}' produced an empty sub-plan`,
+            );
+          }
           liveNodes = spliceSubPlan(
             { ...plan, nodes: liveNodes },
             o.node.id,
