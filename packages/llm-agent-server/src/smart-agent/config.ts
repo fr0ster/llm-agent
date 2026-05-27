@@ -43,6 +43,8 @@ export interface YamlCoordinator {
   interpreter?: { type?: string } | Record<string, unknown>;
   reviewer?: { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' };
   errorStrategy?: { type?: string; maxReplans?: number };
+  stateOracle?: string;
+  maxRoundTrips?: number;
 }
 
 const LINEAR_ONLY = [
@@ -54,7 +56,14 @@ const LINEAR_ONLY = [
   'maxLayer',
   'plannerLlm',
 ];
-const DAG_ONLY = ['planner', 'interpreter', 'reviewer', 'errorStrategy'];
+const DAG_ONLY = [
+  'planner',
+  'interpreter',
+  'reviewer',
+  'errorStrategy',
+  'stateOracle',
+  'maxRoundTrips',
+];
 
 /** Validate a `{ type?: 'llm'; plannerLlm?: main|planner|helper }` role block. */
 function assertLlmRoleShape(label: string, role: unknown): void {
@@ -115,6 +124,22 @@ export function assertCoordinatorConfigShape(
     }
     if (coord.errorStrategy !== undefined) {
       assertErrorStrategyShape(coord.errorStrategy);
+    }
+    if (
+      coord.stateOracle !== undefined &&
+      typeof coord.stateOracle !== 'string'
+    ) {
+      throw new Error(
+        `coordinator.stateOracle must be a string (a declared subagent name), got: ${JSON.stringify(coord.stateOracle)}`,
+      );
+    }
+    if (
+      coord.maxRoundTrips !== undefined &&
+      (typeof coord.maxRoundTrips !== 'number' || coord.maxRoundTrips < 0)
+    ) {
+      throw new Error(
+        `coordinator.maxRoundTrips must be a non-negative number, got: ${String(coord.maxRoundTrips)}`,
+      );
     }
     for (const f of LINEAR_ONLY) {
       if (coord[f] !== undefined) {

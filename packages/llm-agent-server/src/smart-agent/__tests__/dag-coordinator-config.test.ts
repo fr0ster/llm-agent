@@ -198,4 +198,33 @@ describe('coordinator config shape (DAG vs linear)', () => {
       assertCoordinatorConfigShape({ planning: 'one-shot', maxLayer: 2 }),
     );
   });
+  it('accepts a DAG coordinator with stateOracle + maxRoundTrips', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        stateOracle: 'oracle',
+        maxRoundTrips: 8,
+      }),
+    );
+  });
+  it('rejects a non-string stateOracle', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          stateOracle: 5,
+        }),
+      /stateOracle/,
+    );
+  });
+  it('rejects stateOracle in a linear coordinator', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planning: 'one-shot',
+          stateOracle: 'oracle',
+        }),
+      /stateOracle/,
+    );
+  });
 });

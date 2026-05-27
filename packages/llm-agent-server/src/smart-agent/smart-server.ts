@@ -18,6 +18,7 @@ import type {
   IRequestLogger,
   IReviewStrategy,
   ISkillManager,
+  ISubAgent,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -677,16 +678,30 @@ export class SmartServer {
         const interpreter = new DagPlanInterpreter();
         // Reuse the registry built above — same ISubAgent instances already
         // passed to builder.withSubAgents(). No second buildSubAgent calls.
-        // DAG mode plans against the worker catalog, so an empty registry
+        const oracleName = coordCfg.stateOracle as string | undefined;
+        let stateOracle: ISubAgent | undefined;
+        if (oracleName) {
+          stateOracle = registry.get(oracleName);
+          if (!stateOracle) {
+            throw new Error(
+              `coordinator.stateOracle '${oracleName}' is not a declared subagent`,
+            );
+          }
+        }
+        // The oracle is inspection-only — never a DAG worker. Exclude it from the
+        // catalog the planner sees and the interpreter dispatches to.
+        const workers: SubAgentRegistry = new Map(
+          [...registry].filter(([name]) => name !== oracleName),
+        );
+        // DAG mode plans against the worker catalog, so an empty worker set
         // would plan against nothing and fail per-request in the interpreter.
         // Fail loud at startup instead.
-        if (registry.size === 0) {
+        if (workers.size === 0) {
           throw new Error(
             'coordinator.planner is set (DAG mode) but no workers are configured. ' +
               'Add at least one entry under the top-level `subagents:` block.',
           );
         }
-        const workers = registry;
         const activation = resolveCoordinatorActivation(
           (coordCfg.activation ?? 'explicit') as string,
         );
@@ -708,6 +723,8 @@ export class SmartServer {
           activation,
           reviewer,
           errorStrategy,
+          stateOracle,
+          maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
         });
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
