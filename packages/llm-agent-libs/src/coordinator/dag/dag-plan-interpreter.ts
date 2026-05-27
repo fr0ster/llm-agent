@@ -107,9 +107,7 @@ export class DagPlanInterpreter
       const failures = outcomes.filter(
         (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
       );
-      let revised = false;
       for (const o of failures) {
-        if (revised) break;
         const remainingReplans = maxReplans - replansUsed;
         const reaction = await ctx.errorStrategy.onNodeFailure(
           o.node,
@@ -123,8 +121,6 @@ export class DagPlanInterpreter
             })),
             sessionId: ctx.sessionId,
             signal: ctx.signal,
-            plan: currentPlan,
-            completedResults: Object.values(results),
           },
         );
         if (reaction.action === 'replan' && remainingReplans > 0) {
@@ -136,21 +132,6 @@ export class DagPlanInterpreter
           currentPlan = spliceSubPlan(currentPlan, o.node.id, reaction.subPlan);
           replansUsed++;
           splicedThisWave = true;
-        } else if (reaction.action === 'revise' && remainingReplans > 0) {
-          if (reaction.revisedPlan.nodes.length === 0) {
-            throw new PlanInvalidError(
-              `COORDINATOR_PLAN_INVALID: revise for node '${o.node.id}' produced an empty plan`,
-            );
-          }
-          // Whole-remainder swap: supersede the entire wave. Drop all results
-          // (completed work lives in the world + was given to the reviewer as
-          // trace); run the revised plan from scratch.
-          currentPlan = reaction.revisedPlan;
-          for (const key of Object.keys(results)) delete results[key];
-          done.clear();
-          replansUsed++;
-          splicedThisWave = true;
-          revised = true;
         } else {
           results[o.node.id] = {
             nodeId: o.node.id,
@@ -180,16 +161,18 @@ export class DagPlanInterpreter
       (n) => results[n.id].status !== 'done',
     );
     if (failed.length > 0) {
-      const first = currentPlan.nodes.find(
+      const firstFailed = currentPlan.nodes.find(
         (n) => results[n.id].status === 'failed',
       );
       return {
         nodeResults: results,
         ok: false,
-        error: first
-          ? `node '${first.id}' failed: ${results[first.id].error ?? 'unknown'}`
+        error: firstFailed
+          ? `node '${firstFailed.id}' failed: ${results[firstFailed.id].error ?? 'unknown'}`
           : 'plan did not complete',
         output: '',
+        failedNodeId: firstFailed?.id,
+        executedPlan: currentPlan,
       };
     }
 

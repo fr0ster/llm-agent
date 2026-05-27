@@ -10,7 +10,6 @@ import { NeedsDecompositionError } from '@mcp-abap-adt/llm-agent';
 import { AbortErrorStrategy } from '../abort-error-strategy.js';
 import { DagPlanInterpreter } from '../dag-plan-interpreter.js';
 import { ReplanErrorStrategy } from '../replan-error-strategy.js';
-import { ReviewerErrorStrategy } from '../reviewer-error-strategy.js';
 
 function worker(
   name: string,
@@ -336,59 +335,19 @@ describe('DagPlanInterpreter', () => {
     );
   });
 
-  it('revises the whole remaining plan on failure and runs it (state-baselined)', async () => {
-    let bigCalls = 0;
-    const big = worker('big', async () => {
-      bigCalls++;
-      throw new Error('table already exists');
-    });
-    const fix = worker('fix', async () => ({ output: 'fixed' }));
-    const reviewer = {
-      name: 'r',
-      review: async () => ({ pass: true as const }),
-      reviewExecutionFailure: async () => ({
-        action: 'revise' as const,
-        revisedPlan: {
-          nodes: [{ id: 'f1', goal: 'modify table', agent: 'fix' }],
-          createdAt: 0,
-        },
-      }),
-    };
+  it('reports failedNodeId and executedPlan on failure', async () => {
+    const w = worker('w', async (i) =>
+      i.task.includes('boom')
+        ? Promise.reject(new Error('boom'))
+        : { output: 'ok' },
+    );
     const r = await I().interpret(
-      dag([{ id: 'n1', goal: 'create table', agent: 'big' }]),
-      ctx(
-        [
-          ['big', big],
-          ['fix', fix],
-        ],
-        new ReviewerErrorStrategy(reviewer, 4),
-      ),
+      dag([{ id: 'a', goal: 'boom', agent: 'w' }]),
+      ctx([['w', w]]),
     );
-    assert.equal(r.ok, true);
-    assert.equal(r.output, 'fixed');
-    assert.equal(bigCalls, 1); // old failed node not re-run; replaced by revised plan
-  });
-
-  it('revise with an empty plan fails loud (COORDINATOR_PLAN_INVALID)', async () => {
-    const big = worker('big', async () => {
-      throw new Error('boom');
-    });
-    const reviewer = {
-      name: 'r',
-      review: async () => ({ pass: true as const }),
-      reviewExecutionFailure: async () => ({
-        action: 'revise' as const,
-        revisedPlan: { nodes: [], createdAt: 0 },
-      }),
-    };
-    await assert.rejects(
-      () =>
-        I().interpret(
-          dag([{ id: 'n1', goal: 'g', agent: 'big' }]),
-          ctx([['big', big]], new ReviewerErrorStrategy(reviewer, 4)),
-        ),
-      /COORDINATOR_PLAN_INVALID/,
-    );
+    assert.equal(r.ok, false);
+    assert.equal(r.failedNodeId, 'a');
+    assert.equal(r.executedPlan?.nodes[0].id, 'a');
   });
 
   it('applies replans serially for two NeedsDecomposition failures in one wave', async () => {
