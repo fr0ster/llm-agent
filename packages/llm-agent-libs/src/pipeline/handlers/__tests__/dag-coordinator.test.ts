@@ -8,12 +8,8 @@ import type {
   IPlanner,
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  CLARIFY_MARKER,
-  ClarifySignal,
-  NeedInfoSignal,
-} from '@mcp-abap-adt/llm-agent';
-import { DagCoordinatorHandler } from '../dag-coordinator.js';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import { CLARIFY_MARKER, DagCoordinatorHandler } from '../dag-coordinator.js';
 
 const planner = (nodes: DagPlan['nodes']): IPlanner => ({
   name: 'p',

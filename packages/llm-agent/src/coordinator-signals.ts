@@ -19,12 +19,3 @@ export class ClarifySignal extends Error {
     this.question = question;
   }
 }
-
-/**
- * Marker prefixed onto a coordinator-emitted clarification question. `Message`
- * exposes no metadata field, so the marker lives in the assistant content — but
- * it is zero-width (invisible): the user/API sees only the question. On the next
- * turn the coordinator reconstructs the clarification Q/A ONLY from the marked
- * tail turn. Zero-width: U+2063 INVISIBLE SEPARATOR x3.
- */
-export const CLARIFY_MARKER = '⁣⁣⁣';

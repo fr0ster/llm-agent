@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { CLARIFY_MARKER } from '@mcp-abap-adt/llm-agent';
-import { buildAncestorContext } from '../dag-coordinator.js';
+import { buildAncestorContext, CLARIFY_MARKER } from '../dag-coordinator.js';
 
 function ctx(
   history: Array<{ role: string; content: string }>,

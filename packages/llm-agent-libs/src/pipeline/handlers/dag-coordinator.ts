@@ -10,16 +10,23 @@ import type {
   IReviewStrategy,
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  CLARIFY_MARKER,
-  ClarifySignal,
-  NeedInfoSignal,
-} from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+
+/**
+ * Marker prefixed onto a coordinator-emitted clarification question. `Message`
+ * has no metadata field, so the marker lives in the assistant content — but it is
+ * zero-width (invisible): the user/API sees only the question. On the next turn
+ * `buildAncestorContext` reconstructs the clarification Q/A ONLY from the marked
+ * tail turn. This is a coordinator-internal protocol detail (emit + reconstruct
+ * are both here), NOT a public contract — hence it lives in llm-agent-libs, not in
+ * the contracts package. Zero-width: U+2063 INVISIBLE SEPARATOR x3.
+ */
+export const CLARIFY_MARKER = '⁣⁣⁣';
 
 export interface DagCoordinatorHandlerDeps {
   planner: IPlanner;
