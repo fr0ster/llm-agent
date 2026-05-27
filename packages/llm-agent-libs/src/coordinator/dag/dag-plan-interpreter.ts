@@ -27,12 +27,12 @@ export class DagPlanInterpreter
 
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
-    let liveNodes = plan.nodes;
+    let currentPlan = plan;
     const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
     let replansUsed = 0;
 
     for (;;) {
-      const ready = liveNodes.filter(
+      const ready = currentPlan.nodes.filter(
         (n) =>
           !(n.id in results) && (n.dependsOn ?? []).every((d) => done.has(d)),
       );
@@ -47,11 +47,17 @@ export class DagPlanInterpreter
             task: string;
             durationMs: number;
           };
+      const planForWave = currentPlan;
       const outcomes = await Promise.all(
         ready.map(async (n): Promise<Outcome> => {
           const depOutputs: Record<string, string> = {};
           for (const d of n.dependsOn ?? []) depOutputs[d] = results[d].output;
-          const task = composeNodeTask(n, plan, ctx.inputText, depOutputs);
+          const task = composeNodeTask(
+            n,
+            planForWave,
+            ctx.inputText,
+            depOutputs,
+          );
           const started = Date.now();
           try {
             const res = await this.resolveWorker(n, ctx).run({
@@ -87,17 +93,23 @@ export class DagPlanInterpreter
       );
 
       let splicedThisWave = false;
+      // Record successes first, then process failures in plan-node order.
       for (const o of outcomes) {
-        if (o.kind === 'done') {
-          results[o.node.id] = {
-            nodeId: o.node.id,
-            output: o.output,
-            status: 'done',
-            durationMs: o.durationMs,
-          };
-          done.add(o.node.id);
-          continue;
-        }
+        if (o.kind !== 'done') continue;
+        results[o.node.id] = {
+          nodeId: o.node.id,
+          output: o.output,
+          status: 'done',
+          durationMs: o.durationMs,
+        };
+        done.add(o.node.id);
+      }
+      const failures = outcomes.filter(
+        (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
+      );
+      let revised = false;
+      for (const o of failures) {
+        if (revised) break;
         const remainingReplans = maxReplans - replansUsed;
         const reaction = await ctx.errorStrategy.onNodeFailure(
           o.node,
@@ -111,25 +123,34 @@ export class DagPlanInterpreter
             })),
             sessionId: ctx.sessionId,
             signal: ctx.signal,
+            plan: currentPlan,
+            completedResults: Object.values(results),
           },
         );
         if (reaction.action === 'replan' && remainingReplans > 0) {
-          // Fail loud on an empty sub-plan: splicing it would silently drop the
-          // failed node (terminals=[]; consumers rewired to nothing), leaving a
-          // smaller graph that still passes re-validation. An empty replan is an
-          // invalid plan, not a no-op.
           if (reaction.subPlan.nodes.length === 0) {
             throw new PlanInvalidError(
               `COORDINATOR_PLAN_INVALID: replan for node '${o.node.id}' produced an empty sub-plan`,
             );
           }
-          liveNodes = spliceSubPlan(
-            { ...plan, nodes: liveNodes },
-            o.node.id,
-            reaction.subPlan,
-          ).nodes;
+          currentPlan = spliceSubPlan(currentPlan, o.node.id, reaction.subPlan);
           replansUsed++;
           splicedThisWave = true;
+        } else if (reaction.action === 'revise' && remainingReplans > 0) {
+          if (reaction.revisedPlan.nodes.length === 0) {
+            throw new PlanInvalidError(
+              `COORDINATOR_PLAN_INVALID: revise for node '${o.node.id}' produced an empty plan`,
+            );
+          }
+          // Whole-remainder swap: supersede the entire wave. Drop all results
+          // (completed work lives in the world + was given to the reviewer as
+          // trace); run the revised plan from scratch.
+          currentPlan = reaction.revisedPlan;
+          for (const key of Object.keys(results)) delete results[key];
+          done.clear();
+          replansUsed++;
+          splicedThisWave = true;
+          revised = true;
         } else {
           results[o.node.id] = {
             nodeId: o.node.id,
@@ -141,10 +162,10 @@ export class DagPlanInterpreter
         }
       }
 
-      if (splicedThisWave) this.validate({ ...plan, nodes: liveNodes }, ctx);
+      if (splicedThisWave) this.validate(currentPlan, ctx);
     }
 
-    for (const n of liveNodes) {
+    for (const n of currentPlan.nodes) {
       if (!(n.id in results)) {
         results[n.id] = {
           nodeId: n.id,
@@ -155,9 +176,13 @@ export class DagPlanInterpreter
       }
     }
 
-    const failed = liveNodes.filter((n) => results[n.id].status !== 'done');
+    const failed = currentPlan.nodes.filter(
+      (n) => results[n.id].status !== 'done',
+    );
     if (failed.length > 0) {
-      const first = liveNodes.find((n) => results[n.id].status === 'failed');
+      const first = currentPlan.nodes.find(
+        (n) => results[n.id].status === 'failed',
+      );
       return {
         nodeResults: results,
         ok: false,
@@ -168,8 +193,10 @@ export class DagPlanInterpreter
       };
     }
 
-    const depended = new Set(liveNodes.flatMap((n) => n.dependsOn ?? []));
-    const terminals = liveNodes.filter((n) => !depended.has(n.id));
+    const depended = new Set(
+      currentPlan.nodes.flatMap((n) => n.dependsOn ?? []),
+    );
+    const terminals = currentPlan.nodes.filter((n) => !depended.has(n.id));
     const output = terminals.map((n) => results[n.id].output).join('\n\n');
     return { nodeResults: results, ok: true, output };
   }
