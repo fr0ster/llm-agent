@@ -194,6 +194,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             sessionId: ctx.sessionId,
             signal: ctx.options?.signal,
             errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
+            ancestorContext,
           });
         } catch (err) {
           ctx.error =
@@ -273,7 +274,32 @@ export class DagCoordinatorHandler implements IStageHandler {
   }
 }
 
-function buildAncestorContext(ctx: PipelineContext): ContextPath {
+export function buildAncestorContext(ctx: PipelineContext): ContextPath {
+  const h = ctx.history ?? [];
+  const n = h.length;
+  const isMarked = (m?: { role: string; content: string | null }) =>
+    m?.role === 'assistant' &&
+    typeof m.content === 'string' &&
+    m.content.startsWith(CLARIFY_MARKER);
+  let mi = -1;
+  if (isMarked(h[n - 1])) mi = n - 1;
+  else if (h[n - 1]?.role === 'user' && isMarked(h[n - 2])) mi = n - 2;
+
+  if (mi >= 0) {
+    const question = (h[mi].content as string)
+      .slice(CLARIFY_MARKER.length)
+      .trim();
+    const parent = h[mi - 1];
+    const objective =
+      parent?.role === 'user' && typeof parent.content === 'string'
+        ? parent.content
+        : ctx.inputText;
+    return {
+      objective,
+      clarifications: [{ question, answer: ctx.inputText }],
+      oracleObservations: [],
+    };
+  }
   return {
     objective: ctx.inputText,
     clarifications: [],

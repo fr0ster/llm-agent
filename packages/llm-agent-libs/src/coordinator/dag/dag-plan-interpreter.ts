@@ -57,6 +57,7 @@ export class DagPlanInterpreter
             planForWave,
             ctx.inputText,
             depOutputs,
+            ctx.ancestorContext,
           );
           const started = Date.now();
           try {
