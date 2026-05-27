@@ -17,17 +17,25 @@ This epic introduces **session-scoped infrastructure**: a per-session object gra
 
 The design separates two axes that were previously conflated:
 
-1. **Object lifecycle / ownership (per-session instances).** A session owns a live runtime graph — coordinator, interpreter, roles (planner/reviewer/state-oracle), workers, token-logger, SessionManager. These are instantiated per session and live across that session's requests.
+1. **Object lifecycle / ownership.** Classes are shared code, but **instances are per-session**: a session owns live instances of the pipeline, interpreter, coordinator, roles (planner/reviewer/state-oracle), workers, the per-session MCP server (handler registration + server instance, per the MCP standard), token-logger, SessionManager, history-memory, and the sessionId-keyed registries. The **pipeline itself is per-session because different sessions may run different pipelines.** These per-session instances are **built cheaply by injecting shared global resources** (below) rather than rebuilding them — so a per-session graph does NOT re-connect MCP or re-vectorize the tools catalog.
 2. **RAG scope (access parameter over shared storage).** RAG objects are not per-session data copies; they are identity-bound *views* over a shared backend (Qdrant / Vectorized Custom Store / …). `scope` (`global|user|session`) is a static store-config dimension; the identity **values** (sessionId, userId, …) are injected when the view is created for a session.
 
-| Object | Plane | Nature |
+### Global vs per-session resources
+
+| Resource | Lifecycle | Notes |
 |---|---|---|
-| Coordinator / Interpreter | 1 | per-session instance (dialog state) |
-| Roles: planner / reviewer / state-oracle | 1 | per-session instance |
-| Workers (subagents + their pipeline) | 1 | per-session instance |
-| Token-logger | 1 | per-session (session's spend) |
-| SessionManager | 1 | per-session |
-| RAG stores (Qdrant / custom) | 2 | shared handle; scope = call/identity parameter |
+| Upstream MCP client (SAP ADT, …) | **GLOBAL** | one connection, shared by reference; expensive to establish |
+| Vectorized MCP **tools-catalog RAG** | **GLOBAL** | ~hundreds of tool embeddings — the most expensive build step; vectorized once, shared |
+| LLM / embedder clients | **GLOBAL** | constructed once, injected |
+| RAG provider/registry, global+user collections | **GLOBAL** | shared backend; scope filter selects partitions |
+| **Pipeline** (may differ per session) | per-session instance | built from injected globals |
+| Interpreter / coordinator / roles / workers | per-session instance | wired to shared LLM + tools-RAG + MCP |
+| **MCP server** (handlers + instance) | per-session instance | per the MCP standard; cheap (handler registration) |
+| Session-scoped RAG collections | per-session | created via `createCollection(scope:session, sessionId)` |
+| Token-logger / history-memory | per-session | session's spend / recency cache |
+| `ToolAvailabilityRegistry` / `PendingToolResultsRegistry` | per-session | today per-request; hoist to the session graph |
+
+The key efficiency invariant: **per-session build injects the global heavy resources (upstream MCP, vectorized tools-catalog RAG, LLM/embedder clients) by reference and never rebuilds them.** Only the lightweight composition (pipeline/interpreter/coordinator wiring + per-session MCP server handler registration + state allocation) happens per session.
 
 ---
 
@@ -47,7 +55,9 @@ The substrate B and C build on.
 ### A.2 Per-session graph
 
 - Registry `Map<sessionId, SessionGraph>` on the server; **lazy build** on first request for a new/absent session cookie (the minting request, A.1, runs in this newly built graph).
-- `SessionGraph` owns the per-session runtime: coordinator, interpreter, roles, workers, token-logger, SessionManager, **and the already-session-keyed runtime stores** — `ToolAvailabilityRegistry` (`packages/llm-agent-libs/src/policy/tool-availability-registry.ts`) and `PendingToolResultsRegistry` (`packages/llm-agent-libs/src/policy/pending-tool-results-registry.ts`). These are currently built **per-request** in `default-pipeline.ts` (~line 411) even though both are keyed by `sessionId`; moving them into the SessionGraph is required so **pending async tool results and temporary tool blocklists survive subsequent requests in the same session**. Audit for any other sessionId-keyed runtime state and hoist it here too.
+- A **`SessionGraphFactory`** builds a `SessionGraph` from the injected global resources (upstream MCP client, vectorized tools-catalog RAG, LLM/embedder clients, RAG provider/registry). This is the central new composition path: it assembles a per-session **pipeline + interpreter + coordinator + roles + workers + per-session MCP server** **without** re-connecting MCP or re-vectorizing tools — those globals are passed by reference.
+- `SessionGraph` owns the per-session runtime: the pipeline/interpreter/coordinator/roles/workers instances, the per-session MCP server, token-logger, SessionManager, history-memory, **and the already-session-keyed runtime stores** — `ToolAvailabilityRegistry` (`packages/llm-agent-libs/src/policy/tool-availability-registry.ts`) and `PendingToolResultsRegistry` (`packages/llm-agent-libs/src/policy/pending-tool-results-registry.ts`). These two are currently built **per-request** in `default-pipeline.ts` (~line 411) even though both are keyed by `sessionId`; moving them into the SessionGraph is required so **pending async tool results and temporary tool blocklists survive subsequent requests in the same session**. Audit for any other sessionId-keyed runtime state and hoist it here too.
+- Because the pipeline is a per-session instance, **different sessions may run different pipelines**; the default server builds them from one config, but the capability to vary per session is first-class.
 - Lives across that cookie's requests.
 
 ### A.3 RAG factory
