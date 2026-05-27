@@ -554,35 +554,43 @@ git commit -m "feat(slice4b): wire coordinator.stateOracle (excluded from worker
   assistant turn** when it carries the marker — narrow (last turn only) so it never
   pulls unrelated/sibling questions from deeper history:
 
+  **Reality of `ctx.history`:** the pipeline passes the FULL message array
+  INCLUDING the current user turn at the tail (see `agent.ts` /
+  `default-pipeline.ts` — history = all `textOrMessages`). So on a clarification
+  resume the tail is `… user(parent), assistant(CLARIFY_MARKER+Q), user(current
+  answer)` and `h[len-1]` is the user answer, NOT the marked assistant. Locate the
+  marked assistant robustly (handles both history-includes-current and
+  history-excludes-current):
+
   ```ts
   function buildAncestorContext(ctx: PipelineContext): ContextPath {
     const h = ctx.history;
-    const last = h[h.length - 1];
-    if (
-      last?.role === 'assistant' &&
-      typeof last.content === 'string' &&
-      last.content.startsWith(CLARIFY_MARKER)
-    ) {
-      // Resume of a coordinator clarification. Recover BOTH the clarification Q/A
-      // AND the PARENT OBJECTIVE — the user request the question was asked about —
-      // = the user turn immediately preceding the marked clarification turn.
-      const parent = h[h.length - 2];
+    const n = h.length;
+    const isMarked = (m?: { role: string; content: string | null }) =>
+      m?.role === 'assistant' &&
+      typeof m.content === 'string' &&
+      m.content.startsWith(CLARIFY_MARKER);
+    // The marked clarify turn is the most recent assistant turn at the tail:
+    // h[n-1] when history EXCLUDES the current user turn, else h[n-2] (the usual
+    // case — history INCLUDES the current user answer as h[n-1]).
+    let mi = -1;
+    if (isMarked(h[n - 1])) mi = n - 1;
+    else if (h[n - 1]?.role === 'user' && isMarked(h[n - 2])) mi = n - 2;
+
+    if (mi >= 0) {
+      const question = (h[mi].content as string).slice(CLARIFY_MARKER.length).trim();
+      const parent = h[mi - 1]; // the user request the question was about
       const objective =
         parent?.role === 'user' && typeof parent.content === 'string'
           ? parent.content
           : ctx.inputText;
       return {
         objective,
-        clarifications: [
-          {
-            question: last.content.slice(CLARIFY_MARKER.length).trim(),
-            answer: ctx.inputText, // the current turn IS the user's answer
-          },
-        ],
+        clarifications: [{ question, answer: ctx.inputText }], // inputText = current answer (robust)
         oracleObservations: [],
       };
     }
-    // Not a clarification resume: a fresh request. Objective = the current input.
+    // Fresh request (no marked clarification at the tail).
     return { objective: ctx.inputText, clarifications: [], oracleObservations: [] };
   }
   ```
@@ -591,12 +599,10 @@ git commit -m "feat(slice4b): wire coordinator.stateOracle (excluded from worker
   the next turn's planner receives `objective: "<original request>"` AND
   `clarifications: [{question: "Which table?", answer: "ZCUSTOMERS"}]` — so a short
   answer like `ZCUSTOMERS` has both the original goal and the question it answers.
-  A non-clarification prior turn (no marker) → fresh request, `clarifications: []`,
-  and deeper history is never scanned (only `h[len-1]` + its immediate `h[len-2]`
-  parent are read). Multi-round clarification chains (walking back over several
-  marked pairs) are a documented follow-up — single-round + parent objective is the
-  MVP. `oracleObservations` is filled WITHIN the turn by `runRole`'s needInfo
-  round-trip. `import { CLARIFY_MARKER } from '@mcp-abap-adt/llm-agent';`.
+  `ctx.inputText` is used for the answer (robust regardless of whether the current
+  turn is also in `h`). Only `h[n-1]` / `h[n-2]` / `h[n-3]` are read — no deep scan,
+  no sibling leakage. Multi-round chains are a documented follow-up.
+  `import { CLARIFY_MARKER } from '@mcp-abap-adt/llm-agent';`.
 
 - [ ] **Step 2: composeNodeTask ancestor path** — in `compose-node-task.ts`, accept the ancestor objective/clarifications and prepend them (objective already partly present via `plan.objective`; add the clarifications/oracleObservations text). Keep dependency outputs (dependsOn) and exclude siblings (already the case). Update the interpreter call site to pass the ancestor info (thread `ctx.ancestorContext` if added to `InterpretContext`, or pass via the plan objective). Minimal: add `ancestorContext?: ContextPath` to `InterpretContext`, set it from the coordinator, and have `composeNodeTask` render it.
 
@@ -604,13 +610,14 @@ git commit -m "feat(slice4b): wire coordinator.stateOracle (excluded from worker
   - `compose-node-task.test.ts`: a node task includes the objective + a clarification
     Q/A when `ancestorContext` is provided, includes dependency outputs, and excludes
     a non-dependency sibling's output.
-  - `buildAncestorContext`: history `[{user:'create RAP BO for orders'}, {assistant:
-    CLARIFY_MARKER+'Which table?'}]` + `inputText:'ZCUSTOMERS'` →
-    `objective:'create RAP BO for orders'` (the parent user turn) AND
-    `clarifications:[{question:'Which table?', answer:'ZCUSTOMERS'}]`; a last
-    assistant turn WITHOUT the marker (a normal prior answer) → `objective: inputText`,
-    `clarifications:[]`; a deeper marked turn that is NOT last → `[]` (only `h[len-1]`
-    + `h[len-2]` are read).
+  - `buildAncestorContext`: realistic history (current answer at the tail)
+    `[{user:'create RAP BO for orders'}, {assistant: CLARIFY_MARKER+'Which table?'},
+    {user:'ZCUSTOMERS'}]` + `inputText:'ZCUSTOMERS'` → `objective:'create RAP BO for
+    orders'` (parent) AND `clarifications:[{question:'Which table?', answer:'ZCUSTOMERS'}]`.
+    Also cover: history-EXCLUDES-current form `[{user:'…'},{assistant:CLARIFY_MARKER+'Q'}]`
+    + `inputText:'A'` → same result. A plain fresh request (last turn user, prior
+    turn NOT a marked assistant) → `objective: inputText`, `clarifications:[]`. A
+    marked turn deeper than `h[n-2]` → `[]` (only the tail is read).
   - `dag-coordinator.test.ts`: after an oracle round-trip, `ancestorContext.oracleObservations`
     reaches the next role call (spy); a clarify emits `CLARIFY_MARKER + question` as
     the assistant content.
