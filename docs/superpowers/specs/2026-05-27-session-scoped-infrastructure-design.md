@@ -133,6 +133,19 @@ Session-cumulative resets on session evict (A.4 lifecycle).
 
 ---
 
+## Existing infrastructure to REUSE (do not reinvent)
+
+A code inventory (2026-05-27) found much of the RAG scoping already implemented; the plan must build on it:
+
+- **`SimpleRagRegistry`** (`packages/llm-agent/src/rag/registry/simple-rag-registry.ts`) — `createCollection({providerName, collectionName, scope, sessionId, userId})` creates an identity-bound collection; **`closeSession(sessionId)`** already deletes all `scope==='session'` collections for a sessionId.
+- **`IRagProvider` / `AbstractRagProvider`** (`packages/llm-agent/src/rag/providers/`) — `supportedScopes`, `SessionScopedIdStrategy(sessionId)`; in-memory/vector/qdrant/hana/pg providers create identity-bound collections.
+- **Live projection** registry → `ctx.ragStores` (builder.ts ~807-825) via a mutation listener — once at build, kept in sync.
+- **`rag-query` scope filter** (rag-query.ts:74-86) already maps `scope: global|user|session` → `ragFilter` from `ctx.sessionId` / `ctx.options.userId`.
+- **`SmartAgent.closeSession(sessionId)`** (agent.ts:408-420) already calls `ragRegistry.closeSession` + `historyMemory.clear`. **Gap: nothing triggers it** — the server never calls it.
+- **`ToolAvailabilityRegistry` / `PendingToolResultsRegistry`** are sessionId-keyed but built per-request (default-pipeline.ts:411-412) — A must hoist them to the SessionGraph.
+
+What is genuinely MISSING (the plan's real work): cookie identity + `Set-Cookie` (A.1); the per-session graph registry + eviction manager with TTL/LRU/refcount that triggers `closeSession` (A.2/A.4); worker sharing of the parent `ragRegistry` instead of isolated `makeRag` (B.5); the per-session shared token-logger + subagent-usage aggregation + non-zero per-response usage (C). `userId`/auth stays out of scope (downstream build).
+
 ## Out of scope
 - The authorization layer itself (separate downstream build supplies `userId`).
 - ABAP connection-header semantics beyond the pluggable extension point.
