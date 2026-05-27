@@ -40,11 +40,11 @@ export interface Plan {
 }
 
 /**
- * Trace frame for nested-dispatch failures. The parent appends its own
- * frame and passes the result upward without other transformation.
+ * Flat diagnostic trace for an epicfail failure. Captures a single frame:
+ * which step failed, which agent, the retry attempts, and the root error
+ * message. There is no nesting — each failure is represented independently.
  */
 export interface EpicFailTrace {
-  layer: number;
   stepId: string;
   agentName: string;
   attempts: Array<{
@@ -53,7 +53,6 @@ export interface EpicFailTrace {
     durationMs: number;
   }>;
   originalError: string;
-  childTrace?: EpicFailTrace;
 }
 
 export interface StepResult {
@@ -66,8 +65,8 @@ export interface StepResult {
   error?: string;
   /**
    * Populated when a child subagent returned `errorClass: 'epicfail'`.
-   * Carries the diagnostic trace upward unchanged so consumers see the
-   * full chain instead of a flattened error string.
+   * Carries a flat diagnostic trace (single frame) upward so consumers
+   * can inspect which step and agent failed.
    */
   epicFailTrace?: EpicFailTrace;
 }
@@ -88,12 +87,6 @@ export interface ICoordinatorContext {
   stepResults: Record<string, StepResult>;
   signal?: AbortSignal;
   sessionId: string;
-  /**
-   * Dispatch depth of the current coordinator. Root coordinator is 0; child
-   * subagent coordinators increment per nested dispatch. Forward-declared for
-   * Task 4 of the nested-subagent-dispatch foundation plan.
-   */
-  layer?: number;
 }
 
 export interface IPlanningStrategy {
@@ -124,12 +117,6 @@ export interface ICoordinatorConfig {
   maxSteps?: number;
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
-  /**
-   * Maximum dispatch depth from this coordinator. Default 1: the
-   * coordinator may dispatch children (layer 1), but those children
-   * may not dispatch further unless they raise maxLayer themselves.
-   */
-  maxLayer?: number;
 }
 
 export type SubAgentWithDescription = ISubAgent & { description: string };

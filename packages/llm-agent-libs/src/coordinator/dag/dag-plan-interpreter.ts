@@ -8,6 +8,7 @@ import type {
   PlanNode,
 } from '@mcp-abap-adt/llm-agent';
 import { composeNodeTask } from './compose-node-task.js';
+import { spliceSubPlan } from './splice-sub-plan.js';
 
 class PlanInvalidError extends Error {
   readonly code = 'COORDINATOR_PLAN_INVALID';
@@ -26,62 +27,124 @@ export class DagPlanInterpreter
 
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
+    let liveNodes = plan.nodes;
+    const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
+    let replansUsed = 0;
 
     for (;;) {
-      const ready = plan.nodes.filter(
+      const ready = liveNodes.filter(
         (n) =>
           !(n.id in results) && (n.dependsOn ?? []).every((d) => done.has(d)),
       );
       if (ready.length === 0) break;
 
-      await Promise.all(
-        ready.map(async (n) => {
+      type Outcome =
+        | { node: PlanNode; kind: 'done'; output: string; durationMs: number }
+        | {
+            node: PlanNode;
+            kind: 'failed';
+            error: unknown;
+            task: string;
+            durationMs: number;
+          };
+      const outcomes = await Promise.all(
+        ready.map(async (n): Promise<Outcome> => {
           const depOutputs: Record<string, string> = {};
           for (const d of n.dependsOn ?? []) depOutputs[d] = results[d].output;
           const task = composeNodeTask(n, plan, ctx.inputText, depOutputs);
-          const worker = this.resolveWorker(n, ctx);
           const started = Date.now();
           try {
-            const res = await worker.run({
+            const res = await this.resolveWorker(n, ctx).run({
               task,
               sessionId: ctx.sessionId,
               signal: ctx.signal,
-              layer: ctx.layer + 1,
             });
-            // Slice 1 records an epicfail worker result as a plain node failure.
-            // Cross-DAG epicfail-trace propagation (res.epicFailTrace) is
-            // intentionally out of scope here (see slice-1 spec) — deferred.
             if (res.errorClass === 'epicfail') {
-              results[n.id] = {
-                nodeId: n.id,
-                output: '',
-                status: 'failed',
-                error: 'epicfail',
+              return {
+                node: n,
+                kind: 'failed',
+                error: new Error('epicfail'),
+                task,
                 durationMs: Date.now() - started,
               };
-            } else {
-              results[n.id] = {
-                nodeId: n.id,
-                output: res.output,
-                status: 'done',
-                durationMs: Date.now() - started,
-              };
-              done.add(n.id);
             }
-          } catch (err) {
-            results[n.id] = {
-              nodeId: n.id,
-              output: '',
-              status: 'failed',
-              error: err instanceof Error ? err.message : String(err),
+            return {
+              node: n,
+              kind: 'done',
+              output: res.output,
+              durationMs: Date.now() - started,
+            };
+          } catch (error) {
+            return {
+              node: n,
+              kind: 'failed',
+              error,
+              task,
               durationMs: Date.now() - started,
             };
           }
         }),
       );
+
+      let splicedThisWave = false;
+      for (const o of outcomes) {
+        if (o.kind === 'done') {
+          results[o.node.id] = {
+            nodeId: o.node.id,
+            output: o.output,
+            status: 'done',
+            durationMs: o.durationMs,
+          };
+          done.add(o.node.id);
+          continue;
+        }
+        const remainingReplans = maxReplans - replansUsed;
+        const reaction = await ctx.errorStrategy.onNodeFailure(
+          o.node,
+          o.error,
+          {
+            task: o.task,
+            remainingReplans,
+            agents: [...ctx.workers.values()].map((w) => ({
+              name: w.name,
+              description: w.description,
+            })),
+            sessionId: ctx.sessionId,
+            signal: ctx.signal,
+          },
+        );
+        if (reaction.action === 'replan' && remainingReplans > 0) {
+          // Fail loud on an empty sub-plan: splicing it would silently drop the
+          // failed node (terminals=[]; consumers rewired to nothing), leaving a
+          // smaller graph that still passes re-validation. An empty replan is an
+          // invalid plan, not a no-op.
+          if (reaction.subPlan.nodes.length === 0) {
+            throw new PlanInvalidError(
+              `COORDINATOR_PLAN_INVALID: replan for node '${o.node.id}' produced an empty sub-plan`,
+            );
+          }
+          liveNodes = spliceSubPlan(
+            { ...plan, nodes: liveNodes },
+            o.node.id,
+            reaction.subPlan,
+          ).nodes;
+          replansUsed++;
+          splicedThisWave = true;
+        } else {
+          results[o.node.id] = {
+            nodeId: o.node.id,
+            output: '',
+            status: 'failed',
+            error: o.error instanceof Error ? o.error.message : String(o.error),
+            durationMs: o.durationMs,
+          };
+        }
+      }
+
+      if (splicedThisWave) this.validate({ ...plan, nodes: liveNodes }, ctx);
     }
 
-    for (const n of plan.nodes) {
+    for (const n of liveNodes) {
       if (!(n.id in results)) {
         results[n.id] = {
           nodeId: n.id,
@@ -92,9 +155,9 @@ export class DagPlanInterpreter
       }
     }
 
-    const failed = plan.nodes.filter((n) => results[n.id].status !== 'done');
+    const failed = liveNodes.filter((n) => results[n.id].status !== 'done');
     if (failed.length > 0) {
-      const first = plan.nodes.find((n) => results[n.id].status === 'failed');
+      const first = liveNodes.find((n) => results[n.id].status === 'failed');
       return {
         nodeResults: results,
         ok: false,
@@ -105,8 +168,8 @@ export class DagPlanInterpreter
       };
     }
 
-    const depended = new Set(plan.nodes.flatMap((n) => n.dependsOn ?? []));
-    const terminals = plan.nodes.filter((n) => !depended.has(n.id));
+    const depended = new Set(liveNodes.flatMap((n) => n.dependsOn ?? []));
+    const terminals = liveNodes.filter((n) => !depended.has(n.id));
     const output = terminals.map((n) => results[n.id].output).join('\n\n');
     return { nodeResults: results, ok: true, output };
   }

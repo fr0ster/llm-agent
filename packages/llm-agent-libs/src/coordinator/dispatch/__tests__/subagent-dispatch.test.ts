@@ -13,8 +13,6 @@ describe('SubAgentDispatch task composition', () => {
     const captured: { task?: string } = {};
     const fakeSub: ISubAgent = {
       capabilities: {
-        kind: 'constrained',
-        canDispatchChildren: false,
         contextPolicy: 'optional',
       },
       run: async (input: ISubAgentInput) => {

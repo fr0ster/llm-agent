@@ -10,8 +10,6 @@ import type { SmartAgent } from '../agent.js';
 export class SmartAgentSubAgent implements ISubAgent {
   public readonly description?: string;
   public readonly capabilities: SubAgentCapabilities = {
-    kind: 'autonomous',
-    canDispatchChildren: true,
     contextPolicy: 'optional',
   };
 
@@ -31,7 +29,6 @@ export class SmartAgentSubAgent implements ISubAgent {
     const res = await this.agent.process(prompt, {
       sessionId: input.sessionId,
       signal: input.signal,
-      layer: input.layer,
     });
 
     if (!res.ok) {

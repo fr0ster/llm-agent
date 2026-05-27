@@ -29,13 +29,10 @@ function makeSpan(): ISpan {
 class EpicFailingSubAgent implements ISubAgent {
   readonly name = 'failer';
   readonly capabilities = {
-    kind: 'autonomous' as const,
-    canDispatchChildren: false,
     contextPolicy: 'optional' as const,
   };
-  async run(input: ISubAgentInput) {
+  async run(_input: ISubAgentInput) {
     const trace: EpicFailTrace = {
-      layer: input.layer,
       stepId: 'inner-step',
       agentName: 'inner-failer',
       attempts: [],
@@ -73,7 +70,6 @@ function makeCtx(subAgents: Map<string, ISubAgent>): PipelineContext {
   return {
     inputText: 'top',
     sessionId: 's',
-    layer: 0,
     assembledMessages: [],
     options: { signal: undefined },
     subAgents,
@@ -96,7 +92,6 @@ describe('Coordinator epicfail propagation', () => {
       maxSteps: 5,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 2,
     };
     const handler = new CoordinatorHandler(deps);
     const ctx = makeCtx(subAgents);

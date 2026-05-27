@@ -43,13 +43,6 @@ export interface CallOptions {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
-  /**
-   * Dispatch depth for nested subagent execution. Root consumer-facing
-   * calls default to 0. `SubAgentDispatch` increments to `input.layer + 1`
-   * when calling a child subagent's `run`; `SmartAgentSubAgent` then
-   * forwards that value as-is into the wrapped `SmartAgent.process()`.
-   */
-  layer?: number;
 }
 
 export interface ToolHeartbeat {

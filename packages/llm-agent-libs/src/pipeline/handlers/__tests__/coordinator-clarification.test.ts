@@ -49,7 +49,6 @@ describe('CoordinatorHandler clarification gate', () => {
       maxSteps: 10,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 1,
     });
 
     const ok = await handler.execute(ctx, {}, {} as never);

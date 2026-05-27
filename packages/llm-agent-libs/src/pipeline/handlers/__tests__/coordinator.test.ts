@@ -109,7 +109,6 @@ function makeDeps(
     maxSteps: overrides.maxSteps ?? 8,
     maxRetriesPerStep: overrides.maxRetriesPerStep ?? 0,
     failPolicy: overrides.failPolicy ?? 'abort',
-    maxLayer: overrides.maxLayer ?? 8,
   };
 }
 

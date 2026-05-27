@@ -27,6 +27,11 @@ export type {
 } from './coordinator.js';
 export type { DagPlan, PlanNode } from './dag-plan.js';
 export type {
+  ErrorContext,
+  ErrorReaction,
+  IErrorStrategy,
+} from './error-strategy.js';
+export type {
   CircuitBreakerStatus,
   HealthComponentStatus,
   HealthStatus,
@@ -134,7 +139,6 @@ export type {
   ISubAgentInput,
   ISubAgentResult,
   SubAgentCapabilities,
-  SubAgentKind,
   SubAgentRegistry,
 } from './subagent.js';
 export type {

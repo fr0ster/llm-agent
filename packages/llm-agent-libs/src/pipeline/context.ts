@@ -177,8 +177,6 @@ export interface PipelineContext {
 
   // -- Coordinator / subagent orchestration ----------------------------------
 
-  /** Dispatch depth. 0 at root; +1 each nested SmartAgent.process() call. */
-  layer?: number;
   /** Subagent stage outputs written by SubAgentHandler. Keyed by output path. */
   subResults?: Record<string, unknown>;
   /** Subagent registry exposed to runtime stages (coordinator, subagent). */

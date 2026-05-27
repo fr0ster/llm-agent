@@ -34,8 +34,6 @@ export class DirectLlmSubAgent implements ISubAgent {
     this.description = opts.description;
     this.systemPrompt = opts.systemPrompt;
     this.capabilities = {
-      kind: 'constrained',
-      canDispatchChildren: false,
       contextPolicy: opts.contextPolicy ?? 'required',
     };
   }

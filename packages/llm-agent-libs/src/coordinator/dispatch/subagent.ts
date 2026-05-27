@@ -50,15 +50,12 @@ export class SubAgentDispatch implements IDispatchStrategy {
     }
     const task = composeTask(step, ctx);
 
-    const childLayer = (ctx.layer ?? 0) + 1;
-
     let context: string | undefined;
     if (this.contextBuilder) {
       const built = await this.contextBuilder.build({
         task,
         step,
         agent: sub,
-        layer: childLayer,
         inputText: ctx.inputText,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
@@ -87,29 +84,24 @@ export class SubAgentDispatch implements IDispatchStrategy {
         context,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
-        layer: childLayer,
       });
 
-      // Epicfail propagation: do NOT retry, do NOT transform — preserve trace
-      // by attaching this layer's frame and passing it upward in StepResult.
+      // Epicfail propagation: do NOT retry, do NOT transform — surface the
+      // flat trace upward in StepResult unchanged (or build one if absent).
       if (res.errorClass === 'epicfail') {
-        const childTrace = res.epicFailTrace;
-        const wrappedTrace: EpicFailTrace = {
-          layer: ctx.layer ?? 0,
+        const trace: EpicFailTrace = res.epicFailTrace ?? {
           stepId: step.id,
           agentName,
           attempts: [],
-          originalError:
-            childTrace?.originalError ?? `epicfail from '${agentName}'`,
-          childTrace,
+          originalError: `epicfail from '${agentName}'`,
         };
         return {
           stepId: step.id,
           output: '',
           durationMs: Date.now() - started,
           ok: false,
-          error: `epicfail from '${agentName}': ${childTrace?.originalError ?? 'unknown'}`,
-          epicFailTrace: wrappedTrace,
+          error: `epicfail from '${agentName}': ${trace.originalError}`,
+          epicFailTrace: trace,
         };
       }
 

@@ -56,7 +56,6 @@ describe('handler registry — DAG coordinator', () => {
         maxSteps: 5,
         maxRetriesPerStep: 0,
         failPolicy: 'abort',
-        maxLayer: 1,
       },
       coordinatorActivation: { name: 'explicit', shouldActivate: () => true },
     });
@@ -100,7 +99,6 @@ describe('handler registry — DAG coordinator', () => {
         maxSteps: 5,
         maxRetriesPerStep: 0,
         failPolicy: 'abort',
-        maxLayer: 1,
       },
       dagCoordinator: { planner, interpreter, workers: new Map() },
       coordinatorActivation: { name: 'explicit', shouldActivate: () => true },

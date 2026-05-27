@@ -9,6 +9,7 @@ import type {
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
+  IErrorStrategy,
   ILlmApiAdapter,
   ILogger,
   IMcpClient,
@@ -37,6 +38,7 @@ import type {
   StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
+  AbortErrorStrategy,
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
@@ -50,6 +52,7 @@ import {
   LlmDagPlanner,
   LlmReviewStrategy,
   makeLlm,
+  ReplanErrorStrategy,
   SessionLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
@@ -688,12 +691,23 @@ export class SmartServer {
           (coordCfg.activation ?? 'explicit') as string,
         );
 
+        let errorStrategy: IErrorStrategy | undefined;
+        const esCfg = coordCfg.errorStrategy as
+          | { type?: string; maxReplans?: number }
+          | undefined;
+        if (esCfg?.type === 'replan') {
+          errorStrategy = new ReplanErrorStrategy(planner, esCfg.maxReplans);
+        } else if (esCfg?.type === 'abort') {
+          errorStrategy = new AbortErrorStrategy();
+        }
+
         builder = builder.withDagCoordinator({
           planner,
           interpreter,
           workers,
           activation,
           reviewer,
+          errorStrategy,
         });
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
@@ -744,7 +758,6 @@ export class SmartServer {
           maxSteps: coordCfg.maxSteps,
           maxRetriesPerStep: coordCfg.maxRetriesPerStep,
           failPolicy: coordCfg.failPolicy,
-          maxLayer: coordCfg.maxLayer,
         });
         log({ event: 'coordinator_configured', config: coordCfg });
       }

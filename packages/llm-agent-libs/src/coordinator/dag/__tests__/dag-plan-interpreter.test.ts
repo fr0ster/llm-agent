@@ -6,7 +6,10 @@ import type {
   ISubAgent,
   ISubAgentInput,
 } from '@mcp-abap-adt/llm-agent';
+import { NeedsDecompositionError } from '@mcp-abap-adt/llm-agent';
+import { AbortErrorStrategy } from '../abort-error-strategy.js';
 import { DagPlanInterpreter } from '../dag-plan-interpreter.js';
+import { ReplanErrorStrategy } from '../replan-error-strategy.js';
 
 function worker(
   name: string,
@@ -15,20 +18,21 @@ function worker(
   return {
     name,
     capabilities: {
-      kind: 'constrained',
-      canDispatchChildren: false,
       contextPolicy: 'optional',
     },
     run: run as ISubAgent['run'],
   } as ISubAgent;
 }
 
-function ctx(workers: Array<[string, ISubAgent]>): InterpretContext {
+function ctx(
+  workers: Array<[string, ISubAgent]>,
+  errorStrategy: import('@mcp-abap-adt/llm-agent').IErrorStrategy = new AbortErrorStrategy(),
+): InterpretContext {
   return {
     inputText: 'RAW',
     workers: new Map(workers),
     sessionId: 't',
-    layer: 0,
+    errorStrategy,
   };
 }
 
@@ -206,8 +210,6 @@ describe('DagPlanInterpreter', () => {
     const required = {
       name: 'needy',
       capabilities: {
-        kind: 'constrained',
-        canDispatchChildren: false,
         contextPolicy: 'required',
       },
       run: async () => ({ output: 'x' }),
@@ -220,5 +222,146 @@ describe('DagPlanInterpreter', () => {
         ),
       /COORDINATOR_PLAN_INVALID.*contextPolicy='required'/s,
     );
+  });
+
+  it('replans a node that throws NeedsDecompositionError into a sub-graph', async () => {
+    let calls = 0;
+    const big = worker('big', async () => {
+      calls++;
+      if (calls === 1) throw new NeedsDecompositionError('split me');
+      return { output: 'unreachable' };
+    });
+    const small = worker('small', async () => ({ output: 'done-small' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    const c = ctx(
+      [
+        ['big', big],
+        ['small', small],
+      ],
+      new ReplanErrorStrategy(planner, 4),
+    );
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      c,
+    );
+    assert.equal(r.ok, true);
+    assert.match(r.output, /done-small/);
+  });
+
+  it('default AbortErrorStrategy still fails the node (slice-1 behavior)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split me');
+    });
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      ctx([['big', big]]),
+    );
+    assert.equal(r.ok, false);
+  });
+
+  it('stops replanning at the budget (infinite-signal guard)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('always too big');
+    });
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 'again', goal: 'big', agent: 'big' }],
+        createdAt: 0,
+      }),
+    };
+    const r = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      ctx([['big', big]], new ReplanErrorStrategy(planner, 2)),
+    );
+    assert.equal(r.ok, false);
+  });
+
+  it('gives each interpret() run a fresh replan budget (no cross-call leak)', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const small = worker('small', async () => ({ output: 'ok' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    // Shared singleton strategy with a 1-replan ceiling; each run needs 1 replan.
+    const strat = new ReplanErrorStrategy(planner, 1);
+    const make = () =>
+      ctx(
+        [
+          ['big', big],
+          ['small', small],
+        ],
+        strat,
+      );
+    const r1 = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      make(),
+    );
+    const r2 = await I().interpret(
+      dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+      make(),
+    );
+    assert.equal(r1.ok, true);
+    assert.equal(r2.ok, true); // would be false if the budget leaked across runs
+  });
+
+  it('fails loud (COORDINATOR_PLAN_INVALID) when a replan produces an empty sub-plan', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const planner = {
+      name: 'p',
+      plan: async () => ({ nodes: [], createdAt: 0 }), // empty sub-plan
+    };
+    await assert.rejects(
+      () =>
+        I().interpret(
+          dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
+          ctx([['big', big]], new ReplanErrorStrategy(planner, 4)),
+        ),
+      /COORDINATOR_PLAN_INVALID/,
+    );
+  });
+
+  it('applies replans serially for two NeedsDecomposition failures in one wave', async () => {
+    const big = worker('big', async () => {
+      throw new NeedsDecompositionError('split');
+    });
+    const small = worker('small', async () => ({ output: 'S' }));
+    const planner = {
+      name: 'p',
+      plan: async () => ({
+        nodes: [{ id: 's', goal: 'small', agent: 'small' }],
+        createdAt: 0,
+      }),
+    };
+    // A and B are independent roots → same first wave; both throw, both replan.
+    const r = await I().interpret(
+      dag([
+        { id: 'A', goal: 'big', agent: 'big' },
+        { id: 'B', goal: 'big', agent: 'big' },
+      ]),
+      ctx(
+        [
+          ['big', big],
+          ['small', small],
+        ],
+        new ReplanErrorStrategy(planner, 4),
+      ),
+    );
+    assert.equal(r.ok, true);
+    assert.deepEqual(r.output, 'S\n\nS'); // both spliced sub-graphs ran
   });
 });

@@ -72,8 +72,6 @@ function makeConstrainedSubAgent(name: string): ISubAgent {
   return {
     name,
     capabilities: {
-      kind: 'constrained',
-      canDispatchChildren: false,
       contextPolicy: 'required',
     },
     async run() {

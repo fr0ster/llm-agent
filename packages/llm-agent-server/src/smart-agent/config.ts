@@ -42,6 +42,7 @@ export interface YamlCoordinator {
     | Record<string, unknown>;
   interpreter?: { type?: string } | Record<string, unknown>;
   reviewer?: { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' };
+  errorStrategy?: { type?: string; maxReplans?: number };
 }
 
 const LINEAR_ONLY = [
@@ -53,7 +54,7 @@ const LINEAR_ONLY = [
   'maxLayer',
   'plannerLlm',
 ];
-const DAG_ONLY = ['planner', 'interpreter', 'reviewer'];
+const DAG_ONLY = ['planner', 'interpreter', 'reviewer', 'errorStrategy'];
 
 /** Validate a `{ type?: 'llm'; plannerLlm?: main|planner|helper }` role block. */
 function assertLlmRoleShape(label: string, role: unknown): void {
@@ -81,6 +82,26 @@ function assertLlmRoleShape(label: string, role: unknown): void {
   }
 }
 
+function assertErrorStrategyShape(es: unknown): void {
+  if (typeof es !== 'object' || es === null || Array.isArray(es)) {
+    throw new Error(
+      `coordinator.errorStrategy must be an object (e.g. { type: replan }), got: ${JSON.stringify(es)}`,
+    );
+  }
+  const type = (es as { type?: unknown }).type;
+  if (type !== undefined && type !== 'abort' && type !== 'replan') {
+    throw new Error(
+      `coordinator.errorStrategy: unknown type '${String(type)}' (only 'abort' | 'replan')`,
+    );
+  }
+  const mr = (es as { maxReplans?: unknown }).maxReplans;
+  if (mr !== undefined && (typeof mr !== 'number' || mr < 0)) {
+    throw new Error(
+      `coordinator.errorStrategy.maxReplans must be a non-negative number, got: ${String(mr)}`,
+    );
+  }
+}
+
 /** Fail-loud guard: a coordinator block is either DAG (has `planner`) or linear,
  *  never mixed. `activation` is shared and always allowed. */
 export function assertCoordinatorConfigShape(
@@ -91,6 +112,9 @@ export function assertCoordinatorConfigShape(
     assertLlmRoleShape('planner', coord.planner);
     if (coord.reviewer !== undefined) {
       assertLlmRoleShape('reviewer', coord.reviewer);
+    }
+    if (coord.errorStrategy !== undefined) {
+      assertErrorStrategyShape(coord.errorStrategy);
     }
     for (const f of LINEAR_ONLY) {
       if (coord[f] !== undefined) {
@@ -418,7 +442,8 @@ log: smart-server.log                 # path to log file; omit for stdout
 #   maxSteps: 12
 #   maxRetriesPerStep: 1
 #   failPolicy: abort                 # abort | continue
-#   maxLayer: 1                       # Max nested-dispatch depth (default 1)
+#   maxLayer: 1                       # DEPRECATED — accepted but ignored (nested
+#                                     # dispatch removed; subagents are leaves)
 `;
 
 export function resolveEnvVars(
