@@ -11,7 +11,7 @@ Give consumers running with different sessions/users **correct, provable scoping
 - Worker token usage never reaches the server's `/v1/usage` (only the coordinator's own auxiliary `translate` call shows; verified live: DAG `/v1/usage` = 85 tok while the worker did 7 tool calls).
 - The per-response `usage` is always `{0,0,0}`.
 
-This epic introduces **session-scoped infrastructure**: a per-session object graph keyed by a server-issued identity, identity-bound RAG views over shared storage, and a session-scoped token-usage rollup.
+This epic introduces **session-scoped infrastructure**: a per-session object graph keyed by a server-issued identity, session-scoped RAG over shared storage (existing per-call scope filter + shared registry), and a session-scoped token-usage rollup.
 
 ## Two orthogonal planes
 
@@ -88,6 +88,9 @@ The substrate B and C build on.
 - Evict clears only session-scope; user/global persist.
 - A no-cookie request gets a **unique** minted session id, runs in that minted graph, and its state persists within it (no shared `'default'` bucket); a no-jar client that never returns the cookie creates separate, never-continued sessions that are reaped by TTL/LRU.
 - Token-logger sums per session and resets on evict.
+- **Malformed/empty cookie → a fresh id is minted** (the bad value is never adopted as a sessionId).
+- **`ctx.sessionId` for a request equals the cookie session id** that ran it (so the RAG scope filter isolates by the right partition).
+- **Reentrancy:** two concurrent requests on the same session do not share per-run state — interleaved runs produce independent results, and the per-`traceId` token deltas stay separate (cross-checks A.5/C.6).
 
 ---
 
@@ -97,18 +100,18 @@ The substrate B and C build on.
 Session artifacts (**skills count as a session-scoped artifact**) + the MCP-tools catalog (the store a subagent queries to pick the right tool).
 
 ### B.2 Scopes
-`global|user|session` — static store-config dimension; identity values supplied by A's factory.
+`global|user|session` — static store-config dimension; isolation applied per-call by the existing `rag-query` filter from `ctx.sessionId` / `ctx.options.userId` (A.3). No view/factory objects.
 
 ### B.3 Sources (per-subagent config, any combination)
-1. **Internal scoped stores** (Qdrant/custom) via A's identity-bound factory.
+1. **Internal scoped stores** (Qdrant/custom) in the shared registry; session/user isolation by the per-call scope filter.
 2. **External customer RAG** — a subagent points at the consumer's RAG backend (an `IRag` adapter; connection from config/headers).
 3. **Consumer-provided MCP retrieval** — retrieval performed by a consumer-injected MCP tool; the agent owns no store, the "RAG" is a tool call.
 
 ### B.4 Per-subagent store map
-Each subagent declares which named stores it consumes and at what scope. **Workers no longer build an isolated `makeRag`**; session/user stores are taken as identity-bound views from the session graph's RAG factory, the global tools-catalog is shared.
+Each subagent declares which named stores it consumes and at what scope. **Workers no longer build an isolated `makeRag`**; they **share the parent `IRagRegistry`** so session/user/global collections are visible, and the per-call scope filter isolates by `ctx.sessionId`/`ctx.options.userId`.
 
 ### B.5 buildSubAgent fix
-Replace each worker's isolated `makeRag(subCfg.rag)` with views obtained from the session graph's RAG factory (plus shared global stores).
+Replace each worker's isolated `makeRag(subCfg.rag)` with the shared parent `IRagRegistry` (`SmartAgentBuilder.setRagRegistry`); a worker's own declared store is registered into that same shared registry under its namespace.
 
 ### B.6 Provability (tests)
 - A session artifact written by the coordinator/one worker is visible to another worker that opts into that session store.
