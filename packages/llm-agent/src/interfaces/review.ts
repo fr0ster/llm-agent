@@ -1,3 +1,4 @@
+import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
 import type { NodeResult } from './interpreter.js';
 import type { PlannerCatalogEntry } from './planner.js';
@@ -8,6 +9,7 @@ export interface ReviewInput {
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
+  ancestorContext?: ContextPath;
 }
 
 export type ReviewVerdict = { pass: true } | { pass: false; feedback: string };
@@ -24,6 +26,7 @@ export interface ExecutionFailureInput {
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
+  ancestorContext?: ContextPath;
 }
 
 export type ExecutionReviewDecision =

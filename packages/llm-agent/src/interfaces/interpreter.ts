@@ -1,3 +1,4 @@
+import type { DagPlan } from './dag-plan.js';
 import type { IErrorStrategy } from './error-strategy.js';
 import type { ISubAgent } from './subagent.js';
 
@@ -30,4 +31,9 @@ export interface InterpretResult {
   ok: boolean;
   error?: string;
   output: string;
+  /** Set when ok === false: the node whose failure stopped the run (first
+   *  plan-node-order node with status 'failed'). */
+  failedNodeId?: string;
+  /** The final plan after any in-run local splices. */
+  executedPlan?: DagPlan;
 }
