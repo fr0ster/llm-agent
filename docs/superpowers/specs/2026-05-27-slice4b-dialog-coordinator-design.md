@@ -56,6 +56,44 @@ Context is **layered, with no central manager**:
   focused task over a constrained or tool-capable subagent.
 - The coordinator owns neither — it is a dumb router.
 
+## Hierarchical context rule (the context unit is node + ancestors)
+
+Context is not globally accumulated and is not "the last prompt" — the unit is
+**the current node/request plus its ancestor intent path**.
+
+**Rule.** Role and worker inputs are built from the current node/request plus the
+**ancestor intent path** (the parent objective(s) and the clarification dialogue
+that led here, with the RAG/MCP each subagent assembles for *that* path). They MUST
+NOT receive sibling or descendant context unless it flows through an explicit DAG
+dependency edge, the execution trace, or an oracle observation. Clarify/resume
+relies on the same rule: the next turn is fresh, but the planner input includes the
+relevant **ancestor dialogue/context selected for the current request** — not the
+raw chat.
+
+This is why "no store" works: the carried unit is `node + ancestors`, not the whole
+conversation. After a `clarify`, the answer (e.g. `ZCUSTOMERS` to "Which table
+should I modify?") is meaningful because the ancestor path carries that question;
+the node is not polluted by unrelated sibling tasks.
+
+**Contract shape** — a curated `ancestorContext` (intent lineage), NOT raw history:
+
+```ts
+interface ContextPath {
+  objective?: string;                                   // root/parent intent
+  clarifications: Array<{ question: string; answer: string }>; // intent-shaping dialogue along the path
+}
+```
+
+- `PlannerInput`, `ReviewInput`, `ExecutionFailureInput` carry `ancestorContext?:
+  ContextPath` instead of raw history; the role assembles its own RAG/MCP from
+  `task + ancestorContext`.
+- `composeNodeTask` for a worker node = ancestor objective/path **+ dependency
+  outputs (dependsOn edges only)** + user input when `needsInput`. Sibling nodes
+  (not in the dependency closure) are excluded — already true today; this rule
+  makes the exclusion normative and adds the ancestor intent path.
+- `needInfo` oracle facts are scoped to the **current path** (the query + answer
+  attach to this node's context), not appended globally.
+
 ## Roles (all behind interfaces)
 
 - **Planner** (`IPlanner`) — builds the DAG plan. May emit a request for info
@@ -137,6 +175,13 @@ A `clarify` ends the turn with the question as the assistant message. There is
 So the next turn re-plans from the *current real state*; completed work is not
 redone. Resumption is an emergent property, not a mechanism.
 
+Per the **Hierarchical context rule**, the resuming planner does NOT receive the
+raw chat — it receives a curated `ancestorContext` (the objective + the relevant
+clarification Q/A, e.g. `{question: "Which table?", answer: "ZCUSTOMERS"}`) selected
+for the current request. The runtime already maintains conversation history; the
+coordinator selects the path-relevant slice into `ancestorContext` rather than
+dumping everything.
+
 ## Relationship to slice 4a (refactor within this PR)
 
 Slice 4a put reviewer-driven recovery **inside** the interpreter
@@ -211,6 +256,11 @@ coordinator:
   coordinator loop (interpreter returns failed; coordinator drives revise); slice-3
   autonomous local replan (`NeedsDecompositionError`) still works inside the
   interpreter.
+- **Hierarchical context** — a role/worker input carries the ancestor intent path
+  (objective + clarification Q/A) and its dependency outputs, but NOT a sibling
+  node's output (a node with no `dependsOn` edge to a sibling never sees it); on
+  resume the planner receives `ancestorContext` (the selected clarification Q/A),
+  not the raw chat.
 - **Backward-compat** — existing example YAMLs validate and load; build + lint:check
   clean; full suite green.
 
