@@ -177,6 +177,23 @@ round-trip, bounded) and `clarify` (emit + end turn) uniformly. The coordinator
 itself contains no recovery *judgement* — every decision is the role's; the
 coordinator only routes.
 
+**Reviewer is optional — no reviewer ⇒ batch (unchanged from slices 1/4a).** The
+`reviewer.review` gate and `reviewer.reviewExecutionFailure` recovery steps run
+**only when a reviewer is configured** (`coordinator.reviewer` present — same
+presence-gate as slice 2). When no reviewer is configured, the loop degenerates to:
+
+```
+plan = run-role(planner)            // planner clarify/needInfo still honored if oracle/clarify arise
+result = interpreter.interpret(plan)
+if result.ok: stream; DONE
+else: fail terminally (COORDINATOR_STEP_FAILED)   // existing batch behavior
+```
+
+i.e. no plan gate, no reviewer-driven recovery, no clarify-from-reviewer — exactly
+the slice-1/4a batch path. (The interpreter's own slice-3 autonomous local replan
+still applies regardless.) This keeps every existing DAG config without a reviewer
+behaving identically; the loop's reviewer steps are additive, gated on presence.
+
 ### Interpreter failure contract (stable input for recovery)
 
 The coordinator needs a deterministic way to build `reviewExecutionFailure`'s input
@@ -196,14 +213,17 @@ interface InterpretResult {
 Deterministic derivation (the interpreter sets these; the coordinator reads them):
 - `failedNodeId` = the first node in plan-node order whose `nodeResults[id].status
   === 'failed'`. (Already the order the interpreter scans for its `error` string.)
-- `trace` (for `ExecutionFailureInput.trace`) = `Object.values(nodeResults)` — all
-  `done`/`failed`/`skipped` `NodeResult`s so far (the current-state knowledge).
+- `trace` (for `ExecutionFailureInput.trace`) = the `NodeResult`s in **plan-node
+  order** (`currentPlan.nodes.map((n) => nodeResults[n.id]).filter(Boolean)`), NOT
+  `Object.values(nodeResults)` (whose order follows wave-execution insertion and is
+  unstable). Deterministic order → stable reviewer context and stable tests.
 - `error` = the failed node's `NodeResult.error` (and `InterpretResult.error` keeps
   the existing human-readable summary).
 
 So the coordinator builds `ExecutionFailureInput` as
-`{ failedNodeId, error: nodeResults[failedNodeId].error, trace: Object.values(nodeResults),
-plan, objective: plan.objective, agents, ancestorContext, sessionId }` with no guessing.
+`{ failedNodeId, error: nodeResults[failedNodeId].error, trace: <plan-node-ordered
+NodeResults>, plan, objective: plan.objective, agents, ancestorContext, sessionId }`
+with no guessing.
 
 ## Resume — no store
 
