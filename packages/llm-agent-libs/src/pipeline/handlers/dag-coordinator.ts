@@ -186,7 +186,10 @@ export class DagCoordinatorHandler implements IStageHandler {
             ctx.error =
               err instanceof OrchestratorError
                 ? err
-                : new OrchestratorError(errMsg(err), 'COORDINATOR_REVIEW_FAILED');
+                : new OrchestratorError(
+                    errMsg(err),
+                    'COORDINATOR_REVIEW_FAILED',
+                  );
             return false;
           }
           if ('ended' in gate) return true;
