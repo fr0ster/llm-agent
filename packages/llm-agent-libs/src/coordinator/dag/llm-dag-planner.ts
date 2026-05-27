@@ -1,5 +1,4 @@
 import type {
-  ContextPath,
   DagPlan,
   ILlm,
   IPlanner,
@@ -8,6 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
+import { renderAncestorContext } from './render-ancestor-context.js';
 
 // Static planner instructions. The agent catalog and user prompt are NOT here —
 // they are dynamic and go into the per-call `task` (see plan()).
@@ -19,28 +19,6 @@ Emit a plan-level "objective". Respond with ONLY one of:
 {"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}
 {"needInfo":"<query>"}  — if you need a reality fact before planning (e.g. which table exists)
 {"clarify":"<question>"}  — if you need a human decision before planning (e.g. overwrite ok?)`;
-
-function renderAncestorContext(ac: ContextPath): string {
-  const lines: string[] = [];
-  if (ac.objective) {
-    lines.push(`Ancestor objective: ${ac.objective}`);
-  }
-  if (ac.clarifications.length > 0) {
-    lines.push('Prior clarifications:');
-    for (const c of ac.clarifications) {
-      lines.push(`  Q: ${c.question}`);
-      lines.push(`  A: ${c.answer}`);
-    }
-  }
-  if (ac.oracleObservations.length > 0) {
-    lines.push('Oracle observations:');
-    for (const o of ac.oracleObservations) {
-      lines.push(`  Query: ${o.query}`);
-      lines.push(`  Answer: ${o.answer}`);
-    }
-  }
-  return lines.join('\n');
-}
 
 /**
  * Role adapter: owns a constrained `DirectLlmSubAgent` and turns its string

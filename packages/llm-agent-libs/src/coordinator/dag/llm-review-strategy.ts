@@ -1,5 +1,4 @@
 import type {
-  ContextPath,
   DagPlan,
   ExecutionFailureInput,
   ExecutionReviewDecision,
@@ -10,6 +9,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
+import { renderAncestorContext } from './render-ancestor-context.js';
 
 // Static critic instructions. The user prompt, plan and catalog are dynamic and
 // go into the per-call `task` (see review()).
@@ -27,28 +27,6 @@ Decide recovery and respond with ONLY a JSON object:
 {"needInfo":"<query>"}  — if you need a reality fact before deciding recovery
 {"clarify":"<question>"}  — if you need a human decision before deciding recovery
 The revised plan MUST treat the current state as the starting point: do not redo work already done (per the trace); if an artifact already exists, modify it instead of recreating it (idempotent/adaptive).`;
-
-function renderAncestorContext(ac: ContextPath): string {
-  const lines: string[] = [];
-  if (ac.objective) {
-    lines.push(`Ancestor objective: ${ac.objective}`);
-  }
-  if (ac.clarifications.length > 0) {
-    lines.push('Prior clarifications:');
-    for (const c of ac.clarifications) {
-      lines.push(`  Q: ${c.question}`);
-      lines.push(`  A: ${c.answer}`);
-    }
-  }
-  if (ac.oracleObservations.length > 0) {
-    lines.push('Oracle observations:');
-    for (const o of ac.oracleObservations) {
-      lines.push(`  Query: ${o.query}`);
-      lines.push(`  Answer: ${o.answer}`);
-    }
-  }
-  return lines.join('\n');
-}
 
 /**
  * Role adapter: owns a constrained `DirectLlmSubAgent` critic and turns its

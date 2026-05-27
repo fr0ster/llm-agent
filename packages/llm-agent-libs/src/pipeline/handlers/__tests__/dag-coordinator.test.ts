@@ -304,7 +304,7 @@ describe('DagCoordinatorHandler', () => {
     assert.equal(ok, true);
     assert.equal((ctx as unknown as { error?: unknown }).error, undefined);
     assert.ok(yields.length >= 2);
-    assert.equal(yields[0].value.content, CLARIFY_MARKER + 'q');
+    assert.equal(yields[0].value.content, `${CLARIFY_MARKER}q`);
     assert.equal(yields[1].value.finishReason, 'stop');
   });
 

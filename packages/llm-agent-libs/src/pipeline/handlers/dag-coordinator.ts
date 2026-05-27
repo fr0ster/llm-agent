@@ -65,7 +65,7 @@ export class DagCoordinatorHandler implements IStageHandler {
     _rawConfig: Record<string, unknown>,
     _span: ISpan,
   ): Promise<boolean> {
-    const maxRoundTrips = this.deps.maxRoundTrips ?? 6;
+    const maxRoundTrips = Math.max(1, this.deps.maxRoundTrips ?? 6);
     const ancestorContext = buildAncestorContext(ctx);
     const agents = [...this.deps.workers.values()].map((w) => ({
       name: w.name,
@@ -176,7 +176,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 prompt: ctx.inputText,
                 agents,
                 ancestorContext,
-                reviewerFeedback: verdict.pass ? undefined : verdict.feedback,
+                reviewerFeedback: verdict.feedback,
                 sessionId: ctx.sessionId,
                 signal: ctx.options?.signal,
               }),
