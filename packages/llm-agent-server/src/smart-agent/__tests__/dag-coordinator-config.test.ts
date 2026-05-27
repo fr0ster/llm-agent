@@ -136,4 +136,40 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /reviewer/,
     );
   });
+  it('accepts a DAG coordinator with errorStrategy replan', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        errorStrategy: { type: 'replan', maxReplans: 3 },
+      }),
+    );
+  });
+  it('accepts errorStrategy abort', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        errorStrategy: { type: 'abort' },
+      }),
+    );
+  });
+  it('rejects an unknown errorStrategy.type', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          errorStrategy: { type: 'bogus' },
+        }),
+      /errorStrategy: unknown type 'bogus'/,
+    );
+  });
+  it('rejects errorStrategy in a linear coordinator', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planning: 'one-shot',
+          errorStrategy: { type: 'abort' },
+        }),
+      /errorStrategy/,
+    );
+  });
 });

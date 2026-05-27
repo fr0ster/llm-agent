@@ -1,6 +1,7 @@
 import type {
   DagPlan,
   IActivationStrategy,
+  IErrorStrategy,
   IInterpreter,
   InterpretResult,
   IPlanner,
@@ -26,6 +27,8 @@ export interface DagCoordinatorHandlerDeps {
    *  between planning and execution; a non-pass verdict fails loud (batch).
    *  Absent → no gate. */
   reviewer?: IReviewStrategy;
+  /** Error strategy for DAG node failures. Defaults to AbortErrorStrategy. */
+  errorStrategy?: IErrorStrategy;
 }
 
 export class DagCoordinatorHandler implements IStageHandler {
@@ -104,7 +107,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         sessionId: ctx.sessionId,
         signal: ctx.options?.signal,
         layer: ctx.layer ?? 0,
-        errorStrategy: new AbortErrorStrategy(),
+        errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
       });
     } catch (err) {
       // Structural plan errors: preserve a COORDINATOR_PLAN_INVALID code the
