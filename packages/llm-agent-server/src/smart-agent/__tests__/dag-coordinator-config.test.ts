@@ -172,4 +172,9 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /errorStrategy/,
     );
   });
+  it('still accepts a linear coordinator with maxLayer (now a no-op)', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({ planning: 'one-shot', maxLayer: 2 }),
+    );
+  });
 });

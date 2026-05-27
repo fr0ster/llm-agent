@@ -124,12 +124,6 @@ export interface ICoordinatorConfig {
   maxSteps?: number;
   maxRetriesPerStep?: number;
   failPolicy?: 'abort' | 'continue';
-  /**
-   * Maximum dispatch depth from this coordinator. Default 1: the
-   * coordinator may dispatch children (layer 1), but those children
-   * may not dispatch further unless they raise maxLayer themselves.
-   */
-  maxLayer?: number;
 }
 
 export type SubAgentWithDescription = ISubAgent & { description: string };

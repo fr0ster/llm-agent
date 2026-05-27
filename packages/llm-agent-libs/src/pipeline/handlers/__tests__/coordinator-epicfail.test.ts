@@ -94,7 +94,6 @@ describe('Coordinator epicfail propagation', () => {
       maxSteps: 5,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 2,
     };
     const handler = new CoordinatorHandler(deps);
     const ctx = makeCtx(subAgents);

@@ -34,24 +34,10 @@ export interface CoordinatorHandlerDeps {
   maxSteps: number;
   maxRetriesPerStep: number;
   failPolicy: 'abort' | 'continue';
-  /** Maximum dispatch depth. Default 1. */
-  maxLayer: number;
 }
 
 export class CoordinatorHandler implements IStageHandler {
   constructor(private readonly deps: CoordinatorHandlerDeps) {}
-
-  private validatePlan(
-    _plan: Plan,
-    layer: number,
-    _registry: SubAgentRegistry,
-    maxLayer: number,
-  ): string | undefined {
-    if (layer >= maxLayer) {
-      return `Coordinator at layer ${layer} cannot dispatch (maxLayer=${maxLayer}).`;
-    }
-    return undefined;
-  }
 
   async execute(
     ctx: PipelineContext,
@@ -102,26 +88,9 @@ export class CoordinatorHandler implements IStageHandler {
       return true;
     }
 
-    // Validate plan against layer rules BEFORE executing any step.
-    const validationError = this.validatePlan(
-      plan,
-      ctx.layer ?? 0,
-      registry,
-      this.deps.maxLayer,
-    );
-    if (validationError) {
-      ctx.error = new OrchestratorError(
-        validationError,
-        'COORDINATOR_LAYER_VIOLATION',
-      );
-      return false;
-    }
-
     // Answer-directly: the LLM planner returned an explicit empty step list
     // (no decomposition needed). Synthesize a single agentless step carrying the
     // original request and self-answer it instead of running an empty plan.
-    // Placed AFTER validatePlan so layer rules still apply (a nested coordinator
-    // at layer >= maxLayer is blocked by validatePlan before reaching here).
     // Gated on source 'planner-llm' so manual/skill-steps empty plans keep their
     // current semantics.
     if (plan.source === 'planner-llm' && plan.steps.length === 0) {

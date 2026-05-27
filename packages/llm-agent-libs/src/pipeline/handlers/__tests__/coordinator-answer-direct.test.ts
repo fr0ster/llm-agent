@@ -84,7 +84,6 @@ describe('CoordinatorHandler answer-directly', () => {
       maxSteps: 10,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 1,
     });
 
     const ok = await handler.execute(ctx, {}, {} as never);
@@ -123,7 +122,6 @@ describe('CoordinatorHandler answer-directly', () => {
       maxSteps: 10,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 1,
     });
 
     const ok = await handler.execute(ctx, {}, {} as never);
@@ -148,37 +146,9 @@ describe('CoordinatorHandler answer-directly', () => {
       maxSteps: 10,
       maxRetriesPerStep: 0,
       failPolicy: 'abort',
-      maxLayer: 1,
     });
 
     await handler.execute(ctx, {}, {} as never);
-    assert.equal(dispatch.calls.length, 0);
-  });
-
-  it('blocks answer-directly at layer >= maxLayer (no dispatch)', async () => {
-    const { ctx } = makeCtx('hi');
-    (ctx as unknown as { layer?: number }).layer = 1;
-    const dispatch = capturingDispatch({
-      stepId: 'x',
-      output: '',
-      ok: true,
-      durationMs: 1,
-    });
-    const handler = new CoordinatorHandler({
-      planning: emptyPlanPlanning('planner-llm'),
-      dispatch: dispatch.strategy,
-      maxSteps: 10,
-      maxRetriesPerStep: 0,
-      failPolicy: 'abort',
-      maxLayer: 1,
-    });
-
-    const ok = await handler.execute(ctx, {}, {} as never);
-    assert.equal(ok, false);
-    assert.equal(
-      (ctx as unknown as { error?: { code?: string } }).error?.code,
-      'COORDINATOR_LAYER_VIOLATION',
-    );
     assert.equal(dispatch.calls.length, 0);
   });
 });
