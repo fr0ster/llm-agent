@@ -156,9 +156,10 @@ export class DagCoordinatorHandler implements IStageHandler {
           return false;
         }
 
-        if (this.deps.reviewer) {
+        const reviewer = this.deps.reviewer;
+        if (reviewer) {
           const gate = await runRole(() =>
-            this.deps.reviewer!.review({
+            reviewer.review({
               prompt: ctx.inputText,
               plan,
               agents,
@@ -217,7 +218,9 @@ export class DagCoordinatorHandler implements IStageHandler {
           return true;
         }
 
-        if (!this.deps.reviewer || !this.deps.reviewer.reviewExecutionFailure) {
+        const reviewExecutionFailure =
+          reviewer?.reviewExecutionFailure?.bind(reviewer);
+        if (!reviewExecutionFailure) {
           ctx.error = new OrchestratorError(
             `coordinator: ${result.error ?? 'plan execution failed'}`,
             'COORDINATOR_STEP_FAILED',
@@ -232,7 +235,7 @@ export class DagCoordinatorHandler implements IStageHandler {
         const failedId = result.failedNodeId ?? execPlan.nodes[0]?.id ?? '';
 
         const recovery = await runRole(() =>
-          this.deps.reviewer!.reviewExecutionFailure!({
+          reviewExecutionFailure({
             objective: execPlan.objective,
             plan: execPlan,
             trace,
