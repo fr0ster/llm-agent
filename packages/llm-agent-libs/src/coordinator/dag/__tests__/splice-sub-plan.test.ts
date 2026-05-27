@@ -22,9 +22,10 @@ describe('spliceSubPlan', () => {
     const out = spliceSubPlan(plan, 'X', sub);
     const ids = out.nodes.map((n) => n.id).sort();
     assert.deepEqual(ids, ['X:a', 'X:b', 'Y']);
-    const a = out.nodes.find((n) => n.id === 'X:a')!;
-    const b = out.nodes.find((n) => n.id === 'X:b')!;
-    const y = out.nodes.find((n) => n.id === 'Y')!;
+    const a = out.nodes.find((n) => n.id === 'X:a');
+    const b = out.nodes.find((n) => n.id === 'X:b');
+    const y = out.nodes.find((n) => n.id === 'Y');
+    assert.ok(a && b && y);
     assert.equal(a.needsInput, true);
     assert.deepEqual(a.dependsOn ?? [], []);
     assert.deepEqual(b.dependsOn, ['X:a']);
@@ -47,7 +48,10 @@ describe('spliceSubPlan', () => {
       createdAt: 0,
     };
     const out = spliceSubPlan(plan, 'X', sub);
-    assert.deepEqual(out.nodes.find((n) => n.id === 'X:r1')!.dependsOn, ['P']);
-    assert.deepEqual(out.nodes.find((n) => n.id === 'X:r2')!.dependsOn, ['P']);
+    const r1 = out.nodes.find((n) => n.id === 'X:r1');
+    const r2 = out.nodes.find((n) => n.id === 'X:r2');
+    assert.ok(r1 && r2);
+    assert.deepEqual(r1.dependsOn, ['P']);
+    assert.deepEqual(r2.dependsOn, ['P']);
   });
 });
