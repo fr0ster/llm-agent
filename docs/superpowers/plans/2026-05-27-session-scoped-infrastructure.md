@@ -2,19 +2,22 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give consumers running with different sessions correct, *provable* scoping via a per-session object **graph** assembled by a `SessionGraphFactory` from injected global resources (upstream MCP, vectorized tools-catalog RAG, LLM/embedder clients, RAG registry) — never rebuilding those globals per session. The graph owns per-session pipeline/interpreter/coordinator/workers + the sessionId-keyed registries + a per-session token-logger; identity comes from a server-issued cookie; RAG scoping reuses the existing per-call `rag-query` filter; usage rolls up per session with non-zero per-response numbers.
+**Goal:** Give consumers running with different sessions correct, *provable* scoping via a per-session object **graph** assembled by a `SessionGraphFactory` from injected global resources (upstream MCP, vectorized tools-catalog RAG, LLM/embedder clients, RAG registry) — never rebuilding those globals per session. The graph owns per-session pipeline/interpreter/coordinator/**workers** + the sessionId-keyed registries + a per-session token-logger; identity comes from a server-issued cookie; RAG scoping reuses the existing per-call `rag-query` filter; usage rolls up per session with non-zero per-response numbers.
 
 **Architecture (the locked model):**
 
 - **GLOBAL, built once, injected by reference:** upstream MCP client, vectorized tools-catalog RAG (`toolsRag`), LLM/embedder clients, the RAG provider/registry (`IRagRegistry`) with global/user collections. The expensive `builder.build()` work (MCP connect + tool vectorization, `builder.ts:880-1089`) runs **once**.
-- **PER-SESSION instances, built cheaply from those globals:** pipeline (`DefaultPipeline`), DAG interpreter/coordinator (`DagCoordinatorHandler`), roles, workers, the per-session MCP server (handler registration), token-logger (`SessionRequestLogger`), history-memory, `ToolAvailabilityRegistry`, `PendingToolResultsRegistry`.
-- **`SessionGraphFactory.build(identity) → SessionGraph`** is the central new composition path. It does NOT re-connect MCP or re-vectorize tools; it injects the already-built `toolsRag` / `ragRegistry` / LLM / MCP clients into a fresh `SmartAgentBuilder` via `withMcpClients()` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag()`, `setRagRegistry()`, plus a per-session `SessionRequestLogger` via `withRequestLogger()`.
+- **PER-SESSION instances, built cheaply from those globals:** pipeline (`DefaultPipeline`), DAG interpreter/coordinator (`DagCoordinatorHandler`), roles, **workers (a FRESH per-session `SubAgentRegistry` + DAG coordinator deps — NOT the server's global worker map)**, the per-session MCP server (handler registration), token-logger (`SessionRequestLogger`), history-memory, `ToolAvailabilityRegistry`, `PendingToolResultsRegistry`.
+- **`SessionGraphFactory.build(identity) → SessionGraph`** is the central new composition path. It does NOT re-connect MCP or re-vectorize tools; it injects the already-built `toolsRag` / `ragRegistry` / LLM / MCP clients into a fresh `SmartAgentBuilder` via `withMcpClients()` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag()`, `setRagRegistry()`, plus a per-session `SessionRequestLogger` via `withRequestLogger()`. **Crucially it ALSO rebuilds the session's subagent workers** through the same injected-globals path (one `buildSubAgent` per worker per session), so every worker shares this session's logger + the global toolsRag/ragRegistry/MCP clients — never the server's once-built global workers.
 - **RAG:** NO identity-bound view/factory objects. Reuse the existing per-call `rag-query` scope filter (`rag-query.ts:73-86`: `scope:session → ragFilter.sessionId = ctx.sessionId`, `scope:user → ragFilter.userId = ctx.options.userId`). The graph only (a) guarantees `ctx.sessionId == cookie session id` (set via `options.sessionId`, threaded to `default-pipeline.ts:388` / `agent.ts:672`), and (b) creates/closes session collections via the existing `SimpleRagRegistry.createCollection` / `closeSession`. Workers SHARE the parent `IRagRegistry` (`setRagRegistry`), not an isolated `makeRag`.
+- **Token attribution (binding):** one `SessionRequestLogger` per session, shared by the coordinator AND its workers. Its per-request delta is keyed by `traceId` and is **nested-safe via per-`traceId` refcount/depth**: a worker `SmartAgent.process()` runs `startRequest(traceId)`/`endRequest(traceId)` under the SAME `traceId` as the coordinator, so the logger must NOT clear an existing bucket on nested `startRequest` and must NOT delete it on `endRequest`. Only an explicit `dropRequest(traceId)` — called by the SERVER after it has read the response usage — frees the delta. `traceId` is threaded all the way into worker dispatch (`ISubAgentInput.trace`).
 - **Reentrancy (binding):** per-session pipeline/interpreter/coordinator/worker instances are shared across concurrent same-session requests and MUST be reentrant — all per-run mutable state already lives in the per-request `PipelineContext` (`default-pipeline.ts:386-435`), never on instance fields. The graph holds only session state + shared services. Token-logger request delta is keyed by `traceId`.
 
 **Tech Stack:** TypeScript (strict, ESM, `.js` import suffixes), Node ≥22, `node --test` run via `tsx`, Biome, 16 lockstep-versioned packages. Spec: `docs/superpowers/specs/2026-05-27-session-scoped-infrastructure-design.md`.
 
 **Run tests:** `npx tsx --test <path>` (single file). Full type check: `npm run build`. Lint: `npm run lint`.
+
+**Execution order is strict top-to-bottom.** There are no "pull forward / stub" instructions anywhere. The `SessionRequestLogger` (Task A3) is defined before any task that injects it.
 
 ---
 
@@ -30,19 +33,28 @@
   - `builder.ts:1229-1254` resolves the coordinator (`OneShotPlanning`, `HybridDispatch`/`SubAgentDispatch`/`SelfDispatch`) from `this._coordinator`; `toolSource` is derived from `toolsRag`.
   - `builder.ts:1256-1293` constructs `DefaultPipeline({ subAgents, coordinator, dagCoordinator })` and `pipeline.initialize({... toolsRag, ragRegistry, requestLogger, ...})`.
   - `builder.ts:1295-1339` constructs `new SmartAgent({... ragRegistry, pipeline, requestLogger }, agentCfg)`.
-  - `builder.ts:1365-1381` returns the `SmartAgentHandle` (`agent`, `chat`, `streamChat`, `requestLogger`, `close`, `ragStores`, ...). **`ragRegistry` is NOT currently on the handle** — Task A4 adds it.
-  - **DAG worker wiring:** `withDagCoordinator(deps)` (`builder.ts:561`) stores `this._dagCoordinator`; workers are `ISubAgent` instances in `deps.workers`. The DAG handler `DagCoordinatorHandler` (`dag-coordinator.ts:35` `workers: ReadonlyMap<string, ISubAgent>`) dispatches them.
+  - `builder.ts:1365-1381` returns the `SmartAgentHandle` (`agent`, `chat`, `streamChat`, `requestLogger`, `close`, `ragStores`, ...). **`ragRegistry` and `mcpClients` are NOT currently on the handle** — Task A4 adds both.
+  - **DAG worker wiring:** `withDagCoordinator(deps)` (`builder.ts:561`) stores `this._dagCoordinator`; workers are `ISubAgent` instances in `deps.workers`. The DAG handler `DagCoordinatorHandler` (`dag-coordinator.ts:35` `workers: ReadonlyMap<string, ISubAgent>`) dispatches them via `interpreter.interpret(plan, { workers, sessionId, signal, ... })` (`dag-coordinator.ts:216-223`).
 
-- **`agent.ts` — requestLogger is a constructor field:** `agent.ts:237` `private readonly requestLogger`, set at `agent.ts:260` from `deps.requestLogger`. Used at `agent.ts:680` (`startRequest`), `agent.ts:1083` (`endRequest`), `agent.ts:1233`/`1582`/`1702`/`1743` (`getSummary().byModel`), `agent.ts:1961` (`logLlmCall` for helper). **`traceId` is per-request** at `agent.ts:642` (`options?.trace?.traceId ?? randomUUID()`). `sessionId` at `agent.ts:672` (`options?.sessionId ?? 'default'`).
-  - **Chosen approach (composition seam):** the `SessionGraphFactory` builds a **per-session `SmartAgent`** whose constructor `requestLogger` IS the session's `SessionRequestLogger`. We do NOT thread a per-call logger override into `agent.ts` (that would touch ~6 call sites and the `IRequestLogger` field type). Per-request isolation comes from the **`traceId`-keyed delta inside `SessionRequestLogger`** (Phase C), so one logger instance shared across concurrent requests stays correct. `startRequest`/`endRequest`/`getSummary`/`logLlmCall` calls become `traceId`-aware via Task C6 (propagate `traceId` as `requestId`).
+- **`agent.ts` — requestLogger is a constructor field:** `agent.ts:237` `private readonly requestLogger`, set at `agent.ts:260` from `deps.requestLogger`. Used at `agent.ts:680` (`startRequest()`), `agent.ts:1083` (`endRequest()`), `agent.ts:1233`/`1582`/`1702`/`1743` (`getSummary().byModel`), `agent.ts:1961` (`logLlmCall` for helper). **`traceId` is per-request** at `agent.ts:642` (`options?.trace?.traceId ?? randomUUID()`). `sessionId` at `agent.ts:672` (`options?.sessionId ?? 'default'`).
+  - **Chosen approach (composition seam):** the `SessionGraphFactory` builds a **per-session `SmartAgent` AND per-session workers** whose constructor `requestLogger` IS the session's `SessionRequestLogger`. We do NOT thread a per-call logger override into `agent.ts`. Per-request isolation comes from the **`traceId`-keyed delta inside `SessionRequestLogger`** (Phase C), so one logger instance shared across concurrent requests AND across the coordinator+workers stays correct. Because a worker's `process()` calls `startRequest(traceId)`/`endRequest(traceId)` under the coordinator's own `traceId` (nested), the logger MUST be nested-safe (Task A3) and the server frees the delta with `dropRequest(traceId)` after reading usage (Task A9).
 
 - **`default-pipeline.ts:386-435` `buildContext()`** creates the per-request `PipelineContext`: `sessionId: options?.sessionId ?? 'default'` (`:388`), `requestLogger: this.resolvedRequestLogger` (`:408`), and **`toolAvailabilityRegistry: new ToolAvailabilityRegistry()` (`:411`) + `pendingToolResults: new PendingToolResultsRegistry()` (`:412`)** — per-request `new`, the two sessionId-keyed registries to hoist into the graph.
 
 - **`smart-server.ts` — server composition:**
-  - `build()`: `:463` `new SmartAgentBuilder(...)`; `:484-485` `toolsRag = await makeRag(...)` + `setToolsRag`; `:518-521` named stores; `:610-632` builds subagents via `buildSubAgent` and `withSubAgents(registry)`; `:719` `withDagCoordinator(...)`; `:783` **the single `agentHandle = await builder.build()`**; `:784-792` destructures it (no `ragRegistry` yet).
-  - **`buildSubAgent` (`:940-1030`):** today each worker calls `makeRag(subCfg.rag)` (`:1012-1017`) → isolated RAG. B replaces this with the shared parent `IRagRegistry`.
+  - `build()`: `:463` `new SmartAgentBuilder(...)`; `:484-485` `toolsRag = await makeRag(...)` + `setToolsRag`; `:518-521` named stores; `:605-632` builds subagents via `buildSubAgent` into a `registry: SubAgentRegistry` (`:609`), wraps each in `SmartAgentSubAgent` (`:620`), and `withSubAgents(registry)` (`:631`); `:678-728` resolves the DAG coordinator (`interpreter`, `workers` map at `:693-695`, `withDagCoordinator({...})` at `:719`); `:783` **the single `agentHandle = await builder.build()`**; `:784-792` destructures it.
+  - **`buildSubAgent` (`:940-1030`):** today each worker calls `makeRag(subCfg.rag)` (`:1012-1017`) → isolated RAG, builds its own LLMs, and has its own `DefaultRequestLogger`. **This is the global worker.** Phase B + A8 refactor it to be parameterized by injected resources and callable PER SESSION.
   - `_handle` (`:1032`): `:1342` `traceId = randomUUID()`; `:1343` `sessionId = (req.headers['x-session-id'] as string) || 'default'` — **the line cookie identity replaces**; `:1386-1401` `opts` (carries `sessionId`, `trace.traceId`).
-  - `/v1/usage` (`:1118-1121`): returns the single global `requestLogger.getSummary()` — C4 makes it per-session.
+  - `/v1/usage` (`:1118-1121`): returns the single global `requestLogger.getSummary()` — C5 makes it per-session.
+
+- **Subagent dispatch chain (verified — trace is dropped today):**
+  - `dag-coordinator.ts:216-223` → `interpreter.interpret(plan, { inputText, workers, sessionId: ctx.sessionId, signal, errorStrategy, ancestorContext })` — **no trace**.
+  - `dag-coordinator.ts:120-124` → `this.deps.stateOracle.run({ task, sessionId: ctx.sessionId, signal })` — **no trace**.
+  - `dag-plan-interpreter.ts:64-68` → `this.resolveWorker(n, ctx).run({ task, sessionId: ctx.sessionId, signal: ctx.signal })` — **no trace**.
+  - `smart-agent-subagent.ts:29-32` → `this.agent.process(prompt, { sessionId: input.sessionId, signal: input.signal })` — **no trace**.
+  - `ISubAgentInput` (`packages/llm-agent/src/interfaces/subagent.ts:18-32`) has `task/context/sessionId/signal` — **no trace field**.
+  - `InterpretContext` (`packages/llm-agent/src/interfaces/interpreter.ts:11-22`) has `sessionId/signal` — **no trace field**.
+  - `CallOptions` (`packages/llm-agent/src/interfaces/types.ts:23-27`) has `trace?: TraceContext`, `TraceContext.traceId` (`:17-18`). So `process(prompt, { ..., trace })` is the existing seam.
 
 - **Reuse (do NOT reinvent):** `SimpleRagRegistry.createCollection` / `closeSession` (`simple-rag-registry.ts:86`,`:188`); `InMemoryRagProvider` + provider registry (close-session test pattern, `smart-agent-close-session.test.ts:1-35`); the `rag-query` scope filter (`rag-query.ts:73-86`); `SmartAgent.closeSession` (`agent.ts:408-420`).
 
@@ -51,21 +63,26 @@
 **Phase A — Session Foundation**
 - Create: `packages/llm-agent/src/interfaces/session-identity.ts` — `SessionIdentity` contract.
 - Create: `packages/llm-agent-server/src/smart-agent/session-identity-resolver.ts` — cookie parse/validate/mint + `Set-Cookie`.
+- Modify: `packages/llm-agent/src/interfaces/request-logger.ts` — `requestId?` on entries; `startRequest/endRequest/getSummary(requestId?)`; add `dropRequest(requestId?)`.
+- Create: `packages/llm-agent-libs/src/logger/session-request-logger.ts` — nested-safe `SessionRequestLogger` (refcount/depth + `dropRequest`) + `aggregate` + `summaryToUsage`. **(Task A3 — defined here so every later injector has it.)**
 - Create: `packages/llm-agent-libs/src/session/session-graph.ts` — `SessionGraph` (per-session instances + refcount + disposal flag).
-- Create: `packages/llm-agent-libs/src/session/session-graph-factory.ts` — `SessionGraphFactory.build(identity)` (compose-from-injected-globals).
-- Create: `packages/llm-agent-libs/src/session/session-registry.ts` — `SessionRegistry` (Map + lazy build + TTL/LRU + **drain** semantics).
-- Modify: `packages/llm-agent-libs/src/builder.ts` — expose `ragRegistry` on `SmartAgentHandle` (and the base interface).
-- Modify: `packages/llm-agent/src/interfaces/builder.ts` — add `ragRegistry` to `SmartAgentHandle`.
+- Modify: `packages/llm-agent/src/interfaces/builder.ts` — expose `ragRegistry` + `mcpClients` on `SmartAgentHandle`.
+- Modify: `packages/llm-agent-libs/src/builder.ts` — return `ragRegistry` + `mcpClients` on the handle.
 - Modify: `packages/llm-agent-libs/src/pipeline/default-pipeline.ts:411-412` — take the two registries from injected deps instead of per-request `new`.
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` (`build` + `_handle`) — build globals once, construct `SessionGraphFactory` + `SessionRegistry`, cookie resolve → graph → run on the session pipeline.
+- Create: `packages/llm-agent-libs/src/session/session-graph-factory.ts` — `SessionGraphFactory.build(identity)` (compose-from-injected-globals, incl. fresh per-session workers).
+- Create: `packages/llm-agent-libs/src/session/session-registry.ts` — `SessionRegistry` (Map + lazy build + TTL/LRU + **drain** semantics).
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` (`build` + `_handle`) — build globals once, construct `SessionGraphFactory` + `SessionRegistry`, cookie resolve → graph → run on the session pipeline; `dropRequest(traceId)` in `finally` after reading usage.
 - Modify: server config type (`SmartServerConfig`) — add optional `session` block.
 
-**Phase B — Worker RAG sharing**
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` `buildSubAgent` (`:940-1030`) + call site (`:612`) — share parent `IRagRegistry`.
+**Phase B — Worker RAG sharing + parameterized `buildSubAgent`**
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` — refactor `buildSubAgent` to be parameterized by `{ ragRegistry, toolsRag, mcpClients, requestLogger }` so it is callable per session; share parent `IRagRegistry`.
 
-**Phase C — Session token-rollup**
-- Modify: `packages/llm-agent/src/interfaces/request-logger.ts` — `requestId?` on entries + `startRequest/endRequest/getSummary(requestId?)`.
-- Create: `packages/llm-agent-libs/src/logger/session-request-logger.ts` — `SessionRequestLogger` + `aggregate` + `summaryToUsage`.
+**Phase C — traceId threading + Session token-rollup**
+- Modify: `packages/llm-agent/src/interfaces/subagent.ts` — add `trace?: { traceId: string }` to `ISubAgentInput`.
+- Modify: `packages/llm-agent/src/interfaces/interpreter.ts` — add `trace?: { traceId: string }` to `InterpretContext`.
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — thread `ctx.options?.trace` into `interpret(...)` and `stateOracle.run(...)`.
+- Modify: `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — forward `ctx.trace` into `worker.run({ ..., trace })`.
+- Modify: `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — forward `input.trace` into `process(prompt, { ..., trace })`.
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts:505`, `translate.ts:46`, `packages/llm-agent-libs/src/classifier/llm-classifier.ts:144`, `agent.ts:1961`, `rag-query.ts:90` — propagate `ctx.options.trace.traceId` as `requestId`.
 - Modify: `packages/llm-agent-libs/src/agent.ts` — `startRequest(traceId)` / `endRequest(traceId)`; set `response.usage` from `getSummary(traceId)`.
 - Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts:1118` — `/v1/usage` per-session.
@@ -134,7 +151,7 @@ git commit -m "feat(session): add SessionIdentity contract type"
 
 ### Task A2: Cookie identity resolver (mint/validate + `Set-Cookie`)
 
-Resolves a `SessionIdentity` from the request cookie. Implements the spec cookie contract (A.1 / §A.1 cookie contract): opaque UUID id; `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age`, `Secure` WHEN HTTPS; id must match `^[A-Za-z0-9-]{1,128}$` else treat as no-cookie and mint fresh.
+Resolves a `SessionIdentity` from the request cookie. Implements the spec cookie contract (§A.1): opaque UUID id; `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age`, `Secure` WHEN HTTPS; id must match `^[A-Za-z0-9-]{1,128}$` else treat as no-cookie and mint fresh.
 
 **Files:**
 - Create: `packages/llm-agent-server/src/smart-agent/session-identity-resolver.ts`
@@ -261,9 +278,289 @@ git commit -m "feat(session): cookie identity resolver (mint/validate + Set-Cook
 
 ---
 
-### Task A3: `SessionGraph` (per-session instances + refcount + drain flag)
+### Task A3: `SessionRequestLogger` — nested-safe per-`traceId` delta (refcount/depth + `dropRequest`)
 
-A `SessionGraph` holds the per-session runtime objects produced by the factory and a refcount that pins it against eviction while requests are in flight. It also carries a **mark-for-disposal** flag so the registry can drain a pinned graph (spec A.4). For this task the graph holds the two sessionId-keyed registries + the session logger + an injected per-session `agent` and `disposeFn`; the factory (A3b) populates them. The graph stays construction-injectable so it is unit-testable without the full builder.
+> **Moved early (review MEDIUM #4):** the logger is defined here, before any task that injects it (`SessionGraph` A4, `SessionGraphFactory` A6, server wiring A9). Strict top-to-bottom execution works; there is no "pull forward / stub".
+
+Implements `IRequestLogger`. Keeps a **session-cumulative** tally (survives across requests, for `/v1/usage`) plus a **per-`traceId` delta** map (for exact per-response usage). The delta is **nested-safe** because a worker `SmartAgent.process()` calls `startRequest(traceId)`/`endRequest(traceId)` under the SAME `traceId` as the coordinator (`agent.ts:680`/`agent.ts:1083`). Therefore:
+
+- `startRequest(id)` → increment `depth[id]`; create the delta bucket **only if absent** (NEVER clear an existing one — a nested worker start must not wipe the coordinator's tokens).
+- `endRequest(id)` → decrement `depth[id]`; **does NOT delete** the bucket (a nested worker end must not drop the coordinator's delta before the server reads `response.usage`).
+- `dropRequest(id)` → the explicit free. The SERVER calls it once, after reading `getSummary(traceId)` for the response usage (only the outermost/top-level owner frees the delta).
+- `logLlmCall` accrues to **session-cumulative regardless of depth**, and to the per-`traceId` bucket when `requestId` is set.
+
+**Files:**
+- Modify: `packages/llm-agent/src/interfaces/request-logger.ts` — `requestId?` on entries; `startRequest/endRequest/getSummary(requestId?)`; add `dropRequest(requestId?)`.
+- Create: `packages/llm-agent-libs/src/logger/session-request-logger.ts` (incl. `aggregate` + `summaryToUsage`).
+- Test: `packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts`
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { SessionRequestLogger } from '../session-request-logger.js';
+
+const call = (component: string, total: number, requestId?: string) => ({
+  component: component as never, model: 'm', promptTokens: total, completionTokens: 0,
+  totalTokens: total, durationMs: 1, requestId,
+});
+
+test('per-traceId delta isolates concurrent requests', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('r1');
+  log.startRequest('r2');
+  log.logLlmCall(call('tool-loop', 10, 'r1'));
+  log.logLlmCall(call('tool-loop', 5, 'r2'));
+  assert.equal(log.getSummary('r1').byComponent['tool-loop'].totalTokens, 10);
+  assert.equal(log.getSummary('r2').byComponent['tool-loop'].totalTokens, 5);
+});
+
+test('NESTED start does NOT clear an existing delta (coordinator tokens survive a worker start)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');                       // coordinator (depth 1)
+  log.logLlmCall(call('translate', 7, 't'));   // coordinator's own aux call
+  log.startRequest('t');                        // nested worker start (depth 2) — must NOT wipe
+  log.logLlmCall(call('tool-loop', 30, 't'));   // worker tokens
+  assert.equal(log.getSummary('t').byComponent['translate'].totalTokens, 7);
+  assert.equal(log.getSummary('t').byComponent['tool-loop'].totalTokens, 30);
+});
+
+test('NESTED end does NOT delete the delta (worker endRequest leaves it for the server)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');                        // coordinator (depth 1)
+  log.startRequest('t');                        // worker (depth 2)
+  log.logLlmCall(call('tool-loop', 42, 't'));
+  log.endRequest('t');                          // worker end (depth 1) — bucket survives
+  assert.equal(log.getSummary('t').byComponent['tool-loop'].totalTokens, 42);
+  log.endRequest('t');                          // coordinator end (depth 0) — STILL survives
+  assert.equal(log.getSummary('t').byComponent['tool-loop'].totalTokens, 42,
+    'endRequest never deletes; only dropRequest frees');
+});
+
+test('dropRequest frees the delta (server calls it after reading usage)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');
+  log.logLlmCall(call('tool-loop', 42, 't'));
+  assert.equal(log.getSummary('t').byComponent['tool-loop'].totalTokens, 42);
+  log.dropRequest('t');
+  assert.equal(Object.keys(log.getSummary('t').byComponent).length, 0,
+    'delta freed; getSummary(t) now empty');
+});
+
+test('session-cumulative sums across requests regardless of depth and survives end+drop', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('r1');
+  log.logLlmCall(call('tool-loop', 10, 'r1'));
+  log.endRequest('r1'); log.dropRequest('r1');
+  log.startRequest('r2');
+  log.logLlmCall(call('tool-loop', 7, 'r2'));
+  log.endRequest('r2'); log.dropRequest('r2');
+  assert.equal(log.getSummary().byComponent['tool-loop'].totalTokens, 17);
+});
+
+test('reset clears session-cumulative + deltas (called on session evict)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('r1');
+  log.logLlmCall(call('tool-loop', 10, 'r1'));
+  log.reset();
+  assert.equal(Object.keys(log.getSummary().byComponent).length, 0);
+});
+
+test('calls without a requestId still land in session-cumulative', () => {
+  const log = new SessionRequestLogger();
+  log.logLlmCall(call('embedding', 4));
+  assert.equal(log.getSummary().byComponent['embedding'].totalTokens, 4);
+});
+```
+
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts` — Expected: FAIL (module not found).
+
+- [ ] **Step 3: Implement**
+
+Widen the interface in `packages/llm-agent/src/interfaces/request-logger.ts`:
+
+```ts
+export interface LlmCallEntry {
+  component: LlmComponent;
+  model: string;
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  durationMs: number;
+  estimated?: boolean;
+  scope?: 'initialization' | 'request';
+  detail?: string;
+  /** Request correlation id (the server's traceId). Routes the entry to the
+   *  per-request delta; absent → session-cumulative only. */
+  requestId?: string;
+}
+
+export interface IRequestLogger {
+  logLlmCall(entry: LlmCallEntry): void;
+  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void;
+  logToolCall(entry: ToolCallEntry & { requestId?: string }): void;
+  /** Enter a request scope. Nested-safe: depth-counted, bucket created if absent,
+   *  NEVER clears an existing bucket. */
+  startRequest(requestId?: string): void;
+  /** Leave a request scope. Depth-counted; NEVER deletes the bucket. */
+  endRequest(requestId?: string): void;
+  /** Explicitly free a request delta. The top-level owner (server) calls this
+   *  AFTER reading getSummary(requestId) for the response usage. */
+  dropRequest(requestId?: string): void;
+  getSummary(requestId?: string): RequestSummary;
+  reset(): void;
+}
+```
+
+> `DefaultRequestLogger` and `NoopRequestLogger` keep working: add a `dropRequest(requestId?)` method and widen `startRequest/endRequest/getSummary` to accept the optional arg. For `DefaultRequestLogger`, map `dropRequest` to whatever its current `endRequest` did (its single-request semantics are unchanged — it has no nesting); for `NoopRequestLogger`, no-op. Build will flag every implementer; fix each by widening the signature + adding the no-op/`dropRequest`.
+
+Implement `SessionRequestLogger`:
+
+```ts
+// packages/llm-agent-libs/src/logger/session-request-logger.ts
+import type {
+  IRequestLogger,
+  LlmCallEntry,
+  RagQueryEntry,
+  RequestSummary,
+  ToolCallEntry,
+  LlmUsage,
+} from '@mcp-abap-adt/llm-agent';
+
+interface Bucket {
+  llm: LlmCallEntry[];
+  rag: number;
+  tool: number;
+}
+function emptyBucket(): Bucket { return { llm: [], rag: 0, tool: 0 }; }
+
+/** Shared aggregation (DRY with DefaultRequestLogger.getSummary). */
+export function aggregate(b: Bucket): RequestSummary {
+  const byModel: RequestSummary['byModel'] = {};
+  const byComponent: RequestSummary['byComponent'] = {};
+  const byCategory: RequestSummary['byCategory'] = {};
+  let totalDurationMs = 0;
+  for (const c of b.llm) {
+    totalDurationMs += c.durationMs;
+    const m = (byModel[c.model] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
+    m.promptTokens += c.promptTokens; m.completionTokens += c.completionTokens; m.totalTokens += c.totalTokens; m.requests++;
+    const comp = (byComponent[c.component] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
+    comp.promptTokens += c.promptTokens; comp.completionTokens += c.completionTokens; comp.totalTokens += c.totalTokens; comp.requests++;
+    const catKey = c.scope ?? 'request';
+    const cat = (byCategory[catKey] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
+    cat.promptTokens += c.promptTokens; cat.completionTokens += c.completionTokens; cat.totalTokens += c.totalTokens; cat.requests++;
+  }
+  return { byModel, byComponent, byCategory, ragQueries: b.rag, toolCalls: b.tool, totalDurationMs };
+}
+
+/** Sum a summary's components into a flat usage triple for response.usage. */
+export function summaryToUsage(s: RequestSummary): LlmUsage {
+  let promptTokens = 0, completionTokens = 0, totalTokens = 0;
+  for (const v of Object.values(s.byComponent)) {
+    promptTokens += v.promptTokens; completionTokens += v.completionTokens; totalTokens += v.totalTokens;
+  }
+  return { promptTokens, completionTokens, totalTokens };
+}
+
+/**
+ * One logger per SessionGraph, shared by the coordinator AND its workers. Two
+ * accounting axes (spec C.2):
+ *  - session-cumulative (survives across requests, for /v1/usage),
+ *  - per-traceId delta (for response.usage; keyed so concurrent requests never
+ *    stomp each other).
+ *
+ * NESTED-SAFE: a worker's SmartAgent.process() runs startRequest(traceId) /
+ * endRequest(traceId) under the SAME traceId as the coordinator. Therefore:
+ *   - startRequest is depth-counted and creates the bucket ONLY if absent
+ *     (never clears an existing one — a worker start must not wipe coordinator
+ *     tokens already logged under that traceId),
+ *   - endRequest is depth-counted and NEVER deletes the bucket (a worker end
+ *     must not drop the delta before the server emits response.usage),
+ *   - dropRequest is the explicit free, called by the top-level owner (the
+ *     server) AFTER it has read getSummary(traceId).
+ */
+export class SessionRequestLogger implements IRequestLogger {
+  private readonly cumulative = emptyBucket();
+  private readonly deltas = new Map<string, Bucket>();
+  private readonly depth = new Map<string, number>();
+
+  startRequest(requestId?: string): void {
+    if (!requestId) return;
+    this.depth.set(requestId, (this.depth.get(requestId) ?? 0) + 1);
+    if (!this.deltas.has(requestId)) this.deltas.set(requestId, emptyBucket());
+  }
+
+  endRequest(requestId?: string): void {
+    if (!requestId) return;
+    const d = this.depth.get(requestId);
+    if (d === undefined) return;
+    if (d <= 1) this.depth.delete(requestId);
+    else this.depth.set(requestId, d - 1);
+    // Intentionally does NOT delete the delta bucket: the server frees it via
+    // dropRequest() after reading response.usage.
+  }
+
+  /** Explicit free of a request delta. Called once by the top-level owner. */
+  dropRequest(requestId?: string): void {
+    if (!requestId) return;
+    this.deltas.delete(requestId);
+    this.depth.delete(requestId);
+  }
+
+  logLlmCall(entry: LlmCallEntry): void {
+    this.cumulative.llm.push(entry);
+    if (entry.requestId) this.deltaFor(entry.requestId).llm.push(entry);
+  }
+  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {
+    this.cumulative.rag++;
+    if (entry.requestId) this.deltaFor(entry.requestId).rag++;
+  }
+  logToolCall(entry: ToolCallEntry & { requestId?: string }): void {
+    this.cumulative.tool++;
+    if (entry.requestId) this.deltaFor(entry.requestId).tool++;
+  }
+
+  getSummary(requestId?: string): RequestSummary {
+    if (requestId) return aggregate(this.deltas.get(requestId) ?? emptyBucket());
+    return aggregate(this.cumulative);
+  }
+
+  reset(): void {
+    this.cumulative.llm.length = 0;
+    this.cumulative.rag = 0;
+    this.cumulative.tool = 0;
+    this.deltas.clear();
+    this.depth.clear();
+  }
+
+  /** Get-or-create the delta bucket for a requestId (used by log* when a call
+   *  arrives before startRequest, e.g. a deeply nested worker). */
+  private deltaFor(requestId: string): Bucket {
+    let b = this.deltas.get(requestId);
+    if (!b) { b = emptyBucket(); this.deltas.set(requestId, b); }
+    return b;
+  }
+}
+```
+
+> Implementer note: match the exact `RequestSummary`/bucket shape from `DefaultRequestLogger.getSummary` (grep its return). Extract the shared body into `aggregate` and have `DefaultRequestLogger` call it too if trivial; otherwise keep `aggregate` local but mirror the shape exactly so `/v1/usage` payloads stay identical.
+
+- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS (7 tests); build clean (after widening all `IRequestLogger` impls + adding `dropRequest`).
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent/src/interfaces/request-logger.ts packages/llm-agent-libs/src/logger/session-request-logger.ts packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts
+git commit -m "feat(usage): nested-safe SessionRequestLogger — depth-counted startRequest/endRequest, explicit dropRequest, session-cumulative + per-traceId delta"
+```
+
+---
+
+### Task A4: `SessionGraph` (per-session instances + refcount + drain flag)
+
+A `SessionGraph` holds the per-session runtime objects produced by the factory and a refcount that pins it against eviction while requests are in flight. It also carries a **mark-for-disposal** flag so the registry can drain a pinned graph (spec A.4). It holds the two sessionId-keyed registries + the session logger + an injected per-session `agent` and `disposeFn`; the factory (A6) populates them. The graph stays construction-injectable so it is unit-testable without the full builder.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/session/session-graph.ts`
@@ -334,8 +631,6 @@ test('markForDisposal flag + dispose() runs the injected hook once', async () =>
   assert.equal(n, 1);
 });
 ```
-
-> Note: this test imports `SessionRequestLogger`, created in C1. Implement C1's bare class first OR temporarily stub. The recommended order keeps A3 dependent on C1 only for the type; if executing strictly A→B→C, replace the logger arg with a minimal `{ reset(){} }` cast and revisit in C. The plan assumes the logger class exists (C1 is small and can be pulled forward).
 
 - [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/session/__tests__/session-graph.test.ts` — Expected: FAIL (module not found).
 
@@ -426,13 +721,13 @@ git commit -m "feat(session): SessionGraph with refcount, mark-for-disposal drai
 
 ---
 
-### Task A4: Expose `ragRegistry` on `SmartAgentHandle`
+### Task A5: Expose `ragRegistry` + `mcpClients` on `SmartAgentHandle`
 
-The `SessionGraphFactory` injects the global `ragRegistry`/`toolsRag` it gets from the once-built handle. Today the handle does not expose `ragRegistry`; add it.
+The `SessionGraphFactory` injects the global `ragRegistry`/`toolsRag`/MCP clients it gets from the once-built handle. Today the handle exposes neither `ragRegistry` nor `mcpClients`; add both (the factory needs `mcpClients` to call `withMcpClients(...)` and skip connect+vectorize).
 
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/builder.ts` (add `ragRegistry` to `SmartAgentHandle`)
-- Modify: `packages/llm-agent-libs/src/builder.ts:1365-1381` (return it)
+- Modify: `packages/llm-agent/src/interfaces/builder.ts` (add `ragRegistry` + `mcpClients` to `SmartAgentHandle`)
+- Modify: `packages/llm-agent-libs/src/builder.ts:1365-1381` (return both)
 - Test: `packages/llm-agent-libs/src/__tests__/handle-exposes-rag-registry.test.ts`
 
 - [ ] **Step 1: Write the failing test**
@@ -445,20 +740,21 @@ import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '../builder.js';
 import { makeTestLlm } from '../testing/index.js'; // existing test helper for a fake ILlm
 
-test('build() exposes the ragRegistry it composed', async () => {
+test('build() exposes the ragRegistry it composed and an mcpClients array', async () => {
   const reg = new SimpleRagRegistry();
   const handle = await new SmartAgentBuilder({})
     .withMainLlm(makeTestLlm())
     .setRagRegistry(reg)
     .build();
   assert.equal(handle.ragRegistry, reg);
+  assert.ok(Array.isArray(handle.mcpClients));
   await handle.close();
 });
 ```
 
-> Implementer note: use whatever fake-LLM helper `packages/llm-agent-libs/src/testing/index.ts` exports (grep for a `makeTestLlm`/`FakeLlm`/`makeDefaultDeps` equivalent); the assertion is only that `handle.ragRegistry === reg`.
+> Implementer note: use whatever fake-LLM helper `packages/llm-agent-libs/src/testing/index.ts` exports (grep for a `makeTestLlm`/`FakeLlm`/`makeDefaultDeps` equivalent); the load-bearing assertions are `handle.ragRegistry === reg` and `Array.isArray(handle.mcpClients)`.
 
-- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/__tests__/handle-exposes-rag-registry.test.ts` — Expected: FAIL (`ragRegistry` not on handle / type error).
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/__tests__/handle-exposes-rag-registry.test.ts` — Expected: FAIL (`ragRegistry`/`mcpClients` not on handle / type error).
 
 - [ ] **Step 3: Implement**
 
@@ -467,11 +763,14 @@ In `packages/llm-agent/src/interfaces/builder.ts`, add to `SmartAgentHandle` (af
 ```ts
   /** The RAG registry composed by the builder (shared global, injected per-session). */
   ragRegistry: IRagRegistry;
+  /** The connected upstream MCP clients (shared global, injected per-session
+   *  via withMcpClients to skip re-connect + re-vectorize). Empty when no MCP. */
+  mcpClients: IMcpClient[];
 ```
 
-Ensure `IRagRegistry` is imported in that file (it is already used elsewhere in the interfaces package; add the import if missing).
+Ensure `IRagRegistry` and `IMcpClient` are imported in that file (both are already used elsewhere in the interfaces package; add the imports if missing).
 
-In `packages/llm-agent-libs/src/builder.ts`, in the `return { ... }` object (`:1365`), add `ragRegistry,` (the local `ragRegistry` from `:764` is in scope).
+In `packages/llm-agent-libs/src/builder.ts`, in the `return { ... }` object (`:1365`), add `ragRegistry,` (the local from `:764`) and `mcpClients,` (the connected-clients local resolved in the build path; if no local exists, use `this._mcpClients ?? []`).
 
 - [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
 
@@ -479,12 +778,12 @@ In `packages/llm-agent-libs/src/builder.ts`, in the `return { ... }` object (`:1
 
 ```bash
 git add packages/llm-agent/src/interfaces/builder.ts packages/llm-agent-libs/src/builder.ts packages/llm-agent-libs/src/__tests__/handle-exposes-rag-registry.test.ts
-git commit -m "feat(session): expose ragRegistry on SmartAgentHandle for per-session injection"
+git commit -m "feat(session): expose ragRegistry + mcpClients on SmartAgentHandle for per-session injection"
 ```
 
 ---
 
-### Task A5: Inject sessionId-keyed registries into the pipeline
+### Task A6: Inject sessionId-keyed registries into the pipeline
 
 Replace the per-request `new ToolAvailabilityRegistry()` / `new PendingToolResultsRegistry()` (`default-pipeline.ts:411-412`) with values taken from the per-request `CallOptions`, falling back to fresh instances (preserves embed-as-library behavior). The `SessionGraph` supplies its instances via `options`.
 
@@ -522,7 +821,7 @@ test('falls back to fresh instances when none provided', () => {
 
 - [ ] **Step 3: Implement**
 
-In `packages/llm-agent/src/interfaces/types.ts`, extend `CallOptions` (it already has `sessionId`/`userId`/`trace`) with two optional carriers. Use `unknown`-free precise types via a structural import to avoid a libs→contracts dependency cycle: declare them as opaque slots typed only by the registries' public method surface. Simplest correct approach — add:
+In `packages/llm-agent/src/interfaces/types.ts`, extend `CallOptions` (it already has `sessionId`/`userId`/`trace`) with two optional carriers, typed structurally to avoid a contracts→libs cycle:
 
 ```ts
   /** Per-session sessionId-keyed registries injected by the SessionGraph.
@@ -586,9 +885,11 @@ git commit -m "feat(session): inject sessionId-keyed registries into pipeline vi
 
 ---
 
-### Task A6: `SessionGraphFactory` — compose per-session graph from injected globals
+### Task A7: `SessionGraphFactory` — compose per-session graph (incl. FRESH per-session workers) from injected globals
 
-The central new composition path (spec A.2). `build(identity)` constructs a per-session `SmartAgent` by re-running `SmartAgentBuilder.build()` **with the heavy globals injected**: `withMcpClients(globalMcpClients)` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag(globalToolsRag)`, `setRagRegistry(globalRagRegistry)`, and a fresh per-session `SessionRequestLogger` via `withRequestLogger`. It also creates the two sessionId-keyed registries and wires `dispose` to `globalRagRegistry.closeSession`. Coordinator/DAG/subagent config is passed through unchanged so the per-session pipeline matches the server's config (and MAY differ per session in future).
+The central new composition path (spec A.2). `build(identity)` constructs a per-session `SmartAgent` **and a fresh per-session worker set** by re-running `SmartAgentBuilder.build()` **with the heavy globals injected**: `withMcpClients(globalMcpClients)` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag(globalToolsRag)`, `setRagRegistry(globalRagRegistry)`, and a fresh per-session `SessionRequestLogger` via `withRequestLogger`. It also creates the two sessionId-keyed registries and wires `dispose` to `globalRagRegistry.closeSession`.
+
+> **Review HIGH #2 — why per-session workers:** the server builds subagents ONCE before the main handle (`smart-server.ts:609-632`), wraps them in `SmartAgentSubAgent` (`:620`), and keeps that global worker map in the DAG deps (`:719-728`). Reusing that global worker map per session would keep workers GLOBAL with their original `DefaultRequestLogger`/RAG — contradicting per-session workers + one shared session logger. So the factory's `buildAgent` MUST construct a fresh `SubAgentRegistry` + DAG coordinator deps **per session**, building each worker via the inject-globals path (`withMcpClients(globalMcpClients)`, `setToolsRag(globalToolsRag)`, `setRagRegistry(globalRagRegistry)`, `withRequestLogger(sessionLogger)`). Building workers per session stays cheap because the globals are injected (no re-vectorize). The mechanics of the parameterized `buildSubAgent` live in Phase B; the factory invokes the server-supplied `buildAgent` seam that performs this fresh-per-session assembly.
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/session/session-graph-factory.ts`
@@ -607,7 +908,6 @@ import {
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
 import { SessionGraphFactory } from '../session-graph-factory.js';
-import { makeTestLlm } from '../../testing/index.js';
 
 function makeRagRegistry() {
   const providers = new SimpleRagProviderRegistry();
@@ -617,21 +917,20 @@ function makeRagRegistry() {
   return reg;
 }
 
-test('build(identity) yields a graph whose registries differ per session and shares the injected RAG registry', async () => {
+test('build(identity) yields a graph whose registries+logger differ per session and shares the injected RAG registry; buildAgent receives a FRESH logger per session', async () => {
   const ragRegistry = makeRagRegistry();
+  const seenLoggers: unknown[] = [];
   const factory = new SessionGraphFactory({
     mcpClients: [],            // injected globals (empty here: no connect/vectorize)
     toolsRag: undefined,
     ragRegistry,
     buildAgent: async (parts) => {
       // The factory feeds parts (sessionId, logger, mcpClients, toolsRag, ragRegistry)
-      // into a SmartAgentBuilder; in this test we just assert wiring values arrive.
+      // into the server's fresh-per-session worker assembly; here we assert wiring.
       assert.equal(parts.ragRegistry, ragRegistry);
       assert.ok(parts.logger);
-      // Return a minimal agent stand-in: the real factory returns handle.agent.
-      const handle = await (await import('../../builder.js')).SmartAgentBuilder
-        .prototype; // not used; real impl builds a real agent (see note)
-      return undefined as never;
+      seenLoggers.push(parts.logger);
+      return undefined; // pure-wiring test: real impl returns the built agent
     },
   });
 
@@ -642,6 +941,9 @@ test('build(identity) yields a graph whose registries differ per session and sha
   assert.notEqual(g1.pendingToolResults, g2.pendingToolResults);
   assert.notEqual(g1.logger, g2.logger);
   assert.equal(g1.sessionId, 's1');
+  // The logger each buildAgent saw is exactly the one its graph exposes (fresh per session).
+  assert.equal(seenLoggers[0], g1.logger);
+  assert.equal(seenLoggers[1], g2.logger);
 });
 
 test('dispose() of a graph closes session collections on the shared registry only', async () => {
@@ -650,7 +952,7 @@ test('dispose() of a graph closes session collections on the shared registry onl
     mcpClients: [],
     toolsRag: undefined,
     ragRegistry,
-    buildAgent: async () => undefined as never,
+    buildAgent: async () => undefined,
   });
   await ragRegistry.createCollection({ providerName: 'mem', collectionName: 'g-s1', scope: 'session', sessionId: 's1' });
   assert.ok(ragRegistry.get('g-s1'));
@@ -660,7 +962,7 @@ test('dispose() of a graph closes session collections on the shared registry onl
 });
 ```
 
-> Implementer note: the test injects a `buildAgent` seam so the factory is unit-testable without a real MCP/LLM stack. In production the factory's default `buildAgent` runs a real `SmartAgentBuilder.build()`. Keep `buildAgent` an injectable constructor option (defaulting to the real builder path) so this test stays cheap. Drop the placeholder dynamic-import line in the first test — `buildAgent` may return `undefined as never` for these wiring assertions; the registry-isolation assertions are what matter.
+> Implementer note: the test injects a `buildAgent` seam so the factory is unit-testable without a real MCP/LLM stack. In production the server supplies a `buildAgent` that performs the fresh-per-session worker assembly (Task A9). The registry-isolation + fresh-logger assertions are what matter.
 
 - [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts` — Expected: FAIL (module not found).
 
@@ -680,7 +982,10 @@ export interface SessionGraphIdentity {
   readonly userId?: string;
 }
 
-/** Parts handed to `buildAgent` — the injected globals + per-session services. */
+/** Parts handed to `buildAgent` — the injected globals + per-session services.
+ *  The server's buildAgent uses these to assemble a FRESH per-session agent AND
+ *  a fresh per-session worker set (each worker built via the inject-globals path
+ *  with this session's logger). */
 export interface SessionAgentParts {
   readonly sessionId: string;
   readonly mcpClients: IMcpClient[];
@@ -697,9 +1002,11 @@ export interface SessionGraphFactoryOptions {
   /** GLOBAL RAG provider/registry — shared; the per-call scope filter isolates. */
   readonly ragRegistry: IRagRegistry;
   /**
-   * Builds the per-session SmartAgent from `parts`. Production wiring runs a
-   * `SmartAgentBuilder.build()` with the injected globals + this session's logger;
-   * tests inject a stub. Returns the built agent (or undefined in pure-wiring tests).
+   * Builds the per-session SmartAgent + FRESH per-session workers from `parts`.
+   * Production wiring runs a `SmartAgentBuilder.build()` with the injected globals
+   * + this session's logger AND rebuilds the subagent registry/DAG deps per session
+   * (Task A9). Tests inject a stub. Returns the built agent (or undefined in
+   * pure-wiring tests).
    */
   readonly buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
 }
@@ -709,7 +1016,9 @@ export interface SessionGraphFactoryOptions {
  * injecting the GLOBAL heavy resources (MCP clients, vectorized toolsRag, RAG
  * registry) by reference — it never re-connects MCP or re-vectorizes tools — and
  * allocates the cheap per-session instances (logger + sessionId-keyed registries
- * + the per-session agent/pipeline/interpreter/coordinator/workers).
+ * + the per-session agent/pipeline/interpreter/coordinator/WORKERS). The
+ * per-session worker set is FRESH per session (built through buildAgent with the
+ * session logger), never the server's global worker map.
  */
 export class SessionGraphFactory {
   constructor(private readonly opts: SessionGraphFactoryOptions) {}
@@ -763,12 +1072,12 @@ export type { SessionRegistryOptions } from './session/session-registry.js';
 
 ```bash
 git add packages/llm-agent-libs/src/session/session-graph-factory.ts packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/session/__tests__/session-graph-factory.test.ts
-git commit -m "feat(session): SessionGraphFactory composes per-session graph from injected globals (no MCP reconnect / re-vectorize)"
+git commit -m "feat(session): SessionGraphFactory composes per-session graph + FRESH per-session workers from injected globals (no MCP reconnect / re-vectorize)"
 ```
 
 ---
 
-### Task A7: `SessionRegistry` with TTL/LRU + drain semantics
+### Task A8: `SessionRegistry` with TTL/LRU + drain semantics
 
 Owns `Map<sessionId, SessionGraph>`, lazy-builds via `SessionGraphFactory.build`, and evicts idle/over-cap graphs respecting the refcount. **Drain semantics (spec A.4 / review MEDIUM):** `enforceCap` marks the LRU candidate for disposal even if pinned (instead of `break`); `release(sessionId)` disposes a marked graph when refcount hits 0; `release` uses a **non-creating lookup** (never `getOrCreate`, so it can't resurrect a removed session).
 
@@ -991,14 +1300,16 @@ git commit -m "feat(session): SessionRegistry with idle-TTL + LRU + drain semant
 
 ---
 
-### Task A8: Wire the server to cookie identity + SessionGraphFactory + SessionRegistry
+### Task A9: Wire the server to cookie identity + SessionGraphFactory + SessionRegistry (with fresh per-session workers + `dropRequest` after usage)
 
-Build the GLOBAL handle once (`builder.build()` at `:783`), construct the `SessionGraphFactory` from its injected globals (`agentHandle.ragRegistry`, the global `toolsRag`, the connected MCP clients) and a `SessionRegistry`. In `_handle`: replace `x-session-id` (`:1343`) with the cookie resolver, `await lifecycle.acquire(sessionId)`, `Set-Cookie` when minted, run the request **on the session graph's agent** with `opts.sessionId = sessionId` + `opts.toolAvailability/pendingToolResults` from the graph, and `release` in `finally`. Start an idle-TTL sweep timer. Config from a new `session` block.
+Build the GLOBAL handle once (`builder.build()` at `:783`), construct the `SessionGraphFactory` from its injected globals (`agentHandle.ragRegistry`, the global `toolsRag`, `agentHandle.mcpClients`) and a `SessionRegistry`. In `_handle`: replace `x-session-id` (`:1343`) with the cookie resolver, `await lifecycle.acquire(sessionId)`, `Set-Cookie` when minted, run the request **on the session graph's agent** with `opts.sessionId = sessionId` + `opts.trace.traceId` + `opts.toolAvailability/pendingToolResults` from the graph, read the response usage from `graph.logger.getSummary(traceId)`, then `graph.logger.dropRequest(traceId)` **and** `lifecycle.release(sessionId)` in `finally`. Start an idle-TTL sweep timer. Config from a new `session` block.
 
-The factory's production `buildAgent` re-runs a `SmartAgentBuilder.build()` with `withMcpClients(globalMcpClients)` + `setToolsRag(globalToolsRag)` + `setRagRegistry(globalRagRegistry)` + `withRequestLogger(parts.logger)` + the same coordinator/DAG/subagent config the server already assembled — so the heavy connect/vectorize path is skipped (`builder.ts:880-882`).
+> **Review HIGH #1 — `dropRequest` ownership:** the server is the top-level owner of the request delta. The per-session agent + its workers call `startRequest(traceId)`/`endRequest(traceId)` (nested, same traceId) but NEVER `dropRequest`. The server calls `dropRequest(traceId)` once, in the request `finally`, AFTER it has read the usage for the response. This is the only place the delta is freed.
+
+> **Review HIGH #2 — fresh per-session workers:** the server's `buildAgent` builds a FRESH `SubAgentRegistry` + DAG coordinator deps PER SESSION. It does NOT reuse the global `registry`/DAG-deps captured during the primary `build()`. Each worker is built by the Phase-B parameterized `buildSubAgent` with `{ ragRegistry: parts.ragRegistry, toolsRag: parts.toolsRag, mcpClients: parts.mcpClients, requestLogger: parts.logger }`.
 
 **Files:**
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` (`build`: capture global MCP clients + toolsRag; build factory + registry + sweep timer; `_handle`: resolve/acquire/run-on-graph/release)
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` (`build`: capture global MCP clients + toolsRag; build factory + registry + sweep timer; `_handle`: resolve/acquire/run-on-graph/read-usage/drop+release)
 - Modify: server config type (`SmartServerConfig`) — add the optional `session` block.
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/smart-server-session-lifecycle.test.ts`
 
@@ -1032,7 +1343,7 @@ test('first request mints a cookie; dispose closes session collections on the sh
     mcpClients: [],
     toolsRag: undefined,
     ragRegistry,
-    buildAgent: async () => undefined as never,
+    buildAgent: async () => undefined,
   });
 
   const r = lc.resolve(undefined, false); // no cookie, not HTTPS
@@ -1055,15 +1366,32 @@ test('two no-cookie requests get distinct session ids (no shared default bucket)
   const lc = buildSessionLifecycle({
     idleTtlMs: 10_000, maxSessions: 100, cookieName: 'sid',
     mcpClients: [], toolsRag: undefined, ragRegistry: makeRagRegistry(),
-    buildAgent: async () => undefined as never,
+    buildAgent: async () => undefined,
   });
   assert.notEqual(lc.resolve(undefined, false).identity.sessionId, lc.resolve(undefined, false).identity.sessionId);
+});
+
+test('dropRequest frees the delta but session-cumulative survives (server-owned free)', async () => {
+  const lc = buildSessionLifecycle({
+    idleTtlMs: 10_000, maxSessions: 100, cookieName: 'sid',
+    mcpClients: [], toolsRag: undefined, ragRegistry: makeRagRegistry(),
+    buildAgent: async () => undefined,
+  });
+  const g = await lc.acquire('s1');
+  g.logger.startRequest('t');
+  g.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 9, completionTokens: 0, totalTokens: 9, durationMs: 1, requestId: 't' });
+  g.logger.endRequest('t');                 // worker/agent end — delta survives
+  assert.equal(g.logger.getSummary('t').byComponent['tool-loop'].totalTokens, 9);
+  g.logger.dropRequest('t');                // server frees AFTER reading usage
+  assert.equal(Object.keys(g.logger.getSummary('t').byComponent).length, 0);
+  assert.equal(g.logger.getSummary().byComponent['tool-loop'].totalTokens, 9, 'cumulative survives');
+  lc.release('s1');
 });
 ```
 
 - [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-server/src/smart-agent/__tests__/smart-server-session-lifecycle.test.ts` — Expected: FAIL (`buildSessionLifecycle` not exported).
 
-- [ ] **Step 3: Implement `buildSessionLifecycle` and wire it**
+- [ ] **Step 3: Implement `buildSessionLifecycle`, the per-session worker builder, and wire `_handle`**
 
 Add the exported factory in `smart-server.ts` (keeps `_handle` thin + unit-testable):
 
@@ -1113,14 +1441,11 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions) {
 }
 ```
 
-In `build()`, after `agentHandle = await builder.build()` (`:783`) and the destructure (`:784`), capture the globals and the per-session `buildAgent`. The global MCP clients are not currently surfaced on the handle; capture them from the builder path: the server already knows `toolsRag` (local var, `:484`/`:520`) and `agentHandle.ragRegistry` (Task A4). For MCP clients, pass `withMcpClients` from the *first* connected set — extract by having the server build its own MCP clients once via the builder and reuse. Concretely, add after the destructure:
+In `build()`, after `agentHandle = await builder.build()` (`:783`) and the destructure (`:784`), capture the globals and wire the per-session `buildAgent` that **builds fresh workers per session**:
 
 ```ts
-    const { ragRegistry } = agentHandle;
-    // GLOBAL toolsRag captured above as `toolsRag` (server local). GLOBAL MCP
-    // clients: re-resolve from the builder's connected set. Expose them on the
-    // handle (small builder change) OR re-use the server's own connection.
-    const globalMcpClients = agentHandle.mcpClients ?? []; // see note
+    const { ragRegistry, mcpClients: globalMcpClients } = agentHandle; // Task A5 added both
+    // GLOBAL toolsRag captured above as `toolsRag` (server local, :484/:520).
     const sessionCfg = this.cfg.session ?? {};
     const lifecycle = buildSessionLifecycle({
       idleTtlMs: sessionCfg.idleTtlMs ?? 7_200_000,
@@ -1129,53 +1454,84 @@ In `build()`, after `agentHandle = await builder.build()` (`:783`) and the destr
       mcpClients: globalMcpClients,
       toolsRag,
       ragRegistry,
-      buildAgent: async (parts) => {
-        // Re-run the builder with the heavy globals INJECTED -> connect + tool
-        // vectorization are skipped (builder.ts:880-882). Coordinator/DAG/subagent
-        // config matches the server's primary build so the per-session pipeline
-        // is equivalent (and MAY vary per session in future).
-        const sub = this.buildSessionAgentBuilder(parts);
-        const handle = await sub.build();
-        return handle.agent;
-      },
+      buildAgent: (parts) => this.buildSessionAgent(parts),
     });
+    this._lifecycle = lifecycle; // hoist to a field so _handle can use it
     const sweepMs = Math.min(sessionCfg.idleTtlMs ?? 7_200_000, 60_000);
     const sweep = setInterval(() => { void lifecycle.evictIdle(); }, sweepMs);
     sweep.unref?.();
     closeFns.push(async () => { clearInterval(sweep); await lifecycle.disposeAll(); });
 ```
 
-> Note (MCP clients on the handle): add `mcpClients` to `SmartAgentHandle` (mirror Task A4: it's the `mcpClients` local in `builder.ts` `return`) so the factory can inject them via `withMcpClients`. This is a one-line handle addition + one interface field.
-
-Add the private helper `buildSessionAgentBuilder(parts)` to `SmartServerSmartAgent` that mirrors the primary `build()` builder assembly but injects globals and the session logger:
+Add the private `buildSessionAgent(parts)` that assembles a FRESH per-session agent AND a FRESH per-session worker set + DAG deps, all on this session's logger + injected globals:
 
 ```ts
-  private buildSessionAgentBuilder(parts: SessionAgentParts): SmartAgentBuilder {
+  /**
+   * Builds a per-session SmartAgent from injected globals. Rebuilds the subagent
+   * registry + DAG coordinator deps FRESH per session (review HIGH #2): each
+   * worker is built via the parameterized buildSubAgent (Phase B) with this
+   * session's logger + the global ragRegistry/toolsRag/mcpClients. NEVER reuses
+   * the server's global `registry`/DAG-deps from the primary build().
+   */
+  private async buildSessionAgent(parts: SessionAgentParts): Promise<SmartAgent | undefined> {
     let b = new SmartAgentBuilder({
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
       skipModelValidation: this.cfg.skipModelValidation,
     })
-      .withMainLlm(this._mainLlm)            // captured globals (hoist to fields in build())
+      .withMainLlm(this._mainLlm)            // captured globals (hoisted in build())
       .withClassifierLlm(this._classifierLlm)
       .withLogger(this._fileLogger)
       .withMode(this.cfg.mode ?? 'smart')
-      .withMcpClients(parts.mcpClients)      // SKIPS connect + re-vectorize
+      .withMcpClients(parts.mcpClients)      // SKIPS connect + re-vectorize (builder.ts:880-882)
       .setRagRegistry(parts.ragRegistry)
       .withRequestLogger(parts.logger);      // per-session token-logger
     if (this._helperLlm) b = b.withHelperLlm(this._helperLlm);
     if (parts.toolsRag) b = b.setToolsRag(parts.toolsRag);
-    if (this._subAgentRegistry) b = b.withSubAgents(this._subAgentRegistry);
-    if (this._dagCoordinatorDeps) b = b.withDagCoordinator(this._dagCoordinatorDeps);
-    return b;
+
+    // FRESH per-session workers: rebuild the registry from the SAME subagent
+    // configs the primary build() used, but injecting globals + the session
+    // logger so every worker shares this session's accounting + the global
+    // toolsRag/ragRegistry/MCP clients.
+    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
+      const registry: SubAgentRegistry = new Map();
+      for (const sub of this.cfg.subAgentConfigs) {
+        const subAgent = await this.buildSubAgent(sub.name, sub.config, this._fileLogger, this._mergedEmbedderFactories, {
+          ragRegistry: parts.ragRegistry,
+          toolsRag: parts.toolsRag,
+          mcpClients: parts.mcpClients,
+          requestLogger: parts.logger,
+        });
+        registry.set(sub.name, new SmartAgentSubAgent(sub.name, subAgent, { description: sub.description }));
+      }
+      b = b.withSubAgents(registry);
+      // Rebuild the DAG coordinator deps per session against THIS worker set,
+      // mirroring the primary build()'s coordinator resolution (planner/reviewer/
+      // interpreter/stateOracle/errorStrategy/activation/maxRoundTrips).
+      if (this._dagCoordinatorTemplate) {
+        const workers: SubAgentRegistry = new Map(
+          [...registry].filter(([name]) => name !== this._dagCoordinatorTemplate!.oracleName),
+        );
+        b = b.withDagCoordinator({
+          ...this._dagCoordinatorTemplate.deps,   // planner/interpreter/reviewer/activation/errorStrategy/maxRoundTrips (stateless or LLM-bound, reusable)
+          workers,
+          stateOracle: this._dagCoordinatorTemplate.oracleName
+            ? registry.get(this._dagCoordinatorTemplate.oracleName)
+            : undefined,
+        });
+      }
+    }
+    const handle = await b.build();
+    return handle.agent;
   }
 ```
 
-> Implementer note: in `build()`, hoist the LLM instances (`mainLlm`/`classifierLlm`/`helperLlm`), `fileLogger`, the subagent `registry`, and the resolved DAG-coordinator deps into instance fields (`this._mainLlm`, etc.) so `buildSessionAgentBuilder` can reuse them. These are already locals in `build()` — promote, don't rebuild. Workers in `registry` already share the parent `ragRegistry` after Phase B.
+> Implementer note (hoist to fields in `build()`): promote the existing `build()` locals into instance fields so `buildSessionAgent` reuses them: `this._mainLlm`/`this._classifierLlm`/`this._helperLlm` (LLM instances — reusable globals), `this._fileLogger`, `this._mergedEmbedderFactories` (the `mergedEmbedderFactories` local at `:616`), and a `this._dagCoordinatorTemplate = { deps: { planner, interpreter, reviewer, activation, errorStrategy, maxRoundTrips }, oracleName }` captured where the primary DAG deps are resolved (`:719-728`). The planner/interpreter/reviewer/errorStrategy are stateless or LLM-bound and safe to reuse across sessions; only the **`workers` map and `stateOracle`** are rebuilt per session. Do NOT reuse the primary `registry` (`:609`) — that is the global worker map this finding forbids reusing.
 
 In `_handle`, replace `:1342-1343` and wrap the run:
 
 ```ts
+    const lifecycle = this._lifecycle;
     const traceId = randomUUID();
     const isHttps = (req.socket as { encrypted?: boolean }).encrypted === true
       || (req.headers['x-forwarded-proto'] === 'https');
@@ -1186,17 +1542,23 @@ In `_handle`, replace `:1342-1343` and wrap the run:
     try {
       // ... existing request handling. Run on the per-session agent:
       //   const runAgent = graph.agent ?? smartAgent;   // graph.agent is per-session
-      // and inject the graph's sessionId-keyed registries + sessionId into opts:
+      // and inject the graph's sessionId-keyed registries + sessionId + traceId:
       //   opts.sessionId = sessionId;
       //   opts.toolAvailability = graph.toolAvailability;
       //   opts.pendingToolResults = graph.pendingToolResults;
       //   opts.trace = { traceId };
+      // After the run completes, response.usage is set by the agent (Task C7)
+      // from graph.logger.getSummary(traceId). For /v1/usage-free endpoints that
+      // read usage explicitly, read it here BEFORE dropRequest.
     } finally {
+      // Top-level owner frees the per-traceId delta AFTER usage was read; then
+      // release the refcount pin (review HIGH #1).
+      graph.logger.dropRequest(traceId);
       lifecycle.release(sessionId);
     }
 ```
 
-> Implementer note: thread `graph` and `lifecycle` into `_handle` (they live on the server instance set in `build()`). The endpoints that run the agent (`/v1/chat/completions` etc.) must use `graph.agent` and the `opts` additions above. `opts.sessionId = sessionId` guarantees `ctx.sessionId == cookie session id` (verified seam: `default-pipeline.ts:388`, `agent.ts:672`).
+> Implementer note: `opts.sessionId = sessionId` guarantees `ctx.sessionId == cookie session id` (verified seam: `default-pipeline.ts:388`, `agent.ts:672`). The endpoints that run the agent (`/v1/chat/completions` etc.) must use `graph.agent` and the `opts` additions above. The `dropRequest(traceId)` in `finally` runs after the streamed/awaited response has been assembled (so `response.usage` — set in Task C7 from `getSummary(traceId)` — is already computed). Order in `finally` is `dropRequest` then `release`.
 
 Add the `session` block to the server config interface (`SmartServerConfig`):
 
@@ -1214,14 +1576,14 @@ Add the `session` block to the server config interface (`SmartServerConfig`):
 
 ```bash
 git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent/src/interfaces/builder.ts packages/llm-agent-libs/src/builder.ts packages/llm-agent-server/src/smart-agent/__tests__/smart-server-session-lifecycle.test.ts
-git commit -m "feat(session): wire server to cookie identity + SessionGraphFactory + SessionRegistry (Set-Cookie, per-session agent, acquire/release, TTL sweep, closeSession on evict)"
+git commit -m "feat(session): wire server to cookie identity + SessionGraphFactory + SessionRegistry (fresh per-session workers, per-session agent, acquire/release, dropRequest after usage, TTL sweep, closeSession on evict)"
 ```
 
 ---
 
-### Task A9: Phase-A provability tests (spec A.6)
+### Task A10: Phase-A provability tests (spec A.6)
 
-Covers: distinct graphs per session, single dispose on evict, `ctx.sessionId == cookie id`, and reentrancy (two concurrent same-session runs produce independent results with separate per-`traceId` deltas).
+Covers: distinct graphs per session, single dispose on evict, `ctx.sessionId == cookie id`, and reentrancy (two concurrent same-session runs produce independent results with separate per-`traceId` deltas — and nested start/end don't corrupt them).
 
 **Files:**
 - Test: `packages/llm-agent-libs/src/session/__tests__/session-provability.test.ts`
@@ -1276,21 +1638,35 @@ import assert from 'node:assert/strict';
 import { SessionRequestLogger } from '../../logger/session-request-logger.js';
 
 // Reentrancy contract (spec A.5/A.6): two concurrent runs of ONE session share
-// the session logger but keep separate per-traceId deltas — no cross-talk.
+// the session logger but keep separate per-traceId deltas — no cross-talk — and
+// nested worker start/end under one traceId must not corrupt that traceId's delta.
 test('concurrent same-session requests keep independent per-traceId deltas', () => {
   const logger = new SessionRequestLogger(); // shared by the session graph
   logger.startRequest('trace-A');
   logger.startRequest('trace-B');
-  logger.logLlmCall({ component: 'tool-loop', model: 'm', promptTokens: 11, completionTokens: 0, totalTokens: 11, durationMs: 1, requestId: 'trace-A' });
-  logger.logLlmCall({ component: 'tool-loop', model: 'm', promptTokens: 22, completionTokens: 0, totalTokens: 22, durationMs: 1, requestId: 'trace-B' });
+  logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 11, completionTokens: 0, totalTokens: 11, durationMs: 1, requestId: 'trace-A' });
+  logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 22, completionTokens: 0, totalTokens: 22, durationMs: 1, requestId: 'trace-B' });
   assert.equal(logger.getSummary('trace-A').byComponent['tool-loop'].totalTokens, 11);
   assert.equal(logger.getSummary('trace-B').byComponent['tool-loop'].totalTokens, 22);
-  // session-cumulative sees both
   assert.equal(logger.getSummary().byComponent['tool-loop'].totalTokens, 33);
+});
+
+test('nested worker start/end under one traceId does not corrupt the delta', () => {
+  const logger = new SessionRequestLogger();
+  logger.startRequest('t');                                   // coordinator
+  logger.logLlmCall({ component: 'translate' as never, model: 'm', promptTokens: 5, completionTokens: 0, totalTokens: 5, durationMs: 1, requestId: 't' });
+  logger.startRequest('t');                                   // worker (nested)
+  logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 40, completionTokens: 0, totalTokens: 40, durationMs: 1, requestId: 't' });
+  logger.endRequest('t');                                     // worker end
+  logger.endRequest('t');                                     // coordinator end
+  assert.equal(logger.getSummary('t').byComponent['translate'].totalTokens, 5);
+  assert.equal(logger.getSummary('t').byComponent['tool-loop'].totalTokens, 40);
+  logger.dropRequest('t');
+  assert.equal(Object.keys(logger.getSummary('t').byComponent).length, 0);
 });
 ```
 
-> The `ctx.sessionId == cookie id` and malformed-cookie-mint guarantees are already proven by A2 (resolver) + A8 (`buildSessionLifecycle` sets `opts.sessionId = resolved.identity.sessionId`, and `ctx.sessionId = options?.sessionId` at `default-pipeline.ts:388`). The reentrancy test depends on `SessionRequestLogger` (C1) — pull C1 forward or run this suite after C1.
+> The `ctx.sessionId == cookie id` and malformed-cookie-mint guarantees are already proven by A2 (resolver) + A9 (`buildSessionLifecycle` sets `opts.sessionId = resolved.identity.sessionId`, and `ctx.sessionId = options?.sessionId` at `default-pipeline.ts:388`). The reentrancy test depends on `SessionRequestLogger` (A3, already implemented above).
 
 - [ ] **Step 2: Run** both files — Expected: PASS.
 
@@ -1298,19 +1674,22 @@ test('concurrent same-session requests keep independent per-traceId deltas', () 
 
 ```bash
 git add packages/llm-agent-libs/src/session/__tests__/session-provability.test.ts packages/llm-agent-libs/src/session/__tests__/session-reentrancy.test.ts
-git commit -m "test(session): phase-A provability — isolation, single dispose, reentrant per-traceId deltas"
+git commit -m "test(session): phase-A provability — isolation, single dispose, reentrant + nested-safe per-traceId deltas"
 ```
 
 ---
 
-## PHASE B — Worker RAG sharing
+## PHASE B — Worker RAG sharing + parameterized `buildSubAgent`
 
-### Task B1: Subagents share the parent RAG registry
+### Task B1: Parameterize `buildSubAgent` by injected resources; subagents share the parent RAG registry
 
-Today `buildSubAgent` (`smart-server.ts:1007-1018`) builds an isolated RAG via `makeRag(subCfg.rag)`. Replace with the shared parent `IRagRegistry` (`setRagRegistry`) so session/user/global collections written at the top level are visible to workers; the per-call scope filter (`rag-query.ts:73-86`) isolates by `ctx.sessionId`/`ctx.options.userId`. A worker's own declared store registers INTO the shared registry under its namespace.
+Today `buildSubAgent` (`smart-server.ts:940-1030`) builds an isolated RAG via `makeRag(subCfg.rag)` (`:1007-1018`), its own LLMs, and uses its own `DefaultRequestLogger`. Two changes:
+
+1. **Share the parent `IRagRegistry`** (`setRagRegistry`) so session/user/global collections written at the top level are visible to workers; the per-call scope filter (`rag-query.ts:73-86`) isolates by `ctx.sessionId`/`ctx.options.userId`. A worker's own declared store registers INTO the shared registry under its namespace.
+2. **Parameterize by `{ ragRegistry, toolsRag, mcpClients, requestLogger }`** (review HIGH #2) so the per-session `buildSessionAgent` (A9) can build a fresh worker per session that shares the session logger + global toolsRag/MCP clients. The new param is **optional** so the primary `build()` path (which builds the global agent once) keeps working unchanged when it does not pass injected resources.
 
 **Files:**
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` — `buildSubAgent` gains `parentRagRegistry: IRagRegistry`; call site (`:612`) passes `agentHandle.ragRegistry`.
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts` — `buildSubAgent` gains an optional `injected?: { ragRegistry; toolsRag; mcpClients; requestLogger }` param; add `resolveSubAgentRagRegistry`.
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/subagent-shared-rag.test.ts`
 
 - [ ] **Step 1: Write the failing test**
@@ -1322,14 +1701,13 @@ import assert from 'node:assert/strict';
 import { SimpleRagRegistry } from '@mcp-abap-adt/llm-agent';
 import { resolveSubAgentRagRegistry } from '../smart-server.js';
 
-test('subagent reuses the parent registry instead of a fresh one', () => {
+test('subagent reuses the injected parent registry instead of a fresh one', () => {
   const parent = new SimpleRagRegistry();
-  assert.equal(resolveSubAgentRagRegistry({ parentRagRegistry: parent, subHasOwnStore: false }), parent);
+  assert.equal(resolveSubAgentRagRegistry({ parentRagRegistry: parent }), parent);
 });
 
-test('subagent with its own declared store still gets the parent registry', () => {
-  const parent = new SimpleRagRegistry();
-  assert.equal(resolveSubAgentRagRegistry({ parentRagRegistry: parent, subHasOwnStore: true }), parent);
+test('without an injected parent registry, returns undefined (builder allocates its own)', () => {
+  assert.equal(resolveSubAgentRagRegistry({ parentRagRegistry: undefined }), undefined);
 });
 ```
 
@@ -1337,38 +1715,84 @@ test('subagent with its own declared store still gets the parent registry', () =
 
 - [ ] **Step 3: Implement**
 
-Add the resolver and use it in `buildSubAgent`:
+Add the resolver:
 
 ```ts
 import type { IRagRegistry } from '@mcp-abap-adt/llm-agent';
 
 export function resolveSubAgentRagRegistry(input: {
-  parentRagRegistry: IRagRegistry;
-  subHasOwnStore: boolean;
-}): IRagRegistry {
-  // Always share the parent registry: session/user/global collections created
-  // at the top level become visible to the worker; the per-call scope filter
-  // isolates by ctx.sessionId/ctx.options.userId. A worker's own declared store
-  // is registered INTO this same registry under its namespace.
+  parentRagRegistry: IRagRegistry | undefined;
+}): IRagRegistry | undefined {
+  // Share the injected parent registry when present: session/user/global
+  // collections created at the top level become visible to the worker; the
+  // per-call scope filter isolates by ctx.sessionId/ctx.options.userId. A
+  // worker's own declared store is registered INTO this same registry.
   return input.parentRagRegistry;
 }
 ```
 
-In `buildSubAgent`, add `parentRagRegistry: IRagRegistry` param and replace the isolated-RAG block (`:1007-1018`) with:
+Refactor `buildSubAgent` to accept the optional injected resources and use them:
 
 ```ts
-    subBuilder = subBuilder.setRagRegistry(
-      resolveSubAgentRagRegistry({ parentRagRegistry, subHasOwnStore: Boolean(subCfg.rag) }),
-    );
-    // Only build an isolated tools store when the subagent declares one; it is
-    // registered into the shared registry under the subagent's namespace.
-    if (subCfg.rag) {
+  private async buildSubAgent(
+    name: string,
+    subCfg: Omit<SmartServerConfig, 'log'>,
+    parentLogger: ILogger,
+    embedderFactories: Record<string, EmbedderFactory>,
+    injected?: {
+      ragRegistry: IRagRegistry;
+      toolsRag: IRag | undefined;
+      mcpClients: IMcpClient[];
+      requestLogger: IRequestLogger;
+    },
+  ): Promise<SmartAgent> {
+    // ... existing LLM resolution unchanged (mainLlm/classifierLlm/helperLlm) ...
+
+    let subBuilder = new SmartAgentBuilder({
+      mcp: subPipeline?.mcp ?? subCfg.mcp,
+      agent: subCfg.agent,
+      prompts: subCfg.prompts,
+      skipModelValidation: subCfg.skipModelValidation,
+    })
+      .withMainLlm(mainLlm)
+      .withClassifierLlm(classifierLlm)
+      .withLogger(parentLogger)
+      .withMode(subCfg.mode ?? 'smart');
+
+    // ... existing helper-LLM block unchanged ...
+
+    // SHARE the parent RAG registry + session logger when injected (per-session
+    // worker build). The per-call scope filter isolates by ctx.sessionId.
+    const sharedReg = resolveSubAgentRagRegistry({ parentRagRegistry: injected?.ragRegistry });
+    if (sharedReg) subBuilder = subBuilder.setRagRegistry(sharedReg);
+    if (injected?.requestLogger) subBuilder = subBuilder.withRequestLogger(injected.requestLogger);
+
+    // Tools RAG: prefer the injected GLOBAL toolsRag (already vectorized) when
+    // present; otherwise build only when the subagent declares its own store
+    // (registered into the shared registry under its namespace).
+    if (injected?.toolsRag) {
+      subBuilder = subBuilder.setToolsRag(injected.toolsRag);
+    } else if (subCfg.rag) {
       const ragOptions = { injectedEmbedder: subCfg.embedder, extraFactories: embedderFactories };
       subBuilder = subBuilder.setToolsRag(await makeRag(subCfg.rag, ragOptions));
     }
+
+    // ... existing skillManager block unchanged ...
+
+    // MCP clients: inject the GLOBAL connected clients per session (skips
+    // re-connect); else fall back to the subagent's own configured clients.
+    if (injected?.mcpClients && injected.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(injected.mcpClients);
+    } else if (subCfg.mcpClients && subCfg.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(subCfg.mcpClients);
+    }
+
+    const handle = await subBuilder.build();
+    return handle.agent;
+  }
 ```
 
-At the call site (`:612`), pass `agentHandle.ragRegistry` (available after Task A4). Since subagents are built *before* `agentHandle` exists, hoist the `ragRegistry` resolution: the server should construct the `SimpleRagRegistry` once up front (or read it back via a two-phase build). Simplest: build the primary handle first to obtain `ragRegistry`, then build subagents and `withSubAgents`, then re-resolve the DAG. Implementer note: if the current ordering builds subagents before `builder.build()`, pass a freshly-constructed `SimpleRagRegistry` into `builder.setRagRegistry(...)` AND into `buildSubAgent` so both share the same instance from the start.
+> Implementer note: when `injected` is provided, drop the old isolated `setHistoryRag(makeRag(...))` (`:1015-1017`) — history RAG, like tools RAG, comes from the shared registry / injected toolsRag. The primary `build()` call site (`:612`) passes NO `injected` arg (behavior unchanged for the global agent build); the per-session `buildSessionAgent` (A9) passes the injected resources. Import `IRag`, `IMcpClient`, `IRequestLogger` from `@mcp-abap-adt/llm-agent` if not already imported.
 
 - [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
 
@@ -1376,7 +1800,7 @@ At the call site (`:612`), pass `agentHandle.ragRegistry` (available after Task 
 
 ```bash
 git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/subagent-shared-rag.test.ts
-git commit -m "feat(rag): subagents share the parent RAG registry (session/user/global collections visible to workers)"
+git commit -m "feat(rag): parameterize buildSubAgent by injected resources + share parent RAG registry (per-session workers, shared session logger)"
 ```
 
 ---
@@ -1447,215 +1871,97 @@ git commit -m "test(rag): phase-B provability — session artifact visible under
 
 ---
 
-## PHASE C — Session token-rollup
+## PHASE C — traceId threading + Session token-rollup
 
-### Task C1: `SessionRequestLogger` (session-cumulative + per-`traceId` delta)
+### Task C1: Thread `traceId` through subagent dispatch (interface + interpreter + coordinator + SmartAgentSubAgent)
 
-Implements `IRequestLogger`. Keeps a session-cumulative tally across requests plus a per-`traceId` delta map (so concurrent requests don't stomp each other and per-response usage is exact). `startRequest(requestId)` / `endRequest(requestId)` / `getSummary(requestId?)` are keyed; `getSummary()` (no arg) returns session-cumulative.
+Without threading `traceId` into worker dispatch, worker log entries land under no `requestId` and never reach the coordinator's per-`traceId` delta (review HIGH #3). Today `SmartAgentSubAgent.run()` calls `worker.process(prompt, { sessionId, signal })` and drops trace (`smart-agent-subagent.ts:29`); `InterpretContext` (`interpreter.ts:11`) and `ISubAgentInput` (`subagent.ts:18`) carry no trace; the DAG coordinator's `interpret(...)` (`dag-coordinator.ts:216`) and `stateOracle.run(...)` (`dag-coordinator.ts:120`) pass `sessionId` but no trace.
+
+Add a `trace` carrier through the whole chain so worker-side `logLlmCall`s attribute to the coordinator's `traceId` (the shared session logger then sees them under the same delta).
 
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/request-logger.ts` — `requestId?` on entries + `startRequest/endRequest/getSummary(requestId?)`.
-- Create: `packages/llm-agent-libs/src/logger/session-request-logger.ts` (incl. `aggregate` + `summaryToUsage`).
-- Test: `packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts`
+- Modify: `packages/llm-agent/src/interfaces/subagent.ts` — add `trace?: { traceId: string }` to `ISubAgentInput`.
+- Modify: `packages/llm-agent/src/interfaces/interpreter.ts` — add `trace?: { traceId: string }` to `InterpretContext`.
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — pass `trace: ctx.options?.trace` into `interpret(...)` and `stateOracle.run(...)`.
+- Modify: `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — forward `ctx.trace` into `worker.run({ ..., trace: ctx.trace })`.
+- Modify: `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — forward `input.trace` into `process(prompt, { ..., trace: input.trace })`.
+- Test: `packages/llm-agent-libs/src/subagent/__tests__/subagent-threads-trace.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+- [ ] **Step 1: Write the failing test** (a recording `SmartAgent` stand-in proves trace arrives at `process`)
 
 ```ts
-// packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts
+// packages/llm-agent-libs/src/subagent/__tests__/subagent-threads-trace.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SessionRequestLogger } from '../session-request-logger.js';
+import { SmartAgentSubAgent } from '../smart-agent-subagent.js';
+import type { SmartAgent } from '../../agent.js';
 
-const call = (component: string, total: number, requestId: string) => ({
-  component: component as never, model: 'm', promptTokens: total, completionTokens: 0,
-  totalTokens: total, durationMs: 1, requestId,
-});
+test('SmartAgentSubAgent forwards input.trace into agent.process options', async () => {
+  let seenTrace: unknown;
+  const fakeAgent = {
+    process: async (_prompt: string, opts?: { trace?: { traceId: string } }) => {
+      seenTrace = opts?.trace;
+      return { ok: true as const, value: { content: 'ok', toolCalls: undefined, usage: undefined } };
+    },
+  } as unknown as SmartAgent;
 
-test('per-traceId delta isolates concurrent requests', () => {
-  const log = new SessionRequestLogger();
-  log.startRequest('r1');
-  log.startRequest('r2');
-  log.logLlmCall(call('tool-loop', 10, 'r1'));
-  log.logLlmCall(call('tool-loop', 5, 'r2'));
-  assert.equal(log.getSummary('r1').byComponent['tool-loop'].totalTokens, 10);
-  assert.equal(log.getSummary('r2').byComponent['tool-loop'].totalTokens, 5);
-});
-
-test('session-cumulative sums across requests and survives endRequest', () => {
-  const log = new SessionRequestLogger();
-  log.startRequest('r1');
-  log.logLlmCall(call('tool-loop', 10, 'r1'));
-  log.endRequest('r1');
-  log.startRequest('r2');
-  log.logLlmCall(call('tool-loop', 7, 'r2'));
-  log.endRequest('r2');
-  assert.equal(log.getSummary().byComponent['tool-loop'].totalTokens, 17);
-});
-
-test('reset clears session-cumulative + deltas (called on session evict)', () => {
-  const log = new SessionRequestLogger();
-  log.startRequest('r1');
-  log.logLlmCall(call('tool-loop', 10, 'r1'));
-  log.reset();
-  assert.equal(Object.keys(log.getSummary().byComponent).length, 0);
-});
-
-test('calls without a requestId still land in session-cumulative', () => {
-  const log = new SessionRequestLogger();
-  log.logLlmCall({ component: 'embedding' as never, model: 'e', promptTokens: 4, completionTokens: 0, totalTokens: 4, durationMs: 1 });
-  assert.equal(log.getSummary().byComponent['embedding'].totalTokens, 4);
+  const sub = new SmartAgentSubAgent('w', fakeAgent);
+  await sub.run({ task: 'do', sessionId: 's1', trace: { traceId: 'trace-123' } });
+  assert.deepEqual(seenTrace, { traceId: 'trace-123' });
 });
 ```
 
-- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts` — Expected: FAIL (module not found).
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/subagent/__tests__/subagent-threads-trace.test.ts` — Expected: FAIL (trace not forwarded; and `ISubAgentInput` has no `trace` field → type error).
 
 - [ ] **Step 3: Implement**
 
-Widen the interface in `packages/llm-agent/src/interfaces/request-logger.ts`:
+In `packages/llm-agent/src/interfaces/subagent.ts`, add to `ISubAgentInput` (after `signal`):
 
 ```ts
-export interface LlmCallEntry {
-  component: LlmComponent;
-  model: string;
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  durationMs: number;
-  estimated?: boolean;
-  scope?: 'initialization' | 'request';
-  detail?: string;
-  /** Request correlation id (the server's traceId). Routes the entry to the
-   *  per-request delta; absent → session-cumulative only. */
-  requestId?: string;
-}
-
-export interface IRequestLogger {
-  logLlmCall(entry: LlmCallEntry): void;
-  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void;
-  logToolCall(entry: ToolCallEntry & { requestId?: string }): void;
-  startRequest(requestId?: string): void;
-  endRequest(requestId?: string): void;
-  getSummary(requestId?: string): RequestSummary;
-  reset(): void;
-}
+  /** Request correlation, threaded from the coordinator so worker token-log
+   *  entries attribute to the same request delta (traceId). */
+  trace?: { traceId: string };
 ```
 
-> `DefaultRequestLogger` and `NoopRequestLogger` keep working: update their method signatures to accept the optional arg (ignore it — no behavior change). Build will flag every implementer; fix each by widening the signature only.
-
-Implement `SessionRequestLogger`:
+In `packages/llm-agent/src/interfaces/interpreter.ts`, add to `InterpretContext` (after `signal`):
 
 ```ts
-// packages/llm-agent-libs/src/logger/session-request-logger.ts
-import type {
-  IRequestLogger,
-  LlmCallEntry,
-  RagQueryEntry,
-  RequestSummary,
-  ToolCallEntry,
-  LlmUsage,
-} from '@mcp-abap-adt/llm-agent';
-
-interface Bucket {
-  llm: LlmCallEntry[];
-  rag: number;
-  tool: number;
-}
-function emptyBucket(): Bucket { return { llm: [], rag: 0, tool: 0 }; }
-
-/** Shared aggregation (DRY with DefaultRequestLogger.getSummary). */
-export function aggregate(b: Bucket): RequestSummary {
-  const byModel: RequestSummary['byModel'] = {};
-  const byComponent: RequestSummary['byComponent'] = {};
-  const byCategory: RequestSummary['byCategory'] = {};
-  let totalDurationMs = 0;
-  for (const c of b.llm) {
-    totalDurationMs += c.durationMs;
-    const m = (byModel[c.model] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
-    m.promptTokens += c.promptTokens; m.completionTokens += c.completionTokens; m.totalTokens += c.totalTokens; m.requests++;
-    const comp = (byComponent[c.component] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
-    comp.promptTokens += c.promptTokens; comp.completionTokens += c.completionTokens; comp.totalTokens += c.totalTokens; comp.requests++;
-    const catKey = c.scope ?? 'request';
-    const cat = (byCategory[catKey] ??= { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 });
-    cat.promptTokens += c.promptTokens; cat.completionTokens += c.completionTokens; cat.totalTokens += c.totalTokens; cat.requests++;
-  }
-  return { byModel, byComponent, byCategory, ragQueries: b.rag, toolCalls: b.tool, totalDurationMs };
-}
-
-/** Sum a summary's components into a flat usage triple for response.usage. */
-export function summaryToUsage(s: RequestSummary): LlmUsage {
-  let promptTokens = 0, completionTokens = 0, totalTokens = 0;
-  for (const v of Object.values(s.byComponent)) {
-    promptTokens += v.promptTokens; completionTokens += v.completionTokens; totalTokens += v.totalTokens;
-  }
-  return { promptTokens, completionTokens, totalTokens };
-}
-
-/**
- * One logger per SessionGraph. Two axes (spec C.2):
- *  - session-cumulative (survives across requests, for /v1/usage),
- *  - per-traceId delta (for response.usage; keyed so concurrent requests on the
- *    same session never stomp each other).
- */
-export class SessionRequestLogger implements IRequestLogger {
-  private readonly cumulative = emptyBucket();
-  private readonly deltas = new Map<string, Bucket>();
-
-  startRequest(requestId?: string): void {
-    if (requestId) this.deltas.set(requestId, emptyBucket());
-  }
-  endRequest(requestId?: string): void {
-    if (requestId) this.deltas.delete(requestId);
-  }
-
-  logLlmCall(entry: LlmCallEntry): void {
-    this.cumulative.llm.push(entry);
-    if (entry.requestId) (this.deltas.get(entry.requestId) ?? this.startGet(entry.requestId)).llm.push(entry);
-  }
-  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {
-    this.cumulative.rag++;
-    if (entry.requestId) (this.deltas.get(entry.requestId) ?? this.startGet(entry.requestId)).rag++;
-  }
-  logToolCall(entry: ToolCallEntry & { requestId?: string }): void {
-    this.cumulative.tool++;
-    if (entry.requestId) (this.deltas.get(entry.requestId) ?? this.startGet(entry.requestId)).tool++;
-  }
-
-  getSummary(requestId?: string): RequestSummary {
-    if (requestId) return aggregate(this.deltas.get(requestId) ?? emptyBucket());
-    return aggregate(this.cumulative);
-  }
-
-  reset(): void {
-    this.cumulative.llm.length = 0;
-    this.cumulative.rag = 0;
-    this.cumulative.tool = 0;
-    this.deltas.clear();
-  }
-
-  private startGet(requestId: string): Bucket {
-    const b = emptyBucket();
-    this.deltas.set(requestId, b);
-    return b;
-  }
-}
+  /** Request correlation, threaded into each worker dispatch. */
+  trace?: { traceId: string };
 ```
 
-> Implementer note: match the exact `RequestSummary`/bucket shape from `DefaultRequestLogger.getSummary` (grep its return). Extract the shared body into `aggregate` and have `DefaultRequestLogger` call it too if trivial; otherwise keep `aggregate` local to the session logger but mirror the shape exactly so `/v1/usage` payloads stay identical.
+In `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts`:
+- In the `interpreter.interpret(plan, { ... })` call (`:216-223`), add `trace: ctx.options?.trace,`.
+- In the `this.deps.stateOracle.run({ ... })` call (`:120-124`), add `trace: ctx.options?.trace,`.
 
-- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS (4 tests); build clean (after widening all `IRequestLogger` impls).
+In `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts`, in the `this.resolveWorker(n, ctx).run({ ... })` call (`:64-68`), add `trace: ctx.trace,`.
+
+In `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts`, change the `process` call (`:29-32`):
+
+```ts
+    const res = await this.agent.process(prompt, {
+      sessionId: input.sessionId,
+      signal: input.signal,
+      trace: input.trace,
+    });
+```
+
+> Verify `CallOptions.trace` shape is `{ traceId: string }` (`types.ts:17-18` `TraceContext { traceId }`, `:24` `CallOptions { trace?: TraceContext }`) — `{ traceId }` is assignable. When the worker `process` runs, it reads `options?.trace?.traceId` at `agent.ts:642` (so the worker's own `traceId` equals the coordinator's), and its `startRequest(traceId)`/`endRequest(traceId)` (Task C7) are nested-safe under the shared session logger (A3).
+
+- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean (interface widening flows through all `ISubAgent`/interpreter implementers; the new field is optional so non-trace callers compile unchanged).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent/src/interfaces/request-logger.ts packages/llm-agent-libs/src/logger/session-request-logger.ts packages/llm-agent-libs/src/logger/__tests__/session-request-logger.test.ts
-git commit -m "feat(usage): SessionRequestLogger — session-cumulative + per-traceId request delta"
+git add packages/llm-agent/src/interfaces/subagent.ts packages/llm-agent/src/interfaces/interpreter.ts packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts packages/llm-agent-libs/src/subagent/__tests__/subagent-threads-trace.test.ts
+git commit -m "feat(usage): thread traceId through subagent dispatch (ISubAgentInput.trace -> interpreter -> SmartAgentSubAgent.process) so worker tokens reach the request delta"
 ```
 
 ---
 
 ### Task C2: The SessionGraph logger flows into the per-session agent + workers
 
-A8's `buildSessionAgentBuilder` already passes `parts.logger` via `withRequestLogger`, so the per-session `SmartAgent` constructor (`agent.ts:260`) uses the session logger, and the pipeline (`builder.ts:1286`) + classifier (`builder.ts:1129`) + workers (subagents built with `withSubAgents`, sharing the same builder-injected `ragRegistry` and — via the DAG path — the same parent agent's logger) all log into it. This task verifies + locks that wiring.
+A9's `buildSessionAgent` passes `parts.logger` via `withRequestLogger` to BOTH the per-session `SmartAgent` AND every per-session worker (via the injected `buildSubAgent`), so the coordinator (`agent.ts:260`), pipeline (`builder.ts:1286`), classifier (`builder.ts:1129`), and all workers log into the SAME `SessionRequestLogger`. This task verifies + locks that the factory hands the graph's logger to `buildAgent`.
 
 **Files:**
 - Test: `packages/llm-agent-libs/src/session/__tests__/session-logger-wiring.test.ts`
@@ -1684,14 +1990,14 @@ test('the logger handed to buildAgent is the SAME instance the graph exposes', a
     mcpClients: [],
     toolsRag: undefined,
     ragRegistry: reg,
-    buildAgent: async (parts) => { seenLogger = parts.logger; return undefined as never; },
+    buildAgent: async (parts) => { seenLogger = parts.logger; return undefined; },
   });
   const g = await factory.build({ sessionId: 's1' });
   assert.equal(seenLogger, g.logger, 'buildAgent receives the graph’s session logger');
 });
 ```
 
-- [ ] **Step 2: Run** the test — Expected: PASS (the factory already passes `logger` into `buildAgent`, C1+A6 in place).
+- [ ] **Step 2: Run** the test — Expected: PASS (the factory already passes `logger` into `buildAgent`; A3+A7 in place).
 
 - [ ] **Step 3: Commit**
 
@@ -1702,9 +2008,9 @@ git commit -m "test(usage): per-session token-logger flows into the session agen
 
 ---
 
-### Task C3: Propagate `traceId` as `requestId` into every token-log entry
+### Task C3: Propagate `traceId` as `requestId` into every token-log entry (handler sites)
 
-Without this, the per-`traceId` delta and non-zero per-response usage stay empty. Add `requestId: ctx.options?.trace?.traceId` (or the agent's `traceId`) to every `logLlmCall`/`logToolCall` at the verified sites.
+With the dispatch chain threaded (C1), the in-process log sites must stamp `requestId = ctx.options?.trace?.traceId` so entries land in the per-`traceId` delta. Add it at the verified sites.
 
 **Files:**
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts:505` (`logLlmCall`)
@@ -1712,33 +2018,8 @@ Without this, the per-`traceId` delta and non-zero per-response usage stay empty
 - Modify: `packages/llm-agent-libs/src/classifier/llm-classifier.ts:144` (`logLlmCall`)
 - Modify: `packages/llm-agent-libs/src/agent.ts:1961` (helper `logLlmCall`)
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/rag-query.ts:90` (`logRagQuery`)
-- Test: `packages/llm-agent-libs/src/logger/__tests__/traceid-propagation.test.ts`
 
-- [ ] **Step 1: Write the failing test** (uses a recording logger fed through tool-loop's log call)
-
-```ts
-// packages/llm-agent-libs/src/logger/__tests__/traceid-propagation.test.ts
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { SessionRequestLogger } from '../session-request-logger.js';
-
-// Contract test: when handlers attach ctx.options.trace.traceId as requestId,
-// the per-traceId delta is non-empty. We simulate the handler call shape here;
-// the real wiring is asserted by the integration suite (C5).
-test('a logLlmCall carrying requestId lands in that traceId delta', () => {
-  const log = new SessionRequestLogger();
-  const traceId = 'trace-xyz';
-  log.startRequest(traceId);
-  // shape produced by tool-loop after the fix:
-  log.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 12, completionTokens: 3, totalTokens: 15, durationMs: 2, requestId: traceId });
-  assert.equal(log.getSummary(traceId).byComponent['tool-loop'].totalTokens, 15);
-  assert.equal(log.getSummary(traceId).byComponent['tool-loop'].completionTokens, 3);
-});
-```
-
-- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/traceid-propagation.test.ts` — Expected: PASS already at the logger level (C1). The real failure is at the handlers (they don't set `requestId` yet); the test documents the contract the edits must satisfy. Proceed to wire the handlers.
-
-- [ ] **Step 3: Implement — add `requestId` at each site**
+- [ ] **Step 1: Implement — add `requestId` at each site**
 
 At `tool-loop.ts:505` (inside the `ctx.requestLogger.logLlmCall({...})`):
 
@@ -1774,160 +2055,160 @@ At `agent.ts:1961` (helper summarizer): the method runs inside `process` where `
 
 At `rag-query.ts:90` (the `logRagQuery`): add `requestId: ctx.options?.trace?.traceId`.
 
-> Verify `CallOptions.trace.traceId` is the field name (`types.ts:18,24`: `TraceContext { traceId }`, `CallOptions { trace?: TraceContext }`). `ctx.options` is `CallOptions | undefined` (`context.ts:75`).
+> Verify `CallOptions.trace.traceId` is the field name (`types.ts:17-18,24`: `TraceContext { traceId }`, `CallOptions { trace?: TraceContext }`). `ctx.options` is `CallOptions | undefined`.
 
-- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
+- [ ] **Step 2: Run** `npm run build` — Expected: build clean. (Behavior is asserted by Task C4's handler-level + integration tests.)
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/pipeline/handlers/translate.ts packages/llm-agent-libs/src/classifier/llm-classifier.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/pipeline/handlers/rag-query.ts packages/llm-agent-libs/src/logger/__tests__/traceid-propagation.test.ts
-git commit -m "feat(usage): propagate traceId as requestId into every token-log entry (tool-loop, translate, classifier, helper, rag-query)"
+git add packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts packages/llm-agent-libs/src/pipeline/handlers/translate.ts packages/llm-agent-libs/src/classifier/llm-classifier.ts packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/pipeline/handlers/rag-query.ts
+git commit -m "feat(usage): stamp traceId as requestId on every token-log entry (tool-loop, translate, classifier, helper, rag-query)"
 ```
 
 ---
 
-### Task C4: Non-zero per-response usage from the request delta
+### Task C4: Handler-level + integration coverage that the `requestId` wiring actually fires
 
-Populate `response.usage` from `requestLogger.getSummary(traceId)` so the OpenAI/Anthropic adapter emits real numbers (today the coordinator path leaves it `{0,0,0}`). Also call `startRequest(traceId)` / `endRequest(traceId)` with the request's `traceId`.
-
-**Files:**
-- Modify: `packages/llm-agent-libs/src/agent.ts:680` (`startRequest(traceId)`), `:1083` (`endRequest(traceId)`), and the response-assembly sites that set `usage` (`:1582`, plus the coordinator final emit) — use `summaryToUsage(this.requestLogger.getSummary(traceId))`.
-- Test: `packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts`
-
-- [ ] **Step 1: Write the failing test** (unit on the totals helper)
-
-```ts
-// packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
-import { summaryToUsage } from '../session-request-logger.js';
-
-test('summaryToUsage sums all components into prompt/completion/total', () => {
-  const usage = summaryToUsage({
-    byModel: {}, byCategory: {}, ragQueries: 0, toolCalls: 0, totalDurationMs: 0,
-    byComponent: {
-      'tool-loop': { promptTokens: 100, completionTokens: 40, totalTokens: 140, requests: 1 },
-      translate: { promptTokens: 10, completionTokens: 4, totalTokens: 14, requests: 1 },
-    },
-  });
-  assert.deepEqual(usage, { promptTokens: 110, completionTokens: 44, totalTokens: 154 });
-});
-```
-
-- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts` — Expected: PASS at helper level (C1 already exports `summaryToUsage`); if it fails, `summaryToUsage` isn't exported — add it.
-
-- [ ] **Step 3: Implement**
-
-In `agent.ts`:
-- `:680` → `this.requestLogger.startRequest(traceId);`
-- `:1083` → `this.requestLogger.endRequest(traceId);`
-- At the response-assembly site(s) where `usage` is built (e.g. `:1582`, and the coordinator-mode final yield), set the usage triple from the delta:
-
-```ts
-        const delta = this.requestLogger.getSummary(traceId);
-        const deltaUsage = summaryToUsage(delta);
-        // ... existing yield, with usage merged:
-        usage: { ...deltaUsage, models: delta.byModel },
-```
-
-Import `summaryToUsage` from `./logger/session-request-logger.js`. Keep the existing `byModel` (`:1590`) but source the totals from `deltaUsage` so per-response usage is non-zero. Verify `openai-adapter.ts:133` maps `response.usage` → `prompt_tokens/completion_tokens/total_tokens` (read it to confirm; no change expected).
-
-- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts
-git commit -m "feat(usage): non-zero per-response usage from the per-traceId request delta"
-```
-
----
-
-### Task C5: `/v1/usage` reports per-session; reset on evict
-
-`/v1/usage` returns the current session's cumulative summary (resolve the session from the cookie like `_handle`). Session-cumulative resets when the graph is evicted (already wired: `SessionGraph.dispose` calls `logger.reset()`, A3).
+> **Review MEDIUM #5:** a logger-only assertion would pass without the handler edits. This task asserts the EDITS: handler-level tests run each modified handler through a `PipelineContext` carrying `options.trace.traceId` against a recording logger, asserting the emitted entry has `requestId === traceId`; AND one integration test runs a coordinator (DAG) path and asserts `getSummary(traceId)` is non-empty and carries the worker/tool-loop component tokens.
 
 **Files:**
-- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts:1118` — `/v1/usage` resolves the session graph and returns `graph.logger.getSummary()`.
-- Test: `packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts`
+- Test: `packages/llm-agent-libs/src/pipeline/handlers/__tests__/traceid-stamping.test.ts` (handler-level)
+- Test: `packages/llm-agent-libs/src/session/__tests__/coordinator-usage-integration.test.ts` (integration)
 
-- [ ] **Step 1: Write the failing test** (two sessions accumulate independently; evicting one resets only its tally)
+- [ ] **Step 1: Write the failing handler-level tests**
 
 ```ts
-// packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts
+// packages/llm-agent-libs/src/pipeline/handlers/__tests__/traceid-stamping.test.ts
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildSessionLifecycle } from '../smart-server.js';
-import {
-  InMemoryRagProvider,
-  SimpleRagProviderRegistry,
-  SimpleRagRegistry,
-} from '@mcp-abap-adt/llm-agent';
+import type { IRequestLogger, LlmCallEntry, RagQueryEntry, ToolCallEntry } from '@mcp-abap-adt/llm-agent';
 
-function rag() {
-  const p = new SimpleRagProviderRegistry();
-  p.registerProvider(new InMemoryRagProvider({ name: 'mem' }));
-  const r = new SimpleRagRegistry();
-  r.setProviderRegistry(p);
-  return r;
+/** Records exactly what each handler stamps. */
+class RecordingLogger implements IRequestLogger {
+  llm: LlmCallEntry[] = [];
+  rag: (RagQueryEntry & { requestId?: string })[] = [];
+  logLlmCall(e: LlmCallEntry) { this.llm.push(e); }
+  logRagQuery(e: RagQueryEntry & { requestId?: string }) { this.rag.push(e); }
+  logToolCall(_e: ToolCallEntry & { requestId?: string }) {}
+  startRequest() {}
+  endRequest() {}
+  dropRequest() {}
+  getSummary() { return { byModel: {}, byComponent: {}, byCategory: {}, ragQueries: 0, toolCalls: 0, totalDurationMs: 0 }; }
+  reset() {}
 }
 
-test('per-session usage is independent and resets on evict', async () => {
-  const lc = buildSessionLifecycle({
-    idleTtlMs: 0, maxSessions: 100, cookieName: 'sid',
-    mcpClients: [], toolsRag: undefined, ragRegistry: rag(),
-    buildAgent: async () => undefined as never,
-  });
-  const g1 = await lc.acquire('s1');
-  const g2 = await lc.acquire('s2');
-  g1.logger.startRequest('r1');
-  g1.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 10, completionTokens: 0, totalTokens: 10, durationMs: 1, requestId: 'r1' });
-  g2.logger.startRequest('r2');
-  g2.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 3, completionTokens: 0, totalTokens: 3, durationMs: 1, requestId: 'r2' });
-  assert.equal(g1.logger.getSummary().byComponent['tool-loop'].totalTokens, 10);
-  assert.equal(g2.logger.getSummary().byComponent['tool-loop'].totalTokens, 3);
+// For each modified handler, build a minimal PipelineContext whose options carry
+// trace.traceId and a RecordingLogger, drive the handler's log call, and assert
+// requestId === traceId. Implementer wires each handler with the SAME minimal
+// ctx/test-double surface those handlers already use in sibling __tests__ files
+// (grep packages/llm-agent-libs/src/pipeline/handlers/__tests__ for the existing
+// ctx builders for tool-loop / translate / rag-query and the llm-classifier
+// classify(options) signature). The load-bearing assertion per handler:
 
-  lc.release('s1');
-  await lc.evictIdle(); // idleTtlMs:0 -> evicts unpinned; g2 still pinned (active=1)
-  // g1 disposed -> logger.reset(); g2 untouched.
-  assert.equal(g2.logger.getSummary().byComponent['tool-loop'].totalTokens, 3);
+test('tool-loop stamps requestId = ctx.options.trace.traceId', async () => {
+  const rec = new RecordingLogger();
+  const traceId = 'trace-tl';
+  // ... run the tool-loop handler with ctx.requestLogger = rec,
+  //     ctx.options = { trace: { traceId } }, a fake mainLlm returning a final
+  //     answer (no tool calls), reusing the existing tool-loop test harness.
+  // After the run:
+  assert.ok(rec.llm.length >= 1, 'tool-loop logged at least one LLM call');
+  assert.ok(rec.llm.every((e) => e.requestId === traceId), 'every tool-loop entry carries the traceId');
+});
+
+test('translate stamps requestId = ctx.options.trace.traceId', async () => {
+  const rec = new RecordingLogger();
+  const traceId = 'trace-tr';
+  // ... run translate handler with rec + options.trace.traceId, fake llm.
+  assert.ok(rec.llm.length === 1 && rec.llm[0].requestId === traceId);
+});
+
+test('rag-query stamps requestId = ctx.options.trace.traceId', async () => {
+  const rec = new RecordingLogger();
+  const traceId = 'trace-rq';
+  // ... run rag-query handler with rec + options.trace.traceId, a store returning 1 hit.
+  assert.ok(rec.rag.length >= 1 && rec.rag.every((e) => e.requestId === traceId));
+});
+
+test('classifier stamps requestId = options.trace.traceId', async () => {
+  const rec = new RecordingLogger();
+  const traceId = 'trace-cl';
+  // ... construct LlmClassifier(fakeLlm, rec) and call classify(input, { trace: { traceId } }).
+  assert.ok(rec.llm.length >= 1 && rec.llm.every((e) => e.requestId === traceId));
 });
 ```
 
-- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts` — Expected: FAIL until C1+A3+A8 land; then PASS.
+> Implementer note: each block reuses the EXISTING per-handler test harness (the sibling `__tests__` files already construct a minimal `PipelineContext` / fake `ILlm` for tool-loop, translate, rag-query, and instantiate `LlmClassifier`). The only additions vs those harnesses are: set `ctx.requestLogger = new RecordingLogger()` (or pass it to the classifier ctor) and `ctx.options = { trace: { traceId } }` (classifier: pass `{ trace: { traceId } }` as the `classify` options). Assert `requestId === traceId` on the recorded entries. These FAIL before C3 (entries have `requestId === undefined`) and PASS after.
 
-- [ ] **Step 3: Implement** the `/v1/usage` per-session read at `smart-server.ts:1118`:
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/pipeline/handlers/__tests__/traceid-stamping.test.ts` — Expected: PASS (C3 already landed; if any handler still lacks the stamp, this is where it surfaces).
+
+- [ ] **Step 3: Write the integration test** (coordinator path → `getSummary(traceId)` carries worker tokens)
 
 ```ts
-    if (req.method === 'GET' && urlPath === '/v1/usage') {
-      const isHttps = (req.socket as { encrypted?: boolean }).encrypted === true
-        || (req.headers['x-forwarded-proto'] === 'https');
-      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
-      if (resolved.minted && resolved.setCookie) res.setHeader('Set-Cookie', resolved.setCookie);
-      const graph = await lifecycle.acquire(resolved.identity.sessionId);
-      try {
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify(graph.logger.getSummary()));
-      } finally {
-        lifecycle.release(resolved.identity.sessionId);
-      }
-      return;
-    }
+// packages/llm-agent-libs/src/session/__tests__/coordinator-usage-integration.test.ts
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { SessionRequestLogger } from '../../logger/session-request-logger.js';
+import { DagPlanInterpreter } from '../../coordinator/dag/dag-plan-interpreter.js';
+import { AbortErrorStrategy } from '../../coordinator/dag/abort-error-strategy.js'; // verify exact path
+import type { ISubAgent, ISubAgentInput, ISubAgentResult, DagPlan } from '@mcp-abap-adt/llm-agent';
+
+// A worker that logs tokens under the traceId it RECEIVES (proving the chain:
+// coordinator traceId -> InterpretContext.trace -> ISubAgentInput.trace -> log).
+class LoggingWorker implements ISubAgent {
+  readonly name = 'w';
+  readonly capabilities = { contextPolicy: 'optional' as const };
+  constructor(private readonly logger: SessionRequestLogger) {}
+  async run(input: ISubAgentInput): Promise<ISubAgentResult> {
+    const traceId = input.trace?.traceId;
+    this.logger.startRequest(traceId);          // nested under coordinator's traceId
+    this.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 50, completionTokens: 10, totalTokens: 60, durationMs: 1, requestId: traceId });
+    this.logger.endRequest(traceId);
+    return { output: 'done' };
+  }
+}
+
+test('interpreter forwards trace so worker tokens land in getSummary(traceId)', async () => {
+  const logger = new SessionRequestLogger();
+  const traceId = 'trace-int';
+  logger.startRequest(traceId); // coordinator owns the delta
+
+  const plan: DagPlan = {
+    objective: 'do it',
+    nodes: [{ id: 'n1', agent: 'w', task: 'go' }],
+  };
+  const interpreter = new DagPlanInterpreter();
+  const workers = new Map<string, ISubAgent>([['w', new LoggingWorker(logger)]]);
+  const result = await interpreter.interpret(plan, {
+    inputText: 'do it',
+    workers,
+    sessionId: 's1',
+    trace: { traceId },                          // coordinator passes its traceId
+    errorStrategy: new AbortErrorStrategy(),
+  });
+  assert.ok(result.ok, 'plan executed');
+
+  const summary = logger.getSummary(traceId);
+  assert.ok(Object.keys(summary.byComponent).length > 0, 'delta non-empty');
+  assert.equal(summary.byComponent['tool-loop'].totalTokens, 60, 'worker tokens reached the coordinator delta');
+});
 ```
 
-- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
+> Implementer note: verify the exact `DagPlan` node shape (`packages/llm-agent/src/interfaces/dag-plan.ts`) and the `AbortErrorStrategy` import path before writing — adjust the plan literal and import to match. The load-bearing assertion is that `getSummary(traceId)` carries the worker's `tool-loop` tokens (60), proving C1's trace threading + C3's stamping work end-to-end through the interpreter.
+
+- [ ] **Step 4: Run** `npx tsx --test packages/llm-agent-libs/src/session/__tests__/coordinator-usage-integration.test.ts` + `npm run build` — Expected: PASS; build clean.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts
-git commit -m "feat(usage): /v1/usage per-session, reset on session evict"
+git add packages/llm-agent-libs/src/pipeline/handlers/__tests__/traceid-stamping.test.ts packages/llm-agent-libs/src/session/__tests__/coordinator-usage-integration.test.ts
+git commit -m "test(usage): handler-level requestId stamping + coordinator integration proving worker tokens reach getSummary(traceId)"
 ```
 
 ---
 
-### Task C6: External-retrieval honesty (spec C.4)
+### Task C5: External-retrieval honesty (spec C.4)
 
 A consumer-provided MCP retrieval tool is logged as a `toolCall`, never as our LLM/embedding tokens.
 
@@ -1965,6 +2246,167 @@ git commit -m "test(usage): external MCP retrieval logged as tool call, never as
 
 ---
 
+### Task C6: `summaryToUsage` totals helper coverage
+
+Lock the helper used to populate `response.usage` (Task C7).
+
+**Files:**
+- Test: `packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts`
+
+- [ ] **Step 1: Write the test**
+
+```ts
+// packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { summaryToUsage } from '../session-request-logger.js';
+
+test('summaryToUsage sums all components into prompt/completion/total', () => {
+  const usage = summaryToUsage({
+    byModel: {}, byCategory: {}, ragQueries: 0, toolCalls: 0, totalDurationMs: 0,
+    byComponent: {
+      'tool-loop': { promptTokens: 100, completionTokens: 40, totalTokens: 140, requests: 1 },
+      translate: { promptTokens: 10, completionTokens: 4, totalTokens: 14, requests: 1 },
+    },
+  });
+  assert.deepEqual(usage, { promptTokens: 110, completionTokens: 44, totalTokens: 154 });
+});
+```
+
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts` — Expected: PASS (A3 exports `summaryToUsage`).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add packages/llm-agent-libs/src/logger/__tests__/usage-summary-totals.test.ts
+git commit -m "test(usage): summaryToUsage sums components into response usage triple"
+```
+
+---
+
+### Task C7: Non-zero per-response usage from the request delta
+
+Populate `response.usage` from `requestLogger.getSummary(traceId)` so the OpenAI/Anthropic adapter emits real numbers (today the coordinator path leaves it `{0,0,0}`). Also call `startRequest(traceId)` / `endRequest(traceId)` with the request's `traceId`.
+
+> The agent does NOT call `dropRequest` — that is the server's responsibility (Task A9, `finally`), after the response usage has been assembled. `endRequest(traceId)` here is nested-safe and leaves the delta intact for the server to read + drop.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/agent.ts:680` (`startRequest(traceId)`), `:1083` (`endRequest(traceId)`), and the response-assembly sites that set `usage` (`:1582`, plus the coordinator final emit) — use `summaryToUsage(this.requestLogger.getSummary(traceId))`.
+- Test: `packages/llm-agent-libs/src/logger/__tests__/agent-usage-from-delta.test.ts` (see note)
+
+- [ ] **Step 1: Implement**
+
+In `agent.ts`:
+- `:680` → `this.requestLogger.startRequest(traceId);`
+- `:1083` → `this.requestLogger.endRequest(traceId);`
+- At the response-assembly site(s) where `usage` is built (e.g. `:1582`, and the coordinator-mode final yield), set the usage triple from the delta:
+
+```ts
+        const delta = this.requestLogger.getSummary(traceId);
+        const deltaUsage = summaryToUsage(delta);
+        // ... existing yield, with usage merged:
+        usage: { ...deltaUsage, models: delta.byModel },
+```
+
+Import `summaryToUsage` from `./logger/session-request-logger.js`. Keep the existing `byModel` (`:1590`) but source the totals from `deltaUsage` so per-response usage is non-zero. Verify `openai-adapter.ts:133` maps `response.usage` → `prompt_tokens/completion_tokens/total_tokens` (read it to confirm; no change expected).
+
+- [ ] **Step 2: Add a focused test** that drives `process` end-to-end on a `SessionRequestLogger` and asserts the yielded `usage` is the component sum (non-zero). Reuse the existing agent test harness (grep `packages/llm-agent-libs/src/__tests__` for a `process()` test that constructs a `SmartAgent` with a fake pipeline/logger). The load-bearing assertion: after a run whose handlers log e.g. 60 tokens under the traceId, the response `usage.totalTokens === 60` (was `0` before). If the existing harness makes a full `process()` run heavy, assert at the seam instead: call `summaryToUsage(logger.getSummary(traceId))` after a simulated handler log and confirm the agent assembles `usage` from it (the integration in C4 already proves the delta is populated through the coordinator).
+
+- [ ] **Step 3: Run** the test + `npm run build` — Expected: PASS; build clean.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/llm-agent-libs/src/agent.ts packages/llm-agent-libs/src/logger/__tests__/agent-usage-from-delta.test.ts
+git commit -m "feat(usage): non-zero per-response usage from the per-traceId request delta (startRequest/endRequest(traceId); server drops the delta)"
+```
+
+---
+
+### Task C8: `/v1/usage` reports per-session; reset on evict
+
+`/v1/usage` returns the current session's cumulative summary (resolve the session from the cookie like `_handle`). Session-cumulative resets when the graph is evicted (already wired: `SessionGraph.dispose` calls `logger.reset()`, A4).
+
+**Files:**
+- Modify: `packages/llm-agent-server/src/smart-agent/smart-server.ts:1118` — `/v1/usage` resolves the session graph and returns `graph.logger.getSummary()`.
+- Test: `packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts`
+
+- [ ] **Step 1: Write the failing test** (two sessions accumulate independently; evicting one resets only its tally)
+
+```ts
+// packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { buildSessionLifecycle } from '../smart-server.js';
+import {
+  InMemoryRagProvider,
+  SimpleRagProviderRegistry,
+  SimpleRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
+
+function rag() {
+  const p = new SimpleRagProviderRegistry();
+  p.registerProvider(new InMemoryRagProvider({ name: 'mem' }));
+  const r = new SimpleRagRegistry();
+  r.setProviderRegistry(p);
+  return r;
+}
+
+test('per-session usage is independent and resets on evict', async () => {
+  const lc = buildSessionLifecycle({
+    idleTtlMs: 0, maxSessions: 100, cookieName: 'sid',
+    mcpClients: [], toolsRag: undefined, ragRegistry: rag(),
+    buildAgent: async () => undefined,
+  });
+  const g1 = await lc.acquire('s1');
+  const g2 = await lc.acquire('s2');
+  g1.logger.startRequest('r1');
+  g1.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 10, completionTokens: 0, totalTokens: 10, durationMs: 1, requestId: 'r1' });
+  g2.logger.startRequest('r2');
+  g2.logger.logLlmCall({ component: 'tool-loop' as never, model: 'm', promptTokens: 3, completionTokens: 0, totalTokens: 3, durationMs: 1, requestId: 'r2' });
+  assert.equal(g1.logger.getSummary().byComponent['tool-loop'].totalTokens, 10);
+  assert.equal(g2.logger.getSummary().byComponent['tool-loop'].totalTokens, 3);
+
+  lc.release('s1');
+  await lc.evictIdle(); // idleTtlMs:0 -> evicts unpinned; g2 still pinned (active=1)
+  // g1 disposed -> logger.reset(); g2 untouched.
+  assert.equal(g2.logger.getSummary().byComponent['tool-loop'].totalTokens, 3);
+});
+```
+
+- [ ] **Step 2: Run** `npx tsx --test packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts` — Expected: FAIL until A3+A4+A9 land; then PASS.
+
+- [ ] **Step 3: Implement** the `/v1/usage` per-session read at `smart-server.ts:1118`:
+
+```ts
+    if (req.method === 'GET' && urlPath === '/v1/usage') {
+      const lifecycle = this._lifecycle;
+      const isHttps = (req.socket as { encrypted?: boolean }).encrypted === true
+        || (req.headers['x-forwarded-proto'] === 'https');
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      if (resolved.minted && resolved.setCookie) res.setHeader('Set-Cookie', resolved.setCookie);
+      const graph = await lifecycle.acquire(resolved.identity.sessionId);
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(graph.logger.getSummary()));
+      } finally {
+        lifecycle.release(resolved.identity.sessionId);
+      }
+      return;
+    }
+```
+
+- [ ] **Step 4: Run** the test + `npm run build` — Expected: PASS; build clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server/src/smart-agent/smart-server.ts packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts
+git commit -m "feat(usage): /v1/usage per-session, reset on session evict"
+```
+
+---
+
 ## Final steps (after all phases)
 
 - [ ] **Lint + full build:** `npm run lint && npm run build` — Expected: clean.
@@ -1972,36 +2414,41 @@ git commit -m "test(usage): external MCP retrieval logged as tool call, never as
   - `npx tsx --test packages/llm-agent/src/interfaces/__tests__/session-identity.test.ts`
   - `npx tsx --test packages/llm-agent-libs/src/session/__tests__/*.test.ts`
   - `npx tsx --test packages/llm-agent-libs/src/logger/__tests__/*.test.ts`
+  - `npx tsx --test packages/llm-agent-libs/src/subagent/__tests__/subagent-threads-trace.test.ts`
+  - `npx tsx --test packages/llm-agent-libs/src/pipeline/handlers/__tests__/traceid-stamping.test.ts`
+  - `npx tsx --test packages/llm-agent-libs/src/pipeline/__tests__/default-pipeline-session-registries.test.ts`
   - `npx tsx --test packages/llm-agent-server/src/smart-agent/__tests__/session-identity-resolver.test.ts packages/llm-agent-server/src/smart-agent/__tests__/smart-server-session-lifecycle.test.ts packages/llm-agent-server/src/smart-agent/__tests__/subagent-shared-rag.test.ts packages/llm-agent-server/src/smart-agent/__tests__/session-artifact-visibility.test.ts packages/llm-agent-server/src/smart-agent/__tests__/usage-per-session.test.ts`
   - Expected: all PASS.
-- [ ] **Smoke:** `npm run test` (build + start) — server boots, mints a cookie on first `/v1/chat/completions`, `/v1/usage` reflects the session.
-- [ ] **Docs:** update `docs/ARCHITECTURE.md` (SessionGraphFactory + global-vs-per-session table + scoping), `docs/QUICK_START.md` (cookie session note + `session:` config block), `docs/EXAMPLES.md` (YAML `session:` block). No release/version bump here.
+- [ ] **Smoke:** `npm run test` (build + start) — server boots, mints a cookie on first `/v1/chat/completions`, `/v1/usage` reflects the session, per-response `usage` is non-zero on a coordinator run.
+- [ ] **Docs:** update `docs/ARCHITECTURE.md` (SessionGraphFactory + fresh-per-session-workers + global-vs-per-session table + scoping + nested-safe logger + traceId threading), `docs/QUICK_START.md` (cookie session note + `session:` config block), `docs/EXAMPLES.md` (YAML `session:` block). No release/version bump here.
 - [ ] **Delete this plan + the spec** once the epic is merged (repo convention: plans/specs live only while active).
 
 ---
 
 ## Self-Review notes — spec requirement → task mapping
 
-- **A.1 Identity (cookie mint/validate, Set-Cookie, unique id, opaque UUID, HttpOnly/SameSite=Lax/Path/Max-Age/Secure-on-HTTPS, `^[A-Za-z0-9-]{1,128}$`, malformed→mint):** A1 (type) + A2 (resolver, all attributes + validation + distinct mints) + A8 (server wiring sends Set-Cookie, HTTPS detection).
-- **A.2 Per-session graph + `SessionGraphFactory` (compose from injected globals, no MCP reconnect / re-vectorize; owns pipeline/interpreter/coordinator/roles/workers/MCP-server/logger/registries):** A3 (graph) + A6 (factory, `withMcpClients` skips connect+vectorize per `builder.ts:880-882`, `setToolsRag`/`setRagRegistry`/`withRequestLogger`) + A8 (`buildSessionAgentBuilder` mirrors server config) + A4 (`ragRegistry` on handle for injection) + A5 (registries from `CallOptions`).
-- **A.3 RAG scoping (reuse per-call filter, no view objects; guarantee `ctx.sessionId`==cookie id; create/close via existing registry):** A8 (`opts.sessionId = cookie id` → `default-pipeline.ts:388`) + A6 (`dispose` → existing `closeSession`); reuse `rag-query.ts:73-86` unchanged.
-- **A.4 Lifecycle (idle-TTL 2h default + LRU cap, all configurable; refcount pin; DRAIN mark-and-dispose; session-scope cleared on evict, user/global survive):** A7 (TTL/LRU + drain + non-creating release) + A3 (refcount + markForDisposal + idempotent dispose) + A8 (config block defaults, sweep timer, dispose→closeSession which only removes scope:session — `agent.ts:408-420` semantics).
-- **A.5 Concurrency / reentrancy (shared instances reentrant; per-run state in PipelineContext; logger delta keyed by traceId):** A3/A7 (refcount allows concurrency) + A9 reentrancy test + C1 (traceId-keyed delta) + verified seam (per-run state already in `PipelineContext`, `default-pipeline.ts:386-435`).
-- **A.6 Provability (two sessions isolated; evict clears only session-scope; unique mint + persistence; logger sums+resets; malformed→mint; `ctx.sessionId`==cookie id; reentrancy):** A9 (isolation, single dispose, reentrancy) + A2 (malformed→mint, distinct mints) + A8 lifecycle test (dispose clears session collection; distinct ids) + B2 (isolation across sessions) + C5 (logger sums + reset).
-- **B.3 Sources / B.4 per-subagent store map / B.5 buildSubAgent fix (share parent registry, drop isolated makeRag):** B1 (`resolveSubAgentRagRegistry` + `setRagRegistry`, own store registers into shared registry). External customer RAG / consumer-MCP are reuse-only (no new code) per spec Reuse section.
-- **B.6 Provability (session artifact visible across workers, isolated per session; tool-selection vs global catalog):** B2 (concrete in-memory createCollection + upsert + query: 1 for s1, 0 for s2) — mirrors `smart-agent-close-session.test.ts`.
-- **C.1 One logger per graph (coordinator + workers):** C1 (logger) + A6/A8 (`withRequestLogger(parts.logger)`) + C2 (wiring test).
-- **C.2 Two axes, request id = traceId, every logLlmCall under traceId, worker dispatch threads traceId:** C1 (delta map) + C3 (propagate traceId at tool-loop/translate/classifier/helper/rag-query) + C4 (`startRequest/endRequest(traceId)`).
-- **C.3 Non-zero per-response usage from delta:** C4 (`summaryToUsage(getSummary(traceId))` into `response.usage`; openai-adapter mapping verified).
-- **C.4 External-retrieval honesty:** C6 (tool call, no token attribution).
-- **C.5 Reset on evict:** A3 (`dispose` calls `logger.reset()`) + C5 (verified per-session).
-- **C.6 Provability (worker tokens in /v1/usage; per-response non-zero == component sum; session total across requests + reset; concurrent deltas separate; external not counted):** C5 (`/v1/usage` per-session + reset) + C4 (totals) + C1/A9 (concurrent deltas) + C6 (external).
+- **A.1 Identity (cookie mint/validate, Set-Cookie, unique id, opaque UUID, HttpOnly/SameSite=Lax/Path/Max-Age/Secure-on-HTTPS, `^[A-Za-z0-9-]{1,128}$`, malformed→mint):** A1 (type) + A2 (resolver, all attributes + validation + distinct mints) + A9 (server wiring sends Set-Cookie, HTTPS detection).
+- **A.2 Per-session graph + `SessionGraphFactory` (compose from injected globals, no MCP reconnect / re-vectorize; owns pipeline/interpreter/coordinator/roles/WORKERS/MCP-server/logger/registries):** A4 (graph) + A7 (factory, `withMcpClients` skips connect+vectorize per `builder.ts:880-882`; FRESH per-session workers via `buildAgent`) + A9 (`buildSessionAgent` rebuilds a fresh `SubAgentRegistry` + DAG deps per session — review HIGH #2 — never reusing the global worker map at `smart-server.ts:609`/`:719`) + A5 (`ragRegistry`+`mcpClients` on handle for injection) + A6 (registries from `CallOptions`) + B1 (parameterized `buildSubAgent`).
+- **A.3 RAG scoping (reuse per-call filter, no view objects; guarantee `ctx.sessionId`==cookie id; create/close via existing registry):** A9 (`opts.sessionId = cookie id` → `default-pipeline.ts:388`) + A7 (`dispose` → existing `closeSession`); reuse `rag-query.ts:73-86` unchanged.
+- **A.4 Lifecycle (idle-TTL 2h default + LRU cap, all configurable; refcount pin; DRAIN mark-and-dispose; session-scope cleared on evict, user/global survive):** A8 (TTL/LRU + drain + non-creating release) + A4 (refcount + markForDisposal + idempotent dispose) + A9 (config block defaults, sweep timer, dispose→closeSession which only removes scope:session — `agent.ts:408-420` semantics).
+- **A.5 Concurrency / reentrancy (shared instances reentrant; per-run state in PipelineContext; logger delta keyed by traceId; NESTED-safe):** A4/A8 (refcount allows concurrency) + A10 reentrancy + nested-safety tests + A3 (nested-safe traceId-keyed delta — review HIGH #1: depth-counted start/end, explicit dropRequest) + verified seam (per-run state already in `PipelineContext`, `default-pipeline.ts:386-435`).
+- **A.6 Provability (two sessions isolated; evict clears only session-scope; unique mint + persistence; logger sums+resets; malformed→mint; `ctx.sessionId`==cookie id; reentrancy):** A10 (isolation, single dispose, reentrancy + nested-safety) + A2 (malformed→mint, distinct mints) + A9 lifecycle test (dispose clears session collection; distinct ids; dropRequest frees while cumulative survives) + B2 (isolation across sessions) + C8 (logger sums + reset).
+- **B.3/B.4/B.5 buildSubAgent fix (share parent registry, drop isolated makeRag, parameterized per session):** B1 (`resolveSubAgentRagRegistry` + `setRagRegistry`; parameterized by `{ ragRegistry, toolsRag, mcpClients, requestLogger }` so per-session workers share session logger + globals; own store registers into shared registry). External customer RAG / consumer-MCP are reuse-only per spec Reuse section.
+- **B.6 Provability (session artifact visible across workers, isolated per session; tool-selection vs global catalog):** B2 (concrete in-memory createCollection + upsert + query: 1 for s1, 0 for s2).
+- **C.1 One logger per graph (coordinator + workers):** A3 (logger) + A7/A9 (`withRequestLogger(parts.logger)` on agent AND every per-session worker) + C2 (wiring test).
+- **C.2 Two axes, request id = traceId, every logLlmCall under traceId, worker dispatch threads traceId, NESTED-safe:** A3 (delta map, depth-counted + dropRequest — review HIGH #1) + C1 (thread traceId through `ISubAgentInput`/`InterpretContext`/coordinator/`SmartAgentSubAgent.process` — review HIGH #3) + C3 (stamp traceId at tool-loop/translate/classifier/helper/rag-query) + C7 (`startRequest/endRequest(traceId)`; server-owned `dropRequest`) + C4 (handler-level + integration proof).
+- **C.3 Non-zero per-response usage from delta:** C7 (`summaryToUsage(getSummary(traceId))` into `response.usage`; openai-adapter mapping verified) + C6 (totals helper).
+- **C.4 External-retrieval honesty:** C5 (tool call, no token attribution).
+- **C.5 Reset on evict:** A4 (`dispose` calls `logger.reset()`) + C8 (verified per-session).
+- **C.6 Provability (worker tokens in /v1/usage; per-response non-zero == component sum; session total across requests + reset; concurrent deltas separate; external not counted):** C8 (`/v1/usage` per-session + reset) + C7 (totals) + C4 (worker tokens reach `getSummary(traceId)` through the coordinator) + A3/A10 (concurrent + nested deltas) + C5 (external).
 
-**Reuse discipline:** `createCollection`/`closeSession`/scope-filter/providers/`SmartAgent.closeSession` are REUSED, never reinvented — A6/A8 only *trigger* `closeSession`; B1 only shares the registry; B2 exercises the existing in-memory provider. **Out of scope:** `userId`/auth (the `scope:user` branch in `rag-query.ts:76-78` already exists, fed by a downstream auth build).
+**Review-finding closure:** (1) nested-safe logger — A3 (depth start, non-deleting end, explicit `dropRequest`) + A9 (server `dropRequest` in `finally` after reading usage) + A10/C7 nested tests. (2) fresh per-session workers — A7 factory contract + A9 `buildSessionAgent` rebuilds registry+DAG deps per session (never reuses the global `registry`/DAG-deps) + B1 parameterized `buildSubAgent`. (3) traceId threaded — C1 across `ISubAgentInput`/`InterpretContext`/coordinator/interpreter/`SmartAgentSubAgent`. (4) ordering — `SessionRequestLogger` is Task A3, before every injector; strict top-to-bottom, no "pull forward / stub". (5) real C4 coverage — handler-level recording-logger tests assert `requestId === traceId` per modified handler + a coordinator integration test asserts `getSummary(traceId)` carries worker tokens.
+
+**Reuse discipline:** `createCollection`/`closeSession`/scope-filter/providers/`SmartAgent.closeSession` are REUSED, never reinvented — A7/A9 only *trigger* `closeSession`; B1 only shares the registry; B2 exercises the existing in-memory provider. **Out of scope:** `userId`/auth (the `scope:user` branch in `rag-query.ts` already exists, fed by a downstream auth build).
 
 ### Critical Files for Implementation
-- /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/builder.ts
 - /home/okyslytsia/prj/llm-agent/packages/llm-agent-server/src/smart-agent/smart-server.ts
+- /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/logger/session-request-logger.ts
+- /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/session/session-graph-factory.ts
+- /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts
 - /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/agent.ts
-- /home/okyslytsia/prj/llm-agent/packages/llm-agent-libs/src/pipeline/default-pipeline.ts
-- /home/okyslytsia/prj/llm-agent/packages/llm-agent/src/interfaces/request-logger.ts
