@@ -18,7 +18,7 @@ This epic introduces **session-scoped infrastructure**: a per-session object gra
 The design separates two axes that were previously conflated:
 
 1. **Object lifecycle / ownership.** Classes are shared code, but **instances are per-session**: a session owns live instances of the pipeline, interpreter, coordinator, roles (planner/reviewer/state-oracle), workers, the per-session MCP server (handler registration + server instance, per the MCP standard), token-logger, SessionManager, history-memory, and the sessionId-keyed registries. The **pipeline itself is per-session because different sessions may run different pipelines.** These per-session instances are **built cheaply by injecting shared global resources** (below) rather than rebuilding them — so a per-session graph does NOT re-connect MCP or re-vectorize the tools catalog.
-2. **RAG scope (access parameter over shared storage).** RAG objects are not per-session data copies; they are identity-bound *views* over a shared backend (Qdrant / Vectorized Custom Store / …). `scope` (`global|user|session`) is a static store-config dimension; the identity **values** (sessionId, userId, …) are injected when the view is created for a session.
+2. **RAG scope (access parameter over shared storage).** RAG objects are not per-session data copies; they are shared stores over a shared backend (Qdrant / Vectorized Custom Store / …). `scope` (`global|user|session`) is a static store-config dimension; **isolation is applied per call by the existing `rag-query` scope filter** (`ragFilter.sessionId`/`ragFilter.userId`), with the identity **values** taken from `ctx.sessionId` / `ctx.options.userId`. The per-session graph's only RAG responsibility is to (a) guarantee `ctx.sessionId` equals the cookie session id, and (b) create/close session-scoped collections via the existing registry — it does NOT build separate identity-bound view objects.
 
 ### Global vs per-session resources
 
@@ -49,6 +49,7 @@ The substrate B and C build on.
 - **`userId` — only in authorization-enabled builds**, derived from the auth token. The **default server has no authorization**, so `userId` is absent and user-scope lies dormant (mechanism present, partition empty).
 - **Custom headers are reserved for the non-standard only** — e.g. ABAP connection parameters (login/password or JWT), and only for implementations that need them. Custom-header handling is a **pluggable extension** the default server does not require; the core knows nothing about ABAP credentials.
 - Internal abstraction: `SessionIdentity { sessionId: string; userId?: string; /* extensible */ }`.
+- **Cookie contract:** the session id is an **opaque random** value (UUID v4). `Set-Cookie` attributes: `HttpOnly`, `SameSite=Lax`, `Path=/`, `Max-Age` = idle-TTL seconds, and `Secure` **when the request is HTTPS**. **Validation:** accept only ids matching `^[A-Za-z0-9-]{1,128}$`; an absent/empty/malformed cookie is treated as no-cookie → mint a fresh id (never trust a client-supplied malformed value). The server never derives authority from the cookie beyond keying the session graph (no auth — A.1 userId note).
 
 **Caveat (documented, not a defect):** cookie transparency depends on the client keeping a cookie jar. Browsers and Python `openai`/`anthropic` SDKs (httpx.Client) persist cookies within a reused client instance; Node `openai` SDK (fetch) does not keep a jar by default. For non-cookie clients, an explicit override is allowed but is not the primary mechanism.
 
@@ -60,12 +61,12 @@ The substrate B and C build on.
 - Because the pipeline is a per-session instance, **different sessions may run different pipelines**; the default server builds them from one config, but the capability to vary per session is first-class.
 - Lives across that cookie's requests.
 
-### A.3 RAG factory
+### A.3 RAG scoping (reuse the existing per-call filter)
 
-- `scope` (`global|user|session`) is a **static store-config dimension**.
-- Identity **values** are injected at view creation, when the per-session graph is built: `factory(identity: SessionIdentity, storeConfig) → identity-bound view` over the **shared** backend.
-- The view knows its own partition: a session-scoped view filters by its `sessionId`, a user-scoped view by its `userId`, a global view filters nothing. The pipeline no longer threads `ctx.sessionId` into the filter per call — the view is already identity-bound.
-- Multi-source (external customer RAG / consumer-MCP retrieval) is **B's** concern; A provides only the factory + identity injection.
+- `scope` (`global|user|session`) is a **static store-config dimension** (already in code).
+- **Isolation stays per-call** via the existing `rag-query` scope filter (rag-query.ts:74-86): `scope:session → ragFilter.sessionId = ctx.sessionId`, `scope:user → ragFilter.userId = ctx.options.userId`. This is RETAINED, not replaced — no separate identity-bound view objects are introduced (YAGNI).
+- A's only additions: the SessionGraph **guarantees `ctx.sessionId` is the cookie session id** for every request it runs, and **creates/closes session-scoped collections** via the existing `IRagRegistry.createCollection(scope:session, sessionId)` / `closeSession(sessionId)`.
+- Multi-source (external customer RAG / consumer-MCP retrieval) is **B's** concern.
 
 ### A.4 Lifecycle
 
@@ -79,6 +80,7 @@ The substrate B and C build on.
 
 - **Intra-plan parallelism:** the planner decides at plan-build time which subagents may run in parallel; the interpreter dispatches them concurrently and `await`s completion. This is the existing DAG-interpreter behavior — kept.
 - **Inter-request concurrency on the same session:** allowed (no forced serialization), **provided the shared session state is concurrency-safe** — token-logger appends are additive, session-RAG upserts atomic. This is a binding design constraint on every piece of shared session state. Concurrent requests each pin the graph via the A.4 refcount, so eviction cannot dispose it mid-run.
+- **Reentrancy contract (binding).** The per-session pipeline/interpreter/coordinator/worker instances are **shared across concurrent requests of the same session and MUST be reentrant**: all mutable *per-run* state lives in a **request-local execution context** (the per-request `PipelineContext`, already built per request), never on the instance fields. The SessionGraph holds only **session state and shared services** — registries, RAG access, the token-logger, factories. The token-logger's request delta is keyed by `traceId` (C.2) precisely so two concurrent runs of one session never mix run state. Any instance that cannot satisfy this (holds per-run mutable fields) must instead expose a factory that produces a request-local run object.
 
 ### A.6 Provability (tests)
 
