@@ -104,7 +104,10 @@ git add packages/llm-agent/src
 git commit -m "feat(slice4b): contracts — NeedInfo/Clarify signals, ContextPath, ancestorContext, InterpretResult.failedNodeId/executedPlan"
 ```
 
-(All additive/optional → existing impls compile. `ExecutionReviewDecision` widening only affects the coordinator, updated in Task 5.)
+(All additive/optional → existing impls compile. `ExecutionReviewDecision` stays
+`abort | revise` — needInfo/clarify are thrown signals, not union members — so no
+return-type widening; only the additive `PlannerInput.reviewerFeedback?` changes a
+shape, and it's optional.)
 
 ---
 
