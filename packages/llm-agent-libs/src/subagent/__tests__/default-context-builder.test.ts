@@ -35,7 +35,6 @@ function makeReq(
     task: 'do the thing',
     step,
     agent: makeAgent(),
-    layer: 1,
     inputText: 'user request',
     sessionId: 'sess-1',
     ...overrides,

@@ -106,7 +106,6 @@ export class DagCoordinatorHandler implements IStageHandler {
         workers: this.deps.workers,
         sessionId: ctx.sessionId,
         signal: ctx.options?.signal,
-        layer: ctx.layer ?? 0,
         errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
       });
     } catch (err) {

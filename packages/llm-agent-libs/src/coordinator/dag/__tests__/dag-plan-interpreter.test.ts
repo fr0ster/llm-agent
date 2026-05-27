@@ -32,7 +32,6 @@ function ctx(
     inputText: 'RAW',
     workers: new Map(workers),
     sessionId: 't',
-    layer: 0,
     errorStrategy,
   };
 }

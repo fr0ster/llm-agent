@@ -36,7 +36,6 @@ describe('DirectLlmSubAgent', () => {
       task: 'Review this snippet',
       context: 'function foo() { return 42; }',
       sessionId: 'sess-1',
-      layer: 2,
     });
 
     assert.equal(res.output, 'response');
@@ -65,7 +64,6 @@ describe('DirectLlmSubAgent', () => {
         sub.run({
           task: 'do',
           sessionId: 's',
-          layer: 1,
         }),
       /context.*required/i,
     );
@@ -81,7 +79,6 @@ describe('DirectLlmSubAgent', () => {
     const res = await sub.run({
       task: 'do the thing',
       sessionId: 's',
-      layer: 1,
     });
 
     assert.equal(res.output, 'response');

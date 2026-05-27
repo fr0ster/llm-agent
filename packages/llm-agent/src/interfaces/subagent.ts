@@ -29,14 +29,6 @@ export interface ISubAgentInput {
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
-  /**
-   * Dispatch depth. Root is 0; each dispatch increments by 1.
-   *
-   * **Breaking change in the nested-dispatch foundation:** previously absent;
-   * now required on every `sub.run()` call. Callers must pass `(ctx.layer ?? 0) + 1`
-   * (or `0` for direct test invocations).
-   */
-  layer: number;
 }
 
 export interface ISubAgentResult {

@@ -449,7 +449,6 @@ export class DefaultPipeline implements IPipeline {
 
       // Subagent registry for coordinator/subagent stages (read by handlers).
       subAgents: this.subAgents,
-      layer: options?.layer ?? 0,
     };
   }
 }

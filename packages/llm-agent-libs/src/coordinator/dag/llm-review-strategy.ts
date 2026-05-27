@@ -40,7 +40,6 @@ export class LlmReviewStrategy implements IReviewStrategy {
       task,
       sessionId: input.sessionId,
       signal: input.signal,
-      layer: 0,
     });
 
     const match = res.output.match(/\{[\s\S]*\}/);

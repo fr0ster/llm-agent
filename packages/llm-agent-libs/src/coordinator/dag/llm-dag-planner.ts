@@ -42,7 +42,6 @@ export class LlmDagPlanner implements IPlanner {
       task,
       sessionId: input.sessionId,
       signal: input.signal,
-      layer: 0,
     });
     const content = res.output;
 

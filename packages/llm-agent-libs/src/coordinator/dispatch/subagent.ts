@@ -50,15 +50,12 @@ export class SubAgentDispatch implements IDispatchStrategy {
     }
     const task = composeTask(step, ctx);
 
-    const childLayer = (ctx.layer ?? 0) + 1;
-
     let context: string | undefined;
     if (this.contextBuilder) {
       const built = await this.contextBuilder.build({
         task,
         step,
         agent: sub,
-        layer: childLayer,
         inputText: ctx.inputText,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
@@ -87,15 +84,13 @@ export class SubAgentDispatch implements IDispatchStrategy {
         context,
         sessionId: ctx.sessionId,
         signal: ctx.signal,
-        layer: childLayer,
       });
 
       // Epicfail propagation: do NOT retry, do NOT transform — preserve trace
-      // by attaching this layer's frame and passing it upward in StepResult.
+      // by attaching this frame and passing it upward in StepResult.
       if (res.errorClass === 'epicfail') {
         const childTrace = res.epicFailTrace;
         const wrappedTrace: EpicFailTrace = {
-          layer: ctx.layer ?? 0,
           stepId: step.id,
           agentName,
           attempts: [],

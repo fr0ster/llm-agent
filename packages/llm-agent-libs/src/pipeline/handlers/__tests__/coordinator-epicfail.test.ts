@@ -31,9 +31,8 @@ class EpicFailingSubAgent implements ISubAgent {
   readonly capabilities = {
     contextPolicy: 'optional' as const,
   };
-  async run(input: ISubAgentInput) {
+  async run(_input: ISubAgentInput) {
     const trace: EpicFailTrace = {
-      layer: input.layer,
       stepId: 'inner-step',
       agentName: 'inner-failer',
       attempts: [],
@@ -71,7 +70,6 @@ function makeCtx(subAgents: Map<string, ISubAgent>): PipelineContext {
   return {
     inputText: 'top',
     sessionId: 's',
-    layer: 0,
     assembledMessages: [],
     options: { signal: undefined },
     subAgents,

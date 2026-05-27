@@ -9,7 +9,6 @@ export interface SubAgentContextRequest {
   task: string;
   step: PlanStep;
   agent: ISubAgent;
-  layer: number;
   inputText: string;
   sessionId: string;
   signal?: AbortSignal;

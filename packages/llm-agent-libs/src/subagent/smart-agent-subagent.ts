@@ -29,7 +29,6 @@ export class SmartAgentSubAgent implements ISubAgent {
     const res = await this.agent.process(prompt, {
       sessionId: input.sessionId,
       signal: input.signal,
-      layer: input.layer,
     });
 
     if (!res.ok) {

@@ -44,7 +44,6 @@ export interface Plan {
  * frame and passes the result upward without other transformation.
  */
 export interface EpicFailTrace {
-  layer: number;
   stepId: string;
   agentName: string;
   attempts: Array<{
@@ -88,12 +87,6 @@ export interface ICoordinatorContext {
   stepResults: Record<string, StepResult>;
   signal?: AbortSignal;
   sessionId: string;
-  /**
-   * Dispatch depth of the current coordinator. Root coordinator is 0; child
-   * subagent coordinators increment per nested dispatch. Forward-declared for
-   * Task 4 of the nested-subagent-dispatch foundation plan.
-   */
-  layer?: number;
 }
 
 export interface IPlanningStrategy {

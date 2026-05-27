@@ -59,7 +59,6 @@ export class CoordinatorHandler implements IStageHandler {
       stepResults: {},
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
-      layer: ctx.layer ?? 0,
     };
 
     let plan: Plan;
