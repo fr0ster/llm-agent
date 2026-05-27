@@ -298,7 +298,13 @@ describe('DagPlanInterpreter', () => {
     // Shared singleton strategy with a 1-replan ceiling; each run needs 1 replan.
     const strat = new ReplanErrorStrategy(planner, 1);
     const make = () =>
-      ctx([['big', big], ['small', small]], strat);
+      ctx(
+        [
+          ['big', big],
+          ['small', small],
+        ],
+        strat,
+      );
     const r1 = await I().interpret(
       dag([{ id: 'n1', goal: 'big', agent: 'big' }]),
       make(),
@@ -347,7 +353,13 @@ describe('DagPlanInterpreter', () => {
         { id: 'A', goal: 'big', agent: 'big' },
         { id: 'B', goal: 'big', agent: 'big' },
       ]),
-      ctx([['big', big], ['small', small]], new ReplanErrorStrategy(planner, 4)),
+      ctx(
+        [
+          ['big', big],
+          ['small', small],
+        ],
+        new ReplanErrorStrategy(planner, 4),
+      ),
     );
     assert.equal(r.ok, true);
     assert.deepEqual(r.output, 'S\n\nS'); // both spliced sub-graphs ran
