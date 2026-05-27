@@ -1,3 +1,4 @@
+import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
 
 export interface PlannerCatalogEntry {
@@ -10,6 +11,8 @@ export interface PlannerInput {
   agents: PlannerCatalogEntry[];
   sessionId: string;
   signal?: AbortSignal;
+  ancestorContext?: ContextPath;
+  reviewerFeedback?: string;
 }
 
 export interface IPlanner {

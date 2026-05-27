@@ -1,3 +1,5 @@
+import type { ContextPath } from './context-path.js';
+import type { DagPlan } from './dag-plan.js';
 import type { IErrorStrategy } from './error-strategy.js';
 import type { ISubAgent } from './subagent.js';
 
@@ -14,6 +16,9 @@ export interface InterpretContext {
   /** Reaction to a node failure (abort | replan). Always populated by the
    *  caller; defaults to AbortErrorStrategy. */
   errorStrategy: IErrorStrategy;
+  /** Hierarchical ancestor context (parent objective + clarification Q/A +
+   *  oracle observations). Threaded into node task composition. */
+  ancestorContext?: ContextPath;
 }
 
 export interface NodeResult {
@@ -30,4 +35,9 @@ export interface InterpretResult {
   ok: boolean;
   error?: string;
   output: string;
+  /** Set when ok === false: the node whose failure stopped the run (first
+   *  plan-node-order node with status 'failed'). */
+  failedNodeId?: string;
+  /** The final plan after any in-run local splices. */
+  executedPlan?: DagPlan;
 }

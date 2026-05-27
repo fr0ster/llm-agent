@@ -27,12 +27,12 @@ export class DagPlanInterpreter
 
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
-    let liveNodes = plan.nodes;
+    let currentPlan = plan;
     const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
     let replansUsed = 0;
 
     for (;;) {
-      const ready = liveNodes.filter(
+      const ready = currentPlan.nodes.filter(
         (n) =>
           !(n.id in results) && (n.dependsOn ?? []).every((d) => done.has(d)),
       );
@@ -47,11 +47,18 @@ export class DagPlanInterpreter
             task: string;
             durationMs: number;
           };
+      const planForWave = currentPlan;
       const outcomes = await Promise.all(
         ready.map(async (n): Promise<Outcome> => {
           const depOutputs: Record<string, string> = {};
           for (const d of n.dependsOn ?? []) depOutputs[d] = results[d].output;
-          const task = composeNodeTask(n, plan, ctx.inputText, depOutputs);
+          const task = composeNodeTask(
+            n,
+            planForWave,
+            ctx.inputText,
+            depOutputs,
+            ctx.ancestorContext,
+          );
           const started = Date.now();
           try {
             const res = await this.resolveWorker(n, ctx).run({
@@ -87,17 +94,21 @@ export class DagPlanInterpreter
       );
 
       let splicedThisWave = false;
+      // Record successes first, then process failures in plan-node order.
       for (const o of outcomes) {
-        if (o.kind === 'done') {
-          results[o.node.id] = {
-            nodeId: o.node.id,
-            output: o.output,
-            status: 'done',
-            durationMs: o.durationMs,
-          };
-          done.add(o.node.id);
-          continue;
-        }
+        if (o.kind !== 'done') continue;
+        results[o.node.id] = {
+          nodeId: o.node.id,
+          output: o.output,
+          status: 'done',
+          durationMs: o.durationMs,
+        };
+        done.add(o.node.id);
+      }
+      const failures = outcomes.filter(
+        (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
+      );
+      for (const o of failures) {
         const remainingReplans = maxReplans - replansUsed;
         const reaction = await ctx.errorStrategy.onNodeFailure(
           o.node,
@@ -114,20 +125,12 @@ export class DagPlanInterpreter
           },
         );
         if (reaction.action === 'replan' && remainingReplans > 0) {
-          // Fail loud on an empty sub-plan: splicing it would silently drop the
-          // failed node (terminals=[]; consumers rewired to nothing), leaving a
-          // smaller graph that still passes re-validation. An empty replan is an
-          // invalid plan, not a no-op.
           if (reaction.subPlan.nodes.length === 0) {
             throw new PlanInvalidError(
               `COORDINATOR_PLAN_INVALID: replan for node '${o.node.id}' produced an empty sub-plan`,
             );
           }
-          liveNodes = spliceSubPlan(
-            { ...plan, nodes: liveNodes },
-            o.node.id,
-            reaction.subPlan,
-          ).nodes;
+          currentPlan = spliceSubPlan(currentPlan, o.node.id, reaction.subPlan);
           replansUsed++;
           splicedThisWave = true;
         } else {
@@ -141,10 +144,10 @@ export class DagPlanInterpreter
         }
       }
 
-      if (splicedThisWave) this.validate({ ...plan, nodes: liveNodes }, ctx);
+      if (splicedThisWave) this.validate(currentPlan, ctx);
     }
 
-    for (const n of liveNodes) {
+    for (const n of currentPlan.nodes) {
       if (!(n.id in results)) {
         results[n.id] = {
           nodeId: n.id,
@@ -155,21 +158,29 @@ export class DagPlanInterpreter
       }
     }
 
-    const failed = liveNodes.filter((n) => results[n.id].status !== 'done');
+    const failed = currentPlan.nodes.filter(
+      (n) => results[n.id].status !== 'done',
+    );
     if (failed.length > 0) {
-      const first = liveNodes.find((n) => results[n.id].status === 'failed');
+      const firstFailed = currentPlan.nodes.find(
+        (n) => results[n.id].status === 'failed',
+      );
       return {
         nodeResults: results,
         ok: false,
-        error: first
-          ? `node '${first.id}' failed: ${results[first.id].error ?? 'unknown'}`
+        error: firstFailed
+          ? `node '${firstFailed.id}' failed: ${results[firstFailed.id].error ?? 'unknown'}`
           : 'plan did not complete',
         output: '',
+        failedNodeId: firstFailed?.id,
+        executedPlan: currentPlan,
       };
     }
 
-    const depended = new Set(liveNodes.flatMap((n) => n.dependsOn ?? []));
-    const terminals = liveNodes.filter((n) => !depended.has(n.id));
+    const depended = new Set(
+      currentPlan.nodes.flatMap((n) => n.dependsOn ?? []),
+    );
+    const terminals = currentPlan.nodes.filter((n) => !depended.has(n.id));
     const output = terminals.map((n) => results[n.id].output).join('\n\n');
     return { nodeResults: results, ok: true, output };
   }

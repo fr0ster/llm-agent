@@ -335,6 +335,21 @@ describe('DagPlanInterpreter', () => {
     );
   });
 
+  it('reports failedNodeId and executedPlan on failure', async () => {
+    const w = worker('w', async (i) =>
+      i.task.includes('boom')
+        ? Promise.reject(new Error('boom'))
+        : { output: 'ok' },
+    );
+    const r = await I().interpret(
+      dag([{ id: 'a', goal: 'boom', agent: 'w' }]),
+      ctx([['w', w]]),
+    );
+    assert.equal(r.ok, false);
+    assert.equal(r.failedNodeId, 'a');
+    assert.equal(r.executedPlan?.nodes[0].id, 'a');
+  });
+
   it('applies replans serially for two NeedsDecomposition failures in one wave', async () => {
     const big = worker('big', async () => {
       throw new NeedsDecompositionError('split');

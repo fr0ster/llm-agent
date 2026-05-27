@@ -162,6 +162,27 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /errorStrategy: unknown type 'bogus'/,
     );
   });
+  it("rejects errorStrategy type 'reviewer' (removed in slice 4b)", () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          reviewer: { type: 'llm' },
+          errorStrategy: { type: 'reviewer', maxReplans: 2 },
+        }),
+      /unknown type 'reviewer'/,
+    );
+  });
+  it('still rejects an unknown errorStrategy.type', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          errorStrategy: { type: 'bogus' },
+        }),
+      /errorStrategy: unknown type 'bogus'/,
+    );
+  });
   it('rejects errorStrategy in a linear coordinator', () => {
     assert.throws(
       () =>
@@ -175,6 +196,35 @@ describe('coordinator config shape (DAG vs linear)', () => {
   it('still accepts a linear coordinator with maxLayer (now a no-op)', () => {
     assert.doesNotThrow(() =>
       assertCoordinatorConfigShape({ planning: 'one-shot', maxLayer: 2 }),
+    );
+  });
+  it('accepts a DAG coordinator with stateOracle + maxRoundTrips', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        stateOracle: 'oracle',
+        maxRoundTrips: 8,
+      }),
+    );
+  });
+  it('rejects a non-string stateOracle', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          stateOracle: 5,
+        }),
+      /stateOracle/,
+    );
+  });
+  it('rejects stateOracle in a linear coordinator', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planning: 'one-shot',
+          stateOracle: 'oracle',
+        }),
+      /stateOracle/,
     );
   });
 });

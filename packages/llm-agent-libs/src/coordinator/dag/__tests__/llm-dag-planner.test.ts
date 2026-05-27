@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, PlannerInput } from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { LlmDagPlanner } from '../llm-dag-planner.js';
 
 function llm(content: string): ILlm {
@@ -110,5 +111,45 @@ describe('LlmDagPlanner', () => {
       chat: async () => ({ ok: false, error: new Error('quota') }),
     } as unknown as ILlm;
     await assert.rejects(() => new LlmDagPlanner(failing).plan(input), /quota/);
+  });
+
+  it('throws NeedInfoSignal when the planner asks for a reality fact', async () => {
+    await assert.rejects(
+      () => new LlmDagPlanner(llm('{"needInfo":"which table?"}')).plan(input),
+      (e: unknown) => e instanceof NeedInfoSignal && e.query === 'which table?',
+    );
+  });
+
+  it('throws ClarifySignal when the planner needs a human decision', async () => {
+    await assert.rejects(
+      () => new LlmDagPlanner(llm('{"clarify":"overwrite ok?"}')).plan(input),
+      (e: unknown) =>
+        e instanceof ClarifySignal && e.question === 'overwrite ok?',
+    );
+  });
+
+  it('renders ancestorContext clarifications + reviewerFeedback into the task', async () => {
+    const cap: { task?: string } = {};
+    const spy = {
+      chat: async (msgs: Array<{ role: string; content: string }>) => {
+        cap.task = msgs.map((m) => m.content).join('\n');
+        return {
+          ok: true,
+          value: { content: '{"nodes":[{"id":"n1","goal":"g"}]}' },
+        };
+      },
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await new LlmDagPlanner(spy).plan({
+      ...input,
+      reviewerFeedback: 'avoid table X',
+      ancestorContext: {
+        objective: 'build BO',
+        clarifications: [{ question: 'which table?', answer: 'ZCUST' }],
+        oracleObservations: [],
+      },
+    });
+    assert.match(cap.task ?? '', /which table\?/);
+    assert.match(cap.task ?? '', /ZCUST/);
+    assert.match(cap.task ?? '', /avoid table X/);
   });
 });

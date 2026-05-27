@@ -5,7 +5,9 @@ import type {
   PlanNode,
   PlannerInput,
 } from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
+import { renderAncestorContext } from './render-ancestor-context.js';
 
 // Static planner instructions. The agent catalog and user prompt are NOT here —
 // they are dynamic and go into the per-call `task` (see plan()).
@@ -13,8 +15,10 @@ const PLANNER_SYSTEM = `You are a planner. Decompose the user request into a DAG
 Each node: {"id","goal","agent"(optional worker name),"dependsOn"(optional ids),"needsInput"(optional bool)}.
 Use "dependsOn" to express order/data-flow; independent nodes run in parallel.
 If the request needs no decomposition, emit a SINGLE node.
-Emit a plan-level "objective". Respond with ONLY:
-{"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}`;
+Emit a plan-level "objective". Respond with ONLY one of:
+{"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}
+{"needInfo":"<query>"}  — if you need a reality fact before planning (e.g. which table exists)
+{"clarify":"<question>"}  — if you need a human decision before planning (e.g. overwrite ok?)`;
 
 /**
  * Role adapter: owns a constrained `DirectLlmSubAgent` and turns its string
@@ -36,7 +40,17 @@ export class LlmDagPlanner implements IPlanner {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
-    const task = `Available workers:\n${catalog || '(none)'}\n\n${input.prompt}`;
+    const contextPrefix: string[] = [];
+    if (input.ancestorContext) {
+      const rendered = renderAncestorContext(input.ancestorContext);
+      if (rendered) contextPrefix.push(rendered);
+    }
+    if (input.reviewerFeedback) {
+      contextPrefix.push(`Reviewer feedback: ${input.reviewerFeedback}`);
+    }
+    const prefix =
+      contextPrefix.length > 0 ? `${contextPrefix.join('\n\n')}\n\n` : '';
+    const task = `${prefix}Available workers:\n${catalog || '(none)'}\n\n${input.prompt}`;
 
     const res = await this.agent.run({
       task,
@@ -55,6 +69,8 @@ export class LlmDagPlanner implements IPlanner {
     let parsed: {
       objective?: unknown;
       rationale?: unknown;
+      needInfo?: unknown;
+      clarify?: unknown;
       nodes?: Array<{
         id?: unknown;
         goal?: unknown;
@@ -69,6 +85,12 @@ export class LlmDagPlanner implements IPlanner {
       throw new Error(
         `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
       );
+    }
+    if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
+      throw new NeedInfoSignal(parsed.needInfo);
+    }
+    if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
+      throw new ClarifySignal(parsed.clarify);
     }
     if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
       throw new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`);

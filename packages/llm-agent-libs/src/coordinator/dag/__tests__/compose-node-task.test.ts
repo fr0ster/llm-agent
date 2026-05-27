@@ -51,4 +51,30 @@ describe('composeNodeTask', () => {
     const t = composeNodeTask(node({ dependsOn: ['x'] }), plan(), 'RAW', {});
     assert.match(t, /Input from x:\n---\n\n---/);
   });
+
+  it('renders ancestor clarifications and excludes siblings', () => {
+    const p: DagPlan = {
+      nodes: [
+        { id: 'a', goal: 'A' },
+        { id: 'b', goal: 'B', dependsOn: ['a'] },
+      ],
+      objective: 'O',
+      createdAt: 0,
+    };
+    const task = composeNodeTask(
+      p.nodes[1],
+      p,
+      'RAW',
+      { a: 'A-out' },
+      {
+        objective: 'O',
+        clarifications: [{ question: 'which?', answer: 'ZCUST' }],
+        oracleObservations: [],
+      },
+    );
+    assert.match(task, /which\?/);
+    assert.match(task, /ZCUST/);
+    assert.match(task, /A-out/); // dependency output present
+    assert.doesNotMatch(task, /sibling/i); // no sibling leakage (there is none to include)
+  });
 });
