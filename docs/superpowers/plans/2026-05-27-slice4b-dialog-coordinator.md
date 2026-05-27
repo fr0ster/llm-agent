@@ -11,12 +11,16 @@
 **Spec:** `docs/superpowers/specs/2026-05-27-slice4b-dialog-coordinator-design.md`
 
 > **Plan-level refinement (vs spec contract shape):** the spec sketched
-> needInfo/clarify as widened return unions (`PlannerOutput`, `ReviewVerdict +=`).
-> Widening `IPlanner.plan(): Promise<DagPlan>` breaks all callers. This plan
-> realizes the SAME intent with **thrown typed signals** (`NeedInfoSignal`,
-> `ClarifySignal`) — non-breaking, and consistent with `NeedsDecompositionError`
-> (slice 3). `reviewExecutionFailure` keeps its union and gains `needInfo`/`clarify`
-> members there (that union has no external callers but the coordinator).
+> needInfo/clarify as widened return unions (`PlannerOutput`, `ReviewVerdict +=`,
+> `ExecutionReviewDecision +=`). Widening `IPlanner.plan(): Promise<DagPlan>` breaks
+> all callers, and split mechanisms (some thrown, some returned) make the
+> coordinator handle two paths. This plan realizes the SAME intent with **thrown
+> typed signals** (`NeedInfoSignal`, `ClarifySignal`) from **every** role — planner,
+> `review()`, and `reviewExecutionFailure()` — caught uniformly by the coordinator's
+> `runRole`. Non-breaking and consistent with `NeedsDecompositionError` (slice 3).
+> Return unions stay as-is: `ReviewVerdict` = `{pass}|{pass:false,feedback}`,
+> `ExecutionReviewDecision` = `abort|revise`. The only return-shape change is the
+> additive `PlannerInput.reviewerFeedback?` (pre-execution correction loop).
 
 **Conventions:** ESM `.js` imports; interfaces `I`-prefixed; tests in `__tests__/` (`node:test`); `npm run test --workspace <pkg>`; `npm run build`; `npm run lint` then `npm run lint:check`. Husky hook hint is harmless. Each task ends build-green.
 
@@ -73,15 +77,9 @@ export interface ContextPath {
 }
 ```
 
-- [ ] **Step 3: Thread `ancestorContext` into role inputs** — in `planner.ts`, `review.ts`, add `ancestorContext?: ContextPath` to `PlannerInput`, `ReviewInput`, and `ExecutionFailureInput`. Add `import type { ContextPath } from './context-path.js';` to each. Add `needInfo` + `clarify` members to `ExecutionReviewDecision` in `review.ts`:
+- [ ] **Step 3: Thread `ancestorContext` into role inputs** — in `planner.ts`, `review.ts`, add `ancestorContext?: ContextPath` to `PlannerInput`, `ReviewInput`, and `ExecutionFailureInput`. Add `import type { ContextPath } from './context-path.js';` to each. Also add `reviewerFeedback?: string` to `PlannerInput` (the gate's reject feedback fed back into a re-plan — see Task 5 pre-execution correction loop).
 
-```ts
-export type ExecutionReviewDecision =
-  | { action: 'abort' }
-  | { action: 'revise'; revisedPlan: DagPlan }
-  | { action: 'needInfo'; query: string }
-  | { action: 'clarify'; question: string };
-```
+**`ExecutionReviewDecision` stays `abort | revise` only** (do NOT add needInfo/clarify members). needInfo/clarify are **thrown signals** (`NeedInfoSignal`/`ClarifySignal`) from EVERY role — planner, `review()`, AND `reviewExecutionFailure()` — caught uniformly by the coordinator's `runRole`. Keeping the decision union at `abort | revise` is what makes the single signal-based mechanism consistent (Finding-1 fix).
 
 - [ ] **Step 4: InterpretResult failure surface** — in `interpreter.ts`, add to `InterpretResult`:
 
@@ -213,13 +211,14 @@ git commit -m "refactor(slice4b): remove ReviewerErrorStrategy + ErrorReaction.r
   - Prepend `ancestorContext` to the task when present (objective + clarifications + oracleObservations rendered as text).
 
 - [ ] **Step 2: Reviewer — needInfo/clarify in both methods + ancestorContext.** In `llm-review-strategy.ts`:
-  - `review()`: the gate may also throw `NeedInfoSignal`/`ClarifySignal` (parse `{"needInfo"}`/`{"clarify"}` from the critic). Keep `{pass:true}`/`{pass:false,feedback}`.
-  - `reviewExecutionFailure()`: extend the parser to also return `{ action: 'needInfo', query }` and `{ action: 'clarify', question }` (alongside `abort`/`revise`).
+  - `review()`: the gate may **throw** `NeedInfoSignal`/`ClarifySignal` (parse `{"needInfo":"…"}`/`{"clarify":"…"}` from the critic) before returning a verdict. Keep `{pass:true}`/`{pass:false,feedback}` otherwise.
+  - `reviewExecutionFailure()`: likewise **throws** `NeedInfoSignal`/`ClarifySignal` when the critic emits `{"needInfo"}`/`{"clarify"}`; otherwise returns `{action:'abort'}` | `{action:'revise',revisedPlan}` (the union is unchanged — needInfo/clarify are signals, not decision members).
   - Both methods render `input.ancestorContext` (when present) into the critic task.
+  - The planner also renders `input.reviewerFeedback` (when present) so a re-plan after a gate reject incorporates the reviewer's correction.
 
 - [ ] **Step 3: Tests** — add to `llm-review-strategy.test.ts` and `llm-dag-planner.test.ts`:
   - planner `{"needInfo":"which table?"}` → rejects with `NeedInfoSignal`; `{"clarify":"confirm?"}` → `ClarifySignal`.
-  - reviewExecutionFailure `{"action":"needInfo","query":"x"}` → `{action:'needInfo',query:'x'}`; `{"action":"clarify","question":"y"}` → `{action:'clarify',question:'y'}`.
+  - reviewExecutionFailure `{"needInfo":"x"}` → rejects with `NeedInfoSignal`; `{"clarify":"y"}` → `ClarifySignal`; `{"action":"revise","plan":{…}}` → `{action:'revise',…}`; `{"action":"abort"}` → `{action:'abort'}`.
   - ancestorContext rendered: when `ancestorContext.clarifications` is set, the captured task (via a spy llm) contains the Q/A text.
 
 - [ ] **Step 4: Build + test + lint + commit**
@@ -332,8 +331,11 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
     if ('ended' in planRes) return true;
     let plan = planRes.value;
 
-    // Loop: review-gate → interpret → recovery.
-    for (;;) {
+    // Loop: review-gate → interpret → recovery. Wrapped so runRole's thrown
+    // OrchestratorError (no-oracle needInfo / budget) and any generic role error
+    // become ctx.error + return false, never a rejected promise (Finding-3).
+    try {
+      for (;;) {
       if (++roundTrips > maxRoundTrips) {
         ctx.error = new OrchestratorError(
           'coordinator: round-trip budget exhausted',
@@ -356,11 +358,22 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
         );
         if ('ended' in gate) return true;
         if (!gate.value.pass) {
-          ctx.error = new OrchestratorError(
-            gate.value.feedback,
-            'COORDINATOR_PLAN_REJECTED',
+          // Pre-execution correction loop (spec): re-plan WITH the reviewer's
+          // feedback instead of failing. Bounded by maxRoundTrips (incremented at
+          // loop top). Budget exhaustion → COORDINATOR_BUDGET_EXHAUSTED.
+          const replanned = await runRole(() =>
+            this.deps.planner.plan({
+              prompt: ctx.inputText,
+              agents,
+              ancestorContext,
+              reviewerFeedback: gate.value.feedback,
+              sessionId: ctx.sessionId,
+              signal: ctx.options?.signal,
+            }),
           );
-          return false;
+          if ('ended' in replanned) return true;
+          plan = replanned.value;
+          continue; // re-gate the corrected plan
         }
       }
 
@@ -424,7 +437,8 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
         }),
       );
       if ('ended' in recovery) return true;
-      const decision = recovery.value;
+      const decision = recovery.value; // abort | revise — needInfo/clarify were
+                                        // signals already handled inside runRole.
       if (decision.action === 'revise') {
         if (decision.revisedPlan.nodes.length === 0) {
           ctx.error = new OrchestratorError(
@@ -436,13 +450,21 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
         plan = decision.revisedPlan;
         continue; // re-interpret
       }
-      // needInfo here means the reviewer asked for info but runRole already
-      // resolved it (oracle) or ended/threw; a bare needInfo decision is treated
-      // as abort to avoid a silent stall.
+      // decision.action === 'abort'
       ctx.error = new OrchestratorError(
         `coordinator: recovery aborted: ${result.error ?? 'unknown'}`,
         'COORDINATOR_STEP_FAILED',
       );
+      return false;
+    }
+    } catch (err) {
+      // runRole throws OrchestratorError for unresolved-needInfo (no oracle) and
+      // round-trip budget exhaustion; a role may throw a generic error. Convert to
+      // ctx.error + return false (never reject execute()'s promise) — Finding-3 fix.
+      ctx.error =
+        err instanceof OrchestratorError
+          ? err
+          : new OrchestratorError(errMsg(err), 'COORDINATOR_STEP_FAILED');
       return false;
     }
   }
@@ -452,14 +474,15 @@ Add imports: `NeedInfoSignal`, `ClarifySignal` (value) from `@mcp-abap-adt/llm-a
 
 - [ ] **Step 3: Tests** — in `dag-coordinator.test.ts` (helpers `planner`, `interp`, `makeCtx` exist), add:
   - **no reviewer, interpret fails → COORDINATOR_STEP_FAILED** (batch).
-  - **reviewExecutionFailure revise → re-interpret → done** (interp returns failed once with `failedNodeId`/`executedPlan`, then ok; reviewer returns revise; assert final output).
-  - **clarify → turn ends** (reviewer throws... no: reviewExecutionFailure returns `{action:'clarify',question}`; assert the question is yielded and execute returns true, no error).
-  - **needInfo with oracle → round-trip** (reviewExecutionFailure returns `{action:'needInfo',query}` once then `revise`; provide a `stateOracle` stub; assert it was called and the run proceeds).
-  - **needInfo, no oracle → COORDINATOR_NEEDINFO_UNRESOLVED**.
-  - **budget exhausted → COORDINATOR_BUDGET_EXHAUSTED**.
-  - Existing slice-1/2 handler tests (pass-through, plan-rejected, gate) still pass.
+  - **reviewExecutionFailure revise → re-interpret → done** (interp returns failed once with `failedNodeId`/`executedPlan`, then ok; reviewer returns `{action:'revise',revisedPlan}`; assert final output).
+  - **clarify → turn ends** (reviewExecutionFailure **throws `ClarifySignal('q')`**; assert `'q'` is yielded as content + finishReason stop, `execute` returns `true`, `ctx.error` unset).
+  - **needInfo with oracle → round-trip** (reviewExecutionFailure **throws `NeedInfoSignal('q')` once** then returns `{action:'revise',...}`; provide a `stateOracle` stub; assert the oracle was called and the run proceeds to done).
+  - **needInfo, no oracle → ctx.error COORDINATOR_NEEDINFO_UNRESOLVED, return false** (reviewExecutionFailure throws `NeedInfoSignal`, no `stateOracle` dep; assert `execute` resolves `false` with that code — NOT a rejected promise; this is the Finding-3 guard).
+  - **gate reject → replan-with-feedback → re-gate → pass → done** (reviewer `review` returns `{pass:false,feedback}` on the first plan, `{pass:true}` on the second; the planner stub returns plan B when `reviewerFeedback` is set; assert it ran plan B and completed).
+  - **budget exhausted → COORDINATOR_BUDGET_EXHAUSTED** (reviewer keeps returning revise/reject past `maxRoundTrips`).
+  - Existing slice-1/2 handler tests (pass-through, plan-rejected→now replan, gate) updated where the old terminal-reject assertion changed to the replan loop.
 
-  Use stub reviewers implementing `review` + `reviewExecutionFailure`, and a stub `stateOracle: ISubAgent` (`run` returns `{ output: 'oracle says X' }`).
+  Use stub reviewers implementing `review` + `reviewExecutionFailure` (which may throw the signals), a planner stub keyed on `reviewerFeedback`, and a stub `stateOracle: ISubAgent` (`run` returns `{ output: 'oracle says X' }`).
 
 - [ ] **Step 4: Build + test + lint + commit**
 
