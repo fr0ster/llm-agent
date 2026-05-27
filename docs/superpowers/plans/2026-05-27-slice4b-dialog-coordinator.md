@@ -60,6 +60,17 @@ export class ClarifySignal extends Error {
     this.question = question;
   }
 }
+
+/**
+ * Marker prefixed onto a coordinator-emitted clarification question (in the
+ * assistant message content — the only channel `Message` exposes; it has no
+ * metadata field). On the NEXT turn, the coordinator reconstructs the
+ * clarification Q/A ONLY from the immediately-preceding assistant turn IF it
+ * starts with this marker — a reliable, narrow signal (last turn only) that
+ * never pulls unrelated/sibling history. (A cleaner metadata channel for the
+ * marker is a documented follow-up; content-prefix is the reliable MVP.)
+ */
+export const CLARIFY_MARKER = '[needs-clarification] ';
 ```
 
 - [ ] **Step 2: ContextPath** — create `packages/llm-agent/src/interfaces/context-path.ts`:
@@ -94,7 +105,7 @@ export interface ContextPath {
 
 (Add `import type { DagPlan } from './dag-plan.js';` if not present.)
 
-- [ ] **Step 5: Barrels** — `interfaces/index.ts`: export `ContextPath` (from `./context-path.js`) and the (already-exported) review/planner/interpreter types. `src/index.ts`: value-export the signals: `export { NeedInfoSignal, ClarifySignal } from './coordinator-signals.js';`.
+- [ ] **Step 5: Barrels** — `interfaces/index.ts`: export `ContextPath` (from `./context-path.js`) and the (already-exported) review/planner/interpreter types. `src/index.ts`: value-export the signals + marker: `export { NeedInfoSignal, ClarifySignal, CLARIFY_MARKER } from './coordinator-signals.js';`.
 
 - [ ] **Step 6: Build + lint + commit**
 
@@ -283,7 +294,12 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
             ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
               question: err.question,
             });
-            ctx.yield({ ok: true, value: { content: err.question } });
+            // Prefix the marker so the NEXT turn can reconstruct this exact Q/A
+            // from the immediately-preceding assistant turn (see buildAncestorContext).
+            ctx.yield({
+              ok: true,
+              value: { content: CLARIFY_MARKER + err.question },
+            });
             ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
             return { ended: true };
           }
@@ -477,7 +493,7 @@ Deps gain `stateOracle?: ISubAgent` and `maxRoundTrips?: number`. The handler be
   }
 ```
 
-Add imports: `NeedInfoSignal`, `ClarifySignal` (value) from `@mcp-abap-adt/llm-agent`; `NodeResult` type if needed. Add a module-level `buildAncestorContext(ctx)` helper (Task 7 fills it; for this task a minimal version returning `{ objective: undefined, clarifications: [], oracleObservations: [] }` is enough to compile + pass Task-5 tests — Task 7 enriches it from history).
+Add imports: `NeedInfoSignal`, `ClarifySignal`, `CLARIFY_MARKER` (value) from `@mcp-abap-adt/llm-agent`; `NodeResult` type if needed. Add a module-level `buildAncestorContext(ctx)` helper (Task 7 implements it; for this task a minimal version returning `{ objective: ctx.inputText, clarifications: [], oracleObservations: [] }` is enough to compile + pass Task-5 tests — Task 7 adds the marker-based clarification reconstruction).
 
 - [ ] **Step 3: Tests** — in `dag-coordinator.test.ts` (helpers `planner`, `interp`, `makeCtx` exist), add:
   - **no reviewer, interpret fails → COORDINATOR_STEP_FAILED** (batch).
@@ -529,32 +545,50 @@ git commit -m "feat(slice4b): wire coordinator.stateOracle (excluded from worker
 **Files:** `dag-coordinator.ts` (`buildAncestorContext`), `compose-node-task.ts`; tests.
 
 - [ ] **Step 1: `buildAncestorContext(ctx)`** — implement the helper in
-  `dag-coordinator.ts`. **No history heuristic** (a loose "assistant question → next
-  user answer" scan would pull unrelated/sibling questions from earlier in the
-  conversation, violating the node-+-ancestors rule). The MVP returns:
+  `dag-coordinator.ts`. It uses the **`CLARIFY_MARKER`** marker (Task 1), NOT a loose
+  history scan. Reconstruct the clarification Q/A ONLY from the **immediately-preceding
+  assistant turn** when it carries the marker — narrow (last turn only) so it never
+  pulls unrelated/sibling questions from deeper history:
 
   ```ts
   function buildAncestorContext(ctx: PipelineContext): ContextPath {
-    return { objective: ctx.inputText, clarifications: [], oracleObservations: [] };
+    const clarifications: Array<{ question: string; answer: string }> = [];
+    const last = ctx.history[ctx.history.length - 1];
+    if (
+      last?.role === 'assistant' &&
+      typeof last.content === 'string' &&
+      last.content.startsWith(CLARIFY_MARKER)
+    ) {
+      clarifications.push({
+        question: last.content.slice(CLARIFY_MARKER.length).trim(),
+        answer: ctx.inputText, // the current turn IS the user's answer
+      });
+    }
+    return { objective: ctx.inputText, clarifications, oracleObservations: [] };
   }
   ```
 
-  `objective` = the current request; `clarifications` is **`[]`** unless a *reliable
-  structured marker* identifies a coordinator-emitted clarification turn — there is
-  none in this slice (the runtime stores plain assistant text, no clarify marker),
-  so we deliberately prefer `[]` over leakage. `oracleObservations` is populated
-  WITHIN the turn by `runRole`'s needInfo round-trip (that path is safe — same-turn,
-  path-scoped). Cross-turn clarification reconstruction (a structured
-  `coordinator_clarify` marker on the assistant turn + the next user answer) is a
-  documented follow-up, out of scope here.
-
-  Note for the implementer: the user's answer still reaches the planner — it is
-  `ctx.inputText` (the next turn's request) and thus the `objective`. We only avoid
-  *fabricating* a clarifications list by heuristic.
+  This restores clarify-to-user resume: after "Which table?" the next turn's
+  planner receives `clarifications: [{question: "Which table?", answer:
+  "ZCUSTOMERS"}]`, so `ZCUSTOMERS` is meaningful — while a NON-clarification prior
+  turn (no marker) yields `clarifications: []`, and deeper history is never scanned.
+  `oracleObservations` is filled WITHIN the turn by `runRole`'s needInfo round-trip
+  (same-turn, path-scoped). `import { CLARIFY_MARKER } from '@mcp-abap-adt/llm-agent';`.
 
 - [ ] **Step 2: composeNodeTask ancestor path** — in `compose-node-task.ts`, accept the ancestor objective/clarifications and prepend them (objective already partly present via `plan.objective`; add the clarifications/oracleObservations text). Keep dependency outputs (dependsOn) and exclude siblings (already the case). Update the interpreter call site to pass the ancestor info (thread `ctx.ancestorContext` if added to `InterpretContext`, or pass via the plan objective). Minimal: add `ancestorContext?: ContextPath` to `InterpretContext`, set it from the coordinator, and have `composeNodeTask` render it.
 
-- [ ] **Step 3: Tests** — `compose-node-task.test.ts`: a node task includes the objective + a clarification Q/A when `ancestorContext` is provided, includes dependency outputs, and excludes a non-dependency sibling's output. `dag-coordinator.test.ts`: after an oracle round-trip, `ancestorContext.oracleObservations` reaches the next role call (spy).
+- [ ] **Step 3: Tests** —
+  - `compose-node-task.test.ts`: a node task includes the objective + a clarification
+    Q/A when `ancestorContext` is provided, includes dependency outputs, and excludes
+    a non-dependency sibling's output.
+  - `buildAncestorContext`: a `ctx.history` whose last message is `{role:'assistant',
+    content: CLARIFY_MARKER + 'Which table?'}` + `inputText:'ZCUSTOMERS'` →
+    `clarifications: [{question:'Which table?', answer:'ZCUSTOMERS'}]`; a last
+    assistant turn WITHOUT the marker (a normal prior answer) → `clarifications: []`;
+    a deeper marked turn that is NOT last → `[]` (only the last turn is considered).
+  - `dag-coordinator.test.ts`: after an oracle round-trip, `ancestorContext.oracleObservations`
+    reaches the next role call (spy); a clarify emits `CLARIFY_MARKER + question` as
+    the assistant content.
 
 - [ ] **Step 4: Build + test + lint + commit**
 
