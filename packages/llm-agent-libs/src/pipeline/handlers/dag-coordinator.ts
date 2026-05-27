@@ -9,6 +9,7 @@ import type {
   IPlanner,
   IReviewStrategy,
   ISubAgent,
+  ReviewVerdict,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
@@ -165,16 +166,29 @@ export class DagCoordinatorHandler implements IStageHandler {
 
         const reviewer = this.deps.reviewer;
         if (reviewer) {
-          const gate = await runRole(() =>
-            reviewer.review({
-              prompt: ctx.inputText,
-              plan,
-              agents,
-              ancestorContext,
-              sessionId: ctx.sessionId,
-              signal: ctx.options?.signal,
-            }),
-          );
+          let gate: { value: ReviewVerdict } | { ended: true };
+          try {
+            gate = await runRole(() =>
+              reviewer.review({
+                prompt: ctx.inputText,
+                plan,
+                agents,
+                ancestorContext,
+                sessionId: ctx.sessionId,
+                signal: ctx.options?.signal,
+              }),
+            );
+          } catch (err) {
+            // A generic reviewer-gate failure keeps the slice-2 error code
+            // (COORDINATOR_REVIEW_FAILED), not the loop's default STEP_FAILED.
+            // OrchestratorError from runRole (needInfo-no-oracle / budget) is
+            // preserved as-is.
+            ctx.error =
+              err instanceof OrchestratorError
+                ? err
+                : new OrchestratorError(errMsg(err), 'COORDINATOR_REVIEW_FAILED');
+            return false;
+          }
           if ('ended' in gate) return true;
           const verdict = gate.value;
           if (!verdict.pass) {

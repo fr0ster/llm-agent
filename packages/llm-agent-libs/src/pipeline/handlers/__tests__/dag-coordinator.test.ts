@@ -179,7 +179,7 @@ describe('DagCoordinatorHandler', () => {
     assert.equal(yields[0].value.content, 'done');
   });
 
-  it('maps a reviewer throw to COORDINATOR_STEP_FAILED (via outer catch)', async () => {
+  it('maps a reviewer GATE throw to COORDINATOR_REVIEW_FAILED', async () => {
     const { ctx } = makeCtx('hi');
     const h = new DagCoordinatorHandler({
       planner: planner([{ id: 'n1', goal: 'g' }]),
@@ -194,12 +194,10 @@ describe('DagCoordinatorHandler', () => {
     });
     const ok = await h.execute(ctx, {}, {} as never);
     assert.equal(ok, false);
-    // Reviewer throws are caught by the outer try/catch → COORDINATOR_STEP_FAILED
-    const code = (ctx as unknown as { error?: { code?: string } }).error?.code;
-    assert.ok(
-      code === 'COORDINATOR_STEP_FAILED' ||
-        code === 'COORDINATOR_REVIEW_FAILED',
-      `unexpected code: ${code}`,
+    // A generic gate failure keeps the slice-2 code (not the loop default).
+    assert.equal(
+      (ctx as unknown as { error?: { code?: string } }).error?.code,
+      'COORDINATOR_REVIEW_FAILED',
     );
   });
 
