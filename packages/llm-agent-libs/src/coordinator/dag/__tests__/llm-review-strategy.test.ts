@@ -96,7 +96,7 @@ describe('LlmReviewStrategy', () => {
         '{"action":"revise","plan":{"nodes":[{"id":"r1","goal":"modify table T","agent":"w"}],"createdAt":0}}',
       ),
     );
-    const d = await s.reviewExecutionFailure!(failInput);
+    const d = await s.reviewExecutionFailure(failInput);
     assert.equal(d.action, 'revise');
     assert.equal(
       d.action === 'revise' ? d.revisedPlan.nodes[0].goal : '',
@@ -106,13 +106,13 @@ describe('LlmReviewStrategy', () => {
 
   it('reviewExecutionFailure parses an abort decision', async () => {
     const s = new LlmReviewStrategy(llm('{"action":"abort"}'));
-    const d = await s.reviewExecutionFailure!(failInput);
+    const d = await s.reviewExecutionFailure(failInput);
     assert.deepEqual(d, { action: 'abort' });
   });
 
   it('reviewExecutionFailure throws on malformed JSON', async () => {
     const s = new LlmReviewStrategy(llm('not json'));
-    await assert.rejects(() => s.reviewExecutionFailure!(failInput), /JSON/i);
+    await assert.rejects(() => s.reviewExecutionFailure(failInput), /JSON/i);
   });
 
   it('reviewExecutionFailure throws on a revise with no nodes', async () => {
@@ -120,7 +120,7 @@ describe('LlmReviewStrategy', () => {
       llm('{"action":"revise","plan":{"nodes":[],"createdAt":0}}'),
     );
     await assert.rejects(
-      () => s.reviewExecutionFailure!(failInput),
+      () => s.reviewExecutionFailure(failInput),
       /no nodes|empty|nodes/i,
     );
   });
@@ -133,7 +133,7 @@ describe('NoopReviewStrategy', () => {
   });
 
   it('reviewExecutionFailure always aborts', async () => {
-    const d = await new NoopReviewStrategy().reviewExecutionFailure!({
+    const d = await new NoopReviewStrategy().reviewExecutionFailure({
       plan: { nodes: [], createdAt: 0 },
       trace: [],
       failedNodeId: 'x',
