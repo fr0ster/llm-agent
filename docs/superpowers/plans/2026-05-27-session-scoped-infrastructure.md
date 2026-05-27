@@ -2,13 +2,14 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Give consumers running with different sessions correct, *provable* scoping via a per-session object **graph** assembled by a `SessionGraphFactory` from injected global resources (upstream MCP, vectorized tools-catalog RAG, LLM/embedder clients, RAG registry) — never rebuilding those globals per session. The graph owns per-session pipeline/interpreter/coordinator/**workers** + the sessionId-keyed registries + a per-session token-logger; identity comes from a server-issued cookie; RAG scoping reuses the existing per-call `rag-query` filter; usage rolls up per session with non-zero per-response numbers.
+**Goal:** Give consumers running with different sessions correct, *provable* scoping via a per-session object **graph** assembled by a `SessionGraphFactory` from injected global resources (vectorized tools-catalog RAG, LLM/embedder clients, RAG registry) plus a per-session MCP client from an injected `mcpClientFactory` (default: shared global client) — never re-vectorizing the catalog or rebuilding LLM clients per session. The graph owns per-session pipeline/interpreter/coordinator/**workers** + the sessionId-keyed registries + a per-session token-logger; identity comes from a server-issued cookie; RAG scoping reuses the existing per-call `rag-query` filter; usage rolls up per session with non-zero per-response numbers.
 
 **Architecture (the locked model):**
 
-- **GLOBAL, built once, injected by reference:** upstream MCP client(s), the vectorized tools-catalog RAG (`toolsRag`), the **LLM/embedder clients (top-level AND per-worker)**, the RAG provider/registry (`IRagRegistry`) with global/user collections. The expensive `builder.build()` work (MCP connect + tool vectorization, `builder.ts:880-1089`) runs **once**; the per-worker `makeLlm(...)` / embedder construction (`smart-server.ts:953-1004`) also runs **once** and is cached. The full GLOBAL set is: **(a) upstream MCP clients, (b) vectorized tools-catalog RAG, (c) LLM clients — top-level main/classifier/helper AND per-worker main/classifier/helper, (d) embedder, (e) the RAG provider/registry.**
+- **GLOBAL, built once, injected by reference:** the vectorized tools-catalog RAG (`toolsRag`) — **the STRICT global invariant, never re-vectorized per session** — the **LLM/embedder clients (top-level AND per-worker)**, and the RAG provider/registry (`IRagRegistry`) with global/user collections. The expensive `builder.build()` work (MCP connect + tool vectorization, `builder.ts:880-1089`) runs **once**; the per-worker `makeLlm(...)` / embedder construction (`smart-server.ts:953-1004`) also runs **once** and is cached. The full GLOBAL set is: **(a) vectorized tools-catalog RAG, (b) LLM clients — top-level main/classifier/helper AND per-worker main/classifier/helper, (c) embedder, (d) the RAG provider/registry.**
+- **MCP client is per-session-CAPABLE, NOT a strict global.** Resolved via an injected `mcpClientFactory(identity: SessionIdentity) => IMcpClient[]`. The **default** factory returns the once-built **shared global** MCP client(s) (no-per-session-creds case — e.g. the default server keeps ONE upstream connection); a creds-aware build (out of scope) returns a fresh per-session client from per-session ABAP creds. Even when per-session, the tools-catalog RAG is NOT re-vectorized — only the connection differs.
 - **PER-SESSION instances, built cheaply from those globals:** pipeline (`DefaultPipeline`), DAG interpreter/coordinator (`DagCoordinatorHandler`), roles, **workers (a FRESH per-session `SubAgentRegistry` + DAG coordinator deps — NOT the server's global worker map)**, the per-session MCP server (handler registration), token-logger (`SessionRequestLogger`), history-memory, `ToolAvailabilityRegistry`, `PendingToolResultsRegistry`. Per-session worker assembly **only re-wires** — it reuses the cached `ILlm`/embedder instances by reference and **never constructs new LLM clients or re-vectorizes**. Per-session = composition + state only.
-- **`SessionGraphFactory.build(identity) → SessionGraph`** is the central new composition path. It does NOT re-connect MCP, re-vectorize tools, or rebuild LLM clients; it injects the already-built `toolsRag` / `ragRegistry` / LLM / embedder / MCP clients into a fresh `SmartAgentBuilder` via `withMcpClients()` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag()`, `setRagRegistry()`, plus a per-session `SessionRequestLogger` via `withRequestLogger()`. **Crucially it ALSO re-wires the session's subagent workers** through the same injected-globals path (one cheap `buildSubAgent` re-wire per worker per session), so every worker shares this session's logger + the global toolsRag/ragRegistry/MCP clients + the cached per-worker LLM/embedder instances — never the server's once-built global workers, and never freshly constructed LLM clients.
+- **`SessionGraphFactory.build(identity) → SessionGraph`** is the central new composition path. It does NOT re-vectorize tools or rebuild LLM clients; it injects the already-built `toolsRag` / `ragRegistry` / LLM / embedder into a fresh `SmartAgentBuilder` via `setToolsRag()`, `setRagRegistry()`, the cached per-worker LLM/embedder, plus a per-session `SessionRequestLogger` via `withRequestLogger()`, and the MCP client(s) **resolved from `mcpClientFactory(identity)`** via `withMcpClients()` (skips connect+vectorize — `builder.ts:880-882`; the default factory returns the shared global client(s) by reference). **Crucially it ALSO re-wires the session's subagent workers** through the same injected-globals path (one cheap `buildSubAgent` re-wire per worker per session), so every worker shares this session's logger + the global toolsRag/ragRegistry + the cached per-worker LLM/embedder instances + this session's resolved MCP client(s) — never the server's once-built global workers, and never freshly constructed LLM clients.
 - **RAG:** NO identity-bound view/factory objects. Reuse the existing per-call `rag-query` scope filter (`rag-query.ts:73-86`: `scope:session → ragFilter.sessionId = ctx.sessionId`, `scope:user → ragFilter.userId = ctx.options.userId`). The graph only (a) guarantees `ctx.sessionId == cookie session id` (set via `options.sessionId`, threaded to `default-pipeline.ts:388` / `agent.ts:672`), and (b) creates/closes session collections via the existing `SimpleRagRegistry.createCollection` / `closeSession`. Workers SHARE the parent `IRagRegistry` (`setRagRegistry`), not an isolated `makeRag`.
 - **Token attribution (binding):** one `SessionRequestLogger` per session, shared by the coordinator AND its workers. Its per-request delta is keyed by `traceId` and is **nested-safe via per-`traceId` refcount/depth**: a worker `SmartAgent.process()` runs `startRequest(traceId)`/`endRequest(traceId)` under the SAME `traceId` as the coordinator, so the logger must NOT clear an existing bucket on nested `startRequest` and must NOT delete it on `endRequest`. Only an explicit `dropRequest(traceId)` — called by the SERVER after it has read the response usage — frees the delta. `traceId` is threaded all the way into worker dispatch (`ISubAgentInput.trace`).
 - **Reentrancy (binding):** per-session pipeline/interpreter/coordinator/worker instances are shared across concurrent same-session requests and MUST be reentrant — all per-run mutable state already lives in the per-request `PipelineContext` (`default-pipeline.ts:386-435`), never on instance fields. The graph holds only session state + shared services. Token-logger request delta is keyed by `traceId`.
@@ -1159,7 +1160,7 @@ git commit -m "feat(session): cache global per-worker LLM/embedder once + parame
 
 ### Task A8: `SessionGraphFactory` — compose per-session graph (incl. FRESH per-session workers) from injected globals
 
-The central new composition path (spec A.2). `build(identity)` constructs a per-session `SmartAgent` **and a fresh per-session worker set** by re-running `SmartAgentBuilder.build()` **with the heavy globals injected**: `withMcpClients(globalMcpClients)` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag(globalToolsRag)`, `setRagRegistry(globalRagRegistry)`, the cached per-worker LLM/embedder (from A7), and a fresh per-session `SessionRequestLogger` via `withRequestLogger`. It also creates the two sessionId-keyed registries and wires `dispose` to `globalRagRegistry.closeSession`.
+The central new composition path (spec A.2). `build(identity)` resolves this session's MCP client(s) via the injected `mcpClientFactory(identity)` (default: shared global client(s) by reference) and constructs a per-session `SmartAgent` **and a fresh per-session worker set** by re-running `SmartAgentBuilder.build()` **with the heavy globals injected**: `withMcpClients(resolvedMcpClients)` (skips connect+vectorize — `builder.ts:880-882`), `setToolsRag(globalToolsRag)`, `setRagRegistry(globalRagRegistry)`, the cached per-worker LLM/embedder (from A7), and a fresh per-session `SessionRequestLogger` via `withRequestLogger`. It also creates the two sessionId-keyed registries and wires `dispose` to `globalRagRegistry.closeSession`. The tools-catalog `toolsRag` is the SAME global instance every session (never re-vectorized).
 
 > **Review HIGH #1 — why per-session workers, and why this depends on A7:** the server builds subagents ONCE before the main handle (`smart-server.ts:610-632`), wraps them in `SmartAgentSubAgent` (`:620`), and keeps that global worker map in the DAG deps (`:719-728`). Reusing that global worker map per session would keep workers GLOBAL with their original `DefaultRequestLogger`/RAG — contradicting per-session workers + one shared session logger. So the factory's `buildAgent` MUST re-wire a fresh `SubAgentRegistry` + DAG coordinator deps **per session**, re-wiring each worker via the parameterized `buildSubAgent` from A7 (which injects globals + the session logger + the cached per-worker LLM/embedder). Re-wiring per session stays cheap because the LLMs/toolsRag/MCP clients are injected (no construct, no re-vectorize). The factory invokes the server-supplied `buildAgent` seam that performs this fresh-per-session assembly.
 
@@ -1192,8 +1193,9 @@ function makeRagRegistry() {
 test('build(identity) yields a graph whose registries+logger differ per session and shares the injected RAG registry; buildAgent receives a FRESH logger per session', async () => {
   const ragRegistry = makeRagRegistry();
   const seenLoggers: unknown[] = [];
+  let mcpFactoryCalls = 0;
   const factory = new SessionGraphFactory({
-    mcpClients: [],            // injected globals (empty here: no connect/vectorize)
+    mcpClientFactory: (_identity) => { mcpFactoryCalls++; return []; }, // default-style: shared (empty here)
     toolsRag: undefined,
     ragRegistry,
     buildAgent: async (parts) => {
@@ -1216,12 +1218,14 @@ test('build(identity) yields a graph whose registries+logger differ per session 
   // The logger each buildAgent saw is exactly the one its graph exposes (fresh per session).
   assert.equal(seenLoggers[0], g1.logger);
   assert.equal(seenLoggers[1], g2.logger);
+  // MCP client is resolved per session via the factory (default returns shared global).
+  assert.equal(mcpFactoryCalls, 2);
 });
 
 test('dispose() of a graph closes session collections on the shared registry only', async () => {
   const ragRegistry = makeRagRegistry();
   const factory = new SessionGraphFactory({
-    mcpClients: [],
+    mcpClientFactory: () => [],
     toolsRag: undefined,
     ragRegistry,
     buildAgent: async () => undefined,
@@ -1267,8 +1271,11 @@ export interface SessionAgentParts {
 }
 
 export interface SessionGraphFactoryOptions {
-  /** GLOBAL upstream MCP clients — injected by reference, never re-connected. */
-  readonly mcpClients: IMcpClient[];
+  /** Resolve this session's MCP client(s). Per-session-CAPABLE: the default
+   *  factory returns the shared GLOBAL client(s) by reference (no re-connect);
+   *  a creds-aware build (out of scope) returns a fresh per-session client.
+   *  Either way the tools-catalog RAG is never re-vectorized. */
+  readonly mcpClientFactory: (identity: SessionGraphIdentity) => IMcpClient[];
   /** GLOBAL vectorized tools-catalog RAG — injected by reference, never re-vectorized. */
   readonly toolsRag: IRag | undefined;
   /** GLOBAL RAG provider/registry — shared; the per-call scope filter isolates. */
@@ -1285,9 +1292,11 @@ export interface SessionGraphFactoryOptions {
 
 /**
  * Central per-session composition path (spec A.2). Assembles a SessionGraph by
- * injecting the GLOBAL heavy resources (MCP clients, vectorized toolsRag, RAG
- * registry, cached per-worker LLM/embedder) by reference — it never re-connects
- * MCP, re-vectorizes tools, or rebuilds LLM clients — and allocates the cheap
+ * injecting the GLOBAL heavy resources (vectorized toolsRag, RAG registry,
+ * cached per-worker LLM/embedder) by reference — never re-vectorizing tools or
+ * rebuilding LLM clients — resolving this session's MCP client(s) via
+ * `mcpClientFactory(identity)` (default: shared global by reference), and
+ * allocating the cheap
  * per-session instances (logger + sessionId-keyed registries + the per-session
  * agent/pipeline/interpreter/coordinator/WORKERS). The per-session worker set is
  * FRESH per session (re-wired via buildAgent with the session logger), never the
@@ -1301,9 +1310,10 @@ export class SessionGraphFactory {
     const toolAvailability = new ToolAvailabilityRegistry();
     const pendingToolResults = new PendingToolResultsRegistry();
 
+    const mcpClients = this.opts.mcpClientFactory(identity);
     const agent = await this.opts.buildAgent({
       sessionId: identity.sessionId,
-      mcpClients: this.opts.mcpClients,
+      mcpClients,
       toolsRag: this.opts.toolsRag,
       ragRegistry: this.opts.ragRegistry,
       logger,
@@ -1728,7 +1738,11 @@ export interface SessionLifecycleOptions {
 
 export function buildSessionLifecycle(opts: SessionLifecycleOptions) {
   const factory = new SessionGraphFactory({
-    mcpClients: opts.mcpClients,
+    // Default mcpClientFactory: every session shares the once-built GLOBAL
+    // client(s) by reference (single upstream connection — the default server
+    // case). A credentials-aware build (out of scope) swaps this for a factory
+    // returning a fresh per-session client from per-session ABAP creds.
+    mcpClientFactory: (_identity) => opts.mcpClients,
     toolsRag: opts.toolsRag,
     ragRegistry: opts.ragRegistry,
     buildAgent: opts.buildAgent,
@@ -2188,7 +2202,7 @@ test('the logger handed to buildAgent is the SAME instance the graph exposes', a
 
   let seenLogger: unknown;
   const factory = new SessionGraphFactory({
-    mcpClients: [],
+    mcpClientFactory: () => [],
     toolsRag: undefined,
     ragRegistry: reg,
     buildAgent: async (parts) => { seenLogger = parts.logger; return undefined; },
@@ -2646,8 +2660,9 @@ git commit -m "feat(usage): /v1/usage per-session, reset on session evict"
 **Review-finding closure:**
 1. **Task ordering / strict top-to-bottom (HIGH):** the parameterized `buildSubAgent` is now Task A7, placed BEFORE the `SessionGraphFactory` (A8) and the server wiring (A10) that call it. No task references a symbol defined in a later task. Phase B now holds only the session-RAG visibility provability (B1).
 2. **SessionRegistry build race (HIGH):** A9 makes `acquire` async with a single-flight `pendingBuilds` guard — concurrent acquires of the same new sessionId await the SAME build promise and get the identical graph (test asserts `factory.build` called once + identical instance). A10 + C8 + all lifecycle tests `await lifecycle.acquire(...)`.
-3. **Global per-worker LLM/embedder, built once (MEDIUM):** A7 hoists `makeLlm`/embedder construction to a one-time `resolveWorkerLlmSet` keyed by worker name (cached in `this._workerLlmCache`, populated by the primary `build()`); the parameterized `buildSubAgent` accepts injected `{ ..., mainLlm, classifierLlm, helperLlm?, embedder }`; A10's per-session `buildSessionAgent` re-wires using those cached instances by reference, never constructing new LLM clients or re-vectorizing. The `worker-llm-cache.test.ts` asserts build-once (`built === 2` across two calls). Architecture/global-resource notes (top of plan + Final-steps docs item) make the full GLOBAL set explicit: upstream MCP clients, vectorized tools-catalog RAG, LLM clients (top-level AND per-worker), embedder, RAG registry; per-session = composition + state only.
+3. **Global per-worker LLM/embedder, built once (MEDIUM):** A7 hoists `makeLlm`/embedder construction to a one-time `resolveWorkerLlmSet` keyed by worker name (cached in `this._workerLlmCache`, populated by the primary `build()`); the parameterized `buildSubAgent` accepts injected `{ ..., mainLlm, classifierLlm, helperLlm?, embedder }`; A10's per-session `buildSessionAgent` re-wires using those cached instances by reference, never constructing new LLM clients or re-vectorizing. The `worker-llm-cache.test.ts` asserts build-once (`built === 2` across two calls). Architecture/global-resource notes (top of plan + Final-steps docs item) make the full GLOBAL set explicit: vectorized tools-catalog RAG, LLM clients (top-level AND per-worker), embedder, RAG registry; per-session = composition + state only.
 4. **Real C4 coverage:** handler-level recording-logger tests assert `requestId === traceId` per modified handler + a coordinator integration test asserts `getSummary(traceId)` carries worker tokens.
+5. **MCP client per-session-capable; only tools-catalog RAG strictly global (MEDIUM):** `SessionGraphFactory` takes an injected `mcpClientFactory(identity)` (not a fixed global `mcpClients`); `build(identity)` resolves the MCP client(s) per session and feeds them into `buildAgent`/`buildSubAgent` via `withMcpClients(...)`. `buildSessionLifecycle` wires the DEFAULT factory `(_identity) => globalMcpClients` (the once-built shared client(s) — single upstream connection, default server), and documents the creds-aware extension seam (out of scope). The vectorized tools-catalog `toolsRag` stays the STRICT global invariant (`setToolsRag(globalToolsRag)` — SAME instance by reference every session, never re-vectorized); the factory test asserts `mcpClientFactory` is called once per `build`.
 
 **Reuse discipline:** `createCollection`/`closeSession`/scope-filter/providers/`SmartAgent.closeSession` are REUSED, never reinvented — A8/A10 only *trigger* `closeSession`; A7 only shares the registry + caches LLMs; B1 exercises the existing in-memory provider. **Out of scope:** `userId`/auth (the `scope:user` branch in `rag-query.ts` already exists, fed by a downstream auth build).
 
