@@ -2431,8 +2431,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 
 interface SubAgentCapabilities {
-  kind: 'autonomous' | 'constrained';
-  canDispatchChildren: boolean;
+  // Subagents are always leaves — there is no nested dispatch. The only
+  // capability is how the dispatcher should treat the `context` field.
   contextPolicy: 'required' | 'optional' | 'forbidden';
 }
 
@@ -2449,8 +2449,6 @@ interface ISubAgentInput {
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
-  /** Dispatch depth. Root is 0; each dispatch increments by 1. */
-  layer: number;
 }
 
 interface ISubAgentResult {
@@ -2474,22 +2472,19 @@ import type {
 class RemoteAnalystSubAgent implements ISubAgent {
   readonly name = 'remote-analyst';
   readonly description = 'Calls external analyst microservice via HTTP.';
-  // External HTTP wrapper: no local plan dispatch, optional context preamble.
+  // External HTTP wrapper: a leaf, optional context preamble.
   readonly capabilities: SubAgentCapabilities = {
-    kind: 'autonomous',
-    canDispatchChildren: false,
     contextPolicy: 'optional',
   };
   constructor(private endpoint: string) {}
   async run(input: ISubAgentInput): Promise<ISubAgentResult> {
-    // input.layer indicates dispatch depth; input.context is an optional
-    // string preamble assembled by the dispatcher.
+    // input.context is an optional string preamble assembled by the dispatcher.
     const body = input.context
       ? `${input.context}\n\n${input.task}`
       : input.task;
     const res = await fetch(this.endpoint, {
       method: 'POST',
-      body: JSON.stringify({ task: body, layer: input.layer }),
+      body: JSON.stringify({ task: body }),
       signal: input.signal,
     });
     const data = await res.json() as { text: string };
@@ -2498,31 +2493,27 @@ class RemoteAnalystSubAgent implements ISubAgent {
 }
 ```
 
-### Nested dispatch and DirectLlmSubAgent
+### Subagents are leaves; DirectLlmSubAgent
 
-`ISubAgent` now carries `capabilities: SubAgentCapabilities` declaring its
-`kind` (`'autonomous'` or `'constrained'`), `canDispatchChildren`, and
-`contextPolicy`. The Coordinator's plan validator uses these fields to
-reject plans that violate layer rules.
-
-**Layer rules (default `maxLayer: 1`):**
-
-- Root coordinator (layer 0) may dispatch any subagent type.
-- A subagent dispatched at layer >= 1 may target only `constrained`
-  subagents — never `autonomous`.
-- Coordinator at layer >= `maxLayer` cannot dispatch at all and must
-  execute through its normal pipeline.
+`ISubAgent` carries `capabilities: SubAgentCapabilities`, whose only field is
+`contextPolicy`. **Subagents are always leaves — there is no nested dispatch.**
+A subagent never spawns child subagents; dynamic decomposition is the
+coordinator's job (a worker can throw `NeedsDecompositionError`, and the DAG
+coordinator's `replan` error strategy re-plans that node into a finer sub-graph —
+see the DAG coordinator docs). The removed nesting surface (`kind`,
+`canDispatchChildren`, `ISubAgentInput.layer`, `coordinator.maxLayer`,
+cross-layer epicfail chaining) no longer exists.
 
 **Two subagent implementations ship in the box:**
 
-- `SmartAgentSubAgent` (autonomous) wraps a full `SmartAgent`. It has
-  `capabilities.kind = 'autonomous'`, `canDispatchChildren = true`,
-  `contextPolicy = 'optional'`. Use it when the subagent needs its own
-  RAG/MCP/skills/system prompt.
-- `DirectLlmSubAgent` (constrained) performs one LLM call over injected
-  context. `capabilities.kind = 'constrained'`, `canDispatchChildren =
-  false`, `contextPolicy = 'required'` by default. Use it for judgment/
-  synthesis steps where the orchestrator already has the materials.
+- `SmartAgentSubAgent` wraps a full `SmartAgent` (its own RAG/MCP/skills/system
+  prompt). `contextPolicy = 'optional'`. Use it when the subagent needs a full
+  pipeline. (When dispatched by the DAG coordinator, its data arrives in the
+  composed `task`, not the `context` field — so `'optional'` is required there;
+  `contextPolicy: 'required'` workers are rejected by the DAG interpreter.)
+- `DirectLlmSubAgent` performs one LLM call over injected context.
+  `contextPolicy = 'required'` by default. Use it for judgment/synthesis steps
+  where the orchestrator already has the materials.
 
 **Context assembly**: `ISubAgentContextBuilder` is the orthogonal
 component that produces the `context` string injected on each dispatch.

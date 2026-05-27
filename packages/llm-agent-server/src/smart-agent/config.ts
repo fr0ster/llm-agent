@@ -442,7 +442,8 @@ log: smart-server.log                 # path to log file; omit for stdout
 #   maxSteps: 12
 #   maxRetriesPerStep: 1
 #   failPolicy: abort                 # abort | continue
-#   maxLayer: 1                       # Max nested-dispatch depth (default 1)
+#   maxLayer: 1                       # DEPRECATED — accepted but ignored (nested
+#                                     # dispatch removed; subagents are leaves)
 `;
 
 export function resolveEnvVars(
