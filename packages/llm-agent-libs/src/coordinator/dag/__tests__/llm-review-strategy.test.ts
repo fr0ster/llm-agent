@@ -7,6 +7,7 @@ import type {
   NodeResult,
   ReviewInput,
 } from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { LlmReviewStrategy } from '../llm-review-strategy.js';
 import { NoopReviewStrategy } from '../noop-review-strategy.js';
 
@@ -73,6 +74,16 @@ describe('LlmReviewStrategy', () => {
     );
   });
 
+  it('review() throws ClarifySignal when the critic asks the user', async () => {
+    await assert.rejects(
+      () =>
+        new LlmReviewStrategy(llm('{"clarify":"confirm overwrite?"}')).review(
+          input,
+        ),
+      (e: unknown) => e instanceof ClarifySignal,
+    );
+  });
+
   const failInput: ExecutionFailureInput = {
     objective: 'build it',
     plan: { nodes: [{ id: 'n1', goal: 'do', agent: 'w' }], createdAt: 0 },
@@ -122,6 +133,26 @@ describe('LlmReviewStrategy', () => {
     await assert.rejects(
       () => s.reviewExecutionFailure(failInput),
       /no nodes|empty|nodes/i,
+    );
+  });
+
+  it('reviewExecutionFailure throws NeedInfoSignal on a needInfo verdict', async () => {
+    await assert.rejects(
+      () =>
+        new LlmReviewStrategy(
+          llm('{"needInfo":"does object exist?"}'),
+        ).reviewExecutionFailure(failInput),
+      (e: unknown) => e instanceof NeedInfoSignal,
+    );
+  });
+
+  it('reviewExecutionFailure throws ClarifySignal on a clarify verdict', async () => {
+    await assert.rejects(
+      () =>
+        new LlmReviewStrategy(
+          llm('{"clarify":"pick A or B"}'),
+        ).reviewExecutionFailure(failInput),
+      (e: unknown) => e instanceof ClarifySignal,
     );
   });
 });
