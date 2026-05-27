@@ -81,8 +81,15 @@ the node is not polluted by unrelated sibling tasks.
 interface ContextPath {
   objective?: string;                                   // root/parent intent
   clarifications: Array<{ question: string; answer: string }>; // intent-shaping dialogue along the path
+  oracleObservations: Array<{ query: string; answer: string }>; // reality facts gathered for THIS path
 }
 ```
+
+`oracleObservations` makes the `needInfo` results first-class typed context, not
+ad-hoc string concatenation: when `run-role` resolves a `needInfo(query)` via the
+oracle, it appends `{ query, answer }` to the current path's `oracleObservations`
+and re-invokes the role with the updated `ancestorContext`. Observations are scoped
+to the current path (they travel with `ancestorContext`), never appended globally.
 
 - `PlannerInput`, `ReviewInput`, `ExecutionFailureInput` carry `ancestorContext?:
   ContextPath` instead of raw history; the role assembles its own RAG/MCP from
@@ -117,6 +124,14 @@ MCP/tools (read tools, `checkrun`, git/FS), `contextPolicy: 'optional'`. The
 coordinator holds a reference and exposes it to the planner/reviewer via the
 "needInfo" round-trip below. (No new runtime interface beyond `ISubAgent` — the
 oracle is just a tool-capable worker used for inspection rather than mutation.)
+
+**The oracle is excluded from the DAG worker catalog.** When `coordinator.stateOracle`
+is set, that subagent is **removed** from the `workers` map handed to the
+`PlannerInput.agents` catalog and to the plan-interpreter's dispatchable set. The
+oracle is reachable ONLY through the `needInfo` round-trip — the planner can never
+assign ordinary DAG work to it (it is inspection-only). Fail loud at startup if
+`stateOracle` names a subagent that is also intended as a worker but the catalogs
+would collide — simply: oracle-name is filtered out of the worker catalog.
 
 ## Role decision protocol (needInfo vs clarify)
 
@@ -161,6 +176,34 @@ loop (bounded):
 round-trip, bounded) and `clarify` (emit + end turn) uniformly. The coordinator
 itself contains no recovery *judgement* — every decision is the role's; the
 coordinator only routes.
+
+### Interpreter failure contract (stable input for recovery)
+
+The coordinator needs a deterministic way to build `reviewExecutionFailure`'s input
+from a failed `InterpretResult`. `InterpretResult` (currently `{ nodeResults, ok,
+error, output }`) gains one explicit field:
+
+```ts
+interface InterpretResult {
+  nodeResults: Record<string, NodeResult>;
+  ok: boolean;
+  error?: string;
+  output: string;
+  failedNodeId?: string;   // NEW — set when ok === false: the node whose failure stopped the run
+}
+```
+
+Deterministic derivation (the interpreter sets these; the coordinator reads them):
+- `failedNodeId` = the first node in plan-node order whose `nodeResults[id].status
+  === 'failed'`. (Already the order the interpreter scans for its `error` string.)
+- `trace` (for `ExecutionFailureInput.trace`) = `Object.values(nodeResults)` — all
+  `done`/`failed`/`skipped` `NodeResult`s so far (the current-state knowledge).
+- `error` = the failed node's `NodeResult.error` (and `InterpretResult.error` keeps
+  the existing human-readable summary).
+
+So the coordinator builds `ExecutionFailureInput` as
+`{ failedNodeId, error: nodeResults[failedNodeId].error, trace: Object.values(nodeResults),
+plan, objective: plan.objective, agents, ancestorContext, sessionId }` with no guessing.
 
 ## Resume — no store
 
