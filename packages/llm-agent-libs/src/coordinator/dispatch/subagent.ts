@@ -86,25 +86,22 @@ export class SubAgentDispatch implements IDispatchStrategy {
         signal: ctx.signal,
       });
 
-      // Epicfail propagation: do NOT retry, do NOT transform — preserve trace
-      // by attaching this frame and passing it upward in StepResult.
+      // Epicfail propagation: do NOT retry, do NOT transform — surface the
+      // flat trace upward in StepResult unchanged (or build one if absent).
       if (res.errorClass === 'epicfail') {
-        const childTrace = res.epicFailTrace;
-        const wrappedTrace: EpicFailTrace = {
+        const trace: EpicFailTrace = res.epicFailTrace ?? {
           stepId: step.id,
           agentName,
           attempts: [],
-          originalError:
-            childTrace?.originalError ?? `epicfail from '${agentName}'`,
-          childTrace,
+          originalError: `epicfail from '${agentName}'`,
         };
         return {
           stepId: step.id,
           output: '',
           durationMs: Date.now() - started,
           ok: false,
-          error: `epicfail from '${agentName}': ${childTrace?.originalError ?? 'unknown'}`,
-          epicFailTrace: wrappedTrace,
+          error: `epicfail from '${agentName}': ${trace.originalError}`,
+          epicFailTrace: trace,
         };
       }
 

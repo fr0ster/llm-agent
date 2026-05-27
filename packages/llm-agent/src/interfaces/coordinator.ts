@@ -40,8 +40,9 @@ export interface Plan {
 }
 
 /**
- * Trace frame for nested-dispatch failures. The parent appends its own
- * frame and passes the result upward without other transformation.
+ * Flat diagnostic trace for an epicfail failure. Captures a single frame:
+ * which step failed, which agent, the retry attempts, and the root error
+ * message. There is no nesting — each failure is represented independently.
  */
 export interface EpicFailTrace {
   stepId: string;
@@ -52,7 +53,6 @@ export interface EpicFailTrace {
     durationMs: number;
   }>;
   originalError: string;
-  childTrace?: EpicFailTrace;
 }
 
 export interface StepResult {
@@ -65,8 +65,8 @@ export interface StepResult {
   error?: string;
   /**
    * Populated when a child subagent returned `errorClass: 'epicfail'`.
-   * Carries the diagnostic trace upward unchanged so consumers see the
-   * full chain instead of a flattened error string.
+   * Carries a flat diagnostic trace (single frame) upward so consumers
+   * can inspect which step and agent failed.
    */
   epicFailTrace?: EpicFailTrace;
 }
