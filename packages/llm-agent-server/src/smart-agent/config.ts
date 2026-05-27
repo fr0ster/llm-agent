@@ -89,14 +89,9 @@ function assertErrorStrategyShape(es: unknown): void {
     );
   }
   const type = (es as { type?: unknown }).type;
-  if (
-    type !== undefined &&
-    type !== 'abort' &&
-    type !== 'replan' &&
-    type !== 'reviewer'
-  ) {
+  if (type !== undefined && type !== 'abort' && type !== 'replan') {
     throw new Error(
-      `coordinator.errorStrategy: unknown type '${String(type)}' (only 'abort' | 'replan' | 'reviewer')`,
+      `coordinator.errorStrategy: unknown type '${String(type)}' (only 'abort' | 'replan')`,
     );
   }
   const mr = (es as { maxReplans?: unknown }).maxReplans;

@@ -162,13 +162,15 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /errorStrategy: unknown type 'bogus'/,
     );
   });
-  it('accepts errorStrategy reviewer with maxReplans', () => {
-    assert.doesNotThrow(() =>
-      assertCoordinatorConfigShape({
-        planner: { type: 'llm' },
-        reviewer: { type: 'llm' },
-        errorStrategy: { type: 'reviewer', maxReplans: 2 },
-      }),
+  it("rejects errorStrategy type 'reviewer' (removed in slice 4b)", () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          reviewer: { type: 'llm' },
+          errorStrategy: { type: 'reviewer', maxReplans: 2 },
+        }),
+      /unknown type 'reviewer'/,
     );
   });
   it('still rejects an unknown errorStrategy.type', () => {

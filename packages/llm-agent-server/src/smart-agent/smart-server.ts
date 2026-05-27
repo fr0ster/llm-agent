@@ -53,7 +53,6 @@ import {
   LlmReviewStrategy,
   makeLlm,
   ReplanErrorStrategy,
-  ReviewerErrorStrategy,
   SessionLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
@@ -700,13 +699,6 @@ export class SmartServer {
           errorStrategy = new ReplanErrorStrategy(planner, esCfg.maxReplans);
         } else if (esCfg?.type === 'abort') {
           errorStrategy = new AbortErrorStrategy();
-        } else if (esCfg?.type === 'reviewer') {
-          if (!reviewer) {
-            throw new Error(
-              "coordinator.errorStrategy.type='reviewer' requires a configured coordinator.reviewer",
-            );
-          }
-          errorStrategy = new ReviewerErrorStrategy(reviewer, esCfg.maxReplans);
         }
 
         builder = builder.withDagCoordinator({

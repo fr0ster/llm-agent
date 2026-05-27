@@ -59,7 +59,6 @@ export {
   OneShotPlanning,
   ReplanErrorStrategy,
   ReplanOnErrorPlanning,
-  ReviewerErrorStrategy,
   SelfDispatch,
   SkillStepsPlanning,
   SubAgentDispatch,
