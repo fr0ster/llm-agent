@@ -33,6 +33,11 @@ export type {
   IErrorStrategy,
 } from './error-strategy.js';
 export type {
+  FinalizerInput,
+  FinalizerResult,
+  IFinalizer,
+} from './finalizer.js';
+export type {
   CircuitBreakerStatus,
   HealthComponentStatus,
   HealthStatus,
