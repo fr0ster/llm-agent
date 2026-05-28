@@ -65,6 +65,7 @@ export class DagPlanInterpreter
               task,
               sessionId: ctx.sessionId,
               signal: ctx.signal,
+              trace: ctx.trace,
             });
             if (res.errorClass === 'epicfail') {
               return {

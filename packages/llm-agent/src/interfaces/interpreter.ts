@@ -19,6 +19,8 @@ export interface InterpretContext {
   /** Hierarchical ancestor context (parent objective + clarification Q/A +
    *  oracle observations). Threaded into node task composition. */
   ancestorContext?: ContextPath;
+  /** Request correlation, threaded into each worker dispatch. */
+  trace?: { traceId: string };
 }
 
 export interface NodeResult {

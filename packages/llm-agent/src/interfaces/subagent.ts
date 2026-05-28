@@ -29,6 +29,9 @@ export interface ISubAgentInput {
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
+  /** Request correlation, threaded from the coordinator so worker token-log
+   *  entries attribute to the same request delta (traceId). */
+  trace?: { traceId: string };
 }
 
 export interface ISubAgentResult {

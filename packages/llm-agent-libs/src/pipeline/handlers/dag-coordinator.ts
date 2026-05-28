@@ -121,6 +121,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               task: (err as NeedInfoSignal).query,
               sessionId: ctx.sessionId,
               signal: ctx.options?.signal,
+              trace: ctx.options?.trace,
             });
             ancestorContext.oracleObservations.push({
               query: (err as NeedInfoSignal).query,
@@ -220,6 +221,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             signal: ctx.options?.signal,
             errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
             ancestorContext,
+            trace: ctx.options?.trace,
           });
         } catch (err) {
           ctx.error =
