@@ -169,6 +169,11 @@ export type {
 } from './session/session-graph-factory.js';
 export { SessionGraphFactory } from './session/session-graph-factory.js';
 export { SessionManager } from './session/session-manager.js';
+export type {
+  SessionGraphSource,
+  SessionRegistryOptions,
+} from './session/session-registry.js';
+export { SessionRegistry } from './session/session-registry.js';
 // ---------------------------------------------------------------------------
 // Skills
 // ---------------------------------------------------------------------------
