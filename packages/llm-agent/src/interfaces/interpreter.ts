@@ -45,6 +45,8 @@ export interface InterpretResult {
   /** Set when ok === false: the node whose failure stopped the run (first
    *  plan-node-order node with status 'failed'). */
   failedNodeId?: string;
-  /** The final plan after any in-run local splices. */
+  /** The final plan after any in-run local splices. Populated on BOTH success and failure. */
   executedPlan?: DagPlan;
+  /** Topological execution order of node ids in actual run order. */
+  executionOrder: readonly string[];
 }

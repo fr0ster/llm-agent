@@ -27,6 +27,7 @@ export class DagPlanInterpreter
 
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
+    const executionOrder: string[] = [];
     let currentPlan = plan;
     const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
     let replansUsed = 0;
@@ -106,6 +107,7 @@ export class DagPlanInterpreter
           durationMs: o.durationMs,
         };
         done.add(o.node.id);
+        executionOrder.push(o.node.id);
       }
       const failures = outcomes.filter(
         (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
@@ -176,6 +178,7 @@ export class DagPlanInterpreter
         output: '',
         failedNodeId: firstFailed?.id,
         executedPlan: currentPlan,
+        executionOrder,
       };
     }
 
@@ -184,7 +187,13 @@ export class DagPlanInterpreter
     );
     const terminals = currentPlan.nodes.filter((n) => !depended.has(n.id));
     const output = terminals.map((n) => results[n.id].output).join('\n\n');
-    return { nodeResults: results, ok: true, output };
+    return {
+      nodeResults: results,
+      ok: true,
+      output,
+      executedPlan: currentPlan,
+      executionOrder,
+    };
   }
 
   private resolveWorker(node: PlanNode, ctx: InterpretContext): ISubAgent {

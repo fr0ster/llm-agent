@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import type {
   DagPlan,
   InterpretContext,
@@ -387,4 +387,96 @@ describe('DagPlanInterpreter', () => {
     assert.equal(r.ok, true);
     assert.deepEqual(r.output, 'S\n\nS'); // both spliced sub-graphs ran
   });
+});
+
+test('returns executedPlan + topological executionOrder on success after splice', async () => {
+  const replanned = {
+    objective: 'patched',
+    nodes: [
+      { id: 'b1', goal: 'gb1' },
+      { id: 'b2', goal: 'gb2', dependsOn: ['b1'] },
+    ],
+    createdAt: 0,
+  };
+  let bAttempts = 0;
+  const w = {
+    name: 'w',
+    description: 'd',
+    capabilities: { contextPolicy: 'optional' as const },
+    async run(input: { task: string }) {
+      if (input.task.includes('gb') && bAttempts === 0) {
+        bAttempts++;
+        throw new Error('boom');
+      }
+      return { output: `out:${input.task.slice(0, 20)}` };
+    },
+  };
+  const interp = new DagPlanInterpreter();
+  const res = await interp.interpret(
+    {
+      objective: 'orig',
+      nodes: [
+        { id: 'a', goal: 'ga' },
+        { id: 'b', goal: 'gb', dependsOn: ['a'] },
+      ],
+      createdAt: 0,
+    },
+    {
+      inputText: 'x',
+      workers: new Map([['w', w as unknown as ISubAgent]]),
+      sessionId: 's',
+      errorStrategy: {
+        maxReplans: 2,
+        async onNodeFailure() {
+          return { action: 'replan' as const, subPlan: replanned };
+        },
+      },
+    },
+  );
+  assert.equal(res.ok, true);
+  assert.ok(res.executedPlan, 'executedPlan must be populated on success');
+  // spliceSubPlan namespaces sub-plan ids as `${replacedNodeId}:${subId}`
+  const ids = (res.executedPlan?.nodes ?? []).map((n) => n.id).sort();
+  assert.deepEqual(ids, ['a', 'b:b1', 'b:b2']);
+  const order = res.executionOrder ?? [];
+  const pos = new Map(order.map((id, i) => [id, i]));
+  const byId = new Map(res.executedPlan?.nodes?.map((n) => [n.id, n]) ?? []);
+  for (const id of order) {
+    for (const d of byId.get(id)?.dependsOn ?? []) {
+      assert.ok(
+        (pos.get(d) ?? -1) < (pos.get(id) ?? -1),
+        `dep ${d} must precede ${id} in executionOrder`,
+      );
+    }
+  }
+  assert.equal(order.includes('a'), true);
+  assert.equal(order.includes('b:b1'), true);
+  assert.equal(order.includes('b:b2'), true);
+});
+
+test('returns executionOrder on failure path too', async () => {
+  const failWorker = {
+    name: 'w',
+    description: 'd',
+    capabilities: { contextPolicy: 'optional' as const },
+    async run() {
+      throw new Error('nope');
+    },
+  };
+  const interp = new DagPlanInterpreter();
+  const res = await interp.interpret(
+    { objective: 'o', nodes: [{ id: 'a', goal: 'ga' }], createdAt: 0 },
+    {
+      inputText: 'x',
+      workers: new Map([['w', failWorker as unknown as ISubAgent]]),
+      sessionId: 's',
+      errorStrategy: {
+        async onNodeFailure() {
+          return { action: 'abort' as const };
+        },
+      },
+    },
+  );
+  assert.equal(res.ok, false);
+  assert.ok(Array.isArray(res.executionOrder));
 });
