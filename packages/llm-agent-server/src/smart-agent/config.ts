@@ -37,16 +37,26 @@ export type LlmConfigMap = Record<string, SmartServerLlmConfig>;
 export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
 
 /**
+ * Detect whether an object is a flat SmartServerLlmConfig shape.
+ * Flat shape is identified by the presence of `apiKey` as a string at the
+ * top level (which map entries do not have — maps have named role-keys whose
+ * VALUES are the individual SmartServerLlmConfig objects).
+ */
+function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
+  return typeof (input as SmartServerLlmConfig).apiKey === 'string';
+}
+
+/**
  * Normalize the optional top-level `llm:` block.
  * - undefined → undefined (pipeline-only configs stay valid)
- * - flat shape (has `provider`) → { main: flat } (backward compat)
+ * - flat shape (has `apiKey`) → { main: flat } (backward compat)
  * - map shape → must include `main`; returned as NormalizedLlmMap
  */
 export function normalizeLlmConfig(
   input?: SmartServerLlmConfig | LlmConfigMap,
 ): NormalizedLlmMap | undefined {
   if (input === undefined) return undefined;
-  if (typeof (input as SmartServerLlmConfig).provider === 'string') {
+  if (isFlatLlmConfig(input)) {
     return { main: input as SmartServerLlmConfig } as NormalizedLlmMap;
   }
   const map = input as LlmConfigMap;
@@ -1008,22 +1018,26 @@ export function resolveSmartServerConfig(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),
     host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
-    llm: {
-      provider: get(yaml, 'llm', 'provider') as
-        | 'deepseek'
-        | 'openai'
-        | 'anthropic'
-        | 'sap-ai-sdk'
-        | 'ollama'
-        | undefined,
-      apiKey,
-      url: get(yaml, 'llm', 'url') as string | undefined,
-      model: get(yaml, 'llm', 'model') as string | undefined,
-      temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
-      classifierTemperature: Number(
-        get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
-      ),
-    },
+    llm: get(yaml, 'llm')
+      ? typeof get(yaml, 'llm', 'provider') === 'string'
+        ? {
+            provider: get(yaml, 'llm', 'provider') as
+              | 'deepseek'
+              | 'openai'
+              | 'anthropic'
+              | 'sap-ai-sdk'
+              | 'ollama'
+              | undefined,
+            apiKey,
+            url: get(yaml, 'llm', 'url') as string | undefined,
+            model: get(yaml, 'llm', 'model') as string | undefined,
+            temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
+            classifierTemperature: Number(
+              get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
+            ),
+          }
+        : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
+      : undefined,
     rag: get(yaml, 'rag')
       ? {
           type: get(yaml, 'rag', 'type') as

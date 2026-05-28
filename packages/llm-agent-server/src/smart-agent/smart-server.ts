@@ -9,7 +9,6 @@ import type {
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
-  IErrorStrategy,
   ILlm,
   ILlmApiAdapter,
   ILogger,
@@ -18,7 +17,6 @@ import type {
   IModelResolver,
   IRagRegistry,
   IRequestLogger,
-  IReviewStrategy,
   ISkillManager,
   Message,
   NormalizedRequest,
@@ -43,21 +41,16 @@ import type {
   StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
-  AbortErrorStrategy,
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
-  DagPlanInterpreter,
   DefaultSubAgentContextBuilder,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
-  LlmDagPlanner,
-  LlmReviewStrategy,
   makeLlm,
-  ReplanErrorStrategy,
   SessionGraphFactory,
   SessionLogger,
   SessionRegistry,
@@ -65,6 +58,7 @@ import {
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
   SmartAgentSubAgent,
+  SubAgentStateOracle,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
@@ -345,12 +339,15 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
 import {
   assertCoordinatorConfigShape,
+  normalizeLlmConfig,
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
+  resolveLlmConfig,
   resolveToolSelectionStrategy,
 } from './config.js';
 
@@ -670,48 +667,71 @@ export class SmartServer {
 
     // ---- Composition root: resolve config → interfaces --------------------
 
-    // LLM resolution
-    // TODO Task 12: route through normalizeLlmConfig/resolveLlmConfig.
-    // For now cast to flat shape so existing flat-schema reads keep working
-    // until the full map-routing is wired in Task 12.
-    const flatLlm = this.cfg.llm as SmartServerLlmConfig | undefined;
+    // LLM resolution — normalize flat/map cfg.llm and derive pipeline fallback.
+    const llmMap = normalizeLlmConfig(this.cfg.llm);
+
+    // Adapt pipeline.llm.main (uses `baseURL`) → SmartServerLlmConfig (uses
+    // `url`) so resolveLlmConfig's pipelineFallback parameter speaks one
+    // shape. Returns undefined when no pipeline.llm.main is configured.
+    const pipelineFallback = (() => {
+      const pm = pipeline?.llm?.main;
+      if (!pm) return undefined;
+      return {
+        provider: pm.provider,
+        apiKey: pm.apiKey ?? '',
+        url: pm.baseURL,
+        model: pm.model,
+        temperature: pm.temperature,
+      } as SmartServerLlmConfig;
+    })();
+
+    const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
+
     const mainTemp = Number(
-      pipeline?.llm?.main?.temperature ?? flatLlm?.temperature ?? 0.7,
+      pipeline?.llm?.main?.temperature ?? topMain?.temperature ?? 0.7,
     );
     const mainLlm = pipeline?.llm?.main
       ? await makeLlm(pipeline.llm.main, mainTemp)
-      : await makeLlm(
-          {
-            // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-            // rejects a missing flat-schema provider before this runs.
-            provider: flatLlm?.provider ?? 'deepseek',
-            apiKey: flatLlm?.apiKey ?? '',
-            baseURL: flatLlm?.url,
-            model: flatLlm?.model,
-          },
-          mainTemp,
-        );
+      : topMain
+        ? await makeLlm(
+            {
+              provider: topMain.provider ?? 'deepseek',
+              apiKey: topMain.apiKey,
+              baseURL: topMain.url,
+              model: topMain.model,
+            },
+            mainTemp,
+          )
+        : (() => {
+            throw new Error(
+              'no LLM configured: provide top-level llm.main or pipeline.llm.main',
+            );
+          })();
 
     const classifierTemp = Number(
       pipeline?.llm?.classifier?.temperature ??
-        flatLlm?.classifierTemperature ??
+        topMain?.classifierTemperature ??
         0.1,
     );
     const classifierLlm = pipeline?.llm?.classifier
       ? await makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
         ? await makeLlm(pipeline.llm.main, classifierTemp)
-        : await makeLlm(
-            {
-              // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-              // rejects a missing flat-schema provider before this runs.
-              provider: flatLlm?.provider ?? 'deepseek',
-              apiKey: flatLlm?.apiKey ?? '',
-              baseURL: flatLlm?.url,
-              model: flatLlm?.model,
-            },
-            classifierTemp,
-          );
+        : topMain
+          ? await makeLlm(
+              {
+                provider: topMain.provider ?? 'deepseek',
+                apiKey: topMain.apiKey,
+                baseURL: topMain.url,
+                model: topMain.model,
+              },
+              classifierTemp,
+            )
+          : (() => {
+              throw new Error(
+                'no LLM configured: provide top-level llm.main or pipeline.llm.main',
+              );
+            })();
 
     const helperLlm = pipeline?.llm?.helper
       ? await makeLlm(
@@ -958,108 +978,72 @@ export class SmartServer {
             `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
           );
         }
-        // Resolve the planner LLM. Honor `coordinator.planner.plannerLlm` when
-        // set; otherwise fall back to the same resolution as linear mode
-        // ('main' → mainLlm, 'planner' or 'helper' → helperLlm ?? mainLlm).
-        const plannerBlock = coordCfg.planner as {
-          type?: string;
-          plannerLlm?: 'main' | 'planner' | 'helper';
-        };
-        const plannerLlmKey = plannerBlock?.plannerLlm;
-        const plannerLlm =
-          plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
 
-        const planner = new LlmDagPlanner(plannerLlm);
-
-        // Optional plan reviewer (presence of `coordinator.reviewer` = gate on).
-        let reviewer: IReviewStrategy | undefined;
-        if (coordCfg.reviewer !== undefined) {
-          const reviewerBlock = coordCfg.reviewer as {
-            plannerLlm?: 'main' | 'planner' | 'helper';
-          };
-          const reviewerLlm =
-            reviewerBlock.plannerLlm === 'main'
-              ? mainLlm
-              : (helperLlm ?? mainLlm);
-          reviewer = new LlmReviewStrategy(reviewerLlm);
-        }
-
-        const interpreter = new DagPlanInterpreter();
-        // Reuse the registry built above — same ISubAgent instances already
-        // passed to builder.withSubAgents(). No second buildSubAgent calls.
-        const oracleName = coordCfg.stateOracle as string | undefined;
-        let stateOracle:
-          | import('@mcp-abap-adt/llm-agent').IStateOracle
-          | undefined;
-        if (oracleName) {
-          // TODO Task 12: wrap in SubAgentStateOracle; for now cast to IStateOracle.
-          stateOracle = registry.get(oracleName) as
-            | import('@mcp-abap-adt/llm-agent').IStateOracle
-            | undefined;
-          if (!stateOracle) {
-            throw new Error(
-              `coordinator.stateOracle '${oracleName}' is not a declared subagent`,
-            );
-          }
-        }
-        // The oracle is inspection-only — never a DAG worker. Exclude it from the
-        // catalog the planner sees and the interpreter dispatches to.
-        const workers: SubAgentRegistry = new Map(
-          [...registry].filter(([name]) => name !== oracleName),
-        );
-        // DAG mode plans against the worker catalog, so an empty worker set
-        // would plan against nothing and fail per-request in the interpreter.
-        // Fail loud at startup instead.
-        if (workers.size === 0) {
+        const built = await buildDagCoordinatorDeps({
+          coordCfg: coordCfg as Record<string, unknown>,
+          llmMap,
+          pipelineFallback,
+          mainLlm,
+          helperLlm,
+          mainTemp,
+          registry,
+          makeLlm: async (lc) =>
+            makeLlm(
+              {
+                provider: lc.provider ?? 'deepseek',
+                apiKey: lc.apiKey,
+                baseURL: lc.url,
+                model: lc.model,
+              },
+              Number(lc.temperature ?? mainTemp),
+            ),
+          warn: (m) => log({ event: 'config_warning', message: m }),
+        });
+        // built is defined when coordCfg.planner !== undefined.
+        if (!built) {
           throw new Error(
-            'coordinator.planner is set (DAG mode) but no workers are configured. ' +
-              'Add at least one entry under the top-level `subagents:` block.',
+            'internal: buildDagCoordinatorDeps returned undefined despite planner present',
           );
         }
-        const activation = resolveCoordinatorActivation(
-          (coordCfg.activation ?? 'explicit') as string,
-        );
 
-        let errorStrategy: IErrorStrategy | undefined;
-        const esCfg = coordCfg.errorStrategy as
-          | { type?: string; maxReplans?: number }
-          | undefined;
-        if (esCfg?.type === 'replan') {
-          errorStrategy = new ReplanErrorStrategy(planner, esCfg.maxReplans);
-        } else if (esCfg?.type === 'abort') {
-          errorStrategy = new AbortErrorStrategy();
-        }
-
-        builder = builder.withDagCoordinator({
-          planner,
-          interpreter,
-          workers,
-          activation,
-          reviewer,
-          errorStrategy,
-          stateOracle,
-          maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
-        });
+        const { oracleName, ...deps } = built;
+        builder = builder.withDagCoordinator(deps);
         // Capture template for per-session re-wire (workers + stateOracle are
         // re-wired per session; everything else is stateless or LLM-bound).
         this._dagCoordinatorTemplate = {
           deps: {
-            planner,
-            interpreter,
-            activation,
-            reviewer,
-            errorStrategy,
-            maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
+            planner: deps.planner,
+            interpreter: deps.interpreter,
+            activation: deps.activation,
+            reviewer: deps.reviewer,
+            errorStrategy: deps.errorStrategy,
+            finalizer: deps.finalizer,
+            maxRoundTrips: deps.maxRoundTrips,
           },
           oracleName,
         };
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
-        // Linear mode: existing path unchanged.
-        // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
-        // 'helper' → helperLlm if present, else fall back to mainLlm.
-        const plannerLlm =
-          coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+        // Linear mode: route plannerLlm through the normalized map chain.
+        const linearPlannerName = coordCfg.plannerLlm as string | undefined;
+        const linearPlannerCfg = resolveLlmConfig(
+          llmMap,
+          linearPlannerName,
+          pipelineFallback,
+        );
+        const plannerLlm = linearPlannerCfg
+          ? await makeLlm(
+              {
+                provider: linearPlannerCfg.provider ?? 'deepseek',
+                apiKey: linearPlannerCfg.apiKey,
+                baseURL: linearPlannerCfg.url,
+                model: linearPlannerCfg.model,
+              },
+              Number(linearPlannerCfg.temperature ?? mainTemp),
+            )
+          : linearPlannerName === 'helper' || linearPlannerName === 'planner'
+            ? (helperLlm ?? mainLlm)
+            : mainLlm;
         const planningKind = coordCfg.planning ?? 'one-shot';
         const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 
@@ -1650,15 +1634,11 @@ export class SmartServer {
         const workers: SubAgentRegistry = new Map(
           [...registry].filter(([name]) => name !== tpl.oracleName),
         );
+        const raw = tpl.oracleName ? registry.get(tpl.oracleName) : undefined;
         b = b.withDagCoordinator({
           ...tpl.deps,
           workers,
-          // TODO Task 12: wrap in SubAgentStateOracle; for now cast to IStateOracle.
-          stateOracle: tpl.oracleName
-            ? (registry.get(tpl.oracleName) as
-                | import('@mcp-abap-adt/llm-agent').IStateOracle
-                | undefined)
-            : undefined,
+          stateOracle: raw ? new SubAgentStateOracle(raw) : undefined,
         });
       }
     }
