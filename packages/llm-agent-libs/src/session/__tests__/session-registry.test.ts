@@ -105,3 +105,48 @@ test('release uses a non-creating lookup (unknown session never resurrected)', (
   reg.release('never-seen'); // must be a no-op, not create a graph
   assert.equal(reg.size, 0);
 });
+
+test('disposeAll awaits in-flight builds so a graph resolving after disposal is NOT orphaned', async () => {
+  const disposed: string[] = [];
+  // Slow factory: build resolves only after we hand control back to the
+  // event loop several times. disposeAll() must wait it out, then dispose
+  // the graph it produced.
+  let release: (() => void) | undefined;
+  const gate = new Promise<void>((r) => {
+    release = r;
+  });
+  const slowFactory = {
+    build: async (identity: { sessionId: string }) => {
+      await gate;
+      return new SessionGraph({
+        sessionId: identity.sessionId,
+        toolAvailability: new ToolAvailabilityRegistry(),
+        pendingToolResults: new PendingToolResultsRegistry(),
+        logger: new SessionRequestLogger(),
+        dispose: async (id) => {
+          disposed.push(id);
+        },
+      });
+    },
+  };
+  const reg = new SessionRegistry({
+    idleTtlMs: 10_000,
+    maxSessions: 10,
+    factory: slowFactory,
+  });
+  // Kick off an acquire without awaiting — its build is now pending.
+  const acquired = reg.acquire('slow');
+  // Schedule disposeAll concurrently; it must await the pending build.
+  const dispose = reg.disposeAll();
+  // Let microtasks settle, then release the gate so the build resolves.
+  await Promise.resolve();
+  release?.();
+  await acquired;
+  await dispose;
+  assert.deepEqual(
+    disposed,
+    ['slow'],
+    'graph resolved during disposeAll() is disposed, not orphaned',
+  );
+  assert.equal(reg.size, 0);
+});

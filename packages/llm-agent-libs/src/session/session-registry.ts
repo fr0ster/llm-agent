@@ -88,12 +88,22 @@ export class SessionRegistry {
     await Promise.all(this.pending.splice(0));
   }
 
-  /** Dispose every graph (server shutdown). */
+  /**
+   * Dispose every graph (server shutdown). Awaits in-flight builds FIRST so
+   * graphs whose build resolves after disposeAll's initial sweep are not
+   * orphaned. `allSettled` is intentional: a failed build must not reject
+   * disposeAll (the failing build cleared its pendingBuilds slot in its own
+   * catch handler, so there is nothing to dispose for it).
+   */
   async disposeAll(): Promise<void> {
+    if (this.pendingBuilds.size > 0) {
+      await Promise.allSettled([...this.pendingBuilds.values()]);
+    }
     for (const [id, g] of this.graphs) {
       this.graphs.delete(id);
       this.pending.push(g.dispose());
     }
+    this.pendingBuilds.clear();
     await this.flushEvictions();
   }
 
