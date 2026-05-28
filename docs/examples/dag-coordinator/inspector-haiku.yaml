@@ -1,0 +1,59 @@
+# Inspection-only subagent used as the coordinator stateOracle.
+# Referenced from 03-full-roles.yaml.
+#
+# The DagCoordinatorHandler auto-wraps any subagent named in
+# `coordinator.stateOracle` with SubAgentStateOracle, which:
+#   • forwards trace + sessionLogger so this pipeline's tokens land
+#     in the SAME session usage rollup, attributed by traceId;
+#   • returns usage:undefined from the adapter to avoid double-counting
+#     (the worker pipeline already logged under tool-loop/classifier).
+#
+# Keep this fast: short prompt, low maxIterations, single MCP call.
+
+mode: smart
+
+agent:
+  maxIterations: 6
+  ragQueryK: 5
+  healthTimeoutMs: 15000
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+systemPrompt: |
+  You are an inspection-only ABAP oracle. Answer short factual questions about
+  whether SAP repository objects exist and what type they are. Call ONE MCP
+  tool per question (SearchObject or GetTypeInfo). Reply in ONE sentence,
+  NO Markdown.
+
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0
+    classifier:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0
+
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+  version: "1"
+  stages:
+    - { id: classify, type: classify }
+    - id: rag-retrieval
+      type: parallel
+      stages:
+        - { id: rag-tools, type: rag-query, config: { store: tools, k: 5 } }
+      after:
+        - { id: tool-select, type: tool-select }
+    - { id: assemble, type: assemble }
+    - { id: tool-loop, type: tool-loop, config: { maxIterations: 6 } }
