@@ -9,6 +9,7 @@ import type {
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import { SubAgentStateOracle } from '../../../coordinator/dag/subagent-state-oracle.js';
 import { CLARIFY_MARKER, DagCoordinatorHandler } from '../dag-coordinator.js';
 
 const planner = (nodes: DagPlan['nodes']): IPlanner => ({
@@ -38,8 +39,8 @@ function makeCtx(inputText: string) {
   return { ctx, yields };
 }
 
-/** Stub oracle: always returns 'oracle X' */
-const stubOracle = {
+/** Stub oracle subagent: always returns 'oracle X' */
+const stubOracleSubAgent = {
   name: 'o',
   capabilities: { contextPolicy: 'optional' as const },
   run: async () => ({ output: 'oracle X' }),
@@ -313,8 +314,8 @@ describe('DagCoordinatorHandler', () => {
     const { ctx, yields } = makeCtx('hi');
     let oracleCalls = 0;
     let failureReviewCalls = 0;
-    const oracle: ISubAgent = {
-      ...stubOracle,
+    const oracleSubAgent: ISubAgent = {
+      ...stubOracleSubAgent,
       run: async () => {
         oracleCalls++;
         return { output: 'oracle X' };
@@ -352,7 +353,7 @@ describe('DagCoordinatorHandler', () => {
           };
         },
       },
-      stateOracle: oracle,
+      stateOracle: new SubAgentStateOracle(oracleSubAgent),
     });
     const ok = await h.execute(ctx, {}, {} as never);
     assert.equal(ok, true);

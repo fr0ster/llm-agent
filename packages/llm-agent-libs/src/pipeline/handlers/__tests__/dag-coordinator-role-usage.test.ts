@@ -7,11 +7,13 @@ import type {
   InterpretResult,
   IPlanner,
   IReviewStrategy,
+  ISubAgent,
   LlmUsage,
   PlannerResult,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
+import { SubAgentStateOracle } from '../../../coordinator/dag/subagent-state-oracle.js';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
@@ -271,18 +273,18 @@ describe('DagCoordinatorHandler role-usage logging', () => {
         return { verdict: { pass: true } };
       },
     };
-    const oracle = {
+    const oracleSubAgent = {
       name: 'o',
       capabilities: { contextPolicy: 'optional' as const },
       run: async () => ({ output: 'ZCUST' }),
-    } as unknown as import('@mcp-abap-adt/llm-agent').ISubAgent;
+    } as unknown as ISubAgent;
     const { ctx, logger } = makeCtxWithLogger('trace-needinfo');
     const h = new DagCoordinatorHandler({
       planner,
       interpreter: interpAlwaysOk(),
       workers: new Map(),
       reviewer,
-      stateOracle: oracle,
+      stateOracle: new SubAgentStateOracle(oracleSubAgent),
     });
     const ok = await h.execute(ctx, {}, {} as never);
     assert.equal(ok, true);

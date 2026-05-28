@@ -5,10 +5,12 @@ import type {
   ExecutionReviewResult,
   IActivationStrategy,
   IErrorStrategy,
+  IFinalizer,
   IInterpreter,
   InterpretResult,
   IPlanner,
   IReviewStrategy,
+  IStateOracle,
   ISubAgent,
   LlmComponent,
   LlmUsage,
@@ -17,6 +19,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
+import { PassthroughFinalizer } from '../../coordinator/dag/passthrough-finalizer.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
 import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
@@ -48,15 +51,23 @@ export interface DagCoordinatorHandlerDeps {
   reviewer?: IReviewStrategy;
   /** Error strategy for DAG node failures. Defaults to AbortErrorStrategy. */
   errorStrategy?: IErrorStrategy;
-  /** Optional inspection-only subagent answering "real state" queries (git/FS/ABAP).
-   *  Reachable only via NeedInfoSignal round-trips; never a DAG worker. */
-  stateOracle?: ISubAgent;
+  /** Optional inspection-only state oracle answering "real state" queries
+   *  (git / FS / ABAP) via NeedInfoSignal round-trips. Wrapped by the
+   *  server from a raw ISubAgent automatically; never a DAG worker. */
+  stateOracle?: IStateOracle;
+  /** Optional response synthesizer. Defaults to PassthroughFinalizer
+   *  (which returns interpreter.output verbatim), so omitting it
+   *  preserves the legacy DAG coordinator behaviour. */
+  finalizer?: IFinalizer;
   /** Bounds planner/reviewer/oracle round-trips + re-interprets per turn. Default 6. */
   maxRoundTrips?: number;
 }
 
 export class DagCoordinatorHandler implements IStageHandler {
+  private readonly finalizer: IFinalizer;
+
   constructor(private readonly deps: DagCoordinatorHandlerDeps) {
+    this.finalizer = deps.finalizer ?? new PassthroughFinalizer();
     // The DAG interpreter passes data-flow (dependency outputs + user input)
     // through the composed task text, never through the ISubAgentInput.context
     // field. A worker with contextPolicy='required' (the DirectLlmSubAgent
@@ -173,16 +184,23 @@ export class DagCoordinatorHandler implements IStageHandler {
                 'COORDINATOR_BUDGET_EXHAUSTED',
               );
             }
-            const ans = await this.deps.stateOracle.run({
-              task: (err as NeedInfoSignal).query,
+            const oracleStart = Date.now();
+            const ans = await this.deps.stateOracle.query({
+              query: (err as NeedInfoSignal).query,
               sessionId: ctx.sessionId,
               signal: ctx.options?.signal,
               trace: ctx.options?.trace,
               sessionLogger: ctx.options?.sessionLogger,
             });
+            logRoleUsage(
+              'oracle',
+              this.deps.stateOracle.model,
+              ans.usage,
+              Date.now() - oracleStart,
+            );
             ancestorContext.oracleObservations.push({
               query: (err as NeedInfoSignal).query,
-              answer: ans.output,
+              answer: ans.answer,
             });
             continue;
           }
@@ -309,14 +327,33 @@ export class DagCoordinatorHandler implements IStageHandler {
             nodeCount: plan.nodes.length,
             outputLength: result.output.length,
           });
-          // Attach per-request usage to the final yield so agent.process's
-          // response-assembly path (used in coordinator-driven runs) returns a
-          // non-zero `response.usage`. C7 patched the tool-loop-internal exit
-          // paths in agent.ts, but the coordinator's terminal yield bypasses
-          // those — we surface usage here directly from the session logger
-          // keyed by the request's traceId. (Workers logged under the same
-          // traceId via C1's ISubAgentInput.trace threading.)
-          ctx.yield({ ok: true, value: { content: result.output } });
+          const executedPlan = result.executedPlan ?? plan;
+          const nodeIndex = new Map(
+            executedPlan.nodes?.map((n) => [n.id, n]) ?? [],
+          );
+          const executionTrace = (result.executionOrder ?? []).map((id) => ({
+            nodeId: id,
+            goal: nodeIndex.get(id)?.goal ?? '',
+            output: result.nodeResults[id]?.output ?? '',
+          }));
+          const finalRes = await runRole(
+            'finalizer',
+            this.finalizer.model,
+            () =>
+              this.finalizer.finalize({
+                prompt: ctx.inputText,
+                objective: executedPlan.objective ?? ctx.inputText,
+                ancestorContext,
+                interpreterOutput: result.output,
+                executionTrace,
+                sessionId: ctx.sessionId,
+                signal: ctx.options?.signal,
+                trace: ctx.options?.trace,
+              }),
+          );
+          if ('ended' in finalRes) return true;
+          const finalText = finalRes.value.output;
+          ctx.yield({ ok: true, value: { content: finalText } });
           // Attach usage ONLY to the terminal `finishReason:'stop'` chunk.
           // The agent's response assembler accumulates usage across yielded
           // chunks; including usage on both yields would double-count.
