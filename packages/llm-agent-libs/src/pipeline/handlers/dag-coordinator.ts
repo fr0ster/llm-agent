@@ -139,9 +139,23 @@ export class DagCoordinatorHandler implements IStageHandler {
                 content: CLARIFY_MARKER + (err as ClarifySignalType).question,
               },
             });
+            // Attach per-request usage to the TERMINAL yield only — mirrors the
+            // success-path pattern below (around the result.ok branch). The
+            // response-assembler in agent.process sums chunk-level usage, so
+            // putting usage on the content yield as well would double-count.
+            // Without this, response.usage was zero on clarify paths even though
+            // /v1/usage saw the spend (Fix #10 logged it into requestLogger).
+            const traceIdClarify = ctx.options?.trace?.traceId;
+            const usageClarify = traceIdClarify
+              ? summaryToUsage(ctx.requestLogger.getSummary(traceIdClarify))
+              : undefined;
             ctx.yield({
               ok: true,
-              value: { content: '', finishReason: 'stop' },
+              value: {
+                content: '',
+                finishReason: 'stop',
+                ...(usageClarify ? { usage: usageClarify } : {}),
+              },
             });
             return { ended: true };
           }

@@ -38,7 +38,11 @@ function makeCtxWithLogger(traceId: string) {
   logger.startRequest(traceId);
   const yields: Array<{
     ok: boolean;
-    value: { content: string; finishReason?: string };
+    value: {
+      content: string;
+      finishReason?: string;
+      usage?: LlmUsage;
+    };
   }> = [];
   const ctx = {
     inputText: 'hi',
@@ -47,7 +51,11 @@ function makeCtxWithLogger(traceId: string) {
     options: { trace: { traceId } },
     yield: (c: {
       ok: boolean;
-      value: { content: string; finishReason?: string };
+      value: {
+        content: string;
+        finishReason?: string;
+        usage?: LlmUsage;
+      };
     }) => yields.push(c),
   } as unknown as Parameters<DagCoordinatorHandler['execute']>[0];
   return { ctx, yields, logger };
@@ -228,6 +236,19 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const summary = logger.getSummary('trace-clarify');
     assert.equal(summary.byComponent.planner?.totalTokens, 36);
     assert.equal(summary.byModel['planner-model']?.totalTokens, 36);
+    // Fix #12: the terminal `finishReason:'stop'` yield carries `usage`
+    // (mirrors the success-path pattern). Without this, agent.process's
+    // response-assembler returns response.usage = zero on clarify paths
+    // even though /v1/usage is correct.
+    const terminal = yields[yields.length - 1];
+    assert.equal(terminal.value.finishReason, 'stop');
+    assert.equal(terminal.value.content, '');
+    assert.equal(terminal.value.usage?.promptTokens, 33);
+    assert.equal(terminal.value.usage?.completionTokens, 3);
+    assert.equal(terminal.value.usage?.totalTokens, 36);
+    // And NOT on the content yield (would double-count via the assembler).
+    const content = yields[yields.length - 2];
+    assert.equal(content.value.usage, undefined);
   });
 
   it('logs reviewer usage on NeedInfoSignal path (signal-path spend not lost)', async () => {
