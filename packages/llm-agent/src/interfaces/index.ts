@@ -147,6 +147,11 @@ export type {
   ISkillResource,
 } from './skill.js';
 export type {
+  IStateOracle,
+  StateOracleInput,
+  StateOracleResult,
+} from './state-oracle.js';
+export type {
   ISubAgent,
   ISubAgentInput,
   ISubAgentResult,
