@@ -122,6 +122,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               sessionId: ctx.sessionId,
               signal: ctx.options?.signal,
               trace: ctx.options?.trace,
+              sessionLogger: ctx.options?.sessionLogger,
             });
             ancestorContext.oracleObservations.push({
               query: (err as NeedInfoSignal).query,
@@ -222,6 +223,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             errorStrategy: this.deps.errorStrategy ?? new AbortErrorStrategy(),
             ancestorContext,
             trace: ctx.options?.trace,
+            sessionLogger: ctx.options?.sessionLogger,
           });
         } catch (err) {
           ctx.error =

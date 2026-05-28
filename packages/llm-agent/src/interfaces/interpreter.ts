@@ -21,6 +21,11 @@ export interface InterpretContext {
   ancestorContext?: ContextPath;
   /** Request correlation, threaded into each worker dispatch. */
   trace?: { traceId: string };
+  /** Per-request session debugger logger, threaded into each worker dispatch
+   *  so worker stages write to the parent's per-request session-log directory. */
+  sessionLogger?: {
+    logStep(name: string, data: unknown): void;
+  };
 }
 
 export interface NodeResult {

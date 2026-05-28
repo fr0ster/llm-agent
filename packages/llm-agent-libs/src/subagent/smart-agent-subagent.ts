@@ -30,6 +30,7 @@ export class SmartAgentSubAgent implements ISubAgent {
       sessionId: input.sessionId,
       signal: input.signal,
       trace: input.trace,
+      sessionLogger: input.sessionLogger,
     });
 
     if (!res.ok) {

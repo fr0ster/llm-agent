@@ -32,6 +32,13 @@ export interface ISubAgentInput {
   /** Request correlation, threaded from the coordinator so worker token-log
    *  entries attribute to the same request delta (traceId). */
   trace?: { traceId: string };
+  /** Per-request session debugger logger, threaded from the coordinator so
+   *  worker stages (tool-loop, LLM dumps, MCP calls) write to the parent's
+   *  `.run/sessions/<sid>/<req>/` directory. Shape mirrors
+   *  `CallOptions.sessionLogger` (structural to avoid import cycle). */
+  sessionLogger?: {
+    logStep(name: string, data: unknown): void;
+  };
 }
 
 export interface ISubAgentResult {
