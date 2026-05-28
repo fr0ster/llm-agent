@@ -1,4 +1,5 @@
 import type { EpicFailTrace } from './coordinator.js';
+import type { OnPartial } from './streaming.js';
 import type { LlmToolCall, LlmUsage } from './types.js';
 
 /**
@@ -39,6 +40,10 @@ export interface ISubAgentInput {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
+  /** Optional per-event callback for streaming worker output upstream.
+   *  Fire-and-forget — implementations must never let the callback throw
+   *  break the run. Absence preserves today's silent behaviour. */
+  onPartial?: OnPartial;
 }
 
 export interface ISubAgentResult {
