@@ -473,6 +473,8 @@ export interface SessionLifecycleOptions {
   toolsRag: IRag | undefined;
   ragRegistry: IRagRegistry;
   buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
+  /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
+  logger?: ILogger;
 }
 
 /**
@@ -501,6 +503,7 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
     toolsRag: opts.toolsRag,
     ragRegistry: opts.ragRegistry,
     buildAgent: opts.buildAgent,
+    logger: opts.logger,
   });
   const registry = new SessionRegistry({
     idleTtlMs: opts.idleTtlMs,
@@ -1037,6 +1040,7 @@ export class SmartServer {
       toolsRag,
       ragRegistry: globalRagRegistry,
       buildAgent: (parts) => this.buildSessionAgent(parts),
+      logger: fileLogger,
     });
     this._lifecycle = lifecycle;
     const sweepMs = Math.min(idleTtlMs, 60_000);

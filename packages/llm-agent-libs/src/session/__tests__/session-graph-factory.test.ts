@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  type ILogger,
   InMemoryRagProvider,
+  type IRagRegistry,
+  type LogEvent,
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
@@ -44,6 +47,42 @@ test('build(identity) yields a graph whose registries+logger differ per session 
   assert.equal(seenLoggers[0], g1.logger);
   assert.equal(seenLoggers[1], g2.logger);
   assert.equal(mcpFactoryCalls, 2);
+});
+
+test('dispose hook SURFACES closeSession failure via the configured ILogger (review MEDIUM #2)', async () => {
+  const events: LogEvent[] = [];
+  const logger: ILogger = {
+    log: (e) => {
+      events.push(e);
+    },
+  };
+  // Minimal stub registry whose closeSession returns { ok: false }.
+  const stub = {
+    closeSession: async () => ({
+      ok: false as const,
+      error: { message: 'boom' },
+    }),
+  } as unknown as IRagRegistry;
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: () => [],
+    toolsRag: undefined,
+    ragRegistry: stub,
+    buildAgent: async () => undefined,
+    logger,
+  });
+  const g = await factory.build({ sessionId: 's-fail' });
+  await g.dispose(); // must NOT throw
+  const warn = events.find(
+    (e) =>
+      e.type === 'warning' &&
+      (e as { traceId?: string }).traceId === 'session:s-fail',
+  );
+  assert.ok(warn, 'session_close_failed warning surfaced via the logger');
+  const msg = (warn as { message: string }).message;
+  assert.ok(
+    msg.includes('session_close_failed') && msg.includes('boom'),
+    'message identifies the failure and includes the underlying error',
+  );
 });
 
 test('dispose() of a graph closes session collections on the shared registry only', async () => {

@@ -1,4 +1,9 @@
-import type { IMcpClient, IRag, IRagRegistry } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILogger,
+  IMcpClient,
+  IRag,
+  IRagRegistry,
+} from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -46,6 +51,13 @@ export interface SessionGraphFactoryOptions {
   readonly buildAgent: (
     parts: SessionAgentParts,
   ) => Promise<SmartAgent | undefined>;
+  /**
+   * Optional logger used to SURFACE per-session cleanup failures
+   * (`ragRegistry.closeSession` returning `{ ok: false }`). Without a logger
+   * the failure falls back to `console.warn` so it is never silent. The
+   * dispose hook never throws — a failed close must not crash session teardown.
+   */
+  readonly logger?: ILogger;
 }
 
 /**
@@ -83,9 +95,26 @@ export class SessionGraphFactory {
       logger,
       agent,
       // Reuse the EXISTING registry teardown — closes scope:session collections
-      // for this sessionId; global/user collections survive (spec A.4).
+      // for this sessionId; global/user collections survive (spec A.4). The
+      // Result<void, RagError> is INSPECTED here — a failed close is surfaced
+      // via the optional logger (or console.warn fallback), never silently
+      // dropped (review MEDIUM #2).
       dispose: async (sessionId) => {
-        await this.opts.ragRegistry.closeSession(sessionId);
+        const res = await this.opts.ragRegistry.closeSession(sessionId);
+        if (!res.ok) {
+          const message = res.error?.message ?? String(res.error);
+          if (this.opts.logger) {
+            this.opts.logger.log({
+              type: 'warning',
+              traceId: `session:${sessionId}`,
+              message: `session_close_failed: ${message}`,
+            });
+          } else {
+            console.warn(
+              `[session] closeSession(${sessionId}) failed: ${message}`,
+            );
+          }
+        }
       },
     });
   }

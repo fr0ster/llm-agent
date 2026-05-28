@@ -70,11 +70,22 @@ export class SessionGraph {
     this._marked = true;
   }
 
-  /** Idempotent: runs the dispose hook (session RAG cleanup + logger reset) once. */
+  /**
+   * Idempotent. Ordering (review MEDIUM #2):
+   *   1) run the dispose hook (session RAG cleanup + any factory teardown);
+   *   2) reset the logger in `finally` — runs even if the hook throws, so the
+   *      logger is always reset, but the hook's effect (or surfaced failure)
+   *      is preserved before the in-memory counters are wiped.
+   * Previously the logger was reset BEFORE the hook ran, which made post-hoc
+   * inspection of session token counts impossible if the hook failed.
+   */
   async dispose(): Promise<void> {
     if (this._disposed) return;
     this._disposed = true;
-    this.logger.reset();
-    await this.disposeFn(this.sessionId);
+    try {
+      await this.disposeFn(this.sessionId);
+    } finally {
+      this.logger.reset();
+    }
   }
 }
