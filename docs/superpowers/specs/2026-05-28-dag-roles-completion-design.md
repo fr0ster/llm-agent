@@ -221,30 +221,32 @@ llm:
 
 ### C.2 Backward-compat shim + types + lookup helper
 
-**Type widening.** `SmartServerConfig.llm` (currently flat `LlmProviderConfig` in `packages/llm-agent-server/src/smart-agent/smart-server.ts:~189`) becomes a discriminated input:
+**Type widening.** `SmartServerConfig.llm` (currently flat `LlmProviderConfig` in `packages/llm-agent-server/src/smart-agent/smart-server.ts:~189`) becomes **optional** + discriminated:
 
 ```ts
 // before
 llm: LlmProviderConfig;
 // after
-llm: LlmProviderConfig | Record<string, LlmProviderConfig>;   // flat = backward-compat
+llm?: LlmProviderConfig | Record<string, LlmProviderConfig>;   // OPTIONAL: pipeline-only configs already work without it
 ```
 
-**After normalization** (used by all downstream consumers — `resolveSmartServerConfig`, builder wiring, worker builds, planner/reviewer/finalizer resolution), the config exposes a single normalized shape:
+`llm:` stays **optional** to preserve the existing "pipeline.llm.main is enough" path (`packages/llm-agent-server/src/smart-agent/__tests__/config-validation.test.ts:310` — pipeline-only configs valid without top-level `llm`). When absent, the normalizer returns `undefined`; consumers that don't need a top-level LLM (flat smart pipeline driven by `pipeline.llm.main`) keep working. Consumers that DO need it (DAG coordinator's planner/reviewer/finalizer/etc) error at lookup time with a clear message.
+
+**After normalization** (used by all downstream consumers that need a coordinator-level LLM map):
 
 ```ts
 type NormalizedLlmMap = { main: LlmProviderConfig } & Record<string, LlmProviderConfig>;
-// invariant: `main` is always present after normalization.
+// invariant: `main` is always present after normalization (when the map exists at all).
 ```
 
-**Normalizer** (one branch in the parse step, applied to the parsed input before the rest of `resolveSmartServerConfig` runs):
+**Normalizer** (one branch in the parse step):
 
 ```ts
-function normalizeLlmConfig(input: SmartServerConfig['llm']): NormalizedLlmMap {
-  // Heuristic: flat shape has a `provider` string field; a map of named configs
-  // has plain object values keyed by name (never `provider` at the top).
-  if (input && typeof (input as LlmProviderConfig).provider === 'string') {
-    return { main: input as LlmProviderConfig };
+function normalizeLlmConfig(input?: SmartServerConfig['llm']): NormalizedLlmMap | undefined {
+  if (input === undefined) return undefined;        // pipeline-only configs are unaffected
+  // Heuristic: flat shape has a `provider` string at the top.
+  if (typeof (input as LlmProviderConfig).provider === 'string') {
+    return { main: input as LlmProviderConfig };    // backward-compat wrap
   }
   const map = input as Record<string, LlmProviderConfig>;
   if (!map.main) {
@@ -257,18 +259,33 @@ function normalizeLlmConfig(input: SmartServerConfig['llm']): NormalizedLlmMap {
 **Lookup helper** (`resolveLlmConfig(map, name?): LlmProviderConfig`):
 
 ```ts
-function resolveLlmConfig(map: NormalizedLlmMap, name?: string): LlmProviderConfig {
+function resolveLlmConfig(map: NormalizedLlmMap | undefined, name?: string): LlmProviderConfig | undefined {
+  if (!map) return undefined;                       // caller decides whether undefined is an error
   if (!name || name === 'main') return map.main;
   const found = map[name];
-  return found ?? map.main;     // fall back to main if the named key is missing
+  return found ?? map.main;                         // fall back to main if the named key is missing
 }
 ```
 
-**Downstream consumers** — `resolveSmartServerConfig` (`packages/llm-agent-server/src/smart-agent/config.ts:~842`) is updated to read from the normalized map: `resolveLlmConfig(cfg.llm, 'main')` for the top-level/default LLM, `resolveLlmConfig(cfg.llm, cfg.coordinator?.planner?.plannerLlm)` for the planner, `resolveLlmConfig(cfg.llm, cfg.coordinator?.finalizer?.finalizerLlm)` for the finalizer, `resolveLlmConfig(cfg.llm, cfg.coordinator?.reviewer?.reviewerLlm)` for the reviewer.
+**Downstream consumers** — `resolveSmartServerConfig` (`packages/llm-agent-server/src/smart-agent/config.ts:~842`) is updated to:
+- Continue to allow a missing `llm:` block when `pipeline.llm.main` is present (pipeline-only flat config path stays valid).
+- When `llm:` is present, route through the normalizer.
+- Coordinator role resolution (planner/reviewer/finalizer) calls `resolveLlmConfig(cfg.llm, name)`; if the map is undefined AND the role is configured to need an LLM, throw a clear `ConfigError("coordinator.<role> requires a top-level llm: config (no pipeline.llm fallback at coordinator level)")`.
 
-**Validation:** the normalizer enforces `main` presence; arbitrary other keys are allowed (forward-compat for future roles 3–9). Unknown reference (e.g. `plannerLlm: missing`) silently falls back to `main` — the lookup helper never throws; a startup-time `log({type:'warning'})` notes the fallback for visibility.
+**Reviewer key naming + backward-compat alias.** The existing config validator and tests use `coordinator.reviewer.plannerLlm` (`packages/llm-agent-server/src/smart-agent/config.ts:44`, `packages/llm-agent-server/src/smart-agent/__tests__/dag-coordinator-config.test.ts:105`). The new design's semantically correct field name is `reviewerLlm`. To avoid breaking existing configs, accept BOTH:
 
-Existing flat configs continue working: they're rewritten to `{ main: <flat> }` before any downstream code sees them.
+```ts
+const reviewerLlmName =
+  cfg.coordinator?.reviewer?.reviewerLlm
+  ?? cfg.coordinator?.reviewer?.plannerLlm   // accepted alias (deprecated)
+  ?? undefined;                              // falls back to 'main' via resolveLlmConfig
+```
+
+When `plannerLlm` is read from a `reviewer:` block, emit a `log({type:'warning'})` noting the rename. Same alias applies to `coordinator.reviewer.recoveryReviewer.plannerLlm` (if such field exists in the current config — keep parity).
+
+**Validation:** the normalizer enforces `main` presence WHEN the map is given; arbitrary other keys are allowed (forward-compat for future roles 3–9). Unknown reference (e.g. `plannerLlm: missing`) silently falls back to `main` — the lookup helper never throws; a startup-time `log({type:'warning'})` notes the fallback for visibility.
+
+Existing flat configs continue working: they're rewritten to `{ main: <flat> }` before any downstream code sees them. Pipeline-only configs (no top-level `llm:`) also continue working unchanged.
 
 ### C.3 Worker LLM map (out of scope)
 
@@ -284,8 +301,9 @@ Worker-level `pipeline.llm.{main,classifier,helper}` already follows this patter
 2. **`LlmFinalizer`** invokes the underlying `ILlm` (1) with no tools attached and (2) with the `FINALIZER_SYSTEM` prompt; returns `output` + `usage`.
 3. **`TemplateFinalizer`** composes a deterministic markdown join of trace outputs.
 4. **DAG coordinator** invokes `finalizer.finalize(...)` after `interpreter.interpret(...)` returns `ok=true`; finalizer tokens land in `/v1/usage.byComponent.finalizer`.
-5. **`SubAgentStateOracle`** maps `query.query → ISubAgentInput.task`; `ISubAgentResult.output → query result.answer`; usage forwarded.
-6. **`stateOracle.query(...)`** logs `byComponent.oracle` via `runRole`.
+5. **`SubAgentStateOracle`** (subagent-backed, default for our YAML) maps `query.query → ISubAgentInput.task` and `ISubAgentResult.output → result.answer`; forwards `trace`/`sessionLogger` so the inner pipeline self-attributes by traceId; **returns `usage: undefined`** to honour the double-count contract (B.2).
+6. **`stateOracle.query(...)`** on subagent-backed oracle **does NOT add anything to `byComponent.oracle`** — its inner pipeline's tokens already land under the wrapped components (`tool-loop`, `classifier`, …) of the SAME traceId.
+6a. **Pure-LLM oracle** (a DirectLlmSubAgent-backed `IStateOracle` impl — not the default; consumers that wire one directly): returns `usage` populated and `stateOracle.query` logs `byComponent.oracle` via `runRole`. This is exercised by a unit test against an explicit `LlmStateOracle`-shaped stub.
 7. **YAML normalizer**: flat `llm: { provider: X, ... }` is rewritten to `llm: { main: { provider: X, ... } }` before consumption.
 8. **YAML normalizer**: a `llm:` map with multiple keys (`llm.main`, `llm.planner`) resolves `coordinator.planner.plannerLlm: planner` to the correct concrete config.
 9. **Default fallback**: `coordinator.planner.plannerLlm` absent → planner uses `llm.main`.
