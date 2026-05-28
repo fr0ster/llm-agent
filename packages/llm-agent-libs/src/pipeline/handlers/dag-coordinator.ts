@@ -14,6 +14,7 @@ import type {
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
 import { AbortErrorStrategy } from '../../coordinator/index.js';
+import { summaryToUsage } from '../../logger/session-request-logger.js';
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
@@ -241,8 +242,28 @@ export class DagCoordinatorHandler implements IStageHandler {
             nodeCount: plan.nodes.length,
             outputLength: result.output.length,
           });
-          ctx.yield({ ok: true, value: { content: result.output } });
-          ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
+          // Attach per-request usage to the final yield so agent.process's
+          // response-assembly path (used in coordinator-driven runs) returns a
+          // non-zero `response.usage`. C7 patched the tool-loop-internal exit
+          // paths in agent.ts, but the coordinator's terminal yield bypasses
+          // those — we surface usage here directly from the session logger
+          // keyed by the request's traceId. (Workers logged under the same
+          // traceId via C1's ISubAgentInput.trace threading.)
+          const traceId = ctx.options?.trace?.traceId;
+          const summary = ctx.requestLogger.getSummary(traceId);
+          const usage = summaryToUsage(summary);
+          ctx.yield({
+            ok: true,
+            value: { content: result.output, ...(traceId ? { usage } : {}) },
+          });
+          ctx.yield({
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'stop',
+              ...(traceId ? { usage } : {}),
+            },
+          });
           return true;
         }
 
