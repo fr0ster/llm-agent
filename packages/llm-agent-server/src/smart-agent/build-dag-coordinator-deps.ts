@@ -18,6 +18,7 @@ import {
   type NormalizedLlmMap,
   resolveCoordinatorActivation,
   resolveLlmConfig,
+  resolveLlmConfigStrict,
   resolveReviewerLlmName,
 } from './config.js';
 import type { SmartServerLlmConfig } from './smart-server.js';
@@ -82,16 +83,19 @@ export async function buildDagCoordinatorDeps(
     name: string | undefined,
     fallbackPrebuilt: ILlm = mainLlm,
   ): Promise<ILlm> => {
-    const fromMap = name ? resolveLlmConfig(llmMap, name) : undefined;
-    if (fromMap) {
+    // 1. Explicit map[name] — use it (strict: no main fallback here).
+    const strict = resolveLlmConfigStrict(llmMap, name);
+    if (strict) {
       return makeLlm({
-        ...fromMap,
-        temperature: Number(fromMap.temperature ?? mainTemp),
+        ...strict,
+        temperature: Number(strict.temperature ?? mainTemp),
       });
     }
+    // 2. 'helper' | 'planner' alias → reuse prebuilt helperLlm.
     if (name === 'helper' || name === 'planner') {
       return helperLlm ?? fallbackPrebuilt;
     }
+    // 3. Unknown name → final fallback chain via resolveLlmConfig (map.main → pipelineFallback).
     if (name) {
       const fb = resolveLlmConfig(llmMap, name, pipelineFallback);
       if (fb) {
@@ -101,6 +105,7 @@ export async function buildDagCoordinatorDeps(
         });
       }
     }
+    // 4. No name at all → fallbackPrebuilt (mainLlm by default).
     return fallbackPrebuilt;
   };
 

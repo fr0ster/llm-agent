@@ -9,6 +9,7 @@ import {
   buildFinalizer,
   normalizeLlmConfig,
   resolveLlmConfig,
+  resolveLlmConfigStrict,
   resolveReviewerLlmName,
 } from '../config.js';
 
@@ -236,6 +237,14 @@ test('normalizeLlmConfig: flat sap-ai-sdk config (no apiKey) is detected as flat
   const out = normalizeLlmConfig(flat);
   assert.ok(out);
   assert.equal(out?.main, flat);
+});
+
+test('resolveLlmConfigStrict: returns undefined when name missing (no main fallback)', () => {
+  const map = normalizeLlmConfig({
+    main: { provider: 'x', apiKey: 'k' },
+  } as never);
+  assert.equal(resolveLlmConfigStrict(map, 'helper'), undefined);
+  assert.equal(resolveLlmConfigStrict(map, 'main'), map?.main);
 });
 
 test('subagent llm: map shape with main is honored (regression for finding #2)', () => {

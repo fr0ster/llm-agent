@@ -76,6 +76,20 @@ export function normalizeLlmConfig(
 }
 
 /**
+ * Strict lookup: returns map[name] if explicitly present, else undefined.
+ * Does NOT fall through to map.main. Use when the caller needs to
+ * detect explicit-presence (e.g. to decide between an alias and the
+ * named map entry).
+ */
+export function resolveLlmConfigStrict(
+  map: NormalizedLlmMap | undefined,
+  name: string | undefined,
+): SmartServerLlmConfig | undefined {
+  if (!map || !name) return undefined;
+  return map[name];
+}
+
+/**
  * Resolve a per-role LLM config by name from a normalized map.
  * Lookup chain: map[name] → map.main → pipelineFallback.
  * When map is undefined, falls back to pipelineFallback (so pipeline-only

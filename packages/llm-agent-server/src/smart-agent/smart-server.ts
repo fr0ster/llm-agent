@@ -348,6 +348,7 @@ import {
   resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
   resolveLlmConfig,
+  resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
 
@@ -1028,18 +1029,24 @@ export class SmartServer {
         // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
         //   pipelineFallback → mainLlm.
         const linearPlannerName = coordCfg.plannerLlm as string | undefined;
-        // Do NOT pass pipelineFallback here — we check the alias first so the
-        // cheap helperLlm is preferred over the expensive pipeline.llm.main.
-        const linearPlannerCfg = resolveLlmConfig(llmMap, linearPlannerName);
-        const plannerLlm = linearPlannerCfg
+        // Role-resolution order:
+        //   1. explicit map[name]            → build from that entry
+        //   2. name === 'helper' | 'planner' → reuse prebuilt helperLlm
+        //   3. unknown name                  → resolveLlmConfig fallback chain (map.main → pipelineFallback)
+        //   4. no name                       → mainLlm
+        const linearPlannerCfgStrict = resolveLlmConfigStrict(
+          llmMap,
+          linearPlannerName,
+        );
+        const plannerLlm = linearPlannerCfgStrict
           ? await makeLlm(
               {
-                provider: linearPlannerCfg.provider ?? 'deepseek',
-                apiKey: linearPlannerCfg.apiKey,
-                baseURL: linearPlannerCfg.url,
-                model: linearPlannerCfg.model,
+                provider: linearPlannerCfgStrict.provider ?? 'deepseek',
+                apiKey: linearPlannerCfgStrict.apiKey,
+                baseURL: linearPlannerCfgStrict.url,
+                model: linearPlannerCfgStrict.model,
               },
-              Number(linearPlannerCfg.temperature ?? mainTemp),
+              Number(linearPlannerCfgStrict.temperature ?? mainTemp),
             )
           : linearPlannerName === 'helper' || linearPlannerName === 'planner'
             ? (helperLlm ?? mainLlm)

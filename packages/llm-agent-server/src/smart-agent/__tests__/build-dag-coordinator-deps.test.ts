@@ -261,3 +261,93 @@ test('buildDagCoordinatorDeps: reviewerLlm=planner alias also routes to helperLl
     'helperLlm must be reused for reviewer alias too',
   );
 });
+
+test('plannerLlm=helper with FLAT llm: still routes to helperLlm (not main)', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const helperLlm = { ...stubLlm, name: 'HELPER' } as never;
+  let makeLlmCalls = 0;
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
+    // Flat top-level llm: present → normalized to { main: flat }
+    llmMap: normalizeLlmConfig({
+      provider: 'deepseek',
+      apiKey: 'k',
+      model: 'main-m',
+    } as never),
+    pipelineFallback: {
+      provider: 'openai',
+      apiKey: 'k',
+      model: 'GPT-MAIN',
+    } as never,
+    mainLlm: stubLlm as never,
+    helperLlm,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => {
+      makeLlmCalls++;
+      return stubLlm as never;
+    },
+    warn: () => {},
+  });
+  assert.ok(deps);
+  assert.equal(
+    makeLlmCalls,
+    0,
+    'helperLlm must be reused, not rebuilt from map.main',
+  );
+});
+
+test('plannerLlm=helper with MAP without explicit helper entry still routes to helperLlm', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const helperLlm = { ...stubLlm } as never;
+  let makeLlmCalls = 0;
+  await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k', model: 'main-m' },
+      // NO 'helper' key — should alias to helperLlm, not silently use main.
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => {
+      makeLlmCalls++;
+      return stubLlm as never;
+    },
+    warn: () => {},
+  });
+  assert.equal(makeLlmCalls, 0, 'alias must beat map.main fallback');
+});
+
+test('explicit map[helper] WINS over alias (advanced users can override)', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const helperLlm = { ...stubLlm } as never;
+  let makeLlmCalls = 0;
+  let askedFor: string | undefined;
+  await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k', model: 'main-m' },
+      helper: { provider: 'openai', apiKey: 'k', model: 'EXPLICIT-HELPER' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async (cfg) => {
+      makeLlmCalls++;
+      askedFor = (cfg as { model?: string }).model;
+      return stubLlm as never;
+    },
+    warn: () => {},
+  });
+  assert.equal(makeLlmCalls, 1, 'explicit map entry must build a fresh LLM');
+  assert.equal(
+    askedFor,
+    'EXPLICIT-HELPER',
+    'explicit entry beats helperLlm alias',
+  );
+});
