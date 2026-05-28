@@ -43,6 +43,10 @@ export interface CallOptions {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
+  /** Per-session sessionId-keyed registries injected by the SessionGraph.
+   *  Untyped here (structural) to avoid a contracts→libs cycle; libs narrows. */
+  toolAvailability?: unknown;
+  pendingToolResults?: unknown;
 }
 
 export interface ToolHeartbeat {
