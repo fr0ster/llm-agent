@@ -157,6 +157,48 @@ describe('LlmReviewStrategy', () => {
       (e: unknown) => e instanceof ClarifySignal,
     );
   });
+
+  it('review() attaches LLM usage onto NeedInfoSignal', async () => {
+    const usage = { promptTokens: 4, completionTokens: 1, totalTokens: 5 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"q?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) => e instanceof NeedInfoSignal && e.usage?.totalTokens === 5,
+    );
+  });
+
+  it('review() attaches LLM usage onto ClarifySignal', async () => {
+    const usage = { promptTokens: 4, completionTokens: 1, totalTokens: 5 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"clarify":"yes?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) => e instanceof ClarifySignal && e.usage?.totalTokens === 5,
+    );
+  });
+
+  it('reviewExecutionFailure attaches LLM usage onto NeedInfoSignal', async () => {
+    const usage = { promptTokens: 6, completionTokens: 2, totalTokens: 8 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"q?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).reviewExecutionFailure(failInput),
+      (e: unknown) => e instanceof NeedInfoSignal && e.usage?.totalTokens === 8,
+    );
+  });
 });
 
 describe('NoopReviewStrategy', () => {

@@ -10,6 +10,7 @@ import type {
   LlmUsage,
   ReviewVerdict,
 } from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
@@ -195,6 +196,76 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     assert.equal(ok, true);
     const summary = logger.getSummary('trace-nousage');
     assert.equal(summary.byComponent.planner, undefined);
+  });
+
+  it('logs planner usage on ClarifySignal path (signal-path spend not lost)', async () => {
+    const usage: LlmUsage = {
+      promptTokens: 33,
+      completionTokens: 3,
+      totalTokens: 36,
+    };
+    const planner: IPlanner = {
+      name: 'p',
+      model: 'planner-model',
+      plan: async () => {
+        const sig = new ClarifySignal('overwrite ok?', usage);
+        throw sig;
+      },
+    };
+    const { ctx, yields, logger } = makeCtxWithLogger('trace-clarify');
+    const h = new DagCoordinatorHandler({
+      planner,
+      interpreter: interpAlwaysOk(),
+      workers: new Map(),
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, true);
+    // Coordinator emitted the clarification + stop
+    assert.ok(yields.length >= 2);
+    const summary = logger.getSummary('trace-clarify');
+    assert.equal(summary.byComponent.planner?.totalTokens, 36);
+    assert.equal(summary.byModel['planner-model']?.totalTokens, 36);
+  });
+
+  it('logs reviewer usage on NeedInfoSignal path (signal-path spend not lost)', async () => {
+    const usage: LlmUsage = {
+      promptTokens: 21,
+      completionTokens: 2,
+      totalTokens: 23,
+    };
+    const plan: DagPlan = { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 };
+    const planner: IPlanner = { name: 'p', plan: async () => plan };
+    let reviewCalls = 0;
+    const reviewer: IReviewStrategy = {
+      name: 'r',
+      model: 'reviewer-model',
+      review: async () => {
+        reviewCalls++;
+        if (reviewCalls === 1) {
+          throw new NeedInfoSignal('which table?', usage);
+        }
+        return { pass: true };
+      },
+    };
+    const oracle = {
+      name: 'o',
+      capabilities: { contextPolicy: 'optional' as const },
+      run: async () => ({ output: 'ZCUST' }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ISubAgent;
+    const { ctx, logger } = makeCtxWithLogger('trace-needinfo');
+    const h = new DagCoordinatorHandler({
+      planner,
+      interpreter: interpAlwaysOk(),
+      workers: new Map(),
+      reviewer,
+      stateOracle: oracle,
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, true);
+    assert.equal(reviewCalls, 2);
+    const summary = logger.getSummary('trace-needinfo');
+    assert.equal(summary.byComponent.reviewer?.totalTokens, 23);
+    assert.equal(summary.byModel['reviewer-model']?.totalTokens, 23);
   });
 
   it('falls back to model="unknown" when planner does not expose model', async () => {

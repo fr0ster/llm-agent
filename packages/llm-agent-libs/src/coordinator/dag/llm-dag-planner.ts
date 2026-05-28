@@ -91,10 +91,13 @@ export class LlmDagPlanner implements IPlanner {
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      // Forward LLM usage on the signal path so the coordinator can attribute
+      // planner spend even when the role short-circuits with a signal (HIGH
+      // finding: signal paths previously discarded the captured `res.usage`).
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
       throw new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`);

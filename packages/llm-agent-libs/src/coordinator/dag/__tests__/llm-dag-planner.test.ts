@@ -128,6 +128,38 @@ describe('LlmDagPlanner', () => {
     );
   });
 
+  it('attaches LLM usage onto NeedInfoSignal so signal-path spend is not lost', async () => {
+    const usage = { promptTokens: 7, completionTokens: 3, totalTokens: 10 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"which table?"}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof NeedInfoSignal &&
+        e.usage?.promptTokens === 7 &&
+        e.usage?.completionTokens === 3 &&
+        e.usage?.totalTokens === 10,
+    );
+  });
+
+  it('attaches LLM usage onto ClarifySignal so signal-path spend is not lost', async () => {
+    const usage = { promptTokens: 5, completionTokens: 2, totalTokens: 7 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"clarify":"overwrite ok?"}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) => e instanceof ClarifySignal && e.usage?.totalTokens === 7,
+    );
+  });
+
   it('renders ancestorContext clarifications + reviewerFeedback into the task', async () => {
     const cap: { task?: string } = {};
     const spy = {

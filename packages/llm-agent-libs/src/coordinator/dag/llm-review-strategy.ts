@@ -88,10 +88,12 @@ export class LlmReviewStrategy implements IReviewStrategy {
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      // Forward LLM usage on the signal path so the coordinator can attribute
+      // reviewer spend even when the critic short-circuits with a signal.
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (typeof parsed.pass !== 'boolean') {
       throw new Error(
@@ -155,10 +157,10 @@ export class LlmReviewStrategy implements IReviewStrategy {
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (parsed.action === 'abort') return { action: 'abort', usage: res.usage };
     if (parsed.action !== 'revise') {
