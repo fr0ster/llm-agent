@@ -249,7 +249,10 @@ describe('LlmDagPlanner', () => {
     // telling the planner that nodes don't share fetched data and that
     // single-object multi-dimension prompts use ONE node.
     assert.match(PLANNER_SYSTEM, /DO NOT share fetched data/i);
-    assert.match(PLANNER_SYSTEM, /full classify \+ RAG \+ tool-loop overhead again/i);
+    assert.match(
+      PLANNER_SYSTEM,
+      /full classify \+ RAG \+ tool-loop overhead again/i,
+    );
     assert.match(PLANNER_SYSTEM, /ONE node/);
     assert.match(PLANNER_SYSTEM, /single object along multiple dimensions/i);
   });
