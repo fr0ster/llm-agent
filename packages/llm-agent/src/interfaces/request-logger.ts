@@ -6,7 +6,9 @@ export type LlmComponent =
   | 'query-expander'
   | 'embedding'
   | 'planner'
-  | 'reviewer';
+  | 'reviewer'
+  | 'finalizer'
+  | 'oracle';
 
 export type TokenCategory = 'initialization' | 'auxiliary' | 'request';
 

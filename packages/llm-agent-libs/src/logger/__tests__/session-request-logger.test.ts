@@ -127,3 +127,14 @@ test('planner/reviewer categorize as auxiliary (HIGH: role LLM overhead, not mai
   assert.equal(s.byComponent.planner?.totalTokens, 5);
   assert.equal(s.byComponent.reviewer?.totalTokens, 7);
 });
+
+test('finalizer and oracle components aggregate under the auxiliary category', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('r');
+  log.logLlmCall(call('finalizer', 11, 'r'));
+  log.logLlmCall(call('oracle', 22, 'r'));
+  const s = log.getSummary('r');
+  assert.equal(s.byComponent.finalizer.totalTokens, 11);
+  assert.equal(s.byComponent.oracle.totalTokens, 22);
+  assert.equal(s.byCategory.auxiliary.totalTokens, 33);
+});

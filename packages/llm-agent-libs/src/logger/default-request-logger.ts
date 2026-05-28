@@ -23,6 +23,8 @@ export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   embedding: 'initialization',
   planner: 'auxiliary',
   reviewer: 'auxiliary',
+  finalizer: 'auxiliary',
+  oracle: 'auxiliary',
 };
 
 function emptyBucket(): TokenBucket {
