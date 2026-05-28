@@ -173,8 +173,14 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 ...(toolCalls ? { toolCalls } : {}),
               };
             }
-            // Usage-only chunk (stream_options: include_usage)
-            if (parsed.usage && !choice?.delta) {
+            // Usage chunk. OpenAI emits it as a separate chunk with empty
+            // `choices`, but DeepSeek (and some other OpenAI-compatible APIs)
+            // attaches `usage` to the FINAL delta chunk that ALSO carries
+            // `finish_reason:"stop"` (with empty `delta.content`). Cover both
+            // by yielding a usage chunk whenever `parsed.usage` is present —
+            // independent of whether the same payload also produced a delta
+            // yield above.
+            if (parsed.usage) {
               yield {
                 content: '',
                 raw: parsed,
