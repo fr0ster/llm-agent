@@ -17,6 +17,15 @@ export interface SessionRegistryOptions {
 
 export class SessionRegistry {
   private readonly graphs = new Map<string, SessionGraph>();
+  /**
+   * Graphs detached from `graphs` because they were pinned at the moment
+   * `invalidateAll()` was called. We cannot dispose mid-run, so we move them
+   * here to drain — once their last in-flight `release()` lands, dispose
+   * fires. They are NOT served to new `acquire()` calls, which forces those
+   * to mint a fresh graph using the just-applied config. Keyed by sessionId
+   * so `release()` can find them after `graphs.get(sessionId)` misses.
+   */
+  private readonly draining = new Map<string, SessionGraph>();
   /** Single-flight guard: in-flight builds keyed by sessionId (review HIGH #2). */
   private readonly pendingBuilds = new Map<string, Promise<SessionGraph>>();
   private readonly pending: Promise<void>[] = [];
@@ -87,7 +96,40 @@ export class SessionRegistry {
    * Release one in-flight request. Non-creating lookup: an unknown/removed
    * sessionId is a no-op (never resurrect). Disposes a marked graph once idle.
    */
-  release(sessionId: string): void {
+  release(sessionId: string, graph?: SessionGraph): void {
+    // When the caller passes the exact graph reference they acquired (recent
+    // change required by `invalidateAll`), use it directly — a draining graph
+    // and a freshly-built replacement may coexist under the same sessionId,
+    // and only the original graph instance must be decremented.
+    if (graph) {
+      graph.release();
+      if (!graph.isPinned) {
+        const drain = this.draining.get(sessionId);
+        if (drain === graph) {
+          this.draining.delete(sessionId);
+          this.pending.push(graph.dispose());
+          return;
+        }
+        if (graph.markedForDisposal) {
+          const live = this.graphs.get(sessionId);
+          if (live === graph) this.graphs.delete(sessionId);
+          this.pending.push(graph.dispose());
+        }
+      }
+      return;
+    }
+    // Legacy by-sessionId path — preserved for callers that haven't been
+    // updated. When a draining entry exists it wins (those graphs are
+    // detached and otherwise unreachable for release).
+    const drain = this.draining.get(sessionId);
+    if (drain) {
+      drain.release();
+      if (!drain.isPinned) {
+        this.draining.delete(sessionId);
+        this.pending.push(drain.dispose());
+      }
+      return;
+    }
     const g = this.graphs.get(sessionId);
     if (!g) return;
     g.release();
@@ -131,6 +173,48 @@ export class SessionRegistry {
       this.graphs.delete(id);
       this.pending.push(g.dispose());
     }
+    // Drain any graphs detached by a prior `invalidateAll()`.
+    for (const [id, g] of this.draining) {
+      this.draining.delete(id);
+      this.pending.push(g.dispose());
+    }
+    this.pendingBuilds.clear();
+    await this.flushEvictions();
+  }
+
+  /**
+   * Soft reset — dispose every graph but keep the registry OPEN for new
+   * acquires. Used by config-reload (PUT /v1/config + hot-reload) to force
+   * the next request to mint a fresh per-session graph that picks up the
+   * just-applied config. Unpinned graphs are disposed immediately; pinned
+   * graphs are marked for disposal (drained when their last in-flight
+   * request releases) — same drain semantics as `enforceCap`.
+   *
+   * Unlike `disposeAll`, this does NOT set `_closed`, so callers can keep
+   * serving traffic after a config change.
+   */
+  async invalidateAll(): Promise<void> {
+    for (const [id, g] of [...this.graphs]) {
+      if (g.isPinned) {
+        // Detach: move to the draining side-map so a fresh `acquire(id)`
+        // builds a NEW graph with the just-applied config, while the
+        // original pinned graph keeps serving its current in-flight
+        // request until its last `release(id, graph)` lands.
+        g.markForDisposal();
+        this.graphs.delete(id);
+        this.draining.set(id, g);
+      } else {
+        this.evictNow(id, g);
+      }
+    }
+    // Also abandon any in-flight builds — when they resolve they will insert
+    // their graph back into `graphs`, but we want next acquires to rebuild
+    // using the new config. Clearing pendingBuilds means the next acquire
+    // will start a fresh build; the resolved-but-orphan graph is unpinned
+    // and will be evicted by enforceCap (it never gets returned to a caller
+    // because the acquire that started it already returned the OLD graph).
+    // Defense-in-depth: pendingBuilds is rarely non-empty at config-change
+    // time in practice.
     this.pendingBuilds.clear();
     await this.flushEvictions();
   }

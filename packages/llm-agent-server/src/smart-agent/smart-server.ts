@@ -535,9 +535,10 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
   ) => Promise<
     ReturnType<SessionRegistry['acquire']> extends Promise<infer G> ? G : never
   >;
-  release: (sessionId: string) => void;
+  release: (sessionId: string, graph?: SessionGraph) => void;
   evictIdle: () => Promise<void>;
   disposeAll: () => Promise<void>;
+  invalidateAll: () => Promise<void>;
   registry: SessionRegistry;
 } {
   const factory = new SessionGraphFactory({
@@ -561,9 +562,10 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
         isHttps,
       }),
     acquire: (sessionId) => registry.acquire(sessionId),
-    release: (sessionId) => registry.release(sessionId),
+    release: (sessionId, graph) => registry.release(sessionId, graph),
     evictIdle: () => registry.evictIdle(),
     disposeAll: () => registry.disposeAll(),
+    invalidateAll: () => registry.invalidateAll(),
     registry,
   };
 }
@@ -1136,6 +1138,16 @@ export class SmartServer {
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
         }
+        // Per-session graphs (built by SessionGraphFactory) captured the OLD
+        // config and the OLD cached worker LLM set. Without invalidation,
+        // existing sessions keep the stale SmartAgent and a fresh acquire on a
+        // cookie-known sessionId still returns it. Clear the worker cache so
+        // the next build reads from the just-applied config, then drop every
+        // session graph. Failures are non-fatal — log and continue.
+        this._workerLlmCache.clear();
+        this._lifecycle?.invalidateAll().catch((err: unknown) => {
+          log({ event: 'config_reload_invalidate_error', error: String(err) });
+        });
         // Apply RAG weight updates
         if (
           update.vectorWeight !== undefined ||
@@ -1546,7 +1558,11 @@ export class SmartServer {
       await fn(graph, sessionId, traceId);
     } finally {
       graph.logger.dropRequest(traceId);
-      lifecycle.release(sessionId);
+      // Pass the graph instance — `invalidateAll()` may have detached this
+      // graph into the draining map while the request was in flight; we must
+      // release THIS specific instance, not whatever currently lives under
+      // `sessionId` in the registry.
+      lifecycle.release(sessionId, graph);
     }
   }
 
@@ -1656,7 +1672,7 @@ export class SmartServer {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(graph.logger.getSummary()));
       } finally {
-        lifecycle.release(sessionId);
+        lifecycle.release(sessionId, graph);
       }
       return;
     }
@@ -2378,9 +2394,33 @@ export class SmartServer {
     // --- All validation passed — apply mutations ---
     if (resolvedModels) {
       smartAgent.reconfigure(resolvedModels);
+      // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
+      // freshly-built session graphs pick up the new LLMs by reference
+      // (otherwise `this._mainLlm` etc. would keep pointing at the originals
+      // captured during `start()`).
+      if (resolvedModels.mainLlm) this._mainLlm = resolvedModels.mainLlm;
+      if (resolvedModels.classifierLlm)
+        this._classifierLlm = resolvedModels.classifierLlm;
+      if (resolvedModels.helperLlm) this._helperLlm = resolvedModels.helperLlm;
     }
     if (body.agent) {
       smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
+    }
+    // Invalidate per-session SmartAgents + the worker-LLM cache so the next
+    // request mints a session graph that observes the just-applied config.
+    // Without this, chat routes dispatch to `graph.agent` (the per-session
+    // SmartAgent) which was built with the OLD config, and the PUT is a
+    // no-op from the consumer's perspective. Failures are non-fatal so the
+    // 200 response isn't blocked by a dispose hiccup.
+    if (resolvedModels || body.agent) {
+      this._workerLlmCache.clear();
+      try {
+        await this._lifecycle?.invalidateAll();
+      } catch {
+        // Swallow: cleanup errors must not turn a successful config update
+        // into a 500. The next request will still get a fresh build because
+        // `_workerLlmCache` is already cleared and dispose is idempotent.
+      }
     }
     // --- Return updated config ---
     const models = smartAgent.getActiveConfig();
