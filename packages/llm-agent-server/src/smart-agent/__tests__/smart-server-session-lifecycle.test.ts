@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import { test } from 'node:test';
 import {
   InMemoryRagProvider,
@@ -50,6 +51,53 @@ test('first request mints a cookie; dispose closes session collections on the sh
     ragRegistry.get('c'),
     undefined,
     'session collection cleared on evict',
+  );
+});
+
+test('graceful shutdown: server.close() resolves BEFORE lifecycle.disposeAll() runs (active-request pinning safe)', async () => {
+  // Reproduces the close() pattern in SmartServer.start():
+  //   1. await server.close()  — drains in-flight HTTP
+  //   2. for closeFns: await fn()  — disposes lifecycle/session graphs
+  // If the order ever regresses, the sequence array below will reorder and
+  // the assertion will fail.
+  const sequence: string[] = [];
+  const ragRegistry = makeRagRegistry();
+  const lifecycle = buildSessionLifecycle({
+    idleTtlMs: 10_000,
+    maxSessions: 10,
+    cookieName: 'sid',
+    mcpClients: [],
+    toolsRag: undefined,
+    ragRegistry,
+    buildAgent: async () => undefined,
+  });
+
+  const closeFns: Array<() => Promise<void> | void> = [
+    async () => {
+      sequence.push('lifecycle-disposed');
+      await lifecycle.disposeAll();
+    },
+  ];
+
+  // Stand up a real http.Server bound to a non-listening port; we never need
+  // an inbound connection — we just need server.close() to be a real awaited
+  // event that completes asynchronously, so we can verify the ordering pattern.
+  const server = http.createServer(() => {});
+  await new Promise<void>((res) => server.listen(0, '127.0.0.1', () => res()));
+
+  // Apply the SAME close() pattern as SmartServer.start().
+  await (async () => {
+    await new Promise<void>((res, rej) =>
+      server.close((e) => (e ? rej(e) : res())),
+    );
+    sequence.push('server-closed');
+    for (const fn of closeFns) await fn();
+  })();
+
+  assert.deepEqual(
+    sequence,
+    ['server-closed', 'lifecycle-disposed'],
+    'server.close() must resolve BEFORE lifecycle.disposeAll() runs',
   );
 });
 

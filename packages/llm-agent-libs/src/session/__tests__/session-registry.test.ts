@@ -106,6 +106,23 @@ test('release uses a non-creating lookup (unknown session never resurrected)', (
   assert.equal(reg.size, 0);
 });
 
+test('disposeAll closes the registry; subsequent acquire rejects with SESSION_REGISTRY_CLOSED', async () => {
+  const { reg } = makeRegistry();
+  await reg.acquire('s1');
+  reg.release('s1');
+  await reg.disposeAll();
+  await assert.rejects(
+    () => reg.acquire('s2'),
+    (err: unknown) => {
+      // OrchestratorError carries code='SESSION_REGISTRY_CLOSED'.
+      const e = err as { code?: string; message?: string };
+      return (
+        e.code === 'SESSION_REGISTRY_CLOSED' && /closed/i.test(e.message ?? '')
+      );
+    },
+  );
+});
+
 test('disposeAll awaits in-flight builds so a graph resolving after disposal is NOT orphaned', async () => {
   const disposed: string[] = [];
   // Slow factory: build resolves only after we hand control back to the

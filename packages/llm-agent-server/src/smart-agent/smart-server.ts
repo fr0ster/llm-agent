@@ -1153,10 +1153,18 @@ export class SmartServer {
         resolve({
           port: actualPort,
           close: async () => {
-            for (const fn of closeFns) await fn();
+            // 1. Stop accepting new connections AND wait for in-flight HTTP
+            //    requests to drain. Until server.close() resolves, requests
+            //    accepted before shutdown may still be running and pinning
+            //    per-session graphs — disposing those graphs first would
+            //    violate the active-request pinning guarantee.
             await new Promise<void>((res, rej) =>
               server.close((e) => (e ? rej(e) : res())),
             );
+            // 2. Now run lifecycle cleanup: sweep timer, lifecycle.disposeAll,
+            //    config watcher stop, agent close. By this point no HTTP
+            //    request is in flight, so disposing session graphs is safe.
+            for (const fn of closeFns) await fn();
           },
           requestLogger,
         });

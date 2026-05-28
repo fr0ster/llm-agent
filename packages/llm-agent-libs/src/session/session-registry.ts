@@ -1,3 +1,4 @@
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { SessionGraph } from './session-graph.js';
 import type { SessionGraphIdentity } from './session-graph-factory.js';
 
@@ -19,6 +20,13 @@ export class SessionRegistry {
   /** Single-flight guard: in-flight builds keyed by sessionId (review HIGH #2). */
   private readonly pendingBuilds = new Map<string, Promise<SessionGraph>>();
   private readonly pending: Promise<void>[] = [];
+  /**
+   * Set by `disposeAll` BEFORE any await. While closed the registry refuses new
+   * `acquire` calls so a post-shutdown caller cannot orphan a fresh graph past
+   * disposal. Defense-in-depth — the server's `close()` drains HTTP first, so
+   * in practice no acquire arrives after disposeAll.
+   */
+  private _closed = false;
 
   constructor(private readonly opts: SessionRegistryOptions) {}
 
@@ -33,6 +41,12 @@ export class SessionRegistry {
    * in-flight request increments the refcount (spec A.4).
    */
   async acquire(sessionId: string): Promise<SessionGraph> {
+    if (this._closed) {
+      throw new OrchestratorError(
+        'SessionRegistry is closed; cannot acquire',
+        'SESSION_REGISTRY_CLOSED',
+      );
+    }
     let g = this.graphs.get(sessionId);
     if (!g) {
       let build = this.pendingBuilds.get(sessionId);
@@ -96,6 +110,9 @@ export class SessionRegistry {
    * catch handler, so there is nothing to dispose for it).
    */
   async disposeAll(): Promise<void> {
+    // Mark closed BEFORE the first await so concurrent acquire() calls observe
+    // the closed state and reject — never start a build that escapes disposal.
+    this._closed = true;
     if (this.pendingBuilds.size > 0) {
       await Promise.allSettled([...this.pendingBuilds.values()]);
     }
