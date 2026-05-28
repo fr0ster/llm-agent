@@ -6,6 +6,7 @@ import type {
   RequestSummary,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { CATEGORY_MAP } from './default-request-logger.js';
 
 interface Bucket {
   llm: LlmCallEntry[];
@@ -43,7 +44,12 @@ export function aggregate(b: Bucket): RequestSummary {
     comp.completionTokens += c.completionTokens;
     comp.totalTokens += c.totalTokens;
     comp.requests++;
-    const catKey = c.scope ?? 'request';
+    // Use the component-keyed CATEGORY_MAP — same semantics as
+    // DefaultRequestLogger.getSummary (review MEDIUM #4). Previously this
+    // categorized via `c.scope ?? 'request'`, which dropped most aux calls
+    // (classifier/translate/query-expander/helper have no `scope`) into
+    // `request`, misreporting /v1/usage.byCategory.
+    const catKey = CATEGORY_MAP[c.component] ?? 'request';
     byCategory[catKey] ??= zeroBucket();
     const cat = byCategory[catKey];
     cat.promptTokens += c.promptTokens;

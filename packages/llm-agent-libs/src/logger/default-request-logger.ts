@@ -9,7 +9,12 @@ import type {
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
 
-const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
+/**
+ * Component → token category mapping (shared with SessionRequestLogger so
+ * /v1/usage categorizes per-session entries the same way single-request
+ * deployments do). See review MEDIUM #4.
+ */
+export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   'tool-loop': 'request',
   classifier: 'auxiliary',
   translate: 'auxiliary',

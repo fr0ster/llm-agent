@@ -86,3 +86,27 @@ test('calls without a requestId still land in session-cumulative', () => {
   log.logLlmCall(call('embedding', 4));
   assert.equal(log.getSummary().byComponent['embedding'].totalTokens, 4);
 });
+
+test('byCategory uses component-keyed CATEGORY_MAP — translate counts as auxiliary, not request (review MEDIUM #4)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');
+  // translate has no `scope` set on the entry. The bug treated this as 'request'.
+  log.logLlmCall(call('translate', 9, 't'));
+  log.logLlmCall(call('tool-loop', 11, 't'));
+  const s = log.getSummary('t');
+  assert.equal(s.byCategory.auxiliary?.totalTokens, 9, 'translate → auxiliary');
+  assert.equal(s.byCategory.request?.totalTokens, 11, 'tool-loop → request');
+});
+
+test('classifier/query-expander/helper all categorize as auxiliary; embedding as initialization', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');
+  log.logLlmCall(call('classifier', 1, 't'));
+  log.logLlmCall(call('query-expander', 2, 't'));
+  log.logLlmCall(call('helper', 3, 't'));
+  log.logLlmCall(call('embedding', 4, 't'));
+  const s = log.getSummary('t');
+  assert.equal(s.byCategory.auxiliary?.totalTokens, 6);
+  assert.equal(s.byCategory.initialization?.totalTokens, 4);
+  assert.equal(s.byCategory.request, undefined);
+});
