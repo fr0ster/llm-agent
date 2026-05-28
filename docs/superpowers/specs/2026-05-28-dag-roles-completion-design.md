@@ -69,7 +69,9 @@ export interface IFinalizer {
 
 `DagCoordinatorHandlerDeps` gains `finalizer?: IFinalizer` (optional in deps). The constructor **normalizes**: `this.finalizer = deps.finalizer ?? new PassthroughFinalizer()`. After normalization the field is always defined, so the handler body never deals with `undefined`. Existing direct-handler tests / consumers that omit `finalizer` get the default and unchanged behaviour.
 
-After `result = await interpreter.interpret(plan, ...)` returns `ok === true`, the handler invokes the finalizer via the existing `runRole(component, model, thunk)` (which already handles usage logging on happy-path + clarify/needInfo signal paths + parse-error paths). The trace MUST be built from `result.executedPlan` (set by the interpreter for recovered/replanned runs), falling back to the original `plan` only when the interpreter did not splice:
+**Interpreter change (required for this fix):** today `DagPlanInterpreter` populates `result.executedPlan` only on failure (`packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts:187` returns `{ nodeResults, ok: true, output }` without `executedPlan` on success). After this spec, the interpreter MUST also return `executedPlan: currentPlan` on the success path so that recovered/replanned plans are visible to the finalizer (otherwise `result.executedPlan ?? plan` always picks the stale original on a successful replan, and finalizer would see blank outputs for the newly-spliced nodes). The change is a one-line addition to the success branch; a regression test asserts `executedPlan` reflects post-splice nodes on a successful replan run.
+
+After `result = await interpreter.interpret(plan, ...)` returns `ok === true`, the handler invokes the finalizer via the existing `runRole(component, model, thunk)` (which already handles usage logging on happy-path + clarify/needInfo signal paths + parse-error paths). The trace MUST be built from `result.executedPlan` (now populated on success too — see interpreter change above), falling back to the original `plan` only when the interpreter did not return it for some reason (legacy guard):
 
 ```ts
 const executedPlan = result.executedPlan ?? plan;
@@ -270,7 +272,7 @@ function resolveLlmConfig(map: NormalizedLlmMap | undefined, name?: string): Llm
 **Downstream consumers** — `resolveSmartServerConfig` (`packages/llm-agent-server/src/smart-agent/config.ts:~842`) is updated to:
 - Continue to allow a missing `llm:` block when `pipeline.llm.main` is present (pipeline-only flat config path stays valid).
 - When `llm:` is present, route through the normalizer.
-- Coordinator role resolution (planner/reviewer/finalizer) calls `resolveLlmConfig(cfg.llm, name)`; if the map is undefined AND the role is configured to need an LLM, throw a clear `ConfigError("coordinator.<role> requires a top-level llm: config (no pipeline.llm fallback at coordinator level)")`.
+- **Coordinator role resolution falls back through both maps.** Today the server already constructs the DAG planner's `mainLlm` from `pipeline.llm.main` when top-level `llm:` is missing (`packages/llm-agent-server/src/smart-agent/smart-server.ts:618`, `:906`). To preserve that behaviour, role lookup chains: `resolveLlmConfig(normalizedTopLevelLlm, name)` → `resolveLlmConfig(normalizedTopLevelLlm, 'main')` → **`pipeline.llm.main`** (read once, normalized in the same way). Only if NONE resolve does the lookup throw `ConfigError("coordinator.<role> requires an LLM config: provide top-level llm.<name>, llm.main, or pipeline.llm.main")`. Pipeline-only configs that don't reference per-role LLMs continue working unchanged.
 
 **Reviewer key naming + backward-compat alias.** The existing config validator and tests use `coordinator.reviewer.plannerLlm` (`packages/llm-agent-server/src/smart-agent/config.ts:44`, `packages/llm-agent-server/src/smart-agent/__tests__/dag-coordinator-config.test.ts:105`). The new design's semantically correct field name is `reviewerLlm`. To avoid breaking existing configs, accept BOTH:
 
@@ -321,9 +323,11 @@ Worker-level `pipeline.llm.{main,classifier,helper}` already follows this patter
 ### Modify
 - `packages/llm-agent/src/interfaces/request-logger.ts` — `LlmComponent` += `'finalizer' | 'oracle'`.
 - `packages/llm-agent-libs/src/logger/default-request-logger.ts` — `CATEGORY_MAP` += `finalizer → auxiliary`, `oracle → auxiliary`.
-- `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — invoke finalizer after `interpret`; replace `stateOracle.run(...)` with `stateOracle.query(...)`; surface usage for both via `runRole`.
-- `packages/llm-agent-server/src/smart-agent/smart-server.ts` — flat-`llm:` shim; resolve `plannerLlm`/`finalizerLlm`/`reviewerLlm` by key; auto-wrap resolved oracle `ISubAgent` in `SubAgentStateOracle`; parse `coordinator.finalizer.*` block.
-- Tests across all touched units (interface contracts, impls, handler integration, YAML normalizer).
+- `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — **success path returns `executedPlan: currentPlan`** so recovery/replan splices are visible to the finalizer (today only set on failure).
+- `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — invoke finalizer after `interpret` (trace from `result.executedPlan`); replace `stateOracle.run(...)` with `stateOracle.query(...)`; surface usage for both via `runRole`; normalize `deps.finalizer ?? new PassthroughFinalizer()` in constructor.
+- **`packages/llm-agent-server/src/smart-agent/config.ts`** — `SmartServerConfig.llm` widened to optional union; `normalizeLlmConfig` + `resolveLlmConfig`; reviewer key alias (`reviewerLlm` || `plannerLlm`-deprecated with warning); validate `llm.main` presence in map; coordinator role lookup chain (top-level llm → llm.main → pipeline.llm.main). Update existing validation/tests to allow the new map shape.
+- `packages/llm-agent-server/src/smart-agent/smart-server.ts` — wire normalized LLM map into `resolveLlmConfig` calls at planner/reviewer/finalizer construction sites; parse `coordinator.finalizer.*` block; auto-wrap resolved oracle `ISubAgent` in `SubAgentStateOracle`.
+- Tests across all touched units (interface contracts, impls, handler integration, interpreter `executedPlan` on success, YAML normalizer, reviewer alias, oracle adapter double-count contract).
 
 ## Out of scope
 
