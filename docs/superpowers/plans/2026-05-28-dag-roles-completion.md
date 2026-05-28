@@ -1593,74 +1593,70 @@ test('resolveReviewerLlmName: empty block returns undefined', () => {
 });
 ```
 
-Also append to `packages/llm-agent-server/src/smart-agent/__tests__/config-validation.test.ts` four cases that drive `resolveSmartServerConfig` (not the helpers directly), since the production failure surface is `validateResolvedConfig`:
+Also append to `packages/llm-agent-server/src/smart-agent/__tests__/config-validation.test.ts` four cases that drive `resolveSmartServerConfig` (not the helpers directly), since the production failure surface is `validateResolvedConfig`. The existing file uses `describe`/`it` (see `:1`) and passes a **parsed YAML object as the second positional argument** (signature is `resolveSmartServerConfig(args, yaml, env, options)` per `config.ts:808`; existing callers at `:8`/`:28`/`:37` follow this). Match that style:
 
 ```ts
-test('validateResolvedConfig: flat llm config still validates', () => {
-  // Reuse the existing flat-config fixture pattern in this file. The
-  // resolved config must validate with no issues when llm: is the
-  // legacy flat shape.
-  const yaml = `
-llm:
-  provider: deepseek
-  apiKey: k
-  model: m
-mode: agent
-`;
-  assert.doesNotThrow(() =>
-    resolveSmartServerConfig({ yamlString: yaml, env: { DEEPSEEK_API_KEY: 'k' } as never }),
-  );
-});
+describe('validateResolvedConfig — llm map shape', () => {
+  it('flat llm config still validates (backward-compat)', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        { llm: { provider: 'deepseek', apiKey: 'k', model: 'm' }, mode: 'agent' },
+        {},
+      ),
+    );
+  });
 
-test('validateResolvedConfig: map shape with main validates', () => {
-  const yaml = `
-llm:
-  main:
-    provider: deepseek
-    apiKey: k
-    model: m
-  planner:
-    provider: openai
-    apiKey: k2
-    model: gpt
-mode: agent
-`;
-  assert.doesNotThrow(() =>
-    resolveSmartServerConfig({ yamlString: yaml, env: {} as never }),
-  );
-});
+  it('map shape with main validates', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        {
+          llm: {
+            main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+            planner: { provider: 'openai', apiKey: 'k2', model: 'gpt' },
+          },
+          mode: 'agent',
+        },
+        {},
+      ),
+    );
+  });
 
-test('validateResolvedConfig: map shape without main fails with a clear error', () => {
-  const yaml = `
-llm:
-  planner:
-    provider: openai
-    apiKey: k
-    model: gpt
-mode: agent
-`;
-  assert.throws(
-    () => resolveSmartServerConfig({ yamlString: yaml, env: {} as never }),
-    /llm\.main.*required/i,
-  );
-});
+  it('map shape without main fails with a clear error', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: {
+              planner: { provider: 'openai', apiKey: 'k', model: 'gpt' },
+            },
+            mode: 'agent',
+          },
+          {},
+        ),
+      /llm\.main.*required/i,
+    );
+  });
 
-test("validateResolvedConfig: map's named entry with missing provider fails", () => {
-  const yaml = `
-llm:
-  main:
-    provider: deepseek
-    apiKey: k
-    model: m
-  planner:
-    apiKey: k
-    model: gpt
-mode: agent
-`;
-  assert.throws(
-    () => resolveSmartServerConfig({ yamlString: yaml, env: {} as never }),
-    /llm\.planner\.provider.*required/i,
-  );
+  it("map's named entry with missing provider fails", () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: {
+              main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+              planner: { apiKey: 'k', model: 'gpt' },
+            },
+            mode: 'agent',
+          },
+          {},
+        ),
+      /llm\.planner\.provider.*required/i,
+    );
+  });
 });
 ```
 
