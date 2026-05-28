@@ -29,7 +29,19 @@ export interface FinalizerInput {
   prompt: string;                       // the original user request
   objective: string;                    // plan.objective from the planner
   ancestorContext?: ContextPath;        // inherited clarifications + oracle observations
-  executionTrace: ReadonlyArray<{       // ordered DAG execution outputs
+  /**
+   * The interpreter's already-joined final output (today: terminal-leaf outputs
+   * concatenated with \n\n). PassthroughFinalizer returns this verbatim to
+   * preserve the current behaviour. LlmFinalizer/TemplateFinalizer typically
+   * ignore it and re-derive from executionTrace.
+   */
+  interpreterOutput: string;
+  /**
+   * Execution-ordered (topological) list of DAG nodes that ran, with their
+   * goal and output. Ordering follows the interpreter's actual run order,
+   * NOT plan.nodes[] — after a splice that array can be non-topological.
+   */
+  executionTrace: ReadonlyArray<{
     nodeId: string;
     goal: string;
     output: string;
@@ -57,7 +69,7 @@ export interface IFinalizer {
 
 | Impl | LLM cost | When |
 |---|---|---|
-| **`PassthroughFinalizer`** (default) | none | Backward-compat: returns `trace[trace.length-1].output`. Equivalent to the current behaviour. |
+| **`PassthroughFinalizer`** (default) | none | Backward-compat: returns `input.interpreterOutput` verbatim — exactly what the DAG coordinator yields today (interpreter's terminal-leaf join with `\n\n`). |
 | **`LlmFinalizer`** | one LLM call | DirectLlmSubAgent under the hood, with a `FINALIZER_SYSTEM` prompt and **no tools wired**. The LLM cannot tool-call; it can only write text from the trace context. |
 | **`TemplateFinalizer`** | none | Deterministic join: `# Node {nodeId} — {goal}\n{output}` over the trace. Useful when the agent's plan is already shaped per-section. |
 
@@ -69,16 +81,24 @@ export interface IFinalizer {
 
 `DagCoordinatorHandlerDeps` gains `finalizer?: IFinalizer` (optional in deps). The constructor **normalizes**: `this.finalizer = deps.finalizer ?? new PassthroughFinalizer()`. After normalization the field is always defined, so the handler body never deals with `undefined`. Existing direct-handler tests / consumers that omit `finalizer` get the default and unchanged behaviour.
 
-**Interpreter change (required for this fix):** today `DagPlanInterpreter` populates `result.executedPlan` only on failure (`packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts:187` returns `{ nodeResults, ok: true, output }` without `executedPlan` on success). After this spec, the interpreter MUST also return `executedPlan: currentPlan` on the success path so that recovered/replanned plans are visible to the finalizer (otherwise `result.executedPlan ?? plan` always picks the stale original on a successful replan, and finalizer would see blank outputs for the newly-spliced nodes). The change is a one-line addition to the success branch; a regression test asserts `executedPlan` reflects post-splice nodes on a successful replan run.
+**Interpreter changes (required for this fix):**
+
+1. Today `DagPlanInterpreter` populates `result.executedPlan` only on failure (`packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts:187` returns `{ nodeResults, ok: true, output }` without `executedPlan` on success). The interpreter MUST also return `executedPlan: currentPlan` on the success path so recovered/replanned plans are visible to the finalizer.
+2. **`InterpretResult` gains `executionOrder: readonly string[]`** — the actual topological execution order of node ids. The interpreter populates it as it runs nodes (it already iterates in topological order; just record the ids it visits in sequence). The finalizer trace iterates `executionOrder`, mapping each id to its `nodeResults[id]` and `executedPlan.nodes.find(n => n.id === id)`. This is the authoritative ordering — `executedPlan.nodes[]` is NOT topological after a splice (`spliceSubPlan` returns `[...rest, ...splicedSubNodes]` per `coordinator/dag/splice-sub-plan.ts:40`).
+
+A regression test asserts (a) `executedPlan` reflects post-splice nodes on a successful replan run, and (b) `executionOrder` is topologically valid after splice (every node id appears after all its `dependsOn`).
 
 After `result = await interpreter.interpret(plan, ...)` returns `ok === true`, the handler invokes the finalizer via the existing `runRole(component, model, thunk)` (which already handles usage logging on happy-path + clarify/needInfo signal paths + parse-error paths). The trace MUST be built from `result.executedPlan` (now populated on success too — see interpreter change above), falling back to the original `plan` only when the interpreter did not return it for some reason (legacy guard):
 
 ```ts
 const executedPlan = result.executedPlan ?? plan;
-const executionTrace = (executedPlan.nodes ?? []).map((n) => ({
-  nodeId: n.id,
-  goal: n.goal,
-  output: result.nodeResults[n.id]?.output ?? '',
+const nodeIndex = new Map(executedPlan.nodes?.map((n) => [n.id, n]) ?? []);
+// Use the interpreter's actual execution order (topological), NOT plan.nodes[]
+// which can be non-topological after a splice.
+const executionTrace = (result.executionOrder ?? []).map((id) => ({
+  nodeId: id,
+  goal: nodeIndex.get(id)?.goal ?? '',
+  output: result.nodeResults[id]?.output ?? '',
 }));
 const finalRes = await runRole('finalizer', this.finalizer.model, () =>
   this.finalizer.finalize({
@@ -87,6 +107,7 @@ const finalRes = await runRole('finalizer', this.finalizer.model, () =>
     // FinalizerInput.objective remains a non-empty required string.
     objective: executedPlan.objective ?? ctx.inputText,
     ancestorContext,
+    interpreterOutput: result.output,   // verbatim what DAG yields today
     executionTrace,
     sessionId: ctx.sessionId,
     signal: ctx.options?.signal,
@@ -232,7 +253,7 @@ llm: LlmProviderConfig;
 llm?: LlmProviderConfig | Record<string, LlmProviderConfig>;   // OPTIONAL: pipeline-only configs already work without it
 ```
 
-`llm:` stays **optional** to preserve the existing "pipeline.llm.main is enough" path (`packages/llm-agent-server/src/smart-agent/__tests__/config-validation.test.ts:310` — pipeline-only configs valid without top-level `llm`). When absent, the normalizer returns `undefined`; consumers that don't need a top-level LLM (flat smart pipeline driven by `pipeline.llm.main`) keep working. Consumers that DO need it (DAG coordinator's planner/reviewer/finalizer/etc) error at lookup time with a clear message.
+`llm:` stays **optional** to preserve the existing "pipeline.llm.main is enough" path (`packages/llm-agent-server/src/smart-agent/__tests__/config-validation.test.ts:310` — pipeline-only configs valid without top-level `llm`). When absent, the normalizer returns `undefined`. Coordinator role resolution then falls back through a chain (`pipeline.llm.main` is the final default) — see the **Downstream consumers** section below for the full lookup order. The only error case is when NEITHER a top-level `llm:` NOR a `pipeline.llm.main` is configured AND a coordinator role needs an LLM.
 
 **After normalization** (used by all downstream consumers that need a coordinator-level LLM map):
 
