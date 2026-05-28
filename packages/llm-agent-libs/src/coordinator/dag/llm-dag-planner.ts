@@ -27,9 +27,13 @@ Emit a plan-level "objective". Respond with ONLY one of:
  */
 export class LlmDagPlanner implements IPlanner {
   readonly name = 'llm-dag';
+  /** Best-effort model identifier from the underlying ILlm (for logger
+   *  attribution). May be undefined for ILlm impls that do not expose one. */
+  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
+    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('planner', llm, {
       systemPrompt: PLANNER_SYSTEM,
       contextPolicy: 'optional',
@@ -152,6 +156,10 @@ export class LlmDagPlanner implements IPlanner {
       objective: parsed.objective as string | undefined,
       rationale: parsed.rationale as string | undefined,
       createdAt: Date.now(),
+      // Forward the underlying ILlm.chat usage so the coordinator can
+      // attribute planner-LLM spend to the session/request logger (HIGH
+      // finding: planner+reviewer overhead must not escape /v1/usage).
+      usage: res.usage,
     };
   }
 }

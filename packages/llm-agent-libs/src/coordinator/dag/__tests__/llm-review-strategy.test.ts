@@ -30,17 +30,19 @@ const input: ReviewInput = {
 describe('LlmReviewStrategy', () => {
   it('returns pass:true on a positive verdict', async () => {
     const v = await new LlmReviewStrategy(llm('{"pass": true}')).review(input);
-    assert.deepEqual(v, { pass: true });
+    // `usage` is now forwarded from the underlying LLM response (undefined here
+    // since the stub omits it). Match shape without locking the field's presence.
+    assert.equal(v.pass, true);
   });
 
   it('returns pass:false with feedback on a negative verdict', async () => {
     const v = await new LlmReviewStrategy(
       llm('{"pass": false, "feedback": "no worker can read tables"}'),
     ).review(input);
-    assert.deepEqual(v, {
-      pass: false,
-      feedback: 'no worker can read tables',
-    });
+    assert.equal(v.pass, false);
+    if (v.pass === false) {
+      assert.equal(v.feedback, 'no worker can read tables');
+    }
   });
 
   it('throws on malformed JSON', async () => {
@@ -118,7 +120,7 @@ describe('LlmReviewStrategy', () => {
   it('reviewExecutionFailure parses an abort decision', async () => {
     const s = new LlmReviewStrategy(llm('{"action":"abort"}'));
     const d = await s.reviewExecutionFailure(failInput);
-    assert.deepEqual(d, { action: 'abort' });
+    assert.equal(d.action, 'abort');
   });
 
   it('reviewExecutionFailure throws on malformed JSON', async () => {

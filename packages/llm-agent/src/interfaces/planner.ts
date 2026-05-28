@@ -17,5 +17,9 @@ export interface PlannerInput {
 
 export interface IPlanner {
   readonly name: string;
+  /** Optional model identifier (best-effort), surfaced to the coordinator so
+   *  per-role LLM usage can be attributed to a specific model in the request
+   *  logger. Non-LLM planners may omit it. */
+  readonly model?: string;
   plan(input: PlannerInput): Promise<DagPlan>;
 }

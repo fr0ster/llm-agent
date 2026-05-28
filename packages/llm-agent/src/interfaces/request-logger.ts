@@ -4,7 +4,9 @@ export type LlmComponent =
   | 'helper'
   | 'translate'
   | 'query-expander'
-  | 'embedding';
+  | 'embedding'
+  | 'planner'
+  | 'reviewer';
 
 export type TokenCategory = 'initialization' | 'auxiliary' | 'request';
 

@@ -34,10 +34,14 @@ The revised plan MUST treat the current state as the starting point: do not redo
  */
 export class LlmReviewStrategy implements IReviewStrategy {
   readonly name = 'llm-review';
+  /** Best-effort model identifier from the underlying ILlm (for logger
+   *  attribution). May be undefined for ILlm impls that do not expose one. */
+  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
   private readonly executionAgent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
+    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: REVIEWER_SYSTEM,
       contextPolicy: 'optional',
@@ -103,9 +107,9 @@ export class LlmReviewStrategy implements IReviewStrategy {
           `Reviewer rejection must include a non-empty 'feedback' string: ${match[0].slice(0, 200)}`,
         );
       }
-      return { pass: false, feedback: parsed.feedback };
+      return { pass: false, feedback: parsed.feedback, usage: res.usage };
     }
-    return { pass: true };
+    return { pass: true, usage: res.usage };
   }
 
   async reviewExecutionFailure(
@@ -156,7 +160,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
       throw new ClarifySignal(parsed.clarify);
     }
-    if (parsed.action === 'abort') return { action: 'abort' };
+    if (parsed.action === 'abort') return { action: 'abort', usage: res.usage };
     if (parsed.action !== 'revise') {
       throw new Error(
         `Recovery reviewer action must be 'abort' | 'revise': ${match[0].slice(0, 200)}`,
@@ -178,6 +182,6 @@ export class LlmReviewStrategy implements IReviewStrategy {
         `Recovery reviewer revise plan must have non-empty nodes with string id+goal: ${match[0].slice(0, 200)}`,
       );
     }
-    return { action: 'revise', revisedPlan: plan as DagPlan };
+    return { action: 'revise', revisedPlan: plan as DagPlan, usage: res.usage };
   }
 }

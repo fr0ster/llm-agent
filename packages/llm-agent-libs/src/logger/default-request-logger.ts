@@ -21,6 +21,8 @@ export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   'query-expander': 'auxiliary',
   helper: 'auxiliary',
   embedding: 'initialization',
+  planner: 'auxiliary',
+  reviewer: 'auxiliary',
 };
 
 function emptyBucket(): TokenBucket {

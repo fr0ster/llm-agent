@@ -110,3 +110,20 @@ test('classifier/query-expander/helper all categorize as auxiliary; embedding as
   assert.equal(s.byCategory.initialization?.totalTokens, 4);
   assert.equal(s.byCategory.request, undefined);
 });
+
+test('planner/reviewer categorize as auxiliary (HIGH: role LLM overhead, not main request)', () => {
+  const log = new SessionRequestLogger();
+  log.startRequest('t');
+  log.logLlmCall(call('planner', 5, 't'));
+  log.logLlmCall(call('reviewer', 7, 't'));
+  log.logLlmCall(call('tool-loop', 13, 't'));
+  const s = log.getSummary('t');
+  assert.equal(
+    s.byCategory.auxiliary?.totalTokens,
+    12,
+    'planner+reviewer → auxiliary',
+  );
+  assert.equal(s.byCategory.request?.totalTokens, 13, 'tool-loop → request');
+  assert.equal(s.byComponent.planner?.totalTokens, 5);
+  assert.equal(s.byComponent.reviewer?.totalTokens, 7);
+});

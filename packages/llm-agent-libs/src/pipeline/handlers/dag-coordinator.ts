@@ -2,6 +2,7 @@ import type {
   ClarifySignal as ClarifySignalType,
   ContextPath,
   DagPlan,
+  ExecutionReviewDecision,
   IActivationStrategy,
   IErrorStrategy,
   IInterpreter,
@@ -9,6 +10,8 @@ import type {
   IPlanner,
   IReviewStrategy,
   ISubAgent,
+  LlmComponent,
+  LlmUsage,
   ReviewVerdict,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
@@ -82,6 +85,31 @@ export class DagCoordinatorHandler implements IStageHandler {
     }));
     let roundTrips = 0;
 
+    // HIGH finding: planner+reviewer LLM spend was escaping both
+    // /v1/usage and response.usage. The role return types now carry an
+    // optional `usage` field; we forward it into the session requestLogger
+    // here, keyed by the current traceId so it lands in the per-request
+    // delta AND in the session-cumulative buckets (categorized as
+    // 'auxiliary' via CATEGORY_MAP). Non-LLM strategies omit `usage`, so
+    // this is a no-op for them.
+    const logRoleUsage = (
+      component: LlmComponent,
+      model: string | undefined,
+      usage: LlmUsage | undefined,
+      durationMs: number,
+    ): void => {
+      if (!usage) return;
+      ctx.requestLogger.logLlmCall({
+        component,
+        model: model ?? 'unknown',
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        durationMs,
+        requestId: ctx.options?.trace?.traceId,
+      });
+    };
+
     const runRole = async <T>(
       thunk: () => Promise<T>,
     ): Promise<{ value: T } | { ended: true }> => {
@@ -137,7 +165,9 @@ export class DagCoordinatorHandler implements IStageHandler {
     };
 
     let planRes: { value: DagPlan } | { ended: true };
+    const plannerModel = this.deps.planner.model;
     try {
+      const start = Date.now();
       planRes = await runRole(() =>
         this.deps.planner.plan({
           prompt: ctx.inputText,
@@ -147,6 +177,14 @@ export class DagCoordinatorHandler implements IStageHandler {
           signal: ctx.options?.signal,
         }),
       );
+      if ('value' in planRes) {
+        logRoleUsage(
+          'planner',
+          plannerModel,
+          planRes.value.usage,
+          Date.now() - start,
+        );
+      }
     } catch (err) {
       ctx.error =
         err instanceof OrchestratorError
@@ -170,7 +208,9 @@ export class DagCoordinatorHandler implements IStageHandler {
         const reviewer = this.deps.reviewer;
         if (reviewer) {
           let gate: { value: ReviewVerdict } | { ended: true };
+          const reviewerModel = reviewer.model;
           try {
+            const start = Date.now();
             gate = await runRole(() =>
               reviewer.review({
                 prompt: ctx.inputText,
@@ -181,6 +221,14 @@ export class DagCoordinatorHandler implements IStageHandler {
                 signal: ctx.options?.signal,
               }),
             );
+            if ('value' in gate) {
+              logRoleUsage(
+                'reviewer',
+                reviewerModel,
+                gate.value.usage,
+                Date.now() - start,
+              );
+            }
           } catch (err) {
             // A generic reviewer-gate failure keeps the slice-2 error code
             // (COORDINATOR_REVIEW_FAILED), not the loop's default STEP_FAILED.
@@ -198,6 +246,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           if ('ended' in gate) return true;
           const verdict = gate.value;
           if (!verdict.pass) {
+            const replanStart = Date.now();
             const replanned = await runRole(() =>
               this.deps.planner.plan({
                 prompt: ctx.inputText,
@@ -209,6 +258,12 @@ export class DagCoordinatorHandler implements IStageHandler {
               }),
             );
             if ('ended' in replanned) return true;
+            logRoleUsage(
+              'planner',
+              plannerModel,
+              replanned.value.usage,
+              Date.now() - replanStart,
+            );
             plan = replanned.value;
             continue;
           }
@@ -284,21 +339,31 @@ export class DagCoordinatorHandler implements IStageHandler {
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
         const failedId = result.failedNodeId ?? execPlan.nodes[0]?.id ?? '';
 
-        const recovery = await runRole(() =>
-          reviewExecutionFailure({
-            objective: execPlan.objective,
-            plan: execPlan,
-            trace,
-            failedNodeId: failedId,
-            error:
-              result.nodeResults[failedId]?.error ?? result.error ?? 'unknown',
-            agents,
-            ancestorContext,
-            sessionId: ctx.sessionId,
-            signal: ctx.options?.signal,
-          }),
-        );
+        const recoveryStart = Date.now();
+        const recovery: { value: ExecutionReviewDecision } | { ended: true } =
+          await runRole(() =>
+            reviewExecutionFailure({
+              objective: execPlan.objective,
+              plan: execPlan,
+              trace,
+              failedNodeId: failedId,
+              error:
+                result.nodeResults[failedId]?.error ??
+                result.error ??
+                'unknown',
+              agents,
+              ancestorContext,
+              sessionId: ctx.sessionId,
+              signal: ctx.options?.signal,
+            }),
+          );
         if ('ended' in recovery) return true;
+        logRoleUsage(
+          'reviewer',
+          reviewer?.model,
+          recovery.value.usage,
+          Date.now() - recoveryStart,
+        );
         const decision = recovery.value;
         if (decision.action === 'revise') {
           if (decision.revisedPlan.nodes.length === 0) {
