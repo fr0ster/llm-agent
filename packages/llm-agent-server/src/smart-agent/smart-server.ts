@@ -36,7 +36,10 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type {
+  DagCoordinatorHandlerDeps,
   IPluginLoader,
+  SessionAgentParts,
+  SessionGraph,
   SmartAgent,
   StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -56,7 +59,9 @@ import {
   LlmReviewStrategy,
   makeLlm,
   ReplanErrorStrategy,
+  SessionGraphFactory,
   SessionLogger,
+  SessionRegistry,
   SmartAgentBuilder,
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
@@ -69,6 +74,7 @@ import {
   resolveAgentEmbedder,
   resolveToolsStoreEmbedder,
 } from './resolve-agent-embedder.js';
+import { resolveSessionIdentity } from './session-identity-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -238,6 +244,15 @@ export interface SmartServerConfig {
    * `SmartServer.start()` once the parent LLMs are built.
    */
   coordinatorYaml?: import('./config.js').YamlCoordinator;
+  /**
+   * Per-session lifecycle tuning. Defaults: idleTtlMs=7_200_000 (2h),
+   * maxSessions=1000, cookieName='sid'.
+   */
+  session?: {
+    idleTtlMs?: number;
+    maxSessions?: number;
+    cookieName?: string;
+  };
 }
 
 /**
@@ -407,6 +422,70 @@ export function resolveSubAgentRagRegistry(input: {
   return input.parentRagRegistry;
 }
 
+/**
+ * Options for `buildSessionLifecycle`. Composes the SessionGraphFactory + the
+ * SessionRegistry; exposes a thin facade so `_handle` stays unit-testable.
+ */
+export interface SessionLifecycleOptions {
+  idleTtlMs: number;
+  maxSessions: number;
+  cookieName: string;
+  mcpClients: IMcpClient[];
+  toolsRag: IRag | undefined;
+  ragRegistry: IRagRegistry;
+  buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
+}
+
+/**
+ * Composes the cookie identity resolver + SessionGraphFactory + SessionRegistry
+ * into one lifecycle object the server's `_handle` consumes. The default MCP
+ * factory returns the shared GLOBAL clients by reference (one upstream
+ * connection); a creds-aware build swaps it out (out of scope here).
+ */
+export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
+  resolve: (
+    cookieHeader: string | undefined,
+    isHttps: boolean,
+  ) => ReturnType<typeof resolveSessionIdentity>;
+  acquire: (
+    sessionId: string,
+  ) => Promise<
+    ReturnType<SessionRegistry['acquire']> extends Promise<infer G> ? G : never
+  >;
+  release: (sessionId: string) => void;
+  evictIdle: () => Promise<void>;
+  disposeAll: () => Promise<void>;
+  registry: SessionRegistry;
+} {
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: (_identity) => opts.mcpClients,
+    toolsRag: opts.toolsRag,
+    ragRegistry: opts.ragRegistry,
+    buildAgent: opts.buildAgent,
+  });
+  const registry = new SessionRegistry({
+    idleTtlMs: opts.idleTtlMs,
+    maxSessions: opts.maxSessions,
+    factory,
+  });
+  return {
+    resolve: (cookieHeader, isHttps) =>
+      resolveSessionIdentity({
+        cookieHeader,
+        cookieName: opts.cookieName,
+        maxAgeSeconds: Math.max(1, Math.floor(opts.idleTtlMs / 1000)),
+        isHttps,
+      }),
+    acquire: (sessionId) => registry.acquire(sessionId),
+    release: (sessionId) => registry.release(sessionId),
+    evictIdle: () => registry.evictIdle(),
+    disposeAll: () => registry.disposeAll(),
+    registry,
+  };
+}
+
+export type SessionLifecycle = ReturnType<typeof buildSessionLifecycle>;
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -416,6 +495,23 @@ export class SmartServer {
    * pull from this cache by reference (never reconstructing LLM clients).
    */
   private readonly _workerLlmCache = new Map<string, WorkerLlmSet>();
+  /** Lifecycle handle wired in `start()`; consumed by `_handle`. */
+  private _lifecycle?: SessionLifecycle;
+  /** Hoisted globals used by `buildSessionAgent` to re-wire fresh per-session workers. */
+  private _mainLlm?: ILlm;
+  private _classifierLlm?: ILlm;
+  private _helperLlm?: ILlm;
+  private _fileLogger?: ILogger;
+  private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
+  /**
+   * Captured DAG coordinator template — `deps` are stateless or LLM-bound and
+   * are reused across sessions; only `workers` + `stateOracle` are re-wired per
+   * session (review HIGH #1).
+   */
+  private _dagCoordinatorTemplate?: {
+    deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
+    oracleName?: string;
+  };
 
   constructor(config: SmartServerConfig) {
     this.cfg = config;
@@ -426,6 +522,7 @@ export class SmartServer {
     const fileLogger: ILogger = {
       log: (e) => log(e as unknown as Record<string, unknown>),
     };
+    this._fileLogger = fileLogger;
     const pipeline = this.cfg.pipeline;
 
     // ---- Composition root: resolve config → interfaces --------------------
@@ -475,6 +572,9 @@ export class SmartServer {
           Number(pipeline.llm.helper.temperature ?? 0.1),
         )
       : undefined;
+    this._mainLlm = mainLlm;
+    this._classifierLlm = classifierLlm;
+    this._helperLlm = helperLlm;
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -511,6 +611,7 @@ export class SmartServer {
       ...plugins.embedderFactories,
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
+    this._mergedEmbedderFactories = mergedEmbedderFactories;
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -787,6 +888,19 @@ export class SmartServer {
           stateOracle,
           maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
         });
+        // Capture template for per-session re-wire (workers + stateOracle are
+        // re-wired per session; everything else is stateless or LLM-bound).
+        this._dagCoordinatorTemplate = {
+          deps: {
+            planner,
+            interpreter,
+            activation,
+            reviewer,
+            errorStrategy,
+            maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
+          },
+          oracleName,
+        };
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
         // Linear mode: existing path unchanged.
@@ -851,6 +965,8 @@ export class SmartServer {
       ragStores,
       modelProvider,
     } = agentHandle;
+    const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
+      agentHandle;
 
     // ---- API adapter map (built-in → config DI; DI wins) --------------------
     const { OpenAiApiAdapter, AnthropicApiAdapter } = await import(
@@ -870,6 +986,29 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // ---- Per-session lifecycle (cookie identity + graph factory + registry) ----
+    const sessionCfg = this.cfg.session ?? {};
+    const idleTtlMs = sessionCfg.idleTtlMs ?? 7_200_000;
+    const lifecycle = buildSessionLifecycle({
+      idleTtlMs,
+      maxSessions: sessionCfg.maxSessions ?? 1000,
+      cookieName: sessionCfg.cookieName ?? 'sid',
+      mcpClients: globalMcpClients,
+      toolsRag,
+      ragRegistry: globalRagRegistry,
+      buildAgent: (parts) => this.buildSessionAgent(parts),
+    });
+    this._lifecycle = lifecycle;
+    const sweepMs = Math.min(idleTtlMs, 60_000);
+    const sweep = setInterval(() => {
+      void lifecycle.evictIdle();
+    }, sweepMs);
+    sweep.unref?.();
+    closeFns.push(async () => {
+      clearInterval(sweep);
+      await lifecycle.disposeAll();
+    });
 
     const startTime = Date.now();
     const healthChecker = new HealthChecker({
@@ -1149,6 +1288,130 @@ export class SmartServer {
     return handle.agent;
   }
 
+  /**
+   * Builds a per-session SmartAgent from injected globals (review HIGH #1 +
+   * MEDIUM #3). Re-wires the SubAgent registry + DAG coordinator deps FRESH per
+   * session, sharing this session's logger + the global ragRegistry/toolsRag/
+   * mcpClients + the CACHED per-worker LLM/embedder (this._workerLlmCache). It
+   * NEVER reuses the primary build()'s global `registry`/DAG-deps and NEVER
+   * constructs new LLM clients.
+   */
+  private async buildSessionAgent(
+    parts: SessionAgentParts,
+  ): Promise<SmartAgent | undefined> {
+    // Guard: globals must already be captured by the primary build() before any
+    // session graph is built (the registry calls this lazily on first acquire).
+    if (!this._mainLlm || !this._classifierLlm || !this._fileLogger) {
+      throw new Error(
+        'buildSessionAgent invoked before primary build() captured globals',
+      );
+    }
+    let b = new SmartAgentBuilder({
+      agent: this.cfg.agent,
+      prompts: this.cfg.prompts,
+      skipModelValidation: this.cfg.skipModelValidation,
+    })
+      .withMainLlm(this._mainLlm)
+      .withClassifierLlm(this._classifierLlm)
+      .withLogger(this._fileLogger)
+      .withMode(this.cfg.mode ?? 'smart')
+      .withMcpClients(parts.mcpClients) // skips connect + re-vectorize
+      .setRagRegistry(parts.ragRegistry)
+      .withRequestLogger(parts.logger); // per-session token-logger
+    if (this._helperLlm) b = b.withHelperLlm(this._helperLlm);
+    if (parts.toolsRag) b = b.setToolsRag(parts.toolsRag);
+
+    // FRESH per-session workers — re-wire the registry from the SAME subagent
+    // configs the primary build() used, injecting globals + this session's
+    // logger + the CACHED per-worker LLM/embedder. No LLM reconstruction.
+    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
+      const registry: SubAgentRegistry = new Map();
+      for (const sub of this.cfg.subAgentConfigs) {
+        const cached = this._workerLlmCache.get(sub.name);
+        if (!cached) {
+          throw new Error(`worker LLM set not cached for '${sub.name}'`);
+        }
+        const subAgent = await this.buildSubAgent(
+          sub.name,
+          sub.config,
+          this._fileLogger,
+          this._mergedEmbedderFactories ?? {},
+          {
+            ragRegistry: parts.ragRegistry,
+            toolsRag: parts.toolsRag,
+            mcpClients: parts.mcpClients,
+            requestLogger: parts.logger,
+            mainLlm: cached.mainLlm,
+            classifierLlm: cached.classifierLlm,
+            helperLlm: cached.helperLlm,
+            embedder: cached.embedder,
+          },
+        );
+        registry.set(
+          sub.name,
+          new SmartAgentSubAgent(sub.name, subAgent, {
+            description: sub.description,
+          }),
+        );
+      }
+      b = b.withSubAgents(registry);
+
+      if (this._dagCoordinatorTemplate) {
+        const tpl = this._dagCoordinatorTemplate;
+        const workers: SubAgentRegistry = new Map(
+          [...registry].filter(([name]) => name !== tpl.oracleName),
+        );
+        b = b.withDagCoordinator({
+          ...tpl.deps,
+          workers,
+          stateOracle: tpl.oracleName
+            ? registry.get(tpl.oracleName)
+            : undefined,
+        });
+      }
+    }
+
+    const handle = await b.build();
+    return handle.agent;
+  }
+
+  /**
+   * Resolve identity (mint cookie when needed), acquire the per-session graph,
+   * run `fn` pinned, and release in `finally`. Order in `finally`:
+   *   1. drop the per-traceId logger delta (server-owned free, review HIGH #2)
+   *   2. release the refcount pin
+   */
+  private async _withSession(
+    req: IncomingMessage,
+    res: ServerResponse,
+    fn: (
+      graph: SessionGraph,
+      sessionId: string,
+      traceId: string,
+    ) => Promise<void>,
+  ): Promise<void> {
+    const lifecycle = this._lifecycle;
+    if (!lifecycle) {
+      throw new Error('SmartServer lifecycle not initialized');
+    }
+    const traceId = randomUUID();
+    const isHttps =
+      (req.socket as { encrypted?: boolean }).encrypted === true ||
+      req.headers['x-forwarded-proto'] === 'https';
+    const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+    const sessionId = resolved.identity.sessionId;
+    if (resolved.minted && resolved.setCookie) {
+      res.setHeader('Set-Cookie', resolved.setCookie);
+    }
+    const graph = await lifecycle.acquire(sessionId);
+    try {
+      await fn(graph, sessionId, traceId);
+    } finally {
+      graph.logger.dropRequest(traceId);
+      lifecycle.release(sessionId);
+    }
+  }
+
   private async _handle(
     req: IncomingMessage,
     res: ServerResponse,
@@ -1286,23 +1549,34 @@ export class SmartServer {
         res.end(jsonError('Anthropic adapter not registered', 'not_found'));
         return;
       }
-      await this._handleAdapterRequest(req, res, smartAgent, anthropicAdapter);
+      await this._withSession(req, res, async (graph, sessionId, traceId) => {
+        await this._handleAdapterRequest(
+          req,
+          res,
+          graph.agent ?? smartAgent,
+          anthropicAdapter,
+          { sessionId, traceId, graph },
+        );
+      });
       return;
     }
     if (
       req.method === 'POST' &&
       (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
     ) {
-      await this._handleChat(
-        req,
-        res,
-        requestLogger,
-        smartAgent,
-        chat,
-        streamChat,
-        log,
-        modelProvider,
-      );
+      await this._withSession(req, res, async (graph, sessionId, traceId) => {
+        await this._handleChat(
+          req,
+          res,
+          requestLogger,
+          graph.agent ?? smartAgent,
+          chat,
+          streamChat,
+          log,
+          modelProvider,
+          { sessionId, traceId, graph },
+        );
+      });
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1316,6 +1590,7 @@ export class SmartServer {
     res: ServerResponse,
     agent: SmartAgent,
     adapter: ILlmApiAdapter,
+    session?: { sessionId: string; traceId: string; graph: SessionGraph },
   ): Promise<void> {
     const raw = await readBody(req);
     let body: unknown;
@@ -1339,6 +1614,16 @@ export class SmartServer {
       throw err;
     }
 
+    const augmentedOptions = session
+      ? {
+          ...normalized.options,
+          sessionId: session.sessionId,
+          trace: { traceId: session.traceId },
+          toolAvailability: session.graph.toolAvailability,
+          pendingToolResults: session.graph.pendingToolResults,
+        }
+      : normalized.options;
+
     if (normalized.stream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -1347,7 +1632,7 @@ export class SmartServer {
       });
 
       for await (const event of adapter.transformStream(
-        agent.streamProcess(normalized.messages, normalized.options),
+        agent.streamProcess(normalized.messages, augmentedOptions),
         normalized.context,
       )) {
         const eventLine = event.event ? `event: ${event.event}\n` : '';
@@ -1358,7 +1643,7 @@ export class SmartServer {
     }
 
     // Non-streaming
-    const result = await agent.process(normalized.messages, normalized.options);
+    const result = await agent.process(normalized.messages, augmentedOptions);
     res.setHeader('Content-Type', 'application/json');
     if (!result.ok) {
       res.writeHead(500);
@@ -1389,6 +1674,7 @@ export class SmartServer {
     _streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
     modelProvider?: IModelProvider,
+    session?: { sessionId: string; traceId: string; graph: SessionGraph },
   ): Promise<void> {
     const rawBody = await readBody(req);
     let parsed: unknown;
@@ -1459,8 +1745,14 @@ export class SmartServer {
       return;
     }
 
-    const traceId = randomUUID();
-    const sessionId = (req.headers['x-session-id'] as string) || 'default';
+    // Prefer the session injected by `_withSession` (cookie identity); fall
+    // back to the legacy x-session-id header / 'default' bucket only when no
+    // session was wired (defensive — production routes always inject one).
+    const traceId = session?.traceId ?? randomUUID();
+    const sessionId =
+      session?.sessionId ??
+      (req.headers['x-session-id'] as string) ??
+      'default';
     const sessionLogger = new SessionLogger(
       this.cfg.logDir || null,
       sessionId,
@@ -1510,6 +1802,12 @@ export class SmartServer {
       trace: { traceId },
       sessionLogger,
       model: body.model,
+      ...(session
+        ? {
+            toolAvailability: session.graph.toolAvailability,
+            pendingToolResults: session.graph.pendingToolResults,
+          }
+        : {}),
       ...(body.temperature !== undefined
         ? { temperature: body.temperature }
         : {}),
