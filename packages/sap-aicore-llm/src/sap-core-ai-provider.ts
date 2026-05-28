@@ -199,9 +199,27 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
 
       this.log?.debug('Received response from SAP AI SDK', { finishReason });
 
+      const rawUsage = response.getTokenUsage() as
+        | {
+            prompt_tokens?: number;
+            completion_tokens?: number;
+            total_tokens?: number;
+          }
+        | undefined;
+      const usage = rawUsage
+        ? {
+            promptTokens: rawUsage.prompt_tokens ?? 0,
+            completionTokens: rawUsage.completion_tokens ?? 0,
+            totalTokens:
+              rawUsage.total_tokens ??
+              (rawUsage.prompt_tokens ?? 0) + (rawUsage.completion_tokens ?? 0),
+          }
+        : undefined;
+
       return {
         content,
         finishReason,
+        ...(usage ? { usage } : {}),
         raw: {
           choices: [
             {
@@ -213,7 +231,7 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
               finish_reason: finishReason,
             },
           ],
-          usage: response.getTokenUsage(),
+          usage: rawUsage,
         },
       };
     } catch (error: unknown) {
@@ -353,9 +371,9 @@ export class SapCoreAIProvider extends BaseLLMProvider<SapCoreAIConfig> {
           ...(tokenUsage
             ? {
                 usage: {
-                  prompt_tokens: tokenUsage.prompt_tokens || 0,
-                  completion_tokens: tokenUsage.completion_tokens || 0,
-                  total_tokens: tokenUsage.total_tokens || 0,
+                  promptTokens: tokenUsage.prompt_tokens || 0,
+                  completionTokens: tokenUsage.completion_tokens || 0,
+                  totalTokens: tokenUsage.total_tokens || 0,
                 },
               }
             : {}),

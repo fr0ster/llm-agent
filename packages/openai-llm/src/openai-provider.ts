@@ -81,9 +81,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const usage = response.data.usage
         ? {
-            prompt_tokens: response.data.usage.prompt_tokens,
-            completion_tokens: response.data.usage.completion_tokens,
-            total_tokens: response.data.usage.total_tokens,
+            promptTokens: response.data.usage.prompt_tokens,
+            completionTokens: response.data.usage.completion_tokens,
+            totalTokens: response.data.usage.total_tokens,
           }
         : undefined;
 
@@ -179,9 +179,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 content: '',
                 raw: parsed,
                 usage: {
-                  prompt_tokens: parsed.usage.prompt_tokens,
-                  completion_tokens: parsed.usage.completion_tokens,
-                  total_tokens: parsed.usage.total_tokens,
+                  promptTokens: parsed.usage.prompt_tokens,
+                  completionTokens: parsed.usage.completion_tokens,
+                  totalTokens: parsed.usage.total_tokens,
                 },
               };
             }

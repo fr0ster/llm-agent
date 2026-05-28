@@ -382,9 +382,9 @@ describe('OpenAIProvider — chat() usage', () => {
     });
     const result = await provider.chat([{ role: 'user', content: 'hi' }]);
     assert.deepEqual(result.usage, {
-      prompt_tokens: 10,
-      completion_tokens: 20,
-      total_tokens: 30,
+      promptTokens: 10,
+      completionTokens: 20,
+      totalTokens: 30,
     });
   });
 
@@ -494,9 +494,9 @@ describe('OpenAIProvider — streamChat() usage', () => {
     const usageChunk = chunks.find((c) => c.usage !== undefined);
     assert.ok(usageChunk, 'expected a chunk with usage');
     assert.deepEqual(usageChunk.usage, {
-      prompt_tokens: 5,
-      completion_tokens: 1,
-      total_tokens: 6,
+      promptTokens: 5,
+      completionTokens: 1,
+      totalTokens: 6,
     });
   });
 });

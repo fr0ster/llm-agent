@@ -82,9 +82,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
       const rawUsage = response.data.usage;
       const usage = rawUsage
         ? {
-            prompt_tokens: rawUsage.input_tokens ?? 0,
-            completion_tokens: rawUsage.output_tokens ?? 0,
-            total_tokens:
+            promptTokens: rawUsage.input_tokens ?? 0,
+            completionTokens: rawUsage.output_tokens ?? 0,
+            totalTokens:
               (rawUsage.input_tokens ?? 0) + (rawUsage.output_tokens ?? 0),
           }
         : undefined;
@@ -234,9 +234,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                 content: '',
                 raw: parsed,
                 usage: {
-                  prompt_tokens: u.input_tokens ?? 0,
-                  completion_tokens: u.output_tokens ?? 0,
-                  total_tokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
+                  promptTokens: u.input_tokens ?? 0,
+                  completionTokens: u.output_tokens ?? 0,
+                  totalTokens: (u.input_tokens ?? 0) + (u.output_tokens ?? 0),
                 },
               };
             } else if (eventType === 'message_delta') {
@@ -251,9 +251,9 @@ export class AnthropicProvider extends BaseLLMProvider<AnthropicConfig> {
                 raw: parsed,
                 usage: u
                   ? {
-                      prompt_tokens: 0,
-                      completion_tokens: u.output_tokens ?? 0,
-                      total_tokens: u.output_tokens ?? 0,
+                      promptTokens: 0,
+                      completionTokens: u.output_tokens ?? 0,
+                      totalTokens: u.output_tokens ?? 0,
                     }
                   : undefined,
               };

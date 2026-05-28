@@ -98,8 +98,8 @@ export class LlmProviderBridge implements BaseAgentLlmBridge {
       if (chunk.usage) {
         yield {
           type: 'usage',
-          promptTokens: chunk.usage.prompt_tokens ?? 0,
-          completionTokens: chunk.usage.completion_tokens ?? 0,
+          promptTokens: chunk.usage.promptTokens ?? 0,
+          completionTokens: chunk.usage.completionTokens ?? 0,
         } as AgentStreamChunk;
       }
 
