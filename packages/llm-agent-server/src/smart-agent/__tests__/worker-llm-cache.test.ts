@@ -3,6 +3,7 @@ import { test } from 'node:test';
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
 import {
   backfillWorkerCacheFromHandle,
+  drainWorkerCache,
   resolveWorkerLlmSet,
   type WorkerLlmSet,
 } from '../smart-server.js';
@@ -127,7 +128,7 @@ test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and r
   assert.equal(mcpBuilt, 1, 'mcpClients built exactly once');
 });
 
-test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache slot (subCfg.mcp auto-connect path)', () => {
+test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache slot (subCfg.mcp auto-connect path)', async () => {
   // Simulates a worker whose MCP came from subCfg.mcp auto-connect (no DI):
   // resolveWorkerLlmSet's makeMcpClients was undefined → cache.mcpClients
   // empty. After the primary subBuilder.build() finishes, the handle holds
@@ -141,7 +142,7 @@ test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache
     mcpClients: [fakeClient],
     ragRegistry: { get: () => undefined },
   };
-  backfillWorkerCacheFromHandle(entry, handle);
+  await backfillWorkerCacheFromHandle(entry, handle);
   assert.equal(
     entry.mcpClients?.[0],
     fakeClient,
@@ -149,7 +150,7 @@ test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache
   );
   // Idempotent: second call must not overwrite.
   const other = { id: 'other' } as unknown as IMcpClient;
-  backfillWorkerCacheFromHandle(entry, {
+  await backfillWorkerCacheFromHandle(entry, {
     mcpClients: [other],
     ragRegistry: { get: () => undefined },
   });
@@ -160,7 +161,7 @@ test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache
   );
 });
 
-test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegistry when not already cached', () => {
+test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegistry when not already cached', async () => {
   const tools = { id: 'tools' } as unknown as IRag;
   const history = { id: 'history' } as unknown as IRag;
   // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
@@ -172,7 +173,7 @@ test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegist
         name === 'tools' ? tools : name === 'history' ? history : undefined,
     },
   };
-  backfillWorkerCacheFromHandle(entry, handle);
+  await backfillWorkerCacheFromHandle(entry, handle);
   assert.equal(entry.toolsRag, tools, 'toolsRag backfilled from registry');
   assert.equal(
     entry.historyRag,
@@ -181,10 +182,10 @@ test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegist
   );
 });
 
-test('backfillWorkerCacheFromHandle: empty handle.mcpClients leaves cache slot undefined (re-wire falls back to parent)', () => {
+test('backfillWorkerCacheFromHandle: empty handle.mcpClients leaves cache slot undefined (re-wire falls back to parent)', async () => {
   // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
   const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
-  backfillWorkerCacheFromHandle(entry, {
+  await backfillWorkerCacheFromHandle(entry, {
     mcpClients: [],
     ragRegistry: { get: () => undefined },
   });
@@ -301,4 +302,115 @@ test('worker WITHOUT own toolsRag/MCP factories leaves those cache slots undefin
   );
   assert.equal(set.historyRag, undefined);
   assert.equal(set.mcpClients, undefined);
+});
+
+// ---------------------------------------------------------------------------
+// Fix #21: SmartAgentHandle.close() tracked per cached worker.
+// ---------------------------------------------------------------------------
+
+test('Fix #21: backfillWorkerCacheFromHandle captures handle.close into the cache entry', async () => {
+  const closeFn = async () => {};
+  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  await backfillWorkerCacheFromHandle(entry, {
+    mcpClients: [],
+    ragRegistry: { get: () => undefined },
+    close: closeFn,
+  });
+  assert.equal(entry.close, closeFn, 'close captured by reference');
+});
+
+test('Fix #21: drainWorkerCache invokes close on every entry and clears the cache', async () => {
+  const calls: string[] = [];
+  const cache = new Map<string, WorkerLlmSet>();
+  cache.set('w1', {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+    close: async () => {
+      calls.push('w1');
+    },
+  });
+  cache.set('w2', {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+    close: async () => {
+      calls.push('w2');
+    },
+  });
+  // Entry without close must not blow up drain.
+  cache.set('w3', {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+  });
+  await drainWorkerCache(cache);
+  assert.deepEqual(calls.sort(), ['w1', 'w2']);
+  assert.equal(cache.size, 0, 'cache cleared after drain');
+});
+
+test('Fix #21: drainWorkerCache continues when one close rejects (allSettled)', async () => {
+  const calls: string[] = [];
+  const cache = new Map<string, WorkerLlmSet>();
+  cache.set('bad', {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+    close: async () => {
+      calls.push('bad');
+      throw new Error('boom');
+    },
+  });
+  cache.set('good', {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+    close: async () => {
+      calls.push('good');
+    },
+  });
+  await drainWorkerCache(cache);
+  assert.deepEqual(calls.sort(), ['bad', 'good']);
+  assert.equal(cache.size, 0);
+});
+
+test('Fix #21: re-backfilling the same cache entry awaits the previous close before overwriting', async () => {
+  const order: string[] = [];
+  let resolvePrev: (() => void) | undefined;
+  const prevDone = new Promise<void>((r) => {
+    resolvePrev = r;
+  });
+  const entry: WorkerLlmSet = {
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    mainLlm: {} as any,
+    // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+    classifierLlm: {} as any,
+    close: async () => {
+      order.push('prev-close-start');
+      await prevDone;
+      order.push('prev-close-end');
+    },
+  };
+  const newClose = async () => {
+    order.push('new-close');
+  };
+  // Kick off backfill — it will await the prev close (gated).
+  const backfill = backfillWorkerCacheFromHandle(entry, {
+    mcpClients: [],
+    ragRegistry: { get: () => undefined },
+    close: newClose,
+  });
+  await Promise.resolve();
+  assert.deepEqual(order, ['prev-close-start']);
+  // Now release the prev close.
+  resolvePrev?.();
+  await backfill;
+  assert.deepEqual(order, ['prev-close-start', 'prev-close-end']);
+  assert.equal(entry.close, newClose, 'new close installed after prev awaited');
 });

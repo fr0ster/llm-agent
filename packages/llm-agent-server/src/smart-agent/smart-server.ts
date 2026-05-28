@@ -395,6 +395,49 @@ export interface WorkerLlmSet {
    * may fall back to the parent's injected clients.
    */
   mcpClients?: IMcpClient[];
+  /**
+   * Shutdown function returned by the builder's `SmartAgentHandle.close()`
+   * for this worker (Fix #21). Disconnects MCP clients (and any other
+   * builder-owned resources) registered to this worker. Captured by
+   * `backfillWorkerCacheFromHandle` so `_drainWorkerCache()` can call it on
+   * config-reload (PUT /v1/config + hot-reload) and on server shutdown —
+   * without this, the per-worker handle is discarded by `buildSubAgent` and
+   * lazy rebuilds (Fix #18) accumulate MCP connections with no close path.
+   */
+  close?: () => Promise<void>;
+}
+
+/**
+ * Drain every cached worker's `close` (if any), then clear the cache map.
+ * Used by config-reload (PUT /v1/config + hot-reload — Fix #14/18/21) and by
+ * server `close()` to release per-worker MCP connections that were attached
+ * to the discarded `SmartAgentHandle`s.
+ *
+ * IMPORTANT — in-flight caveat: this aborts any request that is mid-call on
+ * a worker's MCP client. That is acceptable for an admin action (config
+ * reload, server shutdown) where the alternative is leaking connections.
+ * Server `close()` calls this AFTER `lifecycle.disposeAll()` so per-session
+ * graphs that reference worker clients are torn down first.
+ *
+ * Uses `Promise.allSettled` so one failing close cannot block the others.
+ */
+export async function drainWorkerCache(
+  cache: Map<string, WorkerLlmSet>,
+): Promise<void> {
+  const closers: Array<Promise<void>> = [];
+  for (const entry of cache.values()) {
+    if (entry.close) {
+      try {
+        closers.push(entry.close());
+      } catch {
+        // sync throw (defensive — close is async by contract)
+      }
+    }
+  }
+  cache.clear();
+  if (closers.length > 0) {
+    await Promise.allSettled(closers);
+  }
 }
 
 /**
@@ -464,13 +507,14 @@ export async function resolveWorkerLlmSet(input: {
  * is already populated (DI path wins) or when the handle has no resource for
  * that slot (worker simply didn't declare one).
  */
-export function backfillWorkerCacheFromHandle(
+export async function backfillWorkerCacheFromHandle(
   entry: WorkerLlmSet,
   handle: {
     mcpClients?: IMcpClient[];
     ragRegistry: { get(name: string): IRag | undefined };
+    close?: () => Promise<void>;
   },
-): void {
+): Promise<void> {
   if (
     (!entry.mcpClients || entry.mcpClients.length === 0) &&
     handle.mcpClients &&
@@ -485,6 +529,20 @@ export function backfillWorkerCacheFromHandle(
   if (!entry.historyRag) {
     const h = handle.ragRegistry.get('history');
     if (h) entry.historyRag = h;
+  }
+  // Capture the per-worker shutdown function (Fix #21). If the entry already
+  // had a close from a previous build (e.g. the same worker name was rebuilt
+  // WITHOUT going through `drainWorkerCache` first — defence in depth), await
+  // the prior close before overwriting so its MCP connections do not leak.
+  if (handle.close) {
+    if (entry.close) {
+      try {
+        await entry.close();
+      } catch {
+        // Best-effort; never block the new build on a stale close failure.
+      }
+    }
+    entry.close = handle.close;
   }
 }
 
@@ -1095,6 +1153,12 @@ export class SmartServer {
     closeFns.push(async () => {
       clearInterval(sweep);
       await lifecycle.disposeAll();
+      // Fix #21: per-session graphs may reference worker MCP clients, so
+      // dispose them FIRST (above), THEN drain per-worker handle.close so the
+      // worker-owned MCP clients themselves disconnect. Ordering matters —
+      // closing MCP clients while a session graph is mid-use would cut its
+      // request short.
+      await drainWorkerCache(this._workerLlmCache);
     });
 
     const startTime = Date.now();
@@ -1182,7 +1246,13 @@ export class SmartServer {
         // cookie-known sessionId still returns it. Clear the worker cache so
         // the next build reads from the just-applied config, then drop every
         // session graph. Failures are non-fatal — log and continue.
-        this._workerLlmCache.clear();
+        // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing
+        // the cache. Hot-reload runs from a synchronous emitter callback, so
+        // fire-and-forget here — same async-tolerance as the invalidateAll
+        // call below.
+        drainWorkerCache(this._workerLlmCache).catch((err: unknown) => {
+          log({ event: 'config_reload_drain_error', error: String(err) });
+        });
         this._lifecycle?.invalidateAll().catch((err: unknown) => {
           log({ event: 'config_reload_invalidate_error', error: String(err) });
         });
@@ -1461,7 +1531,7 @@ export class SmartServer {
     // doc-comment for the rationale.
     if (!injected) {
       const entry = this._workerLlmCache.get(name);
-      if (entry) backfillWorkerCacheFromHandle(entry, handle);
+      if (entry) await backfillWorkerCacheFromHandle(entry, handle);
     }
     return handle.agent;
   }
@@ -2481,7 +2551,9 @@ export class SmartServer {
     // no-op from the consumer's perspective. Failures are non-fatal so the
     // 200 response isn't blocked by a dispose hiccup.
     if (resolvedModels || body.agent) {
-      this._workerLlmCache.clear();
+      // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
+      // cache so MCP clients owned by the discarded handles disconnect.
+      await drainWorkerCache(this._workerLlmCache);
       try {
         await this._lifecycle?.invalidateAll();
       } catch {
