@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
-import { resolveWorkerLlmSet, type WorkerLlmSet } from '../smart-server.js';
+import {
+  backfillWorkerCacheFromHandle,
+  resolveWorkerLlmSet,
+  type WorkerLlmSet,
+} from '../smart-server.js';
 
 // A worker LLM set is built ONCE per worker name and reused by reference on
 // subsequent (per-session) calls — never reconstructed. The factory counts how
@@ -121,6 +125,125 @@ test('resolveWorkerLlmSet caches worker-OWN toolsRag/historyRag/mcpClients and r
   assert.equal(toolsBuilt, 1, 'toolsRag built exactly once');
   assert.equal(historyBuilt, 1, 'historyRag built exactly once');
   assert.equal(mcpBuilt, 1, 'mcpClients built exactly once');
+});
+
+test('backfillWorkerCacheFromHandle: captures handle.mcpClients into empty cache slot (subCfg.mcp auto-connect path)', () => {
+  // Simulates a worker whose MCP came from subCfg.mcp auto-connect (no DI):
+  // resolveWorkerLlmSet's makeMcpClients was undefined → cache.mcpClients
+  // empty. After the primary subBuilder.build() finishes, the handle holds
+  // the connected clients — the backfill must capture them BY REFERENCE so
+  // per-session re-wires read the worker's own MCP, not the parent's empty
+  // list.
+  const fakeClient = { id: 'auto-connected' } as unknown as IMcpClient;
+  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const handle = {
+    mcpClients: [fakeClient],
+    ragRegistry: { get: () => undefined },
+  };
+  backfillWorkerCacheFromHandle(entry, handle);
+  assert.equal(
+    entry.mcpClients?.[0],
+    fakeClient,
+    'mcpClients backfilled by reference',
+  );
+  // Idempotent: second call must not overwrite.
+  const other = { id: 'other' } as unknown as IMcpClient;
+  backfillWorkerCacheFromHandle(entry, {
+    mcpClients: [other],
+    ragRegistry: { get: () => undefined },
+  });
+  assert.equal(
+    entry.mcpClients?.[0],
+    fakeClient,
+    'subsequent backfill leaves populated slot intact (DI / first-build wins)',
+  );
+});
+
+test('backfillWorkerCacheFromHandle: captures toolsRag/historyRag from ragRegistry when not already cached', () => {
+  const tools = { id: 'tools' } as unknown as IRag;
+  const history = { id: 'history' } as unknown as IRag;
+  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  const handle = {
+    mcpClients: [],
+    ragRegistry: {
+      get: (name: string) =>
+        name === 'tools' ? tools : name === 'history' ? history : undefined,
+    },
+  };
+  backfillWorkerCacheFromHandle(entry, handle);
+  assert.equal(entry.toolsRag, tools, 'toolsRag backfilled from registry');
+  assert.equal(
+    entry.historyRag,
+    history,
+    'historyRag backfilled from registry',
+  );
+});
+
+test('backfillWorkerCacheFromHandle: empty handle.mcpClients leaves cache slot undefined (re-wire falls back to parent)', () => {
+  // biome-ignore lint/suspicious/noExplicitAny: stub for unused LLM slots
+  const entry: WorkerLlmSet = { mainLlm: {} as any, classifierLlm: {} as any };
+  backfillWorkerCacheFromHandle(entry, {
+    mcpClients: [],
+    ragRegistry: { get: () => undefined },
+  });
+  assert.equal(entry.mcpClients, undefined, 'empty mcp list not captured');
+  assert.equal(entry.toolsRag, undefined);
+  assert.equal(entry.historyRag, undefined);
+});
+
+test('per-session injected slot priority: worker-cached mcpClients wins over parent-fallback (review HIGH #7)', () => {
+  // Documents the priority encoded at buildSessionAgent's call site:
+  //   injected.mcpClients = cached.mcpClients ?? parts.mcpClients
+  //   injected.toolsRag   = cached.toolsRag   ?? parts.toolsRag
+  // After the primary buildSubAgent backfills cached.mcpClients/toolsRag from
+  // the built handle (e.g. workers configured with `mcp: ...`), per-session
+  // re-wires pass the worker's OWN connected clients/RAG, not the parent's.
+  const cachedMcp: IMcpClient[] = [
+    { id: 'worker-mcp' } as unknown as IMcpClient,
+  ];
+  const parentMcp: IMcpClient[] = [
+    { id: 'parent-mcp' } as unknown as IMcpClient,
+  ];
+  const cachedTools = { id: 'worker-tools' } as unknown as IRag;
+  const parentTools = { id: 'parent-tools' } as unknown as IRag;
+
+  // worker-cached present → wins
+  const cachedSet: { mcpClients?: IMcpClient[]; toolsRag?: IRag } = {
+    mcpClients: cachedMcp,
+    toolsRag: cachedTools,
+  };
+  const parts = { mcpClients: parentMcp, toolsRag: parentTools };
+  const injectedMcp =
+    cachedSet.mcpClients && cachedSet.mcpClients.length > 0
+      ? cachedSet.mcpClients
+      : parts.mcpClients;
+  const injectedTools = cachedSet.toolsRag ?? parts.toolsRag;
+  assert.equal(injectedMcp, cachedMcp, 'worker-cached MCP clients chosen');
+  assert.equal(injectedTools, cachedTools, 'worker-cached toolsRag chosen');
+
+  // worker-cached absent → parent fallback
+  const leanSet: { mcpClients?: IMcpClient[]; toolsRag?: IRag } = {};
+  const injectedMcp2 =
+    leanSet.mcpClients && leanSet.mcpClients.length > 0
+      ? leanSet.mcpClients
+      : parts.mcpClients;
+  const injectedTools2 = leanSet.toolsRag ?? parts.toolsRag;
+  assert.equal(injectedMcp2, parentMcp, 'parent MCP clients used as fallback');
+  assert.equal(injectedTools2, parentTools, 'parent toolsRag used as fallback');
+
+  // worker-cached present but EMPTY mcpClients array → parent fallback
+  const emptyMcpSet: { mcpClients?: IMcpClient[] } = { mcpClients: [] };
+  const injectedMcp3 =
+    emptyMcpSet.mcpClients && emptyMcpSet.mcpClients.length > 0
+      ? emptyMcpSet.mcpClients
+      : parts.mcpClients;
+  assert.equal(
+    injectedMcp3,
+    parentMcp,
+    'empty cached mcpClients array falls back to parent',
+  );
 });
 
 test('worker WITHOUT own toolsRag/MCP factories leaves those cache slots undefined (re-wire falls back to injected)', async () => {

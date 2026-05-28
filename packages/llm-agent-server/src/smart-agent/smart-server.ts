@@ -447,6 +447,48 @@ export async function resolveWorkerLlmSet(input: {
 }
 
 /**
+ * Backfill the per-worker cache entry from the BUILT handle (review HIGH #7).
+ *
+ * The primary `buildSubAgent` populates `cached.mcpClients`/`toolsRag`/
+ * `historyRag` only when the worker config provided DI factories. Workers
+ * configured with `subCfg.mcp: ...` (regular config that triggers the
+ * builder's own auto-connect) or with `subCfg.rag: ...` whose RAG is owned
+ * by the builder leave those slots empty — so per-session re-wires would
+ * fall back to the PARENT's MCP/RAG, losing the worker's own connection.
+ *
+ * After the builder finishes, this helper captures what the handle actually
+ * holds and stores it BY REFERENCE on the cache entry. Subsequent per-session
+ * re-wires read the same slots and find the worker's own resources.
+ *
+ * Pure helper, mutates `entry` in place. No-op when the corresponding slot
+ * is already populated (DI path wins) or when the handle has no resource for
+ * that slot (worker simply didn't declare one).
+ */
+export function backfillWorkerCacheFromHandle(
+  entry: WorkerLlmSet,
+  handle: {
+    mcpClients?: IMcpClient[];
+    ragRegistry: { get(name: string): IRag | undefined };
+  },
+): void {
+  if (
+    (!entry.mcpClients || entry.mcpClients.length === 0) &&
+    handle.mcpClients &&
+    handle.mcpClients.length > 0
+  ) {
+    entry.mcpClients = handle.mcpClients;
+  }
+  if (!entry.toolsRag) {
+    const t = handle.ragRegistry.get('tools');
+    if (t) entry.toolsRag = t;
+  }
+  if (!entry.historyRag) {
+    const h = handle.ragRegistry.get('history');
+    if (h) entry.historyRag = h;
+  }
+}
+
+/**
  * Share the parent RAG registry with subagents (per-session worker re-wire).
  * Session/user/global collections written at the top level become visible to
  * workers; the per-call scope filter (`rag-query.ts`) isolates by
@@ -1362,6 +1404,15 @@ export class SmartServer {
     }
 
     const handle = await subBuilder.build();
+
+    // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
+    // Only runs on the primary build path (no `injected`) so per-session
+    // re-wires never overwrite the cache. See backfillWorkerCacheFromHandle's
+    // doc-comment for the rationale.
+    if (!injected) {
+      const entry = this._workerLlmCache.get(name);
+      if (entry) backfillWorkerCacheFromHandle(entry, handle);
+    }
     return handle.agent;
   }
 
@@ -1408,6 +1459,16 @@ export class SmartServer {
         if (!cached) {
           throw new Error(`worker LLM set not cached for '${sub.name}'`);
         }
+        // Per-worker injected slot priority (review HIGH #7):
+        //   worker-cached (from the primary build, includes backfilled
+        //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
+        //   fallback. Encoded HERE so buildSubAgent does not need to know
+        //   the difference; it just consumes injected.mcpClients/toolsRag.
+        const injectedMcpClients =
+          cached.mcpClients && cached.mcpClients.length > 0
+            ? cached.mcpClients
+            : parts.mcpClients;
+        const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
         const subAgent = await this.buildSubAgent(
           sub.name,
           sub.config,
@@ -1415,8 +1476,8 @@ export class SmartServer {
           this._mergedEmbedderFactories ?? {},
           {
             ragRegistry: parts.ragRegistry,
-            toolsRag: parts.toolsRag,
-            mcpClients: parts.mcpClients,
+            toolsRag: injectedToolsRag,
+            mcpClients: injectedMcpClients,
             requestLogger: parts.logger,
             mainLlm: cached.mainLlm,
             classifierLlm: cached.classifierLlm,
