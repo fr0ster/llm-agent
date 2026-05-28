@@ -1,6 +1,7 @@
 import type { ContextPath } from './context-path.js';
 import type { DagPlan } from './dag-plan.js';
 import type { IErrorStrategy } from './error-strategy.js';
+import type { OnPartial } from './streaming.js';
 import type { ISubAgent } from './subagent.js';
 
 export interface IInterpreter<TInput, TOutput> {
@@ -26,6 +27,10 @@ export interface InterpretContext {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
+  /** Forwarded into each `worker.run({ ..., onPartial })`; the
+   *  interpreter annotates `nodeId` before calling and emits
+   *  `node-start` / `node-end` itself. */
+  onPartial?: OnPartial;
 }
 
 export interface NodeResult {

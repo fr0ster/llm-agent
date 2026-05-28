@@ -4,7 +4,8 @@ import type {
   FinalizerInput,
   FinalizerResult,
   IFinalizer,
-} from '../finalizer.js';
+  OnPartial,
+} from '../../index.js';
 
 test('IFinalizer contract: minimal happy-path shape compiles', async () => {
   const stub: IFinalizer = {
@@ -21,4 +22,16 @@ test('IFinalizer contract: minimal happy-path shape compiles', async () => {
   });
   assert.equal(res.output, 'verbatim');
   assert.equal(stub.name, 'stub');
+});
+
+test('FinalizerInput exposes optional onPartial', () => {
+  const op: OnPartial = () => {};
+  const input: FinalizerInput = {
+    prompt: 'p',
+    objective: 'o',
+    interpreterOutput: 'i',
+    executionTrace: [],
+    onPartial: op,
+  };
+  assert.equal(typeof input.onPartial, 'function');
 });

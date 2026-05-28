@@ -1,4 +1,5 @@
 import type { ContextPath } from './context-path.js';
+import type { OnPartial } from './streaming.js';
 import type { LlmUsage } from './types.js';
 
 export interface FinalizerInput {
@@ -14,6 +15,10 @@ export interface FinalizerInput {
   sessionId?: string;
   signal?: AbortSignal;
   trace?: { traceId: string };
+  /** Optional streaming sink for finalizer-produced content.
+   *  LlmFinalizer streams synthesis deltas; Passthrough/Template
+   *  emit one chunk equal to their full output. */
+  onPartial?: OnPartial;
 }
 
 export interface FinalizerResult {
