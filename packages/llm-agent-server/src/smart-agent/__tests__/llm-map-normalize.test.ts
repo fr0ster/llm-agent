@@ -155,7 +155,8 @@ test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)',
   const map = normalizeLlmConfig({
     main: { provider: 'deepseek', apiKey: 'k' },
     finalizer: { provider: 'sap-ai-sdk', apiKey: 'k', model: 'sonnet' },
-  } as never)!;
+  } as never);
+  assert.ok(map);
   const f = await buildFinalizer(
     { type: 'llm', finalizerLlm: 'finalizer', systemPrompt: 'CUSTOM' },
     map,
@@ -172,7 +173,8 @@ test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)',
 test('buildFinalizer: type=llm falls back to llm.main when finalizerLlm omitted', async () => {
   const map = normalizeLlmConfig({
     main: { provider: 'deepseek', apiKey: 'k' },
-  } as never)!;
+  } as never);
+  assert.ok(map);
   let askedFor: string | undefined;
   const f = await buildFinalizer(
     { type: 'llm' },
@@ -234,4 +236,14 @@ test('normalizeLlmConfig: flat sap-ai-sdk config (no apiKey) is detected as flat
   const out = normalizeLlmConfig(flat);
   assert.ok(out);
   assert.equal(out?.main, flat);
+});
+
+test('subagent llm: map shape with main is honored (regression for finding #2)', () => {
+  const sub = {
+    main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+  } as never;
+  const out = normalizeLlmConfig(sub);
+  assert.ok(out);
+  assert.equal(out.main.apiKey, 'k');
+  assert.equal(out.main.model, 'm');
 });
