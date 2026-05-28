@@ -218,3 +218,20 @@ test('buildFinalizer: type=llm throws ConfigError when neither map nor pipeline 
     /requires an LLM config/,
   );
 });
+
+test('normalizeLlmConfig: flat ollama config (no apiKey) is detected as flat', () => {
+  const flat = { provider: 'ollama', model: 'llama3' } as never;
+  const out = normalizeLlmConfig(flat);
+  assert.ok(out);
+  assert.equal(out?.main, flat);
+});
+
+test('normalizeLlmConfig: flat sap-ai-sdk config (no apiKey) is detected as flat', () => {
+  const flat = {
+    provider: 'sap-ai-sdk',
+    model: 'anthropic--claude-4.6-sonnet',
+  } as never;
+  const out = normalizeLlmConfig(flat);
+  assert.ok(out);
+  assert.equal(out?.main, flat);
+});

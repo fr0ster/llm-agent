@@ -38,18 +38,25 @@ export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
 
 /**
  * Detect whether an object is a flat SmartServerLlmConfig shape.
- * Flat shape is identified by the presence of `apiKey` as a string at the
- * top level (which map entries do not have — maps have named role-keys whose
- * VALUES are the individual SmartServerLlmConfig objects).
+ * Flat shape is identified by the presence of ANY of the known flat-shape
+ * fields: `provider`, `apiKey`, `model`, or `url`. This covers keyless
+ * providers (Ollama, SAP AI Core) that omit `apiKey` — using `apiKey`-only
+ * detection silently misclassified those configs as a "map" shape.
  */
 function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
-  return typeof (input as SmartServerLlmConfig).apiKey === 'string';
+  const flat = input as Partial<SmartServerLlmConfig>;
+  return (
+    typeof flat.provider === 'string' ||
+    typeof flat.apiKey === 'string' ||
+    typeof flat.model === 'string' ||
+    typeof flat.url === 'string'
+  );
 }
 
 /**
  * Normalize the optional top-level `llm:` block.
  * - undefined → undefined (pipeline-only configs stay valid)
- * - flat shape (has `apiKey`) → { main: flat } (backward compat)
+ * - flat shape (has `provider` | `apiKey` | `model` | `url`) → { main: flat } (backward compat)
  * - map shape → must include `main`; returned as NormalizedLlmMap
  */
 export function normalizeLlmConfig(
