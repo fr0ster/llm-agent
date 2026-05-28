@@ -20,7 +20,6 @@ import type {
   IRequestLogger,
   IReviewStrategy,
   ISkillManager,
-  ISubAgent,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -186,7 +185,7 @@ export interface SmartServerCircuitBreakerConfig {
 export interface SmartServerConfig {
   port?: number;
   host?: string;
-  llm: SmartServerLlmConfig;
+  llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
   rag?: SmartServerRagConfig;
   mcp?: SmartServerMcpConfig;
   agent?: SmartServerAgentConfig;
@@ -672,8 +671,12 @@ export class SmartServer {
     // ---- Composition root: resolve config → interfaces --------------------
 
     // LLM resolution
+    // TODO Task 12: route through normalizeLlmConfig/resolveLlmConfig.
+    // For now cast to flat shape so existing flat-schema reads keep working
+    // until the full map-routing is wired in Task 12.
+    const flatLlm = this.cfg.llm as SmartServerLlmConfig | undefined;
     const mainTemp = Number(
-      pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7,
+      pipeline?.llm?.main?.temperature ?? flatLlm?.temperature ?? 0.7,
     );
     const mainLlm = pipeline?.llm?.main
       ? await makeLlm(pipeline.llm.main, mainTemp)
@@ -681,17 +684,17 @@ export class SmartServer {
           {
             // ?? 'deepseek' is a TS type-narrowing net only; the config validator
             // rejects a missing flat-schema provider before this runs.
-            provider: this.cfg.llm.provider ?? 'deepseek',
-            apiKey: this.cfg.llm.apiKey,
-            baseURL: this.cfg.llm.url,
-            model: this.cfg.llm.model,
+            provider: flatLlm?.provider ?? 'deepseek',
+            apiKey: flatLlm?.apiKey ?? '',
+            baseURL: flatLlm?.url,
+            model: flatLlm?.model,
           },
           mainTemp,
         );
 
     const classifierTemp = Number(
       pipeline?.llm?.classifier?.temperature ??
-        this.cfg.llm.classifierTemperature ??
+        flatLlm?.classifierTemperature ??
         0.1,
     );
     const classifierLlm = pipeline?.llm?.classifier
@@ -702,10 +705,10 @@ export class SmartServer {
             {
               // ?? 'deepseek' is a TS type-narrowing net only; the config validator
               // rejects a missing flat-schema provider before this runs.
-              provider: this.cfg.llm.provider ?? 'deepseek',
-              apiKey: this.cfg.llm.apiKey,
-              baseURL: this.cfg.llm.url,
-              model: this.cfg.llm.model,
+              provider: flatLlm?.provider ?? 'deepseek',
+              apiKey: flatLlm?.apiKey ?? '',
+              baseURL: flatLlm?.url,
+              model: flatLlm?.model,
             },
             classifierTemp,
           );
@@ -985,9 +988,14 @@ export class SmartServer {
         // Reuse the registry built above — same ISubAgent instances already
         // passed to builder.withSubAgents(). No second buildSubAgent calls.
         const oracleName = coordCfg.stateOracle as string | undefined;
-        let stateOracle: ISubAgent | undefined;
+        let stateOracle:
+          | import('@mcp-abap-adt/llm-agent').IStateOracle
+          | undefined;
         if (oracleName) {
-          stateOracle = registry.get(oracleName);
+          // TODO Task 12: wrap in SubAgentStateOracle; for now cast to IStateOracle.
+          stateOracle = registry.get(oracleName) as
+            | import('@mcp-abap-adt/llm-agent').IStateOracle
+            | undefined;
           if (!stateOracle) {
             throw new Error(
               `coordinator.stateOracle '${oracleName}' is not a declared subagent`,
@@ -1387,12 +1395,15 @@ export class SmartServer {
     // re-wires (`injected` set) read from it via the same call below — the
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
+    // TODO Task 12: route through normalizeLlmConfig/resolveLlmConfig.
+    // Cast to flat shape until map-routing is wired in Task 12.
+    const subFlatLlm = subCfg.llm as SmartServerLlmConfig | undefined;
     const mainTemp = Number(
-      subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,
+      subPipeline?.llm?.main?.temperature ?? subFlatLlm?.temperature ?? 0.7,
     );
     const classifierTemp = Number(
       subPipeline?.llm?.classifier?.temperature ??
-        subCfg.llm.classifierTemperature ??
+        subFlatLlm?.classifierTemperature ??
         0.1,
     );
     const cached = await resolveWorkerLlmSet({
@@ -1407,10 +1418,10 @@ export class SmartServer {
                 // ?? 'deepseek' is a TS type-narrowing net only; the config
                 // validator rejects a missing flat-schema provider before
                 // this runs.
-                provider: subCfg.llm.provider ?? 'deepseek',
-                apiKey: subCfg.llm.apiKey,
-                baseURL: subCfg.llm.url,
-                model: subCfg.llm.model,
+                provider: subFlatLlm?.provider ?? 'deepseek',
+                apiKey: subFlatLlm?.apiKey ?? '',
+                baseURL: subFlatLlm?.url,
+                model: subFlatLlm?.model,
               },
               mainTemp,
             ),
@@ -1421,10 +1432,10 @@ export class SmartServer {
             ? makeLlm(subPipeline.llm.main, classifierTemp)
             : makeLlm(
                 {
-                  provider: subCfg.llm.provider ?? 'deepseek',
-                  apiKey: subCfg.llm.apiKey,
-                  baseURL: subCfg.llm.url,
-                  model: subCfg.llm.model,
+                  provider: subFlatLlm?.provider ?? 'deepseek',
+                  apiKey: subFlatLlm?.apiKey ?? '',
+                  baseURL: subFlatLlm?.url,
+                  model: subFlatLlm?.model,
                 },
                 classifierTemp,
               ),
@@ -1642,8 +1653,11 @@ export class SmartServer {
         b = b.withDagCoordinator({
           ...tpl.deps,
           workers,
+          // TODO Task 12: wrap in SubAgentStateOracle; for now cast to IStateOracle.
           stateOracle: tpl.oracleName
-            ? registry.get(tpl.oracleName)
+            ? (registry.get(tpl.oracleName) as
+                | import('@mcp-abap-adt/llm-agent').IStateOracle
+                | undefined)
             : undefined,
         });
       }

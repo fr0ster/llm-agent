@@ -479,3 +479,69 @@ describe('first-run YAML template', () => {
     assert.ok(cfg.llm.apiKey);
   });
 });
+
+describe('validateResolvedConfig — llm map shape', () => {
+  it('flat llm config still validates (backward-compat)', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        {
+          llm: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+          mode: 'agent',
+        },
+        {},
+      ),
+    );
+  });
+
+  it('map shape with main validates', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        {
+          llm: {
+            main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+            planner: { provider: 'openai', apiKey: 'k2', model: 'gpt' },
+          },
+          mode: 'agent',
+        },
+        {},
+      ),
+    );
+  });
+
+  it('map shape without main fails with a clear error', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: {
+              planner: { provider: 'openai', apiKey: 'k', model: 'gpt' },
+            },
+            mode: 'agent',
+          },
+          {},
+        ),
+      /llm\.main.*required/i,
+    );
+  });
+
+  it("map's named entry with missing provider fails", () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          {
+            llm: {
+              main: { provider: 'deepseek', apiKey: 'k', model: 'm' },
+              planner: { apiKey: 'k', model: 'gpt' },
+            },
+            mode: 'agent',
+          },
+          {},
+        ),
+      /llm\.planner\.provider.*required/i,
+    );
+  });
+});

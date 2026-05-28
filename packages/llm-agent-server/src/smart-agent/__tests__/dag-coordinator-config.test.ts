@@ -66,8 +66,8 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /unknown type 'bogus'/,
     );
   });
-  it('accepts valid planner.plannerLlm selectors', () => {
-    for (const sel of ['main', 'planner', 'helper']) {
+  it('accepts valid planner.plannerLlm selectors (any string is valid in map mode)', () => {
+    for (const sel of ['main', 'planner', 'helper', 'bogus', 'custom-llm']) {
       assert.doesNotThrow(() =>
         assertCoordinatorConfigShape({
           planner: { type: 'llm', plannerLlm: sel },
@@ -75,13 +75,13 @@ describe('coordinator config shape (DAG vs linear)', () => {
       );
     }
   });
-  it('rejects an unknown planner.plannerLlm', () => {
+  it('rejects a non-string planner.plannerLlm', () => {
     assert.throws(
       () =>
         assertCoordinatorConfigShape({
-          planner: { type: 'llm', plannerLlm: 'bogus' },
+          planner: { type: 'llm', plannerLlm: 42 },
         }),
-      /plannerLlm must be one of main \| planner \| helper/,
+      /plannerLlm must be a string/,
     );
   });
   it('rejects a non-object planner', () => {
@@ -116,14 +116,14 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /reviewer: unknown type 'bogus'/,
     );
   });
-  it('rejects a bad reviewer.plannerLlm', () => {
+  it('rejects a non-string reviewer.plannerLlm', () => {
     assert.throws(
       () =>
         assertCoordinatorConfigShape({
           planner: { type: 'llm' },
-          reviewer: { type: 'llm', plannerLlm: 'bogus' },
+          reviewer: { type: 'llm', plannerLlm: 42 },
         }),
-      /reviewer\.plannerLlm must be one of/,
+      /reviewer\.plannerLlm must be a string/,
     );
   });
   it('rejects reviewer in a linear coordinator', () => {
