@@ -26,6 +26,9 @@ export interface LlmCallEntry {
   estimated?: boolean;
   scope?: 'initialization' | 'request';
   detail?: string;
+  /** Request correlation id (the server's traceId). Routes the entry to the
+   *  per-request delta; absent → session-cumulative only. */
+  requestId?: string;
 }
 
 export interface RagQueryEntry {
@@ -57,12 +60,16 @@ export interface RequestSummary {
 
 export interface IRequestLogger {
   logLlmCall(entry: LlmCallEntry): void;
-  logRagQuery(entry: RagQueryEntry): void;
-  logToolCall(entry: ToolCallEntry): void;
-  /** Mark the start of a request for wall-clock duration tracking. */
-  startRequest(): void;
-  /** Mark the end of a request for wall-clock duration tracking. */
-  endRequest(): void;
-  getSummary(): RequestSummary;
+  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void;
+  logToolCall(entry: ToolCallEntry & { requestId?: string }): void;
+  /** Enter a request scope. Nested-safe: depth-counted, bucket created if absent,
+   *  NEVER clears an existing bucket. */
+  startRequest(requestId?: string): void;
+  /** Leave a request scope. Depth-counted; NEVER deletes the bucket. */
+  endRequest(requestId?: string): void;
+  /** Explicitly free a request delta. The top-level owner (server) calls this
+   *  AFTER reading getSummary(requestId) for the response usage. */
+  dropRequest(requestId?: string): void;
+  getSummary(requestId?: string): RequestSummary;
   reset(): void;
 }

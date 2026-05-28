@@ -37,7 +37,7 @@ export class DefaultRequestLogger implements IRequestLogger {
   private requestStartMs = 0;
   private requestDurationMs = 0;
 
-  startRequest(): void {
+  startRequest(_requestId?: string): void {
     this.requestLlmCalls = [];
     this.ragQueryEntries = [];
     this.toolCallEntries = [];
@@ -45,11 +45,14 @@ export class DefaultRequestLogger implements IRequestLogger {
     this.requestStartMs = Date.now();
   }
 
-  endRequest(): void {
+  endRequest(_requestId?: string): void {
     this.requestDurationMs = this.requestStartMs
       ? Date.now() - this.requestStartMs
       : 0;
   }
+
+  /** Single-request logger has no nesting/delta map — dropRequest is a no-op. */
+  dropRequest(_requestId?: string): void {}
 
   logLlmCall(entry: LlmCallEntry): void {
     if (entry.scope === 'initialization') {
@@ -59,15 +62,15 @@ export class DefaultRequestLogger implements IRequestLogger {
     }
   }
 
-  logRagQuery(entry: RagQueryEntry): void {
+  logRagQuery(entry: RagQueryEntry & { requestId?: string }): void {
     this.ragQueryEntries.push(entry);
   }
 
-  logToolCall(entry: ToolCallEntry): void {
+  logToolCall(entry: ToolCallEntry & { requestId?: string }): void {
     this.toolCallEntries.push(entry);
   }
 
-  getSummary(): RequestSummary {
+  getSummary(_requestId?: string): RequestSummary {
     const byModel: Record<string, TokenBucket> = {};
     const byComponent: Record<string, TokenBucket> = {};
     const byCategory: Record<string, TokenBucket> = {};

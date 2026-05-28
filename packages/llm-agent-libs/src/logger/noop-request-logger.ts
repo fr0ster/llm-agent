@@ -17,11 +17,12 @@ const EMPTY_SUMMARY: RequestSummary = {
 
 export class NoopRequestLogger implements IRequestLogger {
   logLlmCall(_entry: LlmCallEntry): void {}
-  logRagQuery(_entry: RagQueryEntry): void {}
-  logToolCall(_entry: ToolCallEntry): void {}
-  startRequest(): void {}
-  endRequest(): void {}
-  getSummary(): RequestSummary {
+  logRagQuery(_entry: RagQueryEntry & { requestId?: string }): void {}
+  logToolCall(_entry: ToolCallEntry & { requestId?: string }): void {}
+  startRequest(_requestId?: string): void {}
+  endRequest(_requestId?: string): void {}
+  dropRequest(_requestId?: string): void {}
+  getSummary(_requestId?: string): RequestSummary {
     return { ...EMPTY_SUMMARY, byModel: {}, byComponent: {}, byCategory: {} };
   }
   reset(): void {}
