@@ -151,6 +151,7 @@ export type {
   StateOracleInput,
   StateOracleResult,
 } from './state-oracle.js';
+export type { OnPartial, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
   ISubAgentInput,
