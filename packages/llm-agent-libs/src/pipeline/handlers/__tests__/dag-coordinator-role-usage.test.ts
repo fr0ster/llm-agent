@@ -292,6 +292,71 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     assert.equal(summary.byModel['reviewer-model']?.totalTokens, 23);
   });
 
+  it('logs planner usage on parse-error path (failed-call spend not lost)', async () => {
+    // MEDIUM finding: a parse-/shape-error path through the planner adapter
+    // still consumed LLM tokens. The adapter attaches `res.usage` onto the
+    // thrown Error via withUsage; runRole's outer catch reads `.usage` from
+    // the Error and bills it via logRoleUsage before rethrowing.
+    const usage: LlmUsage = {
+      promptTokens: 17,
+      completionTokens: 5,
+      totalTokens: 22,
+    };
+    const planner: IPlanner = {
+      name: 'p',
+      model: 'planner-model',
+      plan: async () => {
+        const err = new Error('Planner output contained malformed JSON: ...');
+        (err as Error & { usage?: LlmUsage }).usage = usage;
+        throw err;
+      },
+    };
+    const { ctx, logger } = makeCtxWithLogger('trace-planner-parse');
+    const h = new DagCoordinatorHandler({
+      planner,
+      interpreter: interpAlwaysOk(),
+      workers: new Map(),
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, false); // handler bails with COORDINATOR_PLAN_FAILED
+    const summary = logger.getSummary('trace-planner-parse');
+    assert.equal(summary.byComponent.planner?.totalTokens, 22);
+    assert.equal(summary.byComponent.planner?.requests, 1);
+    assert.equal(summary.byModel['planner-model']?.totalTokens, 22);
+    assert.equal(summary.byCategory.auxiliary?.totalTokens, 22);
+  });
+
+  it('logs reviewer usage on parse-error path', async () => {
+    const usage: LlmUsage = {
+      promptTokens: 30,
+      completionTokens: 6,
+      totalTokens: 36,
+    };
+    const plan: DagPlan = { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 };
+    const planner: IPlanner = { name: 'p', plan: async () => ({ plan }) };
+    const reviewer: IReviewStrategy = {
+      name: 'r',
+      model: 'reviewer-model',
+      review: async () => {
+        const err = new Error("Reviewer verdict must have a boolean 'pass'");
+        (err as Error & { usage?: LlmUsage }).usage = usage;
+        throw err;
+      },
+    };
+    const { ctx, logger } = makeCtxWithLogger('trace-reviewer-parse');
+    const h = new DagCoordinatorHandler({
+      planner,
+      interpreter: interpAlwaysOk(),
+      workers: new Map(),
+      reviewer,
+    });
+    const ok = await h.execute(ctx, {}, {} as never);
+    assert.equal(ok, false);
+    const summary = logger.getSummary('trace-reviewer-parse');
+    assert.equal(summary.byComponent.reviewer?.totalTokens, 36);
+    assert.equal(summary.byModel['reviewer-model']?.totalTokens, 36);
+  });
+
   it('falls back to model="unknown" when planner does not expose model', async () => {
     const usage: LlmUsage = {
       promptTokens: 10,

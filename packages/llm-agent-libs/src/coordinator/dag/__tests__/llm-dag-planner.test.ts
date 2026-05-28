@@ -128,6 +128,63 @@ describe('LlmDagPlanner', () => {
     );
   });
 
+  it('attaches LLM usage onto parse-error Error so parse-path spend is not lost', async () => {
+    // MEDIUM finding: a failed (parse-error) planner LLM call still spent
+    // tokens. Without the usage attached to the thrown Error, the coordinator
+    // discards that spend (real money, invisible).
+    const usage = { promptTokens: 13, completionTokens: 4, totalTokens: 17 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: 'not json at all', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /JSON object/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 17,
+    );
+  });
+
+  it('attaches LLM usage onto malformed-JSON Error', async () => {
+    const usage = { promptTokens: 9, completionTokens: 2, totalTokens: 11 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{ not really json }', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /malformed JSON/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 11,
+    );
+  });
+
+  it('attaches LLM usage onto shape-error Error (missing goal)', async () => {
+    const usage = { promptTokens: 6, completionTokens: 1, totalTokens: 7 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"nodes":[{"id":"a"}]}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /missing a goal/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 7,
+    );
+  });
+
   it('attaches LLM usage onto NeedInfoSignal so signal-path spend is not lost', async () => {
     const usage = { promptTokens: 7, completionTokens: 3, totalTokens: 10 };
     const stub = {

@@ -186,6 +186,16 @@ export class DagCoordinatorHandler implements IStageHandler {
             });
             continue;
           }
+          // MEDIUM finding: a role that throws a plain Error (parse-/shape-error
+          // from LlmDagPlanner / LlmReviewStrategy) ALSO consumed LLM tokens;
+          // those adapters now attach `res.usage` onto the Error via withUsage.
+          // Bill it here before rethrowing so the failed call is still visible
+          // in /v1/usage and the per-request delta (otherwise: real spend,
+          // invisible).
+          const failedUsage = (err as { usage?: LlmUsage }).usage;
+          if (failedUsage) {
+            logRoleUsage(component, model, failedUsage, Date.now() - start);
+          }
           throw err;
         }
       }

@@ -187,6 +187,60 @@ describe('LlmReviewStrategy', () => {
     );
   });
 
+  it('review() attaches LLM usage onto malformed-JSON Error (parse-path spend not lost)', async () => {
+    const usage = { promptTokens: 11, completionTokens: 3, totalTokens: 14 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{ not json }', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /malformed JSON/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 14,
+    );
+  });
+
+  it('review() attaches LLM usage onto shape-error Error (non-boolean pass)', async () => {
+    const usage = { promptTokens: 8, completionTokens: 2, totalTokens: 10 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"pass":"yes"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /boolean 'pass'/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 10,
+    );
+  });
+
+  it('reviewExecutionFailure attaches LLM usage onto parse-error Error', async () => {
+    const usage = { promptTokens: 12, completionTokens: 3, totalTokens: 15 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: 'not really json', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).reviewExecutionFailure(failInput),
+      (e: unknown) =>
+        e instanceof Error &&
+        /JSON object/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 15,
+    );
+  });
+
   it('reviewExecutionFailure attaches LLM usage onto NeedInfoSignal', async () => {
     const usage = { promptTokens: 6, completionTokens: 2, totalTokens: 8 };
     const stub = {
