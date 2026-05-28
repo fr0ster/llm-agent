@@ -14,7 +14,9 @@ describe('handler registry — DAG coordinator', () => {
   it('registers DagCoordinatorHandler under the coordinator stage when dagCoordinator is set', () => {
     const planner = {
       name: 'p',
-      plan: async () => ({ nodes: [{ id: 'n', goal: 'g' }], createdAt: 0 }),
+      plan: async () => ({
+        plan: { nodes: [{ id: 'n', goal: 'g' }], createdAt: 0 },
+      }),
     } as IPlanner;
     const interpreter = {
       name: 'i',
@@ -65,7 +67,9 @@ describe('handler registry — DAG coordinator', () => {
   it('DAG takes precedence when both coordinator and dagCoordinator are set', () => {
     const planner = {
       name: 'p',
-      plan: async () => ({ nodes: [{ id: 'n', goal: 'g' }], createdAt: 0 }),
+      plan: async () => ({
+        plan: { nodes: [{ id: 'n', goal: 'g' }], createdAt: 0 },
+      }),
     } as IPlanner;
     const interpreter = {
       name: 'i',

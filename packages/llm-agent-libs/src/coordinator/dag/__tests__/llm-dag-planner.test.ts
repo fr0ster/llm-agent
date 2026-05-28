@@ -22,16 +22,16 @@ describe('LlmDagPlanner', () => {
         '{"objective":"O","nodes":[{"id":"a","goal":"X","agent":"w"},{"id":"b","goal":"Y","agent":"w","dependsOn":["a"]}]}',
       ),
     ).plan(input);
-    assert.equal(p.objective, 'O');
-    assert.equal(p.nodes.length, 2);
-    assert.deepEqual(p.nodes[1].dependsOn, ['a']);
+    assert.equal(p.plan.objective, 'O');
+    assert.equal(p.plan.nodes.length, 2);
+    assert.deepEqual(p.plan.nodes[1].dependsOn, ['a']);
   });
 
   it('accepts a single-node plan (progressive complexity)', async () => {
     const p = await new LlmDagPlanner(
       llm('{"nodes":[{"id":"n1","goal":"answer"}]}'),
     ).plan(input);
-    assert.equal(p.nodes.length, 1);
+    assert.equal(p.plan.nodes.length, 1);
   });
 
   it('throws on malformed JSON', async () => {

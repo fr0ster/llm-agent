@@ -1,9 +1,9 @@
 import type {
-  DagPlan,
   ILlm,
   IPlanner,
   PlanNode,
   PlannerInput,
+  PlannerResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
@@ -40,7 +40,7 @@ export class LlmDagPlanner implements IPlanner {
     });
   }
 
-  async plan(input: PlannerInput): Promise<DagPlan> {
+  async plan(input: PlannerInput): Promise<PlannerResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -155,13 +155,16 @@ export class LlmDagPlanner implements IPlanner {
       };
     });
     return {
-      nodes,
-      objective: parsed.objective as string | undefined,
-      rationale: parsed.rationale as string | undefined,
-      createdAt: Date.now(),
-      // Forward the underlying ILlm.chat usage so the coordinator can
-      // attribute planner-LLM spend to the session/request logger (HIGH
-      // finding: planner+reviewer overhead must not escape /v1/usage).
+      plan: {
+        nodes,
+        objective: parsed.objective as string | undefined,
+        rationale: parsed.rationale as string | undefined,
+        createdAt: Date.now(),
+      },
+      // Forward the underlying ILlm.chat usage on the WRAPPER (not on the
+      // plan itself) so the coordinator can attribute planner-LLM spend to
+      // the session/request logger without polluting the plan domain type
+      // (which the reviewer serializes via JSON.stringify into its prompt).
       usage: res.usage,
     };
   }

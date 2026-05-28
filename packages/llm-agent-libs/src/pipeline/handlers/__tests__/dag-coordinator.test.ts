@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
   DagPlan,
-  ExecutionReviewDecision,
+  ExecutionReviewResult,
   IInterpreter,
   InterpretResult,
   IPlanner,
@@ -13,7 +13,7 @@ import { CLARIFY_MARKER, DagCoordinatorHandler } from '../dag-coordinator.js';
 
 const planner = (nodes: DagPlan['nodes']): IPlanner => ({
   name: 'p',
-  plan: async () => ({ nodes, createdAt: 0 }),
+  plan: async () => ({ plan: { nodes, createdAt: 0 } }),
 });
 const interp = (
   r: InterpretResult,
@@ -131,7 +131,10 @@ describe('DagCoordinatorHandler', () => {
       planner: planner([{ id: 'n1', goal: 'g' }]),
       interpreter: interp({ nodeResults: {}, ok: true, output: '42' }),
       workers: new Map(),
-      reviewer: { name: 'r', review: async () => ({ pass: true }) },
+      reviewer: {
+        name: 'r',
+        review: async () => ({ verdict: { pass: true } }),
+      },
     });
     const ok = await h.execute(ctx, {}, {} as never);
     assert.equal(ok, true);
@@ -157,9 +160,9 @@ describe('DagCoordinatorHandler', () => {
         plan: async (input) => {
           if (input.reviewerFeedback) {
             planBUsed = true;
-            return planB;
+            return { plan: planB };
           }
-          return planA;
+          return { plan: planA };
         },
       },
       interpreter: interp({ nodeResults: {}, ok: true, output: 'done' }),
@@ -168,8 +171,10 @@ describe('DagCoordinatorHandler', () => {
         name: 'r',
         review: async () => {
           reviewCalls++;
-          if (reviewCalls === 1) return { pass: false, feedback: 'bad' };
-          return { pass: true };
+          if (reviewCalls === 1) {
+            return { verdict: { pass: false, feedback: 'bad' } };
+          }
+          return { verdict: { pass: true } };
         },
       },
     });
@@ -261,10 +266,12 @@ describe('DagCoordinatorHandler', () => {
       workers: new Map(),
       reviewer: {
         name: 'r',
-        review: async () => ({ pass: true }),
-        reviewExecutionFailure: async (): Promise<ExecutionReviewDecision> => ({
-          action: 'revise',
-          revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+        review: async () => ({ verdict: { pass: true } }),
+        reviewExecutionFailure: async (): Promise<ExecutionReviewResult> => ({
+          decision: {
+            action: 'revise',
+            revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+          },
         }),
       },
     });
@@ -288,7 +295,7 @@ describe('DagCoordinatorHandler', () => {
       workers: new Map(),
       reviewer: {
         name: 'r',
-        review: async () => ({ pass: true }),
+        review: async () => ({ verdict: { pass: true } }),
         reviewExecutionFailure: async () => {
           throw new ClarifySignal('q');
         },
@@ -328,15 +335,20 @@ describe('DagCoordinatorHandler', () => {
       workers: new Map(),
       reviewer: {
         name: 'r',
-        review: async () => ({ pass: true }),
-        reviewExecutionFailure: async (): Promise<ExecutionReviewDecision> => {
+        review: async () => ({ verdict: { pass: true } }),
+        reviewExecutionFailure: async (): Promise<ExecutionReviewResult> => {
           failureReviewCalls++;
           if (failureReviewCalls === 1) {
             throw new NeedInfoSignal('q');
           }
           return {
-            action: 'revise',
-            revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+            decision: {
+              action: 'revise',
+              revisedPlan: {
+                nodes: [{ id: 'r1', goal: 'fix' }],
+                createdAt: 0,
+              },
+            },
           };
         },
       },
@@ -361,7 +373,7 @@ describe('DagCoordinatorHandler', () => {
       workers: new Map(),
       reviewer: {
         name: 'r',
-        review: async () => ({ pass: true }),
+        review: async () => ({ verdict: { pass: true } }),
         reviewExecutionFailure: async () => {
           throw new NeedInfoSignal('q');
         },
@@ -389,10 +401,12 @@ describe('DagCoordinatorHandler', () => {
       workers: new Map(),
       reviewer: {
         name: 'r',
-        review: async () => ({ pass: true }),
-        reviewExecutionFailure: async (): Promise<ExecutionReviewDecision> => ({
-          action: 'revise',
-          revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+        review: async () => ({ verdict: { pass: true } }),
+        reviewExecutionFailure: async (): Promise<ExecutionReviewResult> => ({
+          decision: {
+            action: 'revise',
+            revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+          },
         }),
       },
       maxRoundTrips: 3,

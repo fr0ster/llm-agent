@@ -83,6 +83,7 @@ export type {
   IPlanner,
   PlannerCatalogEntry,
   PlannerInput,
+  PlannerResult,
 } from './planner.js';
 export type {
   IPluginLoader,
@@ -126,8 +127,10 @@ export type { IReranker } from './reranker.js';
 export type {
   ExecutionFailureInput,
   ExecutionReviewDecision,
+  ExecutionReviewResult,
   IReviewStrategy,
   ReviewInput,
+  ReviewResult,
   ReviewVerdict,
 } from './review.js';
 export type { ISessionManager } from './session.js';

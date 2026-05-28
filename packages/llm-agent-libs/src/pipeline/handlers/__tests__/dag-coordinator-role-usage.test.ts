@@ -2,13 +2,14 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
   DagPlan,
-  ExecutionReviewDecision,
+  ExecutionReviewResult,
   IInterpreter,
   InterpretResult,
   IPlanner,
   IReviewStrategy,
   LlmUsage,
-  ReviewVerdict,
+  PlannerResult,
+  ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
@@ -19,6 +20,10 @@ import { DagCoordinatorHandler } from '../dag-coordinator.js';
  * session requestLogger. The coordinator handler logs `result.usage`
  * returned by each role into `ctx.requestLogger` under the request's
  * traceId, categorized as 'planner' or 'reviewer'.
+ *
+ * MEDIUM finding: usage is carried on the WRAPPER returned by each role
+ * (PlannerResult / ReviewResult / ExecutionReviewResult), not on the
+ * inner domain type (DagPlan / ReviewVerdict / ExecutionReviewDecision).
  */
 
 const interpAlwaysOk = (
@@ -58,9 +63,8 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const planner: IPlanner = {
       name: 'p',
       model: 'planner-model',
-      plan: async (): Promise<DagPlan> => ({
-        nodes: [{ id: 'n1', goal: 'g' }],
-        createdAt: 0,
+      plan: async (): Promise<PlannerResult> => ({
+        plan: { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 },
         usage,
       }),
     };
@@ -86,7 +90,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const plan: DagPlan = { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 };
     const planner: IPlanner = {
       name: 'p',
-      plan: async () => plan,
+      plan: async () => ({ plan }),
     };
     const reviewerUsage: LlmUsage = {
       promptTokens: 50,
@@ -96,8 +100,8 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const reviewer: IReviewStrategy = {
       name: 'r',
       model: 'reviewer-model',
-      review: async (): Promise<ReviewVerdict> => ({
-        pass: true,
+      review: async (): Promise<ReviewResult> => ({
+        verdict: { pass: true },
         usage: reviewerUsage,
       }),
     };
@@ -124,7 +128,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
       name: 'p',
       plan: async () => {
         planCalls++;
-        return plan;
+        return { plan };
       },
     };
     const recoveryUsage: LlmUsage = {
@@ -155,10 +159,12 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const reviewer: IReviewStrategy = {
       name: 'r',
       model: 'recovery-model',
-      review: async () => ({ pass: true }),
-      reviewExecutionFailure: async (): Promise<ExecutionReviewDecision> => ({
-        action: 'revise',
-        revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+      review: async () => ({ verdict: { pass: true } }),
+      reviewExecutionFailure: async (): Promise<ExecutionReviewResult> => ({
+        decision: {
+          action: 'revise',
+          revisedPlan: { nodes: [{ id: 'r1', goal: 'fix' }], createdAt: 0 },
+        },
         usage: recoveryUsage,
       }),
     };
@@ -182,8 +188,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     const planner: IPlanner = {
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 'n1', goal: 'g' }],
-        createdAt: 0,
+        plan: { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 },
       }),
     };
     const { ctx, logger } = makeCtxWithLogger('trace-nousage');
@@ -208,8 +213,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
       name: 'p',
       model: 'planner-model',
       plan: async () => {
-        const sig = new ClarifySignal('overwrite ok?', usage);
-        throw sig;
+        throw new ClarifySignal('overwrite ok?', usage);
       },
     };
     const { ctx, yields, logger } = makeCtxWithLogger('trace-clarify');
@@ -220,7 +224,6 @@ describe('DagCoordinatorHandler role-usage logging', () => {
     });
     const ok = await h.execute(ctx, {}, {} as never);
     assert.equal(ok, true);
-    // Coordinator emitted the clarification + stop
     assert.ok(yields.length >= 2);
     const summary = logger.getSummary('trace-clarify');
     assert.equal(summary.byComponent.planner?.totalTokens, 36);
@@ -234,7 +237,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
       totalTokens: 23,
     };
     const plan: DagPlan = { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 };
-    const planner: IPlanner = { name: 'p', plan: async () => plan };
+    const planner: IPlanner = { name: 'p', plan: async () => ({ plan }) };
     let reviewCalls = 0;
     const reviewer: IReviewStrategy = {
       name: 'r',
@@ -244,7 +247,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
         if (reviewCalls === 1) {
           throw new NeedInfoSignal('which table?', usage);
         }
-        return { pass: true };
+        return { verdict: { pass: true } };
       },
     };
     const oracle = {
@@ -278,8 +281,7 @@ describe('DagCoordinatorHandler role-usage logging', () => {
       // model intentionally omitted
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 'n1', goal: 'g' }],
-        createdAt: 0,
+        plan: { nodes: [{ id: 'n1', goal: 'g' }], createdAt: 0 },
         usage,
       }),
     };

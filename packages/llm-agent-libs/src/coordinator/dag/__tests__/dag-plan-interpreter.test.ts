@@ -235,8 +235,10 @@ describe('DagPlanInterpreter', () => {
     const planner = {
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
-        createdAt: 0,
+        plan: {
+          nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+          createdAt: 0,
+        },
       }),
     };
     const c = ctx(
@@ -272,8 +274,10 @@ describe('DagPlanInterpreter', () => {
     const planner = {
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 'again', goal: 'big', agent: 'big' }],
-        createdAt: 0,
+        plan: {
+          nodes: [{ id: 'again', goal: 'big', agent: 'big' }],
+          createdAt: 0,
+        },
       }),
     };
     const r = await I().interpret(
@@ -291,8 +295,10 @@ describe('DagPlanInterpreter', () => {
     const planner = {
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
-        createdAt: 0,
+        plan: {
+          nodes: [{ id: 's1', goal: 'small', agent: 'small' }],
+          createdAt: 0,
+        },
       }),
     };
     // Shared singleton strategy with a 1-replan ceiling; each run needs 1 replan.
@@ -323,7 +329,7 @@ describe('DagPlanInterpreter', () => {
     });
     const planner = {
       name: 'p',
-      plan: async () => ({ nodes: [], createdAt: 0 }), // empty sub-plan
+      plan: async () => ({ plan: { nodes: [], createdAt: 0 } }), // empty sub-plan
     };
     await assert.rejects(
       () =>
@@ -358,8 +364,10 @@ describe('DagPlanInterpreter', () => {
     const planner = {
       name: 'p',
       plan: async () => ({
-        nodes: [{ id: 's', goal: 'small', agent: 'small' }],
-        createdAt: 0,
+        plan: {
+          nodes: [{ id: 's', goal: 'small', agent: 'small' }],
+          createdAt: 0,
+        },
       }),
     };
     // A and B are independent roots → same first wave; both throw, both replan.

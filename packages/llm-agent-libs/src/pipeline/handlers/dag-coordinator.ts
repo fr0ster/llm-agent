@@ -2,7 +2,7 @@ import type {
   ClarifySignal as ClarifySignalType,
   ContextPath,
   DagPlan,
-  ExecutionReviewDecision,
+  ExecutionReviewResult,
   IActivationStrategy,
   IErrorStrategy,
   IInterpreter,
@@ -12,7 +12,8 @@ import type {
   ISubAgent,
   LlmComponent,
   LlmUsage,
-  ReviewVerdict,
+  PlannerResult,
+  ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { OrchestratorError } from '../../agent.js';
@@ -176,7 +177,7 @@ export class DagCoordinatorHandler implements IStageHandler {
       }
     };
 
-    let planRes: { value: DagPlan } | { ended: true };
+    let planRes: { value: PlannerResult } | { ended: true };
     const plannerModel = this.deps.planner.model;
     try {
       planRes = await runRole('planner', plannerModel, () =>
@@ -196,7 +197,7 @@ export class DagCoordinatorHandler implements IStageHandler {
       return false;
     }
     if ('ended' in planRes) return true;
-    let plan = planRes.value;
+    let plan = planRes.value.plan;
 
     try {
       for (;;) {
@@ -210,7 +211,7 @@ export class DagCoordinatorHandler implements IStageHandler {
 
         const reviewer = this.deps.reviewer;
         if (reviewer) {
-          let gate: { value: ReviewVerdict } | { ended: true };
+          let gate: { value: ReviewResult } | { ended: true };
           const reviewerModel = reviewer.model;
           try {
             gate = await runRole('reviewer', reviewerModel, () =>
@@ -238,7 +239,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             return false;
           }
           if ('ended' in gate) return true;
-          const verdict = gate.value;
+          const verdict = gate.value.verdict;
           if (!verdict.pass) {
             const replanned = await runRole('planner', plannerModel, () =>
               this.deps.planner.plan({
@@ -251,7 +252,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               }),
             );
             if ('ended' in replanned) return true;
-            plan = replanned.value;
+            plan = replanned.value.plan;
             continue;
           }
         }
@@ -326,7 +327,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           .filter((r): r is NonNullable<typeof r> => Boolean(r));
         const failedId = result.failedNodeId ?? execPlan.nodes[0]?.id ?? '';
 
-        const recovery: { value: ExecutionReviewDecision } | { ended: true } =
+        const recovery: { value: ExecutionReviewResult } | { ended: true } =
           await runRole('reviewer', reviewer?.model, () =>
             reviewExecutionFailure({
               objective: execPlan.objective,
@@ -344,7 +345,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             }),
           );
         if ('ended' in recovery) return true;
-        const decision = recovery.value;
+        const decision = recovery.value.decision;
         if (decision.action === 'revise') {
           if (decision.revisedPlan.nodes.length === 0) {
             ctx.error = new OrchestratorError(

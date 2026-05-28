@@ -1,11 +1,11 @@
 import type {
   DagPlan,
   ExecutionFailureInput,
-  ExecutionReviewDecision,
+  ExecutionReviewResult,
   ILlm,
   IReviewStrategy,
   ReviewInput,
-  ReviewVerdict,
+  ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
@@ -52,7 +52,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     });
   }
 
-  async review(input: ReviewInput): Promise<ReviewVerdict> {
+  async review(input: ReviewInput): Promise<ReviewResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -109,14 +109,17 @@ export class LlmReviewStrategy implements IReviewStrategy {
           `Reviewer rejection must include a non-empty 'feedback' string: ${match[0].slice(0, 200)}`,
         );
       }
-      return { pass: false, feedback: parsed.feedback, usage: res.usage };
+      return {
+        verdict: { pass: false, feedback: parsed.feedback },
+        usage: res.usage,
+      };
     }
-    return { pass: true, usage: res.usage };
+    return { verdict: { pass: true }, usage: res.usage };
   }
 
   async reviewExecutionFailure(
     input: ExecutionFailureInput,
-  ): Promise<ExecutionReviewDecision> {
+  ): Promise<ExecutionReviewResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -162,7 +165,9 @@ export class LlmReviewStrategy implements IReviewStrategy {
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
       throw new ClarifySignal(parsed.clarify, res.usage);
     }
-    if (parsed.action === 'abort') return { action: 'abort', usage: res.usage };
+    if (parsed.action === 'abort') {
+      return { decision: { action: 'abort' }, usage: res.usage };
+    }
     if (parsed.action !== 'revise') {
       throw new Error(
         `Recovery reviewer action must be 'abort' | 'revise': ${match[0].slice(0, 200)}`,
@@ -184,6 +189,9 @@ export class LlmReviewStrategy implements IReviewStrategy {
         `Recovery reviewer revise plan must have non-empty nodes with string id+goal: ${match[0].slice(0, 200)}`,
       );
     }
-    return { action: 'revise', revisedPlan: plan as DagPlan, usage: res.usage };
+    return {
+      decision: { action: 'revise', revisedPlan: plan as DagPlan },
+      usage: res.usage,
+    };
   }
 }
