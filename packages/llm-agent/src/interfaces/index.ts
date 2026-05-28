@@ -131,6 +131,7 @@ export type {
   ReviewVerdict,
 } from './review.js';
 export type { ISessionManager } from './session.js';
+export type { SessionIdentity } from './session-identity.js';
 export type {
   ISkill,
   ISkillManager,
