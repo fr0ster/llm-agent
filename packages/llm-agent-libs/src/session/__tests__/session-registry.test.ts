@@ -267,3 +267,91 @@ test('race: in-flight acquire rejects when disposeAll completes during the build
   await assert.rejects(() => acquirePromise, /closed|disposed/i);
   assert.deepEqual(disposed, ['s1']);
 });
+
+test('Fix #20: stale invalidated build does NOT evict the newer in-flight build for same sessionId', async () => {
+  // Sequence:
+  //  1. acquire('s1') starts build A (gated).
+  //  2. invalidateAll() runs — bumps generation, clears pendingBuilds.
+  //  3. acquire('s1') starts build B (gated). pendingBuilds.set('s1', B).
+  //  4. Build A resolves → its .then sees gen mismatch and used to
+  //     unconditionally pendingBuilds.delete('s1') — evicting B!
+  //  5. After the fix, A's cleanup is conditional and B remains in
+  //     pendingBuilds. A third concurrent acquire('s1') joins build B
+  //     (single-flight preserved). Resolving B publishes the graph.
+  const disposed: string[] = [];
+
+  let resolveA: ((g: SessionGraph) => void) | undefined;
+  const promiseA = new Promise<SessionGraph>((r) => {
+    resolveA = r;
+  });
+  let resolveB: ((g: SessionGraph) => void) | undefined;
+  const promiseB = new Promise<SessionGraph>((r) => {
+    resolveB = r;
+  });
+  let calls = 0;
+  const factory = {
+    build: (_id: { sessionId: string }) => {
+      calls++;
+      return calls === 1 ? promiseA : promiseB;
+    },
+  };
+  const reg = new SessionRegistry({
+    idleTtlMs: 10_000,
+    maxSessions: 10,
+    factory,
+  });
+
+  // Step 1: kick off acquire A (build A gated).
+  const acquireA = reg.acquire('s1');
+  // Step 2: invalidateAll while A is still pending.
+  await Promise.resolve();
+  await reg.invalidateAll();
+  // Step 3: kick off acquire B (a fresh build because pendingBuilds was cleared).
+  const acquireB = reg.acquire('s1');
+  await Promise.resolve();
+  assert.equal(calls, 2, 'a fresh build was started for s1 after invalidate');
+
+  // Step 4: resolve A AFTER B is registered.
+  const ga = new SessionGraph({
+    sessionId: 's1',
+    toolAvailability: new ToolAvailabilityRegistry(),
+    pendingToolResults: new PendingToolResultsRegistry(),
+    logger: new SessionRequestLogger(),
+    dispose: async (id) => {
+      disposed.push(`A:${id}`);
+    },
+  });
+  resolveA?.(ga);
+  await assert.rejects(() => acquireA, /SESSION_INVALIDATED|invalidated/i);
+  // Allow A's cleanup microtasks to settle.
+  await reg.flushEvictions();
+
+  // Step 5: a concurrent third acquire MUST join build B (single-flight).
+  const acquireC = reg.acquire('s1');
+
+  // Now resolve B. B should publish into graphs, and both B and C acquires
+  // return the same graph instance.
+  const gb = new SessionGraph({
+    sessionId: 's1',
+    toolAvailability: new ToolAvailabilityRegistry(),
+    pendingToolResults: new PendingToolResultsRegistry(),
+    logger: new SessionRequestLogger(),
+    dispose: async (id) => {
+      disposed.push(`B:${id}`);
+    },
+  });
+  resolveB?.(gb);
+
+  const [gB, gC] = await Promise.all([acquireB, acquireC]);
+  assert.equal(gB, gb, 'acquireB receives the build-B graph');
+  assert.equal(
+    gC,
+    gb,
+    'a third acquire that arrived BEFORE B resolved joins build B (single-flight survived)',
+  );
+  assert.equal(calls, 2, 'no additional build was started for s1');
+  assert.equal(reg.size, 1);
+
+  // Build A's resolved graph was disposed (orphan); B's was not.
+  assert.deepEqual(disposed, ['A:s1']);
+});

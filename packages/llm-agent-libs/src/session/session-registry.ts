@@ -76,6 +76,17 @@ export class SessionRegistry {
       let build = this.pendingBuilds.get(sessionId);
       if (!build) {
         const buildGen = gen;
+        // Forward reference so .then/.catch can identify "are we still the
+        // entry in pendingBuilds?" (Fix #20). Without this, a stale
+        // invalidated build A would unconditionally delete the pendingBuilds
+        // slot — evicting a NEWER in-flight build B that took A's place
+        // after `invalidateAll()` cleared pendingBuilds.
+        let self: Promise<SessionGraph>;
+        const clearIfMine = () => {
+          if (this.pendingBuilds.get(sessionId) === self) {
+            this.pendingBuilds.delete(sessionId);
+          }
+        };
         build = this.opts.factory
           .build({ sessionId })
           .then((graph) => {
@@ -83,22 +94,24 @@ export class SessionRegistry {
               // Orphaned by invalidateAll(); dispose async and do NOT
               // publish into `graphs` (which would be a stale-config graph).
               this.pending.push(graph.dispose());
-              this.pendingBuilds.delete(sessionId);
+              clearIfMine();
               throw new OrchestratorError(
                 'Session graph invalidated mid-build',
                 'SESSION_INVALIDATED',
               );
             }
             this.graphs.set(sessionId, graph);
-            this.pendingBuilds.delete(sessionId);
+            clearIfMine();
             this.enforceCap();
             return graph;
           })
           .catch((err) => {
-            // Clear the in-flight entry so a later request can retry the build.
-            this.pendingBuilds.delete(sessionId);
+            // Clear the in-flight entry so a later request can retry the build
+            // — but ONLY if we are still the current entry (Fix #20).
+            clearIfMine();
             throw err;
           });
+        self = build;
         this.pendingBuilds.set(sessionId, build);
       }
       g = await build;
