@@ -48,6 +48,7 @@ export class TranslateHandler implements IStageHandler {
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
       durationMs: Date.now() - chatStart,
+      requestId: ctx.options?.trace?.traceId,
     });
 
     if (res.ok && res.value.content.trim()) {

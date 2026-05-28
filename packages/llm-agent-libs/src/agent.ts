@@ -1965,6 +1965,7 @@ export class SmartAgent {
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
       durationMs: Date.now() - summarizeStart,
+      requestId: opts?.trace?.traceId,
     });
     if (!res.ok) return { ok: true, value: h };
     return {

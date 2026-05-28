@@ -509,6 +509,7 @@ export class ToolLoopHandler implements IStageHandler {
         completionTokens: iterCompletionTokens,
         totalTokens: iterTotalTokens,
         durationMs: llmCallDuration,
+        requestId: ctx.options?.trace?.traceId,
       });
 
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {

@@ -92,6 +92,7 @@ export class RagQueryHandler implements IStageHandler {
       query: queryText.slice(0, 200),
       resultCount: result.ok ? result.value.length : 0,
       durationMs: Date.now() - ragStart,
+      requestId: ctx.options?.trace?.traceId,
     });
 
     // Log embedding usage once (first rag-query stage that uses the embedding)
