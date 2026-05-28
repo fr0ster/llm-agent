@@ -1505,8 +1505,28 @@ export class SmartServer {
     if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
       const registry: SubAgentRegistry = new Map();
       for (const sub of this.cfg.subAgentConfigs) {
+        // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
+        // clears `_workerLlmCache`, the next buildSessionAgent used to throw
+        // "worker LLM set not cached" because the cache was assumed
+        // pre-populated by the primary build(). buildSubAgent itself routes
+        // through `resolveWorkerLlmSet` which is build-on-miss, so calling
+        // it without an `injected` arg rebuilds the cache entry. We then
+        // re-read the entry to honour the per-worker slot priority below.
+        if (!this._workerLlmCache.has(sub.name)) {
+          await this.buildSubAgent(
+            sub.name,
+            sub.config,
+            this._fileLogger,
+            this._mergedEmbedderFactories ?? {},
+            // No `injected` → primary path: resolveWorkerLlmSet populates
+            // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
+            // mcpClients/toolsRag slots from the built handle.
+          );
+        }
         const cached = this._workerLlmCache.get(sub.name);
         if (!cached) {
+          // Defence in depth — should be impossible after the lazy build
+          // above unless buildSubAgent's contract changes.
           throw new Error(`worker LLM set not cached for '${sub.name}'`);
         }
         // Per-worker injected slot priority (review HIGH #7):

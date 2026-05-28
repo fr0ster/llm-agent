@@ -172,6 +172,72 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
     }
   });
 
+  it('Fix #18: with subAgentConfigs, PUT /v1/config (which clears _workerLlmCache) does NOT make next buildSessionAgent throw', async () => {
+    // Before the fix, buildSessionAgent threw "worker LLM set not cached for
+    // '<name>'" on the next session build after PUT cleared the cache.
+    // The fix routes through `resolveWorkerLlmSet` (build-on-miss) so the
+    // cleared cache lazily repopulates.
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      subAgentConfigs: [
+        {
+          name: 'worker1',
+          config: {
+            llm: { apiKey: 'test', model: 'test-model' },
+            skipModelValidation: true,
+          },
+        },
+      ],
+    });
+    const handle = await server.start();
+    const internals = server as unknown as ServerInternals & {
+      buildSessionAgent: (parts: unknown) => Promise<unknown>;
+      _fileLogger: unknown;
+    };
+    try {
+      // Precondition: primary build() populated the cache for 'worker1'.
+      assert.ok(
+        internals._workerLlmCache.has('worker1'),
+        'precondition: worker1 cached after primary build',
+      );
+
+      // PUT /v1/config clears the cache (existing Fix #14 behaviour).
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        agent: { maxIterations: 25 },
+      });
+      assert.equal(res.status, 200);
+      assert.equal(
+        internals._workerLlmCache.size,
+        0,
+        'precondition: cache cleared by PUT',
+      );
+
+      // Next session build must NOT throw "worker LLM set not cached".
+      // It must rebuild the worker entry lazily.
+      const parts = {
+        mcpClients: [],
+        ragRegistry: {
+          get: () => undefined,
+          set: () => {},
+          list: () => [],
+          register: () => {},
+          unregister: () => {},
+        },
+        toolsRag: undefined,
+        logger: { trackUsage: () => {}, logToolCall: () => {} },
+      };
+      await internals.buildSessionAgent(parts);
+      assert.ok(
+        internals._workerLlmCache.has('worker1'),
+        'cache repopulated lazily by buildSessionAgent',
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
   it('Fix #17: PUT /v1/config patches this.cfg.agent so next buildSessionAgent sees the update', async () => {
     const server = new SmartServer({
       port: 0,

@@ -246,6 +246,44 @@ test('per-session injected slot priority: worker-cached mcpClients wins over par
   );
 });
 
+test('Fix #18: resolveWorkerLlmSet repopulates the cache on miss after clear (config-reload path)', async () => {
+  // After PUT /v1/config / hot-reload clear the cache, buildSessionAgent
+  // used to throw "worker LLM set not cached" on the next session build.
+  // The fix routes through resolveWorkerLlmSet which is build-on-miss:
+  // a cleared cache simply rebuilds the entry rather than throwing.
+  let built = 0;
+  const cache = new Map<string, WorkerLlmSet>();
+  // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
+  const fakeMake = async (): Promise<any> => {
+    built++;
+    return {};
+  };
+  // Prime the cache.
+  await resolveWorkerLlmSet({
+    name: 'w',
+    cache,
+    makeMain: fakeMake,
+    makeClassifier: fakeMake,
+  });
+  assert.equal(cache.size, 1);
+  assert.equal(built, 2);
+
+  // Simulate the config-reload `_workerLlmCache.clear()`.
+  cache.clear();
+  assert.equal(cache.size, 0);
+
+  // Next resolve must succeed (no throw) and re-populate.
+  const set2 = await resolveWorkerLlmSet({
+    name: 'w',
+    cache,
+    makeMain: fakeMake,
+    makeClassifier: fakeMake,
+  });
+  assert.equal(cache.size, 1, 'cache repopulated on miss');
+  assert.equal(cache.get('w'), set2, 'cache holds the freshly built set');
+  assert.equal(built, 4, '2 more LLM constructions (main + classifier)');
+});
+
 test('worker WITHOUT own toolsRag/MCP factories leaves those cache slots undefined (re-wire falls back to injected)', async () => {
   const cache = new Map<string, WorkerLlmSet>();
   // biome-ignore lint/suspicious/noExplicitAny: test stub for ILlm
