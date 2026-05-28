@@ -373,12 +373,28 @@ export {
 // Worker-LLM cache + RAG-registry sharing (Task A7)
 // ---------------------------------------------------------------------------
 
-/** GLOBAL per-worker heavy clients — built once, injected by reference per session. */
+/**
+ * GLOBAL per-worker heavy clients — built once, injected by reference per
+ * session. In addition to LLM/embedder clients, the worker's OWN declared
+ * `toolsRag`/`historyRag`/`mcpClients` (if any) are cached here too — the
+ * per-session re-wire MUST prefer the worker's own resources over the
+ * parent's injected ones, so we build them once and reuse by reference.
+ */
 export interface WorkerLlmSet {
   mainLlm: ILlm;
   classifierLlm: ILlm;
   helperLlm?: ILlm;
   embedder?: IEmbedder;
+  /** Worker's OWN tools RAG, built from `subCfg.rag` if declared. */
+  toolsRag?: IRag;
+  /** Worker's OWN history RAG (mirrors flat-rag block, separate instance). */
+  historyRag?: IRag;
+  /**
+   * Worker's OWN MCP clients (from `subCfg.mcpClients` DI or built once from
+   * `subCfg.mcp`). Undefined means the worker did not declare any — caller
+   * may fall back to the parent's injected clients.
+   */
+  mcpClients?: IMcpClient[];
 }
 
 /**
@@ -387,6 +403,11 @@ export interface WorkerLlmSet {
  * caches the set; every later call (e.g. each per-session worker re-wire)
  * returns the SAME set by reference — never reconstructing LLM clients
  * (locked invariant: LLM/embedder clients are global, built once).
+ *
+ * Accepts optional `makeToolsRag`/`makeHistoryRag`/`makeMcpClients` factories;
+ * when provided, the resolver builds them ONCE on the first miss and caches
+ * them on the returned set. Subsequent calls return the cached resources by
+ * reference — never re-vectorizing or re-connecting MCP.
  */
 export async function resolveWorkerLlmSet(input: {
   name: string;
@@ -395,6 +416,9 @@ export async function resolveWorkerLlmSet(input: {
   makeClassifier: () => Promise<ILlm>;
   makeHelper?: () => Promise<ILlm>;
   makeEmbedder?: () => Promise<IEmbedder>;
+  makeToolsRag?: () => Promise<IRag>;
+  makeHistoryRag?: () => Promise<IRag>;
+  makeMcpClients?: () => Promise<IMcpClient[]>;
 }): Promise<WorkerLlmSet> {
   const hit = input.cache.get(input.name);
   if (hit) return hit;
@@ -402,7 +426,22 @@ export async function resolveWorkerLlmSet(input: {
   const classifierLlm = await input.makeClassifier();
   const helperLlm = input.makeHelper ? await input.makeHelper() : undefined;
   const embedder = input.makeEmbedder ? await input.makeEmbedder() : undefined;
-  const set: WorkerLlmSet = { mainLlm, classifierLlm, helperLlm, embedder };
+  const toolsRag = input.makeToolsRag ? await input.makeToolsRag() : undefined;
+  const historyRag = input.makeHistoryRag
+    ? await input.makeHistoryRag()
+    : undefined;
+  const mcpClients = input.makeMcpClients
+    ? await input.makeMcpClients()
+    : undefined;
+  const set: WorkerLlmSet = {
+    mainLlm,
+    classifierLlm,
+    helperLlm,
+    embedder,
+    toolsRag,
+    historyRag,
+    mcpClients,
+  };
   input.cache.set(input.name, set);
   return set;
 }
@@ -1168,66 +1207,90 @@ export class SmartServer {
     // Today's buildSubAgent does not separately resolve an embedder here —
     // embedders are carried by the worker's own store via makeRag's
     // `injectedEmbedder` — so we ignore the embedder field below.
-    let mainLlm: ILlm;
-    let classifierLlm: ILlm;
-    let helperLlm: ILlm | undefined;
-    if (injected) {
-      mainLlm = injected.mainLlm;
-      classifierLlm = injected.classifierLlm;
-      helperLlm = injected.helperLlm;
-    } else {
-      const mainTemp = Number(
-        subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,
-      );
-      const classifierTemp = Number(
-        subPipeline?.llm?.classifier?.temperature ??
-          subCfg.llm.classifierTemperature ??
-          0.1,
-      );
-      const set = await resolveWorkerLlmSet({
-        name,
-        cache: this._workerLlmCache,
-        // Preserve the existing makeLlm derivation exactly.
-        makeMain: () =>
-          subPipeline?.llm?.main
-            ? makeLlm(subPipeline.llm.main, mainTemp)
+    // Resolve (build-once or load from cache) the worker's own LLMs +
+    // toolsRag/historyRag/mcpClients. The cache is keyed by worker name; the
+    // primary build() populates it (no `injected` arg), and per-session
+    // re-wires (`injected` set) read from it via the same call below — the
+    // cache hit short-circuits all factories. This keeps the worker's
+    // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
+    const mainTemp = Number(
+      subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,
+    );
+    const classifierTemp = Number(
+      subPipeline?.llm?.classifier?.temperature ??
+        subCfg.llm.classifierTemperature ??
+        0.1,
+    );
+    const cached = await resolveWorkerLlmSet({
+      name,
+      cache: this._workerLlmCache,
+      // Preserve the existing makeLlm derivation exactly.
+      makeMain: () =>
+        subPipeline?.llm?.main
+          ? makeLlm(subPipeline.llm.main, mainTemp)
+          : makeLlm(
+              {
+                // ?? 'deepseek' is a TS type-narrowing net only; the config
+                // validator rejects a missing flat-schema provider before
+                // this runs.
+                provider: subCfg.llm.provider ?? 'deepseek',
+                apiKey: subCfg.llm.apiKey,
+                baseURL: subCfg.llm.url,
+                model: subCfg.llm.model,
+              },
+              mainTemp,
+            ),
+      makeClassifier: () =>
+        subPipeline?.llm?.classifier
+          ? makeLlm(subPipeline.llm.classifier, classifierTemp)
+          : subPipeline?.llm?.main
+            ? makeLlm(subPipeline.llm.main, classifierTemp)
             : makeLlm(
                 {
-                  // ?? 'deepseek' is a TS type-narrowing net only; the config
-                  // validator rejects a missing flat-schema provider before
-                  // this runs.
                   provider: subCfg.llm.provider ?? 'deepseek',
                   apiKey: subCfg.llm.apiKey,
                   baseURL: subCfg.llm.url,
                   model: subCfg.llm.model,
                 },
-                mainTemp,
+                classifierTemp,
               ),
-        makeClassifier: () =>
-          subPipeline?.llm?.classifier
-            ? makeLlm(subPipeline.llm.classifier, classifierTemp)
-            : subPipeline?.llm?.main
-              ? makeLlm(subPipeline.llm.main, classifierTemp)
-              : makeLlm(
-                  {
-                    provider: subCfg.llm.provider ?? 'deepseek',
-                    apiKey: subCfg.llm.apiKey,
-                    baseURL: subCfg.llm.url,
-                    model: subCfg.llm.model,
-                  },
-                  classifierTemp,
-                ),
-        makeHelper: subPipeline?.llm?.helper
-          ? (
-              (h) => () =>
-                makeLlm(h, Number(h.temperature ?? 0.1))
-            )(subPipeline.llm.helper)
+      makeHelper: subPipeline?.llm?.helper
+        ? (
+            (h) => () =>
+              makeLlm(h, Number(h.temperature ?? 0.1))
+          )(subPipeline.llm.helper)
+        : undefined,
+      // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
+      // re-wired per-session by reference — never re-vectorized.
+      makeToolsRag: subCfg.rag
+        ? () =>
+            makeRag(subCfg.rag as SmartServerRagConfig, {
+              injectedEmbedder: subCfg.embedder,
+              extraFactories: embedderFactories,
+            })
+        : undefined,
+      makeHistoryRag: subCfg.rag
+        ? () =>
+            makeRag(
+              { ...(subCfg.rag as SmartServerRagConfig) },
+              {
+                injectedEmbedder: subCfg.embedder,
+                extraFactories: embedderFactories,
+              },
+            )
+        : undefined,
+      // Worker-OWN MCP clients. DI list (subCfg.mcpClients) wins; otherwise
+      // SmartAgentBuilder's own MCP-connect path handles `subCfg.mcp` — we
+      // don't pre-build those here (connection is the builder's job and is
+      // not safe to invoke twice). The cache stores the DI clients only.
+      makeMcpClients:
+        subCfg.mcpClients && subCfg.mcpClients.length > 0
+          ? async () => subCfg.mcpClients as IMcpClient[]
           : undefined,
-      });
-      mainLlm = set.mainLlm;
-      classifierLlm = set.classifierLlm;
-      helperLlm = set.helperLlm;
-    }
+    });
+    const mainLlm: ILlm = cached.mainLlm;
+    const classifierLlm: ILlm = cached.classifierLlm;
+    const helperLlm: ILlm | undefined = cached.helperLlm;
 
     let subBuilder = new SmartAgentBuilder({
       mcp: subPipeline?.mcp ?? subCfg.mcp,
@@ -1254,34 +1317,36 @@ export class SmartServer {
       subBuilder = subBuilder.withRequestLogger(injected.requestLogger);
     }
 
-    // Tools RAG: prefer the injected GLOBAL toolsRag (already vectorized) when
-    // present; otherwise build only when the subagent declares its own store
-    // (primary build()). NEVER re-vectorize during a per-session re-wire.
-    if (injected?.toolsRag) {
+    // Tools/History RAG priority (review HIGH #1):
+    //   1) worker's OWN cached toolsRag (from subCfg.rag) — built once, reused
+    //      by reference across per-session re-wires (never re-vectorized);
+    //   2) parent's injected toolsRag (fallback for workers that did not
+    //      declare their own store).
+    // History RAG: only when the worker has its own cached instance — the
+    // parent's history RAG is owned by the parent agent and is not shared.
+    if (cached.toolsRag) {
+      subBuilder = subBuilder.setToolsRag(cached.toolsRag);
+      if (cached.historyRag) {
+        subBuilder = subBuilder.setHistoryRag(cached.historyRag);
+      }
+    } else if (injected?.toolsRag) {
       subBuilder = subBuilder.setToolsRag(injected.toolsRag);
-    } else if (subCfg.rag) {
-      const ragOptions = {
-        injectedEmbedder: subCfg.embedder,
-        extraFactories: embedderFactories,
-      };
-      subBuilder = subBuilder.setToolsRag(
-        await makeRag(subCfg.rag, ragOptions),
-      );
-      subBuilder = subBuilder.setHistoryRag(
-        await makeRag({ ...subCfg.rag }, ragOptions),
-      );
     }
 
     if (subCfg.skillManager) {
       subBuilder = subBuilder.withSkillManager(subCfg.skillManager);
     }
 
-    // MCP clients: inject the GLOBAL connected clients per session (skips
-    // re-connect); else fall back to the subagent's own configured clients.
-    if (injected?.mcpClients && injected.mcpClients.length > 0) {
+    // MCP clients priority (review HIGH #1):
+    //   1) worker's OWN cached MCP clients (from subCfg.mcpClients DI) — keeps
+    //      the worker pointed at its own upstream when the parent has none;
+    //   2) parent's injected GLOBAL MCP clients (fallback) — skips re-connect.
+    // If neither is set, fall through to the builder's own MCP-connect path
+    // (which honours `subCfg.mcp`).
+    if (cached.mcpClients && cached.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(cached.mcpClients);
+    } else if (injected?.mcpClients && injected.mcpClients.length > 0) {
       subBuilder = subBuilder.withMcpClients(injected.mcpClients);
-    } else if (subCfg.mcpClients && subCfg.mcpClients.length > 0) {
-      subBuilder = subBuilder.withMcpClients(subCfg.mcpClients);
     }
 
     const handle = await subBuilder.build();
