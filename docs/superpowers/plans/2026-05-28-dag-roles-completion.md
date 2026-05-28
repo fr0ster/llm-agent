@@ -13,15 +13,15 @@ Close two architectural gaps in the DAG coordinator:
 
 1. Introduce `IFinalizer` as a typed DAG role producing the user-facing answer after interpretation completes (Passthrough / LLM / Template impls).
 2. Introduce `IStateOracle` as a typed view over the existing oracle subagent, with an automatic adapter (`SubAgentStateOracle`) keeping current YAMLs working.
-3. Extend top-level `llm:` into an optional named map (`llm.main`, `llm.planner`, `llm.finalizer`, …) with a backward-compatible normalizer and per-role lookup helper.
+3. Extend top-level `llm:` into an optional named map (`llm.main`, `llm.planner`, `llm.finalizer`, …) with a backward-compatible normalizer and per-role lookup helper that chains through `pipeline.llm.main`.
 4. Surface finalizer/oracle tokens via the existing `runRole`/`logRoleUsage` plumbing — new `LlmComponent` values land in `byComponent.finalizer` / `byComponent.oracle` under category `auxiliary`.
 
 ## Architecture
 
 - **Contracts (`@mcp-abap-adt/llm-agent`):** new `IFinalizer` + `IStateOracle` interfaces; `LlmComponent` widened with `'finalizer' | 'oracle'`; `InterpretResult` gains `executionOrder: readonly string[]`.
 - **Composition (`@mcp-abap-adt/llm-agent-libs`):** `PassthroughFinalizer`, `LlmFinalizer`, `TemplateFinalizer`, `SubAgentStateOracle` implementations + `CATEGORY_MAP` extension. `DagPlanInterpreter` now also returns `executedPlan` on success and records the topological `executionOrder`. `DagCoordinatorHandler` normalizes a default `PassthroughFinalizer`, invokes the finalizer through `runRole('finalizer', …)`, and the oracle through `IStateOracle.query` under `runRole('reviewer', …)`'s NeedInfo branch (logged as `'oracle'`).
-- **Binary (`@mcp-abap-adt/llm-agent-server`):** `SmartServerConfig.llm` widened to an optional union; `normalizeLlmConfig` + `resolveLlmConfig` added; reviewer accepts both `reviewerLlm` and the deprecated `plannerLlm` alias (with warning); `coordinator.finalizer.{type, finalizerLlm?, systemPrompt?}` parsed and wired; the resolved oracle subagent is auto-wrapped in `SubAgentStateOracle`.
-- **Tests:** unit tests per impl + handler integration test + interpreter regression + config normalization/lookup/alias tests.
+- **Binary (`@mcp-abap-adt/llm-agent-server`):** `SmartServerConfig.llm` widened to an optional union; `normalizeLlmConfig` + `resolveLlmConfig` added; `resolveLlmConfig` accepts an optional `pipeline.llm.main` fallback so pipeline-only configs keep working; reviewer accepts both `reviewerLlm` and the deprecated `plannerLlm` alias (with warning); `coordinator.finalizer.{type, finalizerLlm?, systemPrompt?}` parsed and wired; the resolved oracle subagent is auto-wrapped in `SubAgentStateOracle`. A new `buildDagCoordinatorDeps` seam factors the wiring into a unit-testable helper.
+- **Tests:** unit tests per impl + handler integration test + interpreter regression + config normalization/lookup/alias tests + a seam test against `buildDagCoordinatorDeps` exercising the default/LLM/template/oracle-wrapped/no-coordinator cases.
 
 ## Tech Stack
 
@@ -39,7 +39,7 @@ Close two architectural gaps in the DAG coordinator:
 | `packages/llm-agent/src/interfaces/finalizer.ts` | `FinalizerInput`, `FinalizerResult`, `IFinalizer`. |
 | `packages/llm-agent/src/interfaces/state-oracle.ts` | `StateOracleInput`, `StateOracleResult`, `IStateOracle`. |
 | `packages/llm-agent-libs/src/coordinator/dag/passthrough-finalizer.ts` | Returns `input.interpreterOutput` verbatim; no LLM. |
-| `packages/llm-agent-libs/src/coordinator/dag/llm-finalizer.ts` | Wraps `DirectLlmSubAgent` with `FINALIZER_SYSTEM`, no tools; renders trace into user prompt. |
+| `packages/llm-agent-libs/src/coordinator/dag/llm-finalizer.ts` | Wraps inner `ILlm` with `FINALIZER_SYSTEM`, no tools; renders trace into user prompt. |
 | `packages/llm-agent-libs/src/coordinator/dag/template-finalizer.ts` | Deterministic markdown join over `executionTrace`. |
 | `packages/llm-agent-libs/src/coordinator/dag/subagent-state-oracle.ts` | Adapter wrapping a raw `ISubAgent`; returns `usage: undefined` (double-count contract). |
 | `packages/llm-agent-libs/src/coordinator/dag/__tests__/passthrough-finalizer.test.ts` | Multi-terminal verbatim check. |
@@ -48,7 +48,9 @@ Close two architectural gaps in the DAG coordinator:
 | `packages/llm-agent-libs/src/coordinator/dag/__tests__/subagent-state-oracle.test.ts` | Maps `query→task`, `output→answer`; usage undefined. |
 | `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-finalizer.test.ts` | Handler invokes finalizer with `executedPlan`/`executionOrder`. |
 | `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-oracle.test.ts` | NeedInfo path calls `stateOracle.query` (not `.run`). |
-| `packages/llm-agent-server/src/smart-agent/__tests__/llm-map-normalize.test.ts` | Normalizer + lookup + reviewer alias + finalizer wiring. |
+| `packages/llm-agent-server/src/smart-agent/__tests__/llm-map-normalize.test.ts` | Normalizer + lookup (incl. pipeline fallback) + reviewer alias + finalizer wiring (incl. pipeline-fallback). |
+| `packages/llm-agent-server/src/smart-agent/build-dag-coordinator-deps.ts` | Extracted seam: builds the `withDagCoordinator` deps record from resolved LLM map, pipeline fallback, registry, finalizer YAML, reviewer YAML, oracle name. |
+| `packages/llm-agent-server/src/smart-agent/__tests__/build-dag-coordinator-deps.test.ts` | Seam test: default finalizer, LLM finalizer, template finalizer, oracle wrapped, no-coordinator. |
 
 ### Modify
 
@@ -63,8 +65,8 @@ Close two architectural gaps in the DAG coordinator:
 | `packages/llm-agent-libs/src/coordinator/dag/__tests__/dag-plan-interpreter.test.ts` | New regression: success returns `executedPlan` + topological `executionOrder` after splice. |
 | `packages/llm-agent-libs/src/coordinator/dag/index.ts` | Export the four new impls. |
 | `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` | Add `finalizer?: IFinalizer`; normalize default; change `stateOracle` type to `IStateOracle \| undefined`; invoke finalizer via `runRole('finalizer', …)`; rewrite NeedInfo branch to `stateOracle.query(…)` logged as `'oracle'`. |
-| `packages/llm-agent-server/src/smart-agent/config.ts` | Widen `SmartServerConfig.llm`; add `normalizeLlmConfig`, `resolveLlmConfig`; accept `reviewerLlm` alongside deprecated `plannerLlm` in reviewer block; parse `coordinator.finalizer.*`. |
-| `packages/llm-agent-server/src/smart-agent/smart-server.ts` | Route planner/reviewer/finalizer LLM through `resolveLlmConfig`; build the configured finalizer; auto-wrap stateOracle in `SubAgentStateOracle`. |
+| `packages/llm-agent-server/src/smart-agent/config.ts` | Widen `SmartServerConfig.llm`; add `normalizeLlmConfig`, `resolveLlmConfig` (with pipeline fallback), `resolveReviewerLlmName`, `buildFinalizer` (with pipeline fallback); accept `reviewerLlm` alongside deprecated `plannerLlm` in reviewer block; parse `coordinator.finalizer.*`. |
+| `packages/llm-agent-server/src/smart-agent/smart-server.ts` | Route every `this.cfg.llm.*` read through `resolveLlmConfig(map, name, pipeline?.llm?.main)`; extract DAG-deps assembly into `buildDagCoordinatorDeps`; auto-wrap stateOracle in `SubAgentStateOracle`. |
 
 ## Tasks
 
@@ -841,7 +843,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task 8 — Interpreter `executionOrder` + `executedPlan` on success
 
-- [ ] **8a. Write failing test.** Append to `packages/llm-agent-libs/src/coordinator/dag/__tests__/dag-plan-interpreter.test.ts`:
+- [ ] **8a. Write failing test.** Append to `packages/llm-agent-libs/src/coordinator/dag/__tests__/dag-plan-interpreter.test.ts`. NOTE: every `DagPlan` literal MUST include `createdAt: 0` because `packages/llm-agent/src/interfaces/dag-plan.ts:18` makes it required:
 
 ```ts
 test('returns executedPlan + topological executionOrder on success after splice', async () => {
@@ -852,6 +854,7 @@ test('returns executedPlan + topological executionOrder on success after splice'
       { id: 'b1', goal: 'gb1', dependsOn: ['a'] },
       { id: 'b2', goal: 'gb2', dependsOn: ['b1'] },
     ],
+    createdAt: 0,
   };
   let bAttempts = 0;
   const worker = {
@@ -874,6 +877,7 @@ test('returns executedPlan + topological executionOrder on success after splice'
         { id: 'a', goal: 'ga' },
         { id: 'b', goal: 'gb', dependsOn: ['a'] },
       ],
+      createdAt: 0,
     },
     {
       inputText: 'x',
@@ -919,7 +923,7 @@ test('returns executionOrder on failure path too', async () => {
   };
   const interp = new DagPlanInterpreter();
   const res = await interp.interpret(
-    { objective: 'o', nodes: [{ id: 'a', goal: 'ga' }] },
+    { objective: 'o', nodes: [{ id: 'a', goal: 'ga' }], createdAt: 0 },
     {
       inputText: 'x',
       workers: new Map([['w', failWorker]]),
@@ -1045,7 +1049,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ### Task 9 — `DagCoordinatorHandler` integration
 
-- [ ] **9a. Write failing test.** Create `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-finalizer.test.ts`:
+- [ ] **9a. Write failing test.** Create `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-finalizer.test.ts`. Every `DagPlan` literal includes `createdAt: 0` to satisfy the required field:
 
 ```ts
 import assert from 'node:assert/strict';
@@ -1070,6 +1074,7 @@ function plan(): DagPlan {
       { id: 'a', goal: 'ga' },
       { id: 'b', goal: 'gb', dependsOn: ['a'] },
     ],
+    createdAt: 0,
   };
 }
 
@@ -1175,7 +1180,7 @@ test('handler defaults to PassthroughFinalizer when deps.finalizer is omitted', 
 });
 ```
 
-Create `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-oracle.test.ts`:
+Create `packages/llm-agent-libs/src/pipeline/handlers/__tests__/dag-coordinator-oracle.test.ts`. Every `DagPlan` literal includes `createdAt: 0`:
 
 ```ts
 import assert from 'node:assert/strict';
@@ -1226,7 +1231,11 @@ test('handler routes NeedInfoSignal through IStateOracle.query (not ISubAgent.ru
         throw new NeedInfoSignal('is X true?');
       }
       return {
-        plan: { objective: 'o', nodes: [{ id: 'n', goal: 'g' }] },
+        plan: {
+          objective: 'o',
+          nodes: [{ id: 'n', goal: 'g' }],
+          createdAt: 0,
+        },
       };
     },
   };
@@ -1446,7 +1455,7 @@ cd packages/llm-agent-libs && npx tsx --test \
   src/pipeline/handlers/__tests__/dag-coordinator-role-usage.test.ts
 ```
 
-All four must pass (the last two are existing regressions).
+All four must pass (the last two are existing regressions). If any existing test in those files constructs a `DagPlan` literal, audit it for the now-required `createdAt` and patch in this same commit.
 
 - [ ] **9d. Commit.**
 
@@ -1472,7 +1481,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 10 — `llm:` map normalizer + lookup + reviewer alias
+### Task 10 — `llm:` map normalizer + lookup (with pipeline fallback) + reviewer alias
 
 - [ ] **10a. Write failing test.** Create `packages/llm-agent-server/src/smart-agent/__tests__/llm-map-normalize.test.ts`:
 
@@ -1515,8 +1524,13 @@ test('normalizeLlmConfig: map with main is returned as-is', () => {
   assert.equal(out, map);
 });
 
-test('resolveLlmConfig: undefined map returns undefined', () => {
+test('resolveLlmConfig: undefined map + no fallback returns undefined', () => {
   assert.equal(resolveLlmConfig(undefined, 'planner'), undefined);
+});
+
+test('resolveLlmConfig: undefined map but pipeline fallback returns the fallback', () => {
+  const fallback = { provider: 'deepseek', apiKey: 'k' } as never;
+  assert.equal(resolveLlmConfig(undefined, 'planner', fallback), fallback);
 });
 
 test('resolveLlmConfig: omitted name resolves to main', () => {
@@ -1540,6 +1554,14 @@ test('resolveLlmConfig: named key resolves to its config', () => {
 test('resolveLlmConfig: unknown name falls back to main', () => {
   const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
   assert.equal(resolveLlmConfig(map, 'nope'), map.main);
+});
+
+test('resolveLlmConfig: map without the named key prefers main over pipeline fallback', () => {
+  // The chain is: map[name] → map.main → fallback. If map.main exists,
+  // pipeline fallback is NOT used.
+  const map = { main: { provider: 'deepseek', apiKey: 'k' } } as never;
+  const fallback = { provider: 'openai', apiKey: 'k' } as never;
+  assert.equal(resolveLlmConfig(map, 'planner', fallback), map.main);
 });
 
 test('resolveReviewerLlmName: prefers reviewerLlm', () => {
@@ -1611,14 +1633,18 @@ export function normalizeLlmConfig(
 
 /**
  * Resolve a per-role LLM config by name from a normalized map.
- * Unknown names silently fall back to `main`; an undefined map returns
- * undefined (caller decides whether that is an error).
+ * Lookup chain: map[name] → map.main → pipelineFallback.
+ * When map is undefined, falls back to pipelineFallback (so pipeline-only
+ * configs keep working with no top-level llm: block).
+ *
+ * The caller decides whether `undefined` is an error.
  */
 export function resolveLlmConfig(
   map: NormalizedLlmMap | undefined,
   name?: string,
+  pipelineFallback?: SmartServerLlmConfig,
 ): SmartServerLlmConfig | undefined {
-  if (!map) return undefined;
+  if (!map) return pipelineFallback;
   if (!name || name === 'main') return map.main;
   return map[name] ?? map.main;
 }
@@ -1644,7 +1670,9 @@ export function resolveReviewerLlmName(
 }
 ```
 
-2. Update the `YamlCoordinator.reviewer` field to accept both names:
+> **Note on the fallback shape.** `pipeline.llm.main` is a `PipelineLlmProviderConfig` (uses `baseURL`, not `url`), so the caller in `smart-server.ts` MUST convert it to a `SmartServerLlmConfig`-compatible shape (`{ provider, apiKey, url: pipelineMain.baseURL, model, temperature }`) before passing it as `pipelineFallback`. The helper in Task 12 (`adaptPipelineToFallback`) does this once.
+
+2. Update the `YamlCoordinator.reviewer` field to accept both names + add finalizer:
 
 ```ts
   reviewer?: {
@@ -1715,8 +1743,10 @@ git commit -m "feat(server-config): widen llm: to optional named map + lookup he
   flat shape OR a Record<string, LlmProviderConfig> with a required
   'main' key.
 - normalizeLlmConfig rewrites flat→{main: flat} so existing configs
-  keep working; resolveLlmConfig resolves a per-role name to its
-  concrete config, falling back to main for unknown names.
+  keep working; resolveLlmConfig(map, name, pipelineFallback?) resolves
+  a per-role name through the chain map[name] → map.main →
+  pipelineFallback, so pipeline-only configs keep working with no
+  top-level llm: block.
 - coordinator.reviewer accepts both 'reviewerLlm' (preferred) and the
   deprecated 'plannerLlm' alias; the alias emits a warning.
 - coordinator.finalizer schema parsed: { type: passthrough | llm |
@@ -1727,7 +1757,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 11 — Parse `coordinator.finalizer.*` and select impl
+### Task 11 — Parse `coordinator.finalizer.*` and select impl (with pipeline fallback)
 
 - [ ] **11a. Write failing test.** Append to `packages/llm-agent-server/src/smart-agent/__tests__/llm-map-normalize.test.ts`:
 
@@ -1750,7 +1780,7 @@ const stubLlm = {
 };
 
 test('buildFinalizer: omitted block returns PassthroughFinalizer', async () => {
-  const f = await buildFinalizer(undefined, undefined, async () => stubLlm as never);
+  const f = await buildFinalizer(undefined, undefined, undefined, async () => stubLlm as never);
   assert.ok(f instanceof PassthroughFinalizer);
 });
 
@@ -1758,20 +1788,22 @@ test('buildFinalizer: type=template returns TemplateFinalizer', async () => {
   const f = await buildFinalizer(
     { type: 'template' },
     undefined,
+    undefined,
     async () => stubLlm as never,
   );
   assert.ok(f instanceof TemplateFinalizer);
 });
 
-test('buildFinalizer: type=llm uses resolved LLM from llm map', async () => {
+test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)', async () => {
   let askedFor: string | undefined;
   const map = normalizeLlmConfig({
     main: { provider: 'deepseek', apiKey: 'k' },
-    finalizer: { provider: 'sap-ai-sdk', model: 'sonnet' },
+    finalizer: { provider: 'sap-ai-sdk', apiKey: 'k', model: 'sonnet' },
   } as never)!;
   const f = await buildFinalizer(
     { type: 'llm', finalizerLlm: 'finalizer', systemPrompt: 'CUSTOM' },
     map,
+    undefined,
     async (cfg) => {
       askedFor = (cfg as never as { provider: string }).provider;
       return stubLlm as never;
@@ -1781,7 +1813,7 @@ test('buildFinalizer: type=llm uses resolved LLM from llm map', async () => {
   assert.equal(askedFor, 'sap-ai-sdk');
 });
 
-test('buildFinalizer: type=llm falls back to main when finalizerLlm omitted', async () => {
+test('buildFinalizer: type=llm falls back to llm.main when finalizerLlm omitted', async () => {
   const map = normalizeLlmConfig({
     main: { provider: 'deepseek', apiKey: 'k' },
   } as never)!;
@@ -1789,6 +1821,7 @@ test('buildFinalizer: type=llm falls back to main when finalizerLlm omitted', as
   const f = await buildFinalizer(
     { type: 'llm' },
     map,
+    undefined,
     async (cfg) => {
       askedFor = (cfg as never as { provider: string }).provider;
       return stubLlm as never;
@@ -1798,10 +1831,34 @@ test('buildFinalizer: type=llm falls back to main when finalizerLlm omitted', as
   assert.equal(askedFor, 'deepseek');
 });
 
-test('buildFinalizer: type=llm throws when no LLM map is available', async () => {
+test('buildFinalizer: type=llm uses pipeline.llm.main fallback when no top-level llm map', async () => {
+  // Pipeline-only config: no top-level llm: block, but pipeline.llm.main
+  // is set. The chain top-level llm.<name> → llm.main → pipeline.llm.main
+  // must resolve through the pipeline fallback.
+  const pipelineFallback = {
+    provider: 'openai',
+    apiKey: 'k',
+    model: 'gpt-x',
+  } as never;
+  let askedFor: string | undefined;
+  const f = await buildFinalizer(
+    { type: 'llm' },
+    undefined,
+    pipelineFallback,
+    async (cfg) => {
+      askedFor = (cfg as never as { provider: string }).provider;
+      return stubLlm as never;
+    },
+  );
+  assert.ok(f instanceof LlmFinalizer);
+  assert.equal(askedFor, 'openai');
+});
+
+test('buildFinalizer: type=llm throws ConfigError when neither map nor pipeline fallback resolves', async () => {
   await assert.rejects(
     buildFinalizer(
       { type: 'llm' },
+      undefined,
       undefined,
       async () => stubLlm as never,
     ),
@@ -1836,21 +1893,26 @@ export type FinalizerYaml = {
 
 /**
  * Build the IFinalizer impl from `coordinator.finalizer:` YAML.
+ *
+ * Lookup chain for `type: llm`:
+ *   resolveLlmConfig(llmMap, cfg.finalizerLlm, pipelineFallback)
+ *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
+ *   → ConfigError if all three are missing.
+ *
  * Absent block / `type: passthrough` → PassthroughFinalizer.
  * `type: template` → TemplateFinalizer.
- * `type: llm`     → LlmFinalizer, with LLM resolved from
- *                    resolveLlmConfig(llmMap, cfg.finalizerLlm).
  */
 export async function buildFinalizer(
   cfg: FinalizerYaml | undefined,
   llmMap: NormalizedLlmMap | undefined,
+  pipelineFallback: SmartServerLlmConfig | undefined,
   makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>,
 ): Promise<IFinalizer> {
   const kind = cfg?.type ?? 'passthrough';
   if (kind === 'passthrough') return new PassthroughFinalizer();
   if (kind === 'template') return new TemplateFinalizer();
   // kind === 'llm'
-  const resolved = resolveLlmConfig(llmMap, cfg?.finalizerLlm);
+  const resolved = resolveLlmConfig(llmMap, cfg?.finalizerLlm, pipelineFallback);
   if (!resolved) {
     throw new Error(
       "coordinator.finalizer (type: llm) requires an LLM config: provide top-level llm.<name>, llm.main, or pipeline.llm.main",
@@ -1891,12 +1953,14 @@ git add packages/llm-agent-server/src/smart-agent/config.ts \
         packages/llm-agent-libs/src/index.ts
 git commit -m "feat(server-config): parse coordinator.finalizer.* and select impl
 
-buildFinalizer(yaml, llmMap, makeLlm):
+buildFinalizer(yaml, llmMap, pipelineFallback, makeLlm):
 - absent / type=passthrough → PassthroughFinalizer
 - type=template            → TemplateFinalizer
-- type=llm                 → LlmFinalizer wrapping resolveLlmConfig(
-                              llmMap, cfg.finalizerLlm)
-- type=llm with no LLM available → fail-loud ConfigError.
+- type=llm                 → LlmFinalizer wrapping
+                              resolveLlmConfig(llmMap, finalizerLlm,
+                              pipelineFallback). Chain:
+                              llm.<name> → llm.main → pipeline.llm.main.
+- type=llm with no LLM available from ANY source → fail-loud ConfigError.
 
 Also exports the four new impls from llm-agent-libs.
 
@@ -1905,48 +1969,482 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 12 — Server wiring: route LLMs through `resolveLlmConfig`, auto-wrap stateOracle, pass finalizer
+### Task 12.0 — Audit `this.cfg.llm.*` reads in `smart-server.ts`
 
-- [ ] **12a. Write failing test.** This task is glue between Tasks 10/11 and the running server. The existing `dag-coordinator-config.test.ts`, `dag-coordinator-wiring.test.ts`, and `existing-coordinator-yaml-loads.test.ts` MUST stay green; add one new integration test in the same `__tests__` dir as `packages/llm-agent-server/src/smart-agent/__tests__/dag-coordinator-finalizer-wiring.test.ts`:
+This is preparation for Task 12 — every read site must be routed through `resolveLlmConfig(map, name, pipelineFallback)` or guarded so it does not break when `cfg.llm` is undefined or a map.
+
+- [ ] **12.0a. Run the audit.**
+
+```bash
+cd /home/okyslytsia/prj/llm-agent
+grep -nE "(this\.)?cfg\.llm\." packages/llm-agent-server/src/smart-agent/smart-server.ts
+```
+
+At the time of this plan, the audit returns (verify before editing — line numbers shift as Tasks 10–11 land):
+
+| Line | Site | Action in Task 12 |
+|---|---|---|
+| 616 | `this.cfg.llm.temperature` (in `mainTemp = Number(...)`) | Read from `resolved.temperature` of `resolveLlmConfig(llmMap, 'main', pipelineMainFallback)`; default 0.7. |
+| 624 | `this.cfg.llm.provider ?? 'deepseek'` (in flat-fallback `makeLlm`) | Routed through the same resolved config. |
+| 625 | `this.cfg.llm.apiKey` | Routed through resolved. |
+| 626 | `this.cfg.llm.url` | Routed through resolved (note: `SmartServerLlmConfig.url`). |
+| 627 | `this.cfg.llm.model` | Routed through resolved. |
+| 634 | `this.cfg.llm.classifierTemperature` (in `classifierTemp`) | Guard with `topMain?.classifierTemperature` (only the FLAT shape has this field; map keys are per-role `SmartServerLlmConfig` and may share it). Read off `topMain` returned by `resolveLlmConfig(llmMap, 'main', pipelineMainFallback)`; default 0.1. |
+| 645–648 | `this.cfg.llm.{provider,apiKey,url,model}` again (in classifier flat-fallback) | Routed through the same resolved config. |
+
+- [ ] **12.0b. Verify the list is complete.**
+
+```bash
+cd /home/okyslytsia/prj/llm-agent
+# After implementing Task 12 the count must drop to 0; before, it MUST match
+# the rows above (8 hits). If grep returns extras, append them to the table.
+grep -cnE "(this\.)?cfg\.llm\." packages/llm-agent-server/src/smart-agent/smart-server.ts
+```
+
+> **Implementer instruction:** if line numbers in `smart-server.ts` have shifted between the time this plan was written and the time you execute it, re-run the grep and update each site by code context (the exact field-read pattern, not the line number). No code change is committed in Task 12.0 — this task only produces the verified audit list used to drive Task 12.
+
+---
+
+### Task 12 — Server wiring: route LLMs through `resolveLlmConfig`, extract `buildDagCoordinatorDeps` seam, auto-wrap stateOracle, pass finalizer
+
+This task is split into 12a (extracted seam helper + unit test) and 12b (`smart-server.ts` integration using the audit from Task 12.0).
+
+#### Task 12a — Extract `buildDagCoordinatorDeps` seam + unit test
+
+The seam is the unit-testable factory for the `withDagCoordinator` deps record. It encapsulates: planner LLM resolution, reviewer LLM resolution (with alias warning), error strategy, finalizer construction (via `buildFinalizer`), and oracle wrapping (via `SubAgentStateOracle`).
+
+- [ ] **12a.1. Write failing test.** Create `packages/llm-agent-server/src/smart-agent/__tests__/build-dag-coordinator-deps.test.ts`:
 
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { ISubAgent } from '@mcp-abap-adt/llm-agent';
 import {
+  LlmFinalizer,
   PassthroughFinalizer,
   SubAgentStateOracle,
   TemplateFinalizer,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { SmartServer } from '../smart-server.js';
+import { buildDagCoordinatorDeps } from '../build-dag-coordinator-deps.js';
+import { normalizeLlmConfig } from '../config.js';
 
-const minimalCfgBase = {
-  port: 0,
-  host: '127.0.0.1',
-  llm: { provider: 'deepseek' as const, apiKey: 'k', model: 'm' },
-  mode: 'smart' as const,
+const stubLlm = {
+  name: 'stub',
+  async chat() {
+    return {
+      ok: true as const,
+      value: {
+        content: '',
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      },
+    };
+  },
 };
 
-test('coordinator.finalizer absent → PassthroughFinalizer is wired', async () => {
-  // The unit-level wiring assertion is sufficient for this plan: confirm
-  // buildSmartServer assigns a PassthroughFinalizer to its captured
-  // DAG coordinator template when no finalizer block is configured.
-  // (Full server start requires a live MCP/LLM, exercised in integration
-  // tests; here we assert the captured template only.)
-  // This test is left as a SMOKE assertion against the type wiring; the
-  // detailed cases are covered by Tasks 9 and 11.
-  assert.equal(typeof SmartServer, 'function');
+function makeOracle(name: string): ISubAgent {
+  return {
+    name,
+    description: 'd',
+    capabilities: { contextPolicy: 'optional' },
+    async run() {
+      return { output: 'X' };
+    },
+  };
+}
+
+function makeWorker(name: string): ISubAgent {
+  return {
+    name,
+    description: 'd',
+    capabilities: { contextPolicy: 'optional' },
+    async run() {
+      return { output: 'W' };
+    },
+  };
+}
+
+test('buildDagCoordinatorDeps: default finalizer is PassthroughFinalizer', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm' } },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.ok(deps);
+  assert.ok(deps!.finalizer instanceof PassthroughFinalizer);
+  assert.equal(deps!.stateOracle, undefined);
+  assert.equal(deps!.reviewer, undefined);
+  assert.ok(deps!.planner);
+  assert.equal(deps!.workers.size, 1);
+});
+
+test('buildDagCoordinatorDeps: type=llm finalizer yields LlmFinalizer', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: {
+      planner: { type: 'llm' },
+      finalizer: { type: 'llm' },
+    },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.ok(deps!.finalizer instanceof LlmFinalizer);
+});
+
+test('buildDagCoordinatorDeps: type=template finalizer yields TemplateFinalizer', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: {
+      planner: { type: 'llm' },
+      finalizer: { type: 'template' },
+    },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.ok(deps!.finalizer instanceof TemplateFinalizer);
+});
+
+test('buildDagCoordinatorDeps: stateOracle name resolves and is wrapped in SubAgentStateOracle', async () => {
+  const oracle = makeOracle('inspector');
+  const registry = new Map<string, ISubAgent>([
+    ['w', makeWorker('w')],
+    ['inspector', oracle],
+  ]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm' }, stateOracle: 'inspector' },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.ok(deps!.stateOracle instanceof SubAgentStateOracle);
+  assert.equal(deps!.stateOracle?.name, 'inspector');
+  // Oracle MUST be excluded from the workers set passed to the DAG.
+  assert.equal(deps!.workers.has('inspector'), false);
+  assert.equal(deps!.workers.has('w'), true);
+});
+
+test('buildDagCoordinatorDeps: returns undefined when planner block is absent (no coordinator)', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: { stateOracle: 'inspector' }, // no planner
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.equal(deps, undefined);
+});
+
+test('buildDagCoordinatorDeps: reviewer alias plannerLlm emits a warning', async () => {
+  const warnings: string[] = [];
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  await buildDagCoordinatorDeps({
+    coordCfg: {
+      planner: { type: 'llm' },
+      reviewer: { type: 'llm', plannerLlm: 'main' },
+    },
+    llmMap: normalizeLlmConfig({
+      main: { provider: 'deepseek', apiKey: 'k' },
+    } as never),
+    pipelineFallback: undefined,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: (m) => warnings.push(m),
+  });
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /plannerLlm.*deprecated/i);
+});
+
+test('buildDagCoordinatorDeps: pipelineFallback enables type=llm finalizer without top-level llm map', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: {
+      planner: { type: 'llm' },
+      finalizer: { type: 'llm' },
+    },
+    llmMap: undefined, // no top-level llm: block
+    pipelineFallback: {
+      provider: 'openai',
+      apiKey: 'k',
+      model: 'gpt-x',
+    } as never,
+    mainLlm: stubLlm as never,
+    helperLlm: undefined,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => stubLlm as never,
+    warn: () => {},
+  });
+  assert.ok(deps!.finalizer instanceof LlmFinalizer);
 });
 ```
-
-(The single smoke `assert` keeps the test cheap; the substantive coverage already lives in tasks 9 + 11.)
 
 Run:
 
 ```bash
-cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/dag-coordinator-finalizer-wiring.test.ts
+cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/build-dag-coordinator-deps.test.ts
 ```
 
-Expect pass (it's a smoke assertion); but ALSO run the existing wiring tests to verify nothing regresses:
+Expect failure (module missing).
+
+- [ ] **12a.2. Implement the seam.** Create `packages/llm-agent-server/src/smart-agent/build-dag-coordinator-deps.ts`:
+
+```ts
+import type {
+  IErrorStrategy,
+  IReviewStrategy,
+  ISubAgent,
+  ILlm,
+} from '@mcp-abap-adt/llm-agent';
+import {
+  AbortErrorStrategy,
+  DagPlanInterpreter,
+  LlmDagPlanner,
+  LlmReviewStrategy,
+  ReplanErrorStrategy,
+  SubAgentStateOracle,
+} from '@mcp-abap-adt/llm-agent-libs';
+import type { DagCoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  buildFinalizer,
+  resolveCoordinatorActivation,
+  resolveLlmConfig,
+  resolveReviewerLlmName,
+  type NormalizedLlmMap,
+} from './config.js';
+import type { SmartServerLlmConfig } from './smart-server.js';
+
+export interface BuildDagCoordinatorDepsInput {
+  coordCfg: Record<string, unknown> | undefined;
+  llmMap: NormalizedLlmMap | undefined;
+  /** Adapted from `pipeline.llm.main` (already shape-normalized to
+   *  SmartServerLlmConfig: `{ provider, apiKey, url: baseURL, model,
+   *  temperature }`). When set, used as the final fallback in the
+   *  role-resolution chain map[name] → map.main → pipelineFallback. */
+  pipelineFallback: SmartServerLlmConfig | undefined;
+  mainLlm: ILlm;
+  helperLlm: ILlm | undefined;
+  mainTemp: number;
+  registry: ReadonlyMap<string, ISubAgent>;
+  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
+  warn: (msg: string) => void;
+}
+
+export type BuiltDagCoordinatorDeps = Omit<
+  DagCoordinatorHandlerDeps,
+  'workers'
+> & {
+  workers: Map<string, ISubAgent>;
+  oracleName?: string;
+};
+
+/**
+ * Assemble the full deps record for `withDagCoordinator`. Returns
+ * `undefined` when the YAML does not declare a DAG coordinator (no
+ * `planner` block), so the caller can branch.
+ *
+ * Roles resolve their LLM via the chain:
+ *   resolveLlmConfig(llmMap, name, pipelineFallback)
+ *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
+ */
+export async function buildDagCoordinatorDeps(
+  input: BuildDagCoordinatorDepsInput,
+): Promise<BuiltDagCoordinatorDeps | undefined> {
+  const {
+    coordCfg,
+    llmMap,
+    pipelineFallback,
+    mainLlm,
+    helperLlm,
+    mainTemp,
+    registry,
+    makeLlm,
+    warn,
+  } = input;
+
+  if (!coordCfg || coordCfg.planner === undefined) return undefined;
+
+  // ---- Planner ----------------------------------------------------------
+  const plannerBlock = coordCfg.planner as {
+    type?: string;
+    plannerLlm?: string;
+  };
+  const plannerLlmCfg = resolveLlmConfig(
+    llmMap,
+    plannerBlock?.plannerLlm,
+    pipelineFallback,
+  );
+  const plannerLlm = plannerLlmCfg
+    ? await makeLlm({
+        ...plannerLlmCfg,
+        temperature: Number(plannerLlmCfg.temperature ?? mainTemp),
+      })
+    : mainLlm;
+  const planner = new LlmDagPlanner(plannerLlm);
+
+  // ---- Reviewer (optional) ---------------------------------------------
+  let reviewer: IReviewStrategy | undefined;
+  if (coordCfg.reviewer !== undefined) {
+    const reviewerBlock = coordCfg.reviewer as {
+      reviewerLlm?: string;
+      plannerLlm?: string;
+    };
+    const reviewerName = resolveReviewerLlmName(reviewerBlock, warn);
+    const reviewerCfg = resolveLlmConfig(
+      llmMap,
+      reviewerName,
+      pipelineFallback,
+    );
+    const reviewerLlm = reviewerCfg
+      ? await makeLlm({
+          ...reviewerCfg,
+          temperature: Number(reviewerCfg.temperature ?? mainTemp),
+        })
+      : mainLlm;
+    reviewer = new LlmReviewStrategy(reviewerLlm);
+  }
+
+  // ---- Interpreter, workers, oracle, activation, error strategy --------
+  const interpreter = new DagPlanInterpreter();
+
+  const oracleName = coordCfg.stateOracle as string | undefined;
+  let rawOracle: ISubAgent | undefined;
+  if (oracleName) {
+    rawOracle = registry.get(oracleName);
+    if (!rawOracle) {
+      throw new Error(
+        `coordinator.stateOracle '${oracleName}' is not a declared subagent`,
+      );
+    }
+  }
+  const workers: Map<string, ISubAgent> = new Map(
+    [...registry].filter(([name]) => name !== oracleName),
+  );
+  if (workers.size === 0) {
+    throw new Error(
+      'coordinator.planner is set (DAG mode) but no workers are configured. ' +
+        'Add at least one entry under the top-level `subagents:` block.',
+    );
+  }
+  const activation = resolveCoordinatorActivation(
+    (coordCfg.activation ?? 'explicit') as string,
+  );
+
+  let errorStrategy: IErrorStrategy | undefined;
+  const esCfg = coordCfg.errorStrategy as
+    | { type?: string; maxReplans?: number }
+    | undefined;
+  if (esCfg?.type === 'replan') {
+    errorStrategy = new ReplanErrorStrategy(planner, esCfg.maxReplans);
+  } else if (esCfg?.type === 'abort') {
+    errorStrategy = new AbortErrorStrategy();
+  }
+
+  // ---- Finalizer --------------------------------------------------------
+  const finalizer = await buildFinalizer(
+    coordCfg.finalizer as never,
+    llmMap,
+    pipelineFallback,
+    async (lc) =>
+      makeLlm({
+        ...lc,
+        temperature: Number(lc.temperature ?? mainTemp),
+      }),
+  );
+
+  // ---- Oracle wrap ------------------------------------------------------
+  const stateOracle = rawOracle
+    ? new SubAgentStateOracle(rawOracle)
+    : undefined;
+
+  void mainLlm;
+  void helperLlm;
+
+  return {
+    planner,
+    interpreter,
+    workers,
+    activation,
+    reviewer,
+    errorStrategy,
+    stateOracle,
+    finalizer,
+    maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
+    oracleName,
+  };
+}
+```
+
+- [ ] **12a.3. Build + test.**
+
+```bash
+npm --workspace @mcp-abap-adt/llm-agent-libs run build
+npm --workspace @mcp-abap-adt/llm-agent-server run build
+cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/build-dag-coordinator-deps.test.ts
+```
+
+- [ ] **12a.4. Commit.**
+
+```bash
+git add packages/llm-agent-server/src/smart-agent/build-dag-coordinator-deps.ts \
+        packages/llm-agent-server/src/smart-agent/__tests__/build-dag-coordinator-deps.test.ts
+git commit -m "feat(server): extract buildDagCoordinatorDeps seam
+
+A pure async factory that assembles the withDagCoordinator deps
+record from the YAML coord block + normalized LLM map + pipeline
+fallback + subagent registry. Unit-testable in isolation — exercises
+default-PassthroughFinalizer, type=llm finalizer, type=template
+finalizer, oracle wrapping in SubAgentStateOracle, pipeline-fallback
+chain, reviewer-alias warning, and the no-coordinator case.
+
+Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
+```
+
+#### Task 12b — Wire seam + resolved LLMs into `SmartServer`
+
+This task uses the audit list from Task 12.0 and replaces the inline DAG branch in `smart-server.ts` with a `buildDagCoordinatorDeps` call.
+
+- [ ] **12b.1. Sanity: existing wiring tests as the "failing" surface.**
 
 ```bash
 cd packages/llm-agent-server && npx tsx --test \
@@ -1954,20 +2452,11 @@ cd packages/llm-agent-server && npx tsx --test \
   src/smart-agent/__tests__/existing-coordinator-yaml-loads.test.ts
 ```
 
-Expect TWO failures in the existing tests after this task starts (because they read `reviewer.plannerLlm` as a closed union); fix as part of 12b.
+Expect these to continue passing as Tasks 10–11 land; Task 12b only changes how the deps record is assembled, not the YAML schema. If a test fails because it asserts a closed `'main' | 'planner' | 'helper'` union on `reviewer.plannerLlm`, widen the assertion to `typeof === 'string'` in the same commit.
 
-- [ ] **12b. Implement.** Edit `packages/llm-agent-server/src/smart-agent/smart-server.ts`:
+- [ ] **12b.2. Implement.** Edit `packages/llm-agent-server/src/smart-agent/smart-server.ts`:
 
-1. At the top of `start()`, after `const pipeline = this.cfg.pipeline;`, normalize the top-level LLM map and capture warnings:
-
-```ts
-    const warnings: string[] = [];
-    const llmMap = normalizeLlmConfig(this.cfg.llm);
-    // resolveLlmConfig with no name returns map.main; when llm: is absent,
-    // we fall through to the pipeline.llm.main path used today.
-```
-
-Add the import next to the other config imports:
+1. Add imports near the other config imports:
 
 ```ts
 import {
@@ -1981,15 +2470,46 @@ import {
   resolveLlmConfig,
   resolveReviewerLlmName,
 } from './config.js';
+import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
+import { SubAgentStateOracle } from '@mcp-abap-adt/llm-agent-libs';
 ```
 
-2. Replace the `mainLlm` resolution block (around line 615–633) so it routes through the map:
+2. Near the top of `start()`, after `const pipeline = this.cfg.pipeline;`, normalize the LLM map AND derive the pipeline fallback in a single adapter so every downstream lookup uses the same fallback object:
 
 ```ts
+    const warnings: string[] = [];
+    const llmMap = normalizeLlmConfig(this.cfg.llm);
+
+    // Adapt pipeline.llm.main (uses `baseURL`) → SmartServerLlmConfig (uses
+    // `url`) so resolveLlmConfig's pipelineFallback parameter speaks one
+    // shape. Returns undefined when no pipeline.llm.main is configured.
+    const adaptPipelineToFallback = ():
+      | import('./smart-server.js').SmartServerLlmConfig
+      | undefined => {
+      const pm = pipeline?.llm?.main;
+      if (!pm) return undefined;
+      return {
+        provider: pm.provider,
+        apiKey: pm.apiKey ?? '',
+        url: pm.baseURL,
+        model: pm.model,
+        temperature: pm.temperature,
+      };
+    };
+    const pipelineFallback = adaptPipelineToFallback();
+```
+
+3. **Replace EVERY `this.cfg.llm.*` read** with a single `resolveLlmConfig(llmMap, 'main', pipelineFallback)` call. The audit list from Task 12.0 enumerates the 8 sites in the current `mainLlm` + `classifierLlm` blocks (lines 615–651). Replace those blocks with:
+
+```ts
+    // ---- LLM resolution (top-level llm map → pipeline.llm.main chain) --
+    const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
+
     const mainTemp = Number(
-      pipeline?.llm?.main?.temperature ?? this.cfg.llm?.temperature ?? 0.7,
+      pipeline?.llm?.main?.temperature ??
+        topMain?.temperature ??
+        0.7,
     );
-    const topMain = resolveLlmConfig(llmMap, 'main');
     const mainLlm = pipeline?.llm?.main
       ? await makeLlm(pipeline.llm.main, mainTemp)
       : topMain
@@ -2007,66 +2527,57 @@ import {
               'no LLM configured: provide top-level llm.main or pipeline.llm.main',
             );
           })();
-```
 
-3. Replace the DAG planner LLM construction (around line 898–909):
-
-```ts
-        const plannerBlock = coordCfg.planner as {
-          type?: string;
-          plannerLlm?: string;
-        };
-        const plannerName = plannerBlock?.plannerLlm;
-        const plannerLlmCfg = resolveLlmConfig(llmMap, plannerName);
-        const plannerLlm = plannerLlmCfg
+    const classifierTemp = Number(
+      pipeline?.llm?.classifier?.temperature ??
+        topMain?.classifierTemperature ??
+        0.1,
+    );
+    const classifierLlm = pipeline?.llm?.classifier
+      ? await makeLlm(pipeline.llm.classifier, classifierTemp)
+      : pipeline?.llm?.main
+        ? await makeLlm(pipeline.llm.main, classifierTemp)
+        : topMain
           ? await makeLlm(
               {
-                provider: plannerLlmCfg.provider ?? 'deepseek',
-                apiKey: plannerLlmCfg.apiKey,
-                baseURL: plannerLlmCfg.url,
-                model: plannerLlmCfg.model,
+                provider: topMain.provider ?? 'deepseek',
+                apiKey: topMain.apiKey,
+                baseURL: topMain.url,
+                model: topMain.model,
               },
-              Number(plannerLlmCfg.temperature ?? mainTemp),
+              classifierTemp,
             )
-          : mainLlm;
-        const planner = new LlmDagPlanner(plannerLlm);
+          : (() => {
+              throw new Error(
+                'no LLM configured: provide top-level llm.main or pipeline.llm.main',
+              );
+            })();
 ```
 
-4. Replace the DAG reviewer LLM construction (around line 911–922):
+After this replacement, re-run the Task 12.0 grep — it MUST return zero `this.cfg.llm.*` hits.
+
+4. Replace the inline DAG branch (~lines 886–988 today) with a call to `buildDagCoordinatorDeps`:
 
 ```ts
-        let reviewer: IReviewStrategy | undefined;
-        if (coordCfg.reviewer !== undefined) {
-          const reviewerBlock = coordCfg.reviewer as {
-            reviewerLlm?: string;
-            plannerLlm?: string;
-          };
-          const reviewerName = resolveReviewerLlmName(reviewerBlock, (m) =>
-            log({ event: 'config_warning', message: m }),
+      if (coordCfg.planner !== undefined) {
+        const interpKind = (
+          coordCfg.interpreter as { type?: string } | undefined
+        )?.type;
+        if (interpKind !== undefined && interpKind !== 'dag') {
+          throw new Error(
+            `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
           );
-          const reviewerCfg = resolveLlmConfig(llmMap, reviewerName);
-          const reviewerLlm = reviewerCfg
-            ? await makeLlm(
-                {
-                  provider: reviewerCfg.provider ?? 'deepseek',
-                  apiKey: reviewerCfg.apiKey,
-                  baseURL: reviewerCfg.url,
-                  model: reviewerCfg.model,
-                },
-                Number(reviewerCfg.temperature ?? mainTemp),
-              )
-            : mainLlm;
-          reviewer = new LlmReviewStrategy(reviewerLlm);
         }
-```
 
-5. Just before `builder = builder.withDagCoordinator({ … })` (around line 965), build the finalizer and auto-wrap the oracle:
-
-```ts
-        const finalizer = await buildFinalizer(
-          coordCfg.finalizer as never,
+        const built = await buildDagCoordinatorDeps({
+          coordCfg: coordCfg as Record<string, unknown>,
           llmMap,
-          async (lc) =>
+          pipelineFallback,
+          mainLlm,
+          helperLlm,
+          mainTemp,
+          registry,
+          makeLlm: async (lc) =>
             makeLlm(
               {
                 provider: lc.provider ?? 'deepseek',
@@ -2076,41 +2587,64 @@ import {
               },
               Number(lc.temperature ?? mainTemp),
             ),
-        );
-        const wrappedOracle = stateOracle
-          ? new SubAgentStateOracle(stateOracle)
-          : undefined;
-```
-
-6. Update the `withDagCoordinator` call AND the template capture to use `finalizer` and the wrapped oracle:
-
-```ts
-        builder = builder.withDagCoordinator({
-          planner,
-          interpreter,
-          workers,
-          activation,
-          reviewer,
-          errorStrategy,
-          stateOracle: wrappedOracle,
-          finalizer,
-          maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
+          warn: (m) => log({ event: 'config_warning', message: m }),
         });
+        // built is defined when coordCfg.planner !== undefined.
+        if (!built) {
+          throw new Error('internal: buildDagCoordinatorDeps returned undefined despite planner present');
+        }
+
+        const { oracleName, ...deps } = built;
+        builder = builder.withDagCoordinator(deps);
         this._dagCoordinatorTemplate = {
           deps: {
-            planner,
-            interpreter,
-            activation,
-            reviewer,
-            errorStrategy,
-            finalizer,
-            maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
+            planner: deps.planner,
+            interpreter: deps.interpreter,
+            activation: deps.activation,
+            reviewer: deps.reviewer,
+            errorStrategy: deps.errorStrategy,
+            finalizer: deps.finalizer,
+            maxRoundTrips: deps.maxRoundTrips,
           },
           oracleName,
         };
+        log({ event: 'dag_coordinator_configured', config: coordCfg });
+      } else {
+        // Linear mode: existing path, route plannerLlm through the new map.
+        const linearPlannerName = coordCfg.plannerLlm as string | undefined;
+        const linearPlannerCfg = resolveLlmConfig(
+          llmMap,
+          linearPlannerName,
+          pipelineFallback,
+        );
+        const plannerLlm = linearPlannerCfg
+          ? await makeLlm(
+              {
+                provider: linearPlannerCfg.provider ?? 'deepseek',
+                apiKey: linearPlannerCfg.apiKey,
+                baseURL: linearPlannerCfg.url,
+                model: linearPlannerCfg.model,
+              },
+              Number(linearPlannerCfg.temperature ?? mainTemp),
+            )
+          : linearPlannerName === 'helper' || linearPlannerName === 'planner'
+            ? (helperLlm ?? mainLlm)
+            : mainLlm;
+        // … rest of linear branch unchanged (planningKind, dispatchKind, etc.)
 ```
 
-7. In `buildSessionAgent` (around line 1497), wrap the per-session oracle through the adapter:
+5. Update `_dagCoordinatorTemplate` field type at line ~595 — the deps now include `finalizer`, and `stateOracle` is `IStateOracle`:
+
+```ts
+  private _dagCoordinatorTemplate?: {
+    deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
+    oracleName?: string;
+  };
+```
+
+(`finalizer` is part of `DagCoordinatorHandlerDeps` and is therefore included in the `Omit<…, 'workers' | 'stateOracle'>` projection — the type signature is correct without changes; verify after rebuild.)
+
+6. In `buildSessionAgent` (line ~1497) wrap the per-session oracle through the adapter:
 
 ```ts
       if (this._dagCoordinatorTemplate) {
@@ -2127,47 +2661,7 @@ import {
       }
 ```
 
-8. Update the `_dagCoordinatorTemplate` field type to match the new `IStateOracle`-based deps. In the field declaration around line 595:
-
-```ts
-  private _dagCoordinatorTemplate?: {
-    deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
-    oracleName?: string;
-  };
-```
-
-(No change needed — `Omit<..., 'stateOracle'>` already excludes it, and `finalizer` is part of the omitted set's complement; the type is correct.)
-
-9. Update the legacy linear coordinator's plannerLlm resolution (around line 993) to also accept arbitrary names via the new map without breaking existing 'main' | 'planner' | 'helper' fast-path; replace with:
-
-```ts
-        const linearPlannerName = coordCfg.plannerLlm;
-        const linearPlannerCfg = resolveLlmConfig(llmMap, linearPlannerName);
-        const plannerLlm = linearPlannerCfg
-          ? await makeLlm(
-              {
-                provider: linearPlannerCfg.provider ?? 'deepseek',
-                apiKey: linearPlannerCfg.apiKey,
-                baseURL: linearPlannerCfg.url,
-                model: linearPlannerCfg.model,
-              },
-              Number(linearPlannerCfg.temperature ?? mainTemp),
-            )
-          : linearPlannerName === 'helper' || linearPlannerName === 'planner'
-            ? (helperLlm ?? mainLlm)
-            : mainLlm;
-```
-
-Also import `SubAgentStateOracle`:
-
-```ts
-import {
-  // … existing imports …
-  SubAgentStateOracle,
-} from '@mcp-abap-adt/llm-agent-libs';
-```
-
-And update the `resolveSmartServerConfig` in `packages/llm-agent-server/src/smart-agent/config.ts` (around line 842) to allow a missing `llm:` block — replace the unconditional `llm: { … }` literal with:
+7. Update `resolveSmartServerConfig` in `packages/llm-agent-server/src/smart-agent/config.ts` (around line 842) to allow a missing `llm:` block — replace the unconditional `llm: { … }` literal with:
 
 ```ts
     llm: get(yaml, 'llm')
@@ -2188,34 +2682,39 @@ And update the `resolveSmartServerConfig` in `packages/llm-agent-server/src/smar
       : undefined,
 ```
 
-- [ ] **12c. Build + run ALL server-package tests.**
+- [ ] **12b.3. Verify audit complete + build + run ALL server-package tests.**
 
 ```bash
+cd /home/okyslytsia/prj/llm-agent
+# Must return 0 hits.
+grep -cnE "(this\.)?cfg\.llm\." packages/llm-agent-server/src/smart-agent/smart-server.ts
+
 npm --workspace @mcp-abap-adt/llm-agent-server run build
 cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/*.test.ts
 ```
 
-All existing tests + the new wiring smoke test must pass. Fix any regressions iteratively.
+All existing tests + the new wiring/seam tests must pass. Fix any regressions iteratively (especially `dag-coordinator-config.test.ts` and `existing-coordinator-yaml-loads.test.ts` assertions on `reviewer.plannerLlm` types).
 
-- [ ] **12d. Commit.**
+- [ ] **12b.4. Commit.**
 
 ```bash
 git add packages/llm-agent-server/src/smart-agent/smart-server.ts \
-        packages/llm-agent-server/src/smart-agent/config.ts \
-        packages/llm-agent-server/src/smart-agent/__tests__/dag-coordinator-finalizer-wiring.test.ts
+        packages/llm-agent-server/src/smart-agent/config.ts
 git commit -m "feat(server): wire IFinalizer + IStateOracle into SmartServer
 
-- Top-level llm: is resolved through normalizeLlmConfig once and
-  every per-role lookup (planner, reviewer, finalizer, linear
-  planner) routes through resolveLlmConfig(llmMap, name).
-- coordinator.reviewer accepts both reviewerLlm and the deprecated
-  plannerLlm alias; the alias logs a config_warning event.
-- coordinator.finalizer.{type, finalizerLlm?, systemPrompt?} is
-  parsed via buildFinalizer; resolved finalizer is passed into
-  withDagCoordinator and reused in per-session buildSessionAgent.
-- The resolved stateOracle ISubAgent is automatically wrapped in
-  SubAgentStateOracle before being passed to the DAG handler — the
-  consumer YAML stays identical.
+- Top-level llm: is resolved through normalizeLlmConfig once at start.
+- Every this.cfg.llm.* read is replaced by resolveLlmConfig(llmMap,
+  'main', pipelineFallback), so pipeline-only configs (no top-level
+  llm: block) continue to work — the lookup chain map[name] →
+  map.main → pipeline.llm.main covers the role-resolution mandate
+  from spec C.2.
+- The inline DAG branch in start() is replaced by a call to the new
+  buildDagCoordinatorDeps seam, which encapsulates planner/reviewer
+  LLM resolution, finalizer construction, error strategy, oracle
+  wrapping in SubAgentStateOracle, and worker registry shaping.
+- buildSessionAgent re-uses the captured template and re-wraps the
+  per-session oracle in SubAgentStateOracle.
+- Linear coordinator planner LLM also routes through the map chain.
 
 Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```
@@ -2264,12 +2763,12 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 | **A.1** `IFinalizer` interface in `packages/llm-agent/src/interfaces/finalizer.ts` | Task 2 |
 | **A.2** PassthroughFinalizer / LlmFinalizer / TemplateFinalizer impls | Tasks 3, 4, 5 |
 | **A.3** Handler integration — `deps.finalizer` normalized via `?? new PassthroughFinalizer()`; finalize called after `interpret`; trace built from `result.executionOrder` + `result.executedPlan` | Task 9 |
-| **A.4** YAML `coordinator.finalizer.*` parsed; absent → Passthrough; `type: llm` honours `finalizerLlm` / `systemPrompt` | Tasks 10, 11, 12 |
+| **A.4** YAML `coordinator.finalizer.*` parsed; absent → Passthrough; `type: llm` honours `finalizerLlm` / `systemPrompt` | Tasks 10, 11, 12a, 12b |
 | **B.1** `IStateOracle` interface in `packages/llm-agent/src/interfaces/state-oracle.ts` | Task 6 |
 | **B.2** `SubAgentStateOracle` adapter + **double-count contract** (`usage: undefined` even when inner returns usage) | Task 7 (impl + test); Task 9 (handler logs `'oracle'`, no-op when usage undefined) |
 | **B.3** Handler `NeedInfoSignal` branch rewritten to `stateOracle.query(...)`; `logRoleUsage('oracle', …)` | Task 9 |
-| **C.1** YAML `llm:` becomes optional map keyed by role name | Tasks 10, 12 |
-| **C.2** Normalizer (`normalizeLlmConfig`) + lookup helper (`resolveLlmConfig`) + reviewer key alias (`reviewerLlm` + deprecated `plannerLlm` with warning) + coordinator role-resolution chain (top-level llm.<name> → llm.main → pipeline.llm.main) | Task 10 (helpers + alias) + Task 12 (wiring chain in `smart-server.ts`) |
+| **C.1** YAML `llm:` becomes optional map keyed by role name | Tasks 10, 12b |
+| **C.2** Normalizer (`normalizeLlmConfig`) + lookup helper (`resolveLlmConfig` with `pipelineFallback`) + reviewer key alias (`reviewerLlm` + deprecated `plannerLlm` with warning) + coordinator role-resolution chain (top-level llm.<name> → llm.main → pipeline.llm.main → ConfigError) | Task 10 (helpers + alias + fallback param); Task 11 (`buildFinalizer` accepts fallback); Task 12a (seam threads fallback through every role); Task 12b (server adapts `pipeline.llm.main` and passes it everywhere) |
 | **C.3** Worker-internal LLM map untouched | (no-op; out-of-scope reaffirmed in plan) |
 | **D** Logger: `LlmComponent` += `'finalizer' \| 'oracle'`; `CATEGORY_MAP` += both → `auxiliary` | Task 1 |
 | **E.1** PassthroughFinalizer returns interpreterOutput verbatim (multi-terminal DAG) | Task 3 |
@@ -2278,11 +2777,13 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 | **E.4** DAG coordinator invokes `finalizer.finalize(...)` after `interpret`; tokens land in `byComponent.finalizer` via `runRole('finalizer', …)` + existing terminal-yield usage path | Task 9 |
 | **E.5** SubAgentStateOracle maps `query→task`, `output→answer`; forwards `trace`/`sessionLogger`; **returns `usage: undefined`** | Task 7 |
 | **E.6** Subagent-backed oracle does NOT add to `byComponent.oracle` (because `logRoleUsage` no-ops on undefined usage) | Task 7 (contract enforced) + Task 9 (handler honours it) |
-| **E.6a** Pure-LLM oracle stub returning populated `usage` → `byComponent.oracle` populated | Task 9 (the test in 9a uses an IStateOracle stub that returns usage; the handler then calls `logRoleUsage('oracle', …)`. The contract path itself is exercised; an explicit LlmStateOracle impl is not in scope as a deliverable per the spec which calls it "rare; not the standard config".) |
+| **E.6a** Pure-LLM oracle stub returning populated `usage` → `byComponent.oracle` populated | Task 9 (the `IStateOracle` stub in 9a returns usage; the handler calls `logRoleUsage('oracle', …)`. An explicit `LlmStateOracle` impl is not in scope per the spec — "rare; not the standard config".) |
 | **E.7** Flat `llm: { provider: X, … }` rewritten to `{ main: flat }` via `normalizeLlmConfig` | Task 10 |
 | **E.8** Map with multiple keys + `plannerLlm: planner` resolves to the correct entry via `resolveLlmConfig` | Task 10 |
-| **E.9** Default fallback: `plannerLlm` absent → uses `llm.main` | Task 10 |
+| **E.9** Default fallback: `plannerLlm` absent → uses `llm.main` (and `pipeline.llm.main` if no top-level map) | Task 10 (helper) + Task 12b (server-side adapter) |
 | **Interpreter `executedPlan` on success + `executionOrder`** | Task 8 |
+| **`this.cfg.llm.*` audit + replacement** | Task 12.0 (audit), Task 12b (replacement; verified by grep returning 0 hits) |
+| **`buildDagCoordinatorDeps` seam (unit-testable wiring)** | Task 12a |
 | **Tag/branch hygiene** (branch `epic/session-scoped-infrastructure`; conv. commits + Co-Authored-By trailer) | All tasks |
 
 ## Out of scope (per spec)
