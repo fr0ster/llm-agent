@@ -320,7 +320,7 @@ Worker-level `pipeline.llm.{main,classifier,helper}` already follows this patter
 
 ## E. Provability tests
 
-1. **`PassthroughFinalizer`** returns the last-leaf-node output without invoking any LLM.
+1. **`PassthroughFinalizer`** returns `input.interpreterOutput` **verbatim** without invoking any LLM. Test setup uses a multi-terminal DAG (≥2 leaf nodes) and an interpreter that joins their outputs with `\n\n` — assert the finalizer returns exactly that joined string (no dropped leaves, no rewrite).
 2. **`LlmFinalizer`** invokes the underlying `ILlm` (1) with no tools attached and (2) with the `FINALIZER_SYSTEM` prompt; returns `output` + `usage`.
 3. **`TemplateFinalizer`** composes a deterministic markdown join of trace outputs.
 4. **DAG coordinator** invokes `finalizer.finalize(...)` after `interpreter.interpret(...)` returns `ok=true`; finalizer tokens land in `/v1/usage.byComponent.finalizer`.
@@ -344,7 +344,8 @@ Worker-level `pipeline.llm.{main,classifier,helper}` already follows this patter
 ### Modify
 - `packages/llm-agent/src/interfaces/request-logger.ts` — `LlmComponent` += `'finalizer' | 'oracle'`.
 - `packages/llm-agent-libs/src/logger/default-request-logger.ts` — `CATEGORY_MAP` += `finalizer → auxiliary`, `oracle → auxiliary`.
-- `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — **success path returns `executedPlan: currentPlan`** so recovery/replan splices are visible to the finalizer (today only set on failure).
+- **`packages/llm-agent/src/interfaces/interpreter.ts`** — `InterpretResult` gains `executionOrder: readonly string[]` (authoritative topological order of executed node ids).
+- `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — (a) **success path returns `executedPlan: currentPlan`** so recovery/replan splices are visible to the finalizer (today only set on failure); (b) **records `executionOrder` as each node is marked `done`** (and returns it on both success and failure) so consumers have the true run-order regardless of `plan.nodes[]` shape after a splice.
 - `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — invoke finalizer after `interpret` (trace from `result.executedPlan`); replace `stateOracle.run(...)` with `stateOracle.query(...)`; surface usage for both via `runRole`; normalize `deps.finalizer ?? new PassthroughFinalizer()` in constructor.
 - **`packages/llm-agent-server/src/smart-agent/config.ts`** — `SmartServerConfig.llm` widened to optional union; `normalizeLlmConfig` + `resolveLlmConfig`; reviewer key alias (`reviewerLlm` || `plannerLlm`-deprecated with warning); validate `llm.main` presence in map; coordinator role lookup chain (top-level llm → llm.main → pipeline.llm.main). Update existing validation/tests to allow the new map shape.
 - `packages/llm-agent-server/src/smart-agent/smart-server.ts` — wire normalized LLM map into `resolveLlmConfig` calls at planner/reviewer/finalizer construction sites; parse `coordinator.finalizer.*` block; auto-wrap resolved oracle `ISubAgent` in `SubAgentStateOracle`.
