@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, PlannerInput } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
-import { LlmDagPlanner } from '../llm-dag-planner.js';
+import { LlmDagPlanner, PLANNER_SYSTEM } from '../llm-dag-planner.js';
 
 function llm(content: string): ILlm {
   return {
@@ -240,5 +240,17 @@ describe('LlmDagPlanner', () => {
     assert.match(cap.task ?? '', /which table\?/);
     assert.match(cap.task ?? '', /ZCUST/);
     assert.match(cap.task ?? '', /avoid table X/);
+  });
+
+  it('PLANNER_SYSTEM warns about decomposition cost (regression guard)', () => {
+    // Live-tested 2026-05-29: without this guidance Sonnet over-decomposed
+    // "review program X for security, performance, clean-core, maintainability"
+    // into 5 nodes, blowing worker token cost by ~8×. The prompt must keep
+    // telling the planner that nodes don't share fetched data and that
+    // single-object multi-dimension prompts use ONE node.
+    assert.match(PLANNER_SYSTEM, /DO NOT share fetched data/i);
+    assert.match(PLANNER_SYSTEM, /full classify \+ RAG \+ tool-loop overhead again/i);
+    assert.match(PLANNER_SYSTEM, /ONE node/);
+    assert.match(PLANNER_SYSTEM, /single object along multiple dimensions/i);
   });
 });

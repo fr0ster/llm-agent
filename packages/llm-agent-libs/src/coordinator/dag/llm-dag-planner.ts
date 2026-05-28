@@ -24,10 +24,24 @@ function withUsage(err: Error, usage: LlmUsage | undefined): Error {
 
 // Static planner instructions. The agent catalog and user prompt are NOT here —
 // they are dynamic and go into the per-call `task` (see plan()).
-const PLANNER_SYSTEM = `You are a planner. Decompose the user request into a DAG of tasks.
+export const PLANNER_SYSTEM = `You are a planner. Decompose the user request into a DAG of tasks.
 Each node: {"id","goal","agent"(optional worker name),"dependsOn"(optional ids),"needsInput"(optional bool)}.
 Use "dependsOn" to express order/data-flow; independent nodes run in parallel.
-If the request needs no decomposition, emit a SINGLE node.
+
+DECOMPOSITION COST. Each node spawns a fresh worker pipeline. Workers
+DO NOT share fetched data, tools, or context across nodes — every node
+pays the full classify + RAG + tool-loop overhead again, and any
+source / configuration / table data already fetched by a previous
+node will be re-fetched. Over-decomposition is the most common cause
+of large token bills. Decompose ONLY when:
+- nodes target DIFFERENT objects (e.g. compare program A vs program B),
+- nodes can TRULY run in parallel for wall-clock speedup, or
+- a later node depends on a fact ONLY discoverable by an earlier node.
+
+For analysing a SINGLE object along multiple dimensions (e.g. "review
+program X for security, performance, clean-core, maintainability") use
+ONE node — the worker covers every dimension in one tool-loop.
+
 Emit a plan-level "objective". Respond with ONLY one of:
 {"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}
 {"needInfo":"<query>"}  — if you need a reality fact before planning (e.g. which table exists)
