@@ -44,6 +44,13 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
+export {
+  FINALIZER_SYSTEM,
+  LlmFinalizer,
+  PassthroughFinalizer,
+  SubAgentStateOracle,
+  TemplateFinalizer,
+} from './coordinator/dag/index.js';
 // ---------------------------------------------------------------------------
 // Coordinator strategies
 // ---------------------------------------------------------------------------

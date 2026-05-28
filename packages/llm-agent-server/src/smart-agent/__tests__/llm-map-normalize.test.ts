@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  LlmFinalizer,
+  PassthroughFinalizer,
+  TemplateFinalizer,
+} from '@mcp-abap-adt/llm-agent-libs';
+import {
+  buildFinalizer,
   normalizeLlmConfig,
   resolveLlmConfig,
   resolveReviewerLlmName,
@@ -104,5 +110,111 @@ test('resolveReviewerLlmName: empty block returns undefined', () => {
   assert.equal(
     resolveReviewerLlmName({} as never, () => {}),
     undefined,
+  );
+});
+
+// ---------------------------------------------------------------------------
+// buildFinalizer
+// ---------------------------------------------------------------------------
+
+const stubLlm = {
+  name: 'stub',
+  async chat() {
+    return {
+      ok: true as const,
+      value: {
+        content: '',
+        usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 },
+      },
+    };
+  },
+};
+
+test('buildFinalizer: omitted block returns PassthroughFinalizer', async () => {
+  const f = await buildFinalizer(
+    undefined,
+    undefined,
+    undefined,
+    async () => stubLlm as never,
+  );
+  assert.ok(f instanceof PassthroughFinalizer);
+});
+
+test('buildFinalizer: type=template returns TemplateFinalizer', async () => {
+  const f = await buildFinalizer(
+    { type: 'template' },
+    undefined,
+    undefined,
+    async () => stubLlm as never,
+  );
+  assert.ok(f instanceof TemplateFinalizer);
+});
+
+test('buildFinalizer: type=llm uses resolved LLM from llm map (named override)', async () => {
+  let askedFor: string | undefined;
+  const map = normalizeLlmConfig({
+    main: { provider: 'deepseek', apiKey: 'k' },
+    finalizer: { provider: 'sap-ai-sdk', apiKey: 'k', model: 'sonnet' },
+  } as never)!;
+  const f = await buildFinalizer(
+    { type: 'llm', finalizerLlm: 'finalizer', systemPrompt: 'CUSTOM' },
+    map,
+    undefined,
+    async (cfg) => {
+      askedFor = (cfg as never as { provider: string }).provider;
+      return stubLlm as never;
+    },
+  );
+  assert.ok(f instanceof LlmFinalizer);
+  assert.equal(askedFor, 'sap-ai-sdk');
+});
+
+test('buildFinalizer: type=llm falls back to llm.main when finalizerLlm omitted', async () => {
+  const map = normalizeLlmConfig({
+    main: { provider: 'deepseek', apiKey: 'k' },
+  } as never)!;
+  let askedFor: string | undefined;
+  const f = await buildFinalizer(
+    { type: 'llm' },
+    map,
+    undefined,
+    async (cfg) => {
+      askedFor = (cfg as never as { provider: string }).provider;
+      return stubLlm as never;
+    },
+  );
+  assert.ok(f instanceof LlmFinalizer);
+  assert.equal(askedFor, 'deepseek');
+});
+
+test('buildFinalizer: type=llm uses pipeline.llm.main fallback when no top-level llm map', async () => {
+  const pipelineFallback = {
+    provider: 'openai',
+    apiKey: 'k',
+    model: 'gpt-x',
+  } as never;
+  let askedFor: string | undefined;
+  const f = await buildFinalizer(
+    { type: 'llm' },
+    undefined,
+    pipelineFallback,
+    async (cfg) => {
+      askedFor = (cfg as never as { provider: string }).provider;
+      return stubLlm as never;
+    },
+  );
+  assert.ok(f instanceof LlmFinalizer);
+  assert.equal(askedFor, 'openai');
+});
+
+test('buildFinalizer: type=llm throws ConfigError when neither map nor pipeline fallback resolves', async () => {
+  await assert.rejects(
+    buildFinalizer(
+      { type: 'llm' },
+      undefined,
+      undefined,
+      async () => stubLlm as never,
+    ),
+    /requires an LLM config/,
   );
 });

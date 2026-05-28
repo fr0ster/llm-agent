@@ -227,4 +227,58 @@ describe('coordinator config shape (DAG vs linear)', () => {
       /stateOracle/,
     );
   });
+  it('DAG with valid finalizer block parses', () => {
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        finalizer: {
+          type: 'llm',
+          finalizerLlm: 'finalizer',
+          systemPrompt: 'p',
+        },
+      }),
+    );
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        finalizer: { type: 'passthrough' },
+      }),
+    );
+    assert.doesNotThrow(() =>
+      assertCoordinatorConfigShape({
+        planner: { type: 'llm' },
+        finalizer: { type: 'template' },
+      }),
+    );
+  });
+  it('linear with finalizer block fails (DAG_ONLY)', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planning: 'one-shot',
+          finalizer: { type: 'passthrough' },
+        }),
+      /finalizer.*DAG-only/i,
+    );
+  });
+  it('DAG finalizer with invalid type fails', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          finalizer: { type: 'bogus' },
+        }),
+      /coordinator\.finalizer.*unknown type/i,
+    );
+  });
+  it('DAG finalizer with non-string finalizerLlm fails', () => {
+    assert.throws(
+      () =>
+        assertCoordinatorConfigShape({
+          planner: { type: 'llm' },
+          finalizer: { type: 'llm', finalizerLlm: 42 },
+        }),
+      /coordinator\.finalizer\.finalizerLlm.*string/i,
+    );
+  });
 });

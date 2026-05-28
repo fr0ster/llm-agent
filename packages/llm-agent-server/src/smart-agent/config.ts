@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
+  IFinalizer,
   ILlm,
   ISubAgentContextBuilder,
   IToolSelectionStrategy,
@@ -13,12 +14,15 @@ import {
   AutoActivation,
   ExplicitActivation,
   HybridDispatch,
+  LlmFinalizer,
   OneShotPlanning,
+  PassthroughFinalizer,
   ReplanOnErrorPlanning,
   ScoreThresholdToolSelection,
   SelfDispatch,
   SkillStepsPlanning,
   SubAgentDispatch,
+  TemplateFinalizer,
   TopKToolSelection,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
@@ -200,6 +204,9 @@ export function assertCoordinatorConfigShape(
     assertLlmRoleShape('planner', coord.planner);
     if (coord.reviewer !== undefined) {
       assertLlmRoleShape('reviewer', coord.reviewer);
+    }
+    if (coord.finalizer !== undefined) {
+      assertLlmRoleShape('finalizer', coord.finalizer);
     }
     if (coord.errorStrategy !== undefined) {
       assertErrorStrategyShape(coord.errorStrategy);
@@ -580,6 +587,49 @@ export function loadYamlConfig(
 
 export function generateConfigTemplate(outputPath: string): void {
   fs.writeFileSync(outputPath, YAML_TEMPLATE, 'utf8');
+}
+
+export type FinalizerYaml = {
+  type?: 'passthrough' | 'llm' | 'template';
+  finalizerLlm?: string;
+  systemPrompt?: string;
+};
+
+/**
+ * Build the IFinalizer impl from `coordinator.finalizer:` YAML.
+ *
+ * Lookup chain for `type: llm`:
+ *   resolveLlmConfig(llmMap, cfg.finalizerLlm, pipelineFallback)
+ *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
+ *   → ConfigError if all three are missing.
+ *
+ * Absent block / `type: passthrough` → PassthroughFinalizer.
+ * `type: template` → TemplateFinalizer.
+ */
+export async function buildFinalizer(
+  cfg: FinalizerYaml | undefined,
+  llmMap: NormalizedLlmMap | undefined,
+  pipelineFallback: SmartServerLlmConfig | undefined,
+  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>,
+): Promise<IFinalizer> {
+  const kind = cfg?.type ?? 'passthrough';
+  if (kind === 'passthrough') return new PassthroughFinalizer();
+  if (kind === 'template') return new TemplateFinalizer();
+  // kind === 'llm'
+  const resolved = resolveLlmConfig(
+    llmMap,
+    cfg?.finalizerLlm,
+    pipelineFallback,
+  );
+  if (!resolved) {
+    throw new Error(
+      'coordinator.finalizer (type: llm) requires an LLM config: provide top-level llm.<name>, llm.main, or pipeline.llm.main',
+    );
+  }
+  const llm = await makeLlm(resolved);
+  return new LlmFinalizer(llm, {
+    systemPrompt: cfg?.systemPrompt,
+  });
 }
 
 const get = (obj: unknown, ...keys: string[]): unknown =>
