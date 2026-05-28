@@ -249,19 +249,20 @@ export class DagCoordinatorHandler implements IStageHandler {
           // those — we surface usage here directly from the session logger
           // keyed by the request's traceId. (Workers logged under the same
           // traceId via C1's ISubAgentInput.trace threading.)
+          ctx.yield({ ok: true, value: { content: result.output } });
+          // Attach usage ONLY to the terminal `finishReason:'stop'` chunk.
+          // The agent's response assembler accumulates usage across yielded
+          // chunks; including usage on both yields would double-count.
           const traceId = ctx.options?.trace?.traceId;
-          const summary = ctx.requestLogger.getSummary(traceId);
-          const usage = summaryToUsage(summary);
-          ctx.yield({
-            ok: true,
-            value: { content: result.output, ...(traceId ? { usage } : {}) },
-          });
+          const usage = traceId
+            ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
+            : undefined;
           ctx.yield({
             ok: true,
             value: {
               content: '',
               finishReason: 'stop',
-              ...(traceId ? { usage } : {}),
+              ...(usage ? { usage } : {}),
             },
           });
           return true;
