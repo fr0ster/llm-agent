@@ -86,7 +86,10 @@ test('buildDagCoordinatorDeps: type=llm finalizer yields LlmFinalizer', async ()
     makeLlm: async () => stubLlm as never,
     warn: () => {},
   });
-  assert.ok(deps?.finalizer instanceof LlmFinalizer);
+  assert.ok(
+    deps?.finalizer instanceof LlmFinalizer,
+    'type=llm yields LlmFinalizer',
+  );
 });
 
 test('buildDagCoordinatorDeps: type=template finalizer yields TemplateFinalizer', async () => {
@@ -198,4 +201,63 @@ test('buildDagCoordinatorDeps: pipelineFallback enables type=llm finalizer witho
     warn: () => {},
   });
   assert.ok(deps?.finalizer instanceof LlmFinalizer);
+});
+
+test('buildDagCoordinatorDeps: plannerLlm=helper uses helperLlm even when pipeline.llm.main fallback exists', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const helperLlm = { ...stubLlm, name: 'HELPER' } as never;
+  let makeLlmCalls = 0;
+  const deps = await buildDagCoordinatorDeps({
+    coordCfg: { planner: { type: 'llm', plannerLlm: 'helper' } },
+    llmMap: undefined,
+    pipelineFallback: {
+      provider: 'openai',
+      apiKey: 'k',
+      model: 'GPT-MAIN',
+    } as never,
+    mainLlm: stubLlm as never,
+    helperLlm,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => {
+      makeLlmCalls++;
+      return stubLlm as never;
+    },
+    warn: () => {},
+  });
+  assert.ok(deps);
+  // helperLlm must be used directly without going through makeLlm
+  assert.equal(makeLlmCalls, 0, 'helperLlm must be reused, not rebuilt');
+});
+
+test('buildDagCoordinatorDeps: reviewerLlm=planner alias also routes to helperLlm', async () => {
+  const registry = new Map<string, ISubAgent>([['w', makeWorker('w')]]);
+  const helperLlm = { ...stubLlm } as never;
+  let makeLlmCalls = 0;
+  await buildDagCoordinatorDeps({
+    coordCfg: {
+      planner: { type: 'llm' },
+      reviewer: { type: 'llm', reviewerLlm: 'planner' },
+    },
+    llmMap: undefined,
+    pipelineFallback: {
+      provider: 'openai',
+      apiKey: 'k',
+      model: 'GPT',
+    } as never,
+    mainLlm: stubLlm as never,
+    helperLlm,
+    mainTemp: 0.5,
+    registry,
+    makeLlm: async () => {
+      makeLlmCalls++;
+      return stubLlm as never;
+    },
+    warn: () => {},
+  });
+  assert.equal(
+    makeLlmCalls,
+    0,
+    'helperLlm must be reused for reviewer alias too',
+  );
 });

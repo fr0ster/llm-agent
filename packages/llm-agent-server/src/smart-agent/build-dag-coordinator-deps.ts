@@ -72,22 +72,44 @@ export async function buildDagCoordinatorDeps(
 
   if (!coordCfg || coordCfg.planner === undefined) return undefined;
 
+  // ---- Role LLM resolver -----------------------------------------------
+  // Priority chain:
+  //   1. map[name] — explicit named entry in the top-level llm: block
+  //   2. 'helper' | 'planner' alias — route to the prebuilt helperLlm
+  //   3. pipelineFallback (pipeline.llm.main) — last resort
+  //   4. fallbackPrebuilt (mainLlm) — when nothing else resolves
+  const resolveRoleLlm = async (
+    name: string | undefined,
+    fallbackPrebuilt: ILlm = mainLlm,
+  ): Promise<ILlm> => {
+    const fromMap = name ? resolveLlmConfig(llmMap, name) : undefined;
+    if (fromMap) {
+      return makeLlm({
+        ...fromMap,
+        temperature: Number(fromMap.temperature ?? mainTemp),
+      });
+    }
+    if (name === 'helper' || name === 'planner') {
+      return helperLlm ?? fallbackPrebuilt;
+    }
+    if (name) {
+      const fb = resolveLlmConfig(llmMap, name, pipelineFallback);
+      if (fb) {
+        return makeLlm({
+          ...fb,
+          temperature: Number(fb.temperature ?? mainTemp),
+        });
+      }
+    }
+    return fallbackPrebuilt;
+  };
+
   // ---- Planner ----------------------------------------------------------
   const plannerBlock = coordCfg.planner as {
     type?: string;
     plannerLlm?: string;
   };
-  const plannerLlmCfg = resolveLlmConfig(
-    llmMap,
-    plannerBlock?.plannerLlm,
-    pipelineFallback,
-  );
-  const plannerLlm = plannerLlmCfg
-    ? await makeLlm({
-        ...plannerLlmCfg,
-        temperature: Number(plannerLlmCfg.temperature ?? mainTemp),
-      })
-    : mainLlm;
+  const plannerLlm = await resolveRoleLlm(plannerBlock?.plannerLlm);
   const planner = new LlmDagPlanner(plannerLlm);
 
   // ---- Reviewer (optional) ---------------------------------------------
@@ -98,17 +120,7 @@ export async function buildDagCoordinatorDeps(
       plannerLlm?: string;
     };
     const reviewerName = resolveReviewerLlmName(reviewerBlock, warn);
-    const reviewerCfg = resolveLlmConfig(
-      llmMap,
-      reviewerName,
-      pipelineFallback,
-    );
-    const reviewerLlm = reviewerCfg
-      ? await makeLlm({
-          ...reviewerCfg,
-          temperature: Number(reviewerCfg.temperature ?? mainTemp),
-        })
-      : mainLlm;
+    const reviewerLlm = await resolveRoleLlm(reviewerName);
     reviewer = new LlmReviewStrategy(reviewerLlm);
   }
 
@@ -166,7 +178,6 @@ export async function buildDagCoordinatorDeps(
     : undefined;
 
   void mainLlm;
-  void helperLlm;
 
   return {
     planner,

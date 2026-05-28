@@ -1025,12 +1025,12 @@ export class SmartServer {
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
         // Linear mode: route plannerLlm through the normalized map chain.
+        // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
+        //   pipelineFallback → mainLlm.
         const linearPlannerName = coordCfg.plannerLlm as string | undefined;
-        const linearPlannerCfg = resolveLlmConfig(
-          llmMap,
-          linearPlannerName,
-          pipelineFallback,
-        );
+        // Do NOT pass pipelineFallback here — we check the alias first so the
+        // cheap helperLlm is preferred over the expensive pipeline.llm.main.
+        const linearPlannerCfg = resolveLlmConfig(llmMap, linearPlannerName);
         const plannerLlm = linearPlannerCfg
           ? await makeLlm(
               {
@@ -1043,7 +1043,27 @@ export class SmartServer {
             )
           : linearPlannerName === 'helper' || linearPlannerName === 'planner'
             ? (helperLlm ?? mainLlm)
-            : mainLlm;
+            : linearPlannerName
+              ? // Unknown name, not an alias — try pipelineFallback last.
+                await (async () => {
+                  const fb = resolveLlmConfig(
+                    llmMap,
+                    linearPlannerName,
+                    pipelineFallback,
+                  );
+                  return fb
+                    ? makeLlm(
+                        {
+                          provider: fb.provider ?? 'deepseek',
+                          apiKey: fb.apiKey,
+                          baseURL: fb.url,
+                          model: fb.model,
+                        },
+                        Number(fb.temperature ?? mainTemp),
+                      )
+                    : mainLlm;
+                })()
+              : mainLlm;
         const planningKind = coordCfg.planning ?? 'one-shot';
         const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 
@@ -1358,7 +1378,17 @@ export class SmartServer {
       embedder?: IEmbedder;
     },
   ): Promise<SmartAgent> {
-    if (!subCfg.llm?.apiKey && !subCfg.pipeline?.llm?.main) {
+    // Normalize subagent llm: either flat { provider, apiKey, ... } or a map
+    // { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
+    // { main: flat } so downstream code always reads from .main.
+    const subLlmMap = normalizeLlmConfig(subCfg.llm);
+    const subLlmMain = subLlmMap?.main;
+    if (
+      !subLlmMain?.apiKey &&
+      subLlmMain?.provider !== 'sap-ai-sdk' &&
+      subLlmMain?.provider !== 'ollama' &&
+      !subCfg.pipeline?.llm?.main
+    ) {
       throw new Error(`subagent '${name}': LLM API key is required`);
     }
     const subPipeline = subCfg.pipeline;
@@ -1379,9 +1409,7 @@ export class SmartServer {
     // re-wires (`injected` set) read from it via the same call below — the
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
-    // TODO Task 12: route through normalizeLlmConfig/resolveLlmConfig.
-    // Cast to flat shape until map-routing is wired in Task 12.
-    const subFlatLlm = subCfg.llm as SmartServerLlmConfig | undefined;
+    const subFlatLlm = subLlmMain;
     const mainTemp = Number(
       subPipeline?.llm?.main?.temperature ?? subFlatLlm?.temperature ?? 0.7,
     );
