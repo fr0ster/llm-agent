@@ -158,7 +158,9 @@ test('disposeAll awaits in-flight builds so a graph resolving after disposal is 
   // Let microtasks settle, then release the gate so the build resolves.
   await Promise.resolve();
   release?.();
-  await acquired;
+  // The acquire's post-await continuation MUST reject because disposeAll
+  // closed the registry while the build was pending (race fix MEDIUM #8).
+  await assert.rejects(() => acquired, /closed|disposed/i);
   await dispose;
   assert.deepEqual(
     disposed,
@@ -166,4 +168,42 @@ test('disposeAll awaits in-flight builds so a graph resolving after disposal is 
     'graph resolved during disposeAll() is disposed, not orphaned',
   );
   assert.equal(reg.size, 0);
+});
+
+test('race: in-flight acquire rejects when disposeAll completes during the build (MEDIUM #8)', async () => {
+  const disposed: string[] = [];
+  let resolveBuild: ((g: SessionGraph) => void) | undefined;
+  const buildPromise = new Promise<SessionGraph>((r) => {
+    resolveBuild = r;
+  });
+  const gatedFactory = {
+    build: (_identity: { sessionId: string }) => buildPromise,
+  };
+  const reg = new SessionRegistry({
+    idleTtlMs: 10_000,
+    maxSessions: 10,
+    factory: gatedFactory,
+  });
+  // Caller A: kick off an acquire whose build is gated.
+  const acquirePromise = reg.acquire('s1');
+  // Caller B: disposeAll starts; it awaits pendingBuilds.
+  const disposePromise = reg.disposeAll();
+  // Allow microtasks to run so disposeAll is parked on Promise.allSettled.
+  await Promise.resolve();
+  // Resolve the build with a real graph — disposeAll proceeds, inserts and
+  // then disposes it.
+  const g = new SessionGraph({
+    sessionId: 's1',
+    toolAvailability: new ToolAvailabilityRegistry(),
+    pendingToolResults: new PendingToolResultsRegistry(),
+    logger: new SessionRequestLogger(),
+    dispose: async (id) => {
+      disposed.push(id);
+    },
+  });
+  resolveBuild?.(g);
+  await disposePromise;
+  // Caller A's continuation must reject (registry closed / graph disposed).
+  await assert.rejects(() => acquirePromise, /closed|disposed/i);
+  assert.deepEqual(disposed, ['s1']);
 });

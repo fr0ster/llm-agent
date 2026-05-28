@@ -68,6 +68,17 @@ export class SessionRegistry {
       }
       g = await build;
     }
+    // Re-check after the await: disposeAll() may have completed during the
+    // build's then-callback, which inserts the graph and then disposes it.
+    // Without this re-check the post-await continuation would acquire() on a
+    // disposed graph (SessionGraph.acquire() also guards via _disposed —
+    // defense in depth).
+    if (this._closed) {
+      throw new OrchestratorError(
+        'SessionRegistry is closed; cannot acquire',
+        'SESSION_REGISTRY_CLOSED',
+      );
+    }
     g.acquire();
     return g;
   }

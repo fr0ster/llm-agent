@@ -1,3 +1,4 @@
+import { OrchestratorError } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgent } from '../agent.js';
 import type { SessionRequestLogger } from '../logger/session-request-logger.js';
 import type { PendingToolResultsRegistry } from '../policy/pending-tool-results-registry.js';
@@ -58,6 +59,12 @@ export class SessionGraph {
   }
 
   acquire(): void {
+    if (this._disposed) {
+      throw new OrchestratorError(
+        'SessionGraph is disposed; cannot acquire',
+        'SESSION_GRAPH_DISPOSED',
+      );
+    }
     this._active++;
     this._lastUsedMs = Date.now();
   }

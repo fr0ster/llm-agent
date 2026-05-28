@@ -85,6 +85,20 @@ test('dispose() logger.reset runs even if the hook throws (finally)', async () =
   assert.deepEqual(order, ['hook', 'reset']);
 });
 
+test('acquire() throws SESSION_GRAPH_DISPOSED after dispose() (race fix MEDIUM #8)', async () => {
+  const g = make();
+  await g.dispose();
+  assert.throws(
+    () => g.acquire(),
+    (err: unknown) => {
+      const e = err as { code?: string; message?: string };
+      return (
+        e.code === 'SESSION_GRAPH_DISPOSED' && /disposed/i.test(e.message ?? '')
+      );
+    },
+  );
+});
+
 test('markForDisposal flag + dispose() runs the injected hook once', async () => {
   let n = 0;
   const g = new SessionGraph({
