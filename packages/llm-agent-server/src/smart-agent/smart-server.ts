@@ -1499,8 +1499,27 @@ export class SmartServer {
       return;
     }
     if (req.method === 'GET' && urlPath === '/v1/usage') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(requestLogger.getSummary()));
+      const lifecycle = this._lifecycle;
+      if (!lifecycle) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
+        return;
+      }
+      const isHttps =
+        (req.socket as { encrypted?: boolean }).encrypted === true ||
+        req.headers['x-forwarded-proto'] === 'https';
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      if (resolved.minted && resolved.setCookie) {
+        res.setHeader('Set-Cookie', resolved.setCookie);
+      }
+      const sessionId = resolved.identity.sessionId;
+      const graph = await lifecycle.acquire(sessionId);
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(graph.logger.getSummary()));
+      } finally {
+        lifecycle.release(sessionId);
+      }
       return;
     }
     // /v1/config or /config
