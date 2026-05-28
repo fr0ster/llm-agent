@@ -36,6 +36,16 @@ export class SessionRegistry {
    * in practice no acquire arrives after disposeAll.
    */
   private _closed = false;
+  /**
+   * Monotonic counter bumped by `invalidateAll()` (Fix #19). Each acquire
+   * captures the value BEFORE awaiting the build; if the counter has moved
+   * by the time the build resolves, the in-flight build is treated as
+   * orphaned — its `.then()` disposes the resolved graph instead of
+   * publishing it, and the awaiting acquire rejects. Closes the race where
+   * a build started before invalidate would otherwise publish a graph built
+   * with the OLD config after the invalidate completed.
+   */
+  private _generation = 0;
 
   constructor(private readonly opts: SessionRegistryOptions) {}
 
@@ -56,13 +66,29 @@ export class SessionRegistry {
         'SESSION_REGISTRY_CLOSED',
       );
     }
+    // Capture generation BEFORE awaiting the build (Fix #19). If
+    // invalidateAll() bumps the counter mid-build, the build's `.then()`
+    // disposes the resolved graph instead of publishing it, and the
+    // post-await check below rejects this acquire.
+    const gen = this._generation;
     let g = this.graphs.get(sessionId);
     if (!g) {
       let build = this.pendingBuilds.get(sessionId);
       if (!build) {
+        const buildGen = gen;
         build = this.opts.factory
           .build({ sessionId })
           .then((graph) => {
+            if (this._generation !== buildGen) {
+              // Orphaned by invalidateAll(); dispose async and do NOT
+              // publish into `graphs` (which would be a stale-config graph).
+              this.pending.push(graph.dispose());
+              this.pendingBuilds.delete(sessionId);
+              throw new OrchestratorError(
+                'Session graph invalidated mid-build',
+                'SESSION_INVALIDATED',
+              );
+            }
             this.graphs.set(sessionId, graph);
             this.pendingBuilds.delete(sessionId);
             this.enforceCap();
@@ -86,6 +112,15 @@ export class SessionRegistry {
       throw new OrchestratorError(
         'SessionRegistry is closed; cannot acquire',
         'SESSION_REGISTRY_CLOSED',
+      );
+    }
+    // Mid-build invalidate check (Fix #19). If we awaited an existing
+    // pending build whose `.then()` had not yet observed the bump (different
+    // task ordering than the throw path above), still refuse to publish.
+    if (this._generation !== gen) {
+      throw new OrchestratorError(
+        'Session graph invalidated mid-build',
+        'SESSION_INVALIDATED',
       );
     }
     g.acquire();
@@ -194,6 +229,9 @@ export class SessionRegistry {
    * serving traffic after a config change.
    */
   async invalidateAll(): Promise<void> {
+    // Bump generation FIRST (Fix #19). Any in-flight build's `.then()` will
+    // observe the new value and dispose its result instead of publishing it.
+    this._generation++;
     for (const [id, g] of [...this.graphs]) {
       if (g.isPinned) {
         // Detach: move to the draining side-map so a fresh `acquire(id)`

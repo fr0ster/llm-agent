@@ -170,6 +170,66 @@ test('disposeAll awaits in-flight builds so a graph resolving after disposal is 
   assert.equal(reg.size, 0);
 });
 
+test('Fix #19: race — in-flight build invalidated by invalidateAll() is disposed, not published', async () => {
+  // Sequence:
+  //   1. acquire('s1') starts; build is gated.
+  //   2. invalidateAll() runs (e.g. PUT /v1/config); clears pendingBuilds + graphs.
+  //   3. The gated build resolves. Without the generation marker, its .then
+  //      would graphs.set('s1', resolvedGraph) AND the awaiting acquire would
+  //      return the stale graph (built with OLD config). With the marker, the
+  //      build's .then sees generation changed → disposes the graph and
+  //      does NOT publish; the awaiting acquire rejects with
+  //      SESSION_INVALIDATED.
+  const disposed: string[] = [];
+  let resolveBuild: ((g: SessionGraph) => void) | undefined;
+  const buildPromise = new Promise<SessionGraph>((r) => {
+    resolveBuild = r;
+  });
+  const gatedFactory = {
+    build: (_identity: { sessionId: string }) => buildPromise,
+  };
+  const reg = new SessionRegistry({
+    idleTtlMs: 10_000,
+    maxSessions: 10,
+    factory: gatedFactory,
+  });
+
+  // Caller A: gated acquire.
+  const acquirePromise = reg.acquire('s1');
+  // Caller B: config-reload invalidation while the build is still pending.
+  await Promise.resolve();
+  await reg.invalidateAll();
+
+  // Resolve the build AFTER invalidateAll.
+  const g = new SessionGraph({
+    sessionId: 's1',
+    toolAvailability: new ToolAvailabilityRegistry(),
+    pendingToolResults: new PendingToolResultsRegistry(),
+    logger: new SessionRequestLogger(),
+    dispose: async (id) => {
+      disposed.push(id);
+    },
+  });
+  resolveBuild?.(g);
+
+  // The original acquire must reject — it cannot return a graph that was
+  // built with the old config.
+  await assert.rejects(
+    () => acquirePromise,
+    /SESSION_INVALIDATED|invalidated/i,
+  );
+  // The resolved graph must be disposed (drained), not orphaned in graphs.
+  // Allow the .then() and dispose microtasks to run.
+  await reg.flushEvictions();
+  // The graph from the orphaned build was disposed exactly once.
+  assert.deepEqual(
+    disposed,
+    ['s1'],
+    'orphaned build result is disposed (not published)',
+  );
+  assert.equal(reg.size, 0, 'graphs map empty after invalidate + orphan drain');
+});
+
 test('race: in-flight acquire rejects when disposeAll completes during the build (MEDIUM #8)', async () => {
   const disposed: string[] = [];
   let resolveBuild: ((g: SessionGraph) => void) | undefined;
