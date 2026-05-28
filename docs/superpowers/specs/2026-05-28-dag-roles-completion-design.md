@@ -67,20 +67,23 @@ export interface IFinalizer {
 
 ### A.3 Handler integration (`DagCoordinatorHandler`)
 
-`DagCoordinatorHandlerDeps` gains `finalizer?: IFinalizer` (optional). Server-side default is `PassthroughFinalizer` — existing configs see no behaviour change.
+`DagCoordinatorHandlerDeps` gains `finalizer?: IFinalizer` (optional in deps). The constructor **normalizes**: `this.finalizer = deps.finalizer ?? new PassthroughFinalizer()`. After normalization the field is always defined, so the handler body never deals with `undefined`. Existing direct-handler tests / consumers that omit `finalizer` get the default and unchanged behaviour.
 
-After `result = await interpreter.interpret(plan, ...)` returns `ok === true`, the handler invokes the finalizer via the existing `runRole(component, model, thunk)` (which already handles usage logging on happy-path + clarify/needInfo signal paths + parse-error paths):
+After `result = await interpreter.interpret(plan, ...)` returns `ok === true`, the handler invokes the finalizer via the existing `runRole(component, model, thunk)` (which already handles usage logging on happy-path + clarify/needInfo signal paths + parse-error paths). The trace MUST be built from `result.executedPlan` (set by the interpreter for recovered/replanned runs), falling back to the original `plan` only when the interpreter did not splice:
 
 ```ts
-const executionTrace = (plan.nodes ?? []).map((n) => ({
+const executedPlan = result.executedPlan ?? plan;
+const executionTrace = (executedPlan.nodes ?? []).map((n) => ({
   nodeId: n.id,
   goal: n.goal,
   output: result.nodeResults[n.id]?.output ?? '',
 }));
-const finalRes = await runRole('finalizer', this.deps.finalizer.model, () =>
-  this.deps.finalizer.finalize({
+const finalRes = await runRole('finalizer', this.finalizer.model, () =>
+  this.finalizer.finalize({
     prompt: ctx.inputText,
-    objective: plan.objective,
+    // DagPlan.objective is optional; fall back to the original user prompt so
+    // FinalizerInput.objective remains a non-empty required string.
+    objective: executedPlan.objective ?? ctx.inputText,
     ancestorContext,
     executionTrace,
     sessionId: ctx.sessionId,
@@ -95,6 +98,8 @@ ctx.yield({ ok: true, value: { content: finalText } });
 ```
 
 The terminal `finishReason:'stop'` yield's `usage` (added in commit `9275850` / Fix #12) automatically picks up finalizer tokens because they were logged via `logRoleUsage`.
+
+> **Note on `FinalizerInput.objective`:** the interface keeps it **required** (`objective: string`) — the call site fills it from `plan.objective ?? prompt` so consumers always see a non-empty value.
 
 ### A.4 YAML
 
@@ -147,19 +152,26 @@ Most existing configs reference the oracle by subagent name (`coordinator.stateO
 export class SubAgentStateOracle implements IStateOracle {
   constructor(private readonly inner: ISubAgent) {}
   get name() { return this.inner.name; }
-  // no model exposed — inner ISubAgent doesn't expose one
+  // no `model` exposed — inner ISubAgent runs a full pipeline; its LLM
+  // activity is logged by the wrapped pipeline's handlers under their own
+  // component labels (tool-loop, classifier, translate, …) via the SHARED
+  // session logger. Therefore this adapter intentionally returns
+  // `usage: undefined`; otherwise the handler's `logRoleUsage('oracle', ...)`
+  // would double-count tokens already in the per-traceId delta.
   async query(input: StateOracleInput): Promise<StateOracleResult> {
     const res = await this.inner.run({
       task: input.query,
       sessionId: input.sessionId,
       signal: input.signal,
-      trace: input.trace,
+      trace: input.trace,           // worker pipeline still attributes by traceId
       sessionLogger: input.sessionLogger,
     });
-    return { answer: res.output, usage: res.usage };
+    return { answer: res.output, usage: undefined };
   }
 }
 ```
+
+**Double-count avoidance contract:** `IStateOracle.query` returns `usage` ONLY when the implementation invokes an LLM in a path that does NOT log to the shared `requestLogger`. SubAgentStateOracle's inner pipeline DOES log (via worker setup), so usage stays `undefined`. A pure `DirectLlmSubAgent`-backed oracle (rare; not the standard config) would set usage normally because DirectLlmSubAgent bypasses pipeline logging. Handler's `logRoleUsage('oracle', usage)` is a no-op when usage is undefined.
 
 `DagCoordinatorHandlerDeps.stateOracle` type changes from `ISubAgent | undefined` to `IStateOracle | undefined`. This is an internal contract — server wires the adapter automatically; consumer YAML stays identical.
 
@@ -207,18 +219,56 @@ llm:
 
 `coordinator.planner.plannerLlm`, `coordinator.finalizer.finalizerLlm`, `coordinator.reviewer.reviewerLlm` reference keys in `llm:`. Unspecified or missing key → fall back to `llm.main`.
 
-### C.2 Backward-compat shim
+### C.2 Backward-compat shim + types + lookup helper
 
-The server's YAML normalizer runs once after parsing:
+**Type widening.** `SmartServerConfig.llm` (currently flat `LlmProviderConfig` in `packages/llm-agent-server/src/smart-agent/smart-server.ts:~189`) becomes a discriminated input:
 
 ```ts
-if (cfg.llm && typeof cfg.llm.provider === 'string') {
-  // Flat shape detected → wrap as { main: <flat> }
-  cfg.llm = { main: cfg.llm };
+// before
+llm: LlmProviderConfig;
+// after
+llm: LlmProviderConfig | Record<string, LlmProviderConfig>;   // flat = backward-compat
+```
+
+**After normalization** (used by all downstream consumers — `resolveSmartServerConfig`, builder wiring, worker builds, planner/reviewer/finalizer resolution), the config exposes a single normalized shape:
+
+```ts
+type NormalizedLlmMap = { main: LlmProviderConfig } & Record<string, LlmProviderConfig>;
+// invariant: `main` is always present after normalization.
+```
+
+**Normalizer** (one branch in the parse step, applied to the parsed input before the rest of `resolveSmartServerConfig` runs):
+
+```ts
+function normalizeLlmConfig(input: SmartServerConfig['llm']): NormalizedLlmMap {
+  // Heuristic: flat shape has a `provider` string field; a map of named configs
+  // has plain object values keyed by name (never `provider` at the top).
+  if (input && typeof (input as LlmProviderConfig).provider === 'string') {
+    return { main: input as LlmProviderConfig };
+  }
+  const map = input as Record<string, LlmProviderConfig>;
+  if (!map.main) {
+    throw new ConfigError("llm: map MUST include a 'main' key (default LLM for unspecified roles)");
+  }
+  return map as NormalizedLlmMap;
 }
 ```
 
-Existing flat configs continue to work as `llm.main`. No consumer change required.
+**Lookup helper** (`resolveLlmConfig(map, name?): LlmProviderConfig`):
+
+```ts
+function resolveLlmConfig(map: NormalizedLlmMap, name?: string): LlmProviderConfig {
+  if (!name || name === 'main') return map.main;
+  const found = map[name];
+  return found ?? map.main;     // fall back to main if the named key is missing
+}
+```
+
+**Downstream consumers** — `resolveSmartServerConfig` (`packages/llm-agent-server/src/smart-agent/config.ts:~842`) is updated to read from the normalized map: `resolveLlmConfig(cfg.llm, 'main')` for the top-level/default LLM, `resolveLlmConfig(cfg.llm, cfg.coordinator?.planner?.plannerLlm)` for the planner, `resolveLlmConfig(cfg.llm, cfg.coordinator?.finalizer?.finalizerLlm)` for the finalizer, `resolveLlmConfig(cfg.llm, cfg.coordinator?.reviewer?.reviewerLlm)` for the reviewer.
+
+**Validation:** the normalizer enforces `main` presence; arbitrary other keys are allowed (forward-compat for future roles 3–9). Unknown reference (e.g. `plannerLlm: missing`) silently falls back to `main` — the lookup helper never throws; a startup-time `log({type:'warning'})` notes the fallback for visibility.
+
+Existing flat configs continue working: they're rewritten to `{ main: <flat> }` before any downstream code sees them.
 
 ### C.3 Worker LLM map (out of scope)
 
