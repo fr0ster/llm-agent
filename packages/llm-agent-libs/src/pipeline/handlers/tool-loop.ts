@@ -883,6 +883,11 @@ export class ToolLoopHandler implements IStageHandler {
           tool_call_id: tc.id,
         });
         ctx.requestLogger.logToolCall({
+          // Stamp requestId so tool executions land in the per-traceId delta
+          // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
+          // when the request actually ran tools (only the session-cumulative
+          // counter would tick).
+          requestId: ctx.options?.trace?.traceId,
           toolName: tc.name,
           success: !!res?.ok,
           durationMs: r.duration,

@@ -31,7 +31,9 @@ import type {
   Result,
   ToolCallEntry,
 } from '@mcp-abap-adt/llm-agent';
+import { NoopToolCache } from '@mcp-abap-adt/llm-agent';
 import { LlmClassifier } from '../../../classifier/llm-classifier.js';
+import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { PendingToolResultsRegistry } from '../../../policy/pending-tool-results-registry.js';
 import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-registry.js';
 import type { ISpan } from '../../../tracer/types.js';
@@ -385,3 +387,156 @@ test('summarize stamps requestId = ctx.options.trace.traceId', async () => {
   );
 });
 
+// ---------------------------------------------------------------------------
+// tool-loop handler — Fix #16: when a tool actually runs, the logToolCall
+// entry must carry requestId so `getSummary(traceId).toolCalls > 0`.
+// ---------------------------------------------------------------------------
+
+test('tool-loop logToolCall stamps requestId — per-traceId toolCalls > 0', async () => {
+  const traceId = 'trace-tool-exec';
+  // Use the REAL SessionRequestLogger so we can assert the per-traceId delta.
+  const sessionLogger = new SessionRequestLogger();
+  sessionLogger.startRequest(traceId);
+
+  // Iteration 1: stream a tool_call (id, name, args), finishReason=tool_calls.
+  // Iteration 2: stream final 'stop' so the loop terminates.
+  let iter = 0;
+  async function* iterStream(): AsyncIterable<
+    Result<LlmStreamChunk, LlmError>
+  > {
+    iter++;
+    if (iter === 1) {
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          toolCalls: [
+            {
+              index: 0,
+              id: 'call-1',
+              name: 'echo',
+              arguments: '{"x":1}',
+            },
+          ],
+        } as LlmStreamChunk,
+      };
+      yield {
+        ok: true,
+        value: {
+          content: '',
+          finishReason: 'tool_calls',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        } as LlmStreamChunk,
+      };
+      return;
+    }
+    yield {
+      ok: true,
+      value: {
+        content: 'done',
+        finishReason: 'stop',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      } as LlmStreamChunk,
+    };
+  }
+
+  const mainLlm: ILlm = {
+    model: 'tl-model',
+    async chat(): Promise<Result<LlmResponse, LlmError>> {
+      return {
+        ok: true,
+        value: { content: '', finishReason: 'stop' } as LlmResponse,
+      };
+    },
+    streamChat: iterStream,
+  };
+
+  // Tool client returns ok content.
+  const fakeClient = {
+    async listTools() {
+      return { ok: true as const, value: [] };
+    },
+    async callTool() {
+      return {
+        ok: true as const,
+        value: { content: 'tool-ok' },
+      };
+    },
+  };
+
+  const yielded: Result<LlmStreamChunk, unknown>[] = [];
+  const ctx = {
+    config: {
+      maxIterations: 3,
+      maxToolCalls: 5,
+      heartbeatIntervalMs: 5000,
+      mode: 'smart',
+      refreshToolsPerIteration: false,
+    } as PipelineContext['config'],
+    options: { trace: { traceId } } as CallOptions,
+    sessionId: 's-tool-exec',
+    mcpClients: [],
+    mainLlm,
+    inputText: '',
+    history: [] as Message[],
+    assembledMessages: [{ role: 'user', content: 'hi' } as Message],
+    activeTools: [
+      { name: 'echo', description: 'echo', inputSchema: {} } as LlmTool,
+    ],
+    externalTools: [] as LlmTool[],
+    selectedTools: [
+      { name: 'echo', description: 'echo', inputSchema: {} } as LlmTool,
+    ],
+    mcpTools: [{ name: 'echo' }],
+    toolClientMap: new Map([['echo', fakeClient]]),
+    toolCache: new NoopToolCache(),
+    ragStores: {},
+    timing: [],
+    pendingToolResults: new PendingToolResultsRegistry(),
+    toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
+    requestLogger: sessionLogger,
+    metrics: {
+      llmCallCount: { add() {} },
+      llmCallLatency: { record() {} },
+      toolCallCount: { add() {} },
+      toolCacheHitCount: { add() {} },
+    } as unknown as PipelineContext['metrics'],
+    tracer: {
+      startSpan: () => makeSpan(),
+    } as unknown as PipelineContext['tracer'],
+    sessionManager: {
+      addTokens() {},
+      isOverBudget: () => false,
+      reset() {},
+      totalTokens: 0,
+    } as unknown as PipelineContext['sessionManager'],
+    outputValidator: {
+      async validate() {
+        return { ok: true, value: { valid: true } };
+      },
+    } as unknown as PipelineContext['outputValidator'],
+    llmCallStrategy: {
+      call: (
+        _llm: ILlm,
+        _msgs: Message[],
+        _tools: LlmTool[],
+        _opts?: CallOptions,
+      ) => iterStream(),
+    } as unknown as PipelineContext['llmCallStrategy'],
+    yield(chunk: Result<LlmStreamChunk, unknown>) {
+      yielded.push(chunk);
+    },
+  } as unknown as PipelineContext;
+
+  const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+  assert.equal(ok, true, 'tool-loop completed');
+
+  const summary = sessionLogger.getSummary(traceId);
+  assert.ok(
+    summary.toolCalls > 0,
+    `per-traceId toolCalls > 0 (got ${summary.toolCalls})`,
+  );
+  // Sanity: cumulative also reflects the call.
+  assert.ok(sessionLogger.getSummary().toolCalls > 0);
+  sessionLogger.dropRequest(traceId);
+});
