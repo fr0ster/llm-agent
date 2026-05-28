@@ -6,10 +6,8 @@ import type {
   IInterpreter,
   InterpretResult,
   IPlanner,
-  IStateOracle,
   ISubAgent,
 } from '@mcp-abap-adt/llm-agent';
-import { NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { SessionRequestLogger } from '../../../logger/session-request-logger.js';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
@@ -57,7 +55,7 @@ const interpreter: IInterpreter<DagPlan, InterpretResult> = {
 };
 
 function makeCtx() {
-  const yields: any[] = [];
+  const yields: unknown[] = [];
   const logger = new SessionRequestLogger();
   logger.startRequest('t1');
   return {

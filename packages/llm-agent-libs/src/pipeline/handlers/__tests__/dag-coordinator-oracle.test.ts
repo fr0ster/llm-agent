@@ -70,7 +70,7 @@ test('handler routes NeedInfoSignal through IStateOracle.query (not ISubAgent.ru
   });
   const logger = new SessionRequestLogger();
   logger.startRequest('t1');
-  const yields: any[] = [];
+  const yields: unknown[] = [];
   const ctx = {
     inputText: 'p',
     sessionId: 's',
