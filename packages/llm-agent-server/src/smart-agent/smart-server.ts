@@ -1137,6 +1137,44 @@ export class SmartServer {
           agentUpdate.classificationEnabled = update.classificationEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
+          // Mirror onto `this.cfg.agent` so freshly-built session graphs
+          // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
+          // update. Deep-merge to preserve untouched startup fields.
+          // Note: `agentUpdate` includes flat fields ONLY whitelisted by
+          // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
+          // into `this.cfg.prompts` separately below.
+          const agentPatch: Record<string, unknown> = {};
+          for (const k of Object.keys(agentUpdate)) {
+            if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
+              agentPatch[k] = agentUpdate[k];
+            }
+          }
+          if (Object.keys(agentPatch).length > 0) {
+            const mergedAgent: Record<string, unknown> = {
+              ...((this.cfg as { agent?: Record<string, unknown> }).agent ??
+                {}),
+              ...agentPatch,
+            };
+            (this.cfg as { agent?: Record<string, unknown> }).agent =
+              mergedAgent;
+          }
+          if (
+            update.prompts?.ragTranslate !== undefined ||
+            update.prompts?.historySummary !== undefined
+          ) {
+            const mergedPrompts: Record<string, unknown> = {
+              ...((this.cfg as { prompts?: Record<string, unknown> }).prompts ??
+                {}),
+            };
+            if (update.prompts?.ragTranslate !== undefined) {
+              mergedPrompts.ragTranslate = update.prompts.ragTranslate;
+            }
+            if (update.prompts?.historySummary !== undefined) {
+              mergedPrompts.historySummary = update.prompts.historySummary;
+            }
+            (this.cfg as { prompts?: Record<string, unknown> }).prompts =
+              mergedPrompts;
+          }
         }
         // Per-session graphs (built by SessionGraphFactory) captured the OLD
         // config and the OLD cached worker LLM set. Without invalidation,
@@ -2404,7 +2442,17 @@ export class SmartServer {
       if (resolvedModels.helperLlm) this._helperLlm = resolvedModels.helperLlm;
     }
     if (body.agent) {
-      smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
+      const patch = body.agent as Record<string, unknown>;
+      smartAgent.applyConfigUpdate(patch);
+      // Mirror onto `this.cfg.agent` so freshly-built session graphs (which
+      // read `this.cfg.agent` in `buildSessionAgent`) observe the update.
+      // Deep-merge to preserve untouched startup fields; replacing the whole
+      // `agent` block would drop YAML defaults the validator already applied.
+      const merged: Record<string, unknown> = {
+        ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
+        ...patch,
+      };
+      (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
     }
     // Invalidate per-session SmartAgents + the worker-LLM cache so the next
     // request mints a session graph that observes the just-applied config.

@@ -23,6 +23,10 @@ interface ServerInternals {
   _workerLlmCache: Map<string, unknown>;
   _lifecycle?: { registry: { size: number } };
   _mainLlm?: ILlm;
+  cfg: {
+    agent?: Record<string, unknown>;
+    prompts?: Record<string, unknown>;
+  };
 }
 
 function httpRequest(
@@ -162,6 +166,39 @@ describe('PUT /v1/config — invalidates session graphs + worker cache (Fix #14)
         internals._lifecycle?.registry.size,
         0,
         'session registry drained',
+      );
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it('Fix #17: PUT /v1/config patches this.cfg.agent so next buildSessionAgent sees the update', async () => {
+    const server = new SmartServer({
+      port: 0,
+      llm: { apiKey: 'test', model: 'test-model' },
+      skipModelValidation: true,
+      agent: { maxIterations: 10, maxToolCalls: 5 },
+    });
+    const handle = await server.start();
+    const internals = server as unknown as ServerInternals;
+    try {
+      assert.equal(internals.cfg.agent?.maxIterations, 10);
+      const res = await httpRequest(handle.port, 'PUT', '/v1/config', {
+        agent: { maxIterations: 25 },
+      });
+      assert.equal(res.status, 200);
+      // The PUT must deep-merge into this.cfg.agent so a freshly-built session
+      // graph reads the updated value, not the startup value.
+      assert.equal(
+        internals.cfg.agent?.maxIterations,
+        25,
+        'this.cfg.agent.maxIterations updated',
+      );
+      // Deep-merge: untouched fields preserved.
+      assert.equal(
+        internals.cfg.agent?.maxToolCalls,
+        5,
+        'untouched agent fields preserved (deep-merge, not replace)',
       );
     } finally {
       await handle.close();
