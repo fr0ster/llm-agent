@@ -37,6 +37,7 @@ import { ToolAvailabilityRegistry } from '../../../policy/tool-availability-regi
 import type { ISpan } from '../../../tracer/types.js';
 import type { PipelineContext } from '../../context.js';
 import { RagQueryHandler } from '../rag-query.js';
+import { SummarizeHandler } from '../summarize.js';
 import { ToolLoopHandler } from '../tool-loop.js';
 import { TranslateHandler } from '../translate.js';
 
@@ -331,3 +332,56 @@ test('tool-loop stamps requestId = ctx.options.trace.traceId', async () => {
   );
   assert.ok(yielded.length >= 1, 'tool-loop yielded at least once');
 });
+
+// ---------------------------------------------------------------------------
+// summarize handler (Fix #15: helper-LLM history-summarization call must
+// stamp requestId so the per-traceId delta accounts for the helper tokens).
+// ---------------------------------------------------------------------------
+
+test('summarize stamps requestId = ctx.options.trace.traceId', async () => {
+  const rec = new RecordingLogger();
+  const traceId = 'trace-sum';
+  // Helper returns a short summary with usage; chat() (non-streaming) is used.
+  const helperLlm: ILlm = {
+    model: 'helper-model',
+    async chat(): Promise<Result<LlmResponse, LlmError>> {
+      return {
+        ok: true,
+        value: {
+          content: 'short summary',
+          finishReason: 'stop',
+          usage: {
+            promptTokens: 7,
+            completionTokens: 3,
+            totalTokens: 10,
+          },
+        } as LlmResponse,
+      };
+    },
+    async *streamChat(): AsyncIterable<Result<LlmStreamChunk, LlmError>> {},
+  };
+  // History must exceed `limit` (default 10) AND have >=6 messages so
+  // `toSummarize = history.slice(0, -5)` is non-empty.
+  const history: Message[] = Array.from({ length: 12 }, (_, i) => ({
+    role: i % 2 === 0 ? ('user' as const) : ('assistant' as const),
+    content: `msg-${i}`,
+  }));
+
+  const ctx = {
+    history,
+    helperLlm,
+    config: {} as PipelineContext['config'],
+    requestLogger: rec,
+    options: { trace: { traceId } } as CallOptions,
+  } as unknown as PipelineContext;
+
+  const ok = await new SummarizeHandler().execute(ctx, {}, makeSpan());
+  assert.equal(ok, true);
+  assert.equal(rec.llm.length, 1, 'summarize logged exactly one helper call');
+  assert.equal(
+    rec.llm[0].requestId,
+    traceId,
+    'summarize entry carries the traceId',
+  );
+});
+
