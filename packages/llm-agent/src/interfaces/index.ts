@@ -32,6 +32,7 @@ export type {
   ErrorReaction,
   IErrorStrategy,
 } from './error-strategy.js';
+export type { IExecutor } from './executor.js';
 export type {
   FinalizerInput,
   FinalizerResult,
@@ -47,6 +48,7 @@ export type {
   HistoryTurn,
   IHistorySummarizer,
 } from './history-summarizer.js';
+export { InsufficientSignal } from './insufficient-signal.js';
 export type {
   IInterpreter,
   InterpretContext,
@@ -85,6 +87,7 @@ export type {
   IModelProvider,
 } from './model-provider.js';
 export type { IModelResolver } from './model-resolver.js';
+export type { INeedResolver } from './need-resolver.js';
 export type {
   BuiltInStageType,
   ControlFlowType,
@@ -168,6 +171,8 @@ export type {
   ToolSafetyPolicy,
 } from './stepper.js';
 export { TokenLedger } from './stepper.js';
+export type { IStepperInterpreter } from './stepper-interpreter.js';
+export type { IStepperPlanner } from './stepper-planner.js';
 export type { OnPartial, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
