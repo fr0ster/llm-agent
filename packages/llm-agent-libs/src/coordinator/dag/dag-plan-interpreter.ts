@@ -66,7 +66,7 @@ export class DagPlanInterpreter
           const workerOnPartial = outerOnPartial
             ? (c: StreamChunk) => {
                 const annotated: StreamChunk = (() => {
-                  if (c.kind === 'content' || c.kind === 'tool-call') {
+                  if (c.kind === 'content') {
                     return { ...c, nodeId: c.nodeId ?? n.id };
                   }
                   return c;
@@ -75,7 +75,11 @@ export class DagPlanInterpreter
               }
             : undefined;
 
-          outerOnPartial?.({ kind: 'node-start', nodeId: n.id, goal: n.goal });
+          outerOnPartial?.({
+            kind: 'stepper-spawned',
+            source: { stepperId: n.id, name: n.id },
+            goal: n.goal,
+          });
           try {
             const res = await this.resolveWorker(n, ctx).run({
               task,
@@ -86,7 +90,11 @@ export class DagPlanInterpreter
               onPartial: workerOnPartial,
             });
             if (res.errorClass === 'epicfail') {
-              outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
+              outerOnPartial?.({
+                kind: 'stepper-done',
+                source: { stepperId: n.id, name: n.id },
+                ok: false,
+              });
               return {
                 node: n,
                 kind: 'failed',
@@ -95,7 +103,11 @@ export class DagPlanInterpreter
                 durationMs: Date.now() - started,
               };
             }
-            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: true });
+            outerOnPartial?.({
+              kind: 'stepper-done',
+              source: { stepperId: n.id, name: n.id },
+              ok: true,
+            });
             return {
               node: n,
               kind: 'done',
@@ -103,7 +115,11 @@ export class DagPlanInterpreter
               durationMs: Date.now() - started,
             };
           } catch (error) {
-            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
+            outerOnPartial?.({
+              kind: 'stepper-done',
+              source: { stepperId: n.id, name: n.id },
+              ok: false,
+            });
             return {
               node: n,
               kind: 'failed',

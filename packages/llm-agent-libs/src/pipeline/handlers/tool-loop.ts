@@ -484,8 +484,9 @@ export class ToolLoopHandler implements IStageHandler {
             }
             if (tc.name && ctx.onPartial) {
               ctx.onPartial({
-                kind: 'tool-call',
-                name: tc.name,
+                kind: 'mcp-call',
+                source: { stepperId: tc.name, name: 'tool' },
+                tool: tc.name,
                 args: tc.arguments,
               });
             }

@@ -33,10 +33,18 @@ test('handler yields content deltas as soon as interpreter/finalizer emit them',
   const interpreter: IInterpreter<DagPlan, InterpretResult> = {
     name: 'i',
     async interpret(plan, ictx) {
-      ictx.onPartial?.({ kind: 'node-start', nodeId: 'a', goal: 'ga' });
+      ictx.onPartial?.({
+        kind: 'stepper-spawned',
+        source: { stepperId: 'a', name: 'a' },
+        goal: 'ga',
+      });
       ictx.onPartial?.({ kind: 'content', nodeId: 'a', delta: 'foo' });
       ictx.onPartial?.({ kind: 'content', nodeId: 'a', delta: 'bar' });
-      ictx.onPartial?.({ kind: 'node-end', nodeId: 'a', ok: true });
+      ictx.onPartial?.({
+        kind: 'stepper-done',
+        source: { stepperId: 'a', name: 'a' },
+        ok: true,
+      });
       return {
         ok: true,
         nodeResults: {
