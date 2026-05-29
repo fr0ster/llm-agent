@@ -30,6 +30,8 @@ The spec uses some type names that differ from existing 17.0 exports. Use the RE
 
 When a task's code block references `Tool`, write `LlmTool`. Confirm each name with `git grep -n "export .* <Name>" packages/llm-agent/src` before coding if unsure.
 
+**Budget convention (review R2-F1):** `Budget` is `{ depthRemaining: number; tokens: ITokenLedger }`. `tokens` is a SHARED, mutable ledger (`TokenLedger`, exported from `@mcp-abap-adt/llm-agent`) created once per run and passed by reference everywhere. Any test that builds a `Budget` must `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` (a VALUE import, not type-only) and write `tokens: new TokenLedger(<n>)`. There is no `tokensRemaining` field. Children share the SAME ledger (so total spend is capped globally); only `depthRemaining` is per-branch.
+
 ---
 
 ## File Structure
@@ -88,13 +90,14 @@ When a task's code block references `Tool`, write `LlmTool`. Confirm each name w
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type {
-  Budget,
-  IStepper,
-  IStepperInput,
-  IStepperResult,
-  RunIdentity,
-  ToolSafetyPolicy,
+import {
+  type Budget,
+  type IStepper,
+  type IStepperInput,
+  type IStepperResult,
+  type RunIdentity,
+  TokenLedger,
+  type ToolSafetyPolicy,
 } from '../stepper.js';
 
 test('Stepper core types: minimal IStepper compiles and runs', async () => {
@@ -105,12 +108,13 @@ test('Stepper core types: minimal IStepper compiles and runs', async () => {
     mutationPolicy: 'confirm',
     knownReadOnlyTools: new Set(['GetProgram']),
   };
-  const budget: Budget = { depthRemaining: 3, tokensRemaining: 100000 };
+  const budget: Budget = { depthRemaining: 3, tokens: new TokenLedger(100000) };
   const stub: IStepper = {
     name: 'stub',
     async run(input: IStepperInput): Promise<IStepperResult> {
       assert.equal(input.identity.stepperId, 'n0');
       assert.equal(input.toolSafety.knownReadOnlyTools.has('GetProgram'), true);
+      input.budget.tokens.spend({ promptTokens: 10, completionTokens: 5, totalTokens: 15 });
       return { status: 'ok', usage: { promptTokens: 0, completionTokens: 0, totalTokens: 0 } };
     },
   };
@@ -121,6 +125,14 @@ test('Stepper core types: minimal IStepper compiles and runs', async () => {
     budget, identity, toolSafety,
   });
   assert.equal(res.status, 'ok');
+  assert.equal(budget.tokens.remaining, 99985);  // shared ledger decremented
+});
+
+test('TokenLedger.exhausted flips when remaining hits zero', () => {
+  const l = new TokenLedger(20);
+  assert.equal(l.exhausted(), false);
+  l.spend({ promptTokens: 20, completionTokens: 0, totalTokens: 20 });
+  assert.equal(l.exhausted(), true);
 });
 ```
 
@@ -150,9 +162,26 @@ export interface ToolSafetyPolicy {
   knownReadOnlyTools: ReadonlySet<string>;
 }
 
+/** Shared, live token ledger (review R2-F1). ONE instance is created at the
+ *  coordinator boundary and passed BY REFERENCE through the whole run. Every
+ *  Stepper and executor reads `remaining` before each LLM call and calls
+ *  `spend(usage)` after, so total spend is capped across ALL branches —
+ *  including parallel siblings, which interleave at await points and share
+ *  the one counter (JS is single-threaded; no true race). Tokens bound WORK
+ *  globally; depth (a per-branch value below) bounds RECURSION. */
+export interface ITokenLedger {
+  readonly remaining: number;
+  spend(usage: LlmUsage): void;
+  exhausted(): boolean;
+}
+
 export interface Budget {
+  /** Per-branch recursion bound — a plain value, decremented by 1 at each
+   *  child dispatch (NOT shared). */
   depthRemaining: number;
-  tokensRemaining: number;
+  /** Shared run-wide token ledger — the SAME object reference for every
+   *  Stepper/executor in the run. */
+  tokens: ITokenLedger;
 }
 
 export interface IStepperInput {
@@ -177,9 +206,19 @@ export interface IStepper {
   readonly name: string;
   run(input: IStepperInput): Promise<IStepperResult>;
 }
+
+/** Default mutable ledger. Created once per run with the configured token
+ *  budget; shared by reference. */
+export class TokenLedger implements ITokenLedger {
+  private _remaining: number;
+  constructor(total: number) { this._remaining = total; }
+  get remaining(): number { return this._remaining; }
+  spend(usage: LlmUsage): void { this._remaining -= usage.totalTokens; }
+  exhausted(): boolean { return this._remaining <= 0; }
+}
 ```
 
-Add to `packages/llm-agent/src/interfaces/index.ts` (match the existing `export type { … } from './finalizer.js';` pattern):
+Add to `packages/llm-agent/src/interfaces/index.ts` (match the existing `export type { … } from './finalizer.js';` pattern); export `TokenLedger` as a value (not type-only) and `ITokenLedger` as a type:
 
 ```ts
 export type {
@@ -368,7 +407,7 @@ test('IExecutor return union includes budget-exhausted', async () => {
   };
   const r = await ex.execute({
     prompt: 'p', tools: [], knowledgeRag: {} as never, toolsRag: {} as never,
-    budget: { depthRemaining: 0, tokensRemaining: 0 },
+    budget: { depthRemaining: 0, tokens: new TokenLedger(0) },
     identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n' },
     toolSafety: { mutationPolicy: 'confirm', knownReadOnlyTools: new Set() },
   });
@@ -446,7 +485,7 @@ export interface IExecutor {
     knowledgeRag: IKnowledgeRagHandle;
     toolsRag: IToolsRagHandle;
     needResolver?: INeedResolver;
-    /** Executor is a LEAF; ignores depthRemaining, stops on tokensRemaining ≤ 0. */
+    /** Executor is a LEAF; ignores depthRemaining, stops when budget.tokens.exhausted(). */
     budget: Budget;
     identity: RunIdentity;
     toolSafety: ToolSafetyPolicy;
@@ -585,7 +624,7 @@ export type StreamChunk =
   // --- 17.0 legacy variants — REMOVED in Task 19e once all emitters migrate ---
   | { kind: 'node-start'; nodeId: string; goal: string }
   | { kind: 'node-end'; nodeId: string; ok: boolean }
-  | { kind: 'tool-call'; nodeId?: string; name: string; arguments?: unknown }
+  | { kind: 'tool-call'; nodeId?: string; name: string; args?: unknown }
   // --- 18.0 Stepper progress events ---
   | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
   | { kind: 'stepper-done'; source: StepperRef; ok: boolean }
@@ -953,7 +992,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `packages/llm-agent-libs/src/coordinator/stepper/cyclic-react-executor.ts`
 - Test: `packages/llm-agent-libs/src/coordinator/stepper/__tests__/cyclic-react-executor.test.ts`
 
-This is the heart of modes A and C. The executor runs an LLM loop: clean answer → write to knowledge-RAG + return ok; tool call → execute MCP + write result + loop; need signal → resolve via INeedResolver + inject tools + loop. Mutating tools raise ClarifySignal per §C.4. Stops on tokensRemaining ≤ 0 → budget-exhausted.
+This is the heart of modes A and C. The executor runs an LLM loop: clean answer → write to knowledge-RAG + return ok; tool call → execute MCP + write result + loop; need signal → resolve via INeedResolver + inject tools + loop. Mutating tools raise ClarifySignal per §C.4. Stops when the shared token ledger is exhausted → budget-exhausted.
 
 - [ ] **7a. Failing test.**
 
@@ -1034,7 +1073,7 @@ test('H.1 context-augmenting ReAct: need → inject tool → final answer', asyn
     knowledgeRag: rag as never,
     toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram', readOnly: true } }) as never,
     needResolver: new RegexNeedResolver(),
-    budget: { depthRemaining: 0, tokensRemaining: 100000 },
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
     ...META_BASE,
   });
   assert.equal(res.status, 'ok');
@@ -1052,7 +1091,7 @@ test('H.5 mutating tool without readOnly raises ClarifySignal before call', asyn
     () => exec.execute({
       prompt: 'create class ZCL', tools: [], knowledgeRag: rag as never,
       toolsRag: toolsStub({ CreateClass: { name: 'CreateClass' } }) as never,  // no readOnly
-      budget: { depthRemaining: 0, tokensRemaining: 100000 }, ...META_BASE,
+      budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, ...META_BASE,
     }),
     (e: unknown) => e instanceof ClarifySignal && /CreateClass/.test((e as ClarifySignal).question),
   );
@@ -1070,13 +1109,13 @@ test('H.5b knownReadOnlyTools allowlist bypasses confirmation', async () => {
   const res = await exec.execute({
     prompt: 'read', tools: [], knowledgeRag: rag as never,
     toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram' } }) as never,  // no readOnly field
-    budget: { depthRemaining: 0, tokensRemaining: 100000 }, ...META_BASE,    // but in knownReadOnlyTools
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, ...META_BASE,    // but in knownReadOnlyTools
   });
   assert.equal(res.status, 'ok');
   assert.deepEqual(m.calls, ['ReadProgram']);
 });
 
-test('budget-exhausted when tokensRemaining hits zero', async () => {
+test('budget-exhausted when the shared token ledger is exhausted', async () => {
   const llm = scriptedLlm([
     { content: 'x', toolCalls: [{ name: 'ReadProgram', arguments: {} }], usage: { promptTokens: 60000, completionTokens: 0, totalTokens: 60000 } },
     { content: 'y', toolCalls: [{ name: 'ReadProgram', arguments: {} }], usage: { promptTokens: 60000, completionTokens: 0, totalTokens: 60000 } },
@@ -1087,7 +1126,7 @@ test('budget-exhausted when tokensRemaining hits zero', async () => {
   const res = await exec.execute({
     prompt: 'read', tools: [], knowledgeRag: rag as never,
     toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram', readOnly: true } }) as never,
-    budget: { depthRemaining: 0, tokensRemaining: 100000 }, ...META_BASE,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, ...META_BASE,
   });
   assert.equal(res.status, 'budget-exhausted');
 });
@@ -1105,7 +1144,7 @@ test('emits mcp-call / mcp-result / tokens-used progress with identity.stepperId
   await exec.execute({
     prompt: 'read', tools: [], knowledgeRag: rag as never,
     toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram', readOnly: true } }) as never,
-    budget: { depthRemaining: 0, tokensRemaining: 100000 }, onProgress, ...META_BASE,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, onProgress, ...META_BASE,
   });
   const mcpCall = events.find((e) => e.kind === 'mcp-call');
   assert.ok(mcpCall && mcpCall.kind === 'mcp-call' && mcpCall.source.stepperId === 'n1' && mcpCall.tool === 'ReadProgram');
@@ -1169,7 +1208,9 @@ export class CyclicReActExecutor implements IExecutor {
     };
 
     for (let iter = 0; iter < maxIterations; iter++) {
-      if (budget.tokensRemaining - usage.totalTokens <= 0) {
+      // Check the SHARED run-wide ledger (review R2-F1) — not a local snapshot.
+      // Parallel siblings share this counter, so total spend is capped globally.
+      if (budget.tokens.exhausted()) {
         return { status: 'budget-exhausted', usage };
       }
       onProgress?.({ kind: 'llm-call-start', source: ref, component, model: llm.model ?? 'unknown' });
@@ -1179,7 +1220,10 @@ export class CyclicReActExecutor implements IExecutor {
       if (res.ok === false) return { status: 'incomplete', missing: [res.error?.message ?? 'llm error'], usage };
       const v = res.value;
       usage = add(usage, v.usage);
-      if (v.usage) onProgress?.({ kind: 'tokens-used', source: ref, component, delta: v.usage });
+      if (v.usage) {
+        budget.tokens.spend(v.usage);   // decrement the shared ledger immediately
+        onProgress?.({ kind: 'tokens-used', source: ref, component, delta: v.usage });
+      }
 
       const toolCalls = v.toolCalls ?? [];
       if (toolCalls.length > 0) {
@@ -1445,7 +1489,7 @@ const baseCtx = (over: Partial<Parameters<StepperInterpreter['interpret']>[1]>) 
   toolsRag: { async query() { return []; }, lookup() { return undefined; } } as never,
   childSteppers: new Map(),
   executor: okExecutor().exec,
-  budget: { depthRemaining: 3, tokensRemaining: 100000 },
+  budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
   identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
   toolSafety: { mutationPolicy: 'confirm' as const, knownReadOnlyTools: new Set<string>() },
   maxParallelSteps: 4,
@@ -1464,7 +1508,7 @@ test('H.4b depth floor routes subagent node to executor; child.run NOT called; s
     baseCtx({
       childSteppers: new Map([['w', child.st]]),
       executor: ex.exec,
-      budget: { depthRemaining: 0, tokensRemaining: 100000 },  // floor
+      budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },  // floor
       onProgress: (e) => events.push(e),
     }),
   );
@@ -1484,7 +1528,7 @@ test('depth > 0 spawns recursive child stepper with parentStepperId set', async 
   const interp = new StepperInterpreter();
   await interp.interpret(
     { objective: 'o', nodes: [{ id: 'a', goal: 'g', agent: 'w' }], createdAt: 0 },
-    baseCtx({ childSteppers: new Map([['w', child.st]]), budget: { depthRemaining: 2, tokensRemaining: 100000 }, onProgress: (e) => events.push(e) }),
+    baseCtx({ childSteppers: new Map([['w', child.st]]), budget: { depthRemaining: 2, tokens: new TokenLedger(100000) }, onProgress: (e) => events.push(e) }),
   );
   assert.equal(child.runs, 1, 'recursive child spawned above floor');
   const spawned = events.find((e) => e.kind === 'stepper-spawned');
@@ -1507,7 +1551,7 @@ test('unknown agent with no executable leaf returns incomplete', async () => {
   const interp = new StepperInterpreter();
   const res = await interp.interpret(
     { objective: 'o', nodes: [{ id: 'a', goal: 'g', agent: 'missing' }], createdAt: 0 },
-    baseCtx({ childSteppers: new Map(), executor: undefined as never, budget: { depthRemaining: 2, tokensRemaining: 1 } }),
+    baseCtx({ childSteppers: new Map(), executor: undefined as never, budget: { depthRemaining: 2, tokens: new TokenLedger(1) } }),
   );
   assert.equal(res.status, 'incomplete');
   assert.ok(res.missing && res.missing.length > 0);
@@ -1532,7 +1576,7 @@ test('maxParallelSteps caps concurrency at 2', async () => {
       { id: 'a', goal: 'g', agent: 'w' }, { id: 'b', goal: 'g', agent: 'w' },
       { id: 'c', goal: 'g', agent: 'w' }, { id: 'd', goal: 'g', agent: 'w' },
     ], createdAt: 0 },
-    baseCtx({ childSteppers: new Map([['w', slow]]), maxParallelSteps: 2, budget: { depthRemaining: 2, tokensRemaining: 100000 } }),
+    baseCtx({ childSteppers: new Map([['w', slow]]), maxParallelSteps: 2, budget: { depthRemaining: 2, tokens: new TokenLedger(100000) } }),
   );
   assert.ok(peak <= 2, `peak concurrency ${peak} must be ≤ 2`);
 });
@@ -1578,19 +1622,26 @@ export class StepperInterpreter implements IStepperInterpreter {
       const childIdentity: RunIdentity = {
         ...ctx.identity, stepperId: childId, parentStepperId: ctx.identity.stepperId,
       };
-      const ref = { stepperId: childId, parentStepperId: ctx.identity.stepperId, name: node.agent ?? 'executor' };
+      const subagent = node.agent ? ctx.childSteppers.get(node.agent) : undefined;
+      // Decide the route FIRST, then build the ref name accordingly (review
+      // R2-F2): a node with agent 'w' that is below the depth floor routes to
+      // the executor, so its spawned event must say 'executor', not 'w'.
+      const willRecurse = Boolean(node.agent && subagent && ctx.budget.depthRemaining > 0);
+      const refName = willRecurse ? (node.agent as string) : 'executor';
+      const ref = { stepperId: childId, parentStepperId: ctx.identity.stepperId, name: refName };
       ctx.onProgress?.({ kind: 'stepper-spawned', source: ref, goal: node.goal });
 
-      const subagent = node.agent ? ctx.childSteppers.get(node.agent) : undefined;
       let result: IStepperResult;
 
-      if (node.agent && subagent && ctx.budget.depthRemaining > 0) {
-        // Case 1 — recursive child Stepper
+      if (willRecurse && subagent) {
+        // Case 1 — recursive child Stepper. depthRemaining is a per-branch
+        // value (decremented), but tokens is the SAME shared ledger reference
+        // (review R2-F1) so total spend is capped across all branches.
         result = await subagent.run({
           prompt: composeTask(node, plan),
           knowledgeRag: ctx.knowledgeRag,
           toolsRag: ctx.toolsRag,
-          budget: { depthRemaining: ctx.budget.depthRemaining - 1, tokensRemaining: Math.floor(ctx.budget.tokensRemaining / 2) },
+          budget: { depthRemaining: ctx.budget.depthRemaining - 1, tokens: ctx.budget.tokens },
           identity: childIdentity,
           toolSafety: ctx.toolSafety,
           signal: ctx.signal,
@@ -1701,7 +1752,7 @@ const input = () => ({
   prompt: 'p',
   knowledgeRag: { async query() { return []; }, async list() { return []; }, async write() {}, fingerprint() { return ''; } } as never,
   toolsRag: { async query() { return []; }, lookup() { return undefined; } } as never,
-  budget: { depthRemaining: 3, tokensRemaining: 100000 },
+  budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
   identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
   toolSafety: { mutationPolicy: 'confirm' as const, knownReadOnlyTools: new Set<string>() },
 });
@@ -1987,7 +2038,7 @@ export { RootFinalizer } from './root-finalizer.js';
 Add to `packages/llm-agent-libs/src/index.ts`:
 ```ts
 export * from './coordinator/stepper/index.js';
-export { KnowledgeRag } from './rag/knowledge-rag.js';
+export { KnowledgeRag, InMemoryKnowledgeBackend, type KnowledgeBackend } from './rag/knowledge-rag.js';
 ```
 
 - [ ] **12b. Build + full libs sweep + commit.**
@@ -2085,13 +2136,61 @@ export class InMemorySessionMetaStore implements ISessionMetaStore {
 
 > A `PgSessionMetaStore` (using the existing pg client from `pg-vector-rag`) is a follow-up within the same task ONLY IF the pg client is trivially importable; otherwise leave a one-line note that the Postgres adapter ships behind config in a later commit and the in-memory store is the default. Do NOT block the plan on pg wiring.
 
-- [ ] **13c. Test + commit.**
+- [ ] **13c. Durable `JsonlKnowledgeBackend` (review R2-F3 — ships in v1).** Create `packages/llm-agent-server/src/smart-agent/jsonl-knowledge-backend.ts` implementing the `KnowledgeBackend` port (Task 5) with file persistence, so `/v1/sessions` resume works across a real process restart (not only in-process). It appends each entry as one JSONL line under `<logDir>/sessions/<sessionId>/knowledge.jsonl` and rehydrates `scan()` by reading that file. Semantic `query` delegates to an injected text-RAG (the existing embedder-backed store); when no embedder is configured it falls back to returning the most-recent-k entries from the JSONL (keyword-free recency), which is acceptable for the planner's RAG-first check.
+
+```ts
+import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
+
+export class JsonlKnowledgeBackend implements KnowledgeBackend {
+  constructor(
+    private readonly logDir: string,
+    /** Optional semantic index for query(); when absent, query falls back to recency. */
+    private readonly semantic?: { upsert(sid: string, e: KnowledgeEntry): Promise<void>; query(sid: string, text: string, k?: number): Promise<readonly KnowledgeEntry[]> },
+  ) {}
+
+  private file(sid: string): string {
+    return join(this.logDir, 'sessions', sid, 'knowledge.jsonl');
+  }
+
+  async put(sid: string, entry: KnowledgeEntry): Promise<void> {
+    const f = this.file(sid);
+    await mkdir(dirname(f), { recursive: true });
+    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8');
+    await this.semantic?.upsert(sid, entry);
+  }
+
+  async semanticQuery(sid: string, text: string, k?: number): Promise<readonly KnowledgeEntry[]> {
+    if (this.semantic) return this.semantic.query(sid, text, k);
+    const all = await this.scan(sid);
+    return k ? all.slice(-k) : all;
+  }
+
+  async scan(sid: string): Promise<readonly KnowledgeEntry[]> {
+    try {
+      const raw = await readFile(this.file(sid), 'utf8');
+      return raw.split('\n').filter(Boolean).map((l) => JSON.parse(l) as KnowledgeEntry);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
+      throw e;
+    }
+  }
+}
+```
+
+Add a test `jsonl-knowledge-backend.test.ts` writing to a temp dir (`os.tmpdir()` + a fixed subdir passed in — no `Date.now`), then constructing a FRESH `JsonlKnowledgeBackend` over the same dir and asserting `scan()` returns the persisted entries (proves real cross-instance durability).
+
+- [ ] **13d. Test + commit.**
 ```bash
-npm --workspace @mcp-abap-adt/llm-agent-server run build
-cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/session-meta-store.test.ts
+npm run build
+cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/session-meta-store.test.ts src/smart-agent/__tests__/jsonl-knowledge-backend.test.ts
 git add packages/llm-agent-server/src/smart-agent/session-meta-store.ts \
-        packages/llm-agent-server/src/smart-agent/__tests__/session-meta-store.test.ts
-git commit -m "feat(server): SessionMetaStore (in-memory) for session persistence/resume metadata
+        packages/llm-agent-server/src/smart-agent/jsonl-knowledge-backend.ts \
+        packages/llm-agent-server/src/smart-agent/__tests__/session-meta-store.test.ts \
+        packages/llm-agent-server/src/smart-agent/__tests__/jsonl-knowledge-backend.test.ts
+git commit -m "feat(server): SessionMetaStore + durable JsonlKnowledgeBackend (real cross-restart resume in v1)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -2261,7 +2360,7 @@ test('cyclic-react mode produces a root whose executor is CyclicReActExecutor an
 
 Run → FAIL.
 
-- [ ] **15b. Implement.** Create `build-stepper-root.ts` wiring the three modes. Key points: build one `CyclicReActExecutor` (shared), one `LlmStepperPlanner` (or trivial planner for cyclic-react), one `StepperInterpreter`, one root `Stepper`, one `RootFinalizer`. `budget.depthRemaining`: cyclic-react→0, planned-react→1, deep-stepper→config.maxDepth. `toolSafety` from `parseStepperCoordinatorConfig`. Register subagents as child Steppers for deep-stepper mode.
+- [ ] **15b. Implement.** Create `build-stepper-root.ts` wiring the three modes. Key points: build one `CyclicReActExecutor` (shared), one `LlmStepperPlanner` (or trivial planner for cyclic-react), one `StepperInterpreter`, one root `Stepper`, one `RootFinalizer`. `budget.depthRemaining`: cyclic-react→0, planned-react→1, deep-stepper→config.maxDepth. `budget.tokens = new TokenLedger(config.tokenBudget)` — ONE shared ledger per run (review R2-F1). `toolSafety` from `parseStepperCoordinatorConfig`. Register subagents as child Steppers for deep-stepper mode.
 
 > Provide the full implementation matching the test. Use `parseStepperCoordinatorConfig` from Task 14. For the trivial cyclic-react planner, emit a single-node plan `{objective: prompt, nodes:[{id:'root', goal: prompt}], createdAt: 0}` without an LLM call.
 
@@ -2323,7 +2422,7 @@ function fakeBuilt(overrides = {}) {
     rootStepper: { name: 'root', async run(input: { knowledgeRag: { write(e: { content: string; metadata: unknown }): Promise<void> } }) { await input.knowledgeRag.write({ content: 'finding-from-run', metadata: {} }); return { status: 'ok', usage: ZERO }; } },
     // finalizer must READ via the knowledgeRag it is handed and stream content
     finalizer: { async finalize(input: { knowledgeRag: { list(f: unknown): Promise<readonly { content: string }[]> }; onProgress?: (c: unknown) => void }) { const got = await input.knowledgeRag.list({ turnId: 'turn-1' }); const out = `FINAL: ${got.map((e) => e.content).join(',')}`; input.onProgress?.({ kind: 'content', delta: out }); return { output: out, usage: ZERO }; } },
-    budget: { depthRemaining: 1, tokensRemaining: 100000 },
+    budget: { depthRemaining: 1, tokens: new TokenLedger(100000) },
     maxParallelSteps: 4,
     toolSafety: { mutationPolicy: 'confirm', knownReadOnlyTools: new Set() },
     ...overrides,
@@ -2471,7 +2570,7 @@ Each spec §H test that isn't already covered by a unit test gets an end-to-end 
   - **H.3** (Mode C, 4 parallel children with `maxParallelSteps: 2`, peak ≤ 2) — already partly in Task 9; here against the real `buildStepperRoot`.
   - **H.4** (token budget exhaustion → coordinator clarify) — scripted high-token LLM, assert clarify surfaced.
   - **H.7** (progress events with correct `source.stepperId`/`parentStepperId` across a 3-level tree; assert each child's `parentStepperId` equals its parent's `stepperId`; no `node-*` chunks).
-  - **H.8** (session persistence + resume: new session → write → `InMemorySessionMetaStore` row; resume; second prompt's planner.query sees prior entries). Use the same `KnowledgeRag` instance across the two prompts to simulate the persistent backend.
+  - **H.8** (session persistence + resume ACROSS A SIMULATED RESTART — review R2-F5): write entries via a first `KnowledgeRag` over a `JsonlKnowledgeBackend` pointed at a temp dir; then construct a SECOND, FRESH `JsonlKnowledgeBackend` over the SAME dir and a new `KnowledgeRag`, call `init()`, and assert the second prompt's `planner.query`/`list` sees the prior entries. Using two distinct backend instances over the same files proves durability across a real restart, not just in-process continuity. Also assert the `InMemorySessionMetaStore` row flips `in-progress`→`idle` on the restart scan (§G.5).
   - **H.9** (cycle prevention by RAG-first: planner with task identical to parent's but RAG already populated emits a use-the-fact leaf). Scripted planner LLM that, when the RAG block is non-empty, returns a leaf plan; assert no infinite recursion (bounded by maxDepth) and the executor is reached.
   - **H.10** (maxParallelSteps locally enforced: 2-level tree, maxN=2 at each level, peak ≤ 4).
 
@@ -2567,7 +2666,7 @@ git push -u origin epic/18.0-recursive-stepper
 
 **Build-green invariant (review R1-F2):** every task ends with all three packages building. Task 4 adds StreamChunk variants ADDITIVELY; Task 4b migrates 17.0 emitters immediately; Task 19e removes the legacy variants only after the full sweep is green. No intermediate task leaves libs/server broken.
 
-**Persistence invariant (review R1-F1):** `KnowledgeRag.list()` reads from the durable `KnowledgeBackend.scan()`, not a process-local array, so it survives restart/resume. `init()` rehydrates the mirror for a resumed session (Task 5). H.8 (Task 18) exercises this by reusing one backend across two prompts.
+**Persistence invariant (review R1-F1 / R2-F3 / R2-F5):** `KnowledgeRag.list()` reads from the durable `KnowledgeBackend.scan()`, not a process-local array. v1 ships a real durable backend — `JsonlKnowledgeBackend` (Task 13c) — so `/v1/sessions` resume works across an actual process restart, not just in-process. `init()` rehydrates the mirror for a resumed session (Task 5). H.8 (Task 18) proves this with TWO distinct `JsonlKnowledgeBackend` instances over the same files. (A semantic qdrant/pg backend for `query()` relevance ranking remains a post-v1 enhancement; the JSONL backend's recency-fallback `query` is sufficient for the planner's RAG-first check in v1.)
 
 **Wiring invariant (review R1-F3):** the `StepperCoordinatorHandler` owns `knowledgeRagFor(sessionId)` + `toolsRag` and passes the SAME `knowledgeRag` into both `rootStepper.run` and `finalizer.finalize`. Task 16's test asserts the finalizer reads what the run wrote, so the wiring cannot be silently dropped.
 
@@ -2575,4 +2674,6 @@ git push -u origin epic/18.0-recursive-stepper
 
 **Type consistency:** `RunIdentity`, `ToolSafetyPolicy`, `Budget`, `KnowledgeEntryMetadata`, `StepperRef`, `mintStepperId` are used identically across Tasks 1–18. `reviewerAtDepths` is typed `{ has(depth): boolean }` from its first definition in Task 10 — Task 14 only produces a value of that shape, no type change (review R1-F7). `INeedResolver.resolve` returns `{ queryToolsRag: string } | undefined` in v1 — no dead fields (review R1-F5).
 
-**Known follow-up flagged in-plan, not v1:** persistent `KnowledgeBackend` impl over qdrant/pg (Task 5 note — in-memory is the v1 default), PgSessionMetaStore (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note). All explicitly out of v1 scope, consistent with spec §J.
+**Shipped in v1 (NOT deferred):** durable cross-restart knowledge persistence via `JsonlKnowledgeBackend` (Task 13c) — `/v1/sessions` resume genuinely survives a process restart.
+
+**Known follow-up flagged in-plan, NOT v1:** a semantic (embedder-backed) `KnowledgeBackend` over qdrant/pg for relevance-ranked `query()` (the JSONL backend uses a recency fallback for `query`, which suffices for the planner's RAG-first check; exhaustive `list()` for the finalizer is already correct), `PgSessionMetaStore` (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note). All explicitly out of v1 scope, consistent with spec §J.
