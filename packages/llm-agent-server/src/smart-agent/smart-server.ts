@@ -66,6 +66,10 @@ import {
   SmartAgentSubAgent,
   SubAgentStateOracle,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { PipelineConfig } from './pipeline.js';
@@ -722,6 +726,44 @@ export async function handleDeleteSession(
  *
  * Exported for testability — tests can call this with a fake IMcpClient list.
  */
+/**
+ * Connect MCP clients from a YAML `mcp:` config block (single or array).
+ *
+ * Mirrors the builder's connection logic (builder.ts ~lines 897-920) so the
+ * Stepper path gets the same clients that the builder would have connected
+ * internally. Exported for testability.
+ *
+ * @param mcpCfg - single `SmartServerMcpConfig` or array thereof (from
+ *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
+ *   either directly without pre-normalising.
+ */
+export async function connectMcpClientsFromConfig(
+  mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+): Promise<IMcpClient[]> {
+  if (!mcpCfg) return [];
+  const list = Array.isArray(mcpCfg) ? mcpCfg : [mcpCfg];
+  const connected: IMcpClient[] = [];
+  for (const cfg of list) {
+    let wrapper: MCPClientWrapper;
+    if (cfg.type === 'stdio') {
+      wrapper = new MCPClientWrapper({
+        transport: 'stdio',
+        command: cfg.command,
+        args: cfg.args ?? [],
+      });
+    } else {
+      wrapper = new MCPClientWrapper({
+        transport: 'auto',
+        url: cfg.url,
+        headers: cfg.headers,
+      });
+    }
+    await wrapper.connect();
+    connected.push(new McpClientAdapter(wrapper));
+  }
+  return connected;
+}
+
 export function buildMcpBridge(
   clients: IMcpClient[],
 ): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
@@ -802,6 +844,16 @@ export class SmartServer {
    * `coordinator.mode` is present in the raw config; reused across sessions.
    */
   private _stepperCoordinatorHandler?: StepperCoordinatorHandler;
+  /**
+   * MCP clients connected for the Stepper path from the YAML `mcp:` config
+   * block. These are connected ONCE in `start()` (lazily resolved by
+   * `connectMcpClientsFromConfig`) and reused across every Stepper request.
+   *
+   * Populated only when `this.cfg.mcp` / `pipeline.mcp` is set AND no
+   * DI/plugin clients exist (DI precedence: `this.cfg.mcpClients` > plugin >
+   * yaml). Disposed via the server's `closeFns` on shutdown.
+   */
+  private _stepperMcpClients?: IMcpClient[];
   /**
    * Session meta-store for /v1/sessions endpoints (Task 17).
    * Defaults to InMemorySessionMetaStore; a durable store can be injected via
@@ -1146,10 +1198,22 @@ export class SmartServer {
         //   lookup(name)   — returns the tool schema from the MCP catalog by name
         //                     (populated lazily on first query()).
         //
-        // Catalog note: mcpClients may not have connected yet at this point (they
-        // connect inside builder.build()). The catalog Promise is resolved lazily
-        // on the first query/lookup call so the connection window is satisfied.
-        const stepperMcpClients = mcpClients ?? [];
+        // Catalog note: when DI/plugin clients are present they are already
+        // connected. When the config carries a YAML `mcp:` block instead, the
+        // builder connects those clients INSIDE builder.build() and never
+        // exposes them here. We therefore connect the YAML mcp config ONCE and
+        // cache the result in _stepperMcpClients so every subsequent Stepper
+        // request reuses the same live connections without reconnecting.
+        //
+        // DI precedence: this.cfg.mcpClients > plugin clients > yaml mcp config.
+        // NOTE: connection is NOT safe to invoke twice on the same wrapper, so
+        // the cache guard below is critical — do NOT move this inside a
+        // per-request factory.
+        if (!mcpClients && !this._stepperMcpClients) {
+          const yamlMcp = pipeline?.mcp ?? this.cfg.mcp;
+          this._stepperMcpClients = await connectMcpClientsFromConfig(yamlMcp);
+        }
+        const stepperMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
         // Lazily-populated catalog: name → LlmTool.
         let catalogCache: Map<string, LlmTool> | undefined;
         const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
@@ -1452,6 +1516,17 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // Stepper-owned MCP clients (connected from YAML mcp: block when no
+    // DI/plugin clients existed). Dispose on server shutdown.
+    // TODO: IMcpClient does not currently expose a close() method; add
+    //   `for (const c of this._stepperMcpClients) await c.close?.();`
+    //   once the interface gains one.
+    if (this._stepperMcpClients && this._stepperMcpClients.length > 0) {
+      closeFns.push(async () => {
+        this._stepperMcpClients = undefined;
+      });
+    }
 
     // ---- Per-session lifecycle (cookie identity + graph factory + registry) ----
     const sessionCfg = this.cfg.session ?? {};
