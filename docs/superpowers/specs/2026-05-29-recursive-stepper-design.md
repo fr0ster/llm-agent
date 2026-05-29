@@ -214,18 +214,26 @@ export class InsufficientSignal extends Error {
 Additive to the 17.0 union. The existing `content` variant is preserved (used by the root finalizer). All progress variants carry `source` (Stepper name, for debug) and optionally `parent` (so a UI can build a topology view).
 
 ```ts
+interface StepperRef {
+  stepperId: string;          // stable UUID minted on Stepper construction; unique across the tree
+  parentStepperId?: string;   // None on root; UUID of the dispatching parent for non-root
+  name: string;               // debug label (worker / role name); NOT unique under parallel siblings
+}
+
 export type StreamChunk =
   // 17.0 — root finalizer's sequential text output
   | { kind: 'content'; delta: string }
-  // 18.0 progress events
-  | { kind: 'stepper-spawned'; source: string; goal: string; parent?: string }
-  | { kind: 'stepper-done';    source: string; ok: boolean }
-  | { kind: 'mcp-call';        source: string; tool: string; args?: unknown }
-  | { kind: 'mcp-result';      source: string; tool: string; durationMs: number; bytes?: number }
-  | { kind: 'tokens-used';     source: string; component: LlmComponent; delta: LlmUsage }
-  | { kind: 'llm-call-start';  source: string; component: LlmComponent; model: string }
-  | { kind: 'llm-call-end';    source: string; component: LlmComponent; durationMs: number };
+  // 18.0 progress events — every event carries a StepperRef for unambiguous attribution
+  | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
+  | { kind: 'stepper-done';    source: StepperRef; ok: boolean }
+  | { kind: 'mcp-call';        source: StepperRef; tool: string; args?: unknown }
+  | { kind: 'mcp-result';      source: StepperRef; tool: string; durationMs: number; bytes?: number }
+  | { kind: 'tokens-used';     source: StepperRef; component: LlmComponent; delta: LlmUsage }
+  | { kind: 'llm-call-start';  source: StepperRef; component: LlmComponent; model: string }
+  | { kind: 'llm-call-end';    source: StepperRef; component: LlmComponent; durationMs: number };
 ```
+
+`source.stepperId` is the only field clients should use for joining events to a Stepper. `name` is for human-readable rendering only — two parallel siblings dispatched from the same worker config will share `name` but have distinct `stepperId`.
 
 The 17.0 progress variants from PR #163 (`node-start`, `node-end`, `tool-call` flat) are renamed/folded into the new shape: `stepper-spawned` subsumes `node-start`; `stepper-done` subsumes `node-end`; `mcp-call` + `mcp-result` replace the flat `tool-call`. 17.0-flavoured clients receive the new `kind` values; old `node-*` are no longer emitted (breaking, see J).
 
