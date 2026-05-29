@@ -14,18 +14,23 @@ function stubLlm(): {
 } {
   const calls: Array<{ messages: Message[]; tools: LlmTool[] }> = [];
   const llm: ILlm = {
-    async chat(messages: Message[], tools?: LlmTool[], _opts?: CallOptions) {
+    async chat() {
+      // unused
+      return { ok: true as const, value: { content: 'UNUSED' } };
+    },
+    async *streamChat(
+      messages: Message[],
+      tools?: LlmTool[],
+      _opts?: CallOptions,
+    ) {
       calls.push({ messages, tools: tools ?? [] });
-      return {
+      yield {
         ok: true as const,
         value: {
           content: 'SYNTH',
           usage: { promptTokens: 3, completionTokens: 5, totalTokens: 8 },
         },
       };
-    },
-    async *streamChat() {
-      // unused
     },
   };
   return { llm, calls };
@@ -98,13 +103,14 @@ test('LlmFinalizer renders ancestorContext clarifications and oracle observation
 test('LlmFinalizer propagates LLM error', async () => {
   const llm: ILlm = {
     async chat() {
-      return {
-        ok: false as const,
-        error: { kind: 'transport', message: 'boom' },
-      };
+      // unused
+      return { ok: true as const, value: { content: 'UNUSED' } };
     },
     async *streamChat() {
-      // unused
+      yield {
+        ok: false as const,
+        error: { kind: 'transport' as const, message: 'boom' },
+      };
     },
   };
   const f = new LlmFinalizer(llm);

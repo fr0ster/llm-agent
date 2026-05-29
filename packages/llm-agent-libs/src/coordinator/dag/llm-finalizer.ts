@@ -3,6 +3,7 @@ import type {
   FinalizerResult,
   IFinalizer,
   ILlm,
+  LlmUsage,
   Message,
 } from '@mcp-abap-adt/llm-agent';
 
@@ -76,11 +77,20 @@ export class LlmFinalizer implements IFinalizer {
       { role: 'system', content: this.systemPrompt },
       { role: 'user', content: renderUserMessage(input) },
     ];
-    const res = await this.llm.chat(messages, [], {
-      signal: input.signal,
-      sessionId: input.sessionId,
-    });
-    if (!res.ok) throw res.error;
-    return { output: res.value.content, usage: res.value.usage };
+    const { signal, sessionId } = input;
+    let buf = '';
+    let usage: LlmUsage | undefined;
+    const stream = this.llm.streamChat(messages, [], { signal, sessionId });
+    for await (const chunk of stream) {
+      if (chunk.ok === false)
+        throw new Error(chunk.error?.message ?? 'streamChat failed');
+      const content = chunk.value?.content ?? '';
+      if (content) {
+        buf += content;
+        input.onPartial?.({ kind: 'content', delta: content });
+      }
+      if (chunk.value?.usage) usage = chunk.value.usage;
+    }
+    return { output: buf, usage };
   }
 }
