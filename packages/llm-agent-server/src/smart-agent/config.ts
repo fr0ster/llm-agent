@@ -1289,3 +1289,81 @@ export function resolveSmartServerConfig(
   validateResolvedConfig(resolved, yaml, env);
   return resolved;
 }
+
+/**
+ * Stepper coordinator modes.
+ */
+export type StepperMode = 'cyclic-react' | 'deep-stepper' | 'planned-react';
+
+/**
+ * Configuration for the recursive Stepper coordinator.
+ */
+export interface StepperCoordinatorConfig {
+  mode: StepperMode;
+  toolSafety: {
+    mutationPolicy: 'confirm' | 'trusted';
+    knownReadOnlyTools: ReadonlySet<string>;
+  };
+  reviewerAtDepths: { has(depth: number): boolean };
+  maxParallelSteps: number;
+  maxDepth: number;
+  tokenBudget: number;
+}
+
+const MODES = new Set<StepperMode>([
+  'cyclic-react',
+  'deep-stepper',
+  'planned-react',
+]);
+
+/**
+ * Parse stepper coordinator configuration from a raw config object.
+ *
+ * Supports:
+ * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, deep-stepper, planned-react
+ * - `mutationPolicy` (string) — default 'confirm'; one of confirm | trusted
+ * - `knownReadOnlyTools` (string[]) — tools marked as safe for readonly execution
+ * - `stepper.maxParallelSteps` (number) — default 4
+ * - `stepper.maxDepth` (number) — default 4
+ * - `stepper.tokenBudget` (number) — default 1,000,000
+ * - `stepper.reviewer.atDepths` (number[] | 'all') — default [0,1]; 'all' means accept any depth
+ */
+export function parseStepperCoordinatorConfig(
+  coord: Record<string, unknown>,
+): StepperCoordinatorConfig {
+  const mode = (coord.mode as StepperMode | undefined) ?? 'planned-react';
+  if (!MODES.has(mode))
+    throw new Error(`unknown coordinator.mode '${String(coord.mode)}'`);
+
+  const mutationPolicy =
+    (coord.mutationPolicy as 'confirm' | 'trusted' | undefined) ?? 'confirm';
+  if (mutationPolicy !== 'confirm' && mutationPolicy !== 'trusted') {
+    throw new Error(`coordinator.mutationPolicy must be 'confirm' | 'trusted'`);
+  }
+  const knownReadOnlyTools = new Set<string>(
+    Array.isArray(coord.knownReadOnlyTools)
+      ? (coord.knownReadOnlyTools as string[])
+      : [],
+  );
+
+  const stepper = (coord.stepper as Record<string, unknown> | undefined) ?? {};
+  const reviewerCfg =
+    (stepper.reviewer as { atDepths?: number[] | 'all' } | undefined) ?? {};
+  const atDepths = reviewerCfg.atDepths ?? [0, 1];
+  const reviewerAtDepths =
+    atDepths === 'all'
+      ? { has: () => true }
+      : (() => {
+          const s = new Set(atDepths as number[]);
+          return { has: (d: number) => s.has(d) };
+        })();
+
+  return {
+    mode,
+    toolSafety: { mutationPolicy, knownReadOnlyTools },
+    reviewerAtDepths,
+    maxParallelSteps: Number(stepper.maxParallelSteps ?? 4),
+    maxDepth: Number(stepper.maxDepth ?? 4),
+    tokenBudget: Number(stepper.tokenBudget ?? 1_000_000),
+  };
+}
