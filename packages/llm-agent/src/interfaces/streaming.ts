@@ -17,22 +17,19 @@ export interface StepperRef {
 
 /**
  * Per-event chunk type emitted by `onPartial` callbacks along the
- * worker → interpreter → coordinator path.
+ * worker → Stepper → coordinator path.
  *
- * `content` carries an LLM-output delta; `tool-call` flags a tool
- * invocation; `node-start` / `node-end` wrap a DAG node execution at
- * the interpreter layer. `nodeId` is supplied by the interpreter when
- * forwarding worker-emitted chunks (workers don't know their node id).
+ * `content` carries an LLM-output delta. The 18.0 progress-event variants
+ * (`stepper-spawned`, `stepper-done`, `mcp-call`, `mcp-result`,
+ * `tokens-used`, `llm-call-start`, `llm-call-end`) each carry
+ * `source: StepperRef` for precise attribution in nested execution trees.
  *
- * 18.0 adds progress-event variants (`stepper-spawned`, `stepper-done`, etc.)
- * that carry `source: StepperRef` instead of `nodeId`.
+ * BREAKING (18.0 / Task 19e): the 17.0 `tool-call`, `node-start`, and
+ * `node-end` variants have been removed. SSE clients must migrate to
+ * `mcp-call` / `mcp-result` / `stepper-spawned` / `stepper-done`.
  */
 export type StreamChunk =
   | { kind: 'content'; nodeId?: string; delta: string }
-  // --- 17.0 legacy variants — REMOVED in Task 19e once all emitters migrate ---
-  | { kind: 'tool-call'; nodeId?: string; name: string; args?: unknown }
-  | { kind: 'node-start'; nodeId: string; goal: string }
-  | { kind: 'node-end'; nodeId: string; ok: boolean }
   // --- 18.0 Stepper progress events ---
   | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
   | { kind: 'stepper-done'; source: StepperRef; ok: boolean }

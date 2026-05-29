@@ -573,15 +573,8 @@ test('H.7 — progress events: parentStepperId links across 3-level tree; no nod
     'stepper-done count must match stepper-spawned count',
   );
 
-  // NO legacy node-* chunks
-  const legacyChunks = events.filter(
-    (e) => e.kind === 'node-start' || e.kind === 'node-end',
-  );
-  assert.equal(
-    legacyChunks.length,
-    0,
-    'no legacy node-* chunks must be emitted',
-  );
+  // Legacy node-* / tool-call variants have been removed from the StreamChunk
+  // union (Task 19e); only 18.0 Stepper progress events are emitted.
 
   // Root finalizer streams content chunks
   const finalizerLlm = {
