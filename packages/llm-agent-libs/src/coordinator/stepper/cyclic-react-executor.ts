@@ -58,6 +58,20 @@ export class CyclicReActExecutor implements IExecutor {
     const tools: LlmTool[] = [...input.tools];
     let usage = ZERO;
 
+    // Proactive tool seeding: if no tools were supplied by the dispatcher, query
+    // toolsRag with the prompt BEFORE the first LLM call so a capable model that
+    // never emits "I can't" still sees the relevant tools from turn 1.
+    // This mirrors 17.0's `tool-select` stage. INeedResolver stays as a reactive
+    // supplement for mid-loop augmentation.
+    if (tools.length === 0) {
+      const seeded = await toolsRag.query(prompt, 10);
+      for (const t of seeded) tools.push(t as LlmTool);
+      input.sessionLogger?.logStep('executor_tool_seed', {
+        source: ref,
+        seededCount: seeded.length,
+      });
+    }
+
     const isReadOnly = (toolName: string): boolean => {
       const t = toolsRag.lookup(toolName) as
         | (LlmTool & { readOnly?: boolean })

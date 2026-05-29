@@ -299,3 +299,176 @@ test('emits mcp-call / mcp-result / tokens-used progress with identity.stepperId
       mcpCall.tool === 'ReadProgram',
   );
 });
+
+// ── FIX A: proactive tool seeding tests ──────────────────────────────────────
+
+test('FIX-A.1: capable model that never says "I can\'t" still calls MCP when tools are seeded from toolsRag', async () => {
+  // LLM immediately emits a tool call on turn 1 — never requests more tools.
+  // This proves the tool was available from the start (seeded proactively).
+  const capturedToolArgs: { name: string; tools: string[] }[] = [];
+  const llm = {
+    name: 'stub',
+    async chat(_messages: unknown, tools: { name: string }[]) {
+      const idx = capturedToolArgs.length;
+      capturedToolArgs.push({
+        name: `call-${idx}`,
+        tools: tools.map((t) => t.name),
+      });
+      if (idx === 0) {
+        // First call: emit tool call immediately (model already sees ReadProgram)
+        return {
+          ok: true as const,
+          value: {
+            content: '',
+            toolCalls: [{ name: 'ReadProgram', arguments: { p: 'Z' } }],
+            usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+          },
+        };
+      }
+      // Second call: final answer
+      return {
+        ok: true as const,
+        value: {
+          content: 'Analysis complete.',
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        },
+      };
+    },
+  };
+
+  const m = mcp({ ReadProgram: 'REPORT z.' });
+  const { rag, writes } = knowledgeStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  const res = await exec.execute({
+    prompt: 'analyse program Z',
+    tools: [], // empty — dispatcher sent no tools
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({
+      ReadProgram: { name: 'ReadProgram', readOnly: true },
+    }) as never,
+    needResolver: new RegexNeedResolver(),
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+
+  assert.equal(res.status, 'ok', 'executor returns ok');
+  // The MCP call happened — model received the tool from seeding
+  assert.deepEqual(m.calls, ['ReadProgram'], 'MCP was called');
+  // The first LLM call had ReadProgram in its tools (seeded proactively)
+  assert.ok(
+    capturedToolArgs[0].tools.includes('ReadProgram'),
+    `first LLM call must include ReadProgram; got: ${capturedToolArgs[0].tools.join(',')}`,
+  );
+  // Final answer was written to knowledge-RAG
+  assert.ok(
+    writes.some((w) => w.content.includes('Analysis complete')),
+    'final answer written',
+  );
+});
+
+test('FIX-A.2: empty toolsRag + no need signal does not crash — returns LLM answer', async () => {
+  // toolsRag.query returns [] → tools remains empty → model returns generic answer
+  const llm = scriptedLlm([{ content: 'Generic answer.' }]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  const res = await exec.execute({
+    prompt: 'do something',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({}) as never, // empty toolsRag
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+
+  assert.equal(res.status, 'ok', 'no crash when toolsRag is empty');
+  assert.deepEqual(m.calls, [], 'no MCP calls made');
+});
+
+test('FIX-A.3: reactive injection deduplicates tools already seeded proactively', async () => {
+  // Scenario: ReadProgram is seeded proactively; then the model says "I can't"
+  // and the need resolver also fetches ReadProgram. It must not be duplicated.
+  const toolsInSecondCall: string[] = [];
+  let callCount = 0;
+  const llm = {
+    name: 'stub',
+    async chat(_messages: unknown, tools: { name: string }[]) {
+      callCount++;
+      if (callCount === 1) {
+        // Say "I can't" to trigger reactive injection
+        return {
+          ok: true as const,
+          value: {
+            content: "I can't read the program",
+            usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+          },
+        };
+      }
+      if (callCount === 2) {
+        toolsInSecondCall.push(...tools.map((t) => t.name));
+        // Emit tool call
+        return {
+          ok: true as const,
+          value: {
+            content: '',
+            toolCalls: [{ name: 'ReadProgram', arguments: {} }],
+            usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+          },
+        };
+      }
+      return {
+        ok: true as const,
+        value: {
+          content: 'done',
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        },
+      };
+    },
+  };
+
+  const m = mcp({ ReadProgram: 'src' });
+  const { rag } = knowledgeStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  await exec.execute({
+    prompt: 'read Z',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({
+      ReadProgram: { name: 'ReadProgram', readOnly: true },
+    }) as never,
+    needResolver: new RegexNeedResolver(),
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+
+  // ReadProgram must appear exactly once in the second LLM call's tools
+  const readProgramCount = toolsInSecondCall.filter(
+    (n) => n === 'ReadProgram',
+  ).length;
+  assert.equal(
+    readProgramCount,
+    1,
+    `ReadProgram must appear exactly once (no duplicate); got ${readProgramCount}`,
+  );
+});
