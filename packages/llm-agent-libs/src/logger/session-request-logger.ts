@@ -57,7 +57,17 @@ export function aggregate(b: Bucket): RequestSummary {
     cat.totalTokens += c.totalTokens;
     cat.requests++;
   }
+  // Derive totals as the faithful sum of byComponent so that /v1/usage always
+  // has a non-null rollup regardless of which path (DAG/Stepper/flat) was used.
+  const totals = zeroBucket();
+  for (const comp of Object.values(byComponent)) {
+    totals.promptTokens += comp.promptTokens;
+    totals.completionTokens += comp.completionTokens;
+    totals.totalTokens += comp.totalTokens;
+    totals.requests += comp.requests;
+  }
   return {
+    totals,
     byModel,
     byComponent,
     byCategory,

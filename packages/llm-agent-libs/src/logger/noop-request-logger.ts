@@ -7,6 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 
 const EMPTY_SUMMARY: RequestSummary = {
+  totals: { promptTokens: 0, completionTokens: 0, totalTokens: 0, requests: 0 },
   byModel: {},
   byComponent: {},
   byCategory: {},

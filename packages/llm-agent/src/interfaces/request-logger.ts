@@ -50,6 +50,9 @@ export interface ToolCallEntry {
 }
 
 export interface RequestSummary {
+  /** Faithful sum across all byComponent entries (promptTokens, completionTokens,
+   *  totalTokens, requests). Equal to reducing byComponent values; never null. */
+  totals: TokenBucket;
   /** Per-model aggregated token usage. */
   byModel: Record<string, TokenBucket>;
   /** Per-component aggregated token usage. */

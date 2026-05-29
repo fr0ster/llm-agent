@@ -99,7 +99,16 @@ export class DefaultRequestLogger implements IRequestLogger {
       addToBucket(byCategory[cat], call);
     }
 
+    // Derive totals as the faithful sum of byComponent.
+    const totals = emptyBucket();
+    for (const comp of Object.values(byComponent)) {
+      totals.promptTokens += comp.promptTokens;
+      totals.completionTokens += comp.completionTokens;
+      totals.totalTokens += comp.totalTokens;
+      totals.requests += comp.requests;
+    }
     return {
+      totals,
       byModel,
       byComponent,
       byCategory,
