@@ -3,8 +3,10 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import { rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
+import { join } from 'node:path';
 import type {
   EmbedderFactory,
   IClientAdapter,
@@ -705,6 +707,46 @@ export async function handleDeleteSession(
 }
 
 // ---------------------------------------------------------------------------
+// MCP bridge for the Stepper path (B-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `callMcp(name, args, signal?)` bridge over a list of `IMcpClient`s.
+ *
+ * Dispatch strategy (mirrors the 17.0 tool-loop):
+ * - Iterate the clients; the first client whose `listTools()` contains `name` wins.
+ * - On success: return the textual content (stringify structured payloads).
+ * - On error: return the error message as a string so the LLM executor can
+ *   feed the failure back to the model as a tool result (no throw).
+ * - If no client owns the tool: return an informative "Tool not found" string.
+ *
+ * Exported for testability — tests can call this with a fake IMcpClient list.
+ */
+export function buildMcpBridge(
+  clients: IMcpClient[],
+): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
+  return async (name: string, args: unknown, _signal?: AbortSignal) => {
+    const safeArgs =
+      args != null && typeof args === 'object' && !Array.isArray(args)
+        ? (args as Record<string, unknown>)
+        : {};
+    for (const client of clients) {
+      const listed = await client.listTools();
+      if (!listed.ok) continue;
+      const owns = listed.value.some((t) => t.name === name);
+      if (!owns) continue;
+      const result = await client.callTool(name, safeArgs);
+      if (!result.ok) {
+        return result.error.message;
+      }
+      const { content } = result.value;
+      return typeof content === 'string' ? content : JSON.stringify(content);
+    }
+    return `Tool not found: ${name}`;
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Raw-config mode routing gate (R6-F2)
 // ---------------------------------------------------------------------------
 
@@ -1160,11 +1202,10 @@ export class SmartServer {
           },
         };
 
-        // Mint helpers (monotone counters, server-scoped).
-        let stepperCounter = 0;
-        let turnCounter = 0;
-        const mintStepperId = () => `stepper-${++stepperCounter}`;
-        const mintTurnId = () => `turn-${++turnCounter}`;
+        // Mint helpers: stable UUIDs per spec §C.1/§C.2.
+        // The server wires randomUUID(); tests can inject deterministic minters.
+        const mintStepperId = () => randomUUID();
+        const mintTurnId = () => randomUUID();
 
         const stepperMakeLlm = async (lc: SmartServerLlmConfig) =>
           makeLlm(
@@ -1185,19 +1226,9 @@ export class SmartServer {
             ? (this.cfg.llm as SmartServerLlmConfig)
             : undefined;
 
-        // Stub callMcp: real MCP wiring uses the mcpClients from the pipeline
-        // context at execute time. The StepperCoordinatorHandler passes callMcp
-        // through buildBuilt/buildStepperRoot; a full per-request MCP bridge
-        // is wired in Task 18.
-        const callMcp = async (
-          _name: string,
-          _args: unknown,
-          _signal?: AbortSignal,
-        ): Promise<string> => {
-          throw new Error(
-            'MCP tool calls from the Stepper require a per-request bridge (Task 18)',
-          );
-        };
+        // Real callMcp bridge — delegates to the exported buildMcpBridge helper
+        // that iterates stepperMcpClients. Exported for testability (B-1).
+        const callMcp = buildMcpBridge(stepperMcpClients);
 
         // Build the registry from the subagent IStepper instances (empty for now;
         // deep-stepper mode populates this from registered sub-agents).
@@ -2194,8 +2225,19 @@ export class SmartServer {
         }
         const identity = resolved.identity.sessionId;
         const evictFn = async (sid: string) => {
-          await lifecycle.registry.evictIdle();
-          void sid; // eviction is idle-based; RAG state is session-scoped
+          // (a) Evict/dispose this session's graph from the registry.
+          await lifecycle.registry.evictOne(sid);
+          // (b) Delete the session's knowledge JSONL file when logDir is set.
+          const logDir = this.cfg.logDir;
+          if (logDir) {
+            const knowledgeFile = join(
+              logDir,
+              'sessions',
+              sid,
+              'knowledge.jsonl',
+            );
+            await rm(knowledgeFile, { force: true });
+          }
         };
         const body = await handleDeleteSession(
           this._sessionMetaStore,
