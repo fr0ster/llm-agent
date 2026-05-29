@@ -420,10 +420,13 @@ export class InsufficientSignal extends Error {
 `need-resolver.ts`:
 ```ts
 export interface INeedResolver {
-  resolve(llmResponse: string): Promise<
-    | { queryToolsRag?: string; queryKnowledgeRag?: string; injectTools?: string[] }
-    | undefined
-  >;
+  /** Inspect an LLM utterance for an unmet-capability signal. Returns a
+   *  tools-RAG query string to discover the needed capability, or undefined
+   *  for a clean answer / normal tool call.
+   *  v1 scope: only `queryToolsRag`. (Reserved for 18.x: queryKnowledgeRag,
+   *  injectTools — intentionally NOT in the v1 contract so there are no dead
+   *  public fields the executor ignores; see review R1-F5.) */
+  resolve(llmResponse: string): Promise<{ queryToolsRag: string } | undefined>;
 }
 ```
 
@@ -563,7 +566,7 @@ test('StreamChunk progress variants carry StepperRef', () => {
 
 Run → FAIL.
 
-- [ ] **4b. Implement.** In `packages/llm-agent/src/interfaces/streaming.ts`, REPLACE the existing union (which has `content` / `node-start` / `node-end` / `tool-call`) with:
+- [ ] **4b. Implement — ADDITIVE (do NOT remove the old variants yet).** In `packages/llm-agent/src/interfaces/streaming.ts`, ADD `StepperRef` + the new progress variants to the union while KEEPING the existing `content` / `node-start` / `node-end` / `tool-call` variants. This keeps `llm-agent-libs` and `llm-agent-server` building throughout Phases 1–6 (their 17.0 emitters still compile against the old variants). The old variants are removed only in Task 19e, after every emitter has migrated.
 
 ```ts
 import type { LlmComponent, LlmUsage } from './types.js';
@@ -579,6 +582,11 @@ export interface StepperRef {
 
 export type StreamChunk =
   | { kind: 'content'; delta: string }
+  // --- 17.0 legacy variants — REMOVED in Task 19e once all emitters migrate ---
+  | { kind: 'node-start'; nodeId: string; goal: string }
+  | { kind: 'node-end'; nodeId: string; ok: boolean }
+  | { kind: 'tool-call'; nodeId?: string; name: string; arguments?: unknown }
+  // --- 18.0 Stepper progress events ---
   | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
   | { kind: 'stepper-done'; source: StepperRef; ok: boolean }
   | { kind: 'mcp-call'; source: StepperRef; tool: string; args?: unknown }
@@ -590,23 +598,44 @@ export type StreamChunk =
 export type OnPartial = (chunk: StreamChunk) => void;
 ```
 
-> **17.0 callers break here.** `git grep -n "node-start\|node-end\|kind: 'tool-call'" packages/llm-agent-libs packages/llm-agent-server` to find every emitter/consumer of the old variants. They will be migrated in Phase 5/6 (the DagCoordinatorHandler emit sites). For Phase 1, the build of `llm-agent` itself stays green because the contract package has no emitters. Note in the commit that libs/server will not build until Phase 5.
+> Confirm the exact shape of the existing 17.0 variants first: `git grep -n "node-start\|node-end\|kind: 'tool-call'" packages/llm-agent/src/interfaces/streaming.ts` — copy them verbatim so existing emitters keep compiling. The block above shows the likely shapes; match reality.
 
 Ensure `StepperRef` + `OnPartial` are re-exported from `index.ts` (OnPartial already was in 17.0).
 
-- [ ] **4c. Test + commit.**
+- [ ] **4c. Test + build all three packages + commit.**
 ```bash
 cd packages/llm-agent && npx tsx --test src/interfaces/__tests__/streaming-progress.test.ts
-npm --workspace @mcp-abap-adt/llm-agent run build
+cd ../.. && npm run build   # ALL packages must still build — additive change
 git add packages/llm-agent/src/interfaces/streaming.ts \
         packages/llm-agent/src/interfaces/__tests__/streaming-progress.test.ts \
         packages/llm-agent/src/interfaces/index.ts
-git commit -m "feat(contracts): replace StreamChunk node-* variants with Stepper progress events
+git commit -m "feat(contracts): add Stepper progress-event StreamChunk variants (additive; legacy removed in 19e)
 
-BREAKING: node-start / node-end / flat tool-call removed; replaced by
-stepper-spawned / stepper-done / mcp-call / mcp-result / tokens-used /
-llm-call-start / llm-call-end, each carrying a StepperRef. content
-variant preserved. libs/server emit sites migrate in Phase 5/6.
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+### Task 4b — Migrate 17.0 emitters to progress events (kept building throughout)
+
+This task exists so that by the time Task 19e removes the legacy `node-*` / `tool-call` variants, nothing still emits them. It is done EARLY (right after the additive Task 4) rather than at the very end, so each later phase builds against migrated emitters.
+
+**Files:**
+- Modify: `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts`, `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts`, `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (the 17.0 emit sites found by the git grep)
+- Modify: their tests that assert on `node-start` / `node-end` / `tool-call`
+
+- [ ] **4b.1. Inventory.** Run `git grep -n "kind: 'node-start'\|kind: 'node-end'\|kind: 'tool-call'" packages/llm-agent-libs packages/llm-agent-server` and list every emit + every test assertion.
+
+- [ ] **4b.2. Migrate emit sites.** At each legacy emit, replace with the 18.0 equivalent carrying a `StepperRef` built from the available identity (the 17.0 DAG path has a flat `nodeId`; synthesise `{ stepperId: nodeId, name: nodeId }` with no parent). Mapping: `node-start`→`stepper-spawned`, `node-end`→`stepper-done`, `tool-call`→`mcp-call`. Keep the `content` and terminal-stop yields unchanged.
+
+- [ ] **4b.3. Migrate tests.** Update each assertion that matched a legacy variant to the new variant + `source.stepperId`. Do not change the behavioural intent — only the event shape.
+
+- [ ] **4b.4. Build + sweep + commit.**
+```bash
+npm run build
+cd packages/llm-agent-libs && find src -name "*.test.ts" -print0 | xargs -0 npx tsx --test 2>&1 | tail -6
+cd ../llm-agent-server && find src -name "*.test.ts" -print0 | xargs -0 npx tsx --test 2>&1 | tail -6
+cd ../..
+git add -A
+git commit -m "refactor(stream): migrate 17.0 DAG emitters from node-*/tool-call to Stepper progress events
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -626,17 +655,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { IRag } from '@mcp-abap-adt/llm-agent';
-import { KnowledgeRag } from '../knowledge-rag.js';
-
-function fakeRag(): IRag {
-  const docs: Array<{ id: string; text: string; metadata?: Record<string, unknown> }> = [];
-  return {
-    async upsert(items) { for (const it of items) docs.push(it as never); },
-    async query(_text, k) { return docs.slice(0, k ?? docs.length).map((d) => ({ id: d.id, text: d.text, score: 1, metadata: d.metadata })); },
-    // include whatever other IRag methods exist as no-ops; verify via git grep
-  } as unknown as IRag;
-}
+import { InMemoryKnowledgeBackend, KnowledgeRag } from '../knowledge-rag.js';
 
 const META = {
   traceId: 't', turnId: 'u1', stepperId: 'n1',
@@ -644,7 +663,8 @@ const META = {
 };
 
 test('write persists with metadata; list filters by turnId exhaustively', async () => {
-  const kr = new KnowledgeRag(fakeRag(), 'session-1');
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'session-1');
   await kr.write({ content: 'A', metadata: { ...META, turnId: 'u1' } });
   await kr.write({ content: 'B', metadata: { ...META, turnId: 'u2' } });
   const u1 = await kr.list({ turnId: 'u1' });
@@ -653,7 +673,8 @@ test('write persists with metadata; list filters by turnId exhaustively', async 
 });
 
 test('query caps by k', async () => {
-  const kr = new KnowledgeRag(fakeRag(), 'session-1');
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'session-1');
   await kr.write({ content: 'A', metadata: META });
   await kr.write({ content: 'B', metadata: META });
   const r = await kr.query('anything', { k: 1 });
@@ -661,76 +682,119 @@ test('query caps by k', async () => {
 });
 
 test('fingerprint changes on write', async () => {
-  const kr = new KnowledgeRag(fakeRag(), 'session-1');
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'session-1');
   const f0 = kr.fingerprint();
   await kr.write({ content: 'A', metadata: META });
   assert.notEqual(kr.fingerprint(), f0);
 });
-```
 
-> Before coding, `git grep -n "interface IRag" packages/llm-agent/src` to read the real `IRag` method set, and adapt the fake. The `upsert`/`query` shape shown is illustrative.
+test('RESUME: a second KnowledgeRag over the SAME backend rehydrates prior entries (H.8 substrate)', async () => {
+  // The backend is the persistence boundary; a fresh KnowledgeRag bound to
+  // the same session over the same backend must see everything written
+  // before "restart". This is what makes session resume work.
+  const backend = new InMemoryKnowledgeBackend();
+  const first = new KnowledgeRag(backend, 'session-1');
+  await first.write({ content: 'prior source', metadata: { ...META, turnId: 'u1' } });
+
+  const resumed = new KnowledgeRag(backend, 'session-1'); // simulates server restart
+  await resumed.init(); // rehydrate from backend
+  const got = await resumed.list({ turnId: 'u1' });
+  assert.equal(got.length, 1);
+  assert.equal(got[0].content, 'prior source');
+});
+
+test('a different session over the same backend does NOT see other session entries', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  const a = new KnowledgeRag(backend, 'session-A');
+  await a.write({ content: 'A-only', metadata: META });
+  const b = new KnowledgeRag(backend, 'session-B');
+  await b.init();
+  assert.equal((await b.list({})).length, 0);
+});
+```
 
 Run → FAIL.
 
-- [ ] **5b. Implement.** Create `packages/llm-agent-libs/src/rag/knowledge-rag.ts`:
+- [ ] **5b. Implement.** Create `packages/llm-agent-libs/src/rag/knowledge-rag.ts`.
+
+The key design fix (review R1-F1/F4): `KnowledgeRag` does NOT depend on the raw `IRag` shape directly (whose write goes through `writer().upsertRaw(...)` and whose query takes an embedding, not text). Instead it depends on a small **`KnowledgeBackend` port** that owns BOTH (a) the semantic index for `query` and (b) durable per-entry storage for `list`/rehydrate. This makes `list()` survive restart (the entries live in the backend, not only in a private array) and sidesteps the `IRag` API mismatch.
 
 ```ts
 import type {
   IKnowledgeRagHandle,
-  IRag,
   KnowledgeEntry,
   KnowledgeEntryMetadata,
   KnowledgeFilter,
 } from '@mcp-abap-adt/llm-agent';
 
 /**
- * Per-session blackboard over any IRag backend. write() embeds the entry
- * content and stores the full metadata; query() does semantic retrieval
- * (k-capped); list() does an exhaustive metadata-filtered scan (no cap,
- * createdAt-ordered) for the root finalizer.
+ * Persistence + retrieval port for the knowledge blackboard. The server
+ * wires a concrete backend (vector store for semantic query + a durable
+ * per-session entry log for exhaustive list/rehydrate). The in-memory
+ * backend below is the default for stateless deployments and tests.
+ */
+export interface KnowledgeBackend {
+  /** Durably store the full entry (content + metadata) AND index its
+   *  content for semantic query. Keyed by sessionId for isolation. */
+  put(sessionId: string, entry: KnowledgeEntry): Promise<void>;
+  /** Semantic similarity search within a session, relevance-capped by k. */
+  semanticQuery(sessionId: string, text: string, k?: number): Promise<readonly KnowledgeEntry[]>;
+  /** Exhaustive durable scan of ALL entries for a session (no relevance
+   *  cap). Used by list() and by rehydrate. */
+  scan(sessionId: string): Promise<readonly KnowledgeEntry[]>;
+}
+
+/**
+ * Per-session blackboard. write() → backend.put (durable + indexed).
+ * query() → backend.semanticQuery (k-capped, planner RAG-first). list() →
+ * exhaustive scan, metadata-filtered (root finalizer). init() rehydrates
+ * the local mirror from the backend so list()/fingerprint() are correct
+ * immediately after a resume.
  */
 export class KnowledgeRag implements IKnowledgeRagHandle {
-  // Mirror metadata locally for exhaustive list() + fingerprint without
-  // relying on backend metadata-filter support (qdrant has it, in-memory
-  // may not). The backend holds the embeddings for query().
-  private readonly entries: KnowledgeEntry[] = [];
-  private seq = 0;
+  private mirror: KnowledgeEntry[] = [];
 
   constructor(
-    private readonly backend: IRag,
+    private readonly backend: KnowledgeBackend,
     private readonly sessionId: string,
   ) {}
 
+  /** Call once after construction for a RESUMED session to rehydrate the
+   *  local mirror from the durable backend. For a brand-new session it is
+   *  a cheap no-op (empty scan). */
+  async init(): Promise<void> {
+    this.mirror = [...(await this.backend.scan(this.sessionId))];
+  }
+
   async write(entry: { content: string; metadata: KnowledgeEntryMetadata }): Promise<void> {
-    const id = `${this.sessionId}:${this.seq++}`;
-    await this.backend.upsert([
-      { id, text: entry.content, metadata: { ...entry.metadata, sessionId: this.sessionId } },
-    ]);
-    this.entries.push({ content: entry.content, metadata: entry.metadata });
+    const full: KnowledgeEntry = { content: entry.content, metadata: entry.metadata };
+    await this.backend.put(this.sessionId, full);
+    this.mirror.push(full);
   }
 
   async query(
     text: string,
     opts?: { k?: number; filter?: KnowledgeFilter },
   ): Promise<readonly KnowledgeEntry[]> {
-    const hits = await this.backend.query(text, opts?.k);
-    let mapped = hits.map((h) => ({
-      content: h.text,
-      metadata: h.metadata as unknown as KnowledgeEntryMetadata,
-    }));
-    if (opts?.filter) mapped = mapped.filter((e) => matches(e.metadata, opts.filter!));
-    return mapped;
+    const hits = await this.backend.semanticQuery(this.sessionId, text, opts?.k);
+    return opts?.filter ? hits.filter((e) => matches(e.metadata, opts.filter!)) : hits;
   }
 
   async list(filter: KnowledgeFilter): Promise<readonly KnowledgeEntry[]> {
-    return this.entries
+    // Prefer the durable scan so list() is correct even if the local mirror
+    // was never hydrated; fall back to the mirror only if scan is empty and
+    // the mirror has entries (write-then-list within one process).
+    const durable = await this.backend.scan(this.sessionId);
+    const source = durable.length >= this.mirror.length ? durable : this.mirror;
+    return source
       .filter((e) => matches(e.metadata, filter))
       .slice()
       .sort((a, b) => a.metadata.createdAt.localeCompare(b.metadata.createdAt));
   }
 
   fingerprint(): string {
-    return `n=${this.entries.length}`;
+    return `n=${this.mirror.length}`;
   }
 }
 
@@ -746,11 +810,30 @@ function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
   }
   return true;
 }
+
+/** Default in-memory backend — no persistence across process restart, used
+ *  for stateless deployments and tests. (The "RESUME" test reuses the same
+ *  instance to simulate a durable backend; a true persistent backend ships
+ *  in the server package, see Task 13 note.) */
+export class InMemoryKnowledgeBackend implements KnowledgeBackend {
+  private readonly bySession = new Map<string, KnowledgeEntry[]>();
+  private of(sid: string): KnowledgeEntry[] {
+    let a = this.bySession.get(sid);
+    if (!a) { a = []; this.bySession.set(sid, a); }
+    return a;
+  }
+  async put(sid: string, entry: KnowledgeEntry) { this.of(sid).push(entry); }
+  async semanticQuery(sid: string, _text: string, k?: number) {
+    const a = this.of(sid);
+    return k ? a.slice(0, k) : a.slice();
+  }
+  async scan(sid: string) { return this.of(sid).slice(); }
+}
 ```
 
-> The query()-shape (`backend.query(text, k)` returning `{ text, metadata }[]`) must match the real `IRag`. Adapt method names to the actual interface after the git grep in 5a.
+> **Why a port, not `IRag` directly:** the real 17.0 `IRag` writes via `writer().upsertRaw(...)` and its `query` takes an embedding vector, not text (confirm: `git grep -n "interface IRag\|upsertRaw\|writer()" packages/llm-agent/src`). A persistent `KnowledgeBackend` implementation (qdrant/pg) wires the embedder + `IRag` internally AND keeps a durable entry log for `scan()`. That concrete backend is built in the server package (Task 13 area); this task delivers the port + the in-memory default. This is what makes `list()` survive resume — the durable store, not a private array, is the source of truth.
 
-Also add `ToolsRag` if a wrapper is needed — but the existing 17.0 tools-RAG path already exposes a query+lookup; in that case create a thin adapter `ToolsRag implements IToolsRagHandle` in the same file delegating to the existing tools store. Add a test mirroring tools query+lookup.
+Also add a thin `ToolsRag implements IToolsRagHandle` delegating to the existing 17.0 tools store (query + lookup). Add a test mirroring tools query+lookup.
 
 - [ ] **5c. Test + commit.**
 ```bash
@@ -758,7 +841,7 @@ npm --workspace @mcp-abap-adt/llm-agent run build
 cd packages/llm-agent-libs && npx tsx --test src/rag/__tests__/knowledge-rag.test.ts
 git add packages/llm-agent-libs/src/rag/knowledge-rag.ts \
         packages/llm-agent-libs/src/rag/__tests__/knowledge-rag.test.ts
-git commit -m "feat(stepper): KnowledgeRag blackboard over IRag (write/query/list/fingerprint)
+git commit -m "feat(stepper): KnowledgeRag over a KnowledgeBackend port (durable list/rehydrate, resume-safe)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -1370,7 +1453,7 @@ const baseCtx = (over: Partial<Parameters<StepperInterpreter['interpret']>[1]>) 
   ...over,
 });
 
-test('H.4b depth floor routes subagent node to executor, no child spawn', async () => {
+test('H.4b depth floor routes subagent node to executor; child.run NOT called; spawned event is the executor virtual ref', async () => {
   counter = 0;
   const child = spyStepper('w');
   const ex = okExecutor();
@@ -1386,8 +1469,12 @@ test('H.4b depth floor routes subagent node to executor, no child spawn', async 
     }),
   );
   assert.equal(res.status, 'ok');
-  assert.equal(child.runs, 0, 'no recursive child spawned at depth floor');
+  assert.equal(child.runs, 0, 'recursion did not happen — child Stepper run() never invoked');
   assert.equal(ex.calls, 1, 'dispatched to executor instead');
+  // A stepper-spawned IS emitted, but for the executor virtual ref (name 'executor'), not the subagent 'w'.
+  const spawned = events.find((e) => e.kind === 'stepper-spawned');
+  assert.ok(spawned && spawned.kind === 'stepper-spawned');
+  assert.equal((spawned as { source: { name: string } }).source.name, 'executor');
 });
 
 test('depth > 0 spawns recursive child stepper with parentStepperId set', async () => {
@@ -1675,7 +1762,10 @@ export interface StepperDeps {
   executor: IExecutor;
   childSteppers: ReadonlyMap<string, IStepper>;
   reviewer?: IReviewStrategy;
-  reviewerAtDepths: ReadonlySet<number>;
+  /** Depth-membership predicate (NOT a Set) so config `atDepths: 'all'`
+   *  works — see Task 14. A plain `new Set([0,1])` also satisfies this
+   *  shape, so tests can pass a Set directly. */
+  reviewerAtDepths: { has(depth: number): boolean };
   depth: number;
   maxParallelSteps: number;
   mintStepperId: () => string;
@@ -2030,7 +2120,9 @@ test('parses mode, mutationPolicy, knownReadOnlyTools, stepper.* with defaults',
   assert.equal(c.toolSafety.mutationPolicy, 'trusted');
   assert.equal(c.toolSafety.knownReadOnlyTools.has('GetProgram'), true);
   assert.equal(c.maxParallelSteps, 8);
-  assert.deepEqual([...c.reviewerAtDepths].sort(), [0, 1, 2]);
+  assert.equal(c.reviewerAtDepths.has(0), true);
+  assert.equal(c.reviewerAtDepths.has(2), true);
+  assert.equal(c.reviewerAtDepths.has(3), false);
   assert.equal(c.maxDepth, 5);
   assert.equal(c.tokenBudget, 500000);
 });
@@ -2040,7 +2132,9 @@ test('defaults: mode=planned-react, mutationPolicy=confirm, reviewer atDepths=[0
   assert.equal(c.mode, 'planned-react');
   assert.equal(c.toolSafety.mutationPolicy, 'confirm');
   assert.equal(c.toolSafety.knownReadOnlyTools.size, 0);
-  assert.deepEqual([...c.reviewerAtDepths].sort(), [0, 1]);
+  assert.equal(c.reviewerAtDepths.has(0), true);
+  assert.equal(c.reviewerAtDepths.has(1), true);
+  assert.equal(c.reviewerAtDepths.has(2), false);
   assert.equal(c.maxParallelSteps, 4);
 });
 
@@ -2104,7 +2198,7 @@ export function parseStepperCoordinatorConfig(coord: Record<string, unknown>): S
 }
 ```
 
-> Update the `IStepperInterpreter`/`Stepper` reviewer types: `reviewerAtDepths` is `{ has(n): boolean }` not `ReadonlySet<number>` (so `'all'` works). Adjust the Task 10 `StepperDeps.reviewerAtDepths` type to `{ has(depth: number): boolean }` and re-run Task 10's test (the `new Set([0])` still satisfies `{has}`). Make this adjustment in this commit if not already.
+> `reviewerAtDepths` is already typed `{ has(depth: number): boolean }` in Task 10's `StepperDeps` (a plain `Set` satisfies it, and `'all'` returns `{ has: () => true }`). No type change is needed here — this task only produces the config value of that shape.
 
 - [ ] **14c. Test + commit.**
 ```bash
@@ -2188,7 +2282,14 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Create: `packages/llm-agent-server/src/smart-agent/stepper-coordinator-handler.ts`
 - Test: `packages/llm-agent-server/src/smart-agent/__tests__/stepper-coordinator-handler.test.ts`
 
-The handler is the coordinator boundary (§F). It: mints the root `RunIdentity`; runs the root Stepper; on `budget-exhausted` raises the budget-extension `ClarifySignal`; on completion runs the `RootFinalizer` and streams its `content` to `ctx.yield`; on `InsufficientSignal` returns the missing-list to the consumer; routes `NeedInfoSignal` to the state oracle (17.0 surface).
+The handler is the coordinator boundary (§F). It: mints the root `RunIdentity`; **obtains the per-session `knowledgeRag` and the `toolsRag`** (review R1-F3 — see below); runs the root Stepper passing those handles; on `budget-exhausted` raises the budget-extension `ClarifySignal`; on completion runs the `RootFinalizer` (passing the SAME `knowledgeRag`) and streams its `content` to `ctx.yield`; on `InsufficientSignal` returns the missing-list to the consumer; routes `NeedInfoSignal` to the state oracle (17.0 surface).
+
+**Where `knowledgeRag` / `toolsRag` come from (R1-F3).** The handler deps include a `knowledgeRagFor(sessionId): Promise<KnowledgeRag>` factory and a `toolsRag` handle (or a `toolsRagFor(sessionId)` if per-session). For each request the handler:
+1. resolves `sessionId` (from the session graph / cookie identity as in 17.0);
+2. `const knowledgeRag = await knowledgeRagFor(sessionId); await knowledgeRag.init();` — `init()` rehydrates a resumed session's entries (Task 5);
+3. passes that SAME `knowledgeRag` instance into BOTH `rootStepper.run({ knowledgeRag, toolsRag, … })` AND `finalizer.finalize({ knowledgeRag, … })`, so the finalizer reads exactly what the run wrote.
+
+The test below asserts the finalizer receives a knowledgeRag whose `list()` returns what the run wrote, so the wiring can't be silently dropped.
 
 - [ ] **16a. Failing test.**
 
@@ -2199,10 +2300,29 @@ import { StepperCoordinatorHandler } from '../stepper-coordinator-handler.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 
+// A knowledgeRag stub that records whether the run wrote and the finalizer read.
+function knowledgeStub() {
+  const written: string[] = [];
+  let listedBy = '';
+  return {
+    written,
+    get listedBy() { return listedBy; },
+    rag: {
+      async init() {},
+      async query() { return []; },
+      async list() { listedBy = 'finalizer'; return written.map((c) => ({ content: c, metadata: { traceId: 't', turnId: 'turn-1', stepperId: 'n', task: 'x', artifactType: 'analysis-finding', createdAt: '2026-05-29T00:00:00Z' } })); },
+      async write(e: { content: string }) { written.push(e.content); },
+      fingerprint() { return `n=${written.length}`; },
+    },
+  };
+}
+
 function fakeBuilt(overrides = {}) {
   return {
-    rootStepper: { name: 'root', async run() { return { status: 'ok', usage: ZERO }; } },
-    finalizer: { async finalize(input: { onProgress?: (c: unknown) => void }) { input.onProgress?.({ kind: 'content', delta: 'FINAL ANSWER' }); return { output: 'FINAL ANSWER', usage: ZERO }; } },
+    // root run writes to the SAME knowledgeRag it is handed
+    rootStepper: { name: 'root', async run(input: { knowledgeRag: { write(e: { content: string; metadata: unknown }): Promise<void> } }) { await input.knowledgeRag.write({ content: 'finding-from-run', metadata: {} }); return { status: 'ok', usage: ZERO }; } },
+    // finalizer must READ via the knowledgeRag it is handed and stream content
+    finalizer: { async finalize(input: { knowledgeRag: { list(f: unknown): Promise<readonly { content: string }[]> }; onProgress?: (c: unknown) => void }) { const got = await input.knowledgeRag.list({ turnId: 'turn-1' }); const out = `FINAL: ${got.map((e) => e.content).join(',')}`; input.onProgress?.({ kind: 'content', delta: out }); return { output: out, usage: ZERO }; } },
     budget: { depthRemaining: 1, tokensRemaining: 100000 },
     maxParallelSteps: 4,
     toolSafety: { mutationPolicy: 'confirm', knownReadOnlyTools: new Set() },
@@ -2224,17 +2344,34 @@ function ctx() {
   };
 }
 
-test('happy path: runs stepper then finalizer, yields content + terminal stop', async () => {
-  const h = new StepperCoordinatorHandler({ buildBuilt: async () => fakeBuilt(), mintStepperId: () => 'root', mintTurnId: () => 'turn-1' });
+test('happy path: SAME knowledgeRag flows run → finalizer; content + terminal stop yielded', async () => {
+  const ks = knowledgeStub();
+  const h = new StepperCoordinatorHandler({
+    buildBuilt: async () => fakeBuilt(),
+    knowledgeRagFor: async () => ks.rag as never,   // R1-F3: handler owns the source
+    toolsRag: { async query() { return []; }, lookup() { return undefined; } } as never,
+    mintStepperId: () => 'root',
+    mintTurnId: () => 'turn-1',
+  });
   const c = ctx();
   await h.execute(c.obj as never, {}, {} as never);
-  assert.ok(c.yields.some((y) => y.content === 'FINAL ANSWER'));
+  // The finalizer read what the run wrote, through the one shared knowledgeRag:
+  assert.deepEqual(ks.written, ['finding-from-run']);
+  assert.equal(ks.listedBy, 'finalizer');
+  assert.ok(c.yields.some((y) => y.content === 'FINAL: finding-from-run'));
   assert.ok(c.yields.some((y) => y.finishReason === 'stop'));
 });
 
 test('budget-exhausted bubbles to a ClarifySignal from the coordinator (not the finalizer)', async () => {
+  const ks = knowledgeStub();
   const built = fakeBuilt({ rootStepper: { name: 'root', async run() { return { status: 'budget-exhausted', usage: ZERO }; } } });
-  const h = new StepperCoordinatorHandler({ buildBuilt: async () => built, mintStepperId: () => 'root', mintTurnId: () => 'turn-1' });
+  const h = new StepperCoordinatorHandler({
+    buildBuilt: async () => built,
+    knowledgeRagFor: async () => ks.rag as never,
+    toolsRag: { async query() { return []; }, lookup() { return undefined; } } as never,
+    mintStepperId: () => 'root',
+    mintTurnId: () => 'turn-1',
+  });
   const c = ctx();
   // The handler should surface a budget-extension clarify. Assert via a yielded clarify event OR a thrown ClarifySignal — match the 17.0 handler's clarify mechanism.
   await h.execute(c.obj as never, {}, {} as never);
@@ -2365,7 +2502,23 @@ cd ../llm-agent-server      && find src -name "*.test.ts" -print0 | xargs -0 npx
 cd ../..
 npm run lint:check
 ```
-All green, zero lint errors. Fix any regressions inline (especially 17.0 `DagCoordinatorHandler` tests that referenced the removed `node-start`/`node-end` StreamChunk variants — migrate their assertions to the new progress events or mark the handler legacy).
+All green, zero lint errors. (The legacy `node-*` emitter migration already happened in Task 4b, so this sweep should not surface StreamChunk-shape regressions — if it does, a Task 4b emit site was missed; fix it here.)
+
+- [ ] **19e. Remove the legacy StreamChunk variants.** Now that Task 4b migrated every emitter, delete the `node-start` / `node-end` / `tool-call` variants from `packages/llm-agent/src/interfaces/streaming.ts` (added additively in Task 4). Verify nothing references them:
+```bash
+git grep -n "kind: 'node-start'\|kind: 'node-end'\|kind: 'tool-call'\|'node-start'\|'node-end'" packages/llm-agent packages/llm-agent-libs packages/llm-agent-server
+```
+Expected: zero hits (or only the streaming.ts definition itself before you delete it). Remove the three variants, rebuild all packages, run the full sweep again. Commit:
+```bash
+npm run build && npm run lint:check
+git add packages/llm-agent/src/interfaces/streaming.ts
+git commit -m "feat(contracts)!: remove legacy node-*/tool-call StreamChunk variants (all emitters migrated in 4b)
+
+BREAKING: SSE clients relying on node-start / node-end / tool-call events
+must migrate to stepper-spawned / stepper-done / mcp-call / mcp-result.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
 
 - [ ] **19b. Examples.** Create `docs/examples/stepper/{01-cyclic-react.yaml, 02-planned-react.yaml, 03-deep-stepper.yaml, worker.yaml, README.md}` mirroring the structure of `docs/examples/dag-coordinator/`. Each top-level yaml sets `coordinator.mode` accordingly and a `coordinator.stepper.*` block. README explains the three modes + the `/v1/sessions` resume flow + the readOnly tool-safety policy.
 
@@ -2399,7 +2552,7 @@ git push -u origin epic/18.0-recursive-stepper
 | B.5 Sufficiency (depth=interpreter, tokens=executor+stepper) | 9 (depth guard), 7 (token stop) |
 | B.6 Cycle prevention (RAG-first + concrete-leaf + depth) | 8 (planner prompt), 9 (depth), 18 (H.9) |
 | C.1 All contracts incl. RunIdentity/ToolSafetyPolicy/mint rule | 1, 2, 3 |
-| C.2 StreamChunk progress events + StepperRef | 4 |
+| C.2 StreamChunk progress events + StepperRef | 4 (additive add), 4b (migrate emitters), 19e (remove legacy) |
 | C.3 Reviewer depth policy | 10 (gate), 14 (config) |
 | C.4 readOnly safe-default + allowlist + trusted | 7 (executor gate), 14 (config) |
 | C.5 Three-mode wiring | 15 |
@@ -2409,11 +2562,17 @@ git push -u origin epic/18.0-recursive-stepper
 | F signal partitioning | 16 (handler), 11 (finalizer), 7 (executor clarify) |
 | G session persistence | 13 (store), 17 (endpoints), 18 (H.8) |
 | H.1–H.10 + H.4b | 7, 9, 11, 18 |
-| I backward compat | 17 (mode mapping), 19 (legacy test migration) |
-| K migration | 17 (deprecation warning), 19 (CHANGELOG) |
+| I backward compat | 4 (additive StreamChunk), 4b (emitter migration), 17 (mode mapping) |
+| K migration | 17 (deprecation warning), 19c (CHANGELOG), 19e (legacy variant removal) |
 
-**Placeholder scan:** every code step has real code; no "TBD"/"add validation"/"similar to". Verification-name caveats (LlmTool, ILlm.chat shape, IReviewStrategy.review, IRag methods) are flagged with explicit `git grep` instructions because they depend on 17.0 exports the implementer must confirm — these are not placeholders but real reconciliation steps.
+**Build-green invariant (review R1-F2):** every task ends with all three packages building. Task 4 adds StreamChunk variants ADDITIVELY; Task 4b migrates 17.0 emitters immediately; Task 19e removes the legacy variants only after the full sweep is green. No intermediate task leaves libs/server broken.
 
-**Type consistency:** `RunIdentity`, `ToolSafetyPolicy`, `Budget`, `KnowledgeEntryMetadata`, `StepperRef`, `mintStepperId` are used identically across Tasks 1–18. `reviewerAtDepths` type reconciled to `{ has(n): boolean }` in Task 14 (noted there for the Task 10 adjustment).
+**Persistence invariant (review R1-F1):** `KnowledgeRag.list()` reads from the durable `KnowledgeBackend.scan()`, not a process-local array, so it survives restart/resume. `init()` rehydrates the mirror for a resumed session (Task 5). H.8 (Task 18) exercises this by reusing one backend across two prompts.
 
-**Known follow-up flagged in-plan, not v1:** PgSessionMetaStore (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note). All explicitly out of v1 scope, consistent with spec §J.
+**Wiring invariant (review R1-F3):** the `StepperCoordinatorHandler` owns `knowledgeRagFor(sessionId)` + `toolsRag` and passes the SAME `knowledgeRag` into both `rootStepper.run` and `finalizer.finalize`. Task 16's test asserts the finalizer reads what the run wrote, so the wiring cannot be silently dropped.
+
+**Placeholder scan:** every code step has real code; no "TBD"/"add validation"/"similar to". Verification-name caveats (LlmTool, ILlm.chat shape, IReviewStrategy.review, real IRag method set) are flagged with explicit `git grep` instructions because they depend on 17.0 exports the implementer must confirm — these are real reconciliation steps, not placeholders. `KnowledgeRag` deliberately depends on a `KnowledgeBackend` port (not raw `IRag`) so the IRag-API mismatch never reaches its code (review R1-F4).
+
+**Type consistency:** `RunIdentity`, `ToolSafetyPolicy`, `Budget`, `KnowledgeEntryMetadata`, `StepperRef`, `mintStepperId` are used identically across Tasks 1–18. `reviewerAtDepths` is typed `{ has(depth): boolean }` from its first definition in Task 10 — Task 14 only produces a value of that shape, no type change (review R1-F7). `INeedResolver.resolve` returns `{ queryToolsRag: string } | undefined` in v1 — no dead fields (review R1-F5).
+
+**Known follow-up flagged in-plan, not v1:** persistent `KnowledgeBackend` impl over qdrant/pg (Task 5 note — in-memory is the v1 default), PgSessionMetaStore (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note). All explicitly out of v1 scope, consistent with spec §J.
