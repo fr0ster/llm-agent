@@ -173,7 +173,7 @@ export type {
 export { TokenLedger } from './stepper.js';
 export type { IStepperInterpreter } from './stepper-interpreter.js';
 export type { IStepperPlanner } from './stepper-planner.js';
-export type { OnPartial, StreamChunk } from './streaming.js';
+export type { OnPartial, StepperRef, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
   ISubAgentInput,
