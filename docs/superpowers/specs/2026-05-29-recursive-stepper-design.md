@@ -47,7 +47,9 @@ Lives at the coordinator boundary, NOT inside any Stepper. After the root Steppe
 - the original consumer prompt;
 - a read handle to the session's knowledge-RAG.
 
-The finalizer either composes the final answer text or raises an `InsufficientSignal` carrying `missing[]` upward. The coordinator on insufficient either returns the message to the consumer or (if budget allows) triggers a root replan with `missing[]` as a hint.
+The finalizer's **only** failure mode is `InsufficientSignal` — raised when the knowledge-RAG does not contain enough material to answer the prompt. It carries `missing[]`. The finalizer does NOT raise `ClarifySignal` for any reason (budget extension is the coordinator's job — see §B.5 / §F).
+
+The coordinator on `InsufficientSignal` either returns the missing-list to the consumer (cheapest) or, if budget allows, triggers a root replan with `missing[]` as a hint to the next planner call.
 
 ### B.5 Sufficiency mechanism
 
@@ -55,7 +57,9 @@ Layered, no LLM-driven sufficiency oracle in v1:
 
 1. **Depth + token budget.** Each Stepper inherits a budget from its parent; budget is decremented as it spawns children or makes LLM calls.
 2. **INCOMPLETE bubble.** A Stepper that cannot complete its work returns `{ status: 'incomplete', missing: [...] }`. Parent decides — add a step to obtain `missing`, or escalate up.
-3. **Budget-extension clarify.** On budget exhaustion the Stepper raises a `ClarifySignal` upward: *"Budget exhausted at depth N / X tokens used. Continue with extended budget, or stop with what we have?"* Consumer answers `continue` → coordinator extends budget and restarts at root from the saturated knowledge-RAG (no checkpoint-based resume in v1). Consumer answers `stop` → return partial.
+3. **Budget-extension clarify (coordinator-issued).** On budget exhaustion the offending Stepper returns `{ status: 'budget-exhausted' }`. That status bubbles up to the **coordinator**, which is the sole component that may raise a `ClarifySignal('budget exhausted; extend or stop?')` to the consumer. Steppers do NOT raise budget-related ClarifySignals themselves — only the coordinator does, because only the coordinator owns the consumer-facing SSE channel and the budget-extension policy.
+
+Signal-raising responsibility is strictly partitioned. See §F for the full table.
 
 ### B.6 Cycle prevention
 
@@ -389,13 +393,21 @@ During execution the consumer's SSE channel carries progress events:
 
 ## F. Error and signal contracts
 
-| Signal | Origin | Handler | Effect |
+Signal-raising responsibility is strictly partitioned by component. NO component raises a signal that overlaps another's responsibility.
+
+| Signal | Sole origin | Handler | Effect |
 |---|---|---|---|
-| `ClarifySignal` | Executor before mutating tool call; root finalizer on insufficient; budget-extension prompt | Coordinator | Pauses, emits to consumer, awaits answer, resumes the Stepper with the answer fed back as a synthetic message |
-| `NeedInfoSignal` | Existing 17.0 — Stepper.planner needs a reality fact | Coordinator | Routes to `IStateOracle` (17.0 surface preserved) |
-| `InsufficientSignal` (new) | Root finalizer when knowledge-RAG is too sparse | Coordinator | Either returns to consumer or triggers root replan with `missing[]` |
-| `IStepperResult.status: 'incomplete'` | Any Stepper exhausting its sub-budget | Parent Stepper | Parent decides — add a follow-up step or bubble up |
-| `IStepperResult.status: 'budget-exhausted'` | Stepper hit hard cap | Parent Stepper | Bubbles to root; coordinator raises `ClarifySignal` (B.5.3) to consumer for budget-extension choice |
+| `ClarifySignal` — mutation confirmation | Executor, before a mutating tool call (§C.4) | Coordinator | Pauses, emits to consumer, awaits answer, resumes the executor with `yes` / `no` / `modify args` |
+| `ClarifySignal` — budget extension | **Coordinator only** (never a Stepper, never the finalizer), in response to `IStepperResult.status: 'budget-exhausted'` bubbling up | Coordinator (self-handles) | Emits to consumer; on `continue`, extends budget and triggers root replan from the saturated knowledge-RAG; on `stop`, returns partial |
+| `NeedInfoSignal` | Stepper.planner needs a reality fact (17.0 surface preserved) | Coordinator | Routes to `IStateOracle` |
+| `InsufficientSignal` (new) | **Root finalizer only**, when knowledge-RAG cannot satisfy the prompt | Coordinator | Either returns `missing[]` to consumer or, if budget allows, triggers root replan |
+| `IStepperResult.status: 'incomplete'` | Any Stepper unable to complete its work | Parent Stepper | Parent decides — add a follow-up step or bubble up |
+| `IStepperResult.status: 'budget-exhausted'` | Any Stepper or executor that hit its budget cap | Parent Stepper → bubbles to coordinator | Coordinator raises the budget-extension `ClarifySignal` above |
+
+Crucial partitioning rules:
+- The **finalizer** raises only `InsufficientSignal`. Never `ClarifySignal`.
+- **Steppers** never raise `ClarifySignal` for budget. They return `status: 'budget-exhausted'`; the coordinator translates that into the consumer-facing clarify.
+- **Executors** raise `ClarifySignal` only for the mutating-tool case (§C.4). Anything else is `status: 'incomplete'` or `'budget-exhausted'` in their return value.
 
 ## G. Session persistence
 
@@ -445,7 +457,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 | H.1 | Mode A — single Stepper with stub `INeedResolver` | LLM emits "I lack tool X" → resolver returns `injectTools: [X]` → next LLM call has X in tool list → final answer produced. |
 | H.2 | Mode B — three-level recursion, root + child + grandchild | Grandchild planner queries knowledge-RAG and reads the entry written by an earlier sibling, does NOT re-fetch. Cycle of identical task-recurrence is avoided by RAG hit. |
 | H.3 | Mode C — 4 ortho parallel children with `maxParallelSteps: 2` | Observe at most 2 concurrent `stepper-spawned` events; queue drains as `stepper-done` arrives. |
-| H.4 | Sufficiency mechanism — budget exhaustion | Stepper exceeds depth budget → INCOMPLETE bubbles to root → root finalizer raises `ClarifySignal('extend budget?')` → consumer `continue` → root replan from saturated RAG completes. |
+| H.4 | Sufficiency mechanism — budget exhaustion | Stepper exceeds depth or token budget → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
 | H.5 | Mutate tool annotation — safe default | Tool without `readOnly` field (legacy / unknown class) triggers `ClarifySignal` before MCP call; tool with `readOnly: true` executes silently; tool listed in `coordinator.knownReadOnlyTools` executes silently; under `coordinator.mutationPolicy: trusted` all tools execute silently. |
 | H.6 | Root finalizer insufficient path | Knowledge-RAG empty after run → finalizer returns `InsufficientSignal(missing: ['source code'])`; coordinator returns the signal to consumer. |
 | H.7 | Streaming events | Progress events (`stepper-spawned`, `mcp-call`, `tokens-used`) emitted with correct `source` and `parent` for a 3-level tree; root finalizer text arrives as `content` chunks; no `node-start`/`node-end` legacy chunks emitted. |
