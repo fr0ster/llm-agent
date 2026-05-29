@@ -57,9 +57,9 @@ The coordinator on `InsufficientSignal` either returns the missing-list to the c
 
 Layered, no LLM-driven sufficiency oracle in v1:
 
-1. **Depth + token budget.** Each Stepper inherits a budget from its parent; budget is decremented as it spawns children or makes LLM calls. The two dimensions are checked by different components:
+1. **Depth + token budget.** Depth is a per-branch value; tokens are a SHARED, mutable ledger (`ITokenLedger`) created once per run and passed by reference to every Stepper/executor (so total spend is accounted across all branches). The two dimensions are checked by different components:
    - **`depthRemaining`** is checked by the **interpreter** before it spawns a recursive child Stepper. When `depthRemaining <= 0` the interpreter refuses to recurse and instead dispatches the step to the local **executor** (a terminal leaf call). A terminal executor call is ALWAYS permitted regardless of depth — depth bounds recursion, not work. This is what makes the `cyclic-react` (depth-0) and `planned-react` (depth-1 leaves) modes valid: their leaves run at the depth floor by design.
-   - **`tokensRemaining`** is checked by both the executor (stops its ReAct loop) and each Stepper (stops making LLM calls) and returns `budget-exhausted` when it hits zero.
+   - **`tokens`** is a **soft cap**, checked via `tokens.exhausted()` at the TOP of each executor loop and before each child dispatch — i.e. BEFORE starting more work. `budget-exhausted` fires only when MORE work is wanted (another LLM round / tool round / child) but the ledger is already empty. It does NOT fire on a clean final answer that completes the task while its own already-made call drove the ledger negative: that work is DONE, there is nothing to extend, so the executor returns `ok` and the bounded overshoot is the documented soft-cap slack (reported faithfully in `usage`). Because the check is pre-call and `spend()` is post-response, parallel siblings can overshoot by at most `(in-flight calls) × (tokens-per-call)` (global in-flight ≈ `maxParallelSteps^depth` worst case); a reserve-before-call hard cap is a deferred enhancement, not v1.
 2. **INCOMPLETE bubble.** A Stepper that cannot complete its work returns `{ status: 'incomplete', missing: [...] }`. Parent decides — add a step to obtain `missing`, or escalate up.
 3. **Budget-extension clarify (coordinator-issued).** On budget exhaustion the offending Stepper returns `{ status: 'budget-exhausted' }`. That status bubbles up to the **coordinator**, which is the sole component that may raise a `ClarifySignal('budget exhausted; extend or stop?')` to the consumer. Steppers do NOT raise budget-related ClarifySignals themselves — only the coordinator does, because only the coordinator owns the consumer-facing SSE channel and the budget-extension policy.
 
@@ -100,7 +100,18 @@ export interface ToolSafetyPolicy {
   knownReadOnlyTools: ReadonlySet<string>;
 }
 
-export interface Budget { depthRemaining: number; tokensRemaining: number; }
+/** Shared, live token ledger. ONE instance per run, passed by reference to
+ *  every Stepper/executor. `exhausted()` is checked before starting work;
+ *  `spend(usage)` is called after each response. Soft cap (see §B.5). */
+export interface ITokenLedger {
+  readonly remaining: number;
+  spend(usage: LlmUsage): void;
+  exhausted(): boolean;
+}
+
+/** depthRemaining is a per-branch value (decremented at each child dispatch);
+ *  tokens is the SAME shared ledger reference for the whole run. */
+export interface Budget { depthRemaining: number; tokens: ITokenLedger; }
 
 export interface IStepperInput {
   prompt: string;
@@ -168,12 +179,15 @@ export interface IExecutor {
     needResolver?: INeedResolver;
     /** Inherited from the dispatching Stepper's IStepperInput.budget.
      *  The executor is a LEAF — it never spawns recursive children, so
-     *  it ignores `depthRemaining` entirely. It MUST stop iterating and
-     *  return 'budget-exhausted' only when `tokensRemaining` drops to ≤ 0
-     *  (or an internal iteration cap is hit). The `depthRemaining` guard
-     *  is the INTERPRETER's responsibility: the interpreter refuses to
-     *  spawn a recursive child Stepper when `depthRemaining <= 0`, but a
-     *  terminal executor call at depth 0/1 is always allowed. */
+     *  it ignores `depthRemaining` entirely. It checks `budget.tokens.
+     *  exhausted()` at the TOP of its loop and returns 'budget-exhausted'
+     *  only when it wants to start ANOTHER round but the ledger is empty
+     *  (or an internal iteration cap is hit). A clean final answer that
+     *  completes the task returns 'ok' even if its own call drove the
+     *  ledger negative (soft cap, see §B.5). The `depthRemaining` guard
+     *  is the INTERPRETER's responsibility: it refuses to spawn a
+     *  recursive child Stepper when `depthRemaining <= 0`, but a terminal
+     *  executor call at depth 0/1 is always allowed. */
     budget: Budget;
     /** Carries traceId/turnId/sessionId/stepperId so the executor can
      *  stamp every knowledge-RAG write with the required metadata (§C.1). */
@@ -395,7 +409,7 @@ Emits `mcp-call` / `mcp-result` / `tokens-used` / `llm-call-start/end` events.
 
 ### D.6 `KnowledgeRag`
 
-`packages/llm-agent-libs/src/rag/knowledge-rag.ts` — wraps any 17.0 `IRag` backend (in-memory / qdrant / hana / pg) with the read+write+fingerprint surface. Per-session keyed.
+`packages/llm-agent-libs/src/rag/knowledge-rag.ts` — `KnowledgeRag` sits over a small `KnowledgeBackend` port (durable `put` / `semanticQuery` / `scan`), NOT directly over the raw 17.0 `IRag` (whose write goes through `writer().upsertRaw(...)` and whose query takes an embedding, not text). The port exposes the `query`/`list`/`write`/`fingerprint` surface and, crucially, a durable `scan()` so `list()` survives restart/resume. v1 ships `InMemoryKnowledgeBackend` (default, stateless) and a durable `JsonlKnowledgeBackend` (server package) for real cross-restart resume; a semantic embedder-backed backend over qdrant/pg is a post-v1 enhancement. Per-session keyed.
 
 ### D.7 `RootFinalizer`
 
@@ -565,7 +579,8 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 | H.1 | Mode A — single Stepper with stub `INeedResolver` | LLM emits "I lack tool X" → resolver returns `injectTools: [X]` → next LLM call has X in tool list → final answer produced. |
 | H.2 | Mode B — three-level recursion, root + child + grandchild | Grandchild planner queries knowledge-RAG and reads the entry written by an earlier sibling, does NOT re-fetch. Cycle of identical task-recurrence is avoided by RAG hit. |
 | H.3 | Mode C — 4 ortho parallel children with `maxParallelSteps: 2` | Observe at most 2 concurrent `stepper-spawned` events; queue drains as `stepper-done` arrives. |
-| H.4 | Sufficiency — TOKEN budget exhaustion | Stepper/executor exceeds `tokensRemaining` → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
+| H.4 | Sufficiency — TOKEN budget exhaustion (wants more work, ledger empty) | An executor whose loop wants ANOTHER round finds `tokens.exhausted()` true at the top of the loop → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
+| H.4c | Soft-cap — clean answer overshoot returns ok | A single clean final answer whose own call drove the ledger negative returns `status: 'ok'` (task done; nothing to extend); the overage appears in `usage`, NOT as a `budget-exhausted` or a clarify. |
 | H.4b | Sufficiency — DEPTH floor routes to executor | Interpreter at `depthRemaining <= 0` with a node whose `agent` references a subagent does NOT call the recursive child Stepper's `run()`; it dispatches the node to the local executor (terminal leaf call) which runs normally. Assert: the child subagent's `run()` is never invoked (recursion did not happen); a `stepper-spawned` event IS emitted but carries the executor's virtual ref (`source.name === 'executor'`, not the subagent name); the executor call completes with `status: 'ok'`. Depth exhaustion is NOT `budget-exhausted`. |
 | H.5 | Mutate tool annotation — safe default | Tool without `readOnly` field (legacy / unknown class) triggers `ClarifySignal` before MCP call; tool with `readOnly: true` executes silently; tool listed in `coordinator.knownReadOnlyTools` executes silently; under `coordinator.mutationPolicy: trusted` all tools execute silently. |
 | H.6 | Root finalizer insufficient path | Knowledge-RAG empty after run → finalizer returns `InsufficientSignal(missing: ['source code'])`; coordinator returns the signal to consumer. |
@@ -579,7 +594,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 - **17.0 `IFinalizer`** → becomes the root-finalizer component (unchanged interface; relocated outside the Stepper). `PassthroughFinalizer` / `LlmFinalizer` / `TemplateFinalizer` implementations continue to work as root-finalizer choices.
 - **17.0 `IStateOracle`** → preserved verbatim; `NeedInfoSignal` round-trips still go through it.
 - **17.0 `IPlanner` / `IReviewStrategy` / `IInterpreter` / `IErrorStrategy`** → preserved as interfaces. 18.0 introduces new `IStepperPlanner` / `IStepperInterpreter` / `IExecutor`; 17.0's `LlmDagPlanner` / `DagPlanInterpreter` / `LlmReviewStrategy` are shimmed into the new shape for the `cyclic-react` default and the `planned-react` planner role.
-- **17.0 `DagCoordinatorHandler`** → deprecated. New `StepperCoordinatorHandler` replaces it. The yaml `coordinator.planner` shape is mapped to `coordinator.mode: planned-react` with the planner role unchanged.
+- **17.0 `DagCoordinatorHandler`** → deprecated but still present in 18.0. The new `StepperCoordinatorHandler` is used ONLY when the yaml explicitly sets `coordinator.mode` (raw-config gate). A legacy 17.0 config with `coordinator.planner` and NO `coordinator.mode` stays on the `DagCoordinatorHandler` and emits a deprecation warning. There is NO auto-mapping of `coordinator.planner` → `coordinator.mode: planned-react` (explicit opt-in only — this avoids silently switching production configs onto the new runtime).
 - **17.0 StreamChunk variants `node-start` / `node-end` / `tool-call`** → REMOVED. Replaced by 18.0 progress events (`stepper-spawned`/`stepper-done`/`mcp-call`/`mcp-result`/`tokens-used`/`llm-call-start`/`llm-call-end`). **Breaking change for SSE clients.** `content` variant preserved.
 - **17.0 per-role LLM map** → preserved; new role keys: `planner` / `reviewer` / `finalizer` / `executor` / `oracle` / `needResolver` / `main`.
 
@@ -596,11 +611,11 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 
 ## K. Migration strategy
 
-- 18.0 ships the new `StepperCoordinatorHandler` alongside the deprecated `DagCoordinatorHandler` for one minor release.
-- Existing 17.0 yaml configs with `coordinator.planner` and `subagents:` are auto-mapped: planner role becomes the `planned-react` mode's root planner; subagents become Steppers registered for dispatch.
+- 18.0 ships the new `StepperCoordinatorHandler` alongside the deprecated `DagCoordinatorHandler`.
+- **No auto-migration.** A 17.0 config keeps running on the `DagCoordinatorHandler` unchanged; the routing gate (`usesStepper`) switches to the Stepper runtime ONLY when the consumer explicitly adds `coordinator.mode`. A `coordinator.planner` config without `coordinator.mode` emits a one-line deprecation warning but is NOT auto-switched. Opting in is a deliberate one-line yaml change.
 - 18.0 CHANGELOG flags the SSE event-shape change as breaking.
-- 18.1: `DagCoordinatorHandler` emits a deprecation warning on construction.
-- 19.0: `DagCoordinatorHandler` removed.
+- 18.x: `DagCoordinatorHandler` keeps emitting the deprecation warning.
+- 19.0: `DagCoordinatorHandler` removed; `coordinator.mode` becomes mandatory for coordinator configs.
 
 ## L. Implementation footprint estimate
 
