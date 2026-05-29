@@ -200,14 +200,35 @@ The 17.0 progress variants from PR #163 (`node-start`, `node-end`, `tool-call` f
 
 `coordinator.stepper.reviewer.atDepths` (yaml) controls which depths run a reviewer between `planner.plan()` and `interpreter.interpret()`. Default: `[0, 1]` — reviewer ON at depths 0 and 1, OFF at deeper levels. Override with explicit list or `'all'`. The reviewer type (`IReviewStrategy` from 17.0) is reused unchanged.
 
-### C.4 Mutate tool annotation
+### C.4 Mutate tool annotation — safe-default polarity
 
-MCP-tool descriptions gain an optional `mutating: boolean` field. Coordinator policy:
+MCP-tool descriptions gain an optional `readOnly: boolean` field (note the polarity: **explicit-safe**, not explicit-mutate). Executor policy:
 
-- `mutating: false | undefined` → executor calls without confirmation.
-- `mutating: true` → executor raises `ClarifySignal('about to call <tool>(<args>), proceed?')` before the call, unless `coordinator.mutationPolicy: trusted` is configured for the session.
+- `readOnly: true` → executor calls without confirmation.
+- `readOnly: false | undefined` → executor raises `ClarifySignal('about to call <tool>(<args>); this tool is not declared read-only — proceed?')` before the call.
 
-Tools that ship without the field default to non-mutating. Tool authors must opt in to confirmation by marking `mutating: true`.
+This polarity exists deliberately: legacy MCP tools that pre-date the field MUST be treated as potentially mutating until their authors opt in via `readOnly: true`. Silently calling unknown-class tools risks unintended side-effects against production SAP systems.
+
+Operators have two escape hatches for migration friction:
+
+```yaml
+coordinator:
+  # Bypass per-call confirmation for ALL tools in this session — use only on
+  # trusted backend integrations where the consumer is itself authorised.
+  mutationPolicy: trusted          # default: confirm
+
+  # OR maintain a per-deployment allowlist of legacy tool names known to be
+  # read-only — narrower than mutationPolicy: trusted.
+  knownReadOnlyTools:
+    - GetProgram
+    - GetInclude
+    - GetIncludesList
+    - GetAbapSemanticAnalysis
+    - SearchSource
+    # …
+```
+
+The executor checks in this order: explicit `readOnly: true` → `knownReadOnlyTools` allowlist → `mutationPolicy: trusted` → otherwise emit ClarifySignal.
 
 ### C.5 Three modes wiring
 
@@ -425,7 +446,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 | H.2 | Mode B — three-level recursion, root + child + grandchild | Grandchild planner queries knowledge-RAG and reads the entry written by an earlier sibling, does NOT re-fetch. Cycle of identical task-recurrence is avoided by RAG hit. |
 | H.3 | Mode C — 4 ortho parallel children with `maxParallelSteps: 2` | Observe at most 2 concurrent `stepper-spawned` events; queue drains as `stepper-done` arrives. |
 | H.4 | Sufficiency mechanism — budget exhaustion | Stepper exceeds depth budget → INCOMPLETE bubbles to root → root finalizer raises `ClarifySignal('extend budget?')` → consumer `continue` → root replan from saturated RAG completes. |
-| H.5 | Mutate tool annotation | Tool with `mutating: true` triggers `ClarifySignal` before MCP call; tool without it executes silently. |
+| H.5 | Mutate tool annotation — safe default | Tool without `readOnly` field (legacy / unknown class) triggers `ClarifySignal` before MCP call; tool with `readOnly: true` executes silently; tool listed in `coordinator.knownReadOnlyTools` executes silently; under `coordinator.mutationPolicy: trusted` all tools execute silently. |
 | H.6 | Root finalizer insufficient path | Knowledge-RAG empty after run → finalizer returns `InsufficientSignal(missing: ['source code'])`; coordinator returns the signal to consumer. |
 | H.7 | Streaming events | Progress events (`stepper-spawned`, `mcp-call`, `tokens-used`) emitted with correct `source` and `parent` for a 3-level tree; root finalizer text arrives as `content` chunks; no `node-start`/`node-end` legacy chunks emitted. |
 | H.8 | Session persistence + resume | New session, prompt → answer; close; reopen; `POST /v1/sessions/<id>/resume`; second prompt sees prior knowledge-RAG entries via planner.query. |
@@ -450,7 +471,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 - **Global cross-tree concurrency semaphore.** maxParallelSteps is local-only.
 - **Append-to-plan / cancel-and-replan for mid-execution consumer input.** v1 queues the new prompt for the next logical iteration.
 - **Replay-vs-RAG-only resume policy switch.** Always RAG-only in v1; replay deferred.
-- **`mutating` tool field auto-detection.** Tool authors must explicitly opt in.
+- **`readOnly` tool field auto-detection.** Tool authors must explicitly opt in.
 
 ## K. Migration strategy
 
