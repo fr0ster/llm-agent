@@ -76,14 +76,37 @@ No hash-based detector. Cycles are prevented by construction:
 ```ts
 // @mcp-abap-adt/llm-agent
 
+/** Identity carried through every layer so executors can stamp
+ *  KnowledgeEntryMetadata (§C, F5) and the coordinator can attribute
+ *  streaming + usage. Minted at the coordinator boundary and threaded
+ *  down unchanged, with stepperId/parentStepperId rewritten at each
+ *  dispatch (see "who mints stepperId" below). */
+export interface RunIdentity {
+  traceId: string;             // per-prompt trace
+  turnId: string;              // consumer-prompt turn within the session
+  sessionId: string;
+  stepperId: string;           // stable UUID of the CURRENT Stepper
+  parentStepperId?: string;    // UUID of the Stepper that dispatched this one
+}
+
+/** Tool-safety policy resolved once at the coordinator boundary from
+ *  yaml (§C.4) and threaded down unchanged. */
+export interface ToolSafetyPolicy {
+  mutationPolicy: 'confirm' | 'trusted';
+  knownReadOnlyTools: ReadonlySet<string>;
+}
+
+export interface Budget { depthRemaining: number; tokensRemaining: number; }
+
 export interface IStepperInput {
   prompt: string;
   knowledgeRag: IKnowledgeRagHandle;
   toolsRag: IToolsRagHandle;
-  budget: { depthRemaining: number; tokensRemaining: number };
+  budget: Budget;
+  identity: RunIdentity;          // ← carries traceId/turnId/sessionId/stepperId/parentStepperId
+  toolSafety: ToolSafetyPolicy;   // ← carries mutationPolicy + knownReadOnlyTools
   signal?: AbortSignal;
   sessionLogger?: ISessionLogger;
-  trace?: { traceId: string };
   onProgress?: (event: StreamChunk) => void;
 }
 
@@ -105,7 +128,7 @@ export interface IStepperPlanner {
     knowledgeRag: IKnowledgeRagHandle;
     toolsRag: IToolsRagHandle;
     parentPath: string[];
-    sessionId?: string;
+    identity: RunIdentity;
     signal?: AbortSignal;
   }): Promise<DagPlan>;
 }
@@ -120,9 +143,12 @@ export interface IStepperInterpreter {
       toolsRag: IToolsRagHandle;
       childSteppers: ReadonlyMap<string, IStepper>;
       executor: IExecutor;
-      budget: { depthRemaining: number; tokensRemaining: number };
+      budget: Budget;
+      identity: RunIdentity;          // ← propagated; interpreter rewrites stepperId per child dispatch
+      toolSafety: ToolSafetyPolicy;
       maxParallelSteps: number;
       signal?: AbortSignal;
+      sessionLogger?: ISessionLogger;
       onProgress?: (event: StreamChunk) => void;
     },
   ): Promise<IStepperResult>;
@@ -139,12 +165,15 @@ export interface IExecutor {
     /** Inherited from the dispatching Stepper's IStepperInput.budget.
      *  Executor MUST stop iterating and return 'budget-exhausted' when
      *  either tokensRemaining or depthRemaining drops to ≤ 0. */
-    budget: { depthRemaining: number; tokensRemaining: number };
-    /** mutationPolicy decides whether mutating-tool calls require a
-     *  ClarifySignal before execution; see §C.4. */
-    mutationPolicy: 'confirm' | 'trusted';
+    budget: Budget;
+    /** Carries traceId/turnId/sessionId/stepperId so the executor can
+     *  stamp every knowledge-RAG write with the required metadata (F5). */
+    identity: RunIdentity;
+    /** Full tool-safety policy. Executor check order (§C.4):
+     *  tool.readOnly === true → toolSafety.knownReadOnlyTools.has(name)
+     *  → toolSafety.mutationPolicy === 'trusted' → else ClarifySignal. */
+    toolSafety: ToolSafetyPolicy;
     signal?: AbortSignal;
-    trace?: { traceId: string };
     sessionLogger?: ISessionLogger;
     onProgress?: (event: StreamChunk) => void;
   }): Promise<{
@@ -153,6 +182,9 @@ export interface IExecutor {
     usage: LlmUsage;
   }>;
 }
+```
+
+**Who mints `stepperId`.** The coordinator mints the root Stepper's `stepperId` and the `traceId`/`turnId`/`sessionId` when it builds the root `RunIdentity`. Each `IStepperInterpreter`, at the moment it dispatches a child (a recursive Stepper OR the executor), mints a fresh `stepperId` for that child and sets the child's `parentStepperId` to the current Stepper's `stepperId`. Thus every Stepper and every executor invocation has a unique `stepperId` and a correct `parentStepperId`, and every knowledge-RAG write + every StreamChunk carries unambiguous topology. The mint function is injected (so tests pass a deterministic counter instead of a UUID generator — the runtime forbids non-deterministic `Math.random`/`Date.now` in some contexts, mirroring 17.0 workflow constraints).
 
 export interface KnowledgeEntryMetadata {
   traceId: string;             // trace this entry belongs to (per-prompt)
