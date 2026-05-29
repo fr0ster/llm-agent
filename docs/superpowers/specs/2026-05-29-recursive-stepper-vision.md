@@ -321,6 +321,55 @@ The Q1 sufficiency mechanism (budget + INCOMPLETE bubble + clarify-extension) al
 
 ---
 
+## 11.7 Session persistence and resume
+
+Read/analyse and create/mutate prompts both presume **one running session**. For real-world use, users also need to **leave** and **come back** — close the browser today, open it tomorrow, pick up the prior session, continue. The pattern is what Claude.ai, Claude Code, ChatGPT and Codex implement: persistent conversation list + resume.
+
+### How peer products do it
+
+| Product | Persists | Resume mechanism | Cross-session memory |
+|---|---|---|---|
+| Claude.ai (web) | Conversation = messages + artefacts, keyed by `(conversation_id, user_id)`, server-side store | User picks from sidebar → server reloads the tree | Opt-in "memory" feature — a separate user-scoped store of facts the user explicitly marks |
+| Claude Code (CLI) | Append-only JSONL at `~/.claude/projects/<project-hash>/<session-id>.jsonl` | `/resume` lists, picks one, replays the JSONL into context | `MEMORY.md` index + per-fact memory files — separate user-controlled layer |
+| Codex / ChatGPT | Conversations sidebar | Click → load message tree | "Memory" feature, opt-in, separate |
+
+Common shape:
+1. **Stable `session_id`** (not just an ephemeral cookie).
+2. **Persistent storage** — DB rows + (for RAG-equipped systems) vector store.
+3. **List/resume/delete API** for the consumer surface.
+4. **Replay on resume** — runtime state is reconstructed from the persistent log.
+5. **Cross-session memory is a SEPARATE layer**, opt-in, distinct from per-session knowledge.
+
+### What 17.0 already gives us
+
+- Cookie-bound session identity → can map to a stable `session_id` in a metadata table.
+- `SessionGraph` lifecycle (mint / acquire / release / drain) — already structured for the in-RAM case; extending the slot for "rehydrate from store" is mechanical.
+- Persistent vector-store backends for RAG (`qdrant`, `hana-vector`, `pg-vector`) — already configurable. The 18.0 knowledge-RAG can plug into them directly.
+- `/v1/usage` already runs per-session — the same identity routing handles per-session list/resume.
+
+What's missing:
+1. **Stable session_id** distinct from the cookie. The cookie maps to one, but users need to list / name / pick / delete by ID, not by cookie.
+2. **Session metadata store** — a small table (Postgres recommended) with `(user_id, session_id, title, created_at, last_used_at, status)`.
+3. **Persistent message history** — either in the metadata DB or as append-only JSONL á la Claude Code; latter is simpler ops-wise.
+4. **`/v1/sessions` API surface** — `GET` (list), `POST /<id>/resume` (claim), `DELETE /<id>` (purge).
+5. **Persistent knowledge-RAG keyed by session_id** — use one of the configured persistent backends; in-memory store remains the default for stateless deployments.
+
+### Cross-session memory — explicit separate scope
+
+The 17.0 project memory record notes: *"user-scope only lives in a separate auth-enabled downstream build; default server = global+session"*. Holding that line: cross-session ("user-scoped") memory is a SEPARATE knowledge collection, available only in auth-enabled downstream builds. The public open-source build supports session-scoped persistence (resume the same conversation) but does NOT auto-bleed facts across conversations.
+
+### Mid-plan resume after crash
+
+Hardest case: the server died mid-plan (3 of 5 nodes executed). Two options:
+- **(a) Full transactional resume.** Checkpoint plan state (executed/pending nodes, current Stepper subtree) at every `node-end`. On restart, restore and continue from the next un-executed node. Requires durable plan state, idempotent executor semantics, careful concurrency. Significant engineering — full workflow-engine territory. **Deferred to 18.x or 19.x.**
+- **(b) RAG-replay resume.** No checkpointing of plan state. On restart, the knowledge-RAG still holds whatever executors wrote. Coordinator detects `status: in-progress` sessions and either (i) prompts the consumer "the last run died mid-flight — restart? (planner will re-plan from current RAG state, completed work won't be repeated because the new planner sees it)" or (ii) silently flips the session to `idle` and waits for the next prompt. **This is the v1 18.0 answer** — it costs nothing extra because the knowledge-RAG was going to persist anyway, and re-planning from saturated RAG cheaply re-uses prior work without true checkpointing.
+
+### Open question for spec stage
+
+When session is resumed, do we replay the entire message history into the LLM context (like Claude.ai), or do we let the planner start fresh and rely on knowledge-RAG to provide the prior facts? Replay = the LLM sees the literal prior dialogue, useful for reference-by-pronoun ("the second method you suggested"). RAG-only = cheaper, lossier on conversational continuity. Probably a config switch.
+
+---
+
 ## 12. What this is NOT
 
 - It is not "add more nodes to a flat plan". It is a recursive runtime where decomposition is deferred to the point where ambiguity resolves.
