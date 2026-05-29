@@ -263,9 +263,14 @@ Additive to the 17.0 union. The existing `content` variant is preserved (used by
 
 ```ts
 interface StepperRef {
-  stepperId: string;          // stable UUID minted on Stepper construction; unique across the tree
-  parentStepperId?: string;   // None on root; UUID of the dispatching parent for non-root
-  name: string;               // debug label (worker / role name); NOT unique under parallel siblings
+  // Stable UUID minted at each DISPATCH — for a recursive child Stepper on
+  // its construction, and for a terminal executor invocation as a "virtual"
+  // ref (the executor is not a Stepper but is assigned one so its progress
+  // events and knowledge-RAG writes carry the same identity shape). Unique
+  // across the whole run.
+  stepperId: string;
+  parentStepperId?: string;   // None on root; stepperId of the dispatching parent otherwise
+  name: string;               // debug label (worker / role / executor name); NOT unique under parallel siblings
 }
 
 export type StreamChunk =
