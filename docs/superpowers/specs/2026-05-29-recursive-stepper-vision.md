@@ -165,6 +165,93 @@ I have not seen this combination formalised end-to-end in published systems. Ind
 6. **Cycle protection signature.** Hash `(prompt, ancestorPath)` only, or `(prompt, ancestorPath, knowledgeRagFingerprint)`? Second is stricter, costs an embedding lookup.
 7. **Streaming `StreamChunk` annotation.** Add `depth: number` and `path: string[]` for hierarchical client rendering, or keep flat?
 
+## 11.5 Modes of operation
+
+The 18.0 architecture is not one single execution pattern — it is **three modes** layered on the same Stepper contract. A deployment picks the mode (or default-per-request) based on task complexity.
+
+### Mode A — Cyclic flat with context-augmenting ReAct
+**For:** simple, single-task prompts where decomposition is overkill.
+**Shape:** one Stepper, no recursion. Its planner emits a single-step plan "answer the user prompt". The executor is a **context-augmenting ReAct loop**:
+
+```
+prompt + initial RAG retrieval → LLM call
+  → analyse response:
+       • clean final answer  → write to knowledge-RAG, return
+       • tool call            → execute MCP, append result, loop
+       • "I can't, I need X"  → query MCP-RAG for X capability,
+                                inject candidate tools into context, loop
+       • "I have A but need B" → same: query MCP-RAG with B's intent,
+                                 inject tools, loop
+  → repeat until clean final OR budget exhausted
+```
+
+The differentiator from today's tool-loop is the **meta-action on negative/conditional responses**. When the LLM says it lacks a capability, the loop treats the utterance as an MCP-RAG query and ENRICHES the available tool set on the fly. The LLM does not have to know what tools exist — it expresses needs, and the runtime maps needs to tools.
+
+Example trace for "Analyse program X":
+1. LLM: *"I can't read the program code."* → query MCP-RAG `"read program code"` → inject `ReadProgram`, retry step.
+2. LLM: *"Call ReadProgram(X)."* → execute, inject result.
+3. LLM: *"I see the source, but I need its include files."* → query MCP-RAG `"read include code"` → inject `GetIncludesList`, `ReadInclude`, retry.
+4. LLM: *"Call GetIncludesList(X)."* → execute. *"Call ReadInclude(I1)."* → execute. ...
+5. LLM: clean final analysis → write to knowledge-RAG, return.
+
+### Mode B — Deep recursive Stepper hierarchy
+**For:** multi-faceted decomposable tasks where the planner can't see everything in one shot. The "deep reasoning / deliberation" mode.
+**Shape:** the full §1-10 vision — every Stepper has its own planner, plans are shallow, decomposition is deferred, child Steppers recursively expand. Sufficiency oracle (§6/Q1) governs depth.
+
+### Mode C — Recommended hybrid (planner top, cyclic workers below)
+**For:** the production-realistic case — most real workloads.
+**Shape:** top-level planner emits a shallow plan (mode B at the root only, depth 1). Each plan step is dispatched to a **Mode A cyclic worker** (no further recursion). The cyclic worker handles its assigned step with context-augmenting ReAct, writes the clean result to knowledge-RAG, returns.
+
+Why this is the sweet spot:
+- The planner provides structural decomposition — "first read code, then review it" — that pure ReAct cannot reach.
+- The workers handle local intelligence — discover tools, fetch missing context — without paying the cost of recursive planning at every level.
+- Knowledge-RAG accumulates between workers, so step N+1 starts already enriched by step N's outputs.
+- Latency stays low — no per-level reviewer chain, no per-level finalizer.
+- Budget is naturally bounded — planner caps the number of workers, each worker has its own iteration cap.
+
+Mode C is the **default proposal** for 18.0. Modes A and B exist as the limit-cases (no planner / planner at every level). The runtime can degrade from C to A automatically if the planner emits a single-step plan, or escalate to B when sufficiency oracle (§6) signals a Stepper to recurse.
+
+### Three YAML modes, ONE runtime contract
+
+This translates to three pipeline modes exposed via config:
+
+```yaml
+mode: cyclic-react     # Mode A — context-augmenting ReAct
+mode: deep-stepper     # Mode B — full recursive Stepper hierarchy
+mode: planned-react    # Mode C — root planner + cyclic-react workers (default)
+```
+
+But **internally there is ONE Stepper contract** — the modes differ only by which planner / executor / recursion policy is wired:
+
+| Mode | Stepper depth cap | Planner | Leaf executor | Runtime composition |
+|---|---|---|---|---|
+| `cyclic-react` | 0 (single Stepper) | trivial single-step planner ("answer the prompt") | `CyclicReActExecutor` (uses `INeedResolver`) | flat |
+| `deep-stepper` | ∞ (bounded by §6) | full `IStepperPlanner` at every level | recursive child Stepper | tree |
+| `planned-react` | 1 (root planner, leaves are cyclic) | full `IStepperPlanner` at root | each leaf step → a `cyclic-react` Stepper | mixed |
+
+Shared components implemented once: `IStepperPlanner`, `IStepperInterpreter`, `IExecutor`, `IKnowledgeRag`, `INeedResolver`, `ISufficiencyOracle`, the recursive dispatch mechanic, the knowledge-RAG accumulator contract. The three "pipelines" are wiring configurations, not three independent implementations.
+
+### Context-augmenting ReAct — the under-recognised pattern
+
+The "LLM expresses a need → runtime translates need into tool/RAG retrieval → tools/context injected, retry" loop is the single most important new pattern in modes A and C. It deserves its own contract:
+
+```ts
+interface INeedResolver {
+  /** Inspect an LLM utterance for a 'need' signal (cannot do X, lacks Y).
+   *  Return the augmentations to apply (tools to inject, RAG queries to run)
+   *  or undefined if the response is a clean answer or a normal tool call. */
+  resolve(response: string): Promise<{
+    queryToolsRag?: string;
+    queryKnowledgeRag?: string;
+    injectTools?: string[];
+  } | undefined>;
+}
+```
+
+Implementations can be deterministic (regex over phrasings like "I can't" / "I need") or LLM-driven (small classifier call: "is this utterance expressing a need, or a clean answer, or a tool call?").
+
+---
+
 ## 12. What this is NOT
 
 - It is not "add more nodes to a flat plan". It is a recursive runtime where decomposition is deferred to the point where ambiguity resolves.
