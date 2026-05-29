@@ -18,6 +18,8 @@ import type {
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
+  IToolsRagHandle,
+  LlmTool,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -1095,18 +1097,68 @@ export class SmartServer {
           return new KnowledgeRag(backend, sessionId);
         };
 
-        // ToolsRag handle: wrap the shared IRag when available.
-        // IToolsRagHandle expects LlmTool[]; for now return empty —
-        // the executor queries MCP directly. A full adapter is wired in Task 18.
-        const toolsRagHandle: import('@mcp-abap-adt/llm-agent').IToolsRagHandle =
-          {
-            async query(_text: string, _k?: number) {
-              return [];
-            },
-            lookup(_name: string) {
-              return undefined;
-            },
-          };
+        // ToolsRag handle: real adapter over the server's tools RAG store + MCP
+        // catalog. Implements IToolsRagHandle for the Stepper runtime:
+        //   query(text, k) — semantic search via toolsRag+embedder when available;
+        //                     catalog-order fallback when neither is present.
+        //   lookup(name)   — returns the tool schema from the MCP catalog by name
+        //                     (populated lazily on first query()).
+        //
+        // Catalog note: mcpClients may not have connected yet at this point (they
+        // connect inside builder.build()). The catalog Promise is resolved lazily
+        // on the first query/lookup call so the connection window is satisfied.
+        const stepperMcpClients = mcpClients ?? [];
+        // Lazily-populated catalog: name → LlmTool.
+        let catalogCache: Map<string, LlmTool> | undefined;
+        const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
+          if (catalogCache) return catalogCache;
+          const catalog = new Map<string, LlmTool>();
+          await Promise.allSettled(
+            stepperMcpClients.map(async (client) => {
+              const result = await client.listTools();
+              if (result.ok) {
+                for (const t of result.value) {
+                  if (!catalog.has(t.name)) {
+                    catalog.set(t.name, t as LlmTool);
+                  }
+                }
+              }
+            }),
+          );
+          catalogCache = catalog;
+          return catalog;
+        };
+        const toolsRagHandle: IToolsRagHandle = {
+          async query(text: string, k?: number) {
+            const limit = k ?? 20;
+            const catalog = await ensureCatalog();
+            // Semantic path: requires both a vector store and an embedder.
+            if (toolsRag && resolvedEmbedder) {
+              const embedding = new QueryEmbedding(text, resolvedEmbedder);
+              const ragResult = await toolsRag.query(embedding, limit);
+              if (ragResult.ok) {
+                const hits: LlmTool[] = [];
+                for (const r of ragResult.value) {
+                  const id = r.metadata.id as string | undefined;
+                  if (id?.startsWith('tool:')) {
+                    const name = id.slice(5).replace(/:.*$/, '');
+                    const tool = catalog.get(name);
+                    if (tool) hits.push(tool);
+                  }
+                }
+                if (hits.length > 0) return hits;
+              }
+            }
+            // Catalog-order fallback: return first `limit` tools from the MCP catalog.
+            return [...catalog.values()].slice(0, limit);
+          },
+          lookup(name: string) {
+            // Synchronous: returns from the in-memory cache populated by ensureCatalog.
+            // Returns undefined before the first query() call — callers that need
+            // a schema before any query should call query() first.
+            return catalogCache?.get(name);
+          },
+        };
 
         // Mint helpers (monotone counters, server-scoped).
         let stepperCounter = 0;
