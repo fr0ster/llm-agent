@@ -154,10 +154,39 @@ export interface IExecutor {
   }>;
 }
 
+export interface KnowledgeEntryMetadata {
+  traceId: string;             // trace this entry belongs to (per-prompt)
+  turnId: string;              // consumer-prompt turn within the session
+  stepperId: string;           // stable id (NOT name) of the Stepper that wrote this
+  parentStepperId?: string;    // for topology reconstruction
+  task: string;                // the step's goal text — what the Stepper was working on
+  artifactType: string;        // 'source-code' | 'mcp-result' | 'analysis-finding' | …
+  toolName?: string;           // populated when artifactType = 'mcp-result'
+  createdAt: string;           // ISO-8601
+}
+
+export interface KnowledgeEntry {
+  content: string;
+  metadata: KnowledgeEntryMetadata;
+  // implementation also stores the semantic embedding internally
+}
+
+export interface KnowledgeFilter {
+  traceId?: string;
+  turnId?: string;
+  stepperId?: string;
+  parentStepperId?: string;
+  artifactType?: string | readonly string[];
+  toolName?: string;
+}
+
 export interface IKnowledgeRagHandle {
-  query(text: string, k?: number): Promise<readonly KnowledgeEntry[]>;
-  write(entry: { content: string; metadata?: Record<string, unknown> }): Promise<void>;
-  fingerprint(): string;  // cheap snapshot id, for B.6 diagnostic only
+  /** Semantic similarity search, optionally narrowed by metadata. */
+  query(text: string, opts?: { k?: number; filter?: KnowledgeFilter }): Promise<readonly KnowledgeEntry[]>;
+  /** Append a step artefact. metadata is REQUIRED. */
+  write(entry: { content: string; metadata: KnowledgeEntryMetadata }): Promise<void>;
+  /** Cheap snapshot id of the current per-session collection state (count + sum-of-ids). Used for cycle-protection diagnostics in §B.6 only. */
+  fingerprint(): string;
 }
 
 export interface IToolsRagHandle {
@@ -305,7 +334,12 @@ Emits `mcp-call` / `mcp-result` / `tokens-used` / `llm-call-start/end` events.
 
 ### D.7 `RootFinalizer`
 
-`packages/llm-agent-libs/src/coordinator/stepper/root-finalizer.ts` — coordinator-boundary component (not a Stepper). Takes the consumer prompt + knowledge-RAG read handle, runs one LLM call with a system prompt that instructs: "compose the final answer from the provided knowledge entries; if any required fact is missing, return `{insufficient: missing[]}` instead". Streams its text output as `kind: 'content'` chunks.
+`packages/llm-agent-libs/src/coordinator/stepper/root-finalizer.ts` — coordinator-boundary component (not a Stepper). Takes the consumer prompt + knowledge-RAG read handle + the current `traceId` and `turnId`. Default behaviour:
+
+- Reads ONLY the entries for the current `turnId` via `knowledgeRag.query(prompt, { filter: { turnId } })`. This prevents finalizer from picking up artefacts from prior turns of the same session by accident.
+- Optional override via config (`coordinator.finalizer.scope: 'session' | 'turn'`, default `'turn'`) widens the read to the whole session when conversation continuity is desired.
+
+Runs one LLM call with a system prompt that instructs: "compose the final answer from the provided knowledge entries; if any required fact is missing, return `{insufficient: missing[]}` instead". Streams its text output as `kind: 'content'` chunks.
 
 ### D.8 `buildStepperRoot`
 
