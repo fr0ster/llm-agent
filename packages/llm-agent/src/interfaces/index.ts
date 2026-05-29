@@ -33,6 +33,11 @@ export type {
   IErrorStrategy,
 } from './error-strategy.js';
 export type {
+  FinalizerInput,
+  FinalizerResult,
+  IFinalizer,
+} from './finalizer.js';
+export type {
   CircuitBreakerStatus,
   HealthComponentStatus,
   HealthStatus,
@@ -83,6 +88,7 @@ export type {
   IPlanner,
   PlannerCatalogEntry,
   PlannerInput,
+  PlannerResult,
 } from './planner.js';
 export type {
   IPluginLoader,
@@ -126,17 +132,26 @@ export type { IReranker } from './reranker.js';
 export type {
   ExecutionFailureInput,
   ExecutionReviewDecision,
+  ExecutionReviewResult,
   IReviewStrategy,
   ReviewInput,
+  ReviewResult,
   ReviewVerdict,
 } from './review.js';
 export type { ISessionManager } from './session.js';
+export type { SessionIdentity } from './session-identity.js';
 export type {
   ISkill,
   ISkillManager,
   ISkillMeta,
   ISkillResource,
 } from './skill.js';
+export type {
+  IStateOracle,
+  StateOracleInput,
+  StateOracleResult,
+} from './state-oracle.js';
+export type { OnPartial, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
   ISubAgentInput,

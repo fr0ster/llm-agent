@@ -1,0 +1,44 @@
+# Baseline DAG coordinator — every role on the same flagship model.
+# Useful as a quality ceiling to compare hybrid configs against.
+#
+# Per-role lookup chain (this PR):
+#   llm.<role> → llm.main → pipeline.llm.main
+#
+# Here only `main` is set, so every unspecified role (planner, reviewer,
+# finalizer, oracle) silently falls back to it.
+
+port: ${SMART_SERVER_PORT:-4014}
+host: 0.0.0.0
+mode: smart
+
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  activation: explicit
+  planner:
+    type: llm
+    plannerLlm: main             # → llm.main (sonnet)
+  # reviewer / finalizer / stateOracle omitted → defaults:
+  #   reviewer    = unused (no per-node review)
+  #   finalizer   = PassthroughFinalizer (yields interpreter.output verbatim)
+  #   stateOracle = none (NeedInfoSignal would surface as OrchestratorError)
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects via live SAP MCP tools.
+    config: ./worker-sonnet.yaml
+
+logDir: ./.run/dag-sonnet-sessions
+log: ./.run/dag-sonnet-server.log

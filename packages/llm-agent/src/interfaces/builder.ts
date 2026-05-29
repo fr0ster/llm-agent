@@ -7,8 +7,9 @@ import type {
 } from './agent-contracts.js';
 import type { ILlmApiAdapter } from './api-adapter.js';
 import type { ILlm } from './llm.js';
+import type { IMcpClient } from './mcp-client.js';
 import type { IModelProvider } from './model-provider.js';
-import type { IRag } from './rag.js';
+import type { IRag, IRagRegistry } from './rag.js';
 import type { IRequestLogger } from './request-logger.js';
 import type { LlmStreamChunk, Result } from './types.js';
 
@@ -70,6 +71,11 @@ export interface SmartAgentHandle<T extends ISmartAgent = ISmartAgent> {
   circuitBreakers: CircuitBreaker[];
   /** RAG stores (for config hot-reload weight updates). */
   ragStores: SmartAgentRagStores;
+  /** The RAG registry composed by the builder (shared global, injected per-session). */
+  ragRegistry: IRagRegistry;
+  /** The connected upstream MCP clients (shared global, injected per-session
+   *  via withMcpClients to skip re-connect + re-vectorize). Empty when no MCP. */
+  mcpClients: IMcpClient[];
   /** Model provider for discovery. Undefined when not available. */
   modelProvider?: IModelProvider;
   /** Look up a registered API adapter by name. */

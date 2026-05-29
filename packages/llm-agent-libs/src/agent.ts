@@ -57,6 +57,7 @@ export {
 import type { IPipeline } from './interfaces/pipeline.js';
 import type { ILogger } from './logger/index.js';
 import { NoopRequestLogger } from './logger/noop-request-logger.js';
+import { summaryToUsage } from './logger/session-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
@@ -677,7 +678,7 @@ export class SmartAgent {
       normalizedNames: externalTools.map((t) => t.name),
     });
     opts?.sessionLogger?.logStep('pipeline_start', { mode, textOrMessages });
-    this.requestLogger.startRequest();
+    this.requestLogger.startRequest(traceId);
 
     try {
       if (mode === 'pass') {
@@ -1080,7 +1081,7 @@ export class SmartAgent {
       for await (const chunk of stream) yield chunk;
       rootSpan.setStatus('ok');
     } finally {
-      this.requestLogger.endRequest();
+      this.requestLogger.endRequest(traceId);
       rootSpan.end();
       timeoutCleanup?.();
       this.metrics.requestLatency.record(Date.now() - requestStart);
@@ -1223,18 +1224,21 @@ export class SmartAgent {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('iteration_limit_reached');
         toolLoopSpan.end();
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'length',
-            usage: {
-              ...usage,
-              models: this.requestLogger.getSummary().byModel,
+        {
+          const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'length',
+              usage: {
+                ...summaryToUsage(summary),
+                models: summary.byModel,
+              },
+              timing: timingLog,
             },
-            timing: timingLog,
-          },
-        };
+          };
+        }
         return;
       }
       // Refresh MCP tools on each iteration (when enabled)
@@ -1579,14 +1583,14 @@ export class SmartAgent {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
-        const summary = this.requestLogger.getSummary();
+        const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
         yield {
           ok: true,
           value: {
             content: '',
             finishReason: finishReason || 'stop',
             usage: {
-              ...usage,
+              ...summaryToUsage(summary),
               models: summary.byModel,
             },
             timing: timingLog,
@@ -1694,18 +1698,21 @@ export class SmartAgent {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.setStatus('ok');
         toolLoopSpan.end();
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'tool_calls',
-            usage: {
-              ...usage,
-              models: this.requestLogger.getSummary().byModel,
+        {
+          const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'tool_calls',
+              usage: {
+                ...summaryToUsage(summary),
+                models: summary.byModel,
+              },
+              timing: timingLog,
             },
-            timing: timingLog,
-          },
-        };
+          };
+        }
         return;
       }
       if (content || internalCalls.length > 0)
@@ -1733,18 +1740,21 @@ export class SmartAgent {
         timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
         toolLoopSpan.addEvent('tool_call_limit_reached');
         toolLoopSpan.end();
-        yield {
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'length',
-            usage: {
-              ...usage,
-              models: this.requestLogger.getSummary().byModel,
+        {
+          const summary = this.requestLogger.getSummary(opts?.trace?.traceId);
+          yield {
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'length',
+              usage: {
+                ...summaryToUsage(summary),
+                models: summary.byModel,
+              },
+              timing: timingLog,
             },
-            timing: timingLog,
-          },
-        };
+          };
+        }
         return;
       }
       const batch = internalCalls.slice(0, remaining);
@@ -1965,6 +1975,7 @@ export class SmartAgent {
       completionTokens: res.ok ? (res.value.usage?.completionTokens ?? 0) : 0,
       totalTokens: res.ok ? (res.value.usage?.totalTokens ?? 0) : 0,
       durationMs: Date.now() - summarizeStart,
+      requestId: opts?.trace?.traceId,
     });
     if (!res.ok) return { ok: true, value: h };
     return {

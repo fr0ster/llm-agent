@@ -29,18 +29,19 @@ const input: ReviewInput = {
 
 describe('LlmReviewStrategy', () => {
   it('returns pass:true on a positive verdict', async () => {
-    const v = await new LlmReviewStrategy(llm('{"pass": true}')).review(input);
-    assert.deepEqual(v, { pass: true });
+    const r = await new LlmReviewStrategy(llm('{"pass": true}')).review(input);
+    // `usage` lives on the wrapper now (undefined here since the stub omits it).
+    assert.equal(r.verdict.pass, true);
   });
 
   it('returns pass:false with feedback on a negative verdict', async () => {
-    const v = await new LlmReviewStrategy(
+    const r = await new LlmReviewStrategy(
       llm('{"pass": false, "feedback": "no worker can read tables"}'),
     ).review(input);
-    assert.deepEqual(v, {
-      pass: false,
-      feedback: 'no worker can read tables',
-    });
+    assert.equal(r.verdict.pass, false);
+    if (r.verdict.pass === false) {
+      assert.equal(r.verdict.feedback, 'no worker can read tables');
+    }
   });
 
   it('throws on malformed JSON', async () => {
@@ -107,18 +108,20 @@ describe('LlmReviewStrategy', () => {
         '{"action":"revise","plan":{"nodes":[{"id":"r1","goal":"modify table T","agent":"w"}],"createdAt":0}}',
       ),
     );
-    const d = await s.reviewExecutionFailure(failInput);
-    assert.equal(d.action, 'revise');
+    const r = await s.reviewExecutionFailure(failInput);
+    assert.equal(r.decision.action, 'revise');
     assert.equal(
-      d.action === 'revise' ? d.revisedPlan.nodes[0].goal : '',
+      r.decision.action === 'revise'
+        ? r.decision.revisedPlan.nodes[0].goal
+        : '',
       'modify table T',
     );
   });
 
   it('reviewExecutionFailure parses an abort decision', async () => {
     const s = new LlmReviewStrategy(llm('{"action":"abort"}'));
-    const d = await s.reviewExecutionFailure(failInput);
-    assert.deepEqual(d, { action: 'abort' });
+    const r = await s.reviewExecutionFailure(failInput);
+    assert.equal(r.decision.action, 'abort');
   });
 
   it('reviewExecutionFailure throws on malformed JSON', async () => {
@@ -155,16 +158,112 @@ describe('LlmReviewStrategy', () => {
       (e: unknown) => e instanceof ClarifySignal,
     );
   });
+
+  it('review() attaches LLM usage onto NeedInfoSignal', async () => {
+    const usage = { promptTokens: 4, completionTokens: 1, totalTokens: 5 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"q?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) => e instanceof NeedInfoSignal && e.usage?.totalTokens === 5,
+    );
+  });
+
+  it('review() attaches LLM usage onto ClarifySignal', async () => {
+    const usage = { promptTokens: 4, completionTokens: 1, totalTokens: 5 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"clarify":"yes?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) => e instanceof ClarifySignal && e.usage?.totalTokens === 5,
+    );
+  });
+
+  it('review() attaches LLM usage onto malformed-JSON Error (parse-path spend not lost)', async () => {
+    const usage = { promptTokens: 11, completionTokens: 3, totalTokens: 14 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{ not json }', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /malformed JSON/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 14,
+    );
+  });
+
+  it('review() attaches LLM usage onto shape-error Error (non-boolean pass)', async () => {
+    const usage = { promptTokens: 8, completionTokens: 2, totalTokens: 10 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"pass":"yes"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).review(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /boolean 'pass'/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 10,
+    );
+  });
+
+  it('reviewExecutionFailure attaches LLM usage onto parse-error Error', async () => {
+    const usage = { promptTokens: 12, completionTokens: 3, totalTokens: 15 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: 'not really json', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).reviewExecutionFailure(failInput),
+      (e: unknown) =>
+        e instanceof Error &&
+        /JSON object/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 15,
+    );
+  });
+
+  it('reviewExecutionFailure attaches LLM usage onto NeedInfoSignal', async () => {
+    const usage = { promptTokens: 6, completionTokens: 2, totalTokens: 8 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"q?"}', usage },
+      }),
+    } as unknown as ILlm;
+    await assert.rejects(
+      () => new LlmReviewStrategy(stub).reviewExecutionFailure(failInput),
+      (e: unknown) => e instanceof NeedInfoSignal && e.usage?.totalTokens === 8,
+    );
+  });
 });
 
 describe('NoopReviewStrategy', () => {
   it('always passes', async () => {
-    const v = await new NoopReviewStrategy().review(input);
-    assert.deepEqual(v, { pass: true });
+    const r = await new NoopReviewStrategy().review(input);
+    assert.deepEqual(r, { verdict: { pass: true } });
   });
 
   it('reviewExecutionFailure always aborts', async () => {
-    const d = await new NoopReviewStrategy().reviewExecutionFailure({
+    const r = await new NoopReviewStrategy().reviewExecutionFailure({
       plan: { nodes: [], createdAt: 0 },
       trace: [],
       failedNodeId: 'x',
@@ -172,6 +271,6 @@ describe('NoopReviewStrategy', () => {
       agents: [],
       sessionId: 't',
     });
-    assert.deepEqual(d, { action: 'abort' });
+    assert.deepEqual(r, { decision: { action: 'abort' } });
   });
 });

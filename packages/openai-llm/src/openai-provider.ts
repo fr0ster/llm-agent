@@ -81,9 +81,9 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
 
       const usage = response.data.usage
         ? {
-            prompt_tokens: response.data.usage.prompt_tokens,
-            completion_tokens: response.data.usage.completion_tokens,
-            total_tokens: response.data.usage.total_tokens,
+            promptTokens: response.data.usage.prompt_tokens,
+            completionTokens: response.data.usage.completion_tokens,
+            totalTokens: response.data.usage.total_tokens,
           }
         : undefined;
 
@@ -173,15 +173,21 @@ export class OpenAIProvider extends BaseLLMProvider<OpenAIConfig> {
                 ...(toolCalls ? { toolCalls } : {}),
               };
             }
-            // Usage-only chunk (stream_options: include_usage)
-            if (parsed.usage && !choice?.delta) {
+            // Usage chunk. OpenAI emits it as a separate chunk with empty
+            // `choices`, but DeepSeek (and some other OpenAI-compatible APIs)
+            // attaches `usage` to the FINAL delta chunk that ALSO carries
+            // `finish_reason:"stop"` (with empty `delta.content`). Cover both
+            // by yielding a usage chunk whenever `parsed.usage` is present —
+            // independent of whether the same payload also produced a delta
+            // yield above.
+            if (parsed.usage) {
               yield {
                 content: '',
                 raw: parsed,
                 usage: {
-                  prompt_tokens: parsed.usage.prompt_tokens,
-                  completion_tokens: parsed.usage.completion_tokens,
-                  total_tokens: parsed.usage.total_tokens,
+                  promptTokens: parsed.usage.prompt_tokens,
+                  completionTokens: parsed.usage.completion_tokens,
+                  totalTokens: parsed.usage.total_tokens,
                 },
               };
             }

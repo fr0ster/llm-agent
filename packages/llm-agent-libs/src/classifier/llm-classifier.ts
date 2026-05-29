@@ -153,6 +153,7 @@ export class LlmClassifier implements ISubpromptClassifier {
             ? (llmResult.value.usage?.totalTokens ?? 0)
             : 0,
           durationMs: Date.now() - chatStart,
+          requestId: options?.trace?.traceId,
         });
       }
       if (!llmResult.ok)

@@ -2,6 +2,8 @@
  * Core types for LLM Proxy
  */
 
+import type { LlmUsage } from './interfaces/types.js';
+
 export interface Message {
   /**
    * Message role
@@ -57,11 +59,14 @@ export interface LLMResponse {
     name?: string;
     arguments?: string;
   }>;
-  usage?: {
-    prompt_tokens: number;
-    completion_tokens: number;
-    total_tokens: number;
-  };
+  /**
+   * Normalized token usage in camelCase (LlmUsage). Providers MUST map their
+   * SDK-specific shape (e.g. OpenAI's snake_case `prompt_tokens`, Anthropic's
+   * `input_tokens`/`output_tokens`, SAP AI SDK's `prompt_tokens`) to this
+   * canonical shape so downstream consumers (tool-loop accumulator,
+   * /v1/usage capture, RAG cost metering) can read it uniformly.
+   */
+  usage?: LlmUsage;
 }
 
 export interface LLMProviderConfig {

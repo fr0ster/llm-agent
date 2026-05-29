@@ -44,6 +44,13 @@ export {
   type ConfigWatcherOptions,
   type HotReloadableConfig,
 } from './config/config-watcher.js';
+export {
+  FINALIZER_SYSTEM,
+  LlmFinalizer,
+  PassthroughFinalizer,
+  SubAgentStateOracle,
+  TemplateFinalizer,
+} from './coordinator/dag/index.js';
 // ---------------------------------------------------------------------------
 // Coordinator strategies
 // ---------------------------------------------------------------------------
@@ -161,7 +168,19 @@ export {
 // Session
 // ---------------------------------------------------------------------------
 export { NoopSessionManager } from './session/noop-session-manager.js';
+export { SessionGraph } from './session/session-graph.js';
+export type {
+  SessionAgentParts,
+  SessionGraphFactoryOptions,
+  SessionGraphIdentity,
+} from './session/session-graph-factory.js';
+export { SessionGraphFactory } from './session/session-graph-factory.js';
 export { SessionManager } from './session/session-manager.js';
+export type {
+  SessionGraphSource,
+  SessionRegistryOptions,
+} from './session/session-registry.js';
+export { SessionRegistry } from './session/session-registry.js';
 // ---------------------------------------------------------------------------
 // Skills
 // ---------------------------------------------------------------------------

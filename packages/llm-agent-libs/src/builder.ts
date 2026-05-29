@@ -1375,6 +1375,8 @@ export class SmartAgentBuilder {
       },
       circuitBreakers,
       ragStores,
+      ragRegistry,
+      mcpClients,
       modelProvider,
       getApiAdapter: (name: string) => apiAdapters.get(name),
       listApiAdapters: () => [...apiAdapters.keys()],

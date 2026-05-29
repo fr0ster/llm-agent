@@ -440,6 +440,9 @@ export class ToolLoopHandler implements IStageHandler {
         if (chunk.content) {
           content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
+          if (ctx.onPartial) {
+            ctx.onPartial({ kind: 'content', delta: chunk.content });
+          }
         }
         if (chunk.toolCalls) {
           // Register newly seen external tool indices
@@ -479,6 +482,13 @@ export class ToolLoopHandler implements IStageHandler {
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
             }
+            if (tc.name && ctx.onPartial) {
+              ctx.onPartial({
+                kind: 'tool-call',
+                name: tc.name,
+                args: tc.arguments,
+              });
+            }
           }
         }
         if (chunk.finishReason) finishReason = chunk.finishReason;
@@ -509,6 +519,7 @@ export class ToolLoopHandler implements IStageHandler {
         completionTokens: iterCompletionTokens,
         totalTokens: iterTotalTokens,
         durationMs: llmCallDuration,
+        requestId: ctx.options?.trace?.traceId,
       });
 
       const toolCalls = Array.from(toolCallsMap.values()).map((tc) => {
@@ -882,6 +893,11 @@ export class ToolLoopHandler implements IStageHandler {
           tool_call_id: tc.id,
         });
         ctx.requestLogger.logToolCall({
+          // Stamp requestId so tool executions land in the per-traceId delta
+          // bucket — without it, `getSummary(traceId).toolCalls` stays 0 even
+          // when the request actually ran tools (only the session-cumulative
+          // counter would tick).
+          requestId: ctx.options?.trace?.traceId,
           toolName: tc.name,
           success: !!res?.ok,
           durationMs: r.duration,

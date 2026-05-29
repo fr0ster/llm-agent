@@ -1,20 +1,47 @@
 import type {
-  DagPlan,
   ILlm,
   IPlanner,
+  LlmUsage,
   PlanNode,
   PlannerInput,
+  PlannerResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
 import { renderAncestorContext } from './render-ancestor-context.js';
 
+/**
+ * Attach LLM usage to a thrown Error so the coordinator's runRole catch can
+ * still bill the spend (HIGH/MEDIUM finding: parse-/shape-error paths went
+ * through `throw new Error(...)` and the captured `res.usage` was lost — yet
+ * the LLM call WAS made and tokens WERE spent). Plain Errors with a `usage`
+ * property work in JS without subclassing; runRole reads it via a type cast.
+ */
+function withUsage(err: Error, usage: LlmUsage | undefined): Error {
+  if (usage) (err as Error & { usage?: LlmUsage }).usage = usage;
+  return err;
+}
+
 // Static planner instructions. The agent catalog and user prompt are NOT here —
 // they are dynamic and go into the per-call `task` (see plan()).
-const PLANNER_SYSTEM = `You are a planner. Decompose the user request into a DAG of tasks.
+export const PLANNER_SYSTEM = `You are a planner. Decompose the user request into a DAG of tasks.
 Each node: {"id","goal","agent"(optional worker name),"dependsOn"(optional ids),"needsInput"(optional bool)}.
 Use "dependsOn" to express order/data-flow; independent nodes run in parallel.
-If the request needs no decomposition, emit a SINGLE node.
+
+DECOMPOSITION COST. Each node spawns a fresh worker pipeline. Workers
+DO NOT share fetched data, tools, or context across nodes — every node
+pays the full classify + RAG + tool-loop overhead again, and any
+source / configuration / table data already fetched by a previous
+node will be re-fetched. Over-decomposition is the most common cause
+of large token bills. Decompose ONLY when:
+- nodes target DIFFERENT objects (e.g. compare program A vs program B),
+- nodes can TRULY run in parallel for wall-clock speedup, or
+- a later node depends on a fact ONLY discoverable by an earlier node.
+
+For analysing a SINGLE object along multiple dimensions (e.g. "review
+program X for security, performance, clean-core, maintainability") use
+ONE node — the worker covers every dimension in one tool-loop.
+
 Emit a plan-level "objective". Respond with ONLY one of:
 {"objective":"...","nodes":[{"id":"n1","goal":"...","agent":"<worker name or omit>","dependsOn":[],"needsInput":false}]}
 {"needInfo":"<query>"}  — if you need a reality fact before planning (e.g. which table exists)
@@ -27,16 +54,20 @@ Emit a plan-level "objective". Respond with ONLY one of:
  */
 export class LlmDagPlanner implements IPlanner {
   readonly name = 'llm-dag';
+  /** Best-effort model identifier from the underlying ILlm (for logger
+   *  attribution). May be undefined for ILlm impls that do not expose one. */
+  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
+    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('planner', llm, {
       systemPrompt: PLANNER_SYSTEM,
       contextPolicy: 'optional',
     });
   }
 
-  async plan(input: PlannerInput): Promise<DagPlan> {
+  async plan(input: PlannerInput): Promise<PlannerResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -61,8 +92,11 @@ export class LlmDagPlanner implements IPlanner {
 
     const match = content.match(/\{[\s\S]*\}/);
     if (!match)
-      throw new Error(
-        `Planner output did not contain a JSON object: ${content.slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Planner output did not contain a JSON object: ${content.slice(0, 200)}`,
+        ),
+        res.usage,
       );
     // Field values come straight from untrusted JSON, so they are typed as
     // `unknown` and validated below before being narrowed to PlanNode.
@@ -82,47 +116,69 @@ export class LlmDagPlanner implements IPlanner {
     try {
       parsed = JSON.parse(match[0]);
     } catch {
-      throw new Error(
-        `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      // Forward LLM usage on the signal path so the coordinator can attribute
+      // planner spend even when the role short-circuits with a signal (HIGH
+      // finding: signal paths previously discarded the captured `res.usage`).
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
-      throw new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`);
+      throw withUsage(
+        new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`),
+        res.usage,
+      );
     }
     if (
       parsed.objective !== undefined &&
       typeof parsed.objective !== 'string'
     ) {
-      throw new Error(
-        `Planner objective must be a string: ${JSON.stringify(parsed.objective)}`,
+      throw withUsage(
+        new Error(
+          `Planner objective must be a string: ${JSON.stringify(parsed.objective)}`,
+        ),
+        res.usage,
       );
     }
     if (
       parsed.rationale !== undefined &&
       typeof parsed.rationale !== 'string'
     ) {
-      throw new Error(
-        `Planner rationale must be a string: ${JSON.stringify(parsed.rationale)}`,
+      throw withUsage(
+        new Error(
+          `Planner rationale must be a string: ${JSON.stringify(parsed.rationale)}`,
+        ),
+        res.usage,
       );
     }
     const nodes: PlanNode[] = parsed.nodes.map((n, i) => {
       if (typeof n.goal !== 'string' || n.goal.trim() === '') {
-        throw new Error(`Planner node is missing a goal: ${JSON.stringify(n)}`);
+        throw withUsage(
+          new Error(`Planner node is missing a goal: ${JSON.stringify(n)}`),
+          res.usage,
+        );
       }
       if (n.id !== undefined && typeof n.id !== 'string') {
-        throw new Error(
-          `Planner node has a non-string id: ${JSON.stringify(n)}`,
+        throw withUsage(
+          new Error(`Planner node has a non-string id: ${JSON.stringify(n)}`),
+          res.usage,
         );
       }
       if (n.agent !== undefined && typeof n.agent !== 'string') {
-        throw new Error(
-          `Planner node has a non-string agent: ${JSON.stringify(n)}`,
+        throw withUsage(
+          new Error(
+            `Planner node has a non-string agent: ${JSON.stringify(n)}`,
+          ),
+          res.usage,
         );
       }
       if (
@@ -130,13 +186,19 @@ export class LlmDagPlanner implements IPlanner {
         (!Array.isArray(n.dependsOn) ||
           n.dependsOn.some((d) => typeof d !== 'string'))
       ) {
-        throw new Error(
-          `Planner node dependsOn must be an array of strings: ${JSON.stringify(n)}`,
+        throw withUsage(
+          new Error(
+            `Planner node dependsOn must be an array of strings: ${JSON.stringify(n)}`,
+          ),
+          res.usage,
         );
       }
       if (n.needsInput !== undefined && typeof n.needsInput !== 'boolean') {
-        throw new Error(
-          `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
+        throw withUsage(
+          new Error(
+            `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
+          ),
+          res.usage,
         );
       }
       return {
@@ -148,10 +210,17 @@ export class LlmDagPlanner implements IPlanner {
       };
     });
     return {
-      nodes,
-      objective: parsed.objective as string | undefined,
-      rationale: parsed.rationale as string | undefined,
-      createdAt: Date.now(),
+      plan: {
+        nodes,
+        objective: parsed.objective as string | undefined,
+        rationale: parsed.rationale as string | undefined,
+        createdAt: Date.now(),
+      },
+      // Forward the underlying ILlm.chat usage on the WRAPPER (not on the
+      // plan itself) so the coordinator can attribute planner-LLM spend to
+      // the session/request logger without polluting the plan domain type
+      // (which the reviewer serializes via JSON.stringify into its prompt).
+      usage: res.usage,
     };
   }
 }

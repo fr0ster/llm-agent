@@ -9,16 +9,15 @@ import type {
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
-  IErrorStrategy,
+  ILlm,
   ILlmApiAdapter,
   ILogger,
   IMcpClient,
   IModelProvider,
   IModelResolver,
+  IRagRegistry,
   IRequestLogger,
-  IReviewStrategy,
   ISkillManager,
-  ISubAgent,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -34,31 +33,32 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type {
+  DagCoordinatorHandlerDeps,
   IPluginLoader,
+  SessionAgentParts,
+  SessionGraph,
   SmartAgent,
   StopReason,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
-  AbortErrorStrategy,
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
-  DagPlanInterpreter,
   DefaultSubAgentContextBuilder,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
-  LlmDagPlanner,
-  LlmReviewStrategy,
   makeLlm,
-  ReplanErrorStrategy,
+  SessionGraphFactory,
   SessionLogger,
+  SessionRegistry,
   SmartAgentBuilder,
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
   SmartAgentSubAgent,
+  SubAgentStateOracle,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
@@ -67,6 +67,7 @@ import {
   resolveAgentEmbedder,
   resolveToolsStoreEmbedder,
 } from './resolve-agent-embedder.js';
+import { resolveSessionIdentity } from './session-identity-resolver.js';
 
 // ---------------------------------------------------------------------------
 // Config
@@ -178,7 +179,7 @@ export interface SmartServerCircuitBreakerConfig {
 export interface SmartServerConfig {
   port?: number;
   host?: string;
-  llm: SmartServerLlmConfig;
+  llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
   rag?: SmartServerRagConfig;
   mcp?: SmartServerMcpConfig;
   agent?: SmartServerAgentConfig;
@@ -236,6 +237,15 @@ export interface SmartServerConfig {
    * `SmartServer.start()` once the parent LLMs are built.
    */
   coordinatorYaml?: import('./config.js').YamlCoordinator;
+  /**
+   * Per-session lifecycle tuning. Defaults: idleTtlMs=7_200_000 (2h),
+   * maxSessions=1000, cookieName='sid'.
+   */
+  session?: {
+    idleTtlMs?: number;
+    maxSessions?: number;
+    cookieName?: string;
+  };
 }
 
 /**
@@ -329,12 +339,16 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
 import {
   assertCoordinatorConfigShape,
+  normalizeLlmConfig,
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
   resolveCoordinatorPlanning,
+  resolveLlmConfig,
+  resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
 
@@ -352,9 +366,293 @@ export {
   type YamlConfig,
 } from './config.js';
 
+// ---------------------------------------------------------------------------
+// Worker-LLM cache + RAG-registry sharing (Task A7)
+// ---------------------------------------------------------------------------
+
+/**
+ * GLOBAL per-worker heavy clients — built once, injected by reference per
+ * session. In addition to LLM/embedder clients, the worker's OWN declared
+ * `toolsRag`/`historyRag`/`mcpClients` (if any) are cached here too — the
+ * per-session re-wire MUST prefer the worker's own resources over the
+ * parent's injected ones, so we build them once and reuse by reference.
+ */
+export interface WorkerLlmSet {
+  mainLlm: ILlm;
+  classifierLlm: ILlm;
+  helperLlm?: ILlm;
+  embedder?: IEmbedder;
+  /** Worker's OWN tools RAG, built from `subCfg.rag` if declared. */
+  toolsRag?: IRag;
+  /** Worker's OWN history RAG (mirrors flat-rag block, separate instance). */
+  historyRag?: IRag;
+  /**
+   * Worker's OWN MCP clients (from `subCfg.mcpClients` DI or built once from
+   * `subCfg.mcp`). Undefined means the worker did not declare any — caller
+   * may fall back to the parent's injected clients.
+   */
+  mcpClients?: IMcpClient[];
+  /**
+   * Shutdown function returned by the builder's `SmartAgentHandle.close()`
+   * for this worker (Fix #21). Disconnects MCP clients (and any other
+   * builder-owned resources) registered to this worker. Captured by
+   * `backfillWorkerCacheFromHandle` so `_drainWorkerCache()` can call it on
+   * config-reload (PUT /v1/config + hot-reload) and on server shutdown —
+   * without this, the per-worker handle is discarded by `buildSubAgent` and
+   * lazy rebuilds (Fix #18) accumulate MCP connections with no close path.
+   */
+  close?: () => Promise<void>;
+}
+
+/**
+ * Drain every cached worker's `close` (if any), then clear the cache map.
+ * Used by config-reload (PUT /v1/config + hot-reload — Fix #14/18/21) and by
+ * server `close()` to release per-worker MCP connections that were attached
+ * to the discarded `SmartAgentHandle`s.
+ *
+ * IMPORTANT — in-flight caveat: this aborts any request that is mid-call on
+ * a worker's MCP client. That is acceptable for an admin action (config
+ * reload, server shutdown) where the alternative is leaking connections.
+ * Server `close()` calls this AFTER `lifecycle.disposeAll()` so per-session
+ * graphs that reference worker clients are torn down first.
+ *
+ * Uses `Promise.allSettled` so one failing close cannot block the others.
+ */
+export async function drainWorkerCache(
+  cache: Map<string, WorkerLlmSet>,
+): Promise<void> {
+  const closers: Array<Promise<void>> = [];
+  for (const entry of cache.values()) {
+    if (entry.close) {
+      try {
+        closers.push(entry.close());
+      } catch {
+        // sync throw (defensive — close is async by contract)
+      }
+    }
+  }
+  cache.clear();
+  if (closers.length > 0) {
+    await Promise.allSettled(closers);
+  }
+}
+
+/**
+ * Build-once-per-worker resolver. The first time a worker name is seen, it
+ * constructs the worker's main/classifier/(optional helper) LLM + embedder and
+ * caches the set; every later call (e.g. each per-session worker re-wire)
+ * returns the SAME set by reference — never reconstructing LLM clients
+ * (locked invariant: LLM/embedder clients are global, built once).
+ *
+ * Accepts optional `makeToolsRag`/`makeHistoryRag`/`makeMcpClients` factories;
+ * when provided, the resolver builds them ONCE on the first miss and caches
+ * them on the returned set. Subsequent calls return the cached resources by
+ * reference — never re-vectorizing or re-connecting MCP.
+ */
+export async function resolveWorkerLlmSet(input: {
+  name: string;
+  cache: Map<string, WorkerLlmSet>;
+  makeMain: () => Promise<ILlm>;
+  makeClassifier: () => Promise<ILlm>;
+  makeHelper?: () => Promise<ILlm>;
+  makeEmbedder?: () => Promise<IEmbedder>;
+  makeToolsRag?: () => Promise<IRag>;
+  makeHistoryRag?: () => Promise<IRag>;
+  makeMcpClients?: () => Promise<IMcpClient[]>;
+}): Promise<WorkerLlmSet> {
+  const hit = input.cache.get(input.name);
+  if (hit) return hit;
+  const mainLlm = await input.makeMain();
+  const classifierLlm = await input.makeClassifier();
+  const helperLlm = input.makeHelper ? await input.makeHelper() : undefined;
+  const embedder = input.makeEmbedder ? await input.makeEmbedder() : undefined;
+  const toolsRag = input.makeToolsRag ? await input.makeToolsRag() : undefined;
+  const historyRag = input.makeHistoryRag
+    ? await input.makeHistoryRag()
+    : undefined;
+  const mcpClients = input.makeMcpClients
+    ? await input.makeMcpClients()
+    : undefined;
+  const set: WorkerLlmSet = {
+    mainLlm,
+    classifierLlm,
+    helperLlm,
+    embedder,
+    toolsRag,
+    historyRag,
+    mcpClients,
+  };
+  input.cache.set(input.name, set);
+  return set;
+}
+
+/**
+ * Backfill the per-worker cache entry from the BUILT handle (review HIGH #7).
+ *
+ * The primary `buildSubAgent` populates `cached.mcpClients`/`toolsRag`/
+ * `historyRag` only when the worker config provided DI factories. Workers
+ * configured with `subCfg.mcp: ...` (regular config that triggers the
+ * builder's own auto-connect) or with `subCfg.rag: ...` whose RAG is owned
+ * by the builder leave those slots empty — so per-session re-wires would
+ * fall back to the PARENT's MCP/RAG, losing the worker's own connection.
+ *
+ * After the builder finishes, this helper captures what the handle actually
+ * holds and stores it BY REFERENCE on the cache entry. Subsequent per-session
+ * re-wires read the same slots and find the worker's own resources.
+ *
+ * Pure helper, mutates `entry` in place. No-op when the corresponding slot
+ * is already populated (DI path wins) or when the handle has no resource for
+ * that slot (worker simply didn't declare one).
+ */
+export async function backfillWorkerCacheFromHandle(
+  entry: WorkerLlmSet,
+  handle: {
+    mcpClients?: IMcpClient[];
+    ragRegistry: { get(name: string): IRag | undefined };
+    close?: () => Promise<void>;
+  },
+): Promise<void> {
+  if (
+    (!entry.mcpClients || entry.mcpClients.length === 0) &&
+    handle.mcpClients &&
+    handle.mcpClients.length > 0
+  ) {
+    entry.mcpClients = handle.mcpClients;
+  }
+  if (!entry.toolsRag) {
+    const t = handle.ragRegistry.get('tools');
+    if (t) entry.toolsRag = t;
+  }
+  if (!entry.historyRag) {
+    const h = handle.ragRegistry.get('history');
+    if (h) entry.historyRag = h;
+  }
+  // Capture the per-worker shutdown function (Fix #21). If the entry already
+  // had a close from a previous build (e.g. the same worker name was rebuilt
+  // WITHOUT going through `drainWorkerCache` first — defence in depth), await
+  // the prior close before overwriting so its MCP connections do not leak.
+  if (handle.close) {
+    if (entry.close) {
+      try {
+        await entry.close();
+      } catch {
+        // Best-effort; never block the new build on a stale close failure.
+      }
+    }
+    entry.close = handle.close;
+  }
+}
+
+/**
+ * Share the parent RAG registry with subagents (per-session worker re-wire).
+ * Session/user/global collections written at the top level become visible to
+ * workers; the per-call scope filter (`rag-query.ts`) isolates by
+ * `ctx.sessionId` / `ctx.options.userId`. A worker's own declared store is
+ * registered INTO this same registry under its namespace. When the parent
+ * registry is undefined (no top-level registry yet — e.g. unit test seam),
+ * return undefined so the builder allocates its own SimpleRagRegistry.
+ */
+export function resolveSubAgentRagRegistry(input: {
+  parentRagRegistry: IRagRegistry | undefined;
+}): IRagRegistry | undefined {
+  return input.parentRagRegistry;
+}
+
+/**
+ * Options for `buildSessionLifecycle`. Composes the SessionGraphFactory + the
+ * SessionRegistry; exposes a thin facade so `_handle` stays unit-testable.
+ */
+export interface SessionLifecycleOptions {
+  idleTtlMs: number;
+  maxSessions: number;
+  cookieName: string;
+  mcpClients: IMcpClient[];
+  toolsRag: IRag | undefined;
+  ragRegistry: IRagRegistry;
+  buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
+  /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
+  logger?: ILogger;
+}
+
+/**
+ * Composes the cookie identity resolver + SessionGraphFactory + SessionRegistry
+ * into one lifecycle object the server's `_handle` consumes. The default MCP
+ * factory returns the shared GLOBAL clients by reference (one upstream
+ * connection); a creds-aware build swaps it out (out of scope here).
+ */
+export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
+  resolve: (
+    cookieHeader: string | undefined,
+    isHttps: boolean,
+  ) => ReturnType<typeof resolveSessionIdentity>;
+  acquire: (
+    sessionId: string,
+  ) => Promise<
+    ReturnType<SessionRegistry['acquire']> extends Promise<infer G> ? G : never
+  >;
+  release: (sessionId: string, graph?: SessionGraph) => void;
+  evictIdle: () => Promise<void>;
+  disposeAll: () => Promise<void>;
+  invalidateAll: () => Promise<void>;
+  registry: SessionRegistry;
+} {
+  const factory = new SessionGraphFactory({
+    mcpClientFactory: (_identity) => opts.mcpClients,
+    toolsRag: opts.toolsRag,
+    ragRegistry: opts.ragRegistry,
+    buildAgent: opts.buildAgent,
+    logger: opts.logger,
+  });
+  const registry = new SessionRegistry({
+    idleTtlMs: opts.idleTtlMs,
+    maxSessions: opts.maxSessions,
+    factory,
+  });
+  return {
+    resolve: (cookieHeader, isHttps) =>
+      resolveSessionIdentity({
+        cookieHeader,
+        cookieName: opts.cookieName,
+        maxAgeSeconds: Math.max(1, Math.floor(opts.idleTtlMs / 1000)),
+        isHttps,
+      }),
+    acquire: (sessionId) => registry.acquire(sessionId),
+    release: (sessionId, graph) => registry.release(sessionId, graph),
+    evictIdle: () => registry.evictIdle(),
+    disposeAll: () => registry.disposeAll(),
+    invalidateAll: () => registry.invalidateAll(),
+    registry,
+  };
+}
+
+export type SessionLifecycle = ReturnType<typeof buildSessionLifecycle>;
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
+  /**
+   * GLOBAL per-worker LLM/embedder cache. Populated lazily by `buildSubAgent`
+   * the first time each worker name is seen; subsequent per-session re-wires
+   * pull from this cache by reference (never reconstructing LLM clients).
+   */
+  private readonly _workerLlmCache = new Map<string, WorkerLlmSet>();
+  /** Lifecycle handle wired in `start()`; consumed by `_handle`. */
+  private _lifecycle?: SessionLifecycle;
+  /** Hoisted globals used by `buildSessionAgent` to re-wire fresh per-session workers. */
+  private _mainLlm?: ILlm;
+  private _classifierLlm?: ILlm;
+  private _helperLlm?: ILlm;
+  private _fileLogger?: ILogger;
+  private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
+  /**
+   * Captured DAG coordinator template — `deps` are stateless or LLM-bound and
+   * are reused across sessions; only `workers` + `stateOracle` are re-wired per
+   * session (review HIGH #1).
+   */
+  private _dagCoordinatorTemplate?: {
+    deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
+    oracleName?: string;
+  };
 
   constructor(config: SmartServerConfig) {
     this.cfg = config;
@@ -365,48 +663,76 @@ export class SmartServer {
     const fileLogger: ILogger = {
       log: (e) => log(e as unknown as Record<string, unknown>),
     };
+    this._fileLogger = fileLogger;
     const pipeline = this.cfg.pipeline;
 
     // ---- Composition root: resolve config → interfaces --------------------
 
-    // LLM resolution
+    // LLM resolution — normalize flat/map cfg.llm and derive pipeline fallback.
+    const llmMap = normalizeLlmConfig(this.cfg.llm);
+
+    // Adapt pipeline.llm.main (uses `baseURL`) → SmartServerLlmConfig (uses
+    // `url`) so resolveLlmConfig's pipelineFallback parameter speaks one
+    // shape. Returns undefined when no pipeline.llm.main is configured.
+    const pipelineFallback = (() => {
+      const pm = pipeline?.llm?.main;
+      if (!pm) return undefined;
+      return {
+        provider: pm.provider,
+        apiKey: pm.apiKey ?? '',
+        url: pm.baseURL,
+        model: pm.model,
+        temperature: pm.temperature,
+      } as SmartServerLlmConfig;
+    })();
+
+    const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
+
     const mainTemp = Number(
-      pipeline?.llm?.main?.temperature ?? this.cfg.llm.temperature ?? 0.7,
+      pipeline?.llm?.main?.temperature ?? topMain?.temperature ?? 0.7,
     );
     const mainLlm = pipeline?.llm?.main
       ? await makeLlm(pipeline.llm.main, mainTemp)
-      : await makeLlm(
-          {
-            // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-            // rejects a missing flat-schema provider before this runs.
-            provider: this.cfg.llm.provider ?? 'deepseek',
-            apiKey: this.cfg.llm.apiKey,
-            baseURL: this.cfg.llm.url,
-            model: this.cfg.llm.model,
-          },
-          mainTemp,
-        );
+      : topMain
+        ? await makeLlm(
+            {
+              provider: topMain.provider ?? 'deepseek',
+              apiKey: topMain.apiKey,
+              baseURL: topMain.url,
+              model: topMain.model,
+            },
+            mainTemp,
+          )
+        : (() => {
+            throw new Error(
+              'no LLM configured: provide top-level llm.main or pipeline.llm.main',
+            );
+          })();
 
     const classifierTemp = Number(
       pipeline?.llm?.classifier?.temperature ??
-        this.cfg.llm.classifierTemperature ??
+        topMain?.classifierTemperature ??
         0.1,
     );
     const classifierLlm = pipeline?.llm?.classifier
       ? await makeLlm(pipeline.llm.classifier, classifierTemp)
       : pipeline?.llm?.main
         ? await makeLlm(pipeline.llm.main, classifierTemp)
-        : await makeLlm(
-            {
-              // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-              // rejects a missing flat-schema provider before this runs.
-              provider: this.cfg.llm.provider ?? 'deepseek',
-              apiKey: this.cfg.llm.apiKey,
-              baseURL: this.cfg.llm.url,
-              model: this.cfg.llm.model,
-            },
-            classifierTemp,
-          );
+        : topMain
+          ? await makeLlm(
+              {
+                provider: topMain.provider ?? 'deepseek',
+                apiKey: topMain.apiKey,
+                baseURL: topMain.url,
+                model: topMain.model,
+              },
+              classifierTemp,
+            )
+          : (() => {
+              throw new Error(
+                'no LLM configured: provide top-level llm.main or pipeline.llm.main',
+              );
+            })();
 
     const helperLlm = pipeline?.llm?.helper
       ? await makeLlm(
@@ -414,6 +740,9 @@ export class SmartServer {
           Number(pipeline.llm.helper.temperature ?? 0.1),
         )
       : undefined;
+    this._mainLlm = mainLlm;
+    this._classifierLlm = classifierLlm;
+    this._helperLlm = helperLlm;
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -450,6 +779,7 @@ export class SmartServer {
       ...plugins.embedderFactories,
       ...this.cfg.embedderFactories, // config takes precedence over plugins
     };
+    this._mergedEmbedderFactories = mergedEmbedderFactories;
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
@@ -649,90 +979,98 @@ export class SmartServer {
             `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
           );
         }
-        // Resolve the planner LLM. Honor `coordinator.planner.plannerLlm` when
-        // set; otherwise fall back to the same resolution as linear mode
-        // ('main' → mainLlm, 'planner' or 'helper' → helperLlm ?? mainLlm).
-        const plannerBlock = coordCfg.planner as {
-          type?: string;
-          plannerLlm?: 'main' | 'planner' | 'helper';
-        };
-        const plannerLlmKey = plannerBlock?.plannerLlm;
-        const plannerLlm =
-          plannerLlmKey === 'main' ? mainLlm : (helperLlm ?? mainLlm);
 
-        const planner = new LlmDagPlanner(plannerLlm);
-
-        // Optional plan reviewer (presence of `coordinator.reviewer` = gate on).
-        let reviewer: IReviewStrategy | undefined;
-        if (coordCfg.reviewer !== undefined) {
-          const reviewerBlock = coordCfg.reviewer as {
-            plannerLlm?: 'main' | 'planner' | 'helper';
-          };
-          const reviewerLlm =
-            reviewerBlock.plannerLlm === 'main'
-              ? mainLlm
-              : (helperLlm ?? mainLlm);
-          reviewer = new LlmReviewStrategy(reviewerLlm);
-        }
-
-        const interpreter = new DagPlanInterpreter();
-        // Reuse the registry built above — same ISubAgent instances already
-        // passed to builder.withSubAgents(). No second buildSubAgent calls.
-        const oracleName = coordCfg.stateOracle as string | undefined;
-        let stateOracle: ISubAgent | undefined;
-        if (oracleName) {
-          stateOracle = registry.get(oracleName);
-          if (!stateOracle) {
-            throw new Error(
-              `coordinator.stateOracle '${oracleName}' is not a declared subagent`,
-            );
-          }
-        }
-        // The oracle is inspection-only — never a DAG worker. Exclude it from the
-        // catalog the planner sees and the interpreter dispatches to.
-        const workers: SubAgentRegistry = new Map(
-          [...registry].filter(([name]) => name !== oracleName),
-        );
-        // DAG mode plans against the worker catalog, so an empty worker set
-        // would plan against nothing and fail per-request in the interpreter.
-        // Fail loud at startup instead.
-        if (workers.size === 0) {
+        const built = await buildDagCoordinatorDeps({
+          coordCfg: coordCfg as Record<string, unknown>,
+          llmMap,
+          pipelineFallback,
+          mainLlm,
+          helperLlm,
+          mainTemp,
+          registry,
+          makeLlm: async (lc) =>
+            makeLlm(
+              {
+                provider: lc.provider ?? 'deepseek',
+                apiKey: lc.apiKey,
+                baseURL: lc.url,
+                model: lc.model,
+              },
+              Number(lc.temperature ?? mainTemp),
+            ),
+          warn: (m) => log({ event: 'config_warning', message: m }),
+        });
+        // built is defined when coordCfg.planner !== undefined.
+        if (!built) {
           throw new Error(
-            'coordinator.planner is set (DAG mode) but no workers are configured. ' +
-              'Add at least one entry under the top-level `subagents:` block.',
+            'internal: buildDagCoordinatorDeps returned undefined despite planner present',
           );
         }
-        const activation = resolveCoordinatorActivation(
-          (coordCfg.activation ?? 'explicit') as string,
-        );
 
-        let errorStrategy: IErrorStrategy | undefined;
-        const esCfg = coordCfg.errorStrategy as
-          | { type?: string; maxReplans?: number }
-          | undefined;
-        if (esCfg?.type === 'replan') {
-          errorStrategy = new ReplanErrorStrategy(planner, esCfg.maxReplans);
-        } else if (esCfg?.type === 'abort') {
-          errorStrategy = new AbortErrorStrategy();
-        }
-
-        builder = builder.withDagCoordinator({
-          planner,
-          interpreter,
-          workers,
-          activation,
-          reviewer,
-          errorStrategy,
-          stateOracle,
-          maxRoundTrips: coordCfg.maxRoundTrips as number | undefined,
-        });
+        const { oracleName, ...deps } = built;
+        builder = builder.withDagCoordinator(deps);
+        // Capture template for per-session re-wire (workers + stateOracle are
+        // re-wired per session; everything else is stateless or LLM-bound).
+        this._dagCoordinatorTemplate = {
+          deps: {
+            planner: deps.planner,
+            interpreter: deps.interpreter,
+            activation: deps.activation,
+            reviewer: deps.reviewer,
+            errorStrategy: deps.errorStrategy,
+            finalizer: deps.finalizer,
+            maxRoundTrips: deps.maxRoundTrips,
+          },
+          oracleName,
+        };
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
-        // Linear mode: existing path unchanged.
-        // Pick the planner LLM. Default 'main' → reuse mainLlm; 'planner' or
-        // 'helper' → helperLlm if present, else fall back to mainLlm.
-        const plannerLlm =
-          coordCfg.plannerLlm === 'main' ? mainLlm : (helperLlm ?? mainLlm);
+        // Linear mode: route plannerLlm through the normalized map chain.
+        // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
+        //   pipelineFallback → mainLlm.
+        const linearPlannerName = coordCfg.plannerLlm as string | undefined;
+        // Role-resolution order:
+        //   1. explicit map[name]            → build from that entry
+        //   2. name === 'helper' | 'planner' → reuse prebuilt helperLlm
+        //   3. unknown name                  → resolveLlmConfig fallback chain (map.main → pipelineFallback)
+        //   4. no name                       → mainLlm
+        const linearPlannerCfgStrict = resolveLlmConfigStrict(
+          llmMap,
+          linearPlannerName,
+        );
+        const plannerLlm = linearPlannerCfgStrict
+          ? await makeLlm(
+              {
+                provider: linearPlannerCfgStrict.provider ?? 'deepseek',
+                apiKey: linearPlannerCfgStrict.apiKey,
+                baseURL: linearPlannerCfgStrict.url,
+                model: linearPlannerCfgStrict.model,
+              },
+              Number(linearPlannerCfgStrict.temperature ?? mainTemp),
+            )
+          : linearPlannerName === 'helper' || linearPlannerName === 'planner'
+            ? (helperLlm ?? mainLlm)
+            : linearPlannerName
+              ? // Unknown name, not an alias — try pipelineFallback last.
+                await (async () => {
+                  const fb = resolveLlmConfig(
+                    llmMap,
+                    linearPlannerName,
+                    pipelineFallback,
+                  );
+                  return fb
+                    ? makeLlm(
+                        {
+                          provider: fb.provider ?? 'deepseek',
+                          apiKey: fb.apiKey,
+                          baseURL: fb.url,
+                          model: fb.model,
+                        },
+                        Number(fb.temperature ?? mainTemp),
+                      )
+                    : mainLlm;
+                })()
+              : mainLlm;
         const planningKind = coordCfg.planning ?? 'one-shot';
         const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
 
@@ -790,6 +1128,8 @@ export class SmartServer {
       ragStores,
       modelProvider,
     } = agentHandle;
+    const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
+      agentHandle;
 
     // ---- API adapter map (built-in → config DI; DI wins) --------------------
     const { OpenAiApiAdapter, AnthropicApiAdapter } = await import(
@@ -809,6 +1149,36 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // ---- Per-session lifecycle (cookie identity + graph factory + registry) ----
+    const sessionCfg = this.cfg.session ?? {};
+    const idleTtlMs = sessionCfg.idleTtlMs ?? 7_200_000;
+    const lifecycle = buildSessionLifecycle({
+      idleTtlMs,
+      maxSessions: sessionCfg.maxSessions ?? 1000,
+      cookieName: sessionCfg.cookieName ?? 'sid',
+      mcpClients: globalMcpClients,
+      toolsRag,
+      ragRegistry: globalRagRegistry,
+      buildAgent: (parts) => this.buildSessionAgent(parts),
+      logger: fileLogger,
+    });
+    this._lifecycle = lifecycle;
+    const sweepMs = Math.min(idleTtlMs, 60_000);
+    const sweep = setInterval(() => {
+      void lifecycle.evictIdle();
+    }, sweepMs);
+    sweep.unref?.();
+    closeFns.push(async () => {
+      clearInterval(sweep);
+      await lifecycle.disposeAll();
+      // Fix #21: per-session graphs may reference worker MCP clients, so
+      // dispose them FIRST (above), THEN drain per-worker handle.close so the
+      // worker-owned MCP clients themselves disconnect. Ordering matters —
+      // closing MCP clients while a session graph is mid-use would cut its
+      // request short.
+      await drainWorkerCache(this._workerLlmCache);
+    });
 
     const startTime = Date.now();
     const healthChecker = new HealthChecker({
@@ -850,7 +1220,61 @@ export class SmartServer {
           agentUpdate.classificationEnabled = update.classificationEnabled;
         if (Object.keys(agentUpdate).length > 0) {
           smartAgent.applyConfigUpdate(agentUpdate);
+          // Mirror onto `this.cfg.agent` so freshly-built session graphs
+          // (which read `this.cfg.agent` in `buildSessionAgent`) observe the
+          // update. Deep-merge to preserve untouched startup fields.
+          // Note: `agentUpdate` includes flat fields ONLY whitelisted by
+          // `AGENT_CONFIG_FIELDS` plus the two prompt fields, which we route
+          // into `this.cfg.prompts` separately below.
+          const agentPatch: Record<string, unknown> = {};
+          for (const k of Object.keys(agentUpdate)) {
+            if (k !== 'ragTranslatePrompt' && k !== 'historySummaryPrompt') {
+              agentPatch[k] = agentUpdate[k];
+            }
+          }
+          if (Object.keys(agentPatch).length > 0) {
+            const mergedAgent: Record<string, unknown> = {
+              ...((this.cfg as { agent?: Record<string, unknown> }).agent ??
+                {}),
+              ...agentPatch,
+            };
+            (this.cfg as { agent?: Record<string, unknown> }).agent =
+              mergedAgent;
+          }
+          if (
+            update.prompts?.ragTranslate !== undefined ||
+            update.prompts?.historySummary !== undefined
+          ) {
+            const mergedPrompts: Record<string, unknown> = {
+              ...((this.cfg as { prompts?: Record<string, unknown> }).prompts ??
+                {}),
+            };
+            if (update.prompts?.ragTranslate !== undefined) {
+              mergedPrompts.ragTranslate = update.prompts.ragTranslate;
+            }
+            if (update.prompts?.historySummary !== undefined) {
+              mergedPrompts.historySummary = update.prompts.historySummary;
+            }
+            (this.cfg as { prompts?: Record<string, unknown> }).prompts =
+              mergedPrompts;
+          }
         }
+        // Per-session graphs (built by SessionGraphFactory) captured the OLD
+        // config and the OLD cached worker LLM set. Without invalidation,
+        // existing sessions keep the stale SmartAgent and a fresh acquire on a
+        // cookie-known sessionId still returns it. Clear the worker cache so
+        // the next build reads from the just-applied config, then drop every
+        // session graph. Failures are non-fatal — log and continue.
+        // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing
+        // the cache. Hot-reload runs from a synchronous emitter callback, so
+        // fire-and-forget here — same async-tolerance as the invalidateAll
+        // call below.
+        drainWorkerCache(this._workerLlmCache).catch((err: unknown) => {
+          log({ event: 'config_reload_drain_error', error: String(err) });
+        });
+        this._lifecycle?.invalidateAll().catch((err: unknown) => {
+          log({ event: 'config_reload_invalidate_error', error: String(err) });
+        });
         // Apply RAG weight updates
         if (
           update.vectorWeight !== undefined ||
@@ -910,10 +1334,18 @@ export class SmartServer {
         resolve({
           port: actualPort,
           close: async () => {
-            for (const fn of closeFns) await fn();
+            // 1. Stop accepting new connections AND wait for in-flight HTTP
+            //    requests to drain. Until server.close() resolves, requests
+            //    accepted before shutdown may still be running and pinning
+            //    per-session graphs — disposing those graphs first would
+            //    violate the active-request pinning guarantee.
             await new Promise<void>((res, rej) =>
               server.close((e) => (e ? rej(e) : res())),
             );
+            // 2. Now run lifecycle cleanup: sweep timer, lifecycle.disposeAll,
+            //    config watcher stop, agent close. By this point no HTTP
+            //    request is in flight, so disposing session graphs is safe.
+            for (const fn of closeFns) await fn();
           },
           requestLogger,
         });
@@ -942,48 +1374,127 @@ export class SmartServer {
     subCfg: Omit<SmartServerConfig, 'log'>,
     parentLogger: ILogger,
     embedderFactories: Record<string, EmbedderFactory>,
+    injected?: {
+      ragRegistry: IRagRegistry;
+      toolsRag: IRag | undefined;
+      mcpClients: IMcpClient[];
+      requestLogger: IRequestLogger;
+      mainLlm: ILlm;
+      classifierLlm: ILlm;
+      helperLlm?: ILlm;
+      embedder?: IEmbedder;
+    },
   ): Promise<SmartAgent> {
-    if (!subCfg.llm?.apiKey && !subCfg.pipeline?.llm?.main) {
+    // Normalize subagent llm: either flat { provider, apiKey, ... } or a map
+    // { main: {...}, planner: {...} }. normalizeLlmConfig wraps flat shape as
+    // { main: flat } so downstream code always reads from .main.
+    const subLlmMap = normalizeLlmConfig(subCfg.llm);
+    const subLlmMain = subLlmMap?.main;
+    if (
+      !subLlmMain?.apiKey &&
+      subLlmMain?.provider !== 'sap-ai-sdk' &&
+      subLlmMain?.provider !== 'ollama' &&
+      !subCfg.pipeline?.llm?.main
+    ) {
       throw new Error(`subagent '${name}': LLM API key is required`);
     }
     const subPipeline = subCfg.pipeline;
-    const mainTemp = Number(
-      subPipeline?.llm?.main?.temperature ?? subCfg.llm.temperature ?? 0.7,
-    );
-    const mainLlm = subPipeline?.llm?.main
-      ? await makeLlm(subPipeline.llm.main, mainTemp)
-      : await makeLlm(
-          {
-            // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-            // rejects a missing flat-schema provider before this runs.
-            provider: subCfg.llm.provider ?? 'deepseek',
-            apiKey: subCfg.llm.apiKey,
-            baseURL: subCfg.llm.url,
-            model: subCfg.llm.model,
-          },
-          mainTemp,
-        );
 
+    // LLM/embedder clients: when the per-session re-wire injected them, use
+    // those cached instances by reference (NEVER reconstruct). Otherwise (the
+    // primary build()), build-once via the cache so the global agent build
+    // also populates it and later per-session re-wires reuse the SAME
+    // instances.
+    // Note: a per-worker embedder slot is carried in WorkerLlmSet and the
+    // injected record for forward-compat with Task A8/A10 per-session wiring.
+    // Today's buildSubAgent does not separately resolve an embedder here —
+    // embedders are carried by the worker's own store via makeRag's
+    // `injectedEmbedder` — so we ignore the embedder field below.
+    // Resolve (build-once or load from cache) the worker's own LLMs +
+    // toolsRag/historyRag/mcpClients. The cache is keyed by worker name; the
+    // primary build() populates it (no `injected` arg), and per-session
+    // re-wires (`injected` set) read from it via the same call below — the
+    // cache hit short-circuits all factories. This keeps the worker's
+    // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
+    const subFlatLlm = subLlmMain;
+    const mainTemp = Number(
+      subPipeline?.llm?.main?.temperature ?? subFlatLlm?.temperature ?? 0.7,
+    );
     const classifierTemp = Number(
       subPipeline?.llm?.classifier?.temperature ??
-        subCfg.llm.classifierTemperature ??
+        subFlatLlm?.classifierTemperature ??
         0.1,
     );
-    const classifierLlm = subPipeline?.llm?.classifier
-      ? await makeLlm(subPipeline.llm.classifier, classifierTemp)
-      : subPipeline?.llm?.main
-        ? await makeLlm(subPipeline.llm.main, classifierTemp)
-        : await makeLlm(
-            {
-              // ?? 'deepseek' is a TS type-narrowing net only; the config validator
-              // rejects a missing flat-schema provider before this runs.
-              provider: subCfg.llm.provider ?? 'deepseek',
-              apiKey: subCfg.llm.apiKey,
-              baseURL: subCfg.llm.url,
-              model: subCfg.llm.model,
-            },
-            classifierTemp,
-          );
+    const cached = await resolveWorkerLlmSet({
+      name,
+      cache: this._workerLlmCache,
+      // Preserve the existing makeLlm derivation exactly.
+      makeMain: () =>
+        subPipeline?.llm?.main
+          ? makeLlm(subPipeline.llm.main, mainTemp)
+          : makeLlm(
+              {
+                // ?? 'deepseek' is a TS type-narrowing net only; the config
+                // validator rejects a missing flat-schema provider before
+                // this runs.
+                provider: subFlatLlm?.provider ?? 'deepseek',
+                apiKey: subFlatLlm?.apiKey ?? '',
+                baseURL: subFlatLlm?.url,
+                model: subFlatLlm?.model,
+              },
+              mainTemp,
+            ),
+      makeClassifier: () =>
+        subPipeline?.llm?.classifier
+          ? makeLlm(subPipeline.llm.classifier, classifierTemp)
+          : subPipeline?.llm?.main
+            ? makeLlm(subPipeline.llm.main, classifierTemp)
+            : makeLlm(
+                {
+                  provider: subFlatLlm?.provider ?? 'deepseek',
+                  apiKey: subFlatLlm?.apiKey ?? '',
+                  baseURL: subFlatLlm?.url,
+                  model: subFlatLlm?.model,
+                },
+                classifierTemp,
+              ),
+      makeHelper: subPipeline?.llm?.helper
+        ? (
+            (h) => () =>
+              makeLlm(h, Number(h.temperature ?? 0.1))
+          )(subPipeline.llm.helper)
+        : undefined,
+      // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
+      // re-wired per-session by reference — never re-vectorized.
+      makeToolsRag: subCfg.rag
+        ? () =>
+            makeRag(subCfg.rag as SmartServerRagConfig, {
+              injectedEmbedder: subCfg.embedder,
+              extraFactories: embedderFactories,
+            })
+        : undefined,
+      makeHistoryRag: subCfg.rag
+        ? () =>
+            makeRag(
+              { ...(subCfg.rag as SmartServerRagConfig) },
+              {
+                injectedEmbedder: subCfg.embedder,
+                extraFactories: embedderFactories,
+              },
+            )
+        : undefined,
+      // Worker-OWN MCP clients. DI list (subCfg.mcpClients) wins; otherwise
+      // SmartAgentBuilder's own MCP-connect path handles `subCfg.mcp` — we
+      // don't pre-build those here (connection is the builder's job and is
+      // not safe to invoke twice). The cache stores the DI clients only.
+      makeMcpClients:
+        subCfg.mcpClients && subCfg.mcpClients.length > 0
+          ? async () => subCfg.mcpClients as IMcpClient[]
+          : undefined,
+    });
+    const mainLlm: ILlm = cached.mainLlm;
+    const classifierLlm: ILlm = cached.classifierLlm;
+    const helperLlm: ILlm | undefined = cached.helperLlm;
 
     let subBuilder = new SmartAgentBuilder({
       mcp: subPipeline?.mcp ?? subCfg.mcp,
@@ -996,37 +1507,220 @@ export class SmartServer {
       .withLogger(parentLogger)
       .withMode(subCfg.mode ?? 'smart');
 
-    if (subPipeline?.llm?.helper) {
-      const helperLlm = await makeLlm(
-        subPipeline.llm.helper,
-        Number(subPipeline.llm.helper.temperature ?? 0.1),
-      );
+    if (helperLlm) {
       subBuilder = subBuilder.withHelperLlm(helperLlm);
     }
 
-    if (subCfg.rag) {
-      const ragOptions = {
-        injectedEmbedder: subCfg.embedder,
-        extraFactories: embedderFactories,
-      };
-      subBuilder = subBuilder.setToolsRag(
-        await makeRag(subCfg.rag, ragOptions),
-      );
-      subBuilder = subBuilder.setHistoryRag(
-        await makeRag({ ...subCfg.rag }, ragOptions),
-      );
+    // SHARE the parent RAG registry + session logger when injected (per-session
+    // worker re-wire). The per-call scope filter isolates by ctx.sessionId.
+    const sharedReg = resolveSubAgentRagRegistry({
+      parentRagRegistry: injected?.ragRegistry,
+    });
+    if (sharedReg) subBuilder = subBuilder.setRagRegistry(sharedReg);
+    if (injected?.requestLogger) {
+      subBuilder = subBuilder.withRequestLogger(injected.requestLogger);
+    }
+
+    // Tools/History RAG priority (review HIGH #1):
+    //   1) worker's OWN cached toolsRag (from subCfg.rag) — built once, reused
+    //      by reference across per-session re-wires (never re-vectorized);
+    //   2) parent's injected toolsRag (fallback for workers that did not
+    //      declare their own store).
+    // History RAG: only when the worker has its own cached instance — the
+    // parent's history RAG is owned by the parent agent and is not shared.
+    if (cached.toolsRag) {
+      subBuilder = subBuilder.setToolsRag(cached.toolsRag);
+      if (cached.historyRag) {
+        subBuilder = subBuilder.setHistoryRag(cached.historyRag);
+      }
+    } else if (injected?.toolsRag) {
+      subBuilder = subBuilder.setToolsRag(injected.toolsRag);
     }
 
     if (subCfg.skillManager) {
       subBuilder = subBuilder.withSkillManager(subCfg.skillManager);
     }
 
-    if (subCfg.mcpClients && subCfg.mcpClients.length > 0) {
-      subBuilder = subBuilder.withMcpClients(subCfg.mcpClients);
+    // MCP clients priority (review HIGH #1):
+    //   1) worker's OWN cached MCP clients (from subCfg.mcpClients DI) — keeps
+    //      the worker pointed at its own upstream when the parent has none;
+    //   2) parent's injected GLOBAL MCP clients (fallback) — skips re-connect.
+    // If neither is set, fall through to the builder's own MCP-connect path
+    // (which honours `subCfg.mcp`).
+    if (cached.mcpClients && cached.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(cached.mcpClients);
+    } else if (injected?.mcpClients && injected.mcpClients.length > 0) {
+      subBuilder = subBuilder.withMcpClients(injected.mcpClients);
     }
 
     const handle = await subBuilder.build();
+
+    // Backfill the per-worker cache from the BUILT handle (review HIGH #7).
+    // Only runs on the primary build path (no `injected`) so per-session
+    // re-wires never overwrite the cache. See backfillWorkerCacheFromHandle's
+    // doc-comment for the rationale.
+    if (!injected) {
+      const entry = this._workerLlmCache.get(name);
+      if (entry) await backfillWorkerCacheFromHandle(entry, handle);
+    }
     return handle.agent;
+  }
+
+  /**
+   * Builds a per-session SmartAgent from injected globals (review HIGH #1 +
+   * MEDIUM #3). Re-wires the SubAgent registry + DAG coordinator deps FRESH per
+   * session, sharing this session's logger + the global ragRegistry/toolsRag/
+   * mcpClients + the CACHED per-worker LLM/embedder (this._workerLlmCache). It
+   * NEVER reuses the primary build()'s global `registry`/DAG-deps and NEVER
+   * constructs new LLM clients.
+   */
+  private async buildSessionAgent(
+    parts: SessionAgentParts,
+  ): Promise<SmartAgent | undefined> {
+    // Guard: globals must already be captured by the primary build() before any
+    // session graph is built (the registry calls this lazily on first acquire).
+    if (!this._mainLlm || !this._classifierLlm || !this._fileLogger) {
+      throw new Error(
+        'buildSessionAgent invoked before primary build() captured globals',
+      );
+    }
+    let b = new SmartAgentBuilder({
+      agent: this.cfg.agent,
+      prompts: this.cfg.prompts,
+      skipModelValidation: this.cfg.skipModelValidation,
+    })
+      .withMainLlm(this._mainLlm)
+      .withClassifierLlm(this._classifierLlm)
+      .withLogger(this._fileLogger)
+      .withMode(this.cfg.mode ?? 'smart')
+      .withMcpClients(parts.mcpClients) // skips connect + re-vectorize
+      .setRagRegistry(parts.ragRegistry)
+      .withRequestLogger(parts.logger); // per-session token-logger
+    if (this._helperLlm) b = b.withHelperLlm(this._helperLlm);
+    if (parts.toolsRag) b = b.setToolsRag(parts.toolsRag);
+
+    // FRESH per-session workers — re-wire the registry from the SAME subagent
+    // configs the primary build() used, injecting globals + this session's
+    // logger + the CACHED per-worker LLM/embedder. No LLM reconstruction.
+    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
+      const registry: SubAgentRegistry = new Map();
+      for (const sub of this.cfg.subAgentConfigs) {
+        // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
+        // clears `_workerLlmCache`, the next buildSessionAgent used to throw
+        // "worker LLM set not cached" because the cache was assumed
+        // pre-populated by the primary build(). buildSubAgent itself routes
+        // through `resolveWorkerLlmSet` which is build-on-miss, so calling
+        // it without an `injected` arg rebuilds the cache entry. We then
+        // re-read the entry to honour the per-worker slot priority below.
+        if (!this._workerLlmCache.has(sub.name)) {
+          await this.buildSubAgent(
+            sub.name,
+            sub.config,
+            this._fileLogger,
+            this._mergedEmbedderFactories ?? {},
+            // No `injected` → primary path: resolveWorkerLlmSet populates
+            // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
+            // mcpClients/toolsRag slots from the built handle.
+          );
+        }
+        const cached = this._workerLlmCache.get(sub.name);
+        if (!cached) {
+          // Defence in depth — should be impossible after the lazy build
+          // above unless buildSubAgent's contract changes.
+          throw new Error(`worker LLM set not cached for '${sub.name}'`);
+        }
+        // Per-worker injected slot priority (review HIGH #7):
+        //   worker-cached (from the primary build, includes backfilled
+        //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
+        //   fallback. Encoded HERE so buildSubAgent does not need to know
+        //   the difference; it just consumes injected.mcpClients/toolsRag.
+        const injectedMcpClients =
+          cached.mcpClients && cached.mcpClients.length > 0
+            ? cached.mcpClients
+            : parts.mcpClients;
+        const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
+        const subAgent = await this.buildSubAgent(
+          sub.name,
+          sub.config,
+          this._fileLogger,
+          this._mergedEmbedderFactories ?? {},
+          {
+            ragRegistry: parts.ragRegistry,
+            toolsRag: injectedToolsRag,
+            mcpClients: injectedMcpClients,
+            requestLogger: parts.logger,
+            mainLlm: cached.mainLlm,
+            classifierLlm: cached.classifierLlm,
+            helperLlm: cached.helperLlm,
+            embedder: cached.embedder,
+          },
+        );
+        registry.set(
+          sub.name,
+          new SmartAgentSubAgent(sub.name, subAgent, {
+            description: sub.description,
+          }),
+        );
+      }
+      b = b.withSubAgents(registry);
+
+      if (this._dagCoordinatorTemplate) {
+        const tpl = this._dagCoordinatorTemplate;
+        const workers: SubAgentRegistry = new Map(
+          [...registry].filter(([name]) => name !== tpl.oracleName),
+        );
+        const raw = tpl.oracleName ? registry.get(tpl.oracleName) : undefined;
+        b = b.withDagCoordinator({
+          ...tpl.deps,
+          workers,
+          stateOracle: raw ? new SubAgentStateOracle(raw) : undefined,
+        });
+      }
+    }
+
+    const handle = await b.build();
+    return handle.agent;
+  }
+
+  /**
+   * Resolve identity (mint cookie when needed), acquire the per-session graph,
+   * run `fn` pinned, and release in `finally`. Order in `finally`:
+   *   1. drop the per-traceId logger delta (server-owned free, review HIGH #2)
+   *   2. release the refcount pin
+   */
+  private async _withSession(
+    req: IncomingMessage,
+    res: ServerResponse,
+    fn: (
+      graph: SessionGraph,
+      sessionId: string,
+      traceId: string,
+    ) => Promise<void>,
+  ): Promise<void> {
+    const lifecycle = this._lifecycle;
+    if (!lifecycle) {
+      throw new Error('SmartServer lifecycle not initialized');
+    }
+    const traceId = randomUUID();
+    const isHttps =
+      (req.socket as { encrypted?: boolean }).encrypted === true ||
+      req.headers['x-forwarded-proto'] === 'https';
+    const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+    const sessionId = resolved.identity.sessionId;
+    if (resolved.minted && resolved.setCookie) {
+      res.setHeader('Set-Cookie', resolved.setCookie);
+    }
+    const graph = await lifecycle.acquire(sessionId);
+    try {
+      await fn(graph, sessionId, traceId);
+    } finally {
+      graph.logger.dropRequest(traceId);
+      // Pass the graph instance — `invalidateAll()` may have detached this
+      // graph into the draining map while the request was in flight; we must
+      // release THIS specific instance, not whatever currently lives under
+      // `sessionId` in the registry.
+      lifecycle.release(sessionId, graph);
+    }
   }
 
   private async _handle(
@@ -1116,8 +1810,27 @@ export class SmartServer {
       return;
     }
     if (req.method === 'GET' && urlPath === '/v1/usage') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(requestLogger.getSummary()));
+      const lifecycle = this._lifecycle;
+      if (!lifecycle) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
+        return;
+      }
+      const isHttps =
+        (req.socket as { encrypted?: boolean }).encrypted === true ||
+        req.headers['x-forwarded-proto'] === 'https';
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      if (resolved.minted && resolved.setCookie) {
+        res.setHeader('Set-Cookie', resolved.setCookie);
+      }
+      const sessionId = resolved.identity.sessionId;
+      const graph = await lifecycle.acquire(sessionId);
+      try {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(graph.logger.getSummary()));
+      } finally {
+        lifecycle.release(sessionId, graph);
+      }
       return;
     }
     // /v1/config or /config
@@ -1166,23 +1879,34 @@ export class SmartServer {
         res.end(jsonError('Anthropic adapter not registered', 'not_found'));
         return;
       }
-      await this._handleAdapterRequest(req, res, smartAgent, anthropicAdapter);
+      await this._withSession(req, res, async (graph, sessionId, traceId) => {
+        await this._handleAdapterRequest(
+          req,
+          res,
+          graph.agent ?? smartAgent,
+          anthropicAdapter,
+          { sessionId, traceId, graph },
+        );
+      });
       return;
     }
     if (
       req.method === 'POST' &&
       (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
     ) {
-      await this._handleChat(
-        req,
-        res,
-        requestLogger,
-        smartAgent,
-        chat,
-        streamChat,
-        log,
-        modelProvider,
-      );
+      await this._withSession(req, res, async (graph, sessionId, traceId) => {
+        await this._handleChat(
+          req,
+          res,
+          requestLogger,
+          graph.agent ?? smartAgent,
+          chat,
+          streamChat,
+          log,
+          modelProvider,
+          { sessionId, traceId, graph },
+        );
+      });
       return;
     }
     res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -1196,6 +1920,7 @@ export class SmartServer {
     res: ServerResponse,
     agent: SmartAgent,
     adapter: ILlmApiAdapter,
+    session?: { sessionId: string; traceId: string; graph: SessionGraph },
   ): Promise<void> {
     const raw = await readBody(req);
     let body: unknown;
@@ -1219,6 +1944,16 @@ export class SmartServer {
       throw err;
     }
 
+    const augmentedOptions = session
+      ? {
+          ...normalized.options,
+          sessionId: session.sessionId,
+          trace: { traceId: session.traceId },
+          toolAvailability: session.graph.toolAvailability,
+          pendingToolResults: session.graph.pendingToolResults,
+        }
+      : normalized.options;
+
     if (normalized.stream) {
       res.writeHead(200, {
         'Content-Type': 'text/event-stream',
@@ -1227,7 +1962,7 @@ export class SmartServer {
       });
 
       for await (const event of adapter.transformStream(
-        agent.streamProcess(normalized.messages, normalized.options),
+        agent.streamProcess(normalized.messages, augmentedOptions),
         normalized.context,
       )) {
         const eventLine = event.event ? `event: ${event.event}\n` : '';
@@ -1238,7 +1973,7 @@ export class SmartServer {
     }
 
     // Non-streaming
-    const result = await agent.process(normalized.messages, normalized.options);
+    const result = await agent.process(normalized.messages, augmentedOptions);
     res.setHeader('Content-Type', 'application/json');
     if (!result.ok) {
       res.writeHead(500);
@@ -1269,6 +2004,7 @@ export class SmartServer {
     _streamChat: SmartAgentHandle['streamChat'],
     log: (e: Record<string, unknown>) => void,
     modelProvider?: IModelProvider,
+    session?: { sessionId: string; traceId: string; graph: SessionGraph },
   ): Promise<void> {
     const rawBody = await readBody(req);
     let parsed: unknown;
@@ -1339,8 +2075,14 @@ export class SmartServer {
       return;
     }
 
-    const traceId = randomUUID();
-    const sessionId = (req.headers['x-session-id'] as string) || 'default';
+    // Prefer the session injected by `_withSession` (cookie identity); fall
+    // back to the legacy x-session-id header / 'default' bucket only when no
+    // session was wired (defensive — production routes always inject one).
+    const traceId = session?.traceId ?? randomUUID();
+    const sessionId =
+      session?.sessionId ??
+      (req.headers['x-session-id'] as string) ??
+      'default';
     const sessionLogger = new SessionLogger(
       this.cfg.logDir || null,
       sessionId,
@@ -1390,6 +2132,12 @@ export class SmartServer {
       trace: { traceId },
       sessionLogger,
       model: body.model,
+      ...(session
+        ? {
+            toolAvailability: session.graph.toolAvailability,
+            pendingToolResults: session.graph.pendingToolResults,
+          }
+        : {}),
       ...(body.temperature !== undefined
         ? { temperature: body.temperature }
         : {}),
@@ -1803,9 +2551,45 @@ export class SmartServer {
     // --- All validation passed — apply mutations ---
     if (resolvedModels) {
       smartAgent.reconfigure(resolvedModels);
+      // Mirror onto the hoisted globals consumed by `buildSessionAgent` so
+      // freshly-built session graphs pick up the new LLMs by reference
+      // (otherwise `this._mainLlm` etc. would keep pointing at the originals
+      // captured during `start()`).
+      if (resolvedModels.mainLlm) this._mainLlm = resolvedModels.mainLlm;
+      if (resolvedModels.classifierLlm)
+        this._classifierLlm = resolvedModels.classifierLlm;
+      if (resolvedModels.helperLlm) this._helperLlm = resolvedModels.helperLlm;
     }
     if (body.agent) {
-      smartAgent.applyConfigUpdate(body.agent as Record<string, unknown>);
+      const patch = body.agent as Record<string, unknown>;
+      smartAgent.applyConfigUpdate(patch);
+      // Mirror onto `this.cfg.agent` so freshly-built session graphs (which
+      // read `this.cfg.agent` in `buildSessionAgent`) observe the update.
+      // Deep-merge to preserve untouched startup fields; replacing the whole
+      // `agent` block would drop YAML defaults the validator already applied.
+      const merged: Record<string, unknown> = {
+        ...((this.cfg as { agent?: Record<string, unknown> }).agent ?? {}),
+        ...patch,
+      };
+      (this.cfg as { agent?: Record<string, unknown> }).agent = merged;
+    }
+    // Invalidate per-session SmartAgents + the worker-LLM cache so the next
+    // request mints a session graph that observes the just-applied config.
+    // Without this, chat routes dispatch to `graph.agent` (the per-session
+    // SmartAgent) which was built with the OLD config, and the PUT is a
+    // no-op from the consumer's perspective. Failures are non-fatal so the
+    // 200 response isn't blocked by a dispose hiccup.
+    if (resolvedModels || body.agent) {
+      // Fix #21: drain per-worker SmartAgentHandle.close() BEFORE clearing the
+      // cache so MCP clients owned by the discarded handles disconnect.
+      await drainWorkerCache(this._workerLlmCache);
+      try {
+        await this._lifecycle?.invalidateAll();
+      } catch {
+        // Swallow: cleanup errors must not turn a successful config update
+        // into a 500. The next request will still get a fresh build because
+        // `_workerLlmCache` is already cleared and dispose is idempotent.
+      }
     }
     // --- Return updated config ---
     const models = smartAgent.getActiveConfig();

@@ -66,6 +66,30 @@ import { buildDefaultHandlerRegistry } from './handlers/index.js';
 import type { StageDefinition } from './types.js';
 
 // ---------------------------------------------------------------------------
+// Session-scoped registry resolution
+// ---------------------------------------------------------------------------
+
+/**
+ * Resolves the per-session tool-availability / pending-tool-results registries
+ * for a pipeline request. When the SessionGraph injects them via `CallOptions`,
+ * the same instances are reused across requests sharing the sessionId; otherwise
+ * fresh per-request instances are created (preserves embed-as-library behavior).
+ */
+export function resolveSessionRegistries(src: {
+  toolAvailability?: ToolAvailabilityRegistry;
+  pendingToolResults?: PendingToolResultsRegistry;
+}): {
+  toolAvailability: ToolAvailabilityRegistry;
+  pendingToolResults: PendingToolResultsRegistry;
+} {
+  return {
+    toolAvailability: src.toolAvailability ?? new ToolAvailabilityRegistry(),
+    pendingToolResults:
+      src.pendingToolResults ?? new PendingToolResultsRegistry(),
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Default SmartAgentConfig for standalone use
 // ---------------------------------------------------------------------------
 
@@ -408,8 +432,20 @@ export class DefaultPipeline implements IPipeline {
       requestLogger: this.resolvedRequestLogger,
       toolPolicy: this.deps.toolPolicy,
       injectionDetector: this.deps.injectionDetector,
-      toolAvailabilityRegistry: new ToolAvailabilityRegistry(),
-      pendingToolResults: new PendingToolResultsRegistry(),
+      ...(() => {
+        const r = resolveSessionRegistries({
+          toolAvailability: options?.toolAvailability as
+            | ToolAvailabilityRegistry
+            | undefined,
+          pendingToolResults: options?.pendingToolResults as
+            | PendingToolResultsRegistry
+            | undefined,
+        });
+        return {
+          toolAvailabilityRegistry: r.toolAvailability,
+          pendingToolResults: r.pendingToolResults,
+        };
+      })(),
       skillManager: this.deps.skillManager,
       embedder: this.deps.embedder,
       toolSelectionStrategy: this.deps.toolSelectionStrategy,
@@ -446,6 +482,10 @@ export class DefaultPipeline implements IPipeline {
 
       // Streaming callback
       yield: yieldChunk,
+
+      // Partial-output callback (forwarded from ISubAgentInput.onPartial via
+      // CallOptions.onPartial so the tool-loop can emit live deltas).
+      onPartial: options?.onPartial,
 
       // Subagent registry for coordinator/subagent stages (read by handlers).
       subAgents: this.subAgents,

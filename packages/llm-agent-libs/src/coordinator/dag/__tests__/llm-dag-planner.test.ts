@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ILlm, PlannerInput } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
-import { LlmDagPlanner } from '../llm-dag-planner.js';
+import { LlmDagPlanner, PLANNER_SYSTEM } from '../llm-dag-planner.js';
 
 function llm(content: string): ILlm {
   return {
@@ -22,16 +22,16 @@ describe('LlmDagPlanner', () => {
         '{"objective":"O","nodes":[{"id":"a","goal":"X","agent":"w"},{"id":"b","goal":"Y","agent":"w","dependsOn":["a"]}]}',
       ),
     ).plan(input);
-    assert.equal(p.objective, 'O');
-    assert.equal(p.nodes.length, 2);
-    assert.deepEqual(p.nodes[1].dependsOn, ['a']);
+    assert.equal(p.plan.objective, 'O');
+    assert.equal(p.plan.nodes.length, 2);
+    assert.deepEqual(p.plan.nodes[1].dependsOn, ['a']);
   });
 
   it('accepts a single-node plan (progressive complexity)', async () => {
     const p = await new LlmDagPlanner(
       llm('{"nodes":[{"id":"n1","goal":"answer"}]}'),
     ).plan(input);
-    assert.equal(p.nodes.length, 1);
+    assert.equal(p.plan.nodes.length, 1);
   });
 
   it('throws on malformed JSON', async () => {
@@ -128,6 +128,95 @@ describe('LlmDagPlanner', () => {
     );
   });
 
+  it('attaches LLM usage onto parse-error Error so parse-path spend is not lost', async () => {
+    // MEDIUM finding: a failed (parse-error) planner LLM call still spent
+    // tokens. Without the usage attached to the thrown Error, the coordinator
+    // discards that spend (real money, invisible).
+    const usage = { promptTokens: 13, completionTokens: 4, totalTokens: 17 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: 'not json at all', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /JSON object/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 17,
+    );
+  });
+
+  it('attaches LLM usage onto malformed-JSON Error', async () => {
+    const usage = { promptTokens: 9, completionTokens: 2, totalTokens: 11 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{ not really json }', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /malformed JSON/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 11,
+    );
+  });
+
+  it('attaches LLM usage onto shape-error Error (missing goal)', async () => {
+    const usage = { promptTokens: 6, completionTokens: 1, totalTokens: 7 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"nodes":[{"id":"a"}]}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof Error &&
+        /missing a goal/.test(e.message) &&
+        (e as Error & { usage?: { totalTokens?: number } }).usage
+          ?.totalTokens === 7,
+    );
+  });
+
+  it('attaches LLM usage onto NeedInfoSignal so signal-path spend is not lost', async () => {
+    const usage = { promptTokens: 7, completionTokens: 3, totalTokens: 10 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"needInfo":"which table?"}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) =>
+        e instanceof NeedInfoSignal &&
+        e.usage?.promptTokens === 7 &&
+        e.usage?.completionTokens === 3 &&
+        e.usage?.totalTokens === 10,
+    );
+  });
+
+  it('attaches LLM usage onto ClarifySignal so signal-path spend is not lost', async () => {
+    const usage = { promptTokens: 5, completionTokens: 2, totalTokens: 7 };
+    const stub = {
+      chat: async () => ({
+        ok: true,
+        value: { content: '{"clarify":"overwrite ok?"}', usage },
+      }),
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    await assert.rejects(
+      () => new LlmDagPlanner(stub).plan(input),
+      (e: unknown) => e instanceof ClarifySignal && e.usage?.totalTokens === 7,
+    );
+  });
+
   it('renders ancestorContext clarifications + reviewerFeedback into the task', async () => {
     const cap: { task?: string } = {};
     const spy = {
@@ -151,5 +240,20 @@ describe('LlmDagPlanner', () => {
     assert.match(cap.task ?? '', /which table\?/);
     assert.match(cap.task ?? '', /ZCUST/);
     assert.match(cap.task ?? '', /avoid table X/);
+  });
+
+  it('PLANNER_SYSTEM warns about decomposition cost (regression guard)', () => {
+    // Live-tested 2026-05-29: without this guidance Sonnet over-decomposed
+    // "review program X for security, performance, clean-core, maintainability"
+    // into 5 nodes, blowing worker token cost by ~8×. The prompt must keep
+    // telling the planner that nodes don't share fetched data and that
+    // single-object multi-dimension prompts use ONE node.
+    assert.match(PLANNER_SYSTEM, /DO NOT share fetched data/i);
+    assert.match(
+      PLANNER_SYSTEM,
+      /full classify \+ RAG \+ tool-loop overhead again/i,
+    );
+    assert.match(PLANNER_SYSTEM, /ONE node/);
+    assert.match(PLANNER_SYSTEM, /single object along multiple dimensions/i);
   });
 });

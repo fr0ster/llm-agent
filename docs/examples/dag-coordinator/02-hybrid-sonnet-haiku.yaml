@@ -1,0 +1,45 @@
+# Hybrid DAG — smart planner, cheap worker, no LLM finalizer.
+# Demonstrates the per-role LLM map: planner gets a flagship model,
+# the worker pipeline (inside the subagent yaml) runs on a cheap model,
+# and finalizer skips the LLM entirely (PassthroughFinalizer).
+#
+# Typical cost win: ~5–10× cheaper worker tokens with the same plan quality.
+
+port: ${SMART_SERVER_PORT:-4016}
+host: 0.0.0.0
+mode: smart
+
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  activation: explicit
+  planner:
+    type: llm
+    plannerLlm: planner          # → llm.planner (sonnet)
+  finalizer:
+    type: passthrough            # no LLM — yields worker output verbatim
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects via live SAP MCP tools.
+    config: ./worker-haiku.yaml  # haiku-backed pipeline
+
+logDir: ./.run/dag-hybrid-sessions
+log: ./.run/dag-hybrid-server.log

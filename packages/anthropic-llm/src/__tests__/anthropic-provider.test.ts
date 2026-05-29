@@ -301,9 +301,9 @@ describe('AnthropicProvider — chat() usage', () => {
     });
     const result = await provider.chat([{ role: 'user', content: 'hi' }]);
     assert.deepEqual(result.usage, {
-      prompt_tokens: 15,
-      completion_tokens: 25,
-      total_tokens: 40,
+      promptTokens: 15,
+      completionTokens: 25,
+      totalTokens: 40,
     });
   });
 });

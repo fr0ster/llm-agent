@@ -9,9 +9,27 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [17.0.0] — 2026-05-29
+
+### Added
+- **Session-scoped infrastructure.** Per-session object graph keyed by a server-issued cookie identity; identity-bound RAG views over shared storage; session-scoped token-usage rollup published at `GET /v1/usage` with a `byComponent` breakdown by LLM role.
+- **DAG coordinator role surface complete.** New typed contracts: `IFinalizer` (synthesis pass after interpretation — `Passthrough` default, plus `Llm` and `Template` impls) and `IStateOracle` (inspection-only role wrapping a subagent via `SubAgentStateOracle`, returning `usage: undefined` to avoid double-counting). `InterpretResult` now carries `executedPlan` + `executionOrder` so downstream consumers see the actual post-splice run order. The `DagCoordinatorHandler` wires every role through `runRole(...)` so each call attribution lands in the right `byComponent` bucket.
+- **Per-role LLM map.** `llm:` accepts either the legacy flat shape OR a `Record<string, LlmProviderConfig>` with a required `main` key. `resolveLlmConfig(map, name, pipelineFallback)` resolves a role through the chain `llm.<name> → llm.main → pipeline.llm.main`. The new `coordinator.reviewer.reviewerLlm` is preferred over the deprecated `plannerLlm` alias (a warning is emitted when the alias is used). `coordinator.finalizer.{type, finalizerLlm?, systemPrompt?}` selects the finalizer impl and routes its LLM through the same lookup chain. The legacy keyword aliases `helper` / `planner` keep their fall-back to `pipeline.llm.helper`.
+- **`buildDagCoordinatorDeps` seam.** Pure async factory that assembles the `withDagCoordinator` deps record from the YAML coord block + normalised LLM map + pipeline fallback + subagent registry. Unit-testable; the server uses it from `start()`.
+- **DAG streaming through the coordinator.** Token deltas now flow `worker → IInterpreter → DagCoordinatorHandler → /v1/chat/completions?stream=true`. Opt-in via the new `onPartial: (StreamChunk) => void` callback on `ISubAgentInput`, `InterpretContext`, and `FinalizerInput`. Absence preserves the previous one-shot SSE behaviour. New types `StreamChunk` (content / tool-call / node-start / node-end) and `OnPartial` exported from `@mcp-abap-adt/llm-agent`.
+- **DAG-coordinator examples.** `docs/examples/dag-coordinator/` adds three production-shaped configs (`01-all-sonnet.yaml`, `02-hybrid-sonnet-haiku.yaml`, `03-full-roles.yaml`) plus worker / inspector subagent yamls and a streaming test client (`stream-test.sh`) that prints content deltas in real time and then dumps the `byComponent` breakdown.
+
 ### Changed
+- **`LlmFinalizer` now uses `ILlm.streamChat`** internally; the public `FinalizerResult.output` value is unchanged (full concatenated text). `PassthroughFinalizer` / `TemplateFinalizer` invoke `onPartial` once with their full output before resolving (single-yield semantics preserved).
+- **Planner system prompt tightened.** `PLANNER_SYSTEM` now spells out the cost of decomposition (workers do NOT share fetched data; every node pays full classify + RAG + tool-loop overhead again) and instructs the planner that a single-object multi-dimension prompt ("review program X for security, performance, clean-core, maintainability") is **one** node. A live test on 2026-05-29 confirmed the previous prompt over-decomposed the same prompt into 5 nodes, blowing worker tokens ~8× vs the flat path. Regression test pins the cost language.
+- **`SmartServerConfig.llm` is optional** when `pipeline.llm.main` is set. `validateResolvedConfig` detects the map shape and validates every named entry via the existing `checkLlmRole` rules (DRY'd into `validateLlmEntry`).
 - **Supported Node bumped to ≥ 22** (`engines.node` `>=18` → `>=22`, `npm` `>=10`). Node 18 is EOL and 20 reaches EOL in April 2026. CI now runs the matrix on Node **22 and 24** (both active LTS), and the GitHub Actions are bumped to `actions/checkout@v5` / `actions/setup-node@v5` (Node 24 action runtime). Repo/dev policy only — published packages declare no `engines`, so installs are unaffected.
 - **Coordinator default dispatch is now `hybrid`** (was `subagent` for `one-shot`/`replan-on-error`; `skill-steps` was already `hybrid`). Agentless steps — including the #155 answer-directly step and skill steps without an explicit `agent:` — now self-answer via the agent's LLM instead of failing. Configs that require strict subagent-only routing must pin `coordinator.dispatch: subagent` explicitly. Applies to both `SmartAgentBuilder` and YAML-configured deployments. (#155)
+
+### Fixed
+- **`plannerLlm: helper` / `plannerLlm: planner` now routes to `pipeline.llm.helper`** (was silently falling through to the expensive `pipeline.llm.main` whenever a top-level `llm:` block existed). `resolveLlmConfigStrict` provides an explicit-presence lookup so the alias branch wins over the `llm.main` fallback. (#163)
+- **`normalizeLlmConfig` flat-detector widened to any-of `{provider, apiKey, model, url}`** so programmatic configs for keyless providers (Ollama, SAP AI Core) are no longer misclassified as a map. (#163)
+- **DagCoordinatorHandler.stateOracle is now typed `IStateOracle`** (was raw `ISubAgent`). Existing yaml callers continue to work — `buildDagCoordinatorDeps` auto-wraps a registered subagent name via `SubAgentStateOracle`.
 
 ## [16.2.0] — 2026-05-25
 

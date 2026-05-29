@@ -29,6 +29,9 @@ export class SmartAgentSubAgent implements ISubAgent {
     const res = await this.agent.process(prompt, {
       sessionId: input.sessionId,
       signal: input.signal,
+      trace: input.trace,
+      sessionLogger: input.sessionLogger,
+      onPartial: input.onPartial,
     });
 
     if (!res.ok) {

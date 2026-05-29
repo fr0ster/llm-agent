@@ -25,7 +25,7 @@ function planner(captured: { prompt?: string }): IPlanner {
     name: 'p',
     plan: async (input) => {
       captured.prompt = input.prompt;
-      return subPlan;
+      return { plan: subPlan };
     },
   };
 }

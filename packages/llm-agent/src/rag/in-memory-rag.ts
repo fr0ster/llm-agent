@@ -174,8 +174,9 @@ export class InMemoryRag implements IRag {
     }
     const queryEmbedding = embed(searchText);
     const nowSecs = Date.now() / 1000;
+    const targetSessionId = options?.ragFilter?.sessionId;
 
-    // Filter: namespace match + TTL not expired
+    // Filter: namespace match + TTL not expired + sessionId match
     const candidates = this.records.filter((r) => {
       if (
         this.namespace !== undefined &&
@@ -183,6 +184,11 @@ export class InMemoryRag implements IRag {
       )
         return false;
       if (r.metadata.ttl !== undefined && r.metadata.ttl < nowSecs)
+        return false;
+      if (
+        targetSessionId !== undefined &&
+        r.metadata.sessionId !== targetSessionId
+      )
         return false;
       return true;
     });

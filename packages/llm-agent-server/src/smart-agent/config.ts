@@ -5,6 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import type {
+  IFinalizer,
   ILlm,
   ISubAgentContextBuilder,
   IToolSelectionStrategy,
@@ -13,20 +14,118 @@ import {
   AutoActivation,
   ExplicitActivation,
   HybridDispatch,
+  LlmFinalizer,
   OneShotPlanning,
+  PassthroughFinalizer,
   ReplanOnErrorPlanning,
   ScoreThresholdToolSelection,
   SelfDispatch,
   SkillStepsPlanning,
   SubAgentDispatch,
+  TemplateFinalizer,
   TopKToolSelection,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
 import type {
   SmartServerConfig,
+  SmartServerLlmConfig,
   SmartServerMode,
   SmartServerSubAgentConfig,
 } from './smart-server.js';
+
+export type LlmConfigMap = Record<string, SmartServerLlmConfig>;
+export type NormalizedLlmMap = { main: SmartServerLlmConfig } & LlmConfigMap;
+
+/**
+ * Detect whether an object is a flat SmartServerLlmConfig shape.
+ * Flat shape is identified by the presence of ANY of the known flat-shape
+ * fields: `provider`, `apiKey`, `model`, or `url`. This covers keyless
+ * providers (Ollama, SAP AI Core) that omit `apiKey` — using `apiKey`-only
+ * detection silently misclassified those configs as a "map" shape.
+ */
+function isFlatLlmConfig(input: SmartServerLlmConfig | LlmConfigMap): boolean {
+  const flat = input as Partial<SmartServerLlmConfig>;
+  return (
+    typeof flat.provider === 'string' ||
+    typeof flat.apiKey === 'string' ||
+    typeof flat.model === 'string' ||
+    typeof flat.url === 'string'
+  );
+}
+
+/**
+ * Normalize the optional top-level `llm:` block.
+ * - undefined → undefined (pipeline-only configs stay valid)
+ * - flat shape (has `provider` | `apiKey` | `model` | `url`) → { main: flat } (backward compat)
+ * - map shape → must include `main`; returned as NormalizedLlmMap
+ */
+export function normalizeLlmConfig(
+  input?: SmartServerLlmConfig | LlmConfigMap,
+): NormalizedLlmMap | undefined {
+  if (input === undefined) return undefined;
+  if (isFlatLlmConfig(input)) {
+    return { main: input as SmartServerLlmConfig } as NormalizedLlmMap;
+  }
+  const map = input as LlmConfigMap;
+  if (!map.main) {
+    throw new Error(
+      "llm: map must include a 'main' key (default LLM for unspecified roles)",
+    );
+  }
+  return map as NormalizedLlmMap;
+}
+
+/**
+ * Strict lookup: returns map[name] if explicitly present, else undefined.
+ * Does NOT fall through to map.main. Use when the caller needs to
+ * detect explicit-presence (e.g. to decide between an alias and the
+ * named map entry).
+ */
+export function resolveLlmConfigStrict(
+  map: NormalizedLlmMap | undefined,
+  name: string | undefined,
+): SmartServerLlmConfig | undefined {
+  if (!map || !name) return undefined;
+  return map[name];
+}
+
+/**
+ * Resolve a per-role LLM config by name from a normalized map.
+ * Lookup chain: map[name] → map.main → pipelineFallback.
+ * When map is undefined, falls back to pipelineFallback (so pipeline-only
+ * configs keep working with no top-level llm: block).
+ *
+ * The caller decides whether `undefined` is an error.
+ */
+export function resolveLlmConfig(
+  map: NormalizedLlmMap | undefined,
+  name?: string,
+  pipelineFallback?: SmartServerLlmConfig,
+): SmartServerLlmConfig | undefined {
+  if (!map) return pipelineFallback;
+  if (!name || name === 'main') return map.main;
+  return map[name] ?? map.main;
+}
+
+/**
+ * Read the reviewer block's LLM-name selector, accepting both the
+ * preferred `reviewerLlm` field and the deprecated `plannerLlm` alias.
+ * When the alias is used, calls `warn(message)`.
+ */
+export function resolveReviewerLlmName(
+  block: { reviewerLlm?: string; plannerLlm?: string } | undefined,
+  warn: (msg: string) => void,
+): string | undefined {
+  if (!block) return undefined;
+  if (typeof block.reviewerLlm === 'string') return block.reviewerLlm;
+  if (typeof block.plannerLlm === 'string') {
+    warn(
+      "coordinator.reviewer.plannerLlm is deprecated; rename to 'reviewerLlm'",
+    );
+    return block.plannerLlm;
+  }
+  return undefined;
+}
 
 export interface YamlCoordinator {
   planning?: 'one-shot' | 'replan-on-error' | 'skill-steps';
@@ -41,7 +140,16 @@ export interface YamlCoordinator {
     | { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' }
     | Record<string, unknown>;
   interpreter?: { type?: string } | Record<string, unknown>;
-  reviewer?: { type?: string; plannerLlm?: 'main' | 'planner' | 'helper' };
+  reviewer?: {
+    type?: string;
+    reviewerLlm?: string;
+    plannerLlm?: 'main' | 'planner' | 'helper';
+  };
+  finalizer?: {
+    type?: 'passthrough' | 'llm' | 'template';
+    finalizerLlm?: string;
+    systemPrompt?: string;
+  };
   errorStrategy?: { type?: string; maxReplans?: number };
   stateOracle?: string;
   maxRoundTrips?: number;
@@ -61,11 +169,12 @@ const DAG_ONLY = [
   'interpreter',
   'reviewer',
   'errorStrategy',
+  'finalizer',
   'stateOracle',
   'maxRoundTrips',
 ];
 
-/** Validate a `{ type?: 'llm'; plannerLlm?: main|planner|helper }` role block. */
+/** Validate a coordinator role block shape. */
 function assertLlmRoleShape(label: string, role: unknown): void {
   if (typeof role !== 'object' || role === null || Array.isArray(role)) {
     throw new Error(
@@ -73,20 +182,25 @@ function assertLlmRoleShape(label: string, role: unknown): void {
     );
   }
   const kind = (role as { type?: unknown }).type;
-  if (kind !== undefined && kind !== 'llm') {
-    throw new Error(
-      `coordinator.${label}: unknown type '${String(kind)}' (only 'llm' is supported)`,
-    );
-  }
-  const sel = (role as { plannerLlm?: unknown }).plannerLlm;
   if (
-    sel !== undefined &&
-    sel !== 'main' &&
-    sel !== 'planner' &&
-    sel !== 'helper'
+    kind !== undefined &&
+    kind !== 'llm' &&
+    !(label === 'finalizer' && (kind === 'passthrough' || kind === 'template'))
   ) {
+    throw new Error(`coordinator.${label}: unknown type '${String(kind)}'`);
+  }
+  for (const field of ['plannerLlm', 'reviewerLlm', 'finalizerLlm'] as const) {
+    const sel = (role as Record<string, unknown>)[field];
+    if (sel !== undefined && typeof sel !== 'string') {
+      throw new Error(
+        `coordinator.${label}.${field} must be a string referencing an llm.* key, got: ${String(sel)}`,
+      );
+    }
+  }
+  const sp = (role as { systemPrompt?: unknown }).systemPrompt;
+  if (sp !== undefined && typeof sp !== 'string') {
     throw new Error(
-      `coordinator.${label}.plannerLlm must be one of main | planner | helper, got: ${String(sel)}`,
+      `coordinator.${label}.systemPrompt must be a string, got: ${String(sp)}`,
     );
   }
 }
@@ -121,6 +235,9 @@ export function assertCoordinatorConfigShape(
     assertLlmRoleShape('planner', coord.planner);
     if (coord.reviewer !== undefined) {
       assertLlmRoleShape('reviewer', coord.reviewer);
+    }
+    if (coord.finalizer !== undefined) {
+      assertLlmRoleShape('finalizer', coord.finalizer);
     }
     if (coord.errorStrategy !== undefined) {
       assertErrorStrategyShape(coord.errorStrategy);
@@ -503,6 +620,49 @@ export function generateConfigTemplate(outputPath: string): void {
   fs.writeFileSync(outputPath, YAML_TEMPLATE, 'utf8');
 }
 
+export type FinalizerYaml = {
+  type?: 'passthrough' | 'llm' | 'template';
+  finalizerLlm?: string;
+  systemPrompt?: string;
+};
+
+/**
+ * Build the IFinalizer impl from `coordinator.finalizer:` YAML.
+ *
+ * Lookup chain for `type: llm`:
+ *   resolveLlmConfig(llmMap, cfg.finalizerLlm, pipelineFallback)
+ *   → top-level llm.<name> → llm.main → pipelineFallback (pipeline.llm.main)
+ *   → ConfigError if all three are missing.
+ *
+ * Absent block / `type: passthrough` → PassthroughFinalizer.
+ * `type: template` → TemplateFinalizer.
+ */
+export async function buildFinalizer(
+  cfg: FinalizerYaml | undefined,
+  llmMap: NormalizedLlmMap | undefined,
+  pipelineFallback: SmartServerLlmConfig | undefined,
+  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>,
+): Promise<IFinalizer> {
+  const kind = cfg?.type ?? 'passthrough';
+  if (kind === 'passthrough') return new PassthroughFinalizer();
+  if (kind === 'template') return new TemplateFinalizer();
+  // kind === 'llm'
+  const resolved = resolveLlmConfig(
+    llmMap,
+    cfg?.finalizerLlm,
+    pipelineFallback,
+  );
+  if (!resolved) {
+    throw new Error(
+      'coordinator.finalizer (type: llm) requires an LLM config: provide top-level llm.<name>, llm.main, or pipeline.llm.main',
+    );
+  }
+  const llm = await makeLlm(resolved);
+  return new LlmFinalizer(llm, {
+    systemPrompt: cfg?.systemPrompt,
+  });
+}
+
 const get = (obj: unknown, ...keys: string[]): unknown =>
   keys.reduce<unknown>((o, k) => {
     if (o !== null && typeof o === 'object' && k in o) {
@@ -618,8 +778,18 @@ function checkRagStore(
   }
 }
 
+function validateLlmEntry(
+  label: string,
+  cfg: { provider?: unknown; apiKey?: unknown; model?: unknown } | undefined,
+  required: boolean,
+  env: NodeJS.ProcessEnv,
+  issues: string[],
+): void {
+  checkLlmRole(label, cfg, required, env, issues);
+}
+
 function validateResolvedConfig(
-  resolved: Omit<SmartServerConfig, 'log'>,
+  _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
   env: NodeJS.ProcessEnv,
 ): void {
@@ -647,17 +817,47 @@ function validateResolvedConfig(
       checkLlmRole('pipeline.llm.helper', llmCfg.helper, false, env, issues);
     }
   } else {
-    checkLlmRole(
-      'llm',
-      {
-        provider: resolved.llm.provider,
-        apiKey: resolved.llm.apiKey,
-        model: resolved.llm.model,
-      },
-      true,
-      env,
-      issues,
-    );
+    // Read from the raw YAML so we can distinguish flat vs map shape.
+    // `resolved.llm` is always constructed as a flat object by resolveSmartServerConfig,
+    // so it cannot be used to detect the map shape.
+    const rawLlm = get(yaml, 'llm') as
+      | { provider?: unknown; apiKey?: unknown; model?: unknown }
+      | Record<
+          string,
+          { provider?: unknown; apiKey?: unknown; model?: unknown }
+        >
+      | undefined;
+    if (rawLlm === undefined) {
+      // No top-level llm: AND no pipeline.llm.main → would have been caught
+      // by `usingPipeline` branch. Defensive: surface a clear issue.
+      issues.push('llm: required when pipeline.llm.main is not configured');
+    } else if (
+      typeof (rawLlm as { provider?: unknown }).provider === 'string'
+    ) {
+      // Flat shape — existing behaviour.
+      validateLlmEntry(
+        'llm',
+        rawLlm as { provider?: unknown; apiKey?: unknown; model?: unknown },
+        true,
+        env,
+        issues,
+      );
+    } else {
+      // Map shape — llm.main is required; every named entry is validated.
+      const map = rawLlm as Record<
+        string,
+        { provider?: unknown; apiKey?: unknown; model?: unknown }
+      >;
+      if (!map.main) {
+        issues.push("llm.main: required when 'llm' is a named map");
+      } else {
+        validateLlmEntry('llm.main', map.main, true, env, issues);
+      }
+      for (const [name, entry] of Object.entries(map)) {
+        if (name === 'main') continue;
+        validateLlmEntry(`llm.${name}`, entry, true, env, issues);
+      }
+    }
   }
 
   if (get(yaml, 'mcp')) {
@@ -839,22 +1039,26 @@ export function resolveSmartServerConfig(
       (args.port as string) ?? get(yaml, 'port') ?? env.PORT ?? 4004,
     ),
     host: (args.host as string) ?? get(yaml, 'host') ?? '0.0.0.0',
-    llm: {
-      provider: get(yaml, 'llm', 'provider') as
-        | 'deepseek'
-        | 'openai'
-        | 'anthropic'
-        | 'sap-ai-sdk'
-        | 'ollama'
-        | undefined,
-      apiKey,
-      url: get(yaml, 'llm', 'url') as string | undefined,
-      model: get(yaml, 'llm', 'model') as string | undefined,
-      temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
-      classifierTemperature: Number(
-        get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
-      ),
-    },
+    llm: get(yaml, 'llm')
+      ? typeof get(yaml, 'llm', 'provider') === 'string'
+        ? {
+            provider: get(yaml, 'llm', 'provider') as
+              | 'deepseek'
+              | 'openai'
+              | 'anthropic'
+              | 'sap-ai-sdk'
+              | 'ollama'
+              | undefined,
+            apiKey,
+            url: get(yaml, 'llm', 'url') as string | undefined,
+            model: get(yaml, 'llm', 'model') as string | undefined,
+            temperature: Number(get(yaml, 'llm', 'temperature') ?? 0.7),
+            classifierTemperature: Number(
+              get(yaml, 'llm', 'classifierTemperature') ?? 0.1,
+            ),
+          }
+        : (get(yaml, 'llm') as Record<string, SmartServerLlmConfig>)
+      : undefined,
     rag: get(yaml, 'rag')
       ? {
           type: get(yaml, 'rag', 'type') as

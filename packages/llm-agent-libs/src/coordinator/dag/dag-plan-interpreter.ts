@@ -6,6 +6,7 @@ import type {
   ISubAgent,
   NodeResult,
   PlanNode,
+  StreamChunk,
 } from '@mcp-abap-adt/llm-agent';
 import { composeNodeTask } from './compose-node-task.js';
 import { spliceSubPlan } from './splice-sub-plan.js';
@@ -27,6 +28,7 @@ export class DagPlanInterpreter
 
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
+    const executionOrder: string[] = [];
     let currentPlan = plan;
     const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
     let replansUsed = 0;
@@ -60,13 +62,31 @@ export class DagPlanInterpreter
             ctx.ancestorContext,
           );
           const started = Date.now();
+          const outerOnPartial = ctx.onPartial;
+          const workerOnPartial = outerOnPartial
+            ? (c: StreamChunk) => {
+                const annotated: StreamChunk = (() => {
+                  if (c.kind === 'content' || c.kind === 'tool-call') {
+                    return { ...c, nodeId: c.nodeId ?? n.id };
+                  }
+                  return c;
+                })();
+                outerOnPartial(annotated);
+              }
+            : undefined;
+
+          outerOnPartial?.({ kind: 'node-start', nodeId: n.id, goal: n.goal });
           try {
             const res = await this.resolveWorker(n, ctx).run({
               task,
               sessionId: ctx.sessionId,
               signal: ctx.signal,
+              trace: ctx.trace,
+              sessionLogger: ctx.sessionLogger,
+              onPartial: workerOnPartial,
             });
             if (res.errorClass === 'epicfail') {
+              outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
               return {
                 node: n,
                 kind: 'failed',
@@ -75,6 +95,7 @@ export class DagPlanInterpreter
                 durationMs: Date.now() - started,
               };
             }
+            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: true });
             return {
               node: n,
               kind: 'done',
@@ -82,6 +103,7 @@ export class DagPlanInterpreter
               durationMs: Date.now() - started,
             };
           } catch (error) {
+            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
             return {
               node: n,
               kind: 'failed',
@@ -104,6 +126,7 @@ export class DagPlanInterpreter
           durationMs: o.durationMs,
         };
         done.add(o.node.id);
+        executionOrder.push(o.node.id);
       }
       const failures = outcomes.filter(
         (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
@@ -174,6 +197,7 @@ export class DagPlanInterpreter
         output: '',
         failedNodeId: firstFailed?.id,
         executedPlan: currentPlan,
+        executionOrder,
       };
     }
 
@@ -182,7 +206,13 @@ export class DagPlanInterpreter
     );
     const terminals = currentPlan.nodes.filter((n) => !depended.has(n.id));
     const output = terminals.map((n) => results[n.id].output).join('\n\n');
-    return { nodeResults: results, ok: true, output };
+    return {
+      nodeResults: results,
+      ok: true,
+      output,
+      executedPlan: currentPlan,
+      executionOrder,
+    };
   }
 
   private resolveWorker(node: PlanNode, ctx: InterpretContext): ISubAgent {

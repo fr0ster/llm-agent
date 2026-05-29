@@ -217,6 +217,29 @@ describe('chat() options forwarding', () => {
     assert.equal(capturedBody.temperature, 0.2);
     assert.equal(capturedBody.max_tokens, 100);
   });
+
+  it('non-streaming chat does NOT include stream_options', async () => {
+    const provider = new DeepSeekProvider({
+      apiKey: 'test-key',
+      model: 'deepseek-chat',
+    });
+    let capturedBody: Record<string, unknown> = {};
+    // @ts-expect-error — stub axios for test
+    provider.client.post = async (
+      _url: string,
+      body: Record<string, unknown>,
+    ) => {
+      capturedBody = body;
+      return {
+        data: {
+          choices: [{ message: { content: 'ok' }, finish_reason: 'stop' }],
+        },
+      };
+    };
+    await provider.chat([{ role: 'user', content: 'hi' }]);
+    assert.equal(capturedBody.stream, undefined);
+    assert.equal(capturedBody.stream_options, undefined);
+  });
 });
 
 // ---------------------------------------------------------------------------

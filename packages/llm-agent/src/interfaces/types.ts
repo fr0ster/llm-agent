@@ -3,6 +3,7 @@
  */
 
 import type { Message } from '../types.js';
+import type { OnPartial } from './streaming.js';
 
 // ---------------------------------------------------------------------------
 // Result envelope
@@ -43,6 +44,16 @@ export interface CallOptions {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
+  /** Per-session sessionId-keyed registries injected by the SessionGraph.
+   *  Untyped here (structural) to avoid a contracts→libs cycle; libs narrows. */
+  toolAvailability?: unknown;
+  pendingToolResults?: unknown;
+  /**
+   * Optional partial-output callback. When present, the tool-loop stage
+   * forwards streaming content deltas and tool-call events as `StreamChunk`
+   * values so the calling layer can render live progress.
+   */
+  onPartial?: OnPartial;
 }
 
 export interface ToolHeartbeat {

@@ -619,6 +619,29 @@ await agent.closeSession(sessionId);
 
 Call this from your session lifecycle hook (user logout, WebSocket disconnect). It flushes all session-scoped RAG collections created under that `sessionId` and clears the associated conversation history from memory.
 
+### Session cookie support (HTTP server)
+
+`SmartServer` (binary in `@mcp-abap-adt/llm-agent-server`) identifies sessions via an HTTP cookie (default name `sid`, see `cfg.session.cookieName`). The cookie attributes shipped out of the box:
+
+- `HttpOnly` — not readable from JS in the browser.
+- `SameSite=Lax` — sent on top-level GET cross-site navigations and same-site requests.
+- `Path=/` — scoped to the API root.
+- `Secure` — set automatically when the request reaches the server via HTTPS (`req.socket.encrypted` or `X-Forwarded-Proto: https`); plain HTTP omits it for localhost development.
+
+The default CORS policy is `Access-Control-Allow-Origin: *` **without** `Access-Control-Allow-Credentials: true`. This works for:
+
+- API SDK consumers that share an origin with the server (cookie-aware client + same origin).
+- Server-to-server callers (Node's `fetch`, `axios`, etc.) that explicitly forward `Set-Cookie` → `Cookie` themselves between requests (Node's default `fetch` does **not** keep a cookie jar).
+
+#### Cross-origin browser frontend caveat
+
+A browser frontend on a different origin (e.g. `https://app.example.com` calling `https://api.example.com`) will neither persist the `Set-Cookie` nor send it back on subsequent API fetches under the default config. Each request mints a new session, defeating per-session graphs and `/v1/usage`. Pick ONE:
+
+1. **Recommended:** deploy the API behind the SAME origin as the frontend (reverse proxy, e.g. nginx `/api` → upstream SmartServer). The cookie just works; no CORS adjustment needed.
+2. **Cross-origin opt-in:** configure CORS to allow specific origins, set `Access-Control-Allow-Credentials: true`, AND switch the cookie to `SameSite=None; Secure` (HTTPS required). This is **not** the default — exposing credentials to wildcard origins is a security risk; the default config is intentionally restrictive. You will need to override SmartServer's CORS headers and `setCookie` builder in your composition.
+
+Auth-enabled downstream builds (bearer tokens / OIDC / mTLS) may handle session identity differently — those flows are out of scope for the default cookie path.
+
 ## IMcpClient
 
 **File:** `packages/llm-agent/src/interfaces/mcp-client.ts`

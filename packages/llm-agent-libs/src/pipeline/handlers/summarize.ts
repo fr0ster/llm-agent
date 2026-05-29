@@ -49,6 +49,11 @@ export class SummarizeHandler implements IStageHandler {
       ctx.options,
     );
     ctx.requestLogger.logLlmCall({
+      // Stamp requestId so this helper-LLM call is attributed to the active
+      // request's per-traceId delta — without it, history-summarization tokens
+      // only show up in the session-cumulative aggregate and are missing from
+      // `response.usage` (which is computed from the delta).
+      requestId: ctx.options?.trace?.traceId,
       component: 'helper',
       model: ctx.helperLlm.model ?? 'unknown',
       promptTokens: res.ok ? (res.value.usage?.promptTokens ?? 0) : 0,

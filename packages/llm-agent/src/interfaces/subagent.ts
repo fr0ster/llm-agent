@@ -1,4 +1,5 @@
 import type { EpicFailTrace } from './coordinator.js';
+import type { OnPartial } from './streaming.js';
 import type { LlmToolCall, LlmUsage } from './types.js';
 
 /**
@@ -29,6 +30,20 @@ export interface ISubAgentInput {
   context?: string;
   sessionId?: string;
   signal?: AbortSignal;
+  /** Request correlation, threaded from the coordinator so worker token-log
+   *  entries attribute to the same request delta (traceId). */
+  trace?: { traceId: string };
+  /** Per-request session debugger logger, threaded from the coordinator so
+   *  worker stages (tool-loop, LLM dumps, MCP calls) write to the parent's
+   *  `.run/sessions/<sid>/<req>/` directory. Shape mirrors
+   *  `CallOptions.sessionLogger` (structural to avoid import cycle). */
+  sessionLogger?: {
+    logStep(name: string, data: unknown): void;
+  };
+  /** Optional per-event callback for streaming worker output upstream.
+   *  Fire-and-forget — implementations must never let the callback throw
+   *  break the run. Absence preserves today's silent behaviour. */
+  onPartial?: OnPartial;
 }
 
 export interface ISubAgentResult {

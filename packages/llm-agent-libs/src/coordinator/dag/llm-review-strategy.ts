@@ -1,15 +1,25 @@
 import type {
   DagPlan,
   ExecutionFailureInput,
-  ExecutionReviewDecision,
+  ExecutionReviewResult,
   ILlm,
   IReviewStrategy,
+  LlmUsage,
   ReviewInput,
-  ReviewVerdict,
+  ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
 import { ClarifySignal, NeedInfoSignal } from '@mcp-abap-adt/llm-agent';
 import { DirectLlmSubAgent } from '../../subagent/direct-llm-subagent.js';
 import { renderAncestorContext } from './render-ancestor-context.js';
+
+/**
+ * Attach LLM usage to a thrown Error so the coordinator's runRole catch can
+ * still bill the spend. Same rationale as the planner-side helper.
+ */
+function withUsage(err: Error, usage: LlmUsage | undefined): Error {
+  if (usage) (err as Error & { usage?: LlmUsage }).usage = usage;
+  return err;
+}
 
 // Static critic instructions. The user prompt, plan and catalog are dynamic and
 // go into the per-call `task` (see review()).
@@ -34,10 +44,14 @@ The revised plan MUST treat the current state as the starting point: do not redo
  */
 export class LlmReviewStrategy implements IReviewStrategy {
   readonly name = 'llm-review';
+  /** Best-effort model identifier from the underlying ILlm (for logger
+   *  attribution). May be undefined for ILlm impls that do not expose one. */
+  readonly model?: string;
   private readonly agent: DirectLlmSubAgent;
   private readonly executionAgent: DirectLlmSubAgent;
 
   constructor(llm: ILlm) {
+    this.model = llm.model;
     this.agent = new DirectLlmSubAgent('reviewer', llm, {
       systemPrompt: REVIEWER_SYSTEM,
       contextPolicy: 'optional',
@@ -48,7 +62,7 @@ export class LlmReviewStrategy implements IReviewStrategy {
     });
   }
 
-  async review(input: ReviewInput): Promise<ReviewVerdict> {
+  async review(input: ReviewInput): Promise<ReviewResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -67,8 +81,11 @@ export class LlmReviewStrategy implements IReviewStrategy {
 
     const match = res.output.match(/\{[\s\S]*\}/);
     if (!match)
-      throw new Error(
-        `Reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
+        ),
+        res.usage,
       );
     let parsed: {
       pass?: unknown;
@@ -79,19 +96,27 @@ export class LlmReviewStrategy implements IReviewStrategy {
     try {
       parsed = JSON.parse(match[0]);
     } catch {
-      throw new Error(
-        `Reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      // Forward LLM usage on the signal path so the coordinator can attribute
+      // reviewer spend even when the critic short-circuits with a signal.
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
     if (typeof parsed.pass !== 'boolean') {
-      throw new Error(
-        `Reviewer verdict must have a boolean 'pass': ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Reviewer verdict must have a boolean 'pass': ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
     if (parsed.pass === false) {
@@ -99,18 +124,24 @@ export class LlmReviewStrategy implements IReviewStrategy {
         typeof parsed.feedback !== 'string' ||
         parsed.feedback.trim() === ''
       ) {
-        throw new Error(
-          `Reviewer rejection must include a non-empty 'feedback' string: ${match[0].slice(0, 200)}`,
+        throw withUsage(
+          new Error(
+            `Reviewer rejection must include a non-empty 'feedback' string: ${match[0].slice(0, 200)}`,
+          ),
+          res.usage,
         );
       }
-      return { pass: false, feedback: parsed.feedback };
+      return {
+        verdict: { pass: false, feedback: parsed.feedback },
+        usage: res.usage,
+      };
     }
-    return { pass: true };
+    return { verdict: { pass: true }, usage: res.usage };
   }
 
   async reviewExecutionFailure(
     input: ExecutionFailureInput,
-  ): Promise<ExecutionReviewDecision> {
+  ): Promise<ExecutionReviewResult> {
     const catalog = input.agents
       .map((a) => `- ${a.name}: ${a.description ?? '(no description)'}`)
       .join('\n');
@@ -134,8 +165,11 @@ export class LlmReviewStrategy implements IReviewStrategy {
 
     const match = res.output.match(/\{[\s\S]*\}/);
     if (!match)
-      throw new Error(
-        `Recovery reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Recovery reviewer output did not contain a JSON object: ${res.output.slice(0, 200)}`,
+        ),
+        res.usage,
       );
     let parsed: {
       action?: unknown;
@@ -146,20 +180,28 @@ export class LlmReviewStrategy implements IReviewStrategy {
     try {
       parsed = JSON.parse(match[0]);
     } catch {
-      throw new Error(
-        `Recovery reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Recovery reviewer output contained malformed JSON: ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
     if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      throw new NeedInfoSignal(parsed.needInfo);
+      throw new NeedInfoSignal(parsed.needInfo, res.usage);
     }
     if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify);
+      throw new ClarifySignal(parsed.clarify, res.usage);
     }
-    if (parsed.action === 'abort') return { action: 'abort' };
+    if (parsed.action === 'abort') {
+      return { decision: { action: 'abort' }, usage: res.usage };
+    }
     if (parsed.action !== 'revise') {
-      throw new Error(
-        `Recovery reviewer action must be 'abort' | 'revise': ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Recovery reviewer action must be 'abort' | 'revise': ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
     const plan = parsed.plan as { nodes?: unknown } | undefined;
@@ -174,10 +216,16 @@ export class LlmReviewStrategy implements IReviewStrategy {
           ((n as { goal?: string }).goal ?? '').trim() === '',
       )
     ) {
-      throw new Error(
-        `Recovery reviewer revise plan must have non-empty nodes with string id+goal: ${match[0].slice(0, 200)}`,
+      throw withUsage(
+        new Error(
+          `Recovery reviewer revise plan must have non-empty nodes with string id+goal: ${match[0].slice(0, 200)}`,
+        ),
+        res.usage,
       );
     }
-    return { action: 'revise', revisedPlan: plan as DagPlan };
+    return {
+      decision: { action: 'revise', revisedPlan: plan as DagPlan },
+      usage: res.usage,
+    };
   }
 }
