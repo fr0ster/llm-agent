@@ -14,6 +14,7 @@ import type {
   ISubAgent,
   LlmComponent,
   LlmUsage,
+  OnPartial,
   PlannerResult,
   ReviewResult,
 } from '@mcp-abap-adt/llm-agent';
@@ -299,6 +300,14 @@ export class DagCoordinatorHandler implements IStageHandler {
           }
         }
 
+        const onPartial: OnPartial = (chunk) => {
+          if (chunk.kind === 'content') {
+            ctx.yield({ ok: true, value: { content: chunk.delta } });
+          }
+          // node-start / node-end / tool-call → session log only (NOT yielded to client)
+          ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
+        };
+
         let result: InterpretResult;
         try {
           result = await this.deps.interpreter.interpret(plan, {
@@ -310,6 +319,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             ancestorContext,
             trace: ctx.options?.trace,
             sessionLogger: ctx.options?.sessionLogger,
+            onPartial,
           });
         } catch (err) {
           ctx.error =
@@ -349,11 +359,10 @@ export class DagCoordinatorHandler implements IStageHandler {
                 sessionId: ctx.sessionId,
                 signal: ctx.options?.signal,
                 trace: ctx.options?.trace,
+                onPartial,
               }),
           );
           if ('ended' in finalRes) return true;
-          const finalText = finalRes.value.output;
-          ctx.yield({ ok: true, value: { content: finalText } });
           // Attach usage ONLY to the terminal `finishReason:'stop'` chunk.
           // The agent's response assembler accumulates usage across yielded
           // chunks; including usage on both yields would double-count.

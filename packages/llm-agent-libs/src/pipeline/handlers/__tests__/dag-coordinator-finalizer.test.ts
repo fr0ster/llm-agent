@@ -83,6 +83,7 @@ test('handler invokes finalizer with executionOrder-derived trace and yields fin
         trace: input.executionTrace,
         objective: input.objective,
       };
+      input.onPartial?.({ kind: 'content', delta: 'FINAL' });
       return {
         output: 'FINAL',
         usage: { promptTokens: 2, completionTokens: 3, totalTokens: 5 },
