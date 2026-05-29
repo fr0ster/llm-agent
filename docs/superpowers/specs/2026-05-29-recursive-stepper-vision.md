@@ -23,10 +23,12 @@ Stepper {
   planner      // emits a SHALLOW plan from prompt + knowledge-RAG queries
   reviewer     // validates plan matches parent task + RAG state
   interpreter  // dispatches steps → child Steppers OR executor
-  executor     // bottom: MCP-tool call OR terminal LLM call
-  finalizer    // synthesises answer from accumulated knowledge before bubbling up
+  executor     // bottom: MCP-tool call OR terminal LLM call;
+               // writes step artifacts to knowledge-RAG as they are produced
 }
 ```
+
+(Finalizer is NOT part of the Stepper. It exists once, at the coordinator boundary above the root Stepper — see Q5.)
 
 The Coordinator is the **root Stepper**. Workers / subagents are Steppers at non-root depth. The runtime makes no fundamental distinction between coordinator and worker — they share a contract, only their position in the tree differs.
 
@@ -97,13 +99,14 @@ interface IStepperInput {
 
 interface IStepperResult {
   status: 'ok' | 'incomplete' | 'budget-exhausted';
-  output?: string;                         // present when status = ok
-  missing?: string[];                      // present when status = incomplete
+  missing?: string[];                      // populated when status = incomplete
   usage: LlmUsage;
 }
 ```
 
 No fields named "context", "tools allowlist", "facts": the Stepper gets handles, not payloads.
+
+**Internal Steppers do not return text** (`output` is absent from the result by design — Q5/2026-05-29). Step artifacts are written into the knowledge-RAG by the executor as they are produced, and the next Stepper's planner reads them back via `knowledgeRag.query(...)`. Only the root finalizer (which is NOT a Stepper but a coordinator-level component) produces the consumer-facing text by reading the original prompt and the accumulated knowledge-RAG at the end of the run.
 
 ## 6. Sufficiency oracle — the central hard problem
 
@@ -171,6 +174,13 @@ I have not seen this combination formalised end-to-end in published systems. Ind
      **Scope (clarified 2026-05-29):** ONE global config value, locally enforced per Stepper. Each Stepper applies the cap to its own children independently — there is no cross-tree semaphore. Worst-case math (deeply nested fan-out): `maxN^depth` concurrent at peak. With `maxN=4` and depth 3 → 64 concurrent. Real plans rarely fan out wide at every level (typical shape: wide at one review-style level, narrow elsewhere), so 4 is a sensible default for most deployments; raise to 8 on enterprise quotas with no rate limits. If operational pressure surfaces (rate-limit storms on deep + wide trees), a global semaphore is captured as an 18.x add-on, not a v1 default.
      Duplicate-fact race in knowledge-RAG (two siblings independently fetch the same fact and write near-identical vectors concurrently) is a **planner failure**, not a runtime concern — if two steps were meant to return the same fact, the plan should have had ONE step. When it happens despite that, consequences are harmless in v1: vector store inserts are commutative, semantic search returns either copy, planner sees the fact regardless. Cost is wasted LLM/MCP calls, debug noise from duplicate entries. Post-hoc dedup by semantic-similarity threshold is deferred to 18.x if operational pain surfaces.
 5. **Finalizer at every level vs. root only.** Per-level finalizer = per-level LLM call; potentially significant cost. Allow `finalizer: pass-through` as default on internal levels?
+   - **2026-05-29 answer (user):** **ONE finalizer at root only.** Internal Steppers do not have finalizers. They write their step artifacts (source code, MCP results, intermediate analyses) into the knowledge-RAG via the executor as they are produced, and return a STATUS only (`ok` / `incomplete` / `budget-exhausted` with `missing[]`) — not text.
+     The root finalizer is the single text producer. Its job:
+     - read the original consumer prompt;
+     - read the session's knowledge-RAG;
+     - decide: either compose the final answer from the RAG, OR raise an `insufficient` signal carrying `missing[]` upward to the coordinator.
+     The coordinator on `insufficient` either returns "not enough info, here's what's missing" to the consumer, or — if budget allows — triggers a replan at root with the `missing[]` as hint.
+     This collapses the entire per-level finalizer story (Passthrough/Template/LlmFinalizer on internal Steppers) into nothing: there are no internal finalizers. Data flows through the knowledge-RAG, not through return values. Internal Steppers are silent in text and active in RAG.
 6. **Cycle protection signature.** Hash `(prompt, ancestorPath)` only, or `(prompt, ancestorPath, knowledgeRagFingerprint)`? Second is stricter, costs an embedding lookup.
 7. **Streaming `StreamChunk` annotation.** Add `depth: number` and `path: string[]` for hierarchical client rendering, or keep flat?
 
