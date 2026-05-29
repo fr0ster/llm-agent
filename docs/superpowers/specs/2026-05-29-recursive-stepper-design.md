@@ -421,7 +421,7 @@ coordinator (root finalizer not yet involved)
         │     ├── executes, writes include sources to knowledge-RAG
         │     ├── LLM emits clean "all source captured" → return ok
         └── Step "code-review (all four dimensions)" → CyclicReActExecutor (leaf — NO child Stepper)
-              ├── reads source from knowledge-RAG (planner already pre-injected via context)
+              ├── executor queries knowledge-RAG for the current task → finds the source written by the read-source leaf
               ├── LLM call: "review for security" → tool-call SearchSource("OPEN DATASET") + SearchSource("AUTHORITY-CHECK")
               ├── executes MCPs, writes findings to knowledge-RAG with artifactType: 'security-finding'
               ├── LLM call: "now review for performance" → tool-call SearchSource("LOOP AT") + …
