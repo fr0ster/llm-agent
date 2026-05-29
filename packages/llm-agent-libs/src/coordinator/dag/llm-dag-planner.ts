@@ -1,4 +1,5 @@
 import type {
+  DagPlan,
   ILlm,
   IPlanner,
   LlmUsage,
@@ -48,6 +49,127 @@ Emit a plan-level "objective". Respond with ONLY one of:
 {"clarify":"<question>"}  — if you need a human decision before planning (e.g. overwrite ok?)`;
 
 /**
+ * Parse a raw LLM content string into a `DagPlan`.
+ * Throws `NeedInfoSignal`, `ClarifySignal`, or plain `Error` on bad input.
+ * The optional `usage` argument is attached to thrown errors so callers can
+ * still bill LLM spend even when parsing fails.
+ */
+export function parseDagPlan(content: string, usage?: LlmUsage): DagPlan {
+  const match = content.match(/\{[\s\S]*\}/);
+  if (!match)
+    throw withUsage(
+      new Error(
+        `Planner output did not contain a JSON object: ${content.slice(0, 200)}`,
+      ),
+      usage,
+    );
+  let parsed: {
+    objective?: unknown;
+    rationale?: unknown;
+    needInfo?: unknown;
+    clarify?: unknown;
+    nodes?: Array<{
+      id?: unknown;
+      goal?: unknown;
+      agent?: unknown;
+      dependsOn?: unknown;
+      needsInput?: unknown;
+    }>;
+  };
+  try {
+    parsed = JSON.parse(match[0]);
+  } catch {
+    throw withUsage(
+      new Error(
+        `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
+      ),
+      usage,
+    );
+  }
+  if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
+    throw new NeedInfoSignal(parsed.needInfo, usage);
+  }
+  if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
+    throw new ClarifySignal(parsed.clarify, usage);
+  }
+  if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
+    throw withUsage(
+      new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`),
+      usage,
+    );
+  }
+  if (parsed.objective !== undefined && typeof parsed.objective !== 'string') {
+    throw withUsage(
+      new Error(
+        `Planner objective must be a string: ${JSON.stringify(parsed.objective)}`,
+      ),
+      usage,
+    );
+  }
+  if (parsed.rationale !== undefined && typeof parsed.rationale !== 'string') {
+    throw withUsage(
+      new Error(
+        `Planner rationale must be a string: ${JSON.stringify(parsed.rationale)}`,
+      ),
+      usage,
+    );
+  }
+  const nodes: PlanNode[] = parsed.nodes.map((n, i) => {
+    if (typeof n.goal !== 'string' || n.goal.trim() === '') {
+      throw withUsage(
+        new Error(`Planner node is missing a goal: ${JSON.stringify(n)}`),
+        usage,
+      );
+    }
+    if (n.id !== undefined && typeof n.id !== 'string') {
+      throw withUsage(
+        new Error(`Planner node has a non-string id: ${JSON.stringify(n)}`),
+        usage,
+      );
+    }
+    if (n.agent !== undefined && typeof n.agent !== 'string') {
+      throw withUsage(
+        new Error(`Planner node has a non-string agent: ${JSON.stringify(n)}`),
+        usage,
+      );
+    }
+    if (
+      n.dependsOn !== undefined &&
+      (!Array.isArray(n.dependsOn) ||
+        n.dependsOn.some((d) => typeof d !== 'string'))
+    ) {
+      throw withUsage(
+        new Error(
+          `Planner node dependsOn must be an array of strings: ${JSON.stringify(n)}`,
+        ),
+        usage,
+      );
+    }
+    if (n.needsInput !== undefined && typeof n.needsInput !== 'boolean') {
+      throw withUsage(
+        new Error(
+          `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
+        ),
+        usage,
+      );
+    }
+    return {
+      id: (n.id as string | undefined) ?? `n${i + 1}`,
+      goal: n.goal,
+      agent: n.agent as string | undefined,
+      dependsOn: n.dependsOn as string[] | undefined,
+      needsInput: n.needsInput as boolean | undefined,
+    };
+  });
+  return {
+    nodes,
+    objective: parsed.objective as string | undefined,
+    rationale: parsed.rationale as string | undefined,
+    createdAt: Date.now(),
+  };
+}
+
+/**
  * Role adapter: owns a constrained `DirectLlmSubAgent` and turns its string
  * output into a typed `DagPlan`. (Slice 2: planner now flows through the one
  * ISubAgent path instead of calling ILlm directly.)
@@ -88,134 +210,13 @@ export class LlmDagPlanner implements IPlanner {
       sessionId: input.sessionId,
       signal: input.signal,
     });
-    const content = res.output;
 
-    const match = content.match(/\{[\s\S]*\}/);
-    if (!match)
-      throw withUsage(
-        new Error(
-          `Planner output did not contain a JSON object: ${content.slice(0, 200)}`,
-        ),
-        res.usage,
-      );
-    // Field values come straight from untrusted JSON, so they are typed as
-    // `unknown` and validated below before being narrowed to PlanNode.
-    let parsed: {
-      objective?: unknown;
-      rationale?: unknown;
-      needInfo?: unknown;
-      clarify?: unknown;
-      nodes?: Array<{
-        id?: unknown;
-        goal?: unknown;
-        agent?: unknown;
-        dependsOn?: unknown;
-        needsInput?: unknown;
-      }>;
-    };
-    try {
-      parsed = JSON.parse(match[0]);
-    } catch {
-      throw withUsage(
-        new Error(
-          `Planner output contained malformed JSON: ${match[0].slice(0, 200)}`,
-        ),
-        res.usage,
-      );
-    }
-    if (typeof parsed.needInfo === 'string' && parsed.needInfo.trim()) {
-      // Forward LLM usage on the signal path so the coordinator can attribute
-      // planner spend even when the role short-circuits with a signal (HIGH
-      // finding: signal paths previously discarded the captured `res.usage`).
-      throw new NeedInfoSignal(parsed.needInfo, res.usage);
-    }
-    if (typeof parsed.clarify === 'string' && parsed.clarify.trim()) {
-      throw new ClarifySignal(parsed.clarify, res.usage);
-    }
-    if (!Array.isArray(parsed.nodes) || parsed.nodes.length === 0) {
-      throw withUsage(
-        new Error(`Planner returned no nodes: ${match[0].slice(0, 200)}`),
-        res.usage,
-      );
-    }
-    if (
-      parsed.objective !== undefined &&
-      typeof parsed.objective !== 'string'
-    ) {
-      throw withUsage(
-        new Error(
-          `Planner objective must be a string: ${JSON.stringify(parsed.objective)}`,
-        ),
-        res.usage,
-      );
-    }
-    if (
-      parsed.rationale !== undefined &&
-      typeof parsed.rationale !== 'string'
-    ) {
-      throw withUsage(
-        new Error(
-          `Planner rationale must be a string: ${JSON.stringify(parsed.rationale)}`,
-        ),
-        res.usage,
-      );
-    }
-    const nodes: PlanNode[] = parsed.nodes.map((n, i) => {
-      if (typeof n.goal !== 'string' || n.goal.trim() === '') {
-        throw withUsage(
-          new Error(`Planner node is missing a goal: ${JSON.stringify(n)}`),
-          res.usage,
-        );
-      }
-      if (n.id !== undefined && typeof n.id !== 'string') {
-        throw withUsage(
-          new Error(`Planner node has a non-string id: ${JSON.stringify(n)}`),
-          res.usage,
-        );
-      }
-      if (n.agent !== undefined && typeof n.agent !== 'string') {
-        throw withUsage(
-          new Error(
-            `Planner node has a non-string agent: ${JSON.stringify(n)}`,
-          ),
-          res.usage,
-        );
-      }
-      if (
-        n.dependsOn !== undefined &&
-        (!Array.isArray(n.dependsOn) ||
-          n.dependsOn.some((d) => typeof d !== 'string'))
-      ) {
-        throw withUsage(
-          new Error(
-            `Planner node dependsOn must be an array of strings: ${JSON.stringify(n)}`,
-          ),
-          res.usage,
-        );
-      }
-      if (n.needsInput !== undefined && typeof n.needsInput !== 'boolean') {
-        throw withUsage(
-          new Error(
-            `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
-          ),
-          res.usage,
-        );
-      }
-      return {
-        id: (n.id as string | undefined) ?? `n${i + 1}`,
-        goal: n.goal,
-        agent: n.agent as string | undefined,
-        dependsOn: n.dependsOn as string[] | undefined,
-        needsInput: n.needsInput as boolean | undefined,
-      };
-    });
+    // parseDagPlan throws NeedInfoSignal / ClarifySignal / parse errors,
+    // forwarding res.usage so the coordinator can attribute planner-LLM spend
+    // even when the role short-circuits.
+    const plan = parseDagPlan(res.output, res.usage);
     return {
-      plan: {
-        nodes,
-        objective: parsed.objective as string | undefined,
-        rationale: parsed.rationale as string | undefined,
-        createdAt: Date.now(),
-      },
+      plan,
       // Forward the underlying ILlm.chat usage on the WRAPPER (not on the
       // plan itself) so the coordinator can attribute planner-LLM spend to
       // the session/request logger without polluting the plan domain type
