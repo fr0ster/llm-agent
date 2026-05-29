@@ -132,9 +132,22 @@ export interface IExecutor {
     knowledgeRag: IKnowledgeRagHandle;
     toolsRag: IToolsRagHandle;
     needResolver?: INeedResolver;
+    /** Inherited from the dispatching Stepper's IStepperInput.budget.
+     *  Executor MUST stop iterating and return 'budget-exhausted' when
+     *  either tokensRemaining or depthRemaining drops to ≤ 0. */
+    budget: { depthRemaining: number; tokensRemaining: number };
+    /** mutationPolicy decides whether mutating-tool calls require a
+     *  ClarifySignal before execution; see §C.4. */
+    mutationPolicy: 'confirm' | 'trusted';
     signal?: AbortSignal;
+    trace?: { traceId: string };
+    sessionLogger?: ISessionLogger;
     onProgress?: (event: StreamChunk) => void;
-  }): Promise<{ status: 'ok' | 'incomplete'; missing?: string[]; usage: LlmUsage }>;
+  }): Promise<{
+    status: 'ok' | 'incomplete' | 'budget-exhausted';
+    missing?: string[];
+    usage: LlmUsage;
+  }>;
 }
 
 export interface IKnowledgeRagHandle {
