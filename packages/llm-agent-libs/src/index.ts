@@ -71,6 +71,15 @@ export {
   SubAgentDispatch,
 } from './coordinator/index.js';
 // ---------------------------------------------------------------------------
+// Stepper runtime (18.0)
+// ---------------------------------------------------------------------------
+export * from './coordinator/stepper/index.js';
+export {
+  KnowledgeRag,
+  InMemoryKnowledgeBackend,
+  type KnowledgeBackend,
+} from './rag/knowledge-rag.js';
+// ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
 export {
