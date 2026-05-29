@@ -29,10 +29,12 @@ Stepper {
 
 ### B.2 Knowledge-RAG
 
-A single per-session vector collection (the "blackboard"). Two operations:
+A single per-session vector collection (the "blackboard"). Four operations (full contract in §C.1 `IKnowledgeRagHandle`):
 
-- **`write(entry)`** — executors append step artefacts (source code, MCP results, intermediate analyses) as embeddings keyed by session_id.
-- **`query(text, k?)`** — planners retrieve relevant prior facts before authoring a plan.
+- **`write(entry)`** — executors append step artefacts (source code, MCP results, intermediate analyses) as embeddings, with REQUIRED `KnowledgeEntryMetadata`.
+- **`query(text, {k?, filter?})`** — planners retrieve the most relevant prior facts (relevance-capped) for RAG-first planning.
+- **`list(filter)`** — exhaustive metadata-filtered scan, no relevance cap. The root finalizer uses this (`list({turnId})`) so the final answer is never truncated by a retrieval `k`; "insufficient" then means genuinely missing data.
+- **`fingerprint()`** — cheap collection-state snapshot id, for cycle-protection diagnostics only (§B.6).
 
 Scope = per-session. Backed by any persistent vector store (`qdrant` / `hana-vector` / `pg-vector`) or the in-memory store for stateless deployments. No LRU / TTL / explicit reset in v1 (deferred until operational pressure surfaces). Cross-session ("user-scoped") memory is an auth-enabled downstream concern, out of scope.
 
@@ -79,7 +81,7 @@ No hash-based detector. Cycles are prevented by construction:
 // @mcp-abap-adt/llm-agent
 
 /** Identity carried through every layer so executors can stamp
- *  KnowledgeEntryMetadata (§C, F5) and the coordinator can attribute
+ *  KnowledgeEntryMetadata (§C.1) and the coordinator can attribute
  *  streaming + usage. Minted at the coordinator boundary and threaded
  *  down unchanged, with stepperId/parentStepperId rewritten at each
  *  dispatch (see "who mints stepperId" below). */
@@ -174,7 +176,7 @@ export interface IExecutor {
      *  terminal executor call at depth 0/1 is always allowed. */
     budget: Budget;
     /** Carries traceId/turnId/sessionId/stepperId so the executor can
-     *  stamp every knowledge-RAG write with the required metadata (F5). */
+     *  stamp every knowledge-RAG write with the required metadata (§C.1). */
     identity: RunIdentity;
     /** Full tool-safety policy. Executor check order (§C.4):
      *  tool.readOnly === true → toolSafety.knownReadOnlyTools.has(name)
@@ -404,7 +406,7 @@ Runs one LLM call with a system prompt that instructs: "compose the final answer
 
 ### D.8 `buildStepperRoot`
 
-`packages/llm-agent-server/src/smart-agent/build-stepper-root.ts` — analogous to 17.0's `buildDagCoordinatorDeps`. Pure async factory that assembles `{ rootStepper, finalizer, budget, maxParallelSteps, mutationPolicy }` from the yaml coord block + registered subagents + per-role LLM map.
+`packages/llm-agent-server/src/smart-agent/build-stepper-root.ts` — analogous to 17.0's `buildDagCoordinatorDeps`. Pure async factory that assembles `{ rootStepper, finalizer, budget, maxParallelSteps, toolSafety }` from the yaml coord block + registered subagents + per-role LLM map. `toolSafety` is the resolved `ToolSafetyPolicy { mutationPolicy, knownReadOnlyTools }` built from `coordinator.mutationPolicy` + `coordinator.knownReadOnlyTools` (§C.4) — both must be threaded through, not just `mutationPolicy`.
 
 ## E. Data flow — worked examples
 
