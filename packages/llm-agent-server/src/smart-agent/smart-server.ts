@@ -1218,14 +1218,6 @@ export class SmartServer {
             Number(lc.temperature ?? mainTemp),
           );
 
-        // Resolve an LLM config for the planner/finalizer. Prefer the main LLM.
-        const plannerLlmCfg: SmartServerLlmConfig | undefined =
-          this.cfg.llm &&
-          typeof this.cfg.llm === 'object' &&
-          !Array.isArray(this.cfg.llm)
-            ? (this.cfg.llm as SmartServerLlmConfig)
-            : undefined;
-
         // Real callMcp bridge — delegates to the exported buildMcpBridge helper
         // that iterates stepperMcpClients. Exported for testability (B-1).
         const callMcp = buildMcpBridge(stepperMcpClients);
@@ -1251,7 +1243,8 @@ export class SmartServer {
               toolsRag: toolsRagHandle,
               callMcp,
               mintStepperId,
-              llmConfig: plannerLlmCfg,
+              llmMap,
+              pipelineFallback,
             }),
           knowledgeRagFor,
           toolsRag: toolsRagHandle,

@@ -1,18 +1,23 @@
 import {
   type IKnowledgeRagHandle,
   type ILlm,
+  type IReviewStrategy,
   type IStepper,
-  type IToolsRagHandle,
   TokenLedger,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CyclicReActExecutor,
+  LlmReviewStrategy,
   LlmStepperPlanner,
   RootFinalizer,
   Stepper,
   StepperInterpreter,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { parseStepperCoordinatorConfig } from './config.js';
+import {
+  type NormalizedLlmMap,
+  parseStepperCoordinatorConfig,
+  resolveLlmConfig,
+} from './config.js';
 import type { SmartServerLlmConfig } from './smart-server.js';
 
 export interface BuildStepperRootInput {
@@ -20,12 +25,12 @@ export interface BuildStepperRootInput {
   coordCfg: Record<string, unknown>;
   /** Named registry of subagent Steppers — used only for deep-stepper mode. */
   registry: ReadonlyMap<string, IStepper>;
-  /** Factory to build an ILlm from a config; used for planner + finalizer. */
+  /** Factory to build an ILlm from a config; used for all roles. */
   makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
   /** Per-sessionId knowledge RAG factory. */
   knowledgeRagFor: (sessionId: string) => IKnowledgeRagHandle;
   /** Shared tools RAG handle. */
-  toolsRag: IToolsRagHandle;
+  toolsRag: import('@mcp-abap-adt/llm-agent').IToolsRagHandle;
   /** MCP tool invoker. */
   callMcp: (
     name: string,
@@ -34,8 +39,17 @@ export interface BuildStepperRootInput {
   ) => Promise<string>;
   /** Monotonically-unique stepper-ID minter. */
   mintStepperId: () => string;
-  /** Optional LLM config to use for planner + finalizer (defaults to a stub). */
-  llmConfig?: SmartServerLlmConfig;
+  /**
+   * Normalized per-role LLM map (top-level `llm:` block after normalization).
+   * Roles resolve via: llmMap[role] → llmMap.main → pipelineFallback.
+   * When both are undefined, roles fall back to a stub (test path).
+   */
+  llmMap?: NormalizedLlmMap;
+  /**
+   * Pipeline fallback config (`pipeline.llm.main`). Used as last resort when
+   * a role is absent from llmMap.
+   */
+  pipelineFallback?: SmartServerLlmConfig;
 }
 
 export interface BuiltStepperRoot {
@@ -49,6 +63,12 @@ export interface BuiltStepperRoot {
   };
 }
 
+const STUB_LLM_CFG: SmartServerLlmConfig = {
+  provider: 'openai',
+  apiKey: '',
+  model: 'stub',
+} as never;
+
 /**
  * Assemble the root Stepper + finalizer from a coordinator config block.
  *
@@ -56,25 +76,47 @@ export interface BuiltStepperRoot {
  *  - `cyclic-react`   → trivial single-node planner + CyclicReActExecutor leaf; depthRemaining=0.
  *  - `planned-react`  → LlmStepperPlanner + CyclicReActExecutor leaves; depthRemaining=1.
  *  - `deep-stepper`   → LlmStepperPlanner + registry child Steppers; depthRemaining=config.maxDepth.
+ *
+ * Each role (planner, executor, reviewer, finalizer) is resolved from the
+ * per-role LLM map via the chain: llmMap[role] → llmMap.main → pipelineFallback.
+ * This mirrors the 17.0 buildDagCoordinatorDeps resolution chain exactly.
  */
 export async function buildStepperRoot(
   input: BuildStepperRootInput,
 ): Promise<BuiltStepperRoot> {
-  const { coordCfg, registry, makeLlm, callMcp, mintStepperId, llmConfig } =
-    input;
+  const {
+    coordCfg,
+    registry,
+    makeLlm,
+    callMcp,
+    mintStepperId,
+    llmMap,
+    pipelineFallback,
+  } = input;
 
   const config = parseStepperCoordinatorConfig(coordCfg);
 
-  // Build a placeholder LLM for planner/finalizer. When a real llmConfig is
-  // provided, use it; otherwise fall back to the stub shape (callers in tests
-  // pass makeLlm that returns a stub regardless of the config argument).
-  const plannerLlm = await makeLlm(
-    llmConfig ?? ({ provider: 'openai', apiKey: '', model: 'stub' } as never),
-  );
+  // ---- Per-role LLM resolver -----------------------------------------------
+  // Priority chain: llmMap[role] → llmMap.main → pipelineFallback → STUB_LLM_CFG.
+  // Mirrors the resolution chain used in buildDagCoordinatorDeps.
+  const resolveRoleLlm = async (role: string): Promise<ILlm> => {
+    const cfg =
+      resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
+    return makeLlm(cfg);
+  };
 
-  // One shared executor (the ReAct leaf for all modes).
+  // ---- Build per-role LLMs --------------------------------------------------
+  const plannerLlm = await resolveRoleLlm('planner');
+  const executorLlm = await resolveRoleLlm('executor');
+  const finalizerLlm = await resolveRoleLlm('finalizer');
+  const reviewerLlm = await resolveRoleLlm('reviewer');
+
+  // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
+  const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
+
+  // ---- Executor (the ReAct leaf for all modes) ------------------------------
   const executor = new CyclicReActExecutor({
-    llm: plannerLlm,
+    llm: executorLlm,
     callMcp,
     component: 'tool-loop',
     maxIterations: 10,
@@ -138,13 +180,14 @@ export async function buildStepperRoot(
     interpreter,
     executor,
     childSteppers,
+    reviewer,
     reviewerAtDepths: config.reviewerAtDepths,
     depth: 0,
     maxParallelSteps: config.maxParallelSteps,
     mintStepperId,
   });
 
-  const finalizer = new RootFinalizer(plannerLlm);
+  const finalizer = new RootFinalizer(finalizerLlm);
 
   return {
     rootStepper,
