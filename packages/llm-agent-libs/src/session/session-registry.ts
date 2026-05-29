@@ -187,6 +187,23 @@ export class SessionRegistry {
     }
   }
 
+  /**
+   * Evict (dispose) a specific session by ID, regardless of idle TTL.
+   * If the graph is pinned (an in-flight request is holding it), it is marked
+   * for disposal so `release()` disposes it when the request completes.
+   * No-op if the session is not live.
+   */
+  async evictOne(sessionId: string): Promise<void> {
+    const g = this.graphs.get(sessionId);
+    if (!g) return;
+    if (g.isPinned) {
+      g.markForDisposal();
+    } else {
+      this.evictNow(sessionId, g);
+    }
+    await this.flushEvictions();
+  }
+
   /** Evict every unpinned graph idle longer than idleTtlMs. */
   async evictIdle(): Promise<void> {
     const now = Date.now();
