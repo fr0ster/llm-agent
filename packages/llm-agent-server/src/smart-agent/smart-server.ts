@@ -1230,7 +1230,7 @@ export class SmartServer {
         >();
 
         const stepperHandler = new StepperCoordinatorHandler({
-          buildBuilt: async () =>
+          buildBuilt: async (_ctx, logLlmCall) =>
             buildStepperRoot({
               coordCfg: rawCoordCfg,
               registry: stepperRegistry,
@@ -1245,6 +1245,7 @@ export class SmartServer {
               mintStepperId,
               llmMap,
               pipelineFallback,
+              logLlmCall,
             }),
           knowledgeRagFor,
           toolsRag: toolsRagHandle,

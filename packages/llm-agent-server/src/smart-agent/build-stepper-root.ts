@@ -3,12 +3,14 @@ import {
   type ILlm,
   type IReviewStrategy,
   type IStepper,
+  type LlmCallEntry,
   TokenLedger,
 } from '@mcp-abap-adt/llm-agent';
 import {
   CyclicReActExecutor,
   LlmReviewStrategy,
   LlmStepperPlanner,
+  LoggingLlm,
   RootFinalizer,
   Stepper,
   StepperInterpreter,
@@ -50,6 +52,13 @@ export interface BuildStepperRootInput {
    * a role is absent from llmMap.
    */
   pipelineFallback?: SmartServerLlmConfig;
+  /**
+   * Optional usage logger. When supplied, every per-role LLM call is logged
+   * via a LoggingLlm decorator so byComponent is populated in requestLogger.
+   * Matches IRequestLogger.logLlmCall(entry) — pass a bound wrapper that
+   * injects the traceId as requestId.
+   */
+  logLlmCall?: (entry: LlmCallEntry) => void;
 }
 
 export interface BuiltStepperRoot {
@@ -92,6 +101,7 @@ export async function buildStepperRoot(
     mintStepperId,
     llmMap,
     pipelineFallback,
+    logLlmCall,
   } = input;
 
   const config = parseStepperCoordinatorConfig(coordCfg);
@@ -99,17 +109,33 @@ export async function buildStepperRoot(
   // ---- Per-role LLM resolver -----------------------------------------------
   // Priority chain: llmMap[role] → llmMap.main → pipelineFallback → STUB_LLM_CFG.
   // Mirrors the resolution chain used in buildDagCoordinatorDeps.
-  const resolveRoleLlm = async (role: string): Promise<ILlm> => {
+  const resolveRoleLlm = async (
+    role: string,
+    component: import('@mcp-abap-adt/llm-agent').LlmComponent,
+  ): Promise<ILlm> => {
     const cfg =
       resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
-    return makeLlm(cfg);
+    const inner = await makeLlm(cfg);
+    if (!logLlmCall) return inner;
+    // Wrap with LoggingLlm so every call to this role's LLM is logged to
+    // byComponent. The decorator logs once per call after usage is known.
+    return new LoggingLlm(inner, (usage, durationMs) => {
+      logLlmCall({
+        component,
+        model: inner.model ?? cfg.model ?? 'unknown',
+        promptTokens: usage.promptTokens,
+        completionTokens: usage.completionTokens,
+        totalTokens: usage.totalTokens,
+        durationMs,
+      });
+    });
   };
 
   // ---- Build per-role LLMs --------------------------------------------------
-  const plannerLlm = await resolveRoleLlm('planner');
-  const executorLlm = await resolveRoleLlm('executor');
-  const finalizerLlm = await resolveRoleLlm('finalizer');
-  const reviewerLlm = await resolveRoleLlm('reviewer');
+  const plannerLlm = await resolveRoleLlm('planner', 'planner');
+  const executorLlm = await resolveRoleLlm('executor', 'tool-loop');
+  const finalizerLlm = await resolveRoleLlm('finalizer', 'finalizer');
+  const reviewerLlm = await resolveRoleLlm('reviewer', 'reviewer');
 
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);

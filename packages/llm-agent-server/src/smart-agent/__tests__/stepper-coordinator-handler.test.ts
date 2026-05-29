@@ -111,7 +111,7 @@ function ctx() {
 test('happy path: SAME knowledgeRag flows run → finalizer; content + terminal stop yielded', async () => {
   const ks = knowledgeStub();
   const h = new StepperCoordinatorHandler({
-    buildBuilt: async () => fakeBuilt(),
+    buildBuilt: async (_ctx, _log) => fakeBuilt(),
     knowledgeRagFor: async () => ks.rag as never, // R1-F3: handler owns the source
     toolsRag: {
       async query() {
@@ -144,7 +144,7 @@ test('budget-exhausted bubbles to a ClarifySignal from the coordinator (not the 
     },
   });
   const h = new StepperCoordinatorHandler({
-    buildBuilt: async () => built,
+    buildBuilt: async (_ctx, _log) => built,
     knowledgeRagFor: async () => ks.rag as never,
     toolsRag: {
       async query() {
@@ -163,5 +163,209 @@ test('budget-exhausted bubbles to a ClarifySignal from the coordinator (not the 
   assert.ok(
     c.yields.some((y) => /budget/i.test(y.content ?? '')),
     'a budget-extension clarify was surfaced to the consumer',
+  );
+});
+
+// ── FIX B: per-role usage logging tests ──────────────────────────────────────
+
+test('FIX-B.1: planner, tool-loop and finalizer LLM calls are logged to logLlmCall with correct components', async () => {
+  const loggedEntries: {
+    component: string;
+    model: string;
+    totalTokens: number;
+  }[] = [];
+
+  // Scripted LLMs with known usage for each role
+  function makeLlmStub(
+    model: string,
+    usage: {
+      promptTokens: number;
+      completionTokens: number;
+      totalTokens: number;
+    },
+  ) {
+    return {
+      model,
+      async chat() {
+        return {
+          ok: true as const,
+          value: {
+            content: 'done',
+            usage,
+          },
+        };
+      },
+      async *streamChat() {
+        yield {
+          ok: true as const,
+          value: { content: 'done', finishReason: 'stop' as const, usage },
+        };
+      },
+    };
+  }
+
+  // Import LoggingLlm to simulate what buildStepperRoot does internally
+  const { LoggingLlm } = await import('@mcp-abap-adt/llm-agent-libs');
+
+  const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
+  const plannerUsage = {
+    promptTokens: 10,
+    completionTokens: 5,
+    totalTokens: 15,
+  };
+  const executorUsage = {
+    promptTokens: 20,
+    completionTokens: 8,
+    totalTokens: 28,
+  };
+  const finalizerUsage = {
+    promptTokens: 30,
+    completionTokens: 12,
+    totalTokens: 42,
+  };
+
+  const plannerLlmInner = makeLlmStub('planner-model', plannerUsage);
+  const executorLlmInner = makeLlmStub('executor-model', executorUsage);
+  const finalizerLlmInner = makeLlmStub('finalizer-model', finalizerUsage);
+
+  const captureLog = (entry: {
+    component: string;
+    model: string;
+    totalTokens: number;
+  }) => {
+    loggedEntries.push(entry);
+  };
+
+  const plannerLlm = new LoggingLlm(plannerLlmInner as never, (u, _d) =>
+    captureLog({
+      component: 'planner',
+      model: plannerLlmInner.model,
+      totalTokens: u.totalTokens,
+    }),
+  );
+  const executorLlm = new LoggingLlm(executorLlmInner as never, (u, _d) =>
+    captureLog({
+      component: 'tool-loop',
+      model: executorLlmInner.model,
+      totalTokens: u.totalTokens,
+    }),
+  );
+  const finalizerLlm = new LoggingLlm(finalizerLlmInner as never, (u, _d) =>
+    captureLog({
+      component: 'finalizer',
+      model: finalizerLlmInner.model,
+      totalTokens: u.totalTokens,
+    }),
+  );
+
+  // Exercise each LLM once via chat() — simulating what planner/executor/finalizer do
+  await plannerLlm.chat([{ role: 'user', content: 'plan' }]);
+  await executorLlm.chat([{ role: 'user', content: 'exec' }]);
+  await finalizerLlm.chat([{ role: 'user', content: 'finalize' }]);
+
+  assert.equal(
+    loggedEntries.length,
+    3,
+    `expected 3 log entries, got ${loggedEntries.length}`,
+  );
+
+  const planner = loggedEntries.find((e) => e.component === 'planner');
+  assert.ok(planner, 'planner entry missing');
+  assert.equal(planner?.totalTokens, 15, 'planner usage incorrect');
+
+  const toolLoop = loggedEntries.find((e) => e.component === 'tool-loop');
+  assert.ok(toolLoop, 'tool-loop entry missing');
+  assert.equal(toolLoop?.totalTokens, 28, 'tool-loop usage incorrect');
+
+  const finalizer = loggedEntries.find((e) => e.component === 'finalizer');
+  assert.ok(finalizer, 'finalizer entry missing');
+  assert.equal(finalizer?.totalTokens, 42, 'finalizer usage incorrect');
+});
+
+test('FIX-B.2: handler passes logLlmCall to buildBuilt; calls land in requestLogger', async () => {
+  const ks = knowledgeStub();
+  const loggedCalls: { component: string; model: string }[] = [];
+
+  const h = new StepperCoordinatorHandler({
+    buildBuilt: async (_ctx, logLlmCallCb) => {
+      // Simulate what buildStepperRoot does: call logLlmCallCb for each role's
+      // LLM invocation during the run
+      logLlmCallCb({
+        component: 'planner',
+        model: 'planner-m',
+        promptTokens: 10,
+        completionTokens: 5,
+        totalTokens: 15,
+        durationMs: 100,
+        requestId: 't1',
+      });
+      logLlmCallCb({
+        component: 'tool-loop',
+        model: 'exec-m',
+        promptTokens: 20,
+        completionTokens: 8,
+        totalTokens: 28,
+        durationMs: 200,
+        requestId: 't1',
+      });
+      logLlmCallCb({
+        component: 'finalizer',
+        model: 'final-m',
+        promptTokens: 30,
+        completionTokens: 12,
+        totalTokens: 42,
+        durationMs: 150,
+        requestId: 't1',
+      });
+      return fakeBuilt() as never;
+    },
+    knowledgeRagFor: async () => ks.rag as never,
+    toolsRag: {
+      async query() {
+        return [];
+      },
+      lookup() {
+        return undefined;
+      },
+    } as never,
+    mintStepperId: () => 'root',
+    mintTurnId: () => 'turn-1',
+  });
+
+  const c = {
+    yields: [] as { content?: string; finishReason?: string }[],
+    obj: {
+      inputText: 'review X',
+      sessionId: 's1',
+      requestLogger: {
+        startRequest() {},
+        getSummary() {
+          return {};
+        },
+        logStep() {},
+        logLlmCall(entry: { component: string; model: string }) {
+          loggedCalls.push({ component: entry.component, model: entry.model });
+        },
+      },
+      yield(chunk: { value?: { content?: string; finishReason?: string } }) {
+        if (chunk.value) c.yields.push(chunk.value);
+      },
+      options: { trace: { traceId: 't1' } },
+    },
+  };
+
+  await h.execute(c.obj as never, {}, {} as never);
+
+  assert.ok(
+    loggedCalls.some((e) => e.component === 'planner'),
+    'planner call must be logged to requestLogger',
+  );
+  assert.ok(
+    loggedCalls.some((e) => e.component === 'tool-loop'),
+    'tool-loop call must be logged to requestLogger',
+  );
+  assert.ok(
+    loggedCalls.some((e) => e.component === 'finalizer'),
+    'finalizer call must be logged to requestLogger',
   );
 });

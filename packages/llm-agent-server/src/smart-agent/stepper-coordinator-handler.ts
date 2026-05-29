@@ -5,6 +5,7 @@ import {
   type IStageHandler,
   type IStepperResult,
   type IToolsRagHandle,
+  type LlmCallEntry,
   type LlmUsage,
   type RequestSummary,
   type RunIdentity,
@@ -34,8 +35,13 @@ function summaryToUsage(s: RequestSummary): LlmUsage {
 // ---------------------------------------------------------------------------
 
 export interface StepperCoordinatorHandlerDeps {
-  /** Build the root Stepper + finalizer from the coordinator config + ctx. */
-  buildBuilt(ctx: PipelineContext): Promise<BuiltStepperRoot>;
+  /** Build the root Stepper + finalizer from the coordinator config + ctx.
+   *  The optional logLlmCall is bound to the request's traceId by the handler
+   *  and passed to buildStepperRoot so per-role usage lands in byComponent. */
+  buildBuilt(
+    ctx: PipelineContext,
+    logLlmCall: (entry: LlmCallEntry) => void,
+  ): Promise<BuiltStepperRoot>;
   /** Factory that returns (and, if needed, hydrates) a session-scoped KnowledgeRag. */
   knowledgeRagFor(sessionId: string): Promise<IKnowledgeRagHandle>;
   /** Shared tools RAG handle (read-only; wraps the embedder-powered toolsRag). */
@@ -75,11 +81,22 @@ export class StepperCoordinatorHandler implements IStageHandler {
       this.deps;
 
     // Mint root identity (coordinator boundary owns minting — spec §F).
+    const traceId = ctx.options?.trace?.traceId ?? '';
     const identity: RunIdentity = {
-      traceId: ctx.options?.trace?.traceId ?? '',
+      traceId,
       turnId: mintTurnId(),
       sessionId: ctx.sessionId,
       stepperId: mintStepperId(),
+    };
+
+    // Bind a logLlmCall callback that routes per-role usage to the per-request
+    // byComponent bucket. The requestId (= traceId) routes entries to the
+    // request delta so getSummary(traceId).byComponent is populated.
+    const logLlmCall = (entry: LlmCallEntry): void => {
+      ctx.requestLogger.logLlmCall({
+        ...entry,
+        requestId: traceId || undefined,
+      });
     };
 
     // R1-F3: handler owns the knowledgeRag source; the SAME instance flows to
@@ -93,7 +110,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
       knowledgeRag as IKnowledgeRagHandle & { init?(): Promise<void> }
     ).init?.();
 
-    const built = await buildBuilt(ctx);
+    const built = await buildBuilt(ctx, logLlmCall);
 
     // Run the root Stepper.
     // Per spec §F, InsufficientSignal is only raised by the finalizer, never
@@ -129,9 +146,8 @@ export class StepperCoordinatorHandler implements IStageHandler {
             'How many additional tokens should be allocated to continue?',
         },
       });
-      const traceIdBudget = ctx.options?.trace?.traceId;
-      const usageBudget = traceIdBudget
-        ? summaryToUsage(ctx.requestLogger.getSummary(traceIdBudget))
+      const usageBudget = traceId
+        ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
         : undefined;
       ctx.yield({
         ok: true,
@@ -174,7 +190,6 @@ export class StepperCoordinatorHandler implements IStageHandler {
     }
 
     // Terminal stop yield with usage (mirror 17.0 pattern).
-    const traceId = ctx.options?.trace?.traceId;
     const usage = traceId
       ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
       : undefined;
