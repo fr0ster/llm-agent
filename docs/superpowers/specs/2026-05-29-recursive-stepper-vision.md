@@ -1,6 +1,6 @@
 # 18.0 Vision — Recursive Stepper Hierarchy over a Shared Knowledge-RAG
 
-> **Status:** DRAFT / exploration. Not implementation-ready. Open questions section at the end must be settled before this can become a plan.
+> **Status:** SUPERSEDED by the formal design spec at `2026-05-29-recursive-stepper-design.md`. This document is preserved as the brainstorm trace — captured rationale for "why the design ended up this way". All Q1–Q7 open questions in §11 are answered inline; the design spec is the implementation reference.
 > **Date:** 2026-05-29 (captured from live brainstorm; 17.0.0 merged).
 > **Replaces:** the 17.1 "RAG-aware planner + plan-driven context delivery" sketch in `memory/project_rag_aware_planner_goal.md`.
 
@@ -156,7 +156,9 @@ I have not seen this combination formalised end-to-end in published systems. Ind
 | (new) | `IKnowledgeRag` | Accumulating RAG handle (read + write) |
 | (new) | `ISufficiencyOracle` | Stop-condition arbiter (mechanism per §6) |
 
-## 11. Open questions (must be settled before plan)
+## 11. Open questions — ALL ANSWERED (settled before design spec)
+
+The seven questions below were the gating set before this brainstorm could become a design spec. Each carries an answer inline; the answers were folded into the formal design at `2026-05-29-recursive-stepper-design.md`. They are retained here as the rationale trace.
 
 1. **Sufficiency mechanism.** Which of §6 (1)–(4), or which combination?
    - **2026-05-29 answer (user):** combo **(1) + (3) + budget-extension clarify**. Hard budget by default; on exhaustion, instead of silently returning `incomplete`, the Stepper raises a `ClarifySignal`-style query upward: *"Budget exhausted at depth N / X tokens used. Continue with extended budget, or stop with what we have?"* The consumer answers `continue` (extend budget, resume) or `stop` (return partial). Rationale: when running against corporate SAP AI Core, rate/cost limits are either huge or absent and the consumer wants the answer — they should not be forced to a hard cap. When running against rate-limited public providers, the same mechanism gives the consumer a graceful stop. Default budget exists; consumer can extend.
@@ -408,4 +410,4 @@ When session is resumed, do we replay the entire message history into the LLM co
 
 ---
 
-This document is preserved for further thought. Next concrete step is the user weighing in on the §11 open questions; once those are settled, this becomes a proper design spec and we author an implementation plan.
+This document was promoted to a formal design spec at `2026-05-29-recursive-stepper-design.md`. The vision-doc remains as the rationale trace so future readers can see why each architectural decision was made. Both will be deleted from the repo after 18.0 implementation lands (per `feedback_no_specs`).
