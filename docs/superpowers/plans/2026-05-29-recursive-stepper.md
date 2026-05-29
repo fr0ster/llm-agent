@@ -405,6 +405,7 @@ import type { IStepperPlanner } from '../stepper-planner.js';
 import type { IStepperInterpreter } from '../stepper-interpreter.js';
 import type { INeedResolver } from '../need-resolver.js';
 import { InsufficientSignal } from '../insufficient-signal.js';
+import { TokenLedger } from '../stepper.js';
 
 test('IExecutor return union includes budget-exhausted', async () => {
   const ex: IExecutor = {
@@ -1007,7 +1008,7 @@ This is the heart of modes A and C. The executor runs an LLM loop: clean answer 
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { ClarifySignal } from '@mcp-abap-adt/llm-agent';
+import { ClarifySignal, TokenLedger } from '@mcp-abap-adt/llm-agent';
 import type { OnPartial, StreamChunk } from '@mcp-abap-adt/llm-agent';
 import { CyclicReActExecutor } from '../cyclic-react-executor.js';
 import { RegexNeedResolver } from '../need-resolver.js';
@@ -1478,6 +1479,7 @@ Implements the 4-case dispatch from ยงD.3. The interpreter is the sole owner of 
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IExecutor, IStepper, StreamChunk } from '@mcp-abap-adt/llm-agent';
+import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { StepperInterpreter } from '../stepper-interpreter.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -1742,6 +1744,7 @@ The Stepper composes planner + optional reviewer + interpreter. Run loop: plan โ
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { IStepperInterpreter, IStepperPlanner } from '@mcp-abap-adt/llm-agent';
+import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { Stepper } from '../stepper.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -2406,6 +2409,7 @@ The test below asserts the finalizer receives a knowledgeRag whose `list()` retu
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { StepperCoordinatorHandler } from '../stepper-coordinator-handler.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
