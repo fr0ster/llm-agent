@@ -17,6 +17,7 @@ export class TemplateFinalizer implements IFinalizer {
     for (const t of input.executionTrace) {
       out += `# Node ${t.nodeId} — ${t.goal}\n${t.output}\n\n`;
     }
+    input.onPartial?.({ kind: 'content', delta: out });
     return { output: out };
   }
 }

@@ -13,6 +13,7 @@ export class PassthroughFinalizer implements IFinalizer {
   readonly name = 'passthrough';
 
   async finalize(input: FinalizerInput): Promise<FinalizerResult> {
+    input.onPartial?.({ kind: 'content', delta: input.interpreterOutput });
     return { output: input.interpreterOutput };
   }
 }
