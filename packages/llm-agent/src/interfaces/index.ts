@@ -53,6 +53,13 @@ export type {
   InterpretResult,
   NodeResult,
 } from './interpreter.js';
+export type {
+  IKnowledgeRagHandle,
+  IToolsRagHandle,
+  KnowledgeEntry,
+  KnowledgeEntryMetadata,
+  KnowledgeFilter,
+} from './knowledge-rag.js';
 export type { ILlm } from './llm.js';
 export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
