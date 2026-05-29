@@ -360,7 +360,9 @@ export class DefaultPipeline implements IPipeline {
     const coordinatorConfigured =
       this.coordinator?.planning != null && this.coordinator?.dispatch != null;
     const anyCoordinatorStage =
-      coordinatorConfigured || this.dagCoordinator != null;
+      coordinatorConfigured ||
+      this.dagCoordinator != null ||
+      this.stepperCoordinator != null;
 
     stages.push(
       { id: 'tool-select', type: 'tool-select' },
