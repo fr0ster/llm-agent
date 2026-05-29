@@ -188,6 +188,31 @@ I have not seen this combination formalised end-to-end in published systems. Ind
      3. **Depth budget (insurance).** Q1's hard depth cap is the bottom-floor protection. If a planner mis-behaves and recurses anyway, budget exhaustion eventually halts it with `incomplete + missing[]`.
      The previously-proposed `(prompt, ancestorPath, knowledgeRagFingerprint)` hash detector was over-engineered. None of the three layers above needs an explicit hash — they prevent cycles by construction. A pathologically bad planner would trip the depth budget; that is acceptable insurance, not a routine concern.
 7. **Streaming `StreamChunk` annotation.** Add `depth: number` and `path: string[]` for hierarchical client rendering, or keep flat?
+   - **2026-05-29 answer (user):** the question was reframed. There are two different streaming goals that were being conflated:
+     - **Content streaming** (Claude.ai-style token-by-token text rendering).
+     - **Progress streaming** ("I am alive, here is what is happening" heartbeat).
+     For the 18.0 backend nobody reads per-leaf content while the tree is executing — the consumer wants the answer at the end, and a progress signal in between to know the run isn't dead. Content streaming is needed only at the **root finalizer** (one sequential LLM call, naturally ordered, no parallel-sibling interleaving problem). During execution, only structured progress events are sent.
+     **Answer:** extend `StreamChunk` discriminated union with new progress-event variants and keep `content` for the root finalizer's text stream. No `path`/`depth` arrays on every chunk — if the consumer wants topology it reconstructs from `source` / `parent` fields on the events.
+
+     ```ts
+     type StreamChunk =
+       // Existing 17.0 — used by the root finalizer for its sequential text output
+       | { kind: 'content'; delta: string }
+       // 18.0 progress events bubbled up from internal Steppers
+       | { kind: 'stepper-spawned'; source: string; goal: string; parent?: string }
+       | { kind: 'stepper-done';    source: string; ok: boolean }
+       | { kind: 'mcp-call';        source: string; tool: string; args?: unknown }
+       | { kind: 'mcp-result';      source: string; tool: string; durationMs: number; bytes?: number }
+       | { kind: 'tokens-used';     source: string; component: LlmComponent; delta: LlmUsage }
+       | { kind: 'llm-call-start';  source: string; component: LlmComponent; model: string }
+       | { kind: 'llm-call-end';    source: string; component: LlmComponent; durationMs: number };
+     ```
+
+     `source` = Stepper name (debug label). `parent?` lets a UI build a topology view if it wants one. Coordinator at the root has policy on which events to forward to consumer SSE:
+     - **Default** — pass through all progress events + finalizer content.
+     - **Quiet mode** — only `tokens-used` aggregated every N seconds + finalizer content (minimum-noise heartbeat).
+     - **Verbose** — everything including individual `tokens-used` per LLM call.
+     The earlier `(β) depth + path` proposal is dropped — it solved the parallel-siblings interleaving problem for content, but content is no longer streamed in parallel (only the finalizer streams content, and it's a single sequential call). path-arrays would be over-engineering.
 
 ## 11.5 Modes of operation
 
