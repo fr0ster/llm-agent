@@ -471,8 +471,17 @@ Deep-stepper is the "deep reasoning" mode. Each level pays planner + (optional) 
 
 cyclic-react is the limit-case for the simplest prompts (single question, no decomposition payoff). The root planner is a no-op stub; all the intelligence is in the executor's loop driven by `INeedResolver`.
 
-During execution the consumer's SSE channel carries progress events:
-`stepper-spawned (root)`, `stepper-spawned (read-source, parent=root)`, `mcp-call (GetProgFullCode)`, `mcp-result`, `tokens-used`, `stepper-done (read-source)`, `stepper-spawned (code-review)`, four `stepper-spawned` for the parallel children, interleaved `mcp-call`/`mcp-result`/`tokens-used` from concurrent siblings, `stepper-done` for each, then the root finalizer's `content` stream, ending with a terminal `tokens-used` aggregate.
+### E.4 SSE progress streams per mode
+
+The events differ by mode because the tree shape differs. `source` shown as `name#stepperId` for clarity.
+
+**For E.1 (`planned-react`, default — no grandchildren, two leaf executors):**
+`stepper-spawned (root#s0)`, `stepper-spawned (read-source#s1, parent=s0)`, `mcp-call (GetProgFullCode)`, `mcp-result`, `mcp-call (GetIncludesList)`, `mcp-result`, `mcp-call (GetInclude ×2)`, `mcp-result ×2`, `tokens-used (s1)`, `stepper-done (s1)`, `stepper-spawned (code-review#s2, parent=s0)`, `mcp-call (SearchSource …)` × several as the single cyclic executor walks the four dimensions, `tokens-used (s2)`, `stepper-done (s2)`, then the root finalizer's `content` stream, ending with a terminal `tokens-used` aggregate. **No grandchild spawns** — the two leaves are executors, not recursive Steppers.
+
+**For E.2 (`deep-stepper` — recursive children):**
+`stepper-spawned (root#s0)`, `stepper-spawned (read-source#s1, parent=s0)`, … `stepper-done (s1)`, `stepper-spawned (code-review#s2, parent=s0)`, then FOUR `stepper-spawned (security#s3 / performance#s4 / clean#s5 / maintain#s6, parent=s2)` for the parallel grandchildren, interleaved `mcp-call`/`mcp-result`/`tokens-used` from the concurrent siblings (each tagged with its own `stepperId`), `stepper-done` for each, `stepper-done (s2)`, then the root finalizer's `content` stream and the terminal `tokens-used` aggregate.
+
+The four-parallel-children fan-out belongs to E.2 only; E.1's default planned-react has no grandchildren.
 
 ## F. Error and signal contracts
 
