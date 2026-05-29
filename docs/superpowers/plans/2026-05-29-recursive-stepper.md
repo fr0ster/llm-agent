@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript strict, ESM with `.js` import suffixes, Biome (2 spaces, single quotes, semicolons), `node --test` via `tsx`. Three packages lockstep: `@mcp-abap-adt/llm-agent` (contracts), `@mcp-abap-adt/llm-agent-libs` (runtime), `@mcp-abap-adt/llm-agent-server` (wiring).
 
-**Spec:** `docs/superpowers/specs/2026-05-29-recursive-stepper-design.md`. Provability tests H.1–H.10 + H.4b + H.4c are implemented as the integration tests in Phase 7.
+**Spec:** `docs/superpowers/specs/2026-05-29-recursive-stepper-design.md`. Provability tests H.1–H.10 + H.4b + H.4c are covered across the per-component unit tests (Phases 1–6 — e.g. H.1/H.4c/H.5 in Task 7, H.4b in Task 9, H.6 in Task 11) and the end-to-end integration tests in Phase 7 (Task 18).
 
 **Branch:** `epic/18.0-recursive-stepper` (already created off `main`).
 
