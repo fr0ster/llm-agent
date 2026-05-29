@@ -151,6 +151,16 @@ export type {
   StateOracleInput,
   StateOracleResult,
 } from './state-oracle.js';
+export type {
+  Budget,
+  IStepper,
+  IStepperInput,
+  IStepperResult,
+  ITokenLedger,
+  RunIdentity,
+  ToolSafetyPolicy,
+} from './stepper.js';
+export { TokenLedger } from './stepper.js';
 export type { OnPartial, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
