@@ -40,6 +40,7 @@ import type {
   LlmTool,
   McpTool,
   Message,
+  OnPartial,
   Plan,
   RagResult,
   Result,
@@ -174,6 +175,14 @@ export interface PipelineContext {
    * streaming content and heartbeats back through the SSE connection.
    */
   yield(chunk: Result<LlmStreamChunk, OrchestratorError>): void;
+
+  /**
+   * Optional partial-output callback threaded from `ISubAgentInput.onPartial`.
+   * When present, the tool-loop stage forwards every content delta and
+   * tool-call event as a `StreamChunk` so the calling coordinator can
+   * render live progress without polling.
+   */
+  onPartial?: OnPartial;
 
   // -- Coordinator / subagent orchestration ----------------------------------
 

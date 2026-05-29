@@ -483,6 +483,10 @@ export class DefaultPipeline implements IPipeline {
       // Streaming callback
       yield: yieldChunk,
 
+      // Partial-output callback (forwarded from ISubAgentInput.onPartial via
+      // CallOptions.onPartial so the tool-loop can emit live deltas).
+      onPartial: options?.onPartial,
+
       // Subagent registry for coordinator/subagent stages (read by handlers).
       subAgents: this.subAgents,
     };

@@ -440,6 +440,9 @@ export class ToolLoopHandler implements IStageHandler {
         if (chunk.content) {
           content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
+          if (ctx.onPartial) {
+            ctx.onPartial({ kind: 'content', delta: chunk.content });
+          }
         }
         if (chunk.toolCalls) {
           // Register newly seen external tool indices
@@ -478,6 +481,13 @@ export class ToolLoopHandler implements IStageHandler {
                 if (tc.name) ex.name = tc.name;
                 if (tc.arguments) ex.arguments += tc.arguments;
               }
+            }
+            if (tc.name && ctx.onPartial) {
+              ctx.onPartial({
+                kind: 'tool-call',
+                name: tc.name,
+                args: tc.arguments,
+              });
             }
           }
         }
