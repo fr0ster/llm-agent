@@ -55,7 +55,9 @@ The coordinator on `InsufficientSignal` either returns the missing-list to the c
 
 Layered, no LLM-driven sufficiency oracle in v1:
 
-1. **Depth + token budget.** Each Stepper inherits a budget from its parent; budget is decremented as it spawns children or makes LLM calls.
+1. **Depth + token budget.** Each Stepper inherits a budget from its parent; budget is decremented as it spawns children or makes LLM calls. The two dimensions are checked by different components:
+   - **`depthRemaining`** is checked by the **interpreter** before it spawns a recursive child Stepper. When `depthRemaining <= 0` the interpreter refuses to recurse and instead dispatches the step to the local **executor** (a terminal leaf call). A terminal executor call is ALWAYS permitted regardless of depth — depth bounds recursion, not work. This is what makes the `cyclic-react` (depth-0) and `planned-react` (depth-1 leaves) modes valid: their leaves run at the depth floor by design.
+   - **`tokensRemaining`** is checked by both the executor (stops its ReAct loop) and each Stepper (stops making LLM calls) and returns `budget-exhausted` when it hits zero.
 2. **INCOMPLETE bubble.** A Stepper that cannot complete its work returns `{ status: 'incomplete', missing: [...] }`. Parent decides — add a step to obtain `missing`, or escalate up.
 3. **Budget-extension clarify (coordinator-issued).** On budget exhaustion the offending Stepper returns `{ status: 'budget-exhausted' }`. That status bubbles up to the **coordinator**, which is the sole component that may raise a `ClarifySignal('budget exhausted; extend or stop?')` to the consumer. Steppers do NOT raise budget-related ClarifySignals themselves — only the coordinator does, because only the coordinator owns the consumer-facing SSE channel and the budget-extension policy.
 
@@ -163,8 +165,13 @@ export interface IExecutor {
     toolsRag: IToolsRagHandle;
     needResolver?: INeedResolver;
     /** Inherited from the dispatching Stepper's IStepperInput.budget.
-     *  Executor MUST stop iterating and return 'budget-exhausted' when
-     *  either tokensRemaining or depthRemaining drops to ≤ 0. */
+     *  The executor is a LEAF — it never spawns recursive children, so
+     *  it ignores `depthRemaining` entirely. It MUST stop iterating and
+     *  return 'budget-exhausted' only when `tokensRemaining` drops to ≤ 0
+     *  (or an internal iteration cap is hit). The `depthRemaining` guard
+     *  is the INTERPRETER's responsibility: the interpreter refuses to
+     *  spawn a recursive child Stepper when `depthRemaining <= 0`, but a
+     *  terminal executor call at depth 0/1 is always allowed. */
     budget: Budget;
     /** Carries traceId/turnId/sessionId/stepperId so the executor can
      *  stamp every knowledge-RAG write with the required metadata (F5). */
