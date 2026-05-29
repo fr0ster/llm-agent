@@ -89,8 +89,8 @@ export interface RunIdentity {
   traceId: string;             // per-prompt trace
   turnId: string;              // consumer-prompt turn within the session
   sessionId: string;
-  stepperId: string;           // stable UUID of the CURRENT Stepper
-  parentStepperId?: string;    // UUID of the Stepper that dispatched this one
+  stepperId: string;           // stable UUID of the CURRENT execution node (a Stepper, or an executor leaf invocation)
+  parentStepperId?: string;    // UUID of the execution node that dispatched this one
 }
 
 /** Tool-safety policy resolved once at the coordinator boundary from
@@ -198,9 +198,9 @@ export interface IExecutor {
 export interface KnowledgeEntryMetadata {
   traceId: string;             // trace this entry belongs to (per-prompt)
   turnId: string;              // consumer-prompt turn within the session
-  stepperId: string;           // stable id (NOT name) of the Stepper that wrote this
+  stepperId: string;           // stable id (NOT name) of the execution node (Stepper or executor leaf) that wrote this
   parentStepperId?: string;    // for topology reconstruction
-  task: string;                // the step's goal text — what the Stepper was working on
+  task: string;                // the step's goal text — what the execution node was working on
   artifactType: string;        // 'source-code' | 'mcp-result' | 'analysis-finding' | …
   toolName?: string;           // populated when artifactType = 'mcp-result'
   createdAt: string;           // ISO-8601
@@ -360,12 +360,14 @@ Internally one Stepper contract; modes differ only by the wiring of planner / ex
 
 ### D.3 `StepperInterpreter`
 
-`packages/llm-agent-libs/src/coordinator/stepper/stepper-interpreter.ts` — `class StepperInterpreter implements IStepperInterpreter`. Reuses 17.0's wave-based ready-node execution from `DagPlanInterpreter`, but per ready node:
+`packages/llm-agent-libs/src/coordinator/stepper/stepper-interpreter.ts` — `class StepperInterpreter implements IStepperInterpreter`. Reuses 17.0's wave-based ready-node execution from `DagPlanInterpreter`. The interpreter is the **sole owner of the `depthRemaining` guard** (§B.5.1). Per ready node:
 
-- if `node.agent` references a registered subagent — dispatch as a recursive child `Stepper.run(...)` with budget halved per depth (configurable);
-- else dispatch the node to the local `executor`.
+1. **If `node.agent` references a registered subagent AND `ctx.budget.depthRemaining > 0`** — dispatch as a recursive child `Stepper.run(...)`. The child inherits `depthRemaining - 1` and a token slice (default: halved per depth, configurable). The interpreter mints a fresh `stepperId` for the child and sets `parentStepperId` to the current Stepper's id (§C.1 mint rule). Emits `stepper-spawned` / `stepper-done`.
+2. **If `node.agent` references a subagent BUT `ctx.budget.depthRemaining <= 0`** — do NOT recurse. Dispatch the node to the local `executor` as a terminal leaf call instead (the work still happens, just without further decomposition). The executor gets a virtual `stepperId`. This is what keeps depth a bound on recursion, not on work.
+3. **If `node.agent` is absent** — dispatch the node to the local `executor` directly.
+4. **If the node cannot be executed at all** (e.g. references an unknown agent and there is no usable executor) — return `status: 'incomplete'` with `missing: [<reason>]` so the parent can decide.
 
-Emits `stepper-spawned` / `stepper-done` events.
+Emits `stepper-spawned` / `stepper-done` (cases 1–3, with the executor's virtual ref in cases 2–3).
 
 ### D.4 `CyclicReActExecutor` (with `INeedResolver`)
 
@@ -563,7 +565,8 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 | H.1 | Mode A — single Stepper with stub `INeedResolver` | LLM emits "I lack tool X" → resolver returns `injectTools: [X]` → next LLM call has X in tool list → final answer produced. |
 | H.2 | Mode B — three-level recursion, root + child + grandchild | Grandchild planner queries knowledge-RAG and reads the entry written by an earlier sibling, does NOT re-fetch. Cycle of identical task-recurrence is avoided by RAG hit. |
 | H.3 | Mode C — 4 ortho parallel children with `maxParallelSteps: 2` | Observe at most 2 concurrent `stepper-spawned` events; queue drains as `stepper-done` arrives. |
-| H.4 | Sufficiency mechanism — budget exhaustion | Stepper exceeds depth or token budget → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
+| H.4 | Sufficiency — TOKEN budget exhaustion | Stepper/executor exceeds `tokensRemaining` → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
+| H.4b | Sufficiency — DEPTH floor routes to executor | Interpreter at `depthRemaining <= 0` with a node whose `agent` references a subagent does NOT spawn a recursive child Stepper; it dispatches the node to the local executor (terminal leaf call) which runs normally. Assert: no child `stepper-spawned` event at the floor; the executor call completes with `status: 'ok'`. Depth exhaustion is NOT `budget-exhausted`. |
 | H.5 | Mutate tool annotation — safe default | Tool without `readOnly` field (legacy / unknown class) triggers `ClarifySignal` before MCP call; tool with `readOnly: true` executes silently; tool listed in `coordinator.knownReadOnlyTools` executes silently; under `coordinator.mutationPolicy: trusted` all tools execute silently. |
 | H.6 | Root finalizer insufficient path | Knowledge-RAG empty after run → finalizer returns `InsufficientSignal(missing: ['source code'])`; coordinator returns the signal to consumer. |
 | H.7 | Streaming events | Progress events (`stepper-spawned`, `mcp-call`, `tokens-used`) emitted with correct `source.stepperId` and `source.parentStepperId` for a 3-level tree (assert each child's `parentStepperId` equals its parent's `stepperId`); root finalizer text arrives as `content` chunks; no `node-start`/`node-end` legacy chunks emitted. |
