@@ -252,7 +252,7 @@ export class InsufficientSignal extends Error {
 
 ### C.2 StreamChunk extension
 
-Additive to the 17.0 union. The existing `content` variant is preserved (used by the root finalizer). All progress variants carry `source` (Stepper name, for debug) and optionally `parent` (so a UI can build a topology view).
+Additive to the 17.0 union. The existing `content` variant is preserved (used by the root finalizer). All progress variants carry `source: StepperRef`, which holds the stable `source.stepperId` (the join key), the `source.parentStepperId` (for topology reconstruction), and a human-readable `source.name` (for rendering only). Clients join events by `source.stepperId`, never by `source.name`.
 
 ```ts
 interface StepperRef {
@@ -543,7 +543,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 | H.4 | Sufficiency mechanism — budget exhaustion | Stepper exceeds depth or token budget → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
 | H.5 | Mutate tool annotation — safe default | Tool without `readOnly` field (legacy / unknown class) triggers `ClarifySignal` before MCP call; tool with `readOnly: true` executes silently; tool listed in `coordinator.knownReadOnlyTools` executes silently; under `coordinator.mutationPolicy: trusted` all tools execute silently. |
 | H.6 | Root finalizer insufficient path | Knowledge-RAG empty after run → finalizer returns `InsufficientSignal(missing: ['source code'])`; coordinator returns the signal to consumer. |
-| H.7 | Streaming events | Progress events (`stepper-spawned`, `mcp-call`, `tokens-used`) emitted with correct `source` and `parent` for a 3-level tree; root finalizer text arrives as `content` chunks; no `node-start`/`node-end` legacy chunks emitted. |
+| H.7 | Streaming events | Progress events (`stepper-spawned`, `mcp-call`, `tokens-used`) emitted with correct `source.stepperId` and `source.parentStepperId` for a 3-level tree (assert each child's `parentStepperId` equals its parent's `stepperId`); root finalizer text arrives as `content` chunks; no `node-start`/`node-end` legacy chunks emitted. |
 | H.8 | Session persistence + resume | New session, prompt → answer; close; reopen; `POST /v1/sessions/<id>/resume`; second prompt sees prior knowledge-RAG entries via planner.query. |
 | H.9 | Cycle prevention by RAG-first | Planner with task identical to its parent's task but knowledge-RAG already populated emits a leaf step (use-the-fact), not a re-fetch. |
 | H.10 | maxParallelSteps locally enforced | Two-level tree with maxN=2 at each level: peak observed concurrency ≤ 4 (2×2), not bounded by a global semaphore. |
