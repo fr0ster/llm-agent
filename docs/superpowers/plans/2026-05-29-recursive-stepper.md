@@ -30,7 +30,9 @@ The spec uses some type names that differ from existing 17.0 exports. Use the RE
 
 When a task's code block references `Tool`, write `LlmTool`. Confirm each name with `git grep -n "export .* <Name>" packages/llm-agent/src` before coding if unsure.
 
-**Budget convention (review R2-F1):** `Budget` is `{ depthRemaining: number; tokens: ITokenLedger }`. `tokens` is a SHARED, mutable ledger (`TokenLedger`, exported from `@mcp-abap-adt/llm-agent`) created once per run and passed by reference everywhere. Any test that builds a `Budget` must `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` (a VALUE import, not type-only) and write `tokens: new TokenLedger(<n>)`. There is no `tokensRemaining` field. Children share the SAME ledger (so total spend is capped globally); only `depthRemaining` is per-branch.
+**Budget convention (review R2-F1, R3-F2):** `Budget` is `{ depthRemaining: number; tokens: ITokenLedger }`. `tokens` is a SHARED, mutable ledger (`TokenLedger`, exported from `@mcp-abap-adt/llm-agent`) created once per run and passed by reference everywhere. Any test that builds a `Budget` must `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` (a VALUE import, not type-only) and write `tokens: new TokenLedger(<n>)`. There is no `tokensRemaining` field. Children share the SAME ledger; only `depthRemaining` is per-branch.
+
+The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each executor checks `exhausted()` *before* an LLM call and `spend()`s *after* the response. Under `Promise.all` parallelism, several in-flight sibling calls can each pass the pre-check before any of them records its spend, so the run can overshoot the configured budget by at most `(concurrent in-flight LLM calls) × (tokens of one call)`. In-flight concurrency is bounded by `maxParallelSteps` per level, so the overshoot is bounded and small relative to the budget. The overage is caught after the fact by the budget-extension `ClarifySignal` (§F / B.5.3), which asks the consumer to extend or stop. A true hard cap (reserve-before-call with post-call reconciliation) is a deferred enhancement, not v1.
 
 ---
 
@@ -164,11 +166,13 @@ export interface ToolSafetyPolicy {
 
 /** Shared, live token ledger (review R2-F1). ONE instance is created at the
  *  coordinator boundary and passed BY REFERENCE through the whole run. Every
- *  Stepper and executor reads `remaining` before each LLM call and calls
- *  `spend(usage)` after, so total spend is capped across ALL branches —
- *  including parallel siblings, which interleave at await points and share
- *  the one counter (JS is single-threaded; no true race). Tokens bound WORK
- *  globally; depth (a per-branch value below) bounds RECURSION. */
+ *  Stepper and executor reads `exhausted()` before each LLM call and calls
+ *  `spend(usage)` after. This is a SOFT cap (review R3-F2): parallel siblings
+ *  can each pass the pre-check before any records its spend, so the run can
+ *  overshoot by at most (in-flight calls × tokens-per-call) — bounded by
+ *  maxParallelSteps and caught after the fact by the budget-extension
+ *  ClarifySignal. Tokens bound WORK globally; depth (a per-branch value
+ *  below) bounds RECURSION. A reserve-before-call hard cap is deferred. */
 export interface ITokenLedger {
   readonly remaining: number;
   spend(usage: LlmUsage): void;
@@ -218,18 +222,22 @@ export class TokenLedger implements ITokenLedger {
 }
 ```
 
-Add to `packages/llm-agent/src/interfaces/index.ts` (match the existing `export type { … } from './finalizer.js';` pattern); export `TokenLedger` as a value (not type-only) and `ITokenLedger` as a type:
+Add to `packages/llm-agent/src/interfaces/index.ts` (match the existing `export type { … } from './finalizer.js';` pattern). NOTE the two separate exports — `TokenLedger` is a VALUE (class), the rest are type-only:
 
 ```ts
+export { TokenLedger } from './stepper.js';
 export type {
   Budget,
   IStepper,
   IStepperInput,
   IStepperResult,
+  ITokenLedger,
   RunIdentity,
   ToolSafetyPolicy,
 } from './stepper.js';
 ```
+
+If the package's public barrel `packages/llm-agent/src/index.ts` re-exports interface symbols explicitly (rather than `export *`), add `TokenLedger` (value) there too so the budget-convention import `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` resolves across the package boundary.
 
 - [ ] **1c. Build + test.** Run:
 ```bash
@@ -1209,7 +1217,9 @@ export class CyclicReActExecutor implements IExecutor {
 
     for (let iter = 0; iter < maxIterations; iter++) {
       // Check the SHARED run-wide ledger (review R2-F1) — not a local snapshot.
-      // Parallel siblings share this counter, so total spend is capped globally.
+      // Parallel siblings share this counter. Soft cap (review R3-F2): the
+      // pre-check/post-spend window allows bounded overshoot under parallelism;
+      // the budget-extension ClarifySignal catches the overage.
       if (budget.tokens.exhausted()) {
         return { status: 'budget-exhausted', usage };
       }
@@ -1636,7 +1646,8 @@ export class StepperInterpreter implements IStepperInterpreter {
       if (willRecurse && subagent) {
         // Case 1 — recursive child Stepper. depthRemaining is a per-branch
         // value (decremented), but tokens is the SAME shared ledger reference
-        // (review R2-F1) so total spend is capped across all branches.
+        // (review R2-F1) so spend is accounted across all branches (soft cap,
+        // bounded overshoot under parallelism — review R3-F2).
         result = await subagent.run({
           prompt: composeTask(node, plan),
           knowledgeRag: ctx.knowledgeRag,
@@ -2676,4 +2687,4 @@ git push -u origin epic/18.0-recursive-stepper
 
 **Shipped in v1 (NOT deferred):** durable cross-restart knowledge persistence via `JsonlKnowledgeBackend` (Task 13c) — `/v1/sessions` resume genuinely survives a process restart.
 
-**Known follow-up flagged in-plan, NOT v1:** a semantic (embedder-backed) `KnowledgeBackend` over qdrant/pg for relevance-ranked `query()` (the JSONL backend uses a recency fallback for `query`, which suffices for the planner's RAG-first check; exhaustive `list()` for the finalizer is already correct), `PgSessionMetaStore` (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note). All explicitly out of v1 scope, consistent with spec §J.
+**Known follow-up flagged in-plan, NOT v1:** a semantic (embedder-backed) `KnowledgeBackend` over qdrant/pg for relevance-ranked `query()` (the JSONL backend uses a recency fallback for `query`, which suffices for the planner's RAG-first check; exhaustive `list()` for the finalizer is already correct), `PgSessionMetaStore` (Task 13 note), finalizer-insufficient-JSON-buffering (Task 11 note), deterministic clock injection for ordering (Task 7 note), and a **hard token cap** via reserve-before-call + post-call reconciliation on `ITokenLedger` (v1 is a documented soft cap with bounded overshoot — review R3-F2). All explicitly out of v1 scope, consistent with spec §J.
