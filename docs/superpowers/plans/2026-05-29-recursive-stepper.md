@@ -32,7 +32,9 @@ When a task's code block references `Tool`, write `LlmTool`. Confirm each name w
 
 **Budget convention (review R2-F1, R3-F2):** `Budget` is `{ depthRemaining: number; tokens: ITokenLedger }`. `tokens` is a SHARED, mutable ledger (`TokenLedger`, exported from `@mcp-abap-adt/llm-agent`) created once per run and passed by reference everywhere. Any test that builds a `Budget` must `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` (a VALUE import, not type-only) and write `tokens: new TokenLedger(<n>)`. There is no `tokensRemaining` field. Children share the SAME ledger; only `depthRemaining` is per-branch.
 
-The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each executor checks `exhausted()` *before* an LLM call and `spend()`s *after* the response. Under `Promise.all` parallelism, several in-flight sibling calls can each pass the pre-check before any of them records its spend, so the run can overshoot the configured budget by at most `(total in-flight LLM calls across the whole tree) × (tokens of one call)`. `maxParallelSteps` bounds only each LOCAL scheduler's fan-out — the global in-flight count is the product of the per-level caps along concurrently-active branches (review R5-F1; worst case ≈ `maxParallelSteps^depth`, see §C.6 / R2-F4 math). The overshoot is therefore bounded but NOT necessarily small on deep+wide trees; the budget-extension `ClarifySignal` (§F / B.5.3) is the real safety net, asking the consumer to extend or stop. A true hard cap (reserve-before-call with post-call reconciliation) is a deferred enhancement, not v1.
+The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each executor checks `exhausted()` *before* an LLM call and `spend()`s *after* the response. Under `Promise.all` parallelism, several in-flight sibling calls can each pass the pre-check before any of them records its spend, so the run can overshoot the configured budget by at most `(total in-flight LLM calls across the whole tree) × (tokens of one call)`. `maxParallelSteps` bounds only each LOCAL scheduler's fan-out — the global in-flight count is the product of the per-level caps along concurrently-active branches (review R5-F1; worst case ≈ `maxParallelSteps^depth`, see §C.6 / R2-F4 math). The overshoot is therefore bounded but NOT necessarily small on deep+wide trees; the budget-extension `ClarifySignal` (§F / B.5.3) is the real safety net. A true hard cap (reserve-before-call with post-call reconciliation) is a deferred enhancement, not v1.
+
+**Precise semantics of `budget-exhausted` vs `ok`-with-overshoot (review R6-F1).** `budget-exhausted` fires when an executor or Stepper wants to do MORE work (another LLM round, another tool round, another child) but the ledger is already empty — enforced by the `exhausted()` check at the TOP of each executor loop and before each child dispatch. It does NOT fire on a clean final answer that completes the task while its own (already-made) call happened to drive the ledger negative: that work is DONE, there is nothing to "extend", so the executor returns `ok` and the slight overage is the documented soft-cap overshoot (reported faithfully in `usage` and `/v1/usage`). The budget-extension `ClarifySignal` is therefore reached precisely when the run is UNFINISHED and out of budget — never to second-guess a completed answer.
 
 ---
 
@@ -56,7 +58,7 @@ The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each
 
 | File | Responsibility |
 |---|---|
-| `src/rag/knowledge-rag.ts` | `KnowledgeRag` (wraps any `IRag`), `ToolsRag` |
+| `src/rag/knowledge-rag.ts` | `KnowledgeRag` (over a `KnowledgeBackend` port — NOT raw `IRag`; see Task 5), `InMemoryKnowledgeBackend`, `ToolsRag` |
 | `src/coordinator/stepper/need-resolver.ts` | `RegexNeedResolver`, `LlmNeedResolver` |
 | `src/coordinator/stepper/cyclic-react-executor.ts` | `CyclicReActExecutor` |
 | `src/coordinator/stepper/llm-stepper-planner.ts` | `LlmStepperPlanner` + `STEPPER_PLANNER_SYSTEM` |
@@ -1139,7 +1141,31 @@ test('budget-exhausted when the shared token ledger is exhausted', async () => {
     toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram', readOnly: true } }) as never,
     budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, ...META_BASE,
   });
+  // The first tool-call response spends 60k (ledger 40k left), loops; second
+  // spends 60k → ledger -20k; the THIRD top-of-loop check sees exhausted and
+  // bubbles budget-exhausted BEFORE making another call (wants more work, no
+  // budget). This is the gate the budget-extension clarify depends on.
   assert.equal(res.status, 'budget-exhausted');
+});
+
+test('R6-F1: a CLEAN final answer that overshoots the ledger returns ok (work done — no budget-exhausted)', async () => {
+  // Single clean response (no tool calls) that alone costs more than the whole
+  // budget. The task completed; there is nothing to extend, so the executor
+  // returns ok and the overage is the documented soft-cap overshoot — NOT a
+  // budget-exhausted that would trigger a pointless extend-or-stop clarify.
+  const llm = scriptedLlm([
+    { content: 'Final analysis: complete.', usage: { promptTokens: 150000, completionTokens: 200, totalTokens: 150200 } },
+  ]);
+  const m = mcp({});
+  const { rag, writes } = knowledgeStub();
+  const exec = new CyclicReActExecutor({ llm: llm as never, callMcp: m.call, component: 'tool-loop', maxIterations: 10 });
+  const res = await exec.execute({
+    prompt: 'analyse', tools: [], knowledgeRag: rag as never,
+    toolsRag: toolsStub({}) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) }, ...META_BASE,
+  });
+  assert.equal(res.status, 'ok', 'completed answer returns ok even though its call exceeded the budget');
+  assert.ok(writes.some((w) => w.content.includes('Final analysis')), 'the answer was written to knowledge-RAG');
 });
 
 test('emits mcp-call / mcp-result / tokens-used progress with identity.stepperId as source', async () => {
@@ -1219,10 +1245,14 @@ export class CyclicReActExecutor implements IExecutor {
     };
 
     for (let iter = 0; iter < maxIterations; iter++) {
-      // Check the SHARED run-wide ledger (review R2-F1) — not a local snapshot.
-      // Parallel siblings share this counter. Soft cap (review R3-F2): the
-      // pre-check/post-spend window allows bounded overshoot under parallelism;
-      // the budget-extension ClarifySignal catches the overage.
+      // Gate BEFORE any further work (review R2-F1/R6-F1). The ledger is the
+      // SHARED run-wide counter (not a local snapshot). If it is exhausted we
+      // refuse to start another LLM round and bubble budget-exhausted — this
+      // is the gate that the budget-extension ClarifySignal depends on: it
+      // fires only when MORE work is wanted but the budget is gone. A clean
+      // final answer (below) that completes the task returns ok even if its
+      // own call nudged the ledger negative — that bounded overshoot is the
+      // documented soft cap; there is nothing left to "extend", so no clarify.
       if (budget.tokens.exhausted()) {
         return { status: 'budget-exhausted', usage };
       }
@@ -2556,9 +2586,46 @@ test('DELETE /v1/sessions/:id removes the row', async () => {
 
 Run → FAIL.
 
-- [ ] **17b. Implement.** Export `handleListSessions`, `handleResumeSession`, `handleDeleteSession` from `smart-server.ts` and wire them into the request router alongside the existing `/v1/usage` handler. Add mode routing: when `coordinator.mode` is set (or `coordinator.planner` for backward-compat mapping → `planned-react`), instantiate `StepperCoordinatorHandler` via `buildStepperRoot`; else keep the existing `DagCoordinatorHandler` path (deprecated, §K).
+- [ ] **17b. Implement.** Export `handleListSessions`, `handleResumeSession`, `handleDeleteSession` from `smart-server.ts` and wire them into the request router alongside the existing `/v1/usage` handler.
 
-> Backward-compat (§K): a 17.0 yaml with `coordinator.planner` and no `coordinator.mode` maps to `mode: planned-react`. Emit a one-line deprecation note via `log({event:'config_warning', ...})`.
+  **Mode routing gates on the RAW config, NOT on the parsed result (review R6-F2).** `parseStepperCoordinatorConfig({})` deliberately DEFAULTS `mode` to `'planned-react'` — so you must NOT call it to decide whether to use the Stepper path, or every legacy 17.0 config would silently route to the Stepper. Gate on raw presence first, then parse only inside the Stepper branch:
+
+  ```ts
+  function usesStepper(coordCfg: Record<string, unknown> | undefined): boolean {
+    if (!coordCfg) return false;
+    // Explicit opt-in:
+    if (typeof coordCfg.mode === 'string') return true;
+    // No backward-compat auto-switch in v1: a 17.0 config with coordinator.planner
+    // but no coordinator.mode stays on the DEPRECATED DagCoordinatorHandler.
+    return false;
+  }
+
+  // in start():
+  if (usesStepper(coordCfg)) {
+    const cfg = parseStepperCoordinatorConfig(coordCfg!);   // default mode applies only HERE
+    const built = await buildStepperRoot({ coordCfg, /* … */ });
+    handler = new StepperCoordinatorHandler({ /* … */ });
+  } else if (coordCfg?.planner !== undefined) {
+    handler = /* existing DagCoordinatorHandler path (deprecated, §K) */;
+    log({ event: 'config_warning', message: 'coordinator.planner without coordinator.mode uses the deprecated DagCoordinatorHandler; set coordinator.mode to adopt the 18.0 Stepper runtime' });
+  } else {
+    /* no coordinator — existing linear/flat path */
+  }
+  ```
+
+  Legacy 17.0 configs are NOT auto-migrated to the Stepper in v1 (explicit opt-in via `coordinator.mode` only). This is a deliberate departure from the earlier "auto-map planner→planned-react" idea (which the R6-F2 review showed would mis-fire on the defaulted parse). §K migration is therefore: 18.0 ships both handlers; consumers opt in by adding `coordinator.mode`; the Dag path is removed in 19.0.
+
+- [ ] **17b-test. Mode-gating test.** Add to `sessions-endpoints.test.ts` (or a `mode-routing.test.ts`):
+  ```ts
+  import { usesStepper } from '../smart-server.js';
+  test('usesStepper gates on raw coordinator.mode, not on the defaulted parse', () => {
+    assert.equal(usesStepper({ mode: 'deep-stepper' }), true);
+    assert.equal(usesStepper({ planner: { type: 'llm' } }), false); // legacy 17.0 → Dag path
+    assert.equal(usesStepper({}), false);
+    assert.equal(usesStepper(undefined), false);
+  });
+  ```
+  Export `usesStepper` from `smart-server.ts` for the test.
 
 - [ ] **17c. Test + commit.**
 ```bash
@@ -2566,7 +2633,7 @@ npm run build
 cd packages/llm-agent-server && npx tsx --test src/smart-agent/__tests__/sessions-endpoints.test.ts
 git add packages/llm-agent-server/src/smart-agent/smart-server.ts \
         packages/llm-agent-server/src/smart-agent/__tests__/sessions-endpoints.test.ts
-git commit -m "feat(server): /v1/sessions list/resume/delete + coordinator.mode routing to StepperCoordinatorHandler
+git commit -m "feat(server): /v1/sessions list/resume/delete + raw-config-gated coordinator.mode routing
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -2678,8 +2745,8 @@ git push -u origin epic/18.0-recursive-stepper
 | F signal partitioning | 16 (handler), 11 (finalizer), 7 (executor clarify) |
 | G session persistence | 13 (store), 17 (endpoints), 18 (H.8) |
 | H.1–H.10 + H.4b | 7, 9, 11, 18 |
-| I backward compat | 4 (additive StreamChunk), 4b (emitter migration), 17 (mode mapping) |
-| K migration | 17 (deprecation warning), 19c (CHANGELOG), 19e (legacy variant removal) |
+| I backward compat | 4 (additive StreamChunk), 4b (emitter migration), 17 (raw-config mode gating — legacy stays on Dag, explicit opt-in only) |
+| K migration | 17 (Dag-path deprecation warning + explicit `coordinator.mode` opt-in), 19c (CHANGELOG), 19e (legacy variant removal) |
 
 **Build-green invariant (review R1-F2):** every task ends with all three packages building. Task 4 adds StreamChunk variants ADDITIVELY; Task 4b migrates 17.0 emitters immediately; Task 19e removes the legacy variants only after the full sweep is green. No intermediate task leaves libs/server broken.
 
