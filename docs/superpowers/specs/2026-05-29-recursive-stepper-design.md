@@ -213,8 +213,17 @@ export interface KnowledgeFilter {
 }
 
 export interface IKnowledgeRagHandle {
-  /** Semantic similarity search, optionally narrowed by metadata. */
+  /** Semantic similarity search, optionally narrowed by metadata.
+   *  `k` caps results by relevance — appropriate for PLANNERS doing
+   *  RAG-first reasoning ("what do I already know about this task?").
+   *  NOT appropriate for the finalizer (see list). */
   query(text: string, opts?: { k?: number; filter?: KnowledgeFilter }): Promise<readonly KnowledgeEntry[]>;
+  /** Exhaustive metadata-filtered scan — returns ALL entries matching the
+   *  filter, no relevance cap, ordered by createdAt. The root finalizer
+   *  uses this (filter by turnId) so the answer is never truncated by a
+   *  retrieval `k` — incompleteness then means genuine missing data, not
+   *  a retrieval cap. */
+  list(filter: KnowledgeFilter): Promise<readonly KnowledgeEntry[]>;
   /** Append a step artefact. metadata is REQUIRED. */
   write(entry: { content: string; metadata: KnowledgeEntryMetadata }): Promise<void>;
   /** Cheap snapshot id of the current per-session collection state (count + sum-of-ids). Used for cycle-protection diagnostics in §B.6 only. */
@@ -376,7 +385,7 @@ Emits `mcp-call` / `mcp-result` / `tokens-used` / `llm-call-start/end` events.
 
 `packages/llm-agent-libs/src/coordinator/stepper/root-finalizer.ts` — coordinator-boundary component (not a Stepper). Takes the consumer prompt + knowledge-RAG read handle + the current `traceId` and `turnId`. Default behaviour:
 
-- Reads ONLY the entries for the current `turnId` via `knowledgeRag.query(prompt, { filter: { turnId } })`. This prevents finalizer from picking up artefacts from prior turns of the same session by accident.
+- Reads ALL entries for the current `turnId` via `knowledgeRag.list({ turnId })` — the exhaustive scan, NOT the semantic `query`, so the answer is never truncated by a relevance `k` cap. This both prevents the finalizer from picking up artefacts from prior turns of the same session AND guarantees that "insufficient" reflects genuine missing data rather than a retrieval limit.
 - Optional override via config (`coordinator.finalizer.scope: 'session' | 'turn'`, default `'turn'`) widens the read to the whole session when conversation continuity is desired.
 
 Runs one LLM call with a system prompt that instructs: "compose the final answer from the provided knowledge entries; if any required fact is missing, return `{insufficient: missing[]}` instead". Streams its text output as `kind: 'content'` chunks.
