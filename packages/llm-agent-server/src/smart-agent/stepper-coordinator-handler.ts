@@ -96,38 +96,22 @@ export class StepperCoordinatorHandler implements IStageHandler {
     const built = await buildBuilt(ctx);
 
     // Run the root Stepper.
-    let result: IStepperResult;
-    try {
-      result = await built.rootStepper.run({
-        prompt: ctx.inputText,
-        knowledgeRag,
-        toolsRag,
-        budget: built.budget,
-        identity,
-        toolSafety: built.toolSafety,
-        onProgress: (c) => {
-          if (c.kind === 'content') {
-            ctx.yield({ ok: true, value: { content: c.delta } });
-          }
-          ctx.options?.sessionLogger?.logStep('stepper_progress', c);
-        },
-      });
-    } catch (err) {
-      if (err instanceof InsufficientSignal) {
-        ctx.yield({
-          ok: true,
-          value: {
-            content: `Missing required information: ${err.missing.join(', ')}`,
-          },
-        });
-        ctx.yield({
-          ok: true,
-          value: { content: '', finishReason: 'stop' },
-        });
-        return true;
-      }
-      throw err;
-    }
+    // Per spec §F, InsufficientSignal is only raised by the finalizer, never
+    // by the run path — no catch needed here.
+    const result: IStepperResult = await built.rootStepper.run({
+      prompt: ctx.inputText,
+      knowledgeRag,
+      toolsRag,
+      budget: built.budget,
+      identity,
+      toolSafety: built.toolSafety,
+      onProgress: (c) => {
+        if (c.kind === 'content') {
+          ctx.yield({ ok: true, value: { content: c.delta } });
+        }
+        ctx.options?.sessionLogger?.logStep('stepper_progress', c);
+      },
+    });
 
     // budget-exhausted → coordinator surfaces a budget-extension clarify (spec §F).
     // Mirror 17.0 DagCoordinatorHandler: yield content chunk containing the question,
