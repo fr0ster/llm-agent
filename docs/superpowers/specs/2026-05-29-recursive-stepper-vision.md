@@ -271,6 +271,56 @@ Implementations can be deterministic (regex over phrasings like "I can't" / "I n
 
 ---
 
+## 11.6 Interaction modes — read/analyse vs. create/mutate
+
+The §11.5 modes (cyclic-react / deep-stepper / planned-react) are execution shapes. Orthogonal to those is the **interaction semantics**, which differs sharply between the two large classes of prompts the system serves.
+
+### Read / analyse mode (covered by §1-10 directly)
+
+For "read program X" / "review code" / "answer question Y" prompts the model is:
+
+```
+prompt → plan → execute (write to knowledge-RAG) → root finalizer reads RAG → text answer
+```
+
+Single-shot. The consumer fires one prompt, gets one answer (possibly with mid-flight ClarifySignal for genuinely ambiguous requirements). No mid-execution side effects. The root finalizer either composes the answer from accumulated RAG or returns "insufficient: missing X".
+
+### Create / mutate mode (new semantics)
+
+For "create class Z with methods A, B, C" / "refactor X to use Y" / "scaffold a CDS view for table T" prompts the picture changes:
+
+1. **Mutating side effects** must be confirmed before they happen — the agent cannot silently create artefacts in the consumer's SAP system.
+2. **Iterative consumer input** is expected — "also add field email" mid-execution, "wait, change the parent class first", etc. The interaction becomes a conversation rather than a single round-trip.
+3. **Multi-turn within one task** — the consumer's first prompt is rarely complete; they refine as the agent shows them what it is producing.
+4. **Idempotency / rollback / transactionality** — if step 3 of 5 fails, the system state is partially mutated; do we roll back, retry, or report-partial?
+
+### What's the same
+
+The Stepper architecture, all four roles (planner / reviewer / interpreter / executor), the knowledge-RAG, the root finalizer — all unchanged. Mutate prompts are just plans that include mutating tool calls and tend to raise more signals.
+
+### What's new
+
+1. **Tool annotation: read-only vs. mutating.** A new metadata field on MCP-tool descriptions distinguishes the two classes. Executor policy:
+   - read-only tool → call without confirmation;
+   - mutating tool → raise `ClarifySignal('about to call <tool>(<args>), proceed?')` before the call (unless `mutationPolicy: trusted` is configured for this session).
+2. **`ClarifySignal` becomes the main interactivity primitive.** Today (17.0) it is used sparingly for genuinely ambiguous plan inputs; in mutate mode it is the standard pre-action confirmation gate. Same signal type — broader use.
+3. **Multi-turn consumer dialogue within one session.** Two cases:
+   - **(a) Answering a pending signal** — consumer replies `yes`/`no`/`<modified args>` and the coordinator resumes the paused Stepper with that answer. The 17.0 ClarifySignal flow handles this directly.
+   - **(b) New top-level prompt mid-execution** — "actually, also add field X". Three policies, to be decided:
+     - **i. Cancel + replan**: abort the in-flight plan, capture what was already done in knowledge-RAG, replan from the combined prompt.
+     - **ii. Append-to-plan**: add "add field X" as a new step to the running plan, dispatched after the current wave completes.
+     - **iii. Queue for next logical iteration**: complete the current plan, then start a fresh plan for the new prompt — knowledge-RAG carries everything done so far. Cleanest semantics; lowest user-experience interactivity.
+     - **2026-05-29 open question — recommend (iii) for v1**, (i) and (ii) deferred to 18.x. Rationale: (iii) maps cleanly to existing session-scoped infrastructure; (i) and (ii) require mid-plan amendment machinery not present in 17.0.
+4. **Idempotency / rollback / transactionality — deferred.** v1 is best-effort: executor writes "snapshot" entries to knowledge-RAG before and after every mutating tool call so subsequent planners can see the state, but no automatic rollback on failure. A failed step leaves the system in a partially-mutated state and the coordinator returns `step <id> failed; system state may be partial; see knowledge-RAG entries <X, Y, Z> for last known state`. Full transactional semantics is a separate enterprise-workflow-engine concern out of scope for this vision.
+
+### Why this matters for Q1 / Q5
+
+The Q5 simplification (one finalizer at root, internal Steppers return status only) still holds for mutate prompts — the root finalizer reads knowledge-RAG and either confirms "X created at Y with state Z" or raises `insufficient: <what consumer must clarify>`. The difference is only that during execution the path is dotted with ClarifySignal pauses for mutate confirmations.
+
+The Q1 sufficiency mechanism (budget + INCOMPLETE bubble + clarify-extension) also unchanged — it is orthogonal to whether the work is read or mutate.
+
+---
+
 ## 12. What this is NOT
 
 - It is not "add more nodes to a flat plan". It is a recursive runtime where decomposition is deferred to the point where ambiguity resolves.
