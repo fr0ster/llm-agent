@@ -52,6 +52,13 @@ export interface BuildHandlerRegistryOptions {
    */
   dagCoordinator?: DagCoordinatorHandlerDeps;
   /**
+   * Pre-built stage handler to register under the `coordinator` slot.
+   * Takes precedence over `dagCoordinator` and `coordinator` when all three
+   * are supplied. Used by the 18.0 Stepper runtime: caller builds a
+   * `StepperCoordinatorHandler` and passes it in directly.
+   */
+  stepperCoordinator?: IStageHandler;
+  /**
    * Activation strategy used by the `coordinator-activate` runtime stage to
    * compute `ctx.coordinatorActive`. Required when `coordinator` is set —
    * without it, coordinator activation cannot honour runtime skill state.
@@ -79,7 +86,9 @@ export function buildDefaultHandlerRegistry(
   if (opts.subAgents && opts.subAgents.size > 0) {
     registry.set('subagent', new SubAgentHandler(opts.subAgents));
   }
-  if (opts.dagCoordinator) {
+  if (opts.stepperCoordinator) {
+    registry.set('coordinator', opts.stepperCoordinator);
+  } else if (opts.dagCoordinator) {
     registry.set('coordinator', new DagCoordinatorHandler(opts.dagCoordinator));
   } else if (opts.coordinator) {
     registry.set('coordinator', new CoordinatorHandler(opts.coordinator));

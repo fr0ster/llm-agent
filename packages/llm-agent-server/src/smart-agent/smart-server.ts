@@ -50,6 +50,8 @@ import {
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
+  InMemoryKnowledgeBackend,
+  KnowledgeRag,
   makeLlm,
   SessionGraphFactory,
   SessionLogger,
@@ -340,9 +342,11 @@ const CORS_HEADERS = {
 // ---------------------------------------------------------------------------
 
 import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
+import { buildStepperRoot } from './build-stepper-root.js';
 import {
   assertCoordinatorConfigShape,
   normalizeLlmConfig,
+  parseStepperCoordinatorConfig,
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
@@ -351,6 +355,13 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import type {
+  ISessionMetaStore,
+  SessionMetaRow,
+} from './session-meta-store.js';
+import { InMemorySessionMetaStore } from './session-meta-store.js';
+import { StepperCoordinatorHandler } from './stepper-coordinator-handler.js';
 
 export {
   generateConfigTemplate,
@@ -627,6 +638,94 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
 
 export type SessionLifecycle = ReturnType<typeof buildSessionLifecycle>;
 
+// ---------------------------------------------------------------------------
+// /v1/sessions extracted handlers (testable without a live HTTP server)
+// ---------------------------------------------------------------------------
+
+/** Response shape for GET /v1/sessions */
+export interface SessionListBody {
+  sessions: SessionMetaRow[];
+}
+
+/** Response shape for POST /v1/sessions/:id/resume */
+export interface SessionResumeBody {
+  ok: boolean;
+  session?: SessionMetaRow;
+  error?: string;
+}
+
+/**
+ * List all sessions for a given user identity.
+ * Extracted for unit-testability (mirrors the /v1/usage handler pattern).
+ */
+export async function handleListSessions(
+  store: ISessionMetaStore,
+  identity: string,
+): Promise<SessionListBody> {
+  const sessions = await store.listForUser(identity);
+  return { sessions };
+}
+
+/**
+ * Resume (claim) a session by ID for a user identity.
+ * Sets the session status to 'idle' so it can be re-entered.
+ */
+export async function handleResumeSession(
+  store: ISessionMetaStore,
+  identity: string,
+  id: string,
+): Promise<SessionResumeBody> {
+  const row = await store.get(id);
+  if (!row || row.userIdentity !== identity) {
+    return { ok: false, error: 'session not found' };
+  }
+  await store.setStatus(id, 'idle');
+  const updated = await store.get(id);
+  return { ok: true, session: updated };
+}
+
+/**
+ * Delete a session by ID for a user identity, and evict its RAG state.
+ */
+export async function handleDeleteSession(
+  store: ISessionMetaStore,
+  identity: string,
+  id: string,
+  evictFn: (sessionId: string) => Promise<void>,
+): Promise<{ ok: boolean; error?: string }> {
+  const row = await store.get(id);
+  if (!row || row.userIdentity !== identity) {
+    return { ok: false, error: 'session not found' };
+  }
+  await store.delete(id);
+  await evictFn(id);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Raw-config mode routing gate (R6-F2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `true` ONLY when the raw coordinator config has an explicit `mode`
+ * string — the opt-in gate for the 18.0 Stepper runtime.
+ *
+ * IMPORTANT: Do NOT call `parseStepperCoordinatorConfig` to decide — that
+ * function defaults `mode` to `'planned-react'`, which would silently route
+ * every 17.0 legacy config onto the Stepper path. Gate on the RAW field
+ * presence only; parse is done INSIDE the Stepper branch after this check.
+ */
+export function usesStepper(
+  coordCfg: Record<string, unknown> | undefined,
+): boolean {
+  if (!coordCfg) return false;
+  // Explicit opt-in only: `coordinator.mode` must be a string in the raw config.
+  if (typeof coordCfg.mode === 'string') return true;
+  // Legacy 17.0 configs with `coordinator.planner` but no `coordinator.mode`
+  // stay on the deprecated DagCoordinatorHandler (removed in 19.0).
+  return false;
+}
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -653,6 +752,19 @@ export class SmartServer {
     deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
     oracleName?: string;
   };
+  /**
+   * 18.0 Stepper coordinator handler — stateless, session context comes through
+   * `ctx.sessionId` at execute time. Built once in `start()` when
+   * `coordinator.mode` is present in the raw config; reused across sessions.
+   */
+  private _stepperCoordinatorHandler?: StepperCoordinatorHandler;
+  /**
+   * Session meta-store for /v1/sessions endpoints (Task 17).
+   * Defaults to InMemorySessionMetaStore; a durable store can be injected via
+   * `cfg.sessionMetaStore` in a future extension.
+   */
+  private readonly _sessionMetaStore: ISessionMetaStore =
+    new InMemorySessionMetaStore();
 
   constructor(config: SmartServerConfig) {
     this.cfg = config;
@@ -964,11 +1076,122 @@ export class SmartServer {
     // ---- Coordinator (autonomous plan-execute loop) ------------------------
     const coordCfg = this.cfg.coordinatorYaml;
     if (coordCfg) {
-      // Fail loud if the config mixes DAG and linear fields.
-      assertCoordinatorConfigShape(coordCfg as Record<string, unknown>);
+      const rawCoordCfg = coordCfg as Record<string, unknown>;
 
-      if (coordCfg.planner !== undefined) {
-        // DAG mode: `planner` field present → use DagCoordinatorHandler.
+      if (usesStepper(rawCoordCfg)) {
+        // ── 18.0 Stepper path (opt-in via coordinator.mode) ──────────────────
+        // Parse only INSIDE this branch so parseStepperCoordinatorConfig's
+        // mode default ('planned-react') never fires for legacy configs (R6-F2).
+        const stepperCfg = parseStepperCoordinatorConfig(rawCoordCfg);
+        const logDir = this.cfg.logDir;
+
+        // KnowledgeRag factory: per-session — rehydrates from JsonlKnowledgeBackend
+        // when logDir is set (durable across restarts), else in-memory per session.
+        const knowledgeBackend = logDir
+          ? new JsonlKnowledgeBackend(logDir)
+          : undefined;
+        const knowledgeRagFor = async (sessionId: string) => {
+          const backend = knowledgeBackend ?? new InMemoryKnowledgeBackend();
+          return new KnowledgeRag(backend, sessionId);
+        };
+
+        // ToolsRag handle: wrap the shared IRag when available.
+        // IToolsRagHandle expects LlmTool[]; for now return empty —
+        // the executor queries MCP directly. A full adapter is wired in Task 18.
+        const toolsRagHandle: import('@mcp-abap-adt/llm-agent').IToolsRagHandle =
+          {
+            async query(_text: string, _k?: number) {
+              return [];
+            },
+            lookup(_name: string) {
+              return undefined;
+            },
+          };
+
+        // Mint helpers (monotone counters, server-scoped).
+        let stepperCounter = 0;
+        let turnCounter = 0;
+        const mintStepperId = () => `stepper-${++stepperCounter}`;
+        const mintTurnId = () => `turn-${++turnCounter}`;
+
+        const stepperMakeLlm = async (lc: SmartServerLlmConfig) =>
+          makeLlm(
+            {
+              provider: lc.provider ?? 'deepseek',
+              apiKey: lc.apiKey,
+              baseURL: lc.url,
+              model: lc.model,
+            },
+            Number(lc.temperature ?? mainTemp),
+          );
+
+        // Resolve an LLM config for the planner/finalizer. Prefer the main LLM.
+        const plannerLlmCfg: SmartServerLlmConfig | undefined =
+          this.cfg.llm &&
+          typeof this.cfg.llm === 'object' &&
+          !Array.isArray(this.cfg.llm)
+            ? (this.cfg.llm as SmartServerLlmConfig)
+            : undefined;
+
+        // Stub callMcp: real MCP wiring uses the mcpClients from the pipeline
+        // context at execute time. The StepperCoordinatorHandler passes callMcp
+        // through buildBuilt/buildStepperRoot; a full per-request MCP bridge
+        // is wired in Task 18.
+        const callMcp = async (
+          _name: string,
+          _args: unknown,
+          _signal?: AbortSignal,
+        ): Promise<string> => {
+          throw new Error(
+            'MCP tool calls from the Stepper require a per-request bridge (Task 18)',
+          );
+        };
+
+        // Build the registry from the subagent IStepper instances (empty for now;
+        // deep-stepper mode populates this from registered sub-agents).
+        const stepperRegistry = new Map<
+          string,
+          import('@mcp-abap-adt/llm-agent').IStepper
+        >();
+
+        const stepperHandler = new StepperCoordinatorHandler({
+          buildBuilt: async () =>
+            buildStepperRoot({
+              coordCfg: rawCoordCfg,
+              registry: stepperRegistry,
+              makeLlm: stepperMakeLlm,
+              knowledgeRagFor: (sid) => {
+                const backend =
+                  knowledgeBackend ?? new InMemoryKnowledgeBackend();
+                return new KnowledgeRag(backend, sid);
+              },
+              toolsRag: toolsRagHandle,
+              callMcp,
+              mintStepperId,
+              llmConfig: plannerLlmCfg,
+            }),
+          knowledgeRagFor,
+          toolsRag: toolsRagHandle,
+          mintStepperId,
+          mintTurnId,
+        });
+        this._stepperCoordinatorHandler = stepperHandler;
+        builder = builder.withStepperCoordinator(stepperHandler);
+        log({
+          event: 'stepper_coordinator_configured',
+          mode: stepperCfg.mode,
+          config: rawCoordCfg,
+        });
+      } else if (coordCfg.planner !== undefined) {
+        // ── Legacy DAG path (deprecated §K — remove in 19.0) ─────────────────
+        log({
+          event: 'config_warning',
+          message:
+            'coordinator.planner without coordinator.mode uses the deprecated DagCoordinatorHandler; ' +
+            'set coordinator.mode to adopt the 18.0 Stepper runtime',
+        });
+        // Fail loud if the config mixes DAG and linear fields.
+        assertCoordinatorConfigShape(rawCoordCfg);
         // planner shape/type already validated by assertCoordinatorConfigShape.
         // Validate interpreter.type if present — only 'dag' is supported.
         const interpKind = (
@@ -981,7 +1204,7 @@ export class SmartServer {
         }
 
         const built = await buildDagCoordinatorDeps({
-          coordCfg: coordCfg as Record<string, unknown>,
+          coordCfg: rawCoordCfg,
           llmMap,
           pipelineFallback,
           mainLlm,
@@ -1025,6 +1248,9 @@ export class SmartServer {
         };
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
+        // ── Linear / flat coordinator path ────────────────────────────────────
+        // Fail loud if config mixes fields with non-linear settings.
+        assertCoordinatorConfigShape(rawCoordCfg);
         // Linear mode: route plannerLlm through the normalized map chain.
         // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
         //   pipelineFallback → mainLlm.
@@ -1664,7 +1890,11 @@ export class SmartServer {
       }
       b = b.withSubAgents(registry);
 
-      if (this._dagCoordinatorTemplate) {
+      if (this._stepperCoordinatorHandler) {
+        // Stepper coordinator is stateless — reuse the same handler instance
+        // across sessions (session context arrives via ctx.sessionId).
+        b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
+      } else if (this._dagCoordinatorTemplate) {
         const tpl = this._dagCoordinatorTemplate;
         const workers: SubAgentRegistry = new Map(
           [...registry].filter(([name]) => name !== tpl.oracleName),
@@ -1676,6 +1906,10 @@ export class SmartServer {
           stateOracle: raw ? new SubAgentStateOracle(raw) : undefined,
         });
       }
+    } else if (this._stepperCoordinatorHandler) {
+      // No sub-agent configs but stepper coordinator configured — wire it directly.
+      // (Stepper coordinator is stateless and works without sub-agents.)
+      b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
     }
 
     const handle = await b.build();
@@ -1832,6 +2066,96 @@ export class SmartServer {
         lifecycle.release(sessionId, graph);
       }
       return;
+    }
+    // GET /v1/sessions — list sessions for the current identity
+    if (req.method === 'GET' && urlPath === '/v1/sessions') {
+      const lifecycle = this._lifecycle;
+      if (!lifecycle) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
+        return;
+      }
+      const isHttps =
+        (req.socket as { encrypted?: boolean }).encrypted === true ||
+        req.headers['x-forwarded-proto'] === 'https';
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      if (resolved.minted && resolved.setCookie) {
+        res.setHeader('Set-Cookie', resolved.setCookie);
+      }
+      const identity = resolved.identity.sessionId;
+      const body = await handleListSessions(this._sessionMetaStore, identity);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+      return;
+    }
+    // POST /v1/sessions/:id/resume — resume a session
+    {
+      const resumeMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)\/resume$/);
+      if (req.method === 'POST' && resumeMatch) {
+        const sessionId = resumeMatch[1];
+        const lifecycle = this._lifecycle;
+        if (!lifecycle) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (req.socket as { encrypted?: boolean }).encrypted === true ||
+          req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const body = await handleResumeSession(
+          this._sessionMetaStore,
+          identity,
+          sessionId,
+        );
+        const status = body.ok ? 200 : 404;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
+    }
+    // DELETE /v1/sessions/:id — delete a session
+    {
+      const deleteMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
+      if (req.method === 'DELETE' && deleteMatch) {
+        const sessionId = deleteMatch[1];
+        const lifecycle = this._lifecycle;
+        if (!lifecycle) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (req.socket as { encrypted?: boolean }).encrypted === true ||
+          req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const evictFn = async (sid: string) => {
+          await lifecycle.registry.evictIdle();
+          void sid; // eviction is idle-based; RAG state is session-scoped
+        };
+        const body = await handleDeleteSession(
+          this._sessionMetaStore,
+          identity,
+          sessionId,
+          evictFn,
+        );
+        const status = body.ok ? 200 : 404;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
     }
     // /v1/config or /config
     if (urlPath === '/v1/config' || urlPath === '/config') {
