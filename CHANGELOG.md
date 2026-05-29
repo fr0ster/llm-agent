@@ -61,10 +61,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **Session persistence + `/v1/sessions` endpoints.** Sessions are indexed in
   an in-memory `SessionMetaStore` (swappable to Postgres via
-  `sessionStore: pg`). New endpoints: `GET /v1/sessions` (list active sessions)
-  and `GET /v1/sessions/:id` (session details + knowledge-RAG entry count).
-  Clients resume a session by replaying the `sid` cookie issued on the first
-  request. `logDir` controls where JSONL session files are persisted.
+  `sessionStore: pg`). New endpoints: `GET /v1/sessions` (list sessions for the
+  identity), `POST /v1/sessions/:id/resume` (claim + rehydrate), and
+  `DELETE /v1/sessions/:id` (drop metadata + evict the session's knowledge-RAG
+  entries and JSONL). Clients resume a session by replaying the `sid` cookie
+  issued on the first request. `logDir` controls where JSONL session files are
+  persisted.
 
 - **Stepper streaming progress events.** Seven new `StreamChunk` variants
   carry `source: StepperRef` for precise attribution in nested trees:
@@ -74,7 +76,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **`coordinator.stepper.*` config block.** New YAML keys:
   `maxParallelSteps` (local fan-out cap, default 4),
   `maxDepth` (recursion limit, default 4),
-  `tokenBudget` (soft token cap, default 400 000),
+  `tokenBudget` (soft token cap, default 1 000 000),
   `reviewer.atDepths` (depth list or `'all'`).
 
 - **Recursive Stepper examples.** `docs/examples/stepper/` adds three
