@@ -1,0 +1,89 @@
+# Planned-ReAct Stepper — default mode (same planning step as the DAG coordinator,
+# but workers become recursive Steppers instead of flat subagents).
+#
+# The planner decomposes the request into named steps that are scheduled by the
+# StepperInterpreter. Each child Stepper runs its own CyclicReAct executor and
+# can write artefacts to the shared per-session knowledge-RAG. The root
+# finalizer reads the accumulated knowledge-RAG to compose the final answer.
+#
+# Cost shape:
+#   planner    — sonnet, 1 call per plan (+ replan on InsufficientSignal)
+#   executor   — haiku, N calls per step
+#   reviewer   — haiku, called at depths 0 and 1
+#   finalizer  — sonnet LLM synthesis
+#
+# This is the most common production shape: quality planning + cheap execution
+# + full knowledge-RAG accumulation between parallel branches.
+
+port: ${SMART_SERVER_PORT:-4021}
+host: 0.0.0.0
+mode: smart
+
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+  executor:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_FINALIZER_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  mode: planned-react            # default; explicit here for documentation
+
+  stepper:
+    maxParallelSteps: 4          # local fan-out cap per Stepper level
+    maxDepth: 4                  # interpreter recursion limit
+    tokenBudget: 400000          # soft token cap (shared ledger, all branches)
+    reviewer:
+      atDepths: [0, 1]           # review at root + first child level
+
+  # readOnly policy — safest default: every undeclared tool requires confirmation
+  mutationPolicy: confirm
+  knownReadOnlyTools:
+    - GetProgram
+    - GetInclude
+    - GetClass
+    - GetInterface
+    - ListPackage
+    - SearchRepository
+    - GetTransport
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects via live SAP MCP tools.
+      Produces structured findings that are stored in the knowledge-RAG
+      and consumed by sibling steps and the root finalizer.
+    config: ./worker.yaml
+
+logDir: ./.run/stepper-planned-sessions
+log: ./.run/stepper-planned-server.log

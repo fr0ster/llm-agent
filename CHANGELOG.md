@@ -9,6 +9,110 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [18.0.0] — 2026-05-30
+
+### Added
+
+- **Recursive Stepper hierarchy.** Every coordinator/worker is now a `Stepper`
+  (planner + reviewer + interpreter + executor). Steppers compose recursively:
+  the `StepperInterpreter` schedules child Steppers from a plan, each child
+  runs its own `CyclicReActExecutor`, and each level can itself spawn further
+  children up to `coordinator.stepper.maxDepth`. The resulting execution tree
+  replaces the flat DAG coordinator model.
+
+- **Three execution modes** (`coordinator.mode`):
+  - `cyclic-react` — single executor loop, no planning overhead. Best for bounded tasks.
+  - `planned-react` _(default)_ — LLM planner decomposes the request; parallel Stepper
+    workers execute steps and accumulate findings in the knowledge-RAG blackboard.
+  - `deep-stepper` — each Stepper can further plan and spawn children, enabling
+    multi-level hierarchical decomposition.
+
+- **Knowledge-RAG blackboard + durable JSONL backend.** A per-session
+  `KnowledgeRag` is created once and passed to every Stepper in the run. Each
+  executor writes step artefacts (`knowledgeRag.store()`); planners query the
+  blackboard before planning (`knowledgeRag.query()` / `list()`) so later steps
+  can build on earlier findings. The durable `JsonlKnowledgeBackend` persists
+  entries to disk so `/v1/sessions` resume works across real process restarts
+  (not just in-process). A semantic qdrant/pg backend for relevance-ranked
+  `query()` is a planned post-18.0 enhancement; the JSONL backend uses a
+  recency-fallback query sufficient for the planner's RAG-first check.
+
+- **Context-augmenting ReAct via `INeedResolver`.** Before each tool-loop
+  iteration the executor queries the knowledge-RAG for relevant prior findings
+  and injects them into the LLM context (`INeedResolver.resolve()` returns a
+  `queryToolsRag` hint). This lets sibling-step artefacts flow into the current
+  executor without re-fetching.
+
+- **Root finalizer.** A `RootFinalizer` reads the accumulated per-session
+  knowledge-RAG at the end of the run and synthesizes the final answer via a
+  single LLM call. The LLM role is wired through the per-role `llm:` map
+  (`llm.finalizer` → `llm.main`). The `PassthroughFinalizer` (17.0 default)
+  is preserved for `cyclic-react` configs that do not need synthesis.
+
+- **readOnly tool-safety (BREAKING default).** The `CyclicReActExecutor`
+  enforces a gate before every MCP tool call. Undeclared tools raise a
+  `ClarifySignal` (budget-extension request) unless:
+  - The MCP schema declares `readOnly: true` on the tool, **or**
+  - The tool is listed in `coordinator.knownReadOnlyTools`, **or**
+  - `coordinator.mutationPolicy: trusted` removes the gate entirely.
+  The default is `mutationPolicy: confirm`. Existing configs that call
+  mutating tools without declaring them must add `knownReadOnlyTools` entries
+  or switch to `mutationPolicy: trusted`.
+
+- **Session persistence + `/v1/sessions` endpoints.** Sessions are indexed in
+  an in-memory `SessionMetaStore` (swappable to Postgres via
+  `sessionStore: pg`). New endpoints: `GET /v1/sessions` (list active sessions)
+  and `GET /v1/sessions/:id` (session details + knowledge-RAG entry count).
+  Clients resume a session by replaying the `sid` cookie issued on the first
+  request. `logDir` controls where JSONL session files are persisted.
+
+- **Stepper streaming progress events.** Seven new `StreamChunk` variants
+  carry `source: StepperRef` for precise attribution in nested trees:
+  `stepper-spawned`, `stepper-done`, `mcp-call`, `mcp-result`, `tokens-used`,
+  `llm-call-start`, `llm-call-end`. See BREAKING section below.
+
+- **`coordinator.stepper.*` config block.** New YAML keys:
+  `maxParallelSteps` (local fan-out cap, default 4),
+  `maxDepth` (recursion limit, default 4),
+  `tokenBudget` (soft token cap, default 400 000),
+  `reviewer.atDepths` (depth list or `'all'`).
+
+- **Recursive Stepper examples.** `docs/examples/stepper/` adds three
+  production-shaped configs (`01-cyclic-react.yaml`, `02-planned-react.yaml`,
+  `03-deep-stepper.yaml`), a shared `worker.yaml` subagent pipeline, and a
+  `README.md` covering the three modes, `/v1/sessions` resume flow, and the
+  readOnly tool-safety policy.
+
+### Changed
+
+- **`DagCoordinatorHandler` deprecated.** Existing YAML configs without an
+  explicit `coordinator.mode` continue to route through the legacy DAG path
+  (a deprecation warning is emitted at startup). To opt into the Stepper
+  hierarchy, add `coordinator.mode: planned-react` (or another mode).
+  `DagCoordinatorHandler` will be removed in 19.0.
+
+- **`coordinator.activation: explicit` replaced by `coordinator.mode`.** The
+  per-mode flag is now the primary activation signal for the Stepper path.
+  The `activation` key is still accepted on the DAG path for backward
+  compatibility.
+
+### Breaking Changes
+
+- **`StreamChunk`: `node-start`, `node-end`, and `tool-call` variants removed
+  (Task 19e).** These 17.0 variants were emitted by `DagCoordinatorHandler`
+  and the flat DAG interpreter. They have been superseded by the 18.0 Stepper
+  progress events (`stepper-spawned` / `stepper-done` / `mcp-call` /
+  `mcp-result`). SSE clients that match on `kind === 'node-start'` etc. must
+  migrate to the new variants. The `content` variant is preserved unchanged.
+
+- **readOnly tool-safety default: `mutationPolicy: confirm`.** Any config that
+  calls mutating tools without `readOnly: true` in the MCP schema will now
+  receive a `ClarifySignal` instead of executing the call silently. Add
+  `coordinator.knownReadOnlyTools` entries for safe tools, or set
+  `coordinator.mutationPolicy: trusted` to restore the previous unchecked
+  behavior. This applies only to configs that opt into a Stepper mode; the
+  legacy DAG path is unaffected.
+
 ## [17.0.0] — 2026-05-29
 
 ### Added

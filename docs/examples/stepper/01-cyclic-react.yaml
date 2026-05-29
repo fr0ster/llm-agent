@@ -1,0 +1,79 @@
+# Cyclic-ReAct Stepper — single executor that loops until done (no planning step).
+# Use this shape when the task is bounded, self-evident, and benefits from
+# a tight context-augmenting ReAct loop without the overhead of a separate
+# planning pass.
+#
+# Cost shape:
+#   executor   — haiku, N tool-loop iterations until answer or budget exhausted
+#   reviewer   — haiku, called at depth 0 only (root, post-iteration)
+#   finalizer  — LLM synthesis on accumulated knowledge-RAG entries
+#
+# readOnly policy: undeclared tools require confirmation (default).
+# Declared tools in knownReadOnlyTools bypass the gate; trusted removes it.
+
+port: ${SMART_SERVER_PORT:-4020}
+host: 0.0.0.0
+mode: smart
+
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  executor:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_FINALIZER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  mode: cyclic-react
+
+  # Stepper execution parameters
+  stepper:
+    maxParallelSteps: 4        # local fan-out cap per Stepper level
+    maxDepth: 3                # interpreter will not recurse deeper than this
+    tokenBudget: 200000        # soft token cap across the whole run
+    reviewer:
+      atDepths: [0]            # review only at the root depth (cheap gate)
+
+  # Tool-safety policy
+  # undeclared tools raise ClarifySignal (budget-extension request) unless listed below
+  mutationPolicy: confirm
+  knownReadOnlyTools:
+    - GetProgram
+    - GetInclude
+    - GetClass
+    - ListPackage
+    - SearchRepository
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+subagents:
+  - name: abap-worker
+    description: |
+      Executes a single bounded ABAP analysis task using SAP MCP tools.
+      Read-only retrieval — does not create or modify objects.
+    config: ./worker.yaml
+
+logDir: ./.run/stepper-cyclic-sessions
+log: ./.run/stepper-cyclic-server.log
