@@ -32,7 +32,7 @@ When a task's code block references `Tool`, write `LlmTool`. Confirm each name w
 
 **Budget convention (review R2-F1, R3-F2):** `Budget` is `{ depthRemaining: number; tokens: ITokenLedger }`. `tokens` is a SHARED, mutable ledger (`TokenLedger`, exported from `@mcp-abap-adt/llm-agent`) created once per run and passed by reference everywhere. Any test that builds a `Budget` must `import { TokenLedger } from '@mcp-abap-adt/llm-agent'` (a VALUE import, not type-only) and write `tokens: new TokenLedger(<n>)`. There is no `tokensRemaining` field. Children share the SAME ledger; only `depthRemaining` is per-branch.
 
-The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each executor checks `exhausted()` *before* an LLM call and `spend()`s *after* the response. Under `Promise.all` parallelism, several in-flight sibling calls can each pass the pre-check before any of them records its spend, so the run can overshoot the configured budget by at most `(concurrent in-flight LLM calls) × (tokens of one call)`. In-flight concurrency is bounded by `maxParallelSteps` per level, so the overshoot is bounded and small relative to the budget. The overage is caught after the fact by the budget-extension `ClarifySignal` (§F / B.5.3), which asks the consumer to extend or stop. A true hard cap (reserve-before-call with post-call reconciliation) is a deferred enhancement, not v1.
+The ledger is a **soft cap, not a hard cap** (be precise — review R3-F2). Each executor checks `exhausted()` *before* an LLM call and `spend()`s *after* the response. Under `Promise.all` parallelism, several in-flight sibling calls can each pass the pre-check before any of them records its spend, so the run can overshoot the configured budget by at most `(total in-flight LLM calls across the whole tree) × (tokens of one call)`. `maxParallelSteps` bounds only each LOCAL scheduler's fan-out — the global in-flight count is the product of the per-level caps along concurrently-active branches (review R5-F1; worst case ≈ `maxParallelSteps^depth`, see §C.6 / R2-F4 math). The overshoot is therefore bounded but NOT necessarily small on deep+wide trees; the budget-extension `ClarifySignal` (§F / B.5.3) is the real safety net, asking the consumer to extend or stop. A true hard cap (reserve-before-call with post-call reconciliation) is a deferred enhancement, not v1.
 
 ---
 
@@ -167,12 +167,14 @@ export interface ToolSafetyPolicy {
 /** Shared, live token ledger (review R2-F1). ONE instance is created at the
  *  coordinator boundary and passed BY REFERENCE through the whole run. Every
  *  Stepper and executor reads `exhausted()` before each LLM call and calls
- *  `spend(usage)` after. This is a SOFT cap (review R3-F2): parallel siblings
- *  can each pass the pre-check before any records its spend, so the run can
- *  overshoot by at most (in-flight calls × tokens-per-call) — bounded by
- *  maxParallelSteps and caught after the fact by the budget-extension
- *  ClarifySignal. Tokens bound WORK globally; depth (a per-branch value
- *  below) bounds RECURSION. A reserve-before-call hard cap is deferred. */
+ *  `spend(usage)` after. This is a SOFT cap (review R3-F2/R5-F1): parallel
+ *  siblings can each pass the pre-check before any records its spend, so the
+ *  run can overshoot by at most (total in-flight calls across the tree ×
+ *  tokens-per-call). maxParallelSteps bounds only each LOCAL scheduler; the
+ *  global in-flight count is ≈ maxParallelSteps^depth worst case. The
+ *  budget-extension ClarifySignal is the real net. Tokens bound WORK; depth
+ *  (a per-branch value below) bounds RECURSION. A reserve-before-call hard
+ *  cap is deferred. */
 export interface ITokenLedger {
   readonly remaining: number;
   spend(usage: LlmUsage): void;
