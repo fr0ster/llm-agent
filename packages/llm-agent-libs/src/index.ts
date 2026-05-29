@@ -74,11 +74,6 @@ export {
 // Stepper runtime (18.0)
 // ---------------------------------------------------------------------------
 export * from './coordinator/stepper/index.js';
-export {
-  KnowledgeRag,
-  InMemoryKnowledgeBackend,
-  type KnowledgeBackend,
-} from './rag/knowledge-rag.js';
 // ---------------------------------------------------------------------------
 // Health
 // ---------------------------------------------------------------------------
@@ -159,6 +154,11 @@ export {
   makeDefaultLlm,
   makeLlm,
 } from './providers.js';
+export {
+  InMemoryKnowledgeBackend,
+  type KnowledgeBackend,
+  KnowledgeRag,
+} from './rag/knowledge-rag.js';
 // ---------------------------------------------------------------------------
 // Reranker
 // ---------------------------------------------------------------------------
