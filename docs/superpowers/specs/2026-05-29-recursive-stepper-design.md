@@ -273,52 +273,82 @@ Emits `mcp-call` / `mcp-result` / `tokens-used` / `llm-call-start/end` events.
 
 `packages/llm-agent-server/src/smart-agent/build-stepper-root.ts` — analogous to 17.0's `buildDagCoordinatorDeps`. Pure async factory that assembles `{ rootStepper, finalizer, budget, maxParallelSteps, mutationPolicy }` from the yaml coord block + registered subagents + per-role LLM map.
 
-## E. Data flow — worked example
+## E. Data flow — worked examples
+
+### E.1 Default mode — `planned-react` (root planner + cyclic-react leaves, NO grandchildren)
 
 User prompt: "Review ABAP program `ZDMS_UPLOAD_FILES` for security, performance, clean core, maintainability."
+
+In `planned-react` the root planner emits a shallow plan and each leaf step is dispatched directly to a `CyclicReActExecutor`. There are **no grandchildren** — recursion is depth-1 by definition.
 
 ```
 coordinator (root finalizer not yet involved)
 └── Root Stepper
     ├── planner queries knowledge-RAG("program ZDMS_UPLOAD_FILES") → empty
     ├── planner emits plan:
-    │     [ "read source of ZDMS_UPLOAD_FILES",
-    │       "code-review ZDMS_UPLOAD_FILES" ]   (dependsOn: code-review on read-source)
+    │     [ "read full source of ZDMS_UPLOAD_FILES (program + all includes)",
+    │       "code-review ZDMS_UPLOAD_FILES across security / performance / clean-core / maintainability" ]
+    │     (dependsOn: code-review on read-source)
     ├── reviewer (depth 0, enabled) accepts plan
     └── interpreter
-        ├── Step "read source" → Child A Stepper
-        │   ├── planner queries RAG → empty
-        │   ├── planner emits ONE-STEP plan: "call GetProgFullCode(ZDMS_UPLOAD_FILES)"
-        │   │   (PLANNER_SYSTEM "decompose to concrete leaves" prevents re-decomposition)
-        │   ├── interpreter dispatches to executor
-        │   └── CyclicReActExecutor:
-        │         calls LLM → tool-call GetProgFullCode
-        │         executes MCP, writes source to knowledge-RAG
-        │         LLM emits clean confirmation → return ok
-        └── Step "code-review" → Child B Stepper (depth 1)
-            ├── planner queries RAG → finds source (Child A wrote it)
-            ├── planner emits plan:
-            │     [ "security review", "performance review", "clean core review", "maintainability review" ]
-            │     (no dependsOn — planner asserts they are orthogonal)
-            ├── reviewer (depth 1, enabled) accepts plan
-            └── interpreter with maxParallelSteps=4 fans out concurrently:
-                ├── Grandchild B.1 "security review" (depth 2, reviewer OFF)
-                │   ├── planner queries RAG → source present; security patterns absent
-                │   ├── planner emits ONE-STEP plan: "scan source for security patterns"
-                │   └── executor (CyclicReAct):
-                │         calls LLM with source + tools-RAG-injected SearchSource
-                │         tool calls → results written to knowledge-RAG
-                │         LLM final → return ok
-                ├── B.2 performance review — parallel, same shape
-                ├── B.3 clean core review — parallel
-                └── B.4 maintainability review — parallel
-                     (all four write findings to the shared knowledge-RAG)
+        ├── Step "read full source" → CyclicReActExecutor (leaf — NO child Stepper)
+        │     ├── LLM call → tool-call GetProgFullCode(ZDMS_UPLOAD_FILES)
+        │     ├── executes MCP, writes source to knowledge-RAG
+        │     ├── LLM call → tool-call GetIncludesList(ZDMS_UPLOAD_FILES)
+        │     ├── executes, writes includes list to knowledge-RAG
+        │     ├── LLM call → tool-calls GetInclude(I1), GetInclude(I2)  (parallel within the same turn)
+        │     ├── executes, writes include sources to knowledge-RAG
+        │     ├── LLM emits clean "all source captured" → return ok
+        └── Step "code-review (all four dimensions)" → CyclicReActExecutor (leaf — NO child Stepper)
+              ├── reads source from knowledge-RAG (planner already pre-injected via context)
+              ├── LLM call: "review for security" → tool-call SearchSource("OPEN DATASET") + SearchSource("AUTHORITY-CHECK")
+              ├── executes MCPs, writes findings to knowledge-RAG with artifactType: 'security-finding'
+              ├── LLM call: "now review for performance" → tool-call SearchSource("LOOP AT") + …
+              ├── …cycles through clean-core and maintainability the same way…
+              ├── LLM emits clean "all four dimensions covered" → return ok
 
 coordinator → root finalizer
   reads original prompt + accumulated knowledge-RAG
   composes final answer as 'content' StreamChunks
   → consumer
 ```
+
+A single CyclicReActExecutor handles all four review dimensions inside ONE cyclic loop — the LLM steps through them sequentially as the loop iterates. `INeedResolver` may pull additional tools mid-loop ("I need to also check semantic structure" → injects `GetAbapSemanticAnalysis`). The planner did NOT decompose review into four sub-steps because in `planned-react` the leaf is a cyclic worker, not a recursive Stepper.
+
+### E.2 Mode `deep-stepper` — recursive sub-Steppers per dimension
+
+Same prompt, different mode. The planner emits a shallow plan at the root, and each leaf dispatches to a CHILD Stepper that itself plans + executes. The example from earlier drafts (Child B planning grandchildren B.1–B.4) lives in this mode:
+
+```
+└── Root Stepper
+    ├── planner emits plan: [ read-source, code-review ]
+    ├── Step "read-source"   → Child A Stepper (its own planner + executor; ends with executor call)
+    └── Step "code-review"   → Child B Stepper
+                                ├── planner reads RAG, emits [security, performance, clean-core, maintainability]
+                                ├── reviewer (depth 1) accepts
+                                └── interpreter fans out (maxParallelSteps=4):
+                                    ├── B.1 security  → Grandchild Stepper → executor
+                                    ├── B.2 perf      → Grandchild Stepper → executor
+                                    ├── B.3 clean     → Grandchild Stepper → executor
+                                    └── B.4 maintain  → Grandchild Stepper → executor
+```
+
+Deep-stepper is the "deep reasoning" mode. Each level pays planner + (optional) reviewer overhead. Use it when the task is genuinely uncertain at planning time and decomposition needs to be deferred per-branch. For the ABAP-review prompt above the planned-react version (E.1) is the production-realistic default; deep-stepper is shown here only to illustrate when the recursive Stepper hierarchy actually engages.
+
+### E.3 Mode `cyclic-react` — single Stepper, INeedResolver carries the whole task
+
+```
+└── Root Stepper (depth 0, only Stepper in the tree)
+    ├── trivial planner emits single-step plan: "answer the prompt"
+    ├── CyclicReActExecutor handles everything in one ReAct loop:
+    │     - LLM expresses "I lack a tool to read program source" → INeedResolver pulls GetProgFullCode
+    │     - LLM calls tool → result to RAG
+    │     - LLM expresses "I see includes, I need a way to read them" → INeedResolver pulls GetInclude
+    │     - …loop continues until LLM emits clean answer…
+    └── return ok
+```
+
+cyclic-react is the limit-case for the simplest prompts (single question, no decomposition payoff). The root planner is a no-op stub; all the intelligence is in the executor's loop driven by `INeedResolver`.
 
 During execution the consumer's SSE channel carries progress events:
 `stepper-spawned (root)`, `stepper-spawned (read-source, parent=root)`, `mcp-call (GetProgFullCode)`, `mcp-result`, `tokens-used`, `stepper-done (read-source)`, `stepper-spawned (code-review)`, four `stepper-spawned` for the parallel children, interleaved `mcp-call`/`mcp-result`/`tokens-used` from concurrent siblings, `stepper-done` for each, then the root finalizer's `content` stream, ending with a terminal `tokens-used` aggregate.
