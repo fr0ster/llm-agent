@@ -6,6 +6,7 @@ import type {
   ISubAgent,
   NodeResult,
   PlanNode,
+  StreamChunk,
 } from '@mcp-abap-adt/llm-agent';
 import { composeNodeTask } from './compose-node-task.js';
 import { spliceSubPlan } from './splice-sub-plan.js';
@@ -61,6 +62,20 @@ export class DagPlanInterpreter
             ctx.ancestorContext,
           );
           const started = Date.now();
+          const outerOnPartial = ctx.onPartial;
+          const workerOnPartial = outerOnPartial
+            ? (c: StreamChunk) => {
+                const annotated: StreamChunk = (() => {
+                  if (c.kind === 'content' || c.kind === 'tool-call') {
+                    return { ...c, nodeId: c.nodeId ?? n.id };
+                  }
+                  return c;
+                })();
+                outerOnPartial(annotated);
+              }
+            : undefined;
+
+          outerOnPartial?.({ kind: 'node-start', nodeId: n.id, goal: n.goal });
           try {
             const res = await this.resolveWorker(n, ctx).run({
               task,
@@ -68,8 +83,10 @@ export class DagPlanInterpreter
               signal: ctx.signal,
               trace: ctx.trace,
               sessionLogger: ctx.sessionLogger,
+              onPartial: workerOnPartial,
             });
             if (res.errorClass === 'epicfail') {
+              outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
               return {
                 node: n,
                 kind: 'failed',
@@ -78,6 +95,7 @@ export class DagPlanInterpreter
                 durationMs: Date.now() - started,
               };
             }
+            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: true });
             return {
               node: n,
               kind: 'done',
@@ -85,6 +103,7 @@ export class DagPlanInterpreter
               durationMs: Date.now() - started,
             };
           } catch (error) {
+            outerOnPartial?.({ kind: 'node-end', nodeId: n.id, ok: false });
             return {
               node: n,
               kind: 'failed',
