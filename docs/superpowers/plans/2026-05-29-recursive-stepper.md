@@ -8,7 +8,7 @@
 
 **Tech Stack:** TypeScript strict, ESM with `.js` import suffixes, Biome (2 spaces, single quotes, semicolons), `node --test` via `tsx`. Three packages lockstep: `@mcp-abap-adt/llm-agent` (contracts), `@mcp-abap-adt/llm-agent-libs` (runtime), `@mcp-abap-adt/llm-agent-server` (wiring).
 
-**Spec:** `docs/superpowers/specs/2026-05-29-recursive-stepper-design.md`. Provability tests H.1–H.10 + H.4b are implemented as the integration tests in Phase 7.
+**Spec:** `docs/superpowers/specs/2026-05-29-recursive-stepper-design.md`. Provability tests H.1–H.10 + H.4b + H.4c are implemented as the integration tests in Phase 7.
 
 **Branch:** `epic/18.0-recursive-stepper` (already created off `main`).
 
@@ -2642,12 +2642,12 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Phase 7 — Integration provability tests + sweep
 
-### Task 18 — End-to-end provability tests (H.1–H.10 + H.4b)
+### Task 18 — End-to-end provability tests (H.1–H.10 + H.4b + H.4c)
 
 **Files:**
 - Create: `packages/llm-agent-server/src/smart-agent/__tests__/stepper-provability.test.ts`
 
-Each spec §H test that isn't already covered by a unit test gets an end-to-end version wiring real `Stepper` + `StepperInterpreter` + `CyclicReActExecutor` + `KnowledgeRag` + `RootFinalizer` with scripted LLMs and a fake MCP. Many are already covered (H.1 in Task 7, H.4b in Task 9, H.5 in Task 7, H.6 in Task 11). This task adds the multi-component ones:
+Each spec §H test that isn't already covered by a unit test gets an end-to-end version wiring real `Stepper` + `StepperInterpreter` + `CyclicReActExecutor` + `KnowledgeRag` + `RootFinalizer` with scripted LLMs and a fake MCP. Many are already covered as unit tests (H.1 in Task 7, H.4b in Task 9, H.4c in Task 7, H.5 in Task 7, H.6 in Task 11). This task adds the multi-component ones:
 
 - [ ] **18a. Write the integration tests.** Cover at minimum:
   - **H.2** (3-level recursion, grandchild reads sibling's RAG write, no re-fetch) — `deep-stepper` build, scripted LLMs, assert the grandchild planner's `query` returns the earlier write and the grandchild emits a use-the-fact leaf, not a re-fetch.
@@ -2744,7 +2744,7 @@ git push -u origin epic/18.0-recursive-stepper
 | E.1–E.4 worked examples | 18 (integration coverage of the flows) |
 | F signal partitioning | 16 (handler), 11 (finalizer), 7 (executor clarify) |
 | G session persistence | 13 (store), 17 (endpoints), 18 (H.8) |
-| H.1–H.10 + H.4b | 7, 9, 11, 18 |
+| H.1–H.10 + H.4b + H.4c | 7, 9, 11, 18 |
 | I backward compat | 4 (additive StreamChunk), 4b (emitter migration), 17 (raw-config mode gating — legacy stays on Dag, explicit opt-in only) |
 | K migration | 17 (Dag-path deprecation warning + explicit `coordinator.mode` opt-in), 19c (CHANGELOG), 19e (legacy variant removal) |
 

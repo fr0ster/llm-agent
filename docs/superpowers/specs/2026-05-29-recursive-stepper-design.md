@@ -259,11 +259,12 @@ export interface IToolsRagHandle {
 }
 
 export interface INeedResolver {
-  resolve(llmResponse: string): Promise<{
-    queryToolsRag?: string;
-    queryKnowledgeRag?: string;
-    injectTools?: string[];
-  } | undefined>;
+  /** Inspect an LLM utterance for an unmet-capability signal. Returns a
+   *  tools-RAG query string to discover the needed capability, or undefined
+   *  for a clean answer / normal tool call. v1 scope is ONLY `queryToolsRag`
+   *  (queryKnowledgeRag / injectTools are reserved for 18.x — kept out of the
+   *  v1 contract so there are no dead public fields the executor ignores). */
+  resolve(llmResponse: string): Promise<{ queryToolsRag: string } | undefined>;
 }
 
 export class InsufficientSignal extends Error {
@@ -576,7 +577,7 @@ v1 answer = RAG-replay resume (not transactional checkpointing):
 
 | # | Test | Assertion |
 |---|---|---|
-| H.1 | Mode A — single Stepper with stub `INeedResolver` | LLM emits "I lack tool X" → resolver returns `injectTools: [X]` → next LLM call has X in tool list → final answer produced. |
+| H.1 | Mode A — single Stepper with stub `INeedResolver` | LLM emits "I can't / I lack a tool to do X" → resolver returns `{ queryToolsRag: "X" }` → executor runs `toolsRag.query("X")` and injects the discovered tool(s) into the next LLM call's tool list → final answer produced. |
 | H.2 | Mode B — three-level recursion, root + child + grandchild | Grandchild planner queries knowledge-RAG and reads the entry written by an earlier sibling, does NOT re-fetch. Cycle of identical task-recurrence is avoided by RAG hit. |
 | H.3 | Mode C — 4 ortho parallel children with `maxParallelSteps: 2` | Observe at most 2 concurrent `stepper-spawned` events; queue drains as `stepper-done` arrives. |
 | H.4 | Sufficiency — TOKEN budget exhaustion (wants more work, ledger empty) | An executor whose loop wants ANOTHER round finds `tokens.exhausted()` true at the top of the loop → returns `status: 'budget-exhausted'` → bubbles to coordinator (NOT through the finalizer) → coordinator raises `ClarifySignal('extend budget?')` → consumer `continue` → coordinator extends budget and triggers root replan from saturated RAG → run completes. |
