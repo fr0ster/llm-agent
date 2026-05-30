@@ -23,6 +23,13 @@ export interface StepperDeps {
   maxParallelSteps: number;
   mintStepperId: () => string;
   parentPath?: string[];
+  /**
+   * Names + descriptions of the child worker Steppers this Stepper may delegate
+   * to (the keys of `childSteppers`, enriched with descriptions). Passed to the
+   * planner so it can emit `agent`-bearing nodes that the interpreter recurses
+   * into. Empty/omitted → planner emits only executor leaves.
+   */
+  childAgentCatalog?: ReadonlyArray<{ name: string; description?: string }>;
 }
 
 export class Stepper implements IStepper {
@@ -43,6 +50,7 @@ export class Stepper implements IStepper {
       maxParallelSteps,
       mintStepperId,
       parentPath,
+      childAgentCatalog,
     } = this.deps;
     const plan = await planner.plan({
       prompt: input.prompt,
@@ -50,6 +58,7 @@ export class Stepper implements IStepper {
       toolsRag: input.toolsRag,
       parentPath: parentPath ?? [this.name],
       identity: input.identity,
+      agents: childAgentCatalog,
       signal: input.signal,
     });
     if (reviewer && reviewerAtDepths.has(depth)) {

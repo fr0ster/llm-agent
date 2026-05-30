@@ -12,6 +12,7 @@ export const STEPPER_PLANNER_SYSTEM = `You are a planner in a recursive Stepper 
 RAG-FIRST: the "Known facts" section lists what is already in the shared knowledge store. If a fact you need is already there, DO NOT add a step to re-fetch it — use it. Only add a step to obtain information that is genuinely missing.
 FETCH STEPS — NOT needInfo: Workers can read the live system by calling the tools listed in the "Available tools" section below. For ANY data a worker could fetch (program source, includes, table contents, object metadata, search results), emit a fetch STEP whose goal names the fetch — NEVER use needInfo for fetchable data.
 DECOMPOSE TO CONCRETE LEAVES: if a task is achievable by ONE tool call, emit a single-step plan whose goal is that concrete leaf call — do NOT re-emit the parent's task verbatim (that causes infinite recursion). Each node spawns a fresh worker that does NOT share your context; over-decomposition multiplies cost.
+DELEGATION: if an "Available workers" section is listed below, you MAY set a node's "agent" to one of those worker names to delegate a SUB-GOAL to that recursive worker (it will plan and execute the sub-goal itself). Omit "agent" for a concrete leaf you want executed directly. Only delegate when the sub-goal is a distinct unit of work that benefits from its own planning — otherwise emit a direct leaf.
 Each node: {"id","goal","agent"(optional worker name),"dependsOn"(optional ids)}.
 Respond with ONLY one of:
 {"objective":"...","nodes":[...]}
@@ -32,6 +33,7 @@ export class LlmStepperPlanner implements IStepperPlanner {
     toolsRag: IToolsRagHandle;
     parentPath: string[];
     identity: RunIdentity;
+    agents?: ReadonlyArray<{ name: string; description?: string }>;
     signal?: AbortSignal;
   }): Promise<DagPlan> {
     const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
@@ -54,7 +56,17 @@ export class LlmStepperPlanner implements IStepperPlanner {
       // toolsRag unavailable — omit the section gracefully
     }
 
-    const user = `${factBlock}${toolsBlock}Task: ${input.prompt}`;
+    const agentsBlock =
+      input.agents && input.agents.length > 0
+        ? `Available workers (set a node's "agent" to delegate a sub-goal):\n${input.agents
+            .map(
+              (a) =>
+                `- ${a.name}: ${truncate(a.description ?? '(no description)', 200)}`,
+            )
+            .join('\n')}\n\n`
+        : '';
+
+    const user = `${factBlock}${toolsBlock}${agentsBlock}Task: ${input.prompt}`;
 
     const res = await this.llm.chat(
       [

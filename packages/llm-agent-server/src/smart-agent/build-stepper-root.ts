@@ -26,8 +26,19 @@ import type { SmartServerLlmConfig } from './smart-server.js';
 export interface BuildStepperRootInput {
   /** Raw coordinator config object (e.g. the `coordinator:` YAML block). */
   coordCfg: Record<string, unknown>;
-  /** Named registry of subagent Steppers — used only for deep-stepper mode. */
+  /**
+   * Pre-built named registry of subagent Steppers — DI/test override for
+   * deep-stepper mode. When non-empty it is used as childSteppers verbatim;
+   * when empty, child Steppers are built from `subagents` (the normal path).
+   */
   registry: ReadonlyMap<string, IStepper>;
+  /**
+   * Declared subagents (name + description) from the `subagents:` YAML block.
+   * In deep-stepper mode each becomes a recursive child Stepper sharing this
+   * run's planner/executor/reviewer/ledger, and is advertised to the planner so
+   * it can delegate sub-goals via a node's `agent`. Ignored in other modes.
+   */
+  subagents?: ReadonlyArray<{ name: string; description?: string }>;
   /** Factory to build an ILlm from a config; used for all roles. */
   makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
   /** Per-sessionId knowledge RAG factory. */
@@ -160,7 +171,11 @@ export async function buildStepperRoot(
   // — so its cost is distinct from the (skipped-in-stepper) request classifier
   // and the name reflects its actual job. Resolves via role 'classifier' (falls
   // back to main); point it at a small model via `llm.classifier` in YAML.
-  const toolDefinerLlm = await resolveRoleLlm('classifier', 'tool-definer', true);
+  const toolDefinerLlm = await resolveRoleLlm(
+    'classifier',
+    'tool-definer',
+    true,
+  );
 
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
@@ -180,9 +195,28 @@ export async function buildStepperRoot(
   // One shared interpreter.
   const interpreter = new StepperInterpreter();
 
-  // Depth budget depends on mode.
+  // Planner: trivial single-node plan for cyclic-react; LlmStepperPlanner
+  // otherwise. Built BEFORE the mode switch so deep-stepper can reuse the SAME
+  // planner instance for its child Steppers.
+  const planner =
+    config.mode === 'cyclic-react'
+      ? {
+          name: 'trivial' as const,
+          async plan(inp: { prompt: string }) {
+            return {
+              objective: inp.prompt,
+              nodes: [{ id: 'root', goal: inp.prompt }],
+              createdAt: 0,
+            };
+          },
+        }
+      : new LlmStepperPlanner(plannerLlm);
+
+  // Depth budget + child Steppers depend on mode.
   let depthRemaining: number;
   let childSteppers: ReadonlyMap<string, IStepper>;
+  // Worker catalog the ROOT planner advertises (deep-stepper only).
+  let rootCatalog: ReadonlyArray<{ name: string; description?: string }> = [];
 
   switch (config.mode) {
     case 'cyclic-react': {
@@ -199,9 +233,42 @@ export async function buildStepperRoot(
     }
     case 'deep-stepper': {
       depthRemaining = config.maxDepth;
-      // Wrap registry IStepper entries as child Steppers if they are Stepper
-      // instances already; otherwise pass them through (IStepper-compatible).
-      childSteppers = registry;
+      const catalog = (input.subagents ?? []).map((s) => ({
+        name: s.name,
+        description: s.description,
+      }));
+      rootCatalog = catalog;
+      if (registry.size > 0) {
+        // DI/test override: use the supplied registry verbatim.
+        childSteppers = registry;
+      } else {
+        // Build one recursive child Stepper per declared subagent, sharing this
+        // run's planner / interpreter / executor / reviewer and — crucially —
+        // the SAME role LLMs, so every child charges the ONE shared token ledger
+        // (review Finding 2). Each child's childSteppers points back to the SAME
+        // map so recursion continues, bounded by depthRemaining (decremented at
+        // each dispatch in the interpreter).
+        const childMap = new Map<string, IStepper>();
+        for (const s of catalog) {
+          childMap.set(
+            s.name,
+            new Stepper({
+              name: s.name,
+              planner,
+              interpreter,
+              executor,
+              childSteppers: childMap,
+              reviewer,
+              reviewerAtDepths: config.reviewerAtDepths,
+              depth: 1,
+              maxParallelSteps: config.maxParallelSteps,
+              mintStepperId,
+              childAgentCatalog: catalog,
+            }),
+          );
+        }
+        childSteppers = childMap;
+      }
       break;
     }
     default: {
@@ -210,21 +277,6 @@ export async function buildStepperRoot(
       childSteppers = new Map();
     }
   }
-
-  // Planner: trivial single-node plan for cyclic-react; LlmStepperPlanner otherwise.
-  const planner =
-    config.mode === 'cyclic-react'
-      ? {
-          name: 'trivial' as const,
-          async plan(inp: { prompt: string }) {
-            return {
-              objective: inp.prompt,
-              nodes: [{ id: 'root', goal: inp.prompt }],
-              createdAt: 0,
-            };
-          },
-        }
-      : new LlmStepperPlanner(plannerLlm);
 
   const rootStepper = new Stepper({
     name: 'root',
@@ -237,6 +289,7 @@ export async function buildStepperRoot(
     depth: 0,
     maxParallelSteps: config.maxParallelSteps,
     mintStepperId,
+    childAgentCatalog: rootCatalog,
   });
 
   const finalizer = new RootFinalizer(finalizerLlm);
