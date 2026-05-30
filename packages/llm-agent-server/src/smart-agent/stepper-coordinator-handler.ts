@@ -130,6 +130,11 @@ export class StepperCoordinatorHandler implements IStageHandler {
         budget: built.budget,
         identity,
         toolSafety: built.toolSafety,
+        // Thread the client abort signal so cancelling the request actually
+        // stops the planner/executor/child-Stepper path, and the sessionLogger
+        // so per-step logging (executor_tool_seed, etc.) reaches the request log.
+        signal: ctx.options?.signal,
+        sessionLogger: ctx.options?.sessionLogger,
         onProgress: (c) => {
           if (c.kind === 'content') {
             ctx.yield({ ok: true, value: { content: c.delta } });
@@ -210,6 +215,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
         prompt: ctx.inputText,
         knowledgeRag,
         turnId: identity.turnId,
+        signal: ctx.options?.signal,
         onProgress: (c) => {
           if (c.kind === 'content') {
             ctx.yield({ ok: true, value: { content: c.delta } });
