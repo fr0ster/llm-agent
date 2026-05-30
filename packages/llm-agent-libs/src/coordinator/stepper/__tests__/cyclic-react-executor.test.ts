@@ -380,6 +380,101 @@ test('stuck need with no NEW tools → incomplete (bounded, no infinite loop)', 
   );
 });
 
+test('tool-relay builds protocol-correct messages: assistant carries tool_calls, tool carries tool_call_id (the live 400 fix)', async () => {
+  // Reproduces the live SAP AI SDK 400: the executor pushed an assistant message
+  // WITHOUT tool_calls and tool messages WITHOUT tool_call_id, so the 2nd turn's
+  // tool_result was orphaned and Anthropic/SAP rejected it. We assert the wire
+  // shape mirrors the working 17.0 tool-loop pattern.
+  const seen: Array<
+    Array<{
+      role: string;
+      tool_calls?: Array<{
+        id: string;
+        type: string;
+        function: { name: string; arguments: string };
+      }>;
+      tool_call_id?: string;
+    }>
+  > = [];
+  const llm = {
+    name: 'stub',
+    async chat(
+      messages: Array<{
+        role: string;
+        tool_calls?: never;
+        tool_call_id?: string;
+      }>,
+    ) {
+      seen.push(
+        messages.map((m) => ({
+          role: m.role,
+          tool_calls: (
+            m as {
+              tool_calls?: Array<{
+                id: string;
+                type: string;
+                function: { name: string; arguments: string };
+              }>;
+            }
+          ).tool_calls,
+          tool_call_id: m.tool_call_id,
+        })),
+      );
+      if (seen.length === 1) {
+        return {
+          ok: true as const,
+          value: {
+            content: 'reading',
+            toolCalls: [
+              { id: 'tc1', name: 'ReadProgram', arguments: { p: 'Z' } },
+            ],
+            usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+          },
+        };
+      }
+      return {
+        ok: true as const,
+        value: {
+          content: 'Done.',
+          usage: { promptTokens: 5, completionTokens: 5, totalTokens: 10 },
+        },
+      };
+    },
+  };
+  const m = mcp({ ReadProgram: 'REPORT z.' });
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  const res = await exec.execute({
+    prompt: 'read Z',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({
+      ReadProgram: { name: 'ReadProgram', readOnly: true },
+    }) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok');
+  // The SECOND LLM call's history must carry a protocol-correct assistant+tool pair.
+  const second = seen[1];
+  const asst = second.find((x) => x.role === 'assistant' && x.tool_calls);
+  assert.ok(asst?.tool_calls, 'assistant message must carry tool_calls');
+  assert.equal(asst.tool_calls[0].id, 'tc1');
+  assert.equal(asst.tool_calls[0].type, 'function');
+  assert.equal(asst.tool_calls[0].function.name, 'ReadProgram');
+  const toolMsg = second.find((x) => x.role === 'tool');
+  assert.equal(
+    toolMsg?.tool_call_id,
+    'tc1',
+    'tool message must carry tool_call_id matching the assistant tool_call',
+  );
+});
+
 test('R6-F1: a CLEAN final answer that overshoots the ledger returns ok (work done — no budget-exhausted)', async () => {
   // Single clean response (no tool calls) that alone costs more than the whole
   // budget. The task completed; there is nothing to extend, so the executor

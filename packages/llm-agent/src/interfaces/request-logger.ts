@@ -1,6 +1,7 @@
 export type LlmComponent =
   | 'tool-loop'
   | 'classifier'
+  | 'tool-definer'
   | 'helper'
   | 'translate'
   | 'query-expander'

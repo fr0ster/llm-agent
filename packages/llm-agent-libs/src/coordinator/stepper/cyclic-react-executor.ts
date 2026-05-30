@@ -142,7 +142,23 @@ export class CyclicReActExecutor implements IExecutor {
 
       const toolCalls = v.toolCalls ?? [];
       if (toolCalls.length > 0) {
-        messages.push({ role: 'assistant', content: v.content ?? '' });
+        // Relay the assistant turn WITH its tool_calls, then one tool message
+        // per call carrying the matching tool_call_id. Anthropic/SAP AI SDK (and
+        // the DeepSeek/OpenAI protocol) reject a `tool` message that does not
+        // follow an assistant `tool_calls` with the same id — an orphaned
+        // tool_result is a hard 400. (Mirrors the 17.0 tool-loop wire shape.)
+        messages.push({
+          role: 'assistant',
+          content: v.content || null,
+          tool_calls: toolCalls.map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: {
+              name: tc.name,
+              arguments: JSON.stringify(tc.arguments ?? {}),
+            },
+          })),
+        });
         for (const tc of toolCalls) {
           const toolName = tc.name;
           if (!isReadOnly(toolName)) {
@@ -177,7 +193,11 @@ export class CyclicReActExecutor implements IExecutor {
               createdAt: nowIso(),
             },
           });
-          messages.push({ role: 'tool', content: result });
+          messages.push({
+            role: 'tool',
+            content: result,
+            tool_call_id: tc.id,
+          });
         }
         noProgressNeeds = 0; // a tool call is progress — reset the no-new-tool gate
         continue;

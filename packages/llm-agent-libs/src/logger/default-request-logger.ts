@@ -17,6 +17,7 @@ import type {
 export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   'tool-loop': 'request',
   classifier: 'auxiliary',
+  'tool-definer': 'auxiliary',
   translate: 'auxiliary',
   'query-expander': 'auxiliary',
   helper: 'auxiliary',

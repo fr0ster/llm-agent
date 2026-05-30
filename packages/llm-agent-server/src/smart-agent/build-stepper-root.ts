@@ -137,10 +137,13 @@ export async function buildStepperRoot(
   const executorLlm = await resolveRoleLlm('executor', 'tool-loop');
   const finalizerLlm = await resolveRoleLlm('finalizer', 'finalizer');
   const reviewerLlm = await resolveRoleLlm('reviewer', 'reviewer');
-  // Need-classifier LLM: own role (falls back to main), logged as 'classifier'.
-  // Drives the executor's always-on unmet-tool-need detection. Cheap by design
-  // — point it at a small model via `llm.classifier` in YAML.
-  const needClassifierLlm = await resolveRoleLlm('classifier', 'classifier');
+  // Tool-definer LLM: detects an unmet-tool-need ("I can't … no tool") in a
+  // candidate final answer and yields the phrase to search toolsRag with before
+  // the retry. Logged under its OWN component 'tool-definer' — NOT 'classifier'
+  // — so its cost is distinct from the (skipped-in-stepper) request classifier
+  // and the name reflects its actual job. Resolves via role 'classifier' (falls
+  // back to main); point it at a small model via `llm.classifier` in YAML.
+  const toolDefinerLlm = await resolveRoleLlm('classifier', 'tool-definer');
 
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
@@ -154,7 +157,7 @@ export async function buildStepperRoot(
     // Always-on context-augmenting ReAct: on a no-tool-call answer the executor
     // asks this classifier whether the model expressed an unmet-tool need; if so
     // it re-queries toolsRag and retries with the augmented tool set.
-    needResolver: new LlmNeedResolver(needClassifierLlm),
+    needResolver: new LlmNeedResolver(toolDefinerLlm),
   });
 
   // One shared interpreter.
