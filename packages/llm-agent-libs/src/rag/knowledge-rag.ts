@@ -26,6 +26,10 @@ export interface KnowledgeBackend {
   /** Exhaustive durable scan of ALL entries for a session (no relevance
    *  cap). Used by list() and by rehydrate. */
   scan(sessionId: string): Promise<readonly KnowledgeEntry[]>;
+  /** Evict ALL entries for a session so a subsequent same-id request does not
+   *  rehydrate stale knowledge. Backs DELETE /v1/sessions/:id — without it a
+   *  long-lived in-memory backend would retain entries after a session delete. */
+  deleteSession(sessionId: string): Promise<void>;
 }
 
 /**
@@ -132,6 +136,9 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
   }
   async scan(sid: string) {
     return this.of(sid).slice();
+  }
+  async deleteSession(sid: string) {
+    this.bySession.delete(sid);
   }
 }
 

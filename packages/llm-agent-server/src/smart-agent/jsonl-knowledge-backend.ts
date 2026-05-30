@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from 'node:fs/promises';
+import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
@@ -49,5 +49,10 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
       if ((e as NodeJS.ErrnoException).code === 'ENOENT') return [];
       throw e;
     }
+  }
+
+  async deleteSession(sid: string): Promise<void> {
+    // Remove the whole per-session directory (knowledge.jsonl + any siblings).
+    await rm(dirname(this.file(sid)), { recursive: true, force: true });
   }
 }

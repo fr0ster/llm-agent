@@ -3,10 +3,8 @@
  */
 
 import { randomUUID } from 'node:crypto';
-import { rm } from 'node:fs/promises';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
-import { join } from 'node:path';
 import type {
   EmbedderFactory,
   IClientAdapter,
@@ -56,6 +54,7 @@ import {
   HealthChecker,
   type HotReloadableConfig,
   InMemoryKnowledgeBackend,
+  type KnowledgeBackend,
   KnowledgeRag,
   makeLlm,
   SessionGraphFactory,
@@ -932,6 +931,13 @@ export class SmartServer {
    */
   private _stepperMcpClients?: IMcpClient[];
   /**
+   * The ONE shared knowledge backend for the Stepper path (set during build).
+   * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
+   * critical for the long-lived in-memory backend, which would otherwise retain
+   * knowledge after a delete and rehydrate it on a same-id re-entry.
+   */
+  private _stepperKnowledgeBackend?: KnowledgeBackend;
+  /**
    * Session meta-store for /v1/sessions endpoints (Task 17).
    * Defaults to InMemorySessionMetaStore; a durable store can be injected via
    * `cfg.sessionMetaStore` in a future extension.
@@ -1269,6 +1275,9 @@ export class SmartServer {
         const knowledgeBackend = logDir
           ? new JsonlKnowledgeBackend(logDir)
           : new InMemoryKnowledgeBackend();
+        // Held on the instance so DELETE /v1/sessions/:id can evict a session's
+        // knowledge from THIS backend (not just remove the JSONL file).
+        this._stepperKnowledgeBackend = knowledgeBackend;
         const knowledgeRagFor = async (sessionId: string) => {
           const kr = new KnowledgeRag(knowledgeBackend, sessionId);
           // Seed deployment-supplied guidance into a BRAND-NEW session only
@@ -2416,17 +2425,12 @@ export class SmartServer {
         const evictFn = async (sid: string) => {
           // (a) Evict/dispose this session's graph from the registry.
           await lifecycle.registry.evictOne(sid);
-          // (b) Delete the session's knowledge JSONL file when logDir is set.
-          const logDir = this.cfg.logDir;
-          if (logDir) {
-            const knowledgeFile = join(
-              logDir,
-              'sessions',
-              sid,
-              'knowledge.jsonl',
-            );
-            await rm(knowledgeFile, { force: true });
-          }
+          // (b) Evict the session's knowledge from the shared backend. This
+          // clears the long-lived in-memory backend AND removes the JSONL files
+          // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
+          // rehydrates stale entries — matching the README "evicts its
+          // knowledge-RAG entries" contract.
+          await this._stepperKnowledgeBackend?.deleteSession(sid);
         };
         const body = await handleDeleteSession(
           this._sessionMetaStore,

@@ -71,6 +71,31 @@ test('seedSessionKnowledge with empty seeds is a no-op', async () => {
   assert.equal(kr.fingerprint(), 'n=0');
 });
 
+test('backend.deleteSession evicts entries so a same-id re-entry does NOT rehydrate stale knowledge (DELETE /v1/sessions/:id)', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'sess-del');
+  await kr.write({
+    content: 'old fact',
+    metadata: {
+      traceId: 't',
+      turnId: 'u',
+      stepperId: 's',
+      task: 'x',
+      artifactType: 'analysis-finding',
+      createdAt: '2026-05-30T00:00:00Z',
+    },
+  });
+  await backend.deleteSession('sess-del');
+  // A fresh KnowledgeRag for the same id must rehydrate to EMPTY.
+  const reentry = new KnowledgeRag(backend, 'sess-del');
+  await reentry.init();
+  assert.equal(
+    reentry.fingerprint(),
+    'n=0',
+    'deleted session must not rehydrate old entries',
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Finding 3: the live request path populates the meta store
 // ---------------------------------------------------------------------------
