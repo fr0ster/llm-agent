@@ -28,6 +28,17 @@ export interface CyclicReActExecutorDeps {
   needResolver?: INeedResolver;
 }
 
+/**
+ * Task-agnostic tool-use protocol for the executor. It says NOTHING about the
+ * task type or any specific tool/MCP — only how to behave when a needed
+ * capability is missing or a tool fails. This is what makes the always-on
+ * unmet-need detection (INeedResolver) effective: the model is told to VOICE the
+ * gap instead of guessing or silently finishing, so a no-tool-call "I need X"
+ * utterance is produced, which the tool-definer then turns into a toolsRag
+ * re-query. Keep it generic — the runtime is MCP- and task-agnostic.
+ */
+export const EXECUTOR_SYSTEM = `You complete the task by calling the available tools. If you need a capability the available tools do not provide, or a tool call fails or returns an error / empty / "not found" result, do NOT guess, fabricate, or give a final answer prematurely. Instead, state in ONE sentence the capability you still need (e.g. "I need a tool to <do X>"). Produce your final answer only once you actually have the data the task requires.`;
+
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const add = (a: LlmUsage, b?: LlmUsage): LlmUsage =>
   b
@@ -83,6 +94,7 @@ export class CyclicReActExecutor implements IExecutor {
     }
 
     const messages: Message[] = [
+      { role: 'system', content: EXECUTOR_SYSTEM },
       { role: 'user', content: `${factsPrefix}${prompt}` },
     ];
     const tools: LlmTool[] = [...input.tools];
