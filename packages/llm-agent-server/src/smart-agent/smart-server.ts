@@ -11,6 +11,7 @@ import type {
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
+  IKnowledgeRagHandle,
   ILlm,
   ILlmApiAdapter,
   ILogger,
@@ -663,6 +664,40 @@ export interface SessionResumeBody {
 }
 
 /**
+ * Seed session-scope guidance entries into a BRAND-NEW session's knowledge-RAG
+ * (e.g. tool-usage routing rules the planner reads in "Known facts"). Extracted
+ * for unit-testability. Idempotent: rehydrates via init() and writes ONLY when
+ * the session is empty (`fingerprint() === 'n=0'`), so resumes never duplicate.
+ * Entries are config DATA — the runtime stays MCP-agnostic (no tool knowledge in
+ * agent code).
+ */
+export async function seedSessionKnowledge(
+  kr: IKnowledgeRagHandle & {
+    init?(): Promise<void>;
+    fingerprint?(): string;
+  },
+  seeds: ReadonlyArray<{ content: string; artifactType: string }>,
+  nowIso: string,
+): Promise<void> {
+  if (seeds.length === 0) return;
+  await kr.init?.();
+  if (kr.fingerprint?.() !== 'n=0') return; // not a brand-new session → skip
+  for (const s of seeds) {
+    await kr.write({
+      content: s.content,
+      metadata: {
+        traceId: 'seed',
+        turnId: 'seed',
+        stepperId: 'seed',
+        task: 'session-seed',
+        artifactType: s.artifactType,
+        createdAt: nowIso,
+      },
+    });
+  }
+}
+
+/**
  * Record that a request for `sessionId` STARTED — create the meta row on first
  * sight, else touch it and mark in-progress. Called from the live request path
  * (`_withSession`) so GET /v1/sessions, resume and delete actually see sessions
@@ -1231,7 +1266,17 @@ export class SmartServer {
           : undefined;
         const knowledgeRagFor = async (sessionId: string) => {
           const backend = knowledgeBackend ?? new InMemoryKnowledgeBackend();
-          return new KnowledgeRag(backend, sessionId);
+          const kr = new KnowledgeRag(backend, sessionId);
+          // Seed session-scope guidance into a BRAND-NEW session only (e.g.
+          // tool-usage routing rules the planner reads in "Known facts"). Config
+          // DATA, not agent code — keeping the runtime MCP-agnostic. Idempotent
+          // on resume: a session that already has entries is skipped.
+          await seedSessionKnowledge(
+            kr,
+            stepperCfg.knowledgeSeed,
+            new Date().toISOString(),
+          );
+          return kr;
         };
 
         // ToolsRag handle: real adapter over the server's tools RAG store + MCP
