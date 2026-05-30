@@ -139,11 +139,13 @@ test('per-role map: planner, executor, finalizer and reviewer each use their own
   assert.ok(built.rootStepper instanceof Stepper);
   assert.ok(built.finalizer instanceof RootFinalizer);
 
-  // Four LLMs must have been built — planner, executor, finalizer, reviewer.
+  // Five LLMs must have been built — planner, executor, finalizer, reviewer,
+  // plus the tool-definer (resolved via role 'classifier', which has no entry
+  // in this map → falls back to main-model).
   assert.equal(
     calls.length,
-    4,
-    `expected 4 makeLlm calls, got ${calls.length}: ${calls.join(',')}`,
+    5,
+    `expected 5 makeLlm calls, got ${calls.length}: ${calls.join(',')}`,
   );
   assert.ok(calls.includes('planner-model'), 'planner-model must be resolved');
   assert.ok(
@@ -158,8 +160,16 @@ test('per-role map: planner, executor, finalizer and reviewer each use their own
     calls.includes('reviewer-model'),
     'reviewer-model must be resolved',
   );
-  // All four must be distinct
-  assert.equal(new Set(calls).size, 4, 'all four role models must be distinct');
+  assert.ok(
+    calls.includes('main-model'),
+    'tool-definer (classifier role) must fall back to main-model',
+  );
+  // Four role models + the tool-definer's main-model fallback = 5 distinct.
+  assert.equal(
+    new Set(calls).size,
+    5,
+    'four distinct role models + tool-definer fallback to main',
+  );
 });
 
 test('per-role map: absent role falls back to main', async () => {
@@ -187,12 +197,13 @@ test('per-role map: absent role falls back to main', async () => {
     calls.includes('planner-model'),
     'planner role must use planner-model',
   );
-  // executor, finalizer, reviewer all resolve to main-model (3 calls with that value)
+  // executor, finalizer, reviewer AND the tool-definer (classifier role) all
+  // fall back to main-model — 4 calls with that value.
   const mainCalls = calls.filter((m) => m === 'main-model');
   assert.equal(
     mainCalls.length,
-    3,
-    `expected 3 main-model calls (executor+finalizer+reviewer), got ${mainCalls.length}`,
+    4,
+    `expected 4 main-model calls (executor+finalizer+reviewer+tool-definer), got ${mainCalls.length}`,
   );
 });
 
@@ -234,8 +245,9 @@ test('pipelineFallback is used when llmMap is absent', async () => {
     pipelineFallback,
   } as never);
 
-  // All roles (planner, executor, finalizer, reviewer) fall back to pipelineFallback.
-  assert.equal(calls.length, 4);
+  // All roles (planner, executor, finalizer, reviewer) + the tool-definer fall
+  // back to pipelineFallback.
+  assert.equal(calls.length, 5);
   assert.ok(
     calls.every((m) => m === 'pipeline-model'),
     `all roles must use pipeline-model, got: ${calls.join(',')}`,
