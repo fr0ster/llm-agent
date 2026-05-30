@@ -85,6 +85,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `README.md` covering the three modes, `/v1/sessions` resume flow, and the
   readOnly tool-safety policy.
 
+- **Executor reads the shared knowledge-RAG blackboard.** Before its first turn
+  the `CyclicReActExecutor` queries the session blackboard and prepends the
+  relevant facts to its prompt, then enriches the proactive tool-search query
+  with that context BEFORE vectorizing — so guidance already present in the
+  blackboard (from prior steps or a consumer's RAG layer) steers which tools
+  surface, not just the bare prompt. Tool/domain knowledge stays in RAG data,
+  never hardcoded in agent code (the runtime is MCP-agnostic).
+
 ### Changed
 
 - **`DagCoordinatorHandler` deprecated.** Existing YAML configs without an
@@ -114,6 +122,39 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `coordinator.mutationPolicy: trusted` to restore the previous unchecked
   behavior. This applies only to configs that opt into a Stepper mode; the
   legacy DAG path is unaffected.
+
+### Fixed
+
+Pre-release hardening from live SAP validation of the three modes:
+
+- **Unmet-tool-need detection was dead code.** `INeedResolver` was never
+  instantiated nor threaded into the executor, so the context-augmenting branch
+  never ran. It is now an always-on `LlmNeedResolver` injected into the
+  executor (logged as the distinct `tool-definer` component), with a
+  false-positive gate (classifier verdict, not "toolsRag returned something")
+  and a bounded no-progress guard (honest `incomplete` instead of looping).
+
+- **Token ledger only charged the executor.** `coordinator.stepper.tokenBudget`
+  now bounds ALL roles — planner, reviewer, finalizer and tool-definer charge
+  the one shared ledger (the executor still self-spends; no double-count).
+
+- **deep-stepper recursion never engaged.** The child-Stepper registry was
+  always empty and the planner was agent-blind. Child Steppers are now built
+  from declared `subagents` (sharing the run's role LLMs + shared ledger), and
+  `IStepperPlanner` receives the worker catalog so it can delegate via a node's
+  `agent`.
+
+- **Session metadata was never written on the request path.** `GET /v1/sessions`
+  stayed empty and resume/delete returned 404 after normal chat/stream. The live
+  request path now creates/touches the session meta row.
+
+- **Live SAP AI SDK 400 on the 2nd executor turn.** The tool relay pushed an
+  assistant message without `tool_calls` and tool messages without
+  `tool_call_id`, orphaning the `tool_result`. Corrected to the OpenAI/Anthropic
+  wire shape so the ReAct loop survives multi-tool turns.
+
+- **`/v1/usage` totals.** Confirmed correct (per-component rollup); the
+  previously-reported null was a test-harness display bug, not the product.
 
 ## [17.0.0] — 2026-05-29
 

@@ -405,7 +405,7 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
     async query() {
       return [
         {
-          content: 'Read an INCLUDE body ONLY via GetInclude.',
+          content: 'GUIDANCE-MARKER-42: prefer the deep-read path.',
           metadata: { artifactType: 'guidance', createdAt: 'x' },
         },
       ];
@@ -425,7 +425,7 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
     maxIterations: 10,
   });
   await exec.execute({
-    prompt: 'review program Z',
+    prompt: 'review thing Z',
     tools: [{ name: 'seed' }], // non-empty → skip proactive tool seeding
     knowledgeRag: ragWithFact as never,
     toolsRag: toolsStub({}) as never,
@@ -434,8 +434,8 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
   });
   assert.match(
     firstUserContent,
-    /GetInclude/,
-    'the seeded guidance fact must appear in the executor LLM prompt',
+    /GUIDANCE-MARKER-42/,
+    'the blackboard fact must appear in the executor LLM prompt',
   );
 });
 
@@ -448,11 +448,11 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
   const toolsRag = {
     async query(text: string) {
       toolQuery = text;
-      return [{ name: 'GetInclude', readOnly: true }];
+      return [{ name: 'DeepReader', readOnly: true }];
     },
     lookup(n: string) {
-      return n === 'GetInclude'
-        ? { name: 'GetInclude', readOnly: true }
+      return n === 'DeepReader'
+        ? { name: 'DeepReader', readOnly: true }
         : undefined;
     },
   };
@@ -460,7 +460,8 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
     async query() {
       return [
         {
-          content: 'Read an INCLUDE body ONLY via GetInclude.',
+          content:
+            'GUIDANCE-MARKER-99: use the DeepReader tool for nested reads.',
           metadata: { artifactType: 'guidance', createdAt: 'x' },
         },
       ];
@@ -481,7 +482,7 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
     maxIterations: 10,
   });
   await exec.execute({
-    prompt: 'review program Z',
+    prompt: 'review thing Z',
     tools: [], // empty → triggers proactive seeding
     knowledgeRag: ragWithGuidance as never,
     toolsRag: toolsRag as never,
@@ -490,8 +491,8 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
   });
   assert.match(
     toolQuery,
-    /GetInclude/,
-    'tool-search query must carry the seeded guidance, not just the bare prompt',
+    /GUIDANCE-MARKER-99/,
+    'tool-search query must carry the blackboard guidance, not just the bare prompt',
   );
 });
 

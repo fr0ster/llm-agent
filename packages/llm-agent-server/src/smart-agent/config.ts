@@ -1324,13 +1324,6 @@ export interface StepperCoordinatorConfig {
   maxParallelSteps: number;
   maxDepth: number;
   tokenBudget: number;
-  /**
-   * Session-scope knowledge entries written into a NEW session's knowledge-RAG
-   * before planning (e.g. tool-usage guidance the planner/executor should read
-   * in "Known facts"). Data, not code — keeps the runtime MCP-agnostic: any
-   * tool-specific routing rules live here as config, never in agent branches.
-   */
-  knowledgeSeed: ReadonlyArray<{ content: string; artifactType: string }>;
 }
 
 const MODES = new Set<StepperMode>([
@@ -1381,25 +1374,6 @@ export function parseStepperCoordinatorConfig(
           return { has: (d: number) => s.has(d) };
         })();
 
-  const knowledgeSeed = Array.isArray(coord.knowledgeSeed)
-    ? (
-        coord.knowledgeSeed as Array<{
-          content?: unknown;
-          artifactType?: unknown;
-        }>
-      )
-        .filter(
-          (e) => e && typeof e.content === 'string' && e.content.trim() !== '',
-        )
-        .map((e) => ({
-          content: e.content as string,
-          artifactType:
-            typeof e.artifactType === 'string' && e.artifactType
-              ? e.artifactType
-              : 'guidance',
-        }))
-    : [];
-
   return {
     mode,
     toolSafety: { mutationPolicy, knownReadOnlyTools },
@@ -1407,6 +1381,5 @@ export function parseStepperCoordinatorConfig(
     maxParallelSteps: Number(stepper.maxParallelSteps ?? 4),
     maxDepth: Number(stepper.maxDepth ?? 4),
     tokenBudget: Number(stepper.tokenBudget ?? 1_000_000),
-    knowledgeSeed,
   };
 }

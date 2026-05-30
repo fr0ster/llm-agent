@@ -64,16 +64,6 @@ coordinator:
     - ListPackage
     - SearchRepository
 
-  # Session-scope knowledge seeded into every NEW session before planning.
-  # The runtime is MCP-agnostic (it hardcodes no tool names) — so any tool-usage
-  # routing rules live HERE as data, surfaced to the planner/executor as
-  # "Known facts". This is how you teach the agent which read tool to use without
-  # touching code. (Seeded once per session; resumes are not re-seeded.)
-  knowledgeSeed:
-    - content: "To read an ABAP report/program source, call GetProgram with the program name."
-    - content: "To list the includes of a report, call GetIncludesList with the program name."
-    - content: "To read an INCLUDE body, call GetInclude with the include name. GetProgram does NOT resolve include names — never use it for includes."
-
 mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
