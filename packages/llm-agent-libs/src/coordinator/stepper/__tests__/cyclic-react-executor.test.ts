@@ -380,6 +380,65 @@ test('stuck need with no NEW tools → incomplete (bounded, no infinite loop)', 
   );
 });
 
+test('executor injects shared knowledge-RAG facts/guidance into its prompt (makes seeded guidance effective)', async () => {
+  // A seeded guidance fact lives in the session blackboard. The executor must
+  // surface it to its LLM — otherwise seeded tool-usage rules never reach the
+  // component that actually chooses tools (the cyclic-react planner is trivial).
+  let firstUserContent = '';
+  const llm = {
+    name: 'stub',
+    async chat(messages: Array<{ role: string; content: string }>) {
+      if (!firstUserContent) {
+        const u = messages.find((m) => m.role === 'user');
+        firstUserContent = u?.content ?? '';
+      }
+      return {
+        ok: true as const,
+        value: {
+          content: 'Done.',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    },
+  };
+  const ragWithFact = {
+    async query() {
+      return [
+        {
+          content: 'Read an INCLUDE body ONLY via GetInclude.',
+          metadata: { artifactType: 'guidance', createdAt: 'x' },
+        },
+      ];
+    },
+    async list() {
+      return [];
+    },
+    async write() {},
+    fingerprint() {
+      return 'n=1';
+    },
+  };
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await exec.execute({
+    prompt: 'review program Z',
+    tools: [{ name: 'seed' }], // non-empty → skip proactive tool seeding
+    knowledgeRag: ragWithFact as never,
+    toolsRag: toolsStub({}) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.match(
+    firstUserContent,
+    /GetInclude/,
+    'the seeded guidance fact must appear in the executor LLM prompt',
+  );
+});
+
 test('tool-relay builds protocol-correct messages: assistant carries tool_calls, tool carries tool_call_id (the live 400 fix)', async () => {
   // Reproduces the live SAP AI SDK 400: the executor pushed an assistant message
   // WITHOUT tool_calls and tool messages WITHOUT tool_call_id, so the 2nd turn's

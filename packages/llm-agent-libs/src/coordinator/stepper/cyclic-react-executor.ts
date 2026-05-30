@@ -64,7 +64,27 @@ export class CyclicReActExecutor implements IExecutor {
       name: this.name,
     };
 
-    const messages: Message[] = [{ role: 'user', content: prompt }];
+    // Read the shared blackboard before the first turn so the executor benefits
+    // from seeded guidance (e.g. tool-usage routing rules) and prior facts — the
+    // planner does this too, but in cyclic-react the planner is trivial, so the
+    // executor is the only component that can surface guidance to the model that
+    // actually chooses tools. Bounded k + per-fact truncation keep the prompt
+    // lean; large fetched artifacts stay in the blackboard for the finalizer.
+    let factsPrefix = '';
+    try {
+      const facts = await knowledgeRag.query(prompt, { k: 5 });
+      if (facts.length > 0) {
+        factsPrefix = `${'Known facts and guidance (from the shared knowledge store):\n'}${facts
+          .map((f) => `- ${truncateFact(f.content, 300)}`)
+          .join('\n')}\n\n`;
+      }
+    } catch {
+      // knowledge store unavailable — proceed without the prefix
+    }
+
+    const messages: Message[] = [
+      { role: 'user', content: `${factsPrefix}${prompt}` },
+    ];
     const tools: LlmTool[] = [...input.tools];
     let usage = ZERO;
     // Counts consecutive unmet-need iterations whose tool re-query surfaced NO
@@ -266,4 +286,11 @@ export class CyclicReActExecutor implements IExecutor {
 // contexts can monkeypatch if needed. ISO string only used for ordering.
 function nowIso(): string {
   return new Date().toISOString();
+}
+
+/** Keep blackboard facts short in the executor prompt — guidance entries are
+ *  brief and survive intact; large fetched artifacts are truncated (the full
+ *  copy stays in the knowledge store for the finalizer's exhaustive list). */
+function truncateFact(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n)}…` : s;
 }
