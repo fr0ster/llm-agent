@@ -439,6 +439,60 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
   );
 });
 
+test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectorization (contextual-RAG-then-tool-search order)', async () => {
+  // The crux: seeded guidance must steer WHICH tools surface. The executor must
+  // enrich the tool-search text with the knowledge-RAG context first, then
+  // vectorize THAT — otherwise a "review program" prompt never ranks GetInclude
+  // and the model falls back to the wrong tool.
+  let toolQuery = '';
+  const toolsRag = {
+    async query(text: string) {
+      toolQuery = text;
+      return [{ name: 'GetInclude', readOnly: true }];
+    },
+    lookup(n: string) {
+      return n === 'GetInclude' ? { name: 'GetInclude', readOnly: true } : undefined;
+    },
+  };
+  const ragWithGuidance = {
+    async query() {
+      return [
+        {
+          content: 'Read an INCLUDE body ONLY via GetInclude.',
+          metadata: { artifactType: 'guidance', createdAt: 'x' },
+        },
+      ];
+    },
+    async list() {
+      return [];
+    },
+    async write() {},
+    fingerprint() {
+      return 'n=1';
+    },
+  };
+  const llm = scriptedLlm([{ content: 'Done.' }]);
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await exec.execute({
+    prompt: 'review program Z',
+    tools: [], // empty → triggers proactive seeding
+    knowledgeRag: ragWithGuidance as never,
+    toolsRag: toolsRag as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.match(
+    toolQuery,
+    /GetInclude/,
+    'tool-search query must carry the seeded guidance, not just the bare prompt',
+  );
+});
+
 test('tool-relay builds protocol-correct messages: assistant carries tool_calls, tool carries tool_call_id (the live 400 fix)', async () => {
   // Reproduces the live SAP AI SDK 400: the executor pushed an assistant message
   // WITHOUT tool_calls and tool messages WITHOUT tool_call_id, so the 2nd turn's

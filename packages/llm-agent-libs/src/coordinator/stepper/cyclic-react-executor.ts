@@ -95,12 +95,17 @@ export class CyclicReActExecutor implements IExecutor {
     let noProgressNeeds = 0;
 
     // Proactive tool seeding: if no tools were supplied by the dispatcher, query
-    // toolsRag with the prompt BEFORE the first LLM call so a capable model that
-    // never emits "I can't" still sees the relevant tools from turn 1.
-    // This mirrors 17.0's `tool-select` stage. INeedResolver stays as a reactive
-    // supplement for mid-loop augmentation.
+    // toolsRag BEFORE the first LLM call so a capable model that never emits
+    // "I can't" still sees the relevant tools from turn 1.
+    // ORDER MATTERS: enrich the search text with the knowledge-RAG context
+    // (guidance) FIRST, then vectorize THAT for tool discovery. Seeded guidance
+    // like "read an include body via GetInclude" must steer which tools surface
+    // — querying the bare prompt would never rank GetInclude for a "review
+    // program" task, so the model would fall back to the wrong tool. This is the
+    // contextual-RAG-then-tool-search ordering.
     if (tools.length === 0) {
-      const seeded = await toolsRag.query(prompt, 10);
+      const seedQuery = factsPrefix ? `${factsPrefix}${prompt}` : prompt;
+      const seeded = await toolsRag.query(seedQuery, 10);
       for (const t of seeded) tools.push(t as LlmTool);
       input.sessionLogger?.logStep('executor_tool_seed', {
         source: ref,
