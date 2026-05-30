@@ -84,12 +84,18 @@ export class LoggingLlm implements ILlm {
   }
 
   healthCheck?(options?: CallOptions): Promise<Result<boolean, LlmError>> {
+    // Optional passthrough: this method exists on the decorator only to forward
+    // to the inner LLM's optional healthCheck. `?.` is not usable (the return
+    // type is non-optional), so assert — the decorator's method is only invoked
+    // when the inner implements it.
+    // biome-ignore lint/style/noNonNullAssertion: decorator passthrough to inner's optional method
     return this.inner.healthCheck!(options);
   }
 
   getModels?(
     options?: CallOptions,
   ): Promise<Result<import('@mcp-abap-adt/llm-agent').IModelInfo[], LlmError>> {
+    // biome-ignore lint/style/noNonNullAssertion: decorator passthrough to inner's optional method
     return this.inner.getModels!(options);
   }
 }

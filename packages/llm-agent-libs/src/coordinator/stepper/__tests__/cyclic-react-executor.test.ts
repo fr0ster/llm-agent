@@ -451,7 +451,9 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
       return [{ name: 'GetInclude', readOnly: true }];
     },
     lookup(n: string) {
-      return n === 'GetInclude' ? { name: 'GetInclude', readOnly: true } : undefined;
+      return n === 'GetInclude'
+        ? { name: 'GetInclude', readOnly: true }
+        : undefined;
     },
   };
   const ragWithGuidance = {
