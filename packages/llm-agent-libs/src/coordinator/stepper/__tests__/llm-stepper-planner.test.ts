@@ -96,3 +96,118 @@ test('STEPPER_PLANNER_SYSTEM mandates RAG-first + concrete-leaf decomposition', 
   );
   assert.match(STEPPER_PLANNER_SYSTEM, /one (?:tool call|step)|concrete leaf/i);
 });
+
+test('STEPPER_PLANNER_SYSTEM instructs planner to use fetch steps and restricts needInfo to non-fetchable data', () => {
+  // Must tell planner workers can fetch via tools
+  assert.match(
+    STEPPER_PLANNER_SYSTEM,
+    /fetch.*step|workers can.*fetch|FETCH STEPS/i,
+  );
+  // Must say needInfo is only for non-fetchable data
+  assert.match(
+    STEPPER_PLANNER_SYSTEM,
+    /ONLY for a fact that NO.*tool|no listed tool/i,
+  );
+  // Must forbid needInfo for fetchable data
+  assert.match(STEPPER_PLANNER_SYSTEM, /NEVER use needInfo for fetchable/i);
+});
+
+test('planner embeds toolsRag catalog into the planning prompt', async () => {
+  const { obj, calls } = llm(
+    '{"objective":"o","nodes":[{"id":"a","goal":"fetch source via get_program_source"}]}',
+  );
+  const planner = new LlmStepperPlanner(obj as never);
+
+  const toolsRagStub = {
+    async query() {
+      return [
+        {
+          name: 'get_program_source',
+          description: 'Reads ABAP program source code from SAP',
+        },
+        {
+          name: 'search_objects',
+          description: 'Searches for SAP objects by name pattern',
+        },
+      ];
+    },
+    lookup() {
+      return undefined;
+    },
+  };
+
+  await planner.plan({
+    prompt: 'review ABAP program ZTEST',
+    knowledgeRag: ragWith([]) as never,
+    toolsRag: toolsRagStub as never,
+    parentPath: ['root'],
+    identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
+  });
+
+  const userMsg =
+    calls[0].messages.find((m) => m.role === 'user')?.content ?? '';
+  assert.match(
+    userMsg,
+    /get_program_source/,
+    'tool name must appear in prompt',
+  );
+  assert.match(
+    userMsg,
+    /search_objects/,
+    'second tool name must appear in prompt',
+  );
+  assert.match(
+    userMsg,
+    /Available tools/,
+    'tools section header must be present',
+  );
+});
+
+test('planner renders prompt correctly when toolsRag returns empty', async () => {
+  const { obj, calls } = llm(
+    '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',
+  );
+  const planner = new LlmStepperPlanner(obj as never);
+
+  await planner.plan({
+    prompt: 'some task',
+    knowledgeRag: ragWith([]) as never,
+    ...BASE,
+  });
+
+  const userMsg =
+    calls[0].messages.find((m) => m.role === 'user')?.content ?? '';
+  // No tools section when toolsRag returns empty
+  assert.doesNotMatch(userMsg, /Available tools/);
+  assert.match(userMsg, /some task/);
+});
+
+test('planner renders prompt correctly when toolsRag throws', async () => {
+  const { obj, calls } = llm(
+    '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',
+  );
+  const planner = new LlmStepperPlanner(obj as never);
+
+  const throwingToolsRag = {
+    async query(): Promise<never> {
+      throw new Error('rag unavailable');
+    },
+    lookup() {
+      return undefined;
+    },
+  };
+
+  await planner.plan({
+    prompt: 'some task',
+    knowledgeRag: ragWith([]) as never,
+    toolsRag: throwingToolsRag as never,
+    parentPath: ['root'],
+    identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
+  });
+
+  const userMsg =
+    calls[0].messages.find((m) => m.role === 'user')?.content ?? '';
+  // Graceful: no crash, no tools section
+  assert.doesNotMatch(userMsg, /Available tools/);
+  assert.match(userMsg, /some task/);
+});
