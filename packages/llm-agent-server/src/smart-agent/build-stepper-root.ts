@@ -107,43 +107,60 @@ export async function buildStepperRoot(
 
   const config = parseStepperCoordinatorConfig(coordCfg);
 
+  // Shared token ledger — ONE instance per run (review R2-F1). Created up-front
+  // so every role's LLM decorator can spend on it (see resolveRoleLlm).
+  const tokens = new TokenLedger(config.tokenBudget);
+
   // ---- Per-role LLM resolver -----------------------------------------------
   // Priority chain: llmMap[role] → llmMap.main → pipelineFallback → STUB_LLM_CFG.
   // Mirrors the resolution chain used in buildDagCoordinatorDeps.
+  //
+  // `spendOnLedger` makes the role's LLM decrement the SHARED token ledger after
+  // each call, so coordinator.stepper.tokenBudget bounds ALL stepper work — not
+  // just the executor (review Finding 2). The executor passes `false`: it spends
+  // on the same ledger itself (see CyclicReActExecutor) and double-counting must
+  // be avoided. The decorator is now installed whenever EITHER logging or ledger
+  // accounting is needed (previously it was skipped entirely without a logger).
   const resolveRoleLlm = async (
     role: string,
     component: import('@mcp-abap-adt/llm-agent').LlmComponent,
+    spendOnLedger: boolean,
   ): Promise<ILlm> => {
     const cfg =
       resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
     const inner = await makeLlm(cfg);
-    if (!logLlmCall) return inner;
-    // Wrap with LoggingLlm so every call to this role's LLM is logged to
-    // byComponent. The decorator logs once per call after usage is known.
+    if (!logLlmCall && !spendOnLedger) return inner;
+    // Wrap with LoggingLlm so every call to this role's LLM is (a) logged to
+    // byComponent and (b) charged to the shared ledger. Fires once per call
+    // (chat or streamChat) after usage is known.
     return new LoggingLlm(inner, (usage, durationMs) => {
-      logLlmCall({
-        component,
-        model: inner.model ?? cfg.model ?? 'unknown',
-        promptTokens: usage.promptTokens,
-        completionTokens: usage.completionTokens,
-        totalTokens: usage.totalTokens,
-        durationMs,
-      });
+      if (logLlmCall) {
+        logLlmCall({
+          component,
+          model: inner.model ?? cfg.model ?? 'unknown',
+          promptTokens: usage.promptTokens,
+          completionTokens: usage.completionTokens,
+          totalTokens: usage.totalTokens,
+          durationMs,
+        });
+      }
+      if (spendOnLedger) tokens.spend(usage);
     });
   };
 
   // ---- Build per-role LLMs --------------------------------------------------
-  const plannerLlm = await resolveRoleLlm('planner', 'planner');
-  const executorLlm = await resolveRoleLlm('executor', 'tool-loop');
-  const finalizerLlm = await resolveRoleLlm('finalizer', 'finalizer');
-  const reviewerLlm = await resolveRoleLlm('reviewer', 'reviewer');
+  // Every non-executor role charges the shared ledger; the executor self-spends.
+  const plannerLlm = await resolveRoleLlm('planner', 'planner', true);
+  const executorLlm = await resolveRoleLlm('executor', 'tool-loop', false);
+  const finalizerLlm = await resolveRoleLlm('finalizer', 'finalizer', true);
+  const reviewerLlm = await resolveRoleLlm('reviewer', 'reviewer', true);
   // Tool-definer LLM: detects an unmet-tool-need ("I can't … no tool") in a
   // candidate final answer and yields the phrase to search toolsRag with before
   // the retry. Logged under its OWN component 'tool-definer' — NOT 'classifier'
   // — so its cost is distinct from the (skipped-in-stepper) request classifier
   // and the name reflects its actual job. Resolves via role 'classifier' (falls
   // back to main); point it at a small model via `llm.classifier` in YAML.
-  const toolDefinerLlm = await resolveRoleLlm('classifier', 'tool-definer');
+  const toolDefinerLlm = await resolveRoleLlm('classifier', 'tool-definer', true);
 
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
@@ -162,9 +179,6 @@ export async function buildStepperRoot(
 
   // One shared interpreter.
   const interpreter = new StepperInterpreter();
-
-  // Shared token ledger — ONE instance per run (review R2-F1).
-  const tokens = new TokenLedger(config.tokenBudget);
 
   // Depth budget depends on mode.
   let depthRemaining: number;

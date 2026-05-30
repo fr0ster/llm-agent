@@ -126,6 +126,66 @@ const perRoleLlmMap = {
   },
 };
 
+test('Finding 2: shared token ledger is charged by NON-executor roles too (planner/reviewer/tool-definer), not just the executor', async () => {
+  // Every LLM call (chat or streamChat) spends exactly 100 total tokens and bumps
+  // a shared counter. After a full planned-react run the ledger must have been
+  // debited by 100 × (calls) — proving planner / reviewer / tool-definer charge
+  // the SAME ledger (not only the executor), with no double-counting.
+  const BUDGET = 1_000_000;
+  let calls = 0;
+  const usage = { promptTokens: 60, completionTokens: 40, totalTokens: 100 };
+  const countingLlm = {
+    name: 'counting',
+    model: 'counting',
+    async chat() {
+      calls++;
+      return {
+        ok: true as const,
+        value: {
+          content:
+            '{"pass":true,"objective":"o","nodes":[{"id":"a","goal":"g"}]}',
+          usage,
+        },
+      };
+    },
+    async *streamChat() {
+      calls++;
+      yield {
+        ok: true as const,
+        value: { content: 'done', finishReason: 'stop', usage },
+      };
+    },
+  };
+
+  const built = await buildStepperRoot({
+    ...baseInput,
+    coordCfg: { mode: 'planned-react', tokenBudget: BUDGET },
+    makeLlm: async () => countingLlm as never,
+  } as never);
+
+  await built.rootStepper.run({
+    prompt: 'do x',
+    knowledgeRag: baseInput.knowledgeRagFor() as never,
+    toolsRag: baseInput.toolsRag as never,
+    budget: built.budget as never,
+    identity: {
+      traceId: 't',
+      turnId: 'u',
+      sessionId: 's',
+      stepperId: 'root',
+    },
+    toolSafety: built.toolSafety,
+  } as never);
+
+  const spent = BUDGET - built.budget.tokens.remaining;
+  assert.ok(calls >= 2, `expected several LLM calls, got ${calls}`);
+  assert.equal(
+    spent,
+    100 * calls,
+    `ledger must be debited by every role's usage (100 × ${calls}); got ${spent}`,
+  );
+});
+
 test('per-role map: planner, executor, finalizer and reviewer each use their own distinct model', async () => {
   const { makeLlm, calls } = makeRecordingMakeLlm();
 
