@@ -62,6 +62,31 @@ test('semanticQuery falls back to recency when no semantic index', async () => {
   assert.equal(result[2].content, 'entry 4');
 });
 
+test('deleteSession removes the session directory; scan() then returns [] and other sessions survive', async () => {
+  await rm(TEST_DIR, { recursive: true, force: true });
+
+  const backend = new JsonlKnowledgeBackend(TEST_DIR);
+  await backend.put('sess-del', makeEntry('a', 'to be deleted'));
+  await backend.put('sess-keep', makeEntry('b', 'keep me'));
+  assert.equal((await backend.scan('sess-del')).length, 1);
+
+  await backend.deleteSession('sess-del');
+
+  // Deleted session is gone — a fresh instance (cross-restart) also sees nothing.
+  assert.deepEqual(await backend.scan('sess-del'), []);
+  assert.deepEqual(
+    await new JsonlKnowledgeBackend(TEST_DIR).scan('sess-del'),
+    [],
+  );
+  // Sibling session is untouched.
+  assert.equal((await backend.scan('sess-keep')).length, 1);
+});
+
+test('deleteSession on an unknown session is a no-op (no throw)', async () => {
+  const backend = new JsonlKnowledgeBackend(TEST_DIR);
+  await backend.deleteSession('never-existed'); // must not throw (force: true)
+});
+
 test('cleanup temp dir', async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
 });
