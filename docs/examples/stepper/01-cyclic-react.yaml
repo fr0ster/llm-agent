@@ -72,12 +72,24 @@ coordinator:
   # Tool-safety policy
   # undeclared tools raise ClarifySignal (budget-extension request) unless listed below
   mutationPolicy: confirm
+  # Illustrative allowlist — these are deployment-specific tool names; the agent
+  # hardcodes none. Replace with the read-only tools YOUR MCP exposes.
   knownReadOnlyTools:
     - GetProgram
     - GetInclude
     - GetClass
     - ListPackage
     - SearchRepository
+
+  # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
+  # EMPTY to stay MCP-agnostic — the agent assumes nothing about your MCP's
+  # tools. Fill per deployment with rules for the tools YOUR MCP exposes (which
+  # tool reads source, which lists/reads sub-objects). The executor surfaces
+  # these as facts and prioritises the named tools over a bare-prompt tool
+  # search. Example shape (do NOT ship tool-specific rules in agnostic configs):
+  #   knowledgeSeed:
+  #     - content: "<which tool reads what, for your MCP>"
+  knowledgeSeed: []
 
 mcp:
   - type: http

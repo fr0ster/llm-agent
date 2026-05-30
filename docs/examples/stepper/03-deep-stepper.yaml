@@ -92,6 +92,12 @@ coordinator:
   # Remove this and set mutationPolicy: confirm + knownReadOnlyTools for stricter policy.
   mutationPolicy: trusted
 
+  # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
+  # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's
+  # tools (the executor surfaces them as facts and prioritises the named tools
+  # over a bare-prompt tool search). Do NOT ship tool-specific rules here.
+  knowledgeSeed: []
+
 mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
