@@ -8,12 +8,55 @@ import {
   handleDeleteSession,
   handleListSessions,
   handleResumeSession,
+  recordSessionEnd,
+  recordSessionStart,
   usesStepper,
 } from '../smart-server.js';
 
 // ---------------------------------------------------------------------------
 // /v1/sessions extracted handler tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Finding 3: the live request path populates the meta store
+// ---------------------------------------------------------------------------
+
+test('recordSessionStart creates a row the SAME-session caller can list + resume', async () => {
+  const store = new InMemorySessionMetaStore();
+  // Simulate a normal chat/stream request for a freshly-minted session.
+  await recordSessionStart(store, 'sess-1', '2026-05-30T10:00:00Z');
+
+  // GET /v1/sessions for this identity (identity === sessionId in no-auth build)
+  const list = await handleListSessions(store, 'sess-1');
+  assert.equal(list.sessions.length, 1);
+  assert.equal(list.sessions[0].sessionId, 'sess-1');
+  assert.equal(list.sessions[0].status, 'in-progress');
+
+  // resume must succeed (previously always 404 because no row was ever created)
+  const resume = await handleResumeSession(store, 'sess-1', 'sess-1');
+  assert.equal(resume.ok, true);
+});
+
+test('recordSessionStart touches an existing row instead of duplicating; recordSessionEnd marks idle', async () => {
+  const store = new InMemorySessionMetaStore();
+  await recordSessionStart(store, 'sess-2', '2026-05-30T10:00:00Z');
+  await recordSessionStart(store, 'sess-2', '2026-05-30T10:05:00Z'); // second request, same session
+
+  const list = await handleListSessions(store, 'sess-2');
+  assert.equal(list.sessions.length, 1, 'must not duplicate the row');
+  assert.equal(list.sessions[0].lastUsedAt, '2026-05-30T10:05:00Z', 'touched');
+
+  await recordSessionEnd(store, 'sess-2', '2026-05-30T10:06:00Z');
+  const after = await store.get('sess-2');
+  assert.equal(after?.status, 'idle', 'request end marks the session idle');
+});
+
+test('recordSessionEnd is a no-op when the row was deleted mid-flight', async () => {
+  const store = new InMemorySessionMetaStore();
+  // No create — simulate a row deleted before the request finished.
+  await recordSessionEnd(store, 'gone', '2026-05-30T10:00:00Z');
+  assert.equal(await store.get('gone'), undefined);
+});
 
 test('GET /v1/sessions lists rows for the identity', async () => {
   const store = new InMemorySessionMetaStore();

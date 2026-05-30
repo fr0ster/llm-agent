@@ -663,6 +663,49 @@ export interface SessionResumeBody {
 }
 
 /**
+ * Record that a request for `sessionId` STARTED — create the meta row on first
+ * sight, else touch it and mark in-progress. Called from the live request path
+ * (`_withSession`) so GET /v1/sessions, resume and delete actually see sessions
+ * produced by normal chat/stream traffic (review Finding 3). `userIdentity` is
+ * the sessionId itself in the default no-auth build — matching how the
+ * /v1/sessions endpoints resolve identity (`resolved.identity.sessionId`).
+ */
+export async function recordSessionStart(
+  store: ISessionMetaStore,
+  sessionId: string,
+  nowIso: string,
+): Promise<void> {
+  const existing = await store.get(sessionId);
+  if (!existing) {
+    await store.create({
+      sessionId,
+      userIdentity: sessionId,
+      createdAt: nowIso,
+      lastUsedAt: nowIso,
+      status: 'in-progress',
+    });
+    return;
+  }
+  await store.touch(sessionId, nowIso);
+  await store.setStatus(sessionId, 'in-progress');
+}
+
+/**
+ * Record that a request for `sessionId` FINISHED — touch + mark idle (so it can
+ * be resumed). No-op if the row was deleted mid-flight.
+ */
+export async function recordSessionEnd(
+  store: ISessionMetaStore,
+  sessionId: string,
+  nowIso: string,
+): Promise<void> {
+  const existing = await store.get(sessionId);
+  if (!existing) return;
+  await store.touch(sessionId, nowIso);
+  await store.setStatus(sessionId, 'idle');
+}
+
+/**
  * List all sessions for a given user identity.
  * Extracted for unit-testability (mirrors the /v1/usage handler pattern).
  */
@@ -2097,9 +2140,30 @@ export class SmartServer {
       res.setHeader('Set-Cookie', resolved.setCookie);
     }
     const graph = await lifecycle.acquire(sessionId);
+    // Register/touch the session in the meta store so /v1/sessions, resume and
+    // delete reflect real chat/stream traffic (review Finding 3). Best-effort:
+    // a meta-store hiccup must never break the actual request.
+    try {
+      await recordSessionStart(
+        this._sessionMetaStore,
+        sessionId,
+        new Date().toISOString(),
+      );
+    } catch {
+      // swallow — session metadata is non-critical to serving the request
+    }
     try {
       await fn(graph, sessionId, traceId);
     } finally {
+      try {
+        await recordSessionEnd(
+          this._sessionMetaStore,
+          sessionId,
+          new Date().toISOString(),
+        );
+      } catch {
+        // swallow — see above
+      }
       graph.logger.dropRequest(traceId);
       // Pass the graph instance — `invalidateAll()` may have detached this
       // graph into the draining map while the request was in flight; we must
