@@ -223,6 +223,163 @@ test('budget-exhausted when the shared token ledger is exhausted', async () => {
   assert.equal(res.status, 'budget-exhausted');
 });
 
+// ── Always-on need analysis (deps-injected resolver) ─────────────────────────
+// These cover the core 18.x fix: the executor must ALWAYS inspect a no-tool-call
+// answer for an unmet-tool need, gated by the (classifier) resolver — not a
+// brittle last-line regex, and not left undefined by a missing thread-through.
+
+// A fake INeedResolver scripted per resolve() call.
+function fakeResolver(verdicts: Array<{ queryToolsRag: string } | undefined>): {
+  resolve(r: string): Promise<{ queryToolsRag: string } | undefined>;
+} {
+  let i = 0;
+  return {
+    async resolve() {
+      return verdicts[Math.min(i++, verdicts.length - 1)];
+    },
+  };
+}
+
+// A query-aware toolsRag: maps the query string → tools to return.
+function toolsByQuery(
+  byQuery: (q: string) => { name: string; readOnly?: boolean }[],
+  lookupMap: Record<string, { name: string; readOnly?: boolean }> = {},
+): {
+  query(q: string): Promise<{ name: string; readOnly?: boolean }[]>;
+  lookup(name: string): { name: string; readOnly?: boolean } | undefined;
+} {
+  return {
+    async query(q: string) {
+      return byQuery(q);
+    },
+    lookup(name: string) {
+      return lookupMap[name];
+    },
+  };
+}
+
+test('always-on need (deps-injected): classifier signals need → new tool injected → ok', async () => {
+  // turn 1: free-text "I need the include files" (NOT matched by the old regex)
+  // turn 2: clean answer → classifier says no-need → ok
+  const llm = scriptedLlm([
+    {
+      content:
+        'I have the main program, but I need the include files to finish.',
+    },
+    { content: 'Final review complete.' },
+  ]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  let needQuery: string | undefined;
+  const toolsRag = toolsByQuery(
+    (q) => {
+      if (q === 'read include source') {
+        needQuery = q;
+        return [{ name: 'GetInclude', readOnly: true }];
+      }
+      return []; // seed query (prompt) finds nothing
+    },
+    { GetInclude: { name: 'GetInclude', readOnly: true } },
+  );
+  const resolver = fakeResolver([
+    { queryToolsRag: 'read include source' }, // turn 1 → need
+    undefined, // turn 2 → satisfied
+  ]);
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    needResolver: resolver as never, // injected via DEPS, not input
+  });
+  const res = await exec.execute({
+    prompt: 'review program Z',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsRag as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok');
+  assert.equal(
+    needQuery,
+    'read include source',
+    're-query used the capability',
+  );
+});
+
+test('false-positive guard: classifier says no-need → ok with NO tool re-query (even if toolsRag has tools)', async () => {
+  const llm = scriptedLlm([{ content: 'Everything looks fine. Done.' }]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  let queryCount = 0;
+  const toolsRag = {
+    async query() {
+      queryCount++;
+      return [{ name: 'GetInclude', readOnly: true }];
+    },
+    lookup() {
+      return undefined;
+    },
+  };
+  const resolver = fakeResolver([undefined]); // classifier: never a need
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    needResolver: resolver as never,
+  });
+  const res = await exec.execute({
+    prompt: 'review Z',
+    tools: [{ name: 'seed' }], // non-empty → skip proactive seeding query
+    knowledgeRag: rag as never,
+    toolsRag: toolsRag as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok');
+  assert.equal(
+    queryCount,
+    0,
+    'no tool re-query when classifier gate says no-need',
+  );
+});
+
+test('stuck need with no NEW tools → incomplete (bounded, no infinite loop)', async () => {
+  const llm = scriptedLlm([
+    { content: 'I need a tool.' },
+    { content: 'Still need a tool.' },
+    { content: 'Need it.' },
+  ]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  const toolsRag = toolsByQuery(() => [{ name: 'Foo', readOnly: true }], {
+    Foo: { name: 'Foo', readOnly: true },
+  });
+  const resolver = fakeResolver([{ queryToolsRag: 'foo' }]); // always a need
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    needResolver: resolver as never,
+  });
+  const res = await exec.execute({
+    prompt: 'do x',
+    tools: [{ name: 'Foo' }], // Foo already present → re-query never adds anything new
+    knowledgeRag: rag as never,
+    toolsRag: toolsRag as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'incomplete');
+  assert.ok(
+    res.missing && res.missing.length > 0,
+    'reports the missing capability',
+  );
+});
+
 test('R6-F1: a CLEAN final answer that overshoots the ledger returns ok (work done — no budget-exhausted)', async () => {
   // Single clean response (no tool calls) that alone costs more than the whole
   // budget. The task completed; there is nothing to extend, so the executor

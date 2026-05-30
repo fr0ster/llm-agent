@@ -1,6 +1,7 @@
 import {
   ClarifySignal,
   type IExecutor,
+  type INeedResolver,
   type LlmComponent,
   type LlmTool,
   type LlmUsage,
@@ -17,6 +18,14 @@ export interface CyclicReActExecutorDeps {
   ) => Promise<string>;
   component: LlmComponent;
   maxIterations: number;
+  /**
+   * Always-on unmet-need analyzer. Injected here (NOT only via execute input)
+   * so the context-augmenting loop is STRUCTURALLY always-on: the executor is
+   * built once and shared by every Stepper mode, so a resolver on its deps can
+   * never be left undefined by a forgotten thread-through (the bug this fixes).
+   * `execute` input may still override it (tests / per-call tuning).
+   */
+  needResolver?: INeedResolver;
 }
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -41,13 +50,14 @@ export class CyclicReActExecutor implements IExecutor {
       prompt,
       knowledgeRag,
       toolsRag,
-      needResolver,
       budget,
       identity,
       toolSafety,
       signal,
       onProgress,
     } = input;
+    // Always-on: prefer a per-call resolver, else the deps-injected one.
+    const needResolver = input.needResolver ?? this.deps.needResolver;
     const ref = {
       stepperId: identity.stepperId,
       parentStepperId: identity.parentStepperId,
@@ -57,6 +67,12 @@ export class CyclicReActExecutor implements IExecutor {
     const messages: Message[] = [{ role: 'user', content: prompt }];
     const tools: LlmTool[] = [...input.tools];
     let usage = ZERO;
+    // Counts consecutive unmet-need iterations whose tool re-query surfaced NO
+    // new tool. One such "nudge" is allowed (the tool may already be present and
+    // the model just needs prompting); a second consecutive no-progress need
+    // means the capability is genuinely unavailable → return incomplete instead
+    // of looping to maxIterations or passing a half-answer off as ok.
+    let noProgressNeeds = 0;
 
     // Proactive tool seeding: if no tools were supplied by the dispatcher, query
     // toolsRag with the prompt BEFORE the first LLM call so a capable model that
@@ -163,18 +179,42 @@ export class CyclicReActExecutor implements IExecutor {
           });
           messages.push({ role: 'tool', content: result });
         }
+        noProgressNeeds = 0; // a tool call is progress — reset the no-new-tool gate
         continue;
       }
 
-      // No tool call. Either a clean final answer, or a "need" utterance.
+      // No tool call → this answer is a CANDIDATE final answer. ALWAYS analyze
+      // it (gated by the resolver/classifier) for an unmet-tool need. The gate
+      // is the resolver's verdict — NOT "did toolsRag return anything": a query
+      // over a complete answer almost always has near neighbours, so gating on
+      // results would false-positive. We re-query ONLY when the classifier says
+      // the model expressed a need.
       const need = needResolver
         ? await needResolver.resolve(v.content ?? '')
         : undefined;
       if (need?.queryToolsRag) {
         const found = await toolsRag.query(need.queryToolsRag, 5);
-        // inject any newly-discovered tools the model didn't have yet
         const have = new Set(tools.map((t) => t.name));
-        for (const t of found) if (!have.has(t.name)) tools.push(t as LlmTool);
+        let added = 0;
+        for (const t of found)
+          if (!have.has(t.name)) {
+            tools.push(t as LlmTool);
+            added++;
+          }
+        if (added === 0) {
+          // Re-query surfaced nothing new. Allow one nudge (tool may already be
+          // present); on a second consecutive no-progress need, the capability
+          // is genuinely unavailable — stop honestly.
+          if (++noProgressNeeds >= 2) {
+            return {
+              status: 'incomplete',
+              missing: [need.queryToolsRag],
+              usage,
+            };
+          }
+        } else {
+          noProgressNeeds = 0;
+        }
         messages.push({ role: 'assistant', content: v.content ?? '' });
         messages.push({
           role: 'user',

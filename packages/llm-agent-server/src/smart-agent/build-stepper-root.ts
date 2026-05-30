@@ -8,6 +8,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   CyclicReActExecutor,
+  LlmNeedResolver,
   LlmReviewStrategy,
   LlmStepperPlanner,
   LoggingLlm,
@@ -136,6 +137,10 @@ export async function buildStepperRoot(
   const executorLlm = await resolveRoleLlm('executor', 'tool-loop');
   const finalizerLlm = await resolveRoleLlm('finalizer', 'finalizer');
   const reviewerLlm = await resolveRoleLlm('reviewer', 'reviewer');
+  // Need-classifier LLM: own role (falls back to main), logged as 'classifier'.
+  // Drives the executor's always-on unmet-tool-need detection. Cheap by design
+  // — point it at a small model via `llm.classifier` in YAML.
+  const needClassifierLlm = await resolveRoleLlm('classifier', 'classifier');
 
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
@@ -146,6 +151,10 @@ export async function buildStepperRoot(
     callMcp,
     component: 'tool-loop',
     maxIterations: 10,
+    // Always-on context-augmenting ReAct: on a no-tool-call answer the executor
+    // asks this classifier whether the model expressed an unmet-tool need; if so
+    // it re-queries toolsRag and retries with the augmented tool set.
+    needResolver: new LlmNeedResolver(needClassifierLlm),
   });
 
   // One shared interpreter.
