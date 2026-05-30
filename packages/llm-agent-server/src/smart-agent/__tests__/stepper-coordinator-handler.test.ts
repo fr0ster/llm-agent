@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { TokenLedger } from '@mcp-abap-adt/llm-agent';
+import { NeedInfoSignal, TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { StepperCoordinatorHandler } from '../stepper-coordinator-handler.js';
 
 const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -367,5 +367,118 @@ test('FIX-B.2: handler passes logLlmCall to buildBuilt; calls land in requestLog
   assert.ok(
     loggedCalls.some((e) => e.component === 'finalizer'),
     'finalizer call must be logged to requestLogger',
+  );
+});
+
+// ── FIX C: NeedInfoSignal handling ───────────────────────────────────────────
+
+/**
+ * A scripted rootStepper: throws NeedInfoSignal on the FIRST run() call,
+ * then returns ok on the SECOND (simulating the retry-with-guidance succeeding).
+ */
+function needInfoOnFirstRunStepper(executorRan: { value: boolean }) {
+  let calls = 0;
+  return {
+    name: 'scripted-need-info',
+    async run(input: {
+      knowledgeRag: {
+        write(e: { content: string; metadata: unknown }): Promise<void>;
+      };
+    }) {
+      calls++;
+      if (calls === 1) {
+        throw new NeedInfoSignal('the ABAP source code for program ZTEST');
+      }
+      // Second call succeeds — record that the executor ran
+      executorRan.value = true;
+      await input.knowledgeRag.write({
+        content: 'fetched-source',
+        metadata: {},
+      });
+      return { status: 'ok' as const, usage: ZERO };
+    },
+  };
+}
+
+test('NeedInfo retry: planner raises NeedInfoSignal on first run, succeeds on retry — run completes and finalizer executes', async () => {
+  const ks = knowledgeStub();
+  const executorRan = { value: false };
+
+  const built = fakeBuilt({
+    rootStepper: needInfoOnFirstRunStepper(executorRan),
+  });
+
+  const h = new StepperCoordinatorHandler({
+    buildBuilt: async (_ctx, _log) => built as never,
+    knowledgeRagFor: async () => ks.rag as never,
+    toolsRag: {
+      async query() {
+        return [];
+      },
+      lookup() {
+        return undefined;
+      },
+    } as never,
+    mintStepperId: () => 'root',
+    mintTurnId: () => 'turn-1',
+  });
+
+  const c = ctx();
+  // Must NOT throw — the retry-with-guidance path handles it
+  await h.execute(c.obj as never, {}, {} as never);
+
+  assert.ok(executorRan.value, 'executor must have run on the retry attempt');
+  assert.ok(
+    c.yields.some((y) => y.finishReason === 'stop'),
+    'a terminal stop must be yielded',
+  );
+  // Must NOT yield a clarify (the retry resolved it)
+  assert.ok(
+    !c.yields.some((y) => /please provide/i.test(y.content ?? '')),
+    'no clarify should be surfaced when retry succeeds',
+  );
+});
+
+test('NeedInfo double-failure: planner raises NeedInfoSignal BOTH times — coordinator surfaces clarify (not stage error)', async () => {
+  const ks = knowledgeStub();
+
+  // Stepper that always raises NeedInfoSignal
+  const alwaysNeedInfoStepper = {
+    name: 'always-need-info',
+    async run(): Promise<never> {
+      throw new NeedInfoSignal('the ABAP source code for program ZTEST');
+    },
+  };
+
+  const built = fakeBuilt({
+    rootStepper: alwaysNeedInfoStepper,
+  });
+
+  const h = new StepperCoordinatorHandler({
+    buildBuilt: async (_ctx, _log) => built as never,
+    knowledgeRagFor: async () => ks.rag as never,
+    toolsRag: {
+      async query() {
+        return [];
+      },
+      lookup() {
+        return undefined;
+      },
+    } as never,
+    mintStepperId: () => 'root',
+    mintTurnId: () => 'turn-1',
+  });
+
+  const c = ctx();
+  // Must NOT throw — second NeedInfoSignal is surfaced as a clarify, not a stage error
+  await h.execute(c.obj as never, {}, {} as never);
+
+  assert.ok(
+    c.yields.some((y) => /please provide/i.test(y.content ?? '')),
+    'a clarify message must be surfaced to the consumer',
+  );
+  assert.ok(
+    c.yields.some((y) => y.finishReason === 'stop'),
+    'a terminal stop must be yielded after clarify',
   );
 });

@@ -7,6 +7,7 @@ import {
   type IToolsRagHandle,
   type LlmCallEntry,
   type LlmUsage,
+  NeedInfoSignal,
   type RequestSummary,
   type RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
@@ -113,22 +114,65 @@ export class StepperCoordinatorHandler implements IStageHandler {
     const built = await buildBuilt(ctx, logLlmCall);
 
     // Run the root Stepper.
-    // Per spec §F, InsufficientSignal is only raised by the finalizer, never
-    // by the run path — no catch needed here.
-    const result: IStepperResult = await built.rootStepper.run({
-      prompt: ctx.inputText,
-      knowledgeRag,
-      toolsRag,
-      budget: built.budget,
-      identity,
-      toolSafety: built.toolSafety,
-      onProgress: (c) => {
-        if (c.kind === 'content') {
-          ctx.yield({ ok: true, value: { content: c.delta } });
-        }
-        ctx.options?.sessionLogger?.logStep('stepper_progress', c);
-      },
-    });
+    // NeedInfoSignal from the planner is caught here and handled with a
+    // retry-with-guidance strategy (bounded to ONE retry):
+    //   1st occurrence: re-run with an augmented prompt that tells the planner
+    //     to plan a fetch step instead of asking for the info.
+    //   2nd occurrence: surface as a clarify to the consumer (do NOT throw a
+    //     stage error).
+    // If a stateOracle is configured in future, it would be routed there instead
+    // of the retry-with-guidance path.
+    const runOnce = async (prompt: string): Promise<IStepperResult> =>
+      built.rootStepper.run({
+        prompt,
+        knowledgeRag,
+        toolsRag,
+        budget: built.budget,
+        identity,
+        toolSafety: built.toolSafety,
+        onProgress: (c) => {
+          if (c.kind === 'content') {
+            ctx.yield({ ok: true, value: { content: c.delta } });
+          }
+          ctx.options?.sessionLogger?.logStep('stepper_progress', c);
+        },
+      });
+
+    let result: IStepperResult;
+    try {
+      result = await runOnce(ctx.inputText);
+    } catch (firstErr) {
+      if (!(firstErr instanceof NeedInfoSignal)) throw firstErr;
+
+      // First NeedInfoSignal: retry with guidance so planner plans a fetch step.
+      const guidedPrompt = `${ctx.inputText}\n\n[Planner guidance: do NOT ask for "${firstErr.query}" — instead plan a step that fetches it using the available tools.]`;
+      try {
+        result = await runOnce(guidedPrompt);
+      } catch (secondErr) {
+        if (!(secondErr instanceof NeedInfoSignal)) throw secondErr;
+
+        // Second NeedInfoSignal: surface as clarify content to the consumer.
+        ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
+          question: secondErr.query,
+        });
+        ctx.yield({
+          ok: true,
+          value: { content: `To proceed, please provide: ${secondErr.query}` },
+        });
+        const usageNeed = traceId
+          ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
+          : undefined;
+        ctx.yield({
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'stop',
+            ...(usageNeed ? { usage: usageNeed } : {}),
+          },
+        });
+        return true;
+      }
+    }
 
     // budget-exhausted → coordinator surfaces a budget-extension clarify (spec §F).
     // Mirror 17.0 DagCoordinatorHandler: yield content chunk containing the question,
