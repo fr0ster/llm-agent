@@ -191,7 +191,7 @@ export interface SmartServerConfig {
   host?: string;
   llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
   rag?: SmartServerRagConfig;
-  mcp?: SmartServerMcpConfig;
+  mcp?: SmartServerMcpConfig | SmartServerMcpConfig[];
   agent?: SmartServerAgentConfig;
   prompts?: SmartServerPromptsConfig;
   mode?: SmartServerMode;

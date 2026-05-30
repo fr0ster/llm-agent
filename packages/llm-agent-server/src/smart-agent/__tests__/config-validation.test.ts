@@ -545,3 +545,64 @@ describe('validateResolvedConfig — llm map shape', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression: top-level mcp: array form (the bug that caused Stepper server
+// to get zero MCP tools — resolveSmartServerConfig was dropping array mcp).
+// ---------------------------------------------------------------------------
+
+describe('resolveSmartServerConfig — top-level mcp: array form', () => {
+  const base = {
+    llm: { provider: 'ollama', model: 'qwen2', apiKey: 'x' },
+  };
+
+  it('preserves array mcp: as cfg.mcp (not silently undefined)', () => {
+    const yaml = {
+      ...base,
+      mcp: [{ type: 'http', url: 'http://localhost:3003/mcp/stream/http' }],
+    };
+    const cfg = resolveSmartServerConfig({}, yaml, {});
+    assert.ok(
+      cfg.mcp !== undefined,
+      'cfg.mcp must not be undefined when mcp: is an array in YAML',
+    );
+    assert.ok(
+      Array.isArray(cfg.mcp),
+      'cfg.mcp must be an array when YAML mcp: is an array',
+    );
+    const arr = cfg.mcp as Array<{ type: string; url?: string }>;
+    assert.equal(arr.length, 1);
+    assert.equal(arr[0].type, 'http');
+    assert.equal(arr[0].url, 'http://localhost:3003/mcp/stream/http');
+  });
+
+  it('preserves multiple entries in array mcp:', () => {
+    const yaml = {
+      ...base,
+      mcp: [
+        { type: 'http', url: 'http://server1/mcp' },
+        { type: 'http', url: 'http://server2/mcp' },
+      ],
+    };
+    const cfg = resolveSmartServerConfig({}, yaml, {});
+    assert.ok(Array.isArray(cfg.mcp));
+    const arr = cfg.mcp as Array<{ url?: string }>;
+    assert.equal(arr.length, 2);
+    assert.equal(arr[0].url, 'http://server1/mcp');
+    assert.equal(arr[1].url, 'http://server2/mcp');
+  });
+
+  it('still resolves single-object mcp: (backward compat)', () => {
+    const yaml = {
+      ...base,
+      mcp: { type: 'http', url: 'http://localhost:3001/mcp' },
+    };
+    const cfg = resolveSmartServerConfig({}, yaml, {});
+    assert.ok(cfg.mcp !== undefined);
+    assert.ok(!Array.isArray(cfg.mcp));
+    assert.equal(
+      (cfg.mcp as { url?: string }).url,
+      'http://localhost:3001/mcp',
+    );
+  });
+});

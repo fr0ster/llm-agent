@@ -861,18 +861,25 @@ function validateResolvedConfig(
   }
 
   if (get(yaml, 'mcp')) {
-    const mcpType = get(yaml, 'mcp', 'type') as string | undefined;
-    if (mcpType && !['http', 'stdio', 'none'].includes(mcpType)) {
-      issues.push(
-        `mcp.type: "${mcpType}" is invalid (one of: http, stdio, none)`,
-      );
-    }
-    if (mcpType === 'http' && !get(yaml, 'mcp', 'url')) {
-      issues.push('mcp.url: required when mcp.type is http');
-    }
-    if (mcpType === 'stdio' && !get(yaml, 'mcp', 'command')) {
-      issues.push('mcp.command: required when mcp.type is stdio');
-    }
+    const rawMcpVal = yaml.mcp;
+    const mcpEntries = Array.isArray(rawMcpVal)
+      ? (rawMcpVal as Array<Record<string, unknown>>)
+      : [rawMcpVal as Record<string, unknown>];
+    mcpEntries.forEach((entry, i) => {
+      const label = Array.isArray(rawMcpVal) ? `mcp[${i}]` : 'mcp';
+      const mcpType = entry?.type as string | undefined;
+      if (mcpType && !['http', 'stdio', 'none'].includes(mcpType)) {
+        issues.push(
+          `${label}.type: "${mcpType}" is invalid (one of: http, stdio, none)`,
+        );
+      }
+      if (mcpType === 'http' && !entry?.url) {
+        issues.push(`${label}.url: required when ${label}.type is http`);
+      }
+      if (mcpType === 'stdio' && !entry?.command) {
+        issues.push(`${label}.command: required when ${label}.type is stdio`);
+      }
+    });
   }
 
   if (get(yaml, 'rag')) {
@@ -1017,11 +1024,14 @@ export function resolveSmartServerConfig(
     | undefined;
   const apiKey = flatApiKey || pipelineApiKey || '';
 
+  const rawMcp = yaml.mcp;
+  const mcpIsArray = Array.isArray(rawMcp);
   const mcpUrl = get(yaml, 'mcp', 'url') as string | undefined;
   const mcpCommand = get(yaml, 'mcp', 'command') as string | undefined;
-  const mcpTypeRaw =
-    (get(yaml, 'mcp', 'type') as string) ??
-    (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null);
+  const mcpTypeRaw = mcpIsArray
+    ? null // array form: type resolved per-entry inside connectMcpClientsFromConfig
+    : ((get(yaml, 'mcp', 'type') as string) ??
+      (mcpUrl ? 'http' : mcpCommand ? 'stdio' : null));
   const mcpType = (mcpTypeRaw === 'none' ? null : mcpTypeRaw) as
     | 'http'
     | 'stdio'
@@ -1089,20 +1099,26 @@ export function resolveSmartServerConfig(
             : {}),
         }
       : undefined,
-    mcp: mcpType
-      ? {
-          type: mcpType,
-          url: mcpUrl || undefined,
-          command: mcpCommand || undefined,
-          args:
-            (args['mcp-args'] as string) || get(yaml, 'mcp', 'args')
-              ? String(args['mcp-args'] || get(yaml, 'mcp', 'args')).split(' ')
-              : undefined,
-          headers:
-            (get(yaml, 'mcp', 'headers') as Record<string, string>) ||
-            undefined,
-        }
-      : undefined,
+    mcp: mcpIsArray
+      ? // Array form: pass through as-is so connectMcpClientsFromConfig can
+        // iterate and connect each entry. Typed as SmartServerMcpConfig[].
+        (rawMcp as import('./smart-server.js').SmartServerMcpConfig[])
+      : mcpType
+        ? {
+            type: mcpType,
+            url: mcpUrl || undefined,
+            command: mcpCommand || undefined,
+            args:
+              (args['mcp-args'] as string) || get(yaml, 'mcp', 'args')
+                ? String(args['mcp-args'] || get(yaml, 'mcp', 'args')).split(
+                    ' ',
+                  )
+                : undefined,
+            headers:
+              (get(yaml, 'mcp', 'headers') as Record<string, string>) ||
+              undefined,
+          }
+        : undefined,
     agent: {
       externalToolsValidationMode: (get(
         yaml,
