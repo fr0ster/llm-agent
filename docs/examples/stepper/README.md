@@ -55,6 +55,61 @@ Wider token budgets and tighter `maxParallelSteps` are recommended.
 
 ---
 
+## Provider profiles (env override)
+
+The mode (`coordinator`) and the provider (`llm:` / `rag:`) are **orthogonal** —
+all three example configs default to **SAP AI Core** but read the provider, the
+per-role models, and the embedder from environment variables, so you swap the
+whole pipeline to another provider without editing YAML.
+
+**Keep ONE provider per pipeline.** Mix only to fill a capability gap — e.g.
+DeepSeek and Anthropic have no embedder, so pair them with Ollama or OpenAI for
+`EMBEDDER_PROVIDER`. SAP AI Core covers LLM + embedder in one provider.
+
+Env vars (defaults shown apply when unset):
+
+| Var | Purpose | Default |
+|-----|---------|---------|
+| `LLM_PROVIDER` | LLM provider for every role | `sap-ai-sdk` |
+| `LLM_API_KEY` | API key (deepseek/openai/anthropic) | _(empty; SAP AI Core uses `AICORE_SERVICE_KEY`)_ |
+| `LLM_URL` | base URL (Ollama / OpenAI-compatible) | _(empty → provider default)_ |
+| `LLM_MAIN_MODEL` / `LLM_PLANNER_MODEL` / `LLM_EXECUTOR_MODEL` / `LLM_REVIEWER_MODEL` / `LLM_FINALIZER_MODEL` | per-role model | SAP AI Core sonnet/haiku |
+| `EMBEDDER_PROVIDER` | embedder provider | `sap-ai-core` |
+| `EMBEDDER_API_KEY` / `EMBEDDER_URL` / `EMBEDDING_MODEL` | embedder credentials/model | _(empty / provider default)_ |
+
+Profiles (one provider each):
+
+```bash
+# SAP AI Core (default — nothing to set beyond AICORE_SERVICE_KEY)
+
+# DeepSeek LLM + Ollama embedder (DeepSeek has no embedder)
+export LLM_PROVIDER=deepseek LLM_API_KEY=$DEEPSEEK_API_KEY
+export LLM_PLANNER_MODEL=deepseek-reasoner LLM_EXECUTOR_MODEL=deepseek-chat \
+       LLM_REVIEWER_MODEL=deepseek-chat LLM_FINALIZER_MODEL=deepseek-reasoner
+export EMBEDDER_PROVIDER=ollama EMBEDDER_URL=http://localhost:11434 EMBEDDING_MODEL=nomic-embed-text
+
+# Fully local Ollama (LLM + embedder)
+export LLM_PROVIDER=ollama LLM_URL=http://localhost:11434
+export LLM_MAIN_MODEL=qwen2.5 LLM_PLANNER_MODEL=qwen2.5 LLM_EXECUTOR_MODEL=qwen2.5 \
+       LLM_REVIEWER_MODEL=qwen2.5 LLM_FINALIZER_MODEL=qwen2.5
+export EMBEDDER_PROVIDER=ollama EMBEDDER_URL=http://localhost:11434 EMBEDDING_MODEL=nomic-embed-text
+
+# OpenAI (LLM + embedder)
+export LLM_PROVIDER=openai LLM_API_KEY=$OPENAI_API_KEY
+export LLM_PLANNER_MODEL=gpt-5 LLM_EXECUTOR_MODEL=gpt-5-mini
+export EMBEDDER_PROVIDER=openai EMBEDDER_API_KEY=$OPENAI_API_KEY EMBEDDING_MODEL=text-embedding-3-small
+```
+
+> DeepSeek note: `deepseek-reasoner` ignores `temperature` and (historically)
+> does not support function-calling — keep it on no-tool roles (planner/reviewer/
+> finalizer) and run the tool-using executor on `deepseek-chat`.
+
+Provider quirks (temperature support, tool-calling, embedder availability) are
+handled per-provider in each provider package, not in the Stepper. The model
+names above are illustrative — use whatever your provider exposes.
+
+---
+
 ## Session persistence and `/v1/sessions` resume
 
 The Stepper coordinator persists session state so a long-running analysis

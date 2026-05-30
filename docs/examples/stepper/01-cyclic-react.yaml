@@ -15,32 +15,47 @@ port: ${SMART_SERVER_PORT:-4020}
 host: 0.0.0.0
 mode: smart
 
+# Provider is env-overridable; defaults to SAP AI Core. To run the whole
+# pipeline on another provider set LLM_PROVIDER (+ LLM_API_KEY / LLM_URL) and the
+# per-role LLM_*_MODEL vars — keep ONE provider per pipeline (see README).
 llm:
   main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-anthropic--claude-4.6-sonnet}
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.5
   executor:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.2
   reviewer:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0
   finalizer:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_FINALIZER_MODEL:-anthropic--claude-4.5-haiku}
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
     resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
     temperature: 0.2
 
+# Embedder is a SEPARATE choice (DeepSeek/Anthropic have no embedder → pair with
+# Ollama or OpenAI). Defaults to SAP AI Core.
 rag:
   type: in-memory
-  embedder: sap-ai-core
+  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  apiKey: ${EMBEDDER_API_KEY:-}
+  url: ${EMBEDDER_URL:-}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
 coordinator:
