@@ -1258,14 +1258,19 @@ export class SmartServer {
         const stepperCfg = parseStepperCoordinatorConfig(rawCoordCfg);
         const logDir = this.cfg.logDir;
 
-        // KnowledgeRag factory: per-session — rehydrates from JsonlKnowledgeBackend
-        // when logDir is set (durable across restarts), else in-memory per session.
+        // KnowledgeRag factory: ONE backend instance shared across all requests.
+        // Both backends are keyed by sessionId internally, so a single instance
+        // gives correct per-session isolation AND persistence across same-cookie
+        // requests within the process. JsonlKnowledgeBackend (logDir set) adds
+        // durability across restarts; InMemoryKnowledgeBackend is the in-process
+        // default. (Previously a fresh InMemoryKnowledgeBackend was created per
+        // call, so subsequent same-session requests lost prior entries and were
+        // re-seeded — review fix.)
         const knowledgeBackend = logDir
           ? new JsonlKnowledgeBackend(logDir)
-          : undefined;
+          : new InMemoryKnowledgeBackend();
         const knowledgeRagFor = async (sessionId: string) => {
-          const backend = knowledgeBackend ?? new InMemoryKnowledgeBackend();
-          const kr = new KnowledgeRag(backend, sessionId);
+          const kr = new KnowledgeRag(knowledgeBackend, sessionId);
           // Seed deployment-supplied guidance into a BRAND-NEW session only
           // (idempotent on resume). Config DATA — keeps the runtime MCP-agnostic.
           await seedSessionKnowledge(

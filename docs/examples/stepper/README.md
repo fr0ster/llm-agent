@@ -132,12 +132,21 @@ curl -X POST http://localhost:4021/v1/chat/completions \
   -H 'Cookie: sid=<value-from-step-1>' \
   -d '{"messages":[{"role":"user","content":"Continue"}],"stream":true}'
 
-# 3. List active sessions.
-curl http://localhost:4021/v1/sessions
+# 3. List sessions for the current identity — you MUST send the sid cookie.
+#    Without it the server mints a NEW identity and returns its (empty) list.
+curl -b 'sid=<value-from-step-1>' http://localhost:4021/v1/sessions
 
-# 4. Fetch a specific session's knowledge-RAG entries.
-curl http://localhost:4021/v1/sessions/<sessionId>
+# 4. Resume a session by id (claims it + marks it idle so it can be re-entered).
+curl -X POST -b 'sid=<value-from-step-1>' \
+  http://localhost:4021/v1/sessions/<sessionId>/resume
+
+# 5. Delete a session (drops metadata + evicts its knowledge-RAG entries).
+curl -X DELETE -b 'sid=<value-from-step-1>' \
+  http://localhost:4021/v1/sessions/<sessionId>
 ```
+
+Implemented endpoints: `GET /v1/sessions`, `POST /v1/sessions/:id/resume`,
+`DELETE /v1/sessions/:id`. All are scoped to the `sid`-cookie identity.
 
 The server issues a `sid` cookie on the first request. Subsequent requests
 that carry the same cookie are routed to the same session object graph,
