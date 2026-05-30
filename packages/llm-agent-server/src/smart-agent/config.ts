@@ -1324,6 +1324,16 @@ export interface StepperCoordinatorConfig {
   maxParallelSteps: number;
   maxDepth: number;
   tokenBudget: number;
+  /**
+   * Session-scope knowledge entries written into a NEW session's knowledge-RAG
+   * before planning. A deployment/config PARAMETER (not agent code) — the
+   * operator fills it with guidance for THEIR actual MCP tools (e.g. which read
+   * tool reads what). Surfaced to the planner/executor as "Known facts", and the
+   * executor enriches its tool-search query with these facts, so a tool named in
+   * a seed takes priority over tools the bare-prompt MCP search would surface.
+   * The runtime stays MCP-agnostic: tool knowledge lives here as data.
+   */
+  knowledgeSeed: ReadonlyArray<{ content: string; artifactType: string }>;
 }
 
 const MODES = new Set<StepperMode>([
@@ -1374,6 +1384,25 @@ export function parseStepperCoordinatorConfig(
           return { has: (d: number) => s.has(d) };
         })();
 
+  const knowledgeSeed = Array.isArray(coord.knowledgeSeed)
+    ? (
+        coord.knowledgeSeed as Array<{
+          content?: unknown;
+          artifactType?: unknown;
+        }>
+      )
+        .filter(
+          (e) => e && typeof e.content === 'string' && e.content.trim() !== '',
+        )
+        .map((e) => ({
+          content: e.content as string,
+          artifactType:
+            typeof e.artifactType === 'string' && e.artifactType
+              ? e.artifactType
+              : 'guidance',
+        }))
+    : [];
+
   return {
     mode,
     toolSafety: { mutationPolicy, knownReadOnlyTools },
@@ -1381,5 +1410,6 @@ export function parseStepperCoordinatorConfig(
     maxParallelSteps: Number(stepper.maxParallelSteps ?? 4),
     maxDepth: Number(stepper.maxDepth ?? 4),
     tokenBudget: Number(stepper.tokenBudget ?? 1_000_000),
+    knowledgeSeed,
   };
 }

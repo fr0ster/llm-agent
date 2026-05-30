@@ -25,6 +25,27 @@ test('parses mode, mutationPolicy, knownReadOnlyTools, stepper.* with defaults',
   assert.equal(c.tokenBudget, 500000);
 });
 
+test('knowledgeSeed: parses entries (default artifactType=guidance), drops blanks, defaults empty', () => {
+  const empty = parseStepperCoordinatorConfig({ mode: 'planned-react' });
+  assert.deepEqual(empty.knowledgeSeed, []);
+
+  const c = parseStepperCoordinatorConfig({
+    mode: 'cyclic-react',
+    knowledgeSeed: [
+      { content: 'Read a report via GetProgram.' },
+      {
+        content: 'Read an include body via GetInclude.',
+        artifactType: 'tool-rule',
+      },
+      { content: '   ' }, // blank → dropped
+      { artifactType: 'x' }, // no content → dropped
+    ],
+  });
+  assert.equal(c.knowledgeSeed.length, 2);
+  assert.equal(c.knowledgeSeed[0].artifactType, 'guidance');
+  assert.equal(c.knowledgeSeed[1].artifactType, 'tool-rule');
+});
+
 test('defaults: mode=planned-react, mutationPolicy=confirm, reviewer atDepths=[0,1], maxParallelSteps=4', () => {
   const c = parseStepperCoordinatorConfig({});
   assert.equal(c.mode, 'planned-react');

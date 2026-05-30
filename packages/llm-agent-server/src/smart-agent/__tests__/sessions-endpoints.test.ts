@@ -3,6 +3,10 @@ import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import {
+  InMemoryKnowledgeBackend,
+  KnowledgeRag,
+} from '@mcp-abap-adt/llm-agent-libs';
 import { InMemorySessionMetaStore } from '../session-meta-store.js';
 import {
   handleDeleteSession,
@@ -10,12 +14,62 @@ import {
   handleResumeSession,
   recordSessionEnd,
   recordSessionStart,
+  seedSessionKnowledge,
   usesStepper,
 } from '../smart-server.js';
 
 // ---------------------------------------------------------------------------
 // /v1/sessions extracted handler tests
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Session-scope knowledge seeding (deployment-supplied tool guidance)
+// ---------------------------------------------------------------------------
+
+test('seedSessionKnowledge writes guidance into a NEW session, queryable as a fact', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'sess-seed-1');
+  await seedSessionKnowledge(
+    kr,
+    [
+      {
+        content: 'Read an include body via GetInclude.',
+        artifactType: 'guidance',
+      },
+    ],
+    '2026-05-30T10:00:00Z',
+  );
+  const facts = await kr.query('how to read includes', { k: 10 });
+  assert.ok(
+    facts.some((f) => /GetInclude/.test(f.content)),
+    'seeded guidance must be queryable from the session-scope knowledge-RAG',
+  );
+});
+
+test('seedSessionKnowledge is idempotent — a resumed session is not re-seeded', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  const seeds = [{ content: 'rule', artifactType: 'guidance' }];
+  await seedSessionKnowledge(
+    new KnowledgeRag(backend, 'sess-seed-2'),
+    seeds,
+    '2026-05-30T10:00:00Z',
+  );
+  await seedSessionKnowledge(
+    new KnowledgeRag(backend, 'sess-seed-2'),
+    seeds,
+    '2026-05-30T11:00:00Z',
+  );
+  const all = await new KnowledgeRag(backend, 'sess-seed-2').list({
+    artifactType: 'guidance',
+  });
+  assert.equal(all.length, 1, 'resume must not re-seed');
+});
+
+test('seedSessionKnowledge with empty seeds is a no-op', async () => {
+  const kr = new KnowledgeRag(new InMemoryKnowledgeBackend(), 'sess-seed-3');
+  await seedSessionKnowledge(kr, [], '2026-05-30T10:00:00Z');
+  assert.equal(kr.fingerprint(), 'n=0');
+});
 
 // ---------------------------------------------------------------------------
 // Finding 3: the live request path populates the meta store

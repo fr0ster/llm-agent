@@ -89,9 +89,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the `CyclicReActExecutor` queries the session blackboard and prepends the
   relevant facts to its prompt, then enriches the proactive tool-search query
   with that context BEFORE vectorizing — so guidance already present in the
-  blackboard (from prior steps or a consumer's RAG layer) steers which tools
-  surface, not just the bare prompt. Tool/domain knowledge stays in RAG data,
-  never hardcoded in agent code (the runtime is MCP-agnostic).
+  blackboard steers which tools surface, not just the bare prompt. A tool named
+  in a blackboard fact thus takes priority over what the bare-prompt MCP search
+  would return. Tool/domain knowledge stays in RAG data, never in agent code.
+
+- **Session-scope knowledge seeding (`coordinator.knowledgeSeed`).** A config
+  PARAMETER — a list of guidance entries written into every NEW session's
+  knowledge-RAG before planning (idempotent on resume). The operator fills it
+  with guidance for THEIR actual MCP tools (e.g. which read tool reads what);
+  the agent hardcodes nothing, so the runtime stays MCP-agnostic. Combined with
+  the executor's blackboard read above, a seeded tool reliably wins over a
+  bare-prompt MCP search.
 
 ### Changed
 

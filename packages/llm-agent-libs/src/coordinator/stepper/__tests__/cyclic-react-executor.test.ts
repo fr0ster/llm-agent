@@ -405,7 +405,7 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
     async query() {
       return [
         {
-          content: 'GUIDANCE-MARKER-42: prefer the deep-read path.',
+          content: 'Read an include body via GetInclude.',
           metadata: { artifactType: 'guidance', createdAt: 'x' },
         },
       ];
@@ -425,7 +425,7 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
     maxIterations: 10,
   });
   await exec.execute({
-    prompt: 'review thing Z',
+    prompt: 'review program Z',
     tools: [{ name: 'seed' }], // non-empty → skip proactive tool seeding
     knowledgeRag: ragWithFact as never,
     toolsRag: toolsStub({}) as never,
@@ -434,34 +434,35 @@ test('executor injects shared knowledge-RAG facts/guidance into its prompt (make
   });
   assert.match(
     firstUserContent,
-    /GUIDANCE-MARKER-42/,
-    'the blackboard fact must appear in the executor LLM prompt',
+    /GetInclude/,
+    'the seeded blackboard guidance must appear in the executor LLM prompt',
   );
 });
 
-test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectorization (contextual-RAG-then-tool-search order)', async () => {
-  // The crux: seeded guidance must steer WHICH tools surface. The executor must
-  // enrich the tool-search text with the knowledge-RAG context first, then
-  // vectorize THAT — otherwise a "review program" prompt never ranks GetInclude
-  // and the model falls back to the wrong tool.
-  let toolQuery = '';
+test('PRIORITY: a tool named in a RAG seed beats what bare-prompt MCP search returns', async () => {
+  // The real scenario. MCP tool-search (MCP_RAG) for "review program Z" surfaces
+  // only GetProgram. A seeded fact says include bodies are read via GetInclude.
+  // Because the executor enriches the tool-search query with that seeded fact
+  // BEFORE vectorizing, GetInclude surfaces and is offered to the model — i.e.
+  // the RAG-seeded tool takes PRIORITY over the bare-prompt MCP result. This is
+  // exactly what made includes readable on live SAP.
   const toolsRag = {
     async query(text: string) {
-      toolQuery = text;
-      return [{ name: 'DeepReader', readOnly: true }];
+      // Seed-steered query (carries the GetInclude guidance) → include tool.
+      // Bare-prompt query → only the program tool MCP_RAG ranks for "review".
+      return /GetInclude/.test(text)
+        ? [{ name: 'GetInclude', readOnly: true }]
+        : [{ name: 'GetProgram', readOnly: true }];
     },
     lookup(n: string) {
-      return n === 'DeepReader'
-        ? { name: 'DeepReader', readOnly: true }
-        : undefined;
+      return { name: n, readOnly: true };
     },
   };
   const ragWithGuidance = {
     async query() {
       return [
         {
-          content:
-            'GUIDANCE-MARKER-99: use the DeepReader tool for nested reads.',
+          content: 'Read an include body via GetInclude (GetProgram cannot).',
           metadata: { artifactType: 'guidance', createdAt: 'x' },
         },
       ];
@@ -474,7 +475,21 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
       return 'n=1';
     },
   };
-  const llm = scriptedLlm([{ content: 'Done.' }]);
+  // Capture the tool set the executor offers the model on turn 1.
+  let offeredTools: string[] = [];
+  const llm = {
+    name: 'stub',
+    async chat(_m: unknown, tools: Array<{ name: string }>) {
+      offeredTools = tools.map((t) => t.name);
+      return {
+        ok: true as const,
+        value: {
+          content: 'Done.',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    },
+  };
   const exec = new CyclicReActExecutor({
     llm: llm as never,
     callMcp: mcp({}).call,
@@ -482,17 +497,78 @@ test('tool-seeding query is enriched with knowledge-RAG guidance BEFORE vectoriz
     maxIterations: 10,
   });
   await exec.execute({
-    prompt: 'review thing Z',
-    tools: [], // empty → triggers proactive seeding
+    prompt: 'review program Z',
+    tools: [], // empty → triggers proactive seeding (the path under test)
     knowledgeRag: ragWithGuidance as never,
     toolsRag: toolsRag as never,
     budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
     ...META_BASE,
   });
-  assert.match(
-    toolQuery,
-    /GUIDANCE-MARKER-99/,
-    'tool-search query must carry the blackboard guidance, not just the bare prompt',
+  assert.ok(
+    offeredTools.includes('GetInclude'),
+    `seeded tool must take priority and be offered; got: ${offeredTools.join(',') || '(none)'}`,
+  );
+});
+
+test('scenario: a multi-fetch sequence writes a SEPARATE knowledge-RAG artifact per tool result', async () => {
+  // Mirrors the real review shape (read object → list parts → read each part)
+  // with neutral tool names: every tool RESULT must be persisted as its own
+  // mcp-result artifact so the finalizer can synthesize from all of them.
+  const llm = scriptedLlm([
+    {
+      content: 'a',
+      toolCalls: [{ name: 'ReadObject', arguments: { n: 'Z' } }],
+    },
+    { content: 'b', toolCalls: [{ name: 'ListParts', arguments: { n: 'Z' } }] },
+    {
+      content: 'c',
+      toolCalls: [{ name: 'ReadPart', arguments: { p: 'Z_A' } }],
+    },
+    {
+      content: 'd',
+      toolCalls: [{ name: 'ReadPart', arguments: { p: 'Z_B' } }],
+    },
+    { content: 'Final review of Z.' },
+  ]);
+  const m = mcp({
+    ReadObject: 'OBJECT-SOURCE',
+    ListParts: 'Z_A\nZ_B',
+    ReadPart: 'PART-SOURCE',
+  });
+  const { rag, writes } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await exec.execute({
+    prompt: 'review Z fully',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({
+      ReadObject: { name: 'ReadObject', readOnly: true },
+      ListParts: { name: 'ListParts', readOnly: true },
+      ReadPart: { name: 'ReadPart', readOnly: true },
+    }) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.deepEqual(m.calls, [
+    'ReadObject',
+    'ListParts',
+    'ReadPart',
+    'ReadPart',
+  ]);
+  const artifacts = writes.filter((w) => w.artifactType === 'mcp-result');
+  assert.equal(
+    artifacts.length,
+    4,
+    'one mcp-result artifact per tool call (object + list + 2 parts)',
+  );
+  assert.ok(
+    writes.some((w) => w.content.includes('Final review of Z')),
+    'final answer also persisted',
   );
 });
 
