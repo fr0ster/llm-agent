@@ -1315,6 +1315,42 @@ export type StepperMode = 'cyclic-react' | 'deep-stepper' | 'planned-react';
 /**
  * Configuration for the recursive Stepper coordinator.
  */
+/**
+ * A node of a declared composition tree. A leaf executes via the executor; a
+ * node with a nested `flow` runs as a child Stepper (structural recursion —
+ * the sub-cycle is declared and visible).
+ */
+export interface CompositionNode {
+  id: string;
+  goal: string;
+  dependsOn?: string[];
+  flow?: StepperCompositionSpec;
+}
+
+/**
+ * Front-end-agnostic description of a Stepper composition. Produced by BOTH the
+ * yaml parser (`toCompositionSpec`) and a code builder; consumed by the runtime
+ * (`buildFromComposition`). Recursive via `nodes[].flow`.
+ */
+export interface StepperCompositionSpec {
+  planner: 'none' | 'llm' | 'static';
+  granularity: 'shallow' | 'detailed';
+  plan?: PlanNode[];
+  /** Declared composition nodes; a node with a nested `flow` is a sub-Stepper. */
+  nodes?: CompositionNode[];
+  executor: 'simple' | 'cyclic-react' | 'recursive';
+  finalizer: 'llm';
+  reviewerAtDepths: { has(depth: number): boolean };
+  maxParallelSteps: number;
+  maxDepth: number;
+  tokenBudget: number;
+  toolSafety: {
+    mutationPolicy: 'confirm' | 'trusted';
+    knownReadOnlyTools: ReadonlySet<string>;
+  };
+  formalizeTask: boolean;
+}
+
 export interface StepperCoordinatorConfig {
   mode: StepperMode;
   toolSafety: {
@@ -1366,6 +1402,12 @@ export interface StepperCoordinatorConfig {
     finalizer: 'llm';
     /** Declarative plan nodes, required when planner === 'static'. */
     plan?: PlanNode[];
+    /**
+     * Declared composition nodes (the "yaml is a tree" shape). A node with a
+     * nested `flow` is a sub-Stepper. When present at the root, the planner is
+     * effectively static over these nodes.
+     */
+    nodes?: CompositionNode[];
   };
 }
 
@@ -1407,6 +1449,81 @@ function parseFlowPlan(raw: unknown): PlanNode[] | undefined {
           }
         : {}),
       ...(typeof n.agent === 'string' ? { agent: n.agent } : {}),
+    }));
+  return nodes.length > 0 ? nodes : undefined;
+}
+
+/** Bounds a nested composition flow inherits from the root. */
+type FlowBounds = Pick<
+  StepperCompositionSpec,
+  | 'reviewerAtDepths'
+  | 'maxParallelSteps'
+  | 'maxDepth'
+  | 'tokenBudget'
+  | 'toolSafety'
+  | 'formalizeTask'
+>;
+
+/**
+ * Parse a (possibly nested) `flow` block into a full StepperCompositionSpec,
+ * inheriting bounds from the root. Mutually recursive with
+ * parseCompositionNodes (function declarations are hoisted).
+ */
+function parseNestedFlowSpec(
+  flowCfg:
+    | {
+        planner?: { type?: string; granularity?: string };
+        executor?: { type?: string };
+        plan?: unknown;
+        nodes?: unknown;
+      }
+    | undefined,
+  bounds: FlowBounds,
+): StepperCompositionSpec {
+  const plannerType = flowCfg?.planner?.type ?? 'llm';
+  if (!['none', 'llm', 'static'].includes(plannerType))
+    throw new Error(`flow.planner.type must be none|llm|static`);
+  const granularity = flowCfg?.planner?.granularity ?? 'shallow';
+  if (!['shallow', 'detailed'].includes(granularity))
+    throw new Error(`flow.planner.granularity must be shallow|detailed`);
+  const executor = flowCfg?.executor?.type ?? 'cyclic-react';
+  if (!['simple', 'cyclic-react', 'recursive'].includes(executor))
+    throw new Error(`flow.executor.type must be simple|cyclic-react|recursive`);
+  const plan = parseFlowPlan(flowCfg?.plan);
+  const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
+  return {
+    planner: plannerType as 'none' | 'llm' | 'static',
+    granularity: granularity as 'shallow' | 'detailed',
+    ...(plan ? { plan } : {}),
+    ...(nodes ? { nodes } : {}),
+    executor: executor as 'simple' | 'cyclic-react' | 'recursive',
+    finalizer: 'llm',
+    ...bounds,
+  };
+}
+
+/** Parse composition nodes; a node with a nested `flow` recurses into a sub-spec. */
+function parseCompositionNodes(
+  raw: unknown,
+  bounds: FlowBounds,
+): CompositionNode[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const nodes = raw
+    .filter(
+      (n): n is Record<string, unknown> =>
+        !!n && typeof (n as { goal?: unknown }).goal === 'string',
+    )
+    .map((n, i) => ({
+      id: typeof n.id === 'string' && n.id ? n.id : `n${i}`,
+      goal: n.goal as string,
+      ...(Array.isArray(n.dependsOn)
+        ? {
+            dependsOn: (n.dependsOn as unknown[]).filter(
+              (d) => typeof d === 'string',
+            ) as string[],
+          }
+        : {}),
+      ...(n.flow ? { flow: parseNestedFlowSpec(n.flow as never, bounds) } : {}),
     }));
   return nodes.length > 0 ? nodes : undefined;
 }
@@ -1481,6 +1598,7 @@ export function parseStepperCoordinatorConfig(
         executor?: { type?: string };
         finalizer?: { type?: string };
         plan?: unknown;
+        nodes?: unknown;
       }
     | undefined;
   const plannerType = flowCfg?.planner?.type ?? preset.planner;
@@ -1502,26 +1620,46 @@ export function parseStepperCoordinatorConfig(
       `coordinator.flow.finalizer.type 'passthrough' is not yet implemented (use 'llm')`,
     );
   const plan = parseFlowPlan(flowCfg?.plan);
-  if (plannerType === 'static' && !plan)
+
+  const maxParallelSteps = Number(stepper.maxParallelSteps ?? 4);
+  const maxDepth = Number(stepper.maxDepth ?? 4);
+  const tokenBudget = Number(stepper.tokenBudget ?? 1_000_000);
+  const formalizeTask = coord.formalizeTask === true;
+
+  // Nested composition nodes inherit the root bounds (a sub-cycle uses the same
+  // parallelism / depth / budget / safety unless the runtime threads otherwise).
+  const bounds: FlowBounds = {
+    reviewerAtDepths,
+    maxParallelSteps,
+    maxDepth,
+    tokenBudget,
+    toolSafety: { mutationPolicy, knownReadOnlyTools },
+    formalizeTask,
+  };
+  const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
+
+  // Static planner needs an explicit plan OR declared nodes (nodes ARE the plan).
+  if (plannerType === 'static' && !plan && !nodes)
     throw new Error(
-      `coordinator.flow.planner.type 'static' requires a non-empty coordinator.flow.plan`,
+      `coordinator.flow.planner.type 'static' requires coordinator.flow.plan or coordinator.flow.nodes`,
     );
 
   return {
     mode,
     toolSafety: { mutationPolicy, knownReadOnlyTools },
     reviewerAtDepths,
-    maxParallelSteps: Number(stepper.maxParallelSteps ?? 4),
-    maxDepth: Number(stepper.maxDepth ?? 4),
-    tokenBudget: Number(stepper.tokenBudget ?? 1_000_000),
+    maxParallelSteps,
+    maxDepth,
+    tokenBudget,
     knowledgeSeed,
-    formalizeTask: coord.formalizeTask === true,
+    formalizeTask,
     flow: {
       planner: plannerType as 'none' | 'llm' | 'static',
       granularity: granularity as 'shallow' | 'detailed',
       executor: executorType as 'simple' | 'cyclic-react' | 'recursive',
       finalizer: 'llm',
       ...(plan ? { plan } : {}),
+      ...(nodes ? { nodes } : {}),
     },
   };
 }

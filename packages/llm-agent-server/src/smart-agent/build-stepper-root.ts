@@ -25,6 +25,7 @@ import {
   type NormalizedLlmMap,
   parseStepperCoordinatorConfig,
   resolveLlmConfig,
+  type StepperCompositionSpec,
   type StepperCoordinatorConfig,
 } from './config.js';
 import type { SmartServerLlmConfig } from './smart-server.js';
@@ -102,48 +103,10 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
   model: 'stub',
 } as never;
 
-/**
- * Front-end-agnostic description of a Stepper composition. BOTH the yaml parser
- * (`toCompositionSpec` below) and a future code builder produce this; the
- * runtime (`buildFromComposition`) consumes ONLY this — never raw config. This
- * is the seam that gives yaml⟷builder parity and (later) nested sub-flows.
- */
-export interface CompositionNode {
-  id: string;
-  goal: string;
-  dependsOn?: string[];
-  /**
-   * Nested composition: this node is NOT a leaf — it runs as a child Stepper
-   * built from `flow` (its own planner/executor/loop). Structural recursion:
-   * the sub-cycle is declared and visible. Omit for a leaf node.
-   */
-  flow?: StepperCompositionSpec;
-}
-
-export interface StepperCompositionSpec {
-  planner: 'none' | 'llm' | 'static';
-  /** LLM planner eager-decomposition knob; ignored by none/static. */
-  granularity: 'shallow' | 'detailed';
-  /** Declarative nodes for planner === 'static'. */
-  plan?: PlanNode[];
-  /**
-   * Declared composition nodes. When present, the planner is static over these
-   * nodes; a node with a nested `flow` becomes a child Stepper (structural
-   * recursion). This is the "yaml is a composition tree" shape.
-   */
-  nodes?: CompositionNode[];
-  executor: 'simple' | 'cyclic-react' | 'recursive';
-  finalizer: 'llm';
-  reviewerAtDepths: { has(depth: number): boolean };
-  maxParallelSteps: number;
-  maxDepth: number;
-  tokenBudget: number;
-  toolSafety: {
-    mutationPolicy: 'confirm' | 'trusted';
-    knownReadOnlyTools: ReadonlySet<string>;
-  };
-  formalizeTask: boolean;
-}
+// StepperCompositionSpec + CompositionNode are defined in config.ts (so the
+// yaml parser can produce them without a circular import) and re-exported here
+// as the build-time public surface.
+export type { CompositionNode, StepperCompositionSpec } from './config.js';
 
 /** Build-time dependencies (everything not part of the composition itself). */
 export interface BuildFromCompositionDeps {
@@ -169,6 +132,7 @@ export function toCompositionSpec(
     planner: config.flow.planner,
     granularity: config.flow.granularity,
     ...(config.flow.plan ? { plan: config.flow.plan } : {}),
+    ...(config.flow.nodes ? { nodes: config.flow.nodes } : {}),
     executor: config.flow.executor,
     finalizer: config.flow.finalizer,
     reviewerAtDepths: config.reviewerAtDepths,

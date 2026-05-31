@@ -71,3 +71,46 @@ test('invalid mode throws', () => {
     /unknown coordinator\.mode/i,
   );
 });
+
+// ── (б2) nested flow.nodes — yaml composition tree → spec ──────────────────────
+
+test('flow.nodes with a nested flow parses into a recursive composition spec', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: {
+      planner: { type: 'static' },
+      nodes: [
+        { id: 'read', goal: 'Read the code' },
+        {
+          id: 'analyze',
+          goal: 'Analyze',
+          flow: {
+            planner: { type: 'llm', granularity: 'detailed' },
+            executor: { type: 'cyclic-react' },
+            nodes: [{ id: 'sec', goal: 'security' }],
+          },
+        },
+      ],
+    },
+  });
+  assert.equal(c.flow.planner, 'static');
+  assert.ok(c.flow.nodes, 'root nodes parsed');
+  assert.equal(c.flow.nodes?.length, 2);
+  const analyze = c.flow.nodes?.find((n) => n.id === 'analyze');
+  assert.ok(analyze?.flow, 'analyze node has a nested flow');
+  // nested flow keeps its own planner config…
+  assert.equal(analyze?.flow?.planner, 'llm');
+  assert.equal(analyze?.flow?.granularity, 'detailed');
+  // …and its own nested nodes…
+  assert.equal(analyze?.flow?.nodes?.[0]?.id, 'sec');
+  // …while inheriting the root bounds (parallelism here defaults to 4).
+  assert.equal(analyze?.flow?.maxParallelSteps, 4);
+});
+
+test('a leaf node (no nested flow) parses without a flow field', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: { nodes: [{ id: 'x', goal: 'do x' }] },
+  });
+  assert.equal(c.flow.nodes?.[0]?.flow, undefined);
+});
