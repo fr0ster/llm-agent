@@ -113,6 +113,18 @@ export class StepperCoordinatorHandler implements IStageHandler {
 
     const built = await buildBuilt(ctx, logLlmCall);
 
+    // Formalize the overall task ONCE (opt-in via coordinator.formalizeTask).
+    // Derived from the ORIGINAL request; stays constant across needInfo retries
+    // and is threaded into rootStepper.run as a compact anchor.
+    const taskSpec = built.taskFormalizer
+      ? await built.taskFormalizer.formalize({
+          prompt: ctx.inputText,
+          signal: ctx.options?.signal,
+        })
+      : undefined;
+    if (taskSpec)
+      ctx.options?.sessionLogger?.logStep('task_formalized', { taskSpec });
+
     // Run the root Stepper.
     // NeedInfoSignal from the planner is caught here and handled with a
     // retry-with-guidance strategy (bounded to ONE retry):
@@ -130,6 +142,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
         budget: built.budget,
         identity,
         toolSafety: built.toolSafety,
+        taskSpec,
         // Thread the client abort signal so cancelling the request actually
         // stops the planner/executor/child-Stepper path, and the sessionLogger
         // so per-step logging (executor_tool_seed, etc.) reaches the request log.

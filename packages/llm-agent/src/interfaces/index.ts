@@ -186,6 +186,8 @@ export type {
   SubAgentContextRequest,
   SubAgentContextResult,
 } from './subagent-context.js';
+export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
+export { renderTaskSpec } from './task-spec.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {

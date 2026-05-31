@@ -9,6 +9,7 @@ import type {
   ToolSafetyPolicy,
 } from './stepper.js';
 import type { StreamChunk } from './streaming.js';
+import type { ITaskSpec } from './task-spec.js';
 
 export interface IStepperInterpreter {
   readonly name: string;
@@ -23,6 +24,7 @@ export interface IStepperInterpreter {
       budget: Budget;
       identity: RunIdentity;
       toolSafety: ToolSafetyPolicy;
+      taskSpec?: ITaskSpec;
       maxParallelSteps: number;
       mintStepperId: () => string;
       signal?: AbortSignal;

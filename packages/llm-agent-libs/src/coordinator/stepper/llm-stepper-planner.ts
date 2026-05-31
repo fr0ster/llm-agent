@@ -3,9 +3,11 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
   IStepperPlanner,
+  ITaskSpec,
   IToolsRagHandle,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
+import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
 import { parseDagPlan } from '../dag/llm-dag-planner.js';
 
 export const STEPPER_PLANNER_SYSTEM = `You are a planner in a recursive Stepper hierarchy. Decompose the task into a SHALLOW DAG of steps.
@@ -19,12 +21,27 @@ Respond with ONLY one of:
 {"needInfo":"<query>"}  — ONLY for a fact that NO listed tool can obtain (e.g. a human decision, or knowledge external to the system). If a listed tool below could get it, plan a step instead.
 {"clarify":"<question>"}  — you need a human decision before planning`;
 
+/** Granularity directive appended to the planner system prompt — the eager
+ *  decomposition knob (see DESIGN). 'shallow' defers detail to executors;
+ *  'detailed' decomposes fully into concrete leaves up front. */
+const GRANULARITY_DIRECTIVE = {
+  shallow:
+    '\nGRANULARITY: produce a SHALLOW plan — a few high-level steps; defer fine-grained detail to the executors that run each step.',
+  detailed:
+    '\nGRANULARITY: produce a DETAILED plan NOW — decompose fully into concrete, single-action leaf steps with explicit dependsOn; do not defer detail to the executors.',
+} as const;
+
 export class LlmStepperPlanner implements IStepperPlanner {
   readonly name = 'llm-stepper';
   readonly model?: string;
+  private readonly granularity: 'shallow' | 'detailed';
 
-  constructor(private readonly llm: ILlm) {
+  constructor(
+    private readonly llm: ILlm,
+    granularity: 'shallow' | 'detailed' = 'shallow',
+  ) {
     this.model = llm.model;
+    this.granularity = granularity;
   }
 
   async plan(input: {
@@ -34,6 +51,7 @@ export class LlmStepperPlanner implements IStepperPlanner {
     parentPath: string[];
     identity: RunIdentity;
     agents?: ReadonlyArray<{ name: string; description?: string }>;
+    taskSpec?: ITaskSpec;
     signal?: AbortSignal;
   }): Promise<DagPlan> {
     const facts = await input.knowledgeRag.query(input.prompt, { k: 8 });
@@ -66,11 +84,20 @@ export class LlmStepperPlanner implements IStepperPlanner {
             .join('\n')}\n\n`
         : '';
 
-    const user = `${factBlock}${toolsBlock}${agentsBlock}Task: ${input.prompt}`;
+    // Overall-task anchor: every planner at every level sees the formalized
+    // global task (with its constraints), not just its local sub-prompt.
+    const taskBlock = input.taskSpec
+      ? `${renderTaskSpec(input.taskSpec)}\n\n`
+      : '';
+
+    const user = `${taskBlock}${factBlock}${toolsBlock}${agentsBlock}Task: ${input.prompt}`;
 
     const res = await this.llm.chat(
       [
-        { role: 'system', content: STEPPER_PLANNER_SYSTEM },
+        {
+          role: 'system',
+          content: `${STEPPER_PLANNER_SYSTEM}${GRANULARITY_DIRECTIVE[this.granularity]}`,
+        },
         { role: 'user', content: user },
       ] as never,
       [] as never,

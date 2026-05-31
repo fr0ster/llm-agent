@@ -1385,16 +1385,16 @@ export class SmartServer {
         // that iterates stepperMcpClients. Exported for testability (B-1).
         const callMcp = buildMcpBridge(stepperMcpClients);
 
-        // Child-Stepper registry — reserved for recursive `deep-stepper`
-        // (feature/recursive-deep-stepper branch). Left empty: the two modes
-        // shipped in 18.0 (cyclic-react, planned-react) build no child Steppers.
+        // DI/test override registry — left empty in production so buildStepperRoot
+        // builds the recursive child Steppers itself from `subagents` (below),
+        // sharing this run's role LLMs + shared token ledger.
         const stepperRegistry = new Map<
           string,
           import('@mcp-abap-adt/llm-agent').IStepper
         >();
 
-        // Declared subagents (name + description). Passed through for the future
-        // deep-stepper recursion; ignored by buildStepperRoot in 18.0.
+        // Declared subagents (name + description) → advertised to the planner and
+        // turned into recursive child Steppers in deep-stepper mode (Finding 1).
         const stepperSubagents = (this.cfg.subAgentConfigs ?? []).map((s) => ({
           name: s.name,
           description: s.description,

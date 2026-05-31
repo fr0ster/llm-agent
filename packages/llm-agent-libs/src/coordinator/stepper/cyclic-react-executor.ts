@@ -6,6 +6,7 @@ import {
   type LlmTool,
   type LlmUsage,
   type Message,
+  renderTaskSpec,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface CyclicReActExecutorDeps {
@@ -64,9 +65,15 @@ export class CyclicReActExecutor implements IExecutor {
       budget,
       identity,
       toolSafety,
+      taskSpec,
       signal,
       onProgress,
     } = input;
+    // Persistent "main task" anchor — rendered ONCE and pinned in the system
+    // message, so it survives EVERY iteration (even as tool results pile up) and
+    // the executor never loses the overall task. Bounded (a few lines), not the
+    // full conversation. Absent → behaves as before.
+    const taskAnchor = taskSpec ? `\n\n${renderTaskSpec(taskSpec)}` : '';
     // Always-on: prefer a per-call resolver, else the deps-injected one.
     const needResolver = input.needResolver ?? this.deps.needResolver;
     const ref = {
@@ -94,7 +101,7 @@ export class CyclicReActExecutor implements IExecutor {
     }
 
     const messages: Message[] = [
-      { role: 'system', content: EXECUTOR_SYSTEM },
+      { role: 'system', content: `${EXECUTOR_SYSTEM}${taskAnchor}` },
       { role: 'user', content: `${factsPrefix}${prompt}` },
     ];
     const tools: LlmTool[] = [...input.tools];
@@ -116,7 +123,10 @@ export class CyclicReActExecutor implements IExecutor {
     // program" task, so the model would fall back to the wrong tool. This is the
     // contextual-RAG-then-tool-search ordering.
     if (tools.length === 0) {
-      const seedQuery = factsPrefix ? `${factsPrefix}${prompt}` : prompt;
+      // The seed query reflects the OVERALL intent (taskSpec) + shared guidance
+      // (factsPrefix) + this node's prompt — so tool-search ranks tools for the
+      // whole task, not just the narrow sub-goal.
+      const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${factsPrefix}${prompt}`;
       const seeded = await toolsRag.query(seedQuery, 10);
       for (const t of seeded) tools.push(t as LlmTool);
       input.sessionLogger?.logStep('executor_tool_seed', {

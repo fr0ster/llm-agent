@@ -3,6 +3,7 @@ import {
   type ILlm,
   type IReviewStrategy,
   type IStepper,
+  type ITaskFormalizer,
   type LlmCallEntry,
   TokenLedger,
 } from '@mcp-abap-adt/llm-agent';
@@ -11,8 +12,10 @@ import {
   LlmNeedResolver,
   LlmReviewStrategy,
   LlmStepperPlanner,
+  LlmTaskFormalizer,
   LoggingLlm,
   RootFinalizer,
+  StaticPlanner,
   Stepper,
   StepperInterpreter,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -27,16 +30,16 @@ export interface BuildStepperRootInput {
   /** Raw coordinator config object (e.g. the `coordinator:` YAML block). */
   coordCfg: Record<string, unknown>;
   /**
-   * Pre-built named registry of subagent Steppers. Reserved for the recursive
-   * `deep-stepper` mode (feature/recursive-deep-stepper branch); IGNORED in
-   * 18.0 — both shipped modes run with no child Steppers. Kept on the input
-   * type so callers/DI wiring stay source-compatible across the 18.0/18.1 line.
+   * Pre-built named registry of subagent Steppers — DI/test override for
+   * deep-stepper mode. When non-empty it is used as childSteppers verbatim;
+   * when empty, child Steppers are built from `subagents` (the normal path).
    */
   registry: ReadonlyMap<string, IStepper>;
   /**
    * Declared subagents (name + description) from the `subagents:` YAML block.
-   * Reserved for recursive `deep-stepper` (feature/recursive-deep-stepper
-   * branch); IGNORED in 18.0.
+   * In deep-stepper mode each becomes a recursive child Stepper sharing this
+   * run's planner/executor/reviewer/ledger, and is advertised to the planner so
+   * it can delegate sub-goals via a node's `agent`. Ignored in other modes.
    */
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   /** Factory to build an ILlm from a config; used for all roles. */
@@ -82,6 +85,12 @@ export interface BuiltStepperRoot {
     mutationPolicy: 'confirm' | 'trusted';
     knownReadOnlyTools: ReadonlySet<string>;
   };
+  /**
+   * Present only when `coordinator.formalizeTask` is enabled. The handler calls
+   * it ONCE on the raw prompt and threads the resulting TaskSpec into
+   * rootStepper.run. Absent → no formalization (behaves as before).
+   */
+  taskFormalizer?: ITaskFormalizer;
 }
 
 const STUB_LLM_CFG: SmartServerLlmConfig = {
@@ -93,10 +102,10 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
 /**
  * Assemble the root Stepper + finalizer from a coordinator config block.
  *
- * Two modes ship in 18.0 (recursive `deep-stepper` is deferred to the
- * feature/recursive-deep-stepper branch — neither mode below spawns children):
+ * Three modes:
  *  - `cyclic-react`   → trivial single-node planner + CyclicReActExecutor leaf; depthRemaining=0.
  *  - `planned-react`  → LlmStepperPlanner + CyclicReActExecutor leaves; depthRemaining=1.
+ *  - `deep-stepper`   → LlmStepperPlanner + registry child Steppers; depthRemaining=config.maxDepth.
  *
  * Each role (planner, executor, reviewer, finalizer) is resolved from the
  * per-role LLM map via the chain: llmMap[role] → llmMap.main → pipelineFallback.
@@ -107,6 +116,7 @@ export async function buildStepperRoot(
 ): Promise<BuiltStepperRoot> {
   const {
     coordCfg,
+    registry,
     makeLlm,
     callMcp,
     mintStepperId,
@@ -179,12 +189,15 @@ export async function buildStepperRoot(
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
 
-  // ---- Executor (the ReAct leaf for all modes) ------------------------------
+  // ---- Executor (the leaf for all flows) ------------------------------------
+  // 'simple' = single pass (one tool round + synthesis); 'cyclic-react' /
+  // 'recursive' leaves run the full ReAct loop. This is the executor.type knob.
+  const maxIter = config.flow.executor === 'simple' ? 2 : 10;
   const executor = new CyclicReActExecutor({
     llm: executorLlm,
     callMcp,
     component: 'tool-loop',
-    maxIterations: 10,
+    maxIterations: maxIter,
     // Always-on context-augmenting ReAct: on a no-tool-call answer the executor
     // asks this classifier whether the model expressed an unmet-tool need; if so
     // it re-queries toolsRag and retries with the augmented tool set.
@@ -194,11 +207,14 @@ export async function buildStepperRoot(
   // One shared interpreter.
   const interpreter = new StepperInterpreter();
 
-  // Planner: trivial single-node plan for cyclic-react; LlmStepperPlanner
-  // otherwise. Built BEFORE the mode switch so deep-stepper can reuse the SAME
-  // planner instance for its child Steppers.
+  // Planner — selected by the resolved flow (config.flow.planner):
+  //   'none'   → trivial single-node plan (node goal = prompt)
+  //   'static' → StaticPlanner over the declarative flow.plan
+  //   'llm'    → LlmStepperPlanner (LLM decomposition)
+  // Built BEFORE the recursion wiring so a recursive executor can reuse the
+  // SAME planner instance for its child Steppers.
   const planner =
-    config.mode === 'cyclic-react'
+    config.flow.planner === 'none'
       ? {
           name: 'trivial' as const,
           async plan(inp: { prompt: string }) {
@@ -209,24 +225,62 @@ export async function buildStepperRoot(
             };
           },
         }
-      : new LlmStepperPlanner(plannerLlm);
+      : config.flow.planner === 'static'
+        ? new StaticPlanner(config.flow.plan ?? [])
+        : new LlmStepperPlanner(plannerLlm, config.flow.granularity);
 
-  // Depth budget per mode. (Recursive `deep-stepper` — child Steppers from
-  // subagents — is NOT shipped in 18.0; it lives on the
-  // feature/recursive-deep-stepper branch. 18.0 ships cyclic-react +
-  // planned-react, both with NO child Steppers / no recursion.)
+  // Depth budget + child Steppers depend on the resolved flow.executor:
+  //   'cyclic-react' → no recursion (depth 0 if planner 'none', else 1 level)
+  //   'recursive'    → may spawn child Steppers up to maxDepth (deep behaviour)
   let depthRemaining: number;
-  const childSteppers: ReadonlyMap<string, IStepper> = new Map();
+  let childSteppers: ReadonlyMap<string, IStepper>;
+  // Worker catalog the ROOT planner advertises (recursive executor only).
+  let rootCatalog: ReadonlyArray<{ name: string; description?: string }> = [];
 
-  switch (config.mode) {
-    case 'cyclic-react': {
-      // No recursion at all: depth=0 → interpreter always routes to executor leaf.
-      depthRemaining = 0;
-      break;
-    }
-    default: {
-      // planned-react: one level of planning; leaves execute via CyclicReActExecutor.
-      depthRemaining = 1;
+  if (config.flow.executor !== 'recursive') {
+    // Non-recursive leaf executor: depth 0 when there is no planning pass,
+    // 1 when the planner decomposes into leaves.
+    depthRemaining = config.flow.planner === 'none' ? 0 : 1;
+    childSteppers = new Map();
+  } else {
+    {
+      depthRemaining = config.maxDepth;
+      const catalog = (input.subagents ?? []).map((s) => ({
+        name: s.name,
+        description: s.description,
+      }));
+      rootCatalog = catalog;
+      if (registry.size > 0) {
+        // DI/test override: use the supplied registry verbatim.
+        childSteppers = registry;
+      } else {
+        // Build one recursive child Stepper per declared subagent, sharing this
+        // run's planner / interpreter / executor / reviewer and — crucially —
+        // the SAME role LLMs, so every child charges the ONE shared token ledger
+        // (review Finding 2). Each child's childSteppers points back to the SAME
+        // map so recursion continues, bounded by depthRemaining (decremented at
+        // each dispatch in the interpreter).
+        const childMap = new Map<string, IStepper>();
+        for (const s of catalog) {
+          childMap.set(
+            s.name,
+            new Stepper({
+              name: s.name,
+              planner,
+              interpreter,
+              executor,
+              childSteppers: childMap,
+              reviewer,
+              reviewerAtDepths: config.reviewerAtDepths,
+              depth: 1,
+              maxParallelSteps: config.maxParallelSteps,
+              mintStepperId,
+              childAgentCatalog: catalog,
+            }),
+          );
+        }
+        childSteppers = childMap;
+      }
     }
   }
 
@@ -241,9 +295,16 @@ export async function buildStepperRoot(
     depth: 0,
     maxParallelSteps: config.maxParallelSteps,
     mintStepperId,
+    childAgentCatalog: rootCatalog,
   });
 
   const finalizer = new RootFinalizer(finalizerLlm);
+
+  // Task formalizer (opt-in): uses the strong planner-tier LLM to produce a
+  // compact TaskSpec once at the root. Built only when configured.
+  const taskFormalizer = config.formalizeTask
+    ? new LlmTaskFormalizer(plannerLlm)
+    : undefined;
 
   return {
     rootStepper,
@@ -251,5 +312,6 @@ export async function buildStepperRoot(
     budget: { depthRemaining, tokens },
     maxParallelSteps: config.maxParallelSteps,
     toolSafety: config.toolSafety,
+    ...(taskFormalizer ? { taskFormalizer } : {}),
   };
 }

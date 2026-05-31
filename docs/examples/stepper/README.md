@@ -1,26 +1,22 @@
 # Recursive Stepper — per-role configurations (18.0)
 
-Production-shaped examples for the Stepper coordinator introduced in release
-**18.0.0**. Every example sets `coordinator.mode` + a full
+Three production-shaped examples for the recursive Stepper coordinator introduced
+in release **18.0.0**. Every example sets `coordinator.mode` + a full
 `coordinator.stepper.*` block.
 
 | File | Mode | Use it for |
 |---|---|---|
 | [`01-cyclic-react.yaml`](./01-cyclic-react.yaml) | `cyclic-react` | Bounded tasks; single executor loop, no planning overhead. |
 | [`02-planned-react.yaml`](./02-planned-react.yaml) | `planned-react` | Multi-step tasks; LLM planner + parallel Stepper workers + knowledge-RAG blackboard. |
+| [`03-deep-stepper.yaml`](./03-deep-stepper.yaml) | `deep-stepper` | Hierarchical tasks; each Stepper can recursively spawn child Steppers up to `maxDepth`. |
 
-> **`deep-stepper` (recursive child Steppers up to `maxDepth`) is not shipped in
-> 18.0.** Its root planner needs hardening before production; it is being
-> developed on the `feature/recursive-deep-stepper` branch and is targeted for a
-> later release.
-
-`worker.yaml` is the shared subagent pipeline referenced by both coordinator
+`worker.yaml` is the shared subagent pipeline referenced by all three coordinator
 yamls. It is a complete smart-agent config (`mode: smart` + `pipeline.*`) —
 exactly what a Stepper executor dispatches steps to.
 
 ---
 
-## The modes
+## The three modes
 
 ### `cyclic-react` — tight executor loop
 
@@ -46,14 +42,16 @@ Best for: multi-dimension analyses, broad reviews, tasks whose scope is clear
 upfront. The most common production shape: flagship model for planning + cheap
 model for execution.
 
-> ### `deep-stepper` — recursive multi-level hierarchy _(planned, not in 18.0)_
->
-> A future mode in which each Stepper can itself plan and spawn child Steppers,
-> building a recursive execution tree up to `coordinator.stepper.maxDepth` over
-> the shared knowledge-RAG blackboard. It is under development on the
-> `feature/recursive-deep-stepper` branch and is **not available in 18.0** — its
-> root planner needs hardening first. Configuring `mode: deep-stepper` against an
-> 18.0 build is rejected by config parsing.
+### `deep-stepper` — recursive multi-level hierarchy
+
+Each Stepper can itself plan and spawn child Steppers, building a recursive
+execution tree up to `coordinator.stepper.maxDepth`. Every level shares the
+same per-session knowledge-RAG blackboard, so a grandchild can read artefacts
+written by its uncle. The root finalizer synthesizes the full accumulated tree.
+
+Best for: hierarchical tasks (system review → package → object → function),
+long-horizon discovery tasks where intermediate findings open new questions.
+Wider token budgets and tighter `maxParallelSteps` are recommended.
 
 ---
 
@@ -185,7 +183,7 @@ coordinator:
 
 ```yaml
 coordinator:
-  mode: cyclic-react
+  mode: deep-stepper
   mutationPolicy: trusted
 ```
 

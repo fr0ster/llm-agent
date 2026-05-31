@@ -59,6 +59,7 @@ export class Stepper implements IStepper {
       parentPath: parentPath ?? [this.name],
       identity: input.identity,
       agents: childAgentCatalog,
+      taskSpec: input.taskSpec,
       signal: input.signal,
     });
     if (reviewer && reviewerAtDepths.has(depth)) {
@@ -82,6 +83,7 @@ export class Stepper implements IStepper {
       budget: input.budget,
       identity: input.identity,
       toolSafety: input.toolSafety,
+      taskSpec: input.taskSpec,
       maxParallelSteps,
       mintStepperId,
       signal: input.signal,

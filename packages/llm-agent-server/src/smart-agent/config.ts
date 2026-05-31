@@ -9,6 +9,7 @@ import type {
   ILlm,
   ISubAgentContextBuilder,
   IToolSelectionStrategy,
+  PlanNode,
 } from '@mcp-abap-adt/llm-agent';
 import {
   AutoActivation,
@@ -1309,11 +1310,7 @@ export function resolveSmartServerConfig(
 /**
  * Stepper coordinator modes.
  */
-// Note: `deep-stepper` (recursive child Steppers) is NOT shipped in 18.0 — it is
-// under development on the `feature/recursive-deep-stepper` branch (its root
-// planner needs hardening before production). 18.0 ships cyclic-react +
-// planned-react; legacy DAG configs (no `coordinator.mode`) are unaffected.
-export type StepperMode = 'cyclic-react' | 'planned-react';
+export type StepperMode = 'cyclic-react' | 'deep-stepper' | 'planned-react';
 
 /**
  * Configuration for the recursive Stepper coordinator.
@@ -1338,15 +1335,87 @@ export interface StepperCoordinatorConfig {
    * The runtime stays MCP-agnostic: tool knowledge lives here as data.
    */
   knowledgeSeed: ReadonlyArray<{ content: string; artifactType: string }>;
+  /**
+   * Opt-in (default false): formalize the raw prompt into a compact TaskSpec
+   * (objective + scope + constraints + deliverable) ONCE at the root, then
+   * thread it down to every planner and executor as a persistent anchor and as
+   * the overall-intent prefix for tool search. Off → behaves exactly as before.
+   */
+  formalizeTask: boolean;
+  /**
+   * Resolved program flow (the composition the coordinator runs). Always
+   * present: parsed from an explicit `coordinator.flow` block when given, else
+   * derived from `mode` as a preset (so `mode` is now just a preset alias).
+   *
+   *  - planner  'none'   → trivial single-node plan (node goal = prompt)
+   *             'llm'    → LlmStepperPlanner (LLM decomposition)
+   *             'static' → StaticPlanner (declarative `flow.plan`, no LLM)
+   *  - executor 'cyclic-react' → leaf ReAct loop, no recursion
+   *             'recursive'    → may spawn child Steppers up to maxDepth
+   *  - finalizer 'llm' (RootFinalizer). 'passthrough' is reserved (not yet built).
+   */
+  flow: {
+    planner: 'none' | 'llm' | 'static';
+    /** How much the LLM planner decomposes up front (eager): 'shallow' (few
+     *  high-level steps) | 'detailed' (full concrete-leaf decomposition).
+     *  Ignored by 'none'/'static'. Default 'shallow'. */
+    granularity: 'shallow' | 'detailed';
+    /** Leaf executor profile: 'simple' (single pass) | 'cyclic-react' (ReAct
+     *  loop) | 'recursive' (spawns child Steppers — lazy decomposition). */
+    executor: 'simple' | 'cyclic-react' | 'recursive';
+    finalizer: 'llm';
+    /** Declarative plan nodes, required when planner === 'static'. */
+    plan?: PlanNode[];
+  };
 }
 
-const MODES = new Set<StepperMode>(['cyclic-react', 'planned-react']);
+const MODES = new Set<StepperMode>([
+  'cyclic-react',
+  'deep-stepper',
+  'planned-react',
+]);
+
+/**
+ * Preset expansion: each legacy `mode` maps to a default `flow` composition.
+ * An explicit `coordinator.flow` block overrides these per-component.
+ */
+const MODE_FLOW_PRESET: Record<
+  StepperMode,
+  { planner: 'none' | 'llm'; executor: 'cyclic-react' | 'recursive' }
+> = {
+  'cyclic-react': { planner: 'none', executor: 'cyclic-react' },
+  'planned-react': { planner: 'llm', executor: 'cyclic-react' },
+  'deep-stepper': { planner: 'llm', executor: 'recursive' },
+};
+
+/** Parse declarative `flow.plan` nodes (for the static planner). */
+function parseFlowPlan(raw: unknown): PlanNode[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const nodes = raw
+    .filter(
+      (n): n is Record<string, unknown> =>
+        !!n && typeof (n as { goal?: unknown }).goal === 'string',
+    )
+    .map((n, i) => ({
+      id: typeof n.id === 'string' && n.id ? n.id : `n${i}`,
+      goal: n.goal as string,
+      ...(Array.isArray(n.dependsOn)
+        ? {
+            dependsOn: (n.dependsOn as unknown[]).filter(
+              (d) => typeof d === 'string',
+            ) as string[],
+          }
+        : {}),
+      ...(typeof n.agent === 'string' ? { agent: n.agent } : {}),
+    }));
+  return nodes.length > 0 ? nodes : undefined;
+}
 
 /**
  * Parse stepper coordinator configuration from a raw config object.
  *
  * Supports:
- * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, planned-react
+ * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, deep-stepper, planned-react
  * - `mutationPolicy` (string) — default 'confirm'; one of confirm | trusted
  * - `knownReadOnlyTools` (string[]) — tools marked as safe for readonly execution
  * - `stepper.maxParallelSteps` (number) — default 4
@@ -1403,6 +1472,41 @@ export function parseStepperCoordinatorConfig(
         }))
     : [];
 
+  // Resolve the program flow: explicit `coordinator.flow` overrides the
+  // mode-derived preset per component. `mode` thus becomes a preset alias.
+  const preset = MODE_FLOW_PRESET[mode];
+  const flowCfg = coord.flow as
+    | {
+        planner?: { type?: string; granularity?: string };
+        executor?: { type?: string };
+        finalizer?: { type?: string };
+        plan?: unknown;
+      }
+    | undefined;
+  const plannerType = flowCfg?.planner?.type ?? preset.planner;
+  if (!['none', 'llm', 'static'].includes(plannerType))
+    throw new Error(`coordinator.flow.planner.type must be none|llm|static`);
+  const granularity = flowCfg?.planner?.granularity ?? 'shallow';
+  if (!['shallow', 'detailed'].includes(granularity))
+    throw new Error(
+      `coordinator.flow.planner.granularity must be shallow|detailed`,
+    );
+  const executorType = flowCfg?.executor?.type ?? preset.executor;
+  if (!['simple', 'cyclic-react', 'recursive'].includes(executorType))
+    throw new Error(
+      `coordinator.flow.executor.type must be simple|cyclic-react|recursive`,
+    );
+  const finalizerType = flowCfg?.finalizer?.type ?? 'llm';
+  if (finalizerType !== 'llm')
+    throw new Error(
+      `coordinator.flow.finalizer.type 'passthrough' is not yet implemented (use 'llm')`,
+    );
+  const plan = parseFlowPlan(flowCfg?.plan);
+  if (plannerType === 'static' && !plan)
+    throw new Error(
+      `coordinator.flow.planner.type 'static' requires a non-empty coordinator.flow.plan`,
+    );
+
   return {
     mode,
     toolSafety: { mutationPolicy, knownReadOnlyTools },
@@ -1411,5 +1515,13 @@ export function parseStepperCoordinatorConfig(
     maxDepth: Number(stepper.maxDepth ?? 4),
     tokenBudget: Number(stepper.tokenBudget ?? 1_000_000),
     knowledgeSeed,
+    formalizeTask: coord.formalizeTask === true,
+    flow: {
+      planner: plannerType as 'none' | 'llm' | 'static',
+      granularity: granularity as 'shallow' | 'detailed',
+      executor: executorType as 'simple' | 'cyclic-react' | 'recursive',
+      finalizer: 'llm',
+      ...(plan ? { plan } : {}),
+    },
   };
 }

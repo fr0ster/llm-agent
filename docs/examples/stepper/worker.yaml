@@ -1,6 +1,6 @@
 # Stepper worker subagent pipeline.
-# Referenced from 01-cyclic-react.yaml and 02-planned-react.yaml as the target
-# subagent config.
+# Referenced from 01-cyclic-react.yaml, 02-planned-react.yaml, and
+# 03-deep-stepper.yaml as the target subagent config.
 #
 # This is a full smart-agent pipeline config (`mode: smart` + `pipeline.*`).
 # The Stepper executor dispatches steps to this config when child Steppers

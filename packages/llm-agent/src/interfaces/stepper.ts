@@ -1,5 +1,6 @@
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { StreamChunk } from './streaming.js';
+import type { ITaskSpec } from './task-spec.js';
 import type { LlmUsage } from './types.js';
 
 /** Identity carried through every layer so executors can stamp
@@ -52,6 +53,9 @@ export interface IStepperInput {
   budget: Budget;
   identity: RunIdentity;
   toolSafety: ToolSafetyPolicy;
+  /** Formalized overall task (optional). Threaded down to every planner and
+   *  executor as a compact anchor. Absent → behaves as before. */
+  taskSpec?: ITaskSpec;
   signal?: AbortSignal;
   sessionLogger?: { logStep(name: string, data: unknown): void };
   onProgress?: (event: StreamChunk) => void;

@@ -13,20 +13,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **Stepper coordinator.** Coordinator/worker is a `Stepper` (planner +
-  reviewer + interpreter + executor) over a per-session knowledge-RAG
-  blackboard, opt-in via `coordinator.mode`. Legacy DAG configs (no
-  `coordinator.mode`) are unaffected.
+- **Recursive Stepper hierarchy.** Every coordinator/worker is now a `Stepper`
+  (planner + reviewer + interpreter + executor). Steppers compose recursively:
+  the `StepperInterpreter` schedules child Steppers from a plan, each child
+  runs its own `CyclicReActExecutor`, and each level can itself spawn further
+  children up to `coordinator.stepper.maxDepth`. The resulting execution tree
+  replaces the flat DAG coordinator model.
 
-- **Two execution modes** (`coordinator.mode`):
+- **Three execution modes** (`coordinator.mode`):
   - `cyclic-react` — single executor loop, no planning overhead. Best for bounded tasks.
-  - `planned-react` _(default)_ — LLM planner decomposes the request; Stepper
+  - `planned-react` _(default)_ — LLM planner decomposes the request; parallel Stepper
     workers execute steps and accumulate findings in the knowledge-RAG blackboard.
-
-  > The recursive `deep-stepper` mode (each Stepper spawns child Steppers up to
-  > `maxDepth`) is **NOT shipped in 18.0** — its root planner needs hardening
-  > before production. It is under development on the
-  > `feature/recursive-deep-stepper` branch, targeted for a later release.
+  - `deep-stepper` — each Stepper can further plan and spawn children, enabling
+    multi-level hierarchical decomposition.
 
 - **Knowledge-RAG blackboard + durable JSONL backend.** A per-session
   `KnowledgeRag` is created once and passed to every Stepper in the run. Each
@@ -80,10 +79,11 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `tokenBudget` (soft token cap, default 1 000 000),
   `reviewer.atDepths` (depth list or `'all'`).
 
-- **Stepper examples.** `docs/examples/stepper/` adds two production-shaped
-  configs (`01-cyclic-react.yaml`, `02-planned-react.yaml`), a shared
-  `worker.yaml` subagent pipeline, and a `README.md` covering both modes,
-  `/v1/sessions` resume flow, and the readOnly tool-safety policy.
+- **Recursive Stepper examples.** `docs/examples/stepper/` adds three
+  production-shaped configs (`01-cyclic-react.yaml`, `02-planned-react.yaml`,
+  `03-deep-stepper.yaml`), a shared `worker.yaml` subagent pipeline, and a
+  `README.md` covering the three modes, `/v1/sessions` resume flow, and the
+  readOnly tool-safety policy.
 
 - **Executor reads the shared knowledge-RAG blackboard.** Before its first turn
   the `CyclicReActExecutor` queries the session blackboard and prepends the
@@ -133,7 +133,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Fixed
 
-Pre-release hardening from live SAP validation of the two shipped modes:
+Pre-release hardening from live SAP validation of the three modes:
 
 - **Unmet-tool-need detection was dead code.** `INeedResolver` was never
   instantiated nor threaded into the executor, so the context-augmenting branch
@@ -145,6 +145,12 @@ Pre-release hardening from live SAP validation of the two shipped modes:
 - **Token ledger only charged the executor.** `coordinator.stepper.tokenBudget`
   now bounds ALL roles — planner, reviewer, finalizer and tool-definer charge
   the one shared ledger (the executor still self-spends; no double-count).
+
+- **deep-stepper recursion never engaged.** The child-Stepper registry was
+  always empty and the planner was agent-blind. Child Steppers are now built
+  from declared `subagents` (sharing the run's role LLMs + shared ledger), and
+  `IStepperPlanner` receives the worker catalog so it can delegate via a node's
+  `agent`.
 
 - **Session metadata was never written on the request path.** `GET /v1/sessions`
   stayed empty and resume/delete returned 404 after normal chat/stream. The live
