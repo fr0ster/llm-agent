@@ -98,10 +98,11 @@ test('flow.nodes with a nested flow parses into a recursive composition spec', (
   assert.equal(c.flow.nodes?.length, 2);
   const analyze = c.flow.nodes?.find((n) => n.id === 'analyze');
   assert.ok(analyze?.flow, 'analyze node has a nested flow');
-  // nested flow keeps its own planner config…
-  assert.equal(analyze?.flow?.planner, 'llm');
+  // The nested flow declares its own nodes ⇒ static (nodes ARE the plan), even
+  // though planner.type was given as llm — keep the spec honest.
+  assert.equal(analyze?.flow?.planner, 'static');
   assert.equal(analyze?.flow?.granularity, 'detailed');
-  // …and its own nested nodes…
+  // …and its own nested nodes parsed…
   assert.equal(analyze?.flow?.nodes?.[0]?.id, 'sec');
   // …while inheriting the root bounds (parallelism here defaults to 4).
   assert.equal(analyze?.flow?.maxParallelSteps, 4);

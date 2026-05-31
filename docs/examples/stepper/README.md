@@ -9,10 +9,29 @@ in release **18.0.0**. Every example sets `coordinator.mode` + a full
 | [`01-cyclic-react.yaml`](./01-cyclic-react.yaml) | `cyclic-react` | Bounded tasks; single executor loop, no planning overhead. |
 | [`02-planned-react.yaml`](./02-planned-react.yaml) | `planned-react` | Multi-step tasks; LLM planner + parallel Stepper workers + knowledge-RAG blackboard. |
 | [`03-deep-stepper.yaml`](./03-deep-stepper.yaml) | `deep-stepper` | Hierarchical tasks; each Stepper can recursively spawn child Steppers up to `maxDepth`. |
+| [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Describe the composition directly (no `mode`): the `planner.granularity` × `executor.type` knobs + a NESTED composition tree (a node nests its own `flow` = a sub-cycle). |
 
-`worker.yaml` is the shared subagent pipeline referenced by all three coordinator
-yamls. It is a complete smart-agent config (`mode: smart` + `pipeline.*`) —
-exactly what a Stepper executor dispatches steps to.
+`worker.yaml` is the shared subagent pipeline referenced by the coordinator yamls.
+It is a complete smart-agent config (`mode: smart` + `pipeline.*`) — exactly what a
+Stepper executor dispatches steps to.
+
+## `coordinator.flow` — composition over modes
+
+`mode` is a **preset** that expands to a `coordinator.flow`. Writing `flow` directly
+(see `04-flow-composition.yaml`) gives full control:
+
+- **`flow.planner`** — `{ type: none | llm | static, granularity: shallow | detailed }`.
+  `granularity` is the eager-decomposition knob (how much the LLM planner decomposes up front).
+- **`flow.executor`** — `{ type: simple | cyclic-react | recursive }`. `simple` = single pass;
+  `cyclic-react` = ReAct loop; `recursive` = spawns child Steppers (runtime/lazy recursion).
+- **`flow.reviewer` / `flow.finalizer`** — orchestration phases.
+- **`flow.nodes`** — a declared composition TREE. A node is a leaf (`id`, `goal`, `dependsOn`)
+  or nests its own `flow` → a **child Stepper / sub-cycle** (structural recursion, visible in
+  yaml). A level with `nodes` is static over them (the nodes ARE the plan).
+
+Domain operations (fetch source, read includes, run a check) are **never** declared in `flow` —
+the planner/executor obtain data via the consumer's RAG skills (`knowledgeSeed`). Nodes are
+analysis/orchestration intents, not tool calls.
 
 ---
 

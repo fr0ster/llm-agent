@@ -1492,7 +1492,9 @@ function parseNestedFlowSpec(
   const plan = parseFlowPlan(flowCfg?.plan);
   const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
   return {
-    planner: plannerType as 'none' | 'llm' | 'static',
+    // Declared nodes ARE the plan ⇒ this level is static (keep the spec honest:
+    // buildFromComposition routes a node-bearing level to a StaticPlanner).
+    planner: (nodes ? 'static' : plannerType) as 'none' | 'llm' | 'static',
     granularity: granularity as 'shallow' | 'detailed',
     ...(plan ? { plan } : {}),
     ...(nodes ? { nodes } : {}),
@@ -1654,7 +1656,8 @@ export function parseStepperCoordinatorConfig(
     knowledgeSeed,
     formalizeTask,
     flow: {
-      planner: plannerType as 'none' | 'llm' | 'static',
+      // Declared root nodes ARE the plan ⇒ static at the root (honest spec).
+      planner: (nodes ? 'static' : plannerType) as 'none' | 'llm' | 'static',
       granularity: granularity as 'shallow' | 'detailed',
       executor: executorType as 'simple' | 'cyclic-react' | 'recursive',
       finalizer: 'llm',
