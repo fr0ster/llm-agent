@@ -5,6 +5,7 @@ import {
   type IStepper,
   type ITaskFormalizer,
   type LlmCallEntry,
+  type PlanNode,
   TokenLedger,
 } from '@mcp-abap-adt/llm-agent';
 import {
@@ -23,6 +24,7 @@ import {
   type NormalizedLlmMap,
   parseStepperCoordinatorConfig,
   resolveLlmConfig,
+  type StepperCoordinatorConfig,
 } from './config.js';
 import type { SmartServerLlmConfig } from './smart-server.js';
 
@@ -100,22 +102,96 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
 } as never;
 
 /**
- * Assemble the root Stepper + finalizer from a coordinator config block.
- *
- * Three modes:
- *  - `cyclic-react`   → trivial single-node planner + CyclicReActExecutor leaf; depthRemaining=0.
- *  - `planned-react`  → LlmStepperPlanner + CyclicReActExecutor leaves; depthRemaining=1.
- *  - `deep-stepper`   → LlmStepperPlanner + registry child Steppers; depthRemaining=config.maxDepth.
- *
- * Each role (planner, executor, reviewer, finalizer) is resolved from the
- * per-role LLM map via the chain: llmMap[role] → llmMap.main → pipelineFallback.
- * This mirrors the 17.0 buildDagCoordinatorDeps resolution chain exactly.
+ * Front-end-agnostic description of a Stepper composition. BOTH the yaml parser
+ * (`toCompositionSpec` below) and a future code builder produce this; the
+ * runtime (`buildFromComposition`) consumes ONLY this — never raw config. This
+ * is the seam that gives yaml⟷builder parity and (later) nested sub-flows.
+ */
+export interface StepperCompositionSpec {
+  planner: 'none' | 'llm' | 'static';
+  /** LLM planner eager-decomposition knob; ignored by none/static. */
+  granularity: 'shallow' | 'detailed';
+  /** Declarative nodes for planner === 'static'. */
+  plan?: PlanNode[];
+  executor: 'simple' | 'cyclic-react' | 'recursive';
+  finalizer: 'llm';
+  reviewerAtDepths: { has(depth: number): boolean };
+  maxParallelSteps: number;
+  maxDepth: number;
+  tokenBudget: number;
+  toolSafety: {
+    mutationPolicy: 'confirm' | 'trusted';
+    knownReadOnlyTools: ReadonlySet<string>;
+  };
+  formalizeTask: boolean;
+}
+
+/** Build-time dependencies (everything not part of the composition itself). */
+export interface BuildFromCompositionDeps {
+  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
+  callMcp: (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ) => Promise<string>;
+  mintStepperId: () => string;
+  llmMap?: NormalizedLlmMap;
+  pipelineFallback?: SmartServerLlmConfig;
+  logLlmCall?: (entry: LlmCallEntry) => void;
+  subagents?: ReadonlyArray<{ name: string; description?: string }>;
+  registry: ReadonlyMap<string, IStepper>;
+}
+
+/** Map a parsed coordinator config to the front-end-agnostic composition spec. */
+export function toCompositionSpec(
+  config: StepperCoordinatorConfig,
+): StepperCompositionSpec {
+  return {
+    planner: config.flow.planner,
+    granularity: config.flow.granularity,
+    ...(config.flow.plan ? { plan: config.flow.plan } : {}),
+    executor: config.flow.executor,
+    finalizer: config.flow.finalizer,
+    reviewerAtDepths: config.reviewerAtDepths,
+    maxParallelSteps: config.maxParallelSteps,
+    maxDepth: config.maxDepth,
+    tokenBudget: config.tokenBudget,
+    toolSafety: config.toolSafety,
+    formalizeTask: config.formalizeTask,
+  };
+}
+
+/**
+ * yaml front-end: parse the raw coordinator config block → composition spec →
+ * build. Thin wrapper over {@link buildFromComposition}; a code builder can call
+ * buildFromComposition directly with a spec it constructs itself (parity).
  */
 export async function buildStepperRoot(
   input: BuildStepperRootInput,
 ): Promise<BuiltStepperRoot> {
+  const config = parseStepperCoordinatorConfig(input.coordCfg);
+  return buildFromComposition(toCompositionSpec(config), {
+    makeLlm: input.makeLlm,
+    callMcp: input.callMcp,
+    mintStepperId: input.mintStepperId,
+    llmMap: input.llmMap,
+    pipelineFallback: input.pipelineFallback,
+    logLlmCall: input.logLlmCall,
+    subagents: input.subagents,
+    registry: input.registry,
+  });
+}
+
+/**
+ * Build the root Stepper + finalizer from a front-end-agnostic composition spec.
+ * The yaml path reaches here via buildStepperRoot; a code builder can call this
+ * directly. Each role LLM resolves via llmMap[role] → llmMap.main → fallback.
+ */
+export async function buildFromComposition(
+  spec: StepperCompositionSpec,
+  deps: BuildFromCompositionDeps,
+): Promise<BuiltStepperRoot> {
   const {
-    coordCfg,
     registry,
     makeLlm,
     callMcp,
@@ -123,13 +199,11 @@ export async function buildStepperRoot(
     llmMap,
     pipelineFallback,
     logLlmCall,
-  } = input;
-
-  const config = parseStepperCoordinatorConfig(coordCfg);
+  } = deps;
 
   // Shared token ledger — ONE instance per run (review R2-F1). Created up-front
   // so every role's LLM decorator can spend on it (see resolveRoleLlm).
-  const tokens = new TokenLedger(config.tokenBudget);
+  const tokens = new TokenLedger(spec.tokenBudget);
 
   // ---- Per-role LLM resolver -----------------------------------------------
   // Priority chain: llmMap[role] → llmMap.main → pipelineFallback → STUB_LLM_CFG.
@@ -192,7 +266,7 @@ export async function buildStepperRoot(
   // ---- Executor (the leaf for all flows) ------------------------------------
   // 'simple' = single pass (one tool round + synthesis); 'cyclic-react' /
   // 'recursive' leaves run the full ReAct loop. This is the executor.type knob.
-  const maxIter = config.flow.executor === 'simple' ? 2 : 10;
+  const maxIter = spec.executor === 'simple' ? 2 : 10;
   const executor = new CyclicReActExecutor({
     llm: executorLlm,
     callMcp,
@@ -207,14 +281,14 @@ export async function buildStepperRoot(
   // One shared interpreter.
   const interpreter = new StepperInterpreter();
 
-  // Planner — selected by the resolved flow (config.flow.planner):
+  // Planner — selected by the resolved flow (spec.planner):
   //   'none'   → trivial single-node plan (node goal = prompt)
   //   'static' → StaticPlanner over the declarative flow.plan
   //   'llm'    → LlmStepperPlanner (LLM decomposition)
   // Built BEFORE the recursion wiring so a recursive executor can reuse the
   // SAME planner instance for its child Steppers.
   const planner =
-    config.flow.planner === 'none'
+    spec.planner === 'none'
       ? {
           name: 'trivial' as const,
           async plan(inp: { prompt: string }) {
@@ -225,9 +299,9 @@ export async function buildStepperRoot(
             };
           },
         }
-      : config.flow.planner === 'static'
-        ? new StaticPlanner(config.flow.plan ?? [])
-        : new LlmStepperPlanner(plannerLlm, config.flow.granularity);
+      : spec.planner === 'static'
+        ? new StaticPlanner(spec.plan ?? [])
+        : new LlmStepperPlanner(plannerLlm, spec.granularity);
 
   // Depth budget + child Steppers depend on the resolved flow.executor:
   //   'cyclic-react' → no recursion (depth 0 if planner 'none', else 1 level)
@@ -237,15 +311,15 @@ export async function buildStepperRoot(
   // Worker catalog the ROOT planner advertises (recursive executor only).
   let rootCatalog: ReadonlyArray<{ name: string; description?: string }> = [];
 
-  if (config.flow.executor !== 'recursive') {
+  if (spec.executor !== 'recursive') {
     // Non-recursive leaf executor: depth 0 when there is no planning pass,
     // 1 when the planner decomposes into leaves.
-    depthRemaining = config.flow.planner === 'none' ? 0 : 1;
+    depthRemaining = spec.planner === 'none' ? 0 : 1;
     childSteppers = new Map();
   } else {
     {
-      depthRemaining = config.maxDepth;
-      const catalog = (input.subagents ?? []).map((s) => ({
+      depthRemaining = spec.maxDepth;
+      const catalog = (deps.subagents ?? []).map((s) => ({
         name: s.name,
         description: s.description,
       }));
@@ -271,9 +345,9 @@ export async function buildStepperRoot(
               executor,
               childSteppers: childMap,
               reviewer,
-              reviewerAtDepths: config.reviewerAtDepths,
+              reviewerAtDepths: spec.reviewerAtDepths,
               depth: 1,
-              maxParallelSteps: config.maxParallelSteps,
+              maxParallelSteps: spec.maxParallelSteps,
               mintStepperId,
               childAgentCatalog: catalog,
             }),
@@ -291,9 +365,9 @@ export async function buildStepperRoot(
     executor,
     childSteppers,
     reviewer,
-    reviewerAtDepths: config.reviewerAtDepths,
+    reviewerAtDepths: spec.reviewerAtDepths,
     depth: 0,
-    maxParallelSteps: config.maxParallelSteps,
+    maxParallelSteps: spec.maxParallelSteps,
     mintStepperId,
     childAgentCatalog: rootCatalog,
   });
@@ -302,7 +376,7 @@ export async function buildStepperRoot(
 
   // Task formalizer (opt-in): uses the strong planner-tier LLM to produce a
   // compact TaskSpec once at the root. Built only when configured.
-  const taskFormalizer = config.formalizeTask
+  const taskFormalizer = spec.formalizeTask
     ? new LlmTaskFormalizer(plannerLlm)
     : undefined;
 
@@ -310,8 +384,8 @@ export async function buildStepperRoot(
     rootStepper,
     finalizer,
     budget: { depthRemaining, tokens },
-    maxParallelSteps: config.maxParallelSteps,
-    toolSafety: config.toolSafety,
+    maxParallelSteps: spec.maxParallelSteps,
+    toolSafety: spec.toolSafety,
     ...(taskFormalizer ? { taskFormalizer } : {}),
   };
 }
