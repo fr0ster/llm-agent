@@ -115,17 +115,12 @@ function toolsRagWith(
   };
 }
 
-/** Base identity + toolSafety. */
+/** Base identity. */
 const BASE_IDENTITY = {
   traceId: 'trace-1',
   turnId: 'turn-1',
   sessionId: 'sess-1',
   stepperId: 'root',
-};
-
-const CONFIRM_SAFETY = {
-  mutationPolicy: 'confirm' as const,
-  knownReadOnlyTools: new Set<string>(),
 };
 
 // ---------------------------------------------------------------------------
@@ -253,7 +248,6 @@ test('H.2 — 3-level recursion: grandchild planner sees sibling RAG write, emit
     toolsRag: emptyToolsRag() as never,
     budget: { depthRemaining: 2, tokens: new TokenLedger(200000) },
     identity: BASE_IDENTITY,
-    toolSafety: CONFIRM_SAFETY,
   });
 
   assert.equal(result.status, 'ok', `Expected ok, got ${result.status}`);
@@ -329,7 +323,6 @@ test('H.3 — Mode C parallel: 4 orthogonal children with maxParallelSteps=2 →
     toolsRag: emptyToolsRag() as never,
     budget: { depthRemaining: 0, tokens: new TokenLedger(200000) },
     identity: BASE_IDENTITY,
-    toolSafety: CONFIRM_SAFETY,
   });
 
   assert.equal(result.status, 'ok');
@@ -405,7 +398,6 @@ test('H.4 — budget exhaustion: executor returns budget-exhausted; assert-at-ro
     }) as never,
     budget: { depthRemaining: 0, tokens: sharedLedger },
     identity: BASE_IDENTITY,
-    toolSafety: CONFIRM_SAFETY,
   });
 
   assert.equal(
@@ -525,7 +517,6 @@ test('H.7 — progress events: parentStepperId links across 3-level tree; no nod
     toolsRag: emptyToolsRag() as never,
     budget: { depthRemaining: 2, tokens: new TokenLedger(200000) },
     identity: rootIdentity,
-    toolSafety: CONFIRM_SAFETY,
     onProgress,
   });
 
@@ -796,7 +787,6 @@ test('H.9 — cycle prevention: planner sees non-empty RAG, emits use-the-fact l
       sessionId: 'sess-h9',
       stepperId: 'root-h9',
     },
-    toolSafety: CONFIRM_SAFETY,
   });
 
   assert.equal(result.status, 'ok', `Expected ok, got ${result.status}`);
@@ -949,7 +939,6 @@ test('H.10 — maxParallelSteps locally enforced: 2-level tree, maxN=2 at each l
       sessionId: 'sess-h10',
       stepperId: 'root-h10',
     },
-    toolSafety: CONFIRM_SAFETY,
   });
 
   assert.equal(result.status, 'ok', `Expected ok, got ${result.status}`);

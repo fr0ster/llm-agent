@@ -27,7 +27,7 @@ const stubLlm = {
 };
 
 const baseInput = {
-  coordCfg: { mode: 'planned-react', knownReadOnlyTools: ['GetProgram'] },
+  coordCfg: { mode: 'planned-react' },
   registry: new Map(),
   makeLlm: async () => stubLlm as never,
   knowledgeRagFor: () =>
@@ -58,11 +58,10 @@ const baseInput = {
   })(),
 };
 
-test('builds a planned-react root with Stepper + RootFinalizer + threaded toolSafety', async () => {
+test('builds a planned-react root with Stepper + RootFinalizer', async () => {
   const built = await buildStepperRoot(baseInput as never);
   assert.ok(built.rootStepper instanceof Stepper);
   assert.ok(built.finalizer instanceof RootFinalizer);
-  assert.equal(built.toolSafety.knownReadOnlyTools.has('GetProgram'), true);
   assert.equal(built.maxParallelSteps, 4);
   assert.ok(built.budget.depthRemaining >= 1);
 });
@@ -173,7 +172,6 @@ test('Finding 1: deep-stepper builds recursive child Steppers from subagents and
     toolsRag: baseInput.toolsRag as never,
     budget: built.budget as never,
     identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'root' },
-    toolSafety: built.toolSafety,
     onProgress: (e: { kind: string; source?: { name?: string } }) => {
       if (e.kind === 'stepper-spawned' && e.source?.name) {
         spawned.push(e.source.name);
@@ -235,7 +233,6 @@ test('Finding 2: shared token ledger is charged by NON-executor roles too (plann
       sessionId: 's',
       stepperId: 'root',
     },
-    toolSafety: built.toolSafety,
   } as never);
 
   const spent = BUDGET - built.budget.tokens.remaining;
@@ -396,10 +393,6 @@ function leafFlow(): StepperCompositionSpec {
     maxParallelSteps: 4,
     maxDepth: 5,
     tokenBudget: 100000,
-    toolSafety: {
-      mutationPolicy: 'confirm',
-      knownReadOnlyTools: new Set<string>(),
-    },
     formalizeTask: false,
   };
 }

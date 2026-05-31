@@ -76,7 +76,6 @@ function fakeBuilt(overrides = {}) {
     },
     budget: { depthRemaining: 1, tokens: new TokenLedger(100000) },
     maxParallelSteps: 4,
-    toolSafety: { mutationPolicy: 'confirm', knownReadOnlyTools: new Set() },
     ...overrides,
   };
 }

@@ -2,11 +2,9 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseStepperCoordinatorConfig } from '../config.js';
 
-test('parses mode, mutationPolicy, knownReadOnlyTools, stepper.* with defaults', () => {
+test('parses mode + stepper.* with defaults', () => {
   const c = parseStepperCoordinatorConfig({
     mode: 'planned-react',
-    mutationPolicy: 'trusted',
-    knownReadOnlyTools: ['GetProgram', 'GetInclude'],
     stepper: {
       maxParallelSteps: 8,
       reviewer: { atDepths: [0, 1, 2] },
@@ -15,8 +13,6 @@ test('parses mode, mutationPolicy, knownReadOnlyTools, stepper.* with defaults',
     },
   });
   assert.equal(c.mode, 'planned-react');
-  assert.equal(c.toolSafety.mutationPolicy, 'trusted');
-  assert.equal(c.toolSafety.knownReadOnlyTools.has('GetProgram'), true);
   assert.equal(c.maxParallelSteps, 8);
   assert.equal(c.reviewerAtDepths.has(0), true);
   assert.equal(c.reviewerAtDepths.has(2), true);
@@ -46,11 +42,9 @@ test('knowledgeSeed: parses entries (default artifactType=guidance), drops blank
   assert.equal(c.knowledgeSeed[1].artifactType, 'tool-rule');
 });
 
-test('defaults: mode=planned-react, mutationPolicy=confirm, reviewer atDepths=[0,1], maxParallelSteps=4', () => {
+test('defaults: mode=planned-react, reviewer atDepths=[0,1], maxParallelSteps=4', () => {
   const c = parseStepperCoordinatorConfig({});
   assert.equal(c.mode, 'planned-react');
-  assert.equal(c.toolSafety.mutationPolicy, 'confirm');
-  assert.equal(c.toolSafety.knownReadOnlyTools.size, 0);
   assert.equal(c.reviewerAtDepths.has(0), true);
   assert.equal(c.reviewerAtDepths.has(1), true);
   assert.equal(c.reviewerAtDepths.has(2), false);

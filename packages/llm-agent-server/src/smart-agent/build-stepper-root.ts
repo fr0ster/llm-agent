@@ -85,10 +85,6 @@ export interface BuiltStepperRoot {
   finalizer: RootFinalizer;
   budget: { depthRemaining: number; tokens: TokenLedger };
   maxParallelSteps: number;
-  toolSafety: {
-    mutationPolicy: 'confirm' | 'trusted';
-    knownReadOnlyTools: ReadonlySet<string>;
-  };
   /**
    * Present only when `coordinator.formalizeTask` is enabled. The handler calls
    * it ONCE on the raw prompt and threads the resulting TaskSpec into
@@ -139,7 +135,6 @@ export function toCompositionSpec(
     maxParallelSteps: config.maxParallelSteps,
     maxDepth: config.maxDepth,
     tokenBudget: config.tokenBudget,
-    toolSafety: config.toolSafety,
     formalizeTask: config.formalizeTask,
   };
 }
@@ -391,7 +386,6 @@ export async function buildFromComposition(
     finalizer,
     budget: { depthRemaining, tokens },
     maxParallelSteps: spec.maxParallelSteps,
-    toolSafety: spec.toolSafety,
     ...(taskFormalizer ? { taskFormalizer } : {}),
   };
 }

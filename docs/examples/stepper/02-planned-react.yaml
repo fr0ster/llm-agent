@@ -82,18 +82,9 @@ coordinator:
     reviewer:
       atDepths: [0, 1]           # review at root + first child level
 
-  # readOnly policy — safest default: every undeclared tool requires confirmation.
-  # Illustrative allowlist — deployment-specific tool names; the agent hardcodes
-  # none. Replace with the read-only tools YOUR MCP exposes.
-  mutationPolicy: confirm
-  knownReadOnlyTools:
-    - GetProgram
-    - GetInclude
-    - GetClass
-    - GetInterface
-    - ListPackage
-    - SearchRepository
-    - GetTransport
+  # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
+  # agent calls whatever the server exposes via tools/list; safety is the
+  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
 
   # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
   # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { OnPartial, StreamChunk } from '@mcp-abap-adt/llm-agent';
-import { ClarifySignal, TokenLedger } from '@mcp-abap-adt/llm-agent';
+import { TokenLedger } from '@mcp-abap-adt/llm-agent';
 import { CyclicReActExecutor } from '../cyclic-react-executor.js';
 import { RegexNeedResolver } from '../need-resolver.js';
 
@@ -48,10 +48,6 @@ function mcp(results: Record<string, string>) {
 
 const META_BASE = {
   identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n1' },
-  toolSafety: {
-    mutationPolicy: 'confirm' as const,
-    knownReadOnlyTools: new Set(['ReadProgram']),
-  },
 };
 
 function knowledgeStub() {
@@ -128,62 +124,9 @@ test('H.1 context-augmenting ReAct: need → inject tool → final answer', asyn
   assert.ok(writes.some((w) => w.content.includes('Final analysis'))); // final answer written
 });
 
-test('H.5 mutating tool without readOnly raises ClarifySignal before call', async () => {
-  const llm = scriptedLlm([
-    {
-      content: 'creating',
-      toolCalls: [{ name: 'CreateClass', arguments: { n: 'ZCL' } }],
-    },
-  ]);
-  const m = mcp({ CreateClass: 'created' });
-  const { rag } = knowledgeStub();
-  const exec = new CyclicReActExecutor({
-    llm: llm as never,
-    callMcp: m.call,
-    component: 'tool-loop',
-    maxIterations: 10,
-  });
-  await assert.rejects(
-    () =>
-      exec.execute({
-        prompt: 'create class ZCL',
-        tools: [],
-        knowledgeRag: rag as never,
-        toolsRag: toolsStub({ CreateClass: { name: 'CreateClass' } }) as never, // no readOnly
-        budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
-        ...META_BASE,
-      }),
-    (e: unknown) =>
-      e instanceof ClarifySignal &&
-      /CreateClass/.test((e as ClarifySignal).question),
-  );
-  assert.deepEqual(m.calls, []); // NOT executed
-});
-
-test('H.5b knownReadOnlyTools allowlist bypasses confirmation', async () => {
-  const llm = scriptedLlm([
-    { content: 'reading', toolCalls: [{ name: 'ReadProgram', arguments: {} }] },
-    { content: 'done' },
-  ]);
-  const m = mcp({ ReadProgram: 'src' });
-  const { rag } = knowledgeStub();
-  const exec = new CyclicReActExecutor({
-    llm: llm as never,
-    callMcp: m.call,
-    component: 'tool-loop',
-    maxIterations: 10,
-  });
-  const res = await exec.execute({
-    prompt: 'read',
-    tools: [],
-    knowledgeRag: rag as never,
-    toolsRag: toolsStub({ ReadProgram: { name: 'ReadProgram' } }) as never, // no readOnly field
-    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
-    ...META_BASE, // but in knownReadOnlyTools
-  });
-  assert.equal(res.status, 'ok');
-  assert.deepEqual(m.calls, ['ReadProgram']);
-});
+// (Removed H.5 / H.5b: the agent-side readOnly mutation gate was removed —
+// tool permissioning is the MCP server's responsibility; whatever it exposes is
+// allowed. There is no agent-side confirm/allowlist anymore.)
 
 test('budget-exhausted when the shared token ledger is exhausted', async () => {
   const llm = scriptedLlm([

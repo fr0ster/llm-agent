@@ -141,7 +141,6 @@ export class StepperCoordinatorHandler implements IStageHandler {
         toolsRag,
         budget: built.budget,
         identity,
-        toolSafety: built.toolSafety,
         taskSpec,
         // Thread the client abort signal so cancelling the request actually
         // stops the planner/executor/child-Stepper path, and the sessionLogger

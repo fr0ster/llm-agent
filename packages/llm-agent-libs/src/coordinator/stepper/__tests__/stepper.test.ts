@@ -56,10 +56,6 @@ const input = () => ({
   } as never,
   budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
   identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
-  toolSafety: {
-    mutationPolicy: 'confirm' as const,
-    knownReadOnlyTools: new Set<string>(),
-  },
 });
 
 test('Stepper runs planner then interpreter; reviewer skipped when depth not in atDepths', async () => {

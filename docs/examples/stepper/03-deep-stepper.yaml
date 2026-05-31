@@ -18,7 +18,7 @@
 #   reviewer   — sonnet at depth 0; haiku at depths 1 and 2 (asymmetric policy)
 #   finalizer  — sonnet LLM synthesis over the full knowledge-RAG
 #
-# readOnly policy: trusted — all tools are permitted without confirmation.
+# Tool permissioning: the MCP server owns it — no agent-side gate.
 # Use this only when the subagent registry contains exclusively safe MCP tools
 # (e.g. a read-only SAP system snapshot).
 
@@ -88,9 +88,8 @@ coordinator:
     reviewer:
       atDepths: [0, 1, 2]        # review root + first two child levels
 
-  # readOnly: trusted — all tools allowed without confirmation.
-  # Remove this and set mutationPolicy: confirm + knownReadOnlyTools for stricter policy.
-  mutationPolicy: trusted
+  # Tool permissioning is the MCP SERVER's job — there is no agent-side gate; the
+  # agent calls whatever the server exposes. Wire to a read-only/scoped MCP server.
 
   # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
   # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's

@@ -24,7 +24,6 @@ test('IExecutor return union includes budget-exhausted', async () => {
     toolsRag: {} as never,
     budget: { depthRemaining: 0, tokens: new TokenLedger(0) },
     identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n' },
-    toolSafety: { mutationPolicy: 'confirm', knownReadOnlyTools: new Set() },
   });
   assert.equal(r.status, 'budget-exhausted');
 });

@@ -49,15 +49,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   (`llm.finalizer` → `llm.main`). The `PassthroughFinalizer` (17.0 default)
   is preserved for `cyclic-react` configs that do not need synthesis.
 
-- **readOnly tool-safety (BREAKING default).** The `CyclicReActExecutor`
-  enforces a gate before every MCP tool call. Undeclared tools raise a
-  `ClarifySignal` (budget-extension request) unless:
-  - The MCP schema declares `readOnly: true` on the tool, **or**
-  - The tool is listed in `coordinator.knownReadOnlyTools`, **or**
-  - `coordinator.mutationPolicy: trusted` removes the gate entirely.
-  The default is `mutationPolicy: confirm`. Existing configs that call
-  mutating tools without declaring them must add `knownReadOnlyTools` entries
-  or switch to `mutationPolicy: trusted`.
+- **No agent-side tool-safety gate.** Tool permissioning is the MCP server's
+  responsibility — the agent encapsulates MCP and calls whatever the server
+  exposes via `tools/list`. The agent never classifies tools as read-only vs
+  mutating (it cannot reliably know, and it is not its job). There is no
+  `mutationPolicy`, `knownReadOnlyTools`, or confirmation gate; deploy against a
+  read-only / scoped MCP server for a safe setup.
 
 - **Session persistence + `/v1/sessions` endpoints.** Sessions are indexed in
   an in-memory `SessionMetaStore` (swappable to Postgres via
@@ -82,8 +79,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **Recursive Stepper examples.** `docs/examples/stepper/` adds three
   production-shaped configs (`01-cyclic-react.yaml`, `02-planned-react.yaml`,
   `03-deep-stepper.yaml`), a shared `worker.yaml` subagent pipeline, and a
-  `README.md` covering the three modes, `/v1/sessions` resume flow, and the
-  readOnly tool-safety policy.
+  `README.md` covering the modes, `/v1/sessions` resume flow, and tool
+  permissioning (owned by the MCP server, not the agent).
 
 - **Executor reads the shared knowledge-RAG blackboard.** Before its first turn
   the `CyclicReActExecutor` queries the session blackboard and prepends the
@@ -123,13 +120,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   `mcp-result`). SSE clients that match on `kind === 'node-start'` etc. must
   migrate to the new variants. The `content` variant is preserved unchanged.
 
-- **readOnly tool-safety default: `mutationPolicy: confirm`.** Any config that
-  calls mutating tools without `readOnly: true` in the MCP schema will now
-  receive a `ClarifySignal` instead of executing the call silently. Add
-  `coordinator.knownReadOnlyTools` entries for safe tools, or set
-  `coordinator.mutationPolicy: trusted` to restore the previous unchecked
-  behavior. This applies only to configs that opt into a Stepper mode; the
-  legacy DAG path is unaffected.
 
 ### Fixed
 

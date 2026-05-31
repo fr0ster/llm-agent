@@ -256,10 +256,6 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
       sessionId: 'sess-b1',
       stepperId: 's0',
     },
-    toolSafety: {
-      mutationPolicy: 'confirm',
-      knownReadOnlyTools: new Set(['ReadProgram']),
-    },
   });
 
   assert.equal(result.status, 'ok', `expected ok, got: ${result.status}`);

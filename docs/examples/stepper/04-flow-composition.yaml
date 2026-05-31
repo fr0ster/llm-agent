@@ -96,15 +96,8 @@ coordinator:
     maxDepth: 4
     tokenBudget: 400000
 
-  # readOnly safety — undeclared tools require confirmation. Illustrative
-  # allowlist; replace with the read-only tools YOUR MCP exposes.
-  mutationPolicy: confirm
-  knownReadOnlyTools:
-    - GetProgram
-    - GetInclude
-    - GetClass
-    - ListPackage
-    - SearchRepository
+  # Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
+  # gate. The agent calls whatever the server exposes; wire it to a read-only/scoped server.
 
   # Consumer gnostifies the agnostic agent via RAG skills — fill per deployment
   # with HOW-TO records for YOUR MCP's tools (e.g. which tool reads what, which

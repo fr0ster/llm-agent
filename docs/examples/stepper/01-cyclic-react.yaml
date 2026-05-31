@@ -8,8 +8,8 @@
 #   reviewer   — haiku, called at depth 0 only (root, post-iteration)
 #   finalizer  — LLM synthesis on accumulated knowledge-RAG entries
 #
-# readOnly policy: undeclared tools require confirmation (default).
-# Declared tools in knownReadOnlyTools bypass the gate; trusted removes it.
+# Tool permissioning: the MCP SERVER owns it — there is NO agent-side gate. The
+# agent calls whatever the server exposes; wire it to a read-only/scoped server.
 
 port: ${SMART_SERVER_PORT:-4020}
 host: 0.0.0.0
@@ -69,17 +69,9 @@ coordinator:
     reviewer:
       atDepths: [0]            # review only at the root depth (cheap gate)
 
-  # Tool-safety policy
-  # undeclared tools raise ClarifySignal (budget-extension request) unless listed below
-  mutationPolicy: confirm
-  # Illustrative allowlist — these are deployment-specific tool names; the agent
-  # hardcodes none. Replace with the read-only tools YOUR MCP exposes.
-  knownReadOnlyTools:
-    - GetProgram
-    - GetInclude
-    - GetClass
-    - ListPackage
-    - SearchRepository
+  # Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
+  # gate. The agent calls whatever the server exposes via tools/list; safety is the
+  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
 
   # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
   # EMPTY to stay MCP-agnostic — the agent assumes nothing about your MCP's

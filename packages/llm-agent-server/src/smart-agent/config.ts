@@ -1344,19 +1344,11 @@ export interface StepperCompositionSpec {
   maxParallelSteps: number;
   maxDepth: number;
   tokenBudget: number;
-  toolSafety: {
-    mutationPolicy: 'confirm' | 'trusted';
-    knownReadOnlyTools: ReadonlySet<string>;
-  };
   formalizeTask: boolean;
 }
 
 export interface StepperCoordinatorConfig {
   mode: StepperMode;
-  toolSafety: {
-    mutationPolicy: 'confirm' | 'trusted';
-    knownReadOnlyTools: ReadonlySet<string>;
-  };
   reviewerAtDepths: { has(depth: number): boolean };
   maxParallelSteps: number;
   maxDepth: number;
@@ -1460,7 +1452,6 @@ type FlowBounds = Pick<
   | 'maxParallelSteps'
   | 'maxDepth'
   | 'tokenBudget'
-  | 'toolSafety'
   | 'formalizeTask'
 >;
 
@@ -1535,8 +1526,6 @@ function parseCompositionNodes(
  *
  * Supports:
  * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, deep-stepper, planned-react
- * - `mutationPolicy` (string) — default 'confirm'; one of confirm | trusted
- * - `knownReadOnlyTools` (string[]) — tools marked as safe for readonly execution
  * - `stepper.maxParallelSteps` (number) — default 4
  * - `stepper.maxDepth` (number) — default 4
  * - `stepper.tokenBudget` (number) — default 1,000,000
@@ -1549,16 +1538,10 @@ export function parseStepperCoordinatorConfig(
   if (!MODES.has(mode))
     throw new Error(`unknown coordinator.mode '${String(coord.mode)}'`);
 
-  const mutationPolicy =
-    (coord.mutationPolicy as 'confirm' | 'trusted' | undefined) ?? 'confirm';
-  if (mutationPolicy !== 'confirm' && mutationPolicy !== 'trusted') {
-    throw new Error(`coordinator.mutationPolicy must be 'confirm' | 'trusted'`);
-  }
-  const knownReadOnlyTools = new Set<string>(
-    Array.isArray(coord.knownReadOnlyTools)
-      ? (coord.knownReadOnlyTools as string[])
-      : [],
-  );
+  // Tool permissioning is the MCP SERVER's responsibility — whatever it exposes
+  // via tools/list is allowed. The agent does not classify tools (read-only vs
+  // mutating); there is no agent-side gate. The consumer wires the agent to a
+  // server that exposes only the permitted tools (e.g. a read-only MCP proxy).
 
   const stepper = (coord.stepper as Record<string, unknown> | undefined) ?? {};
   const reviewerCfg =
@@ -1635,7 +1618,6 @@ export function parseStepperCoordinatorConfig(
     maxParallelSteps,
     maxDepth,
     tokenBudget,
-    toolSafety: { mutationPolicy, knownReadOnlyTools },
     formalizeTask,
   };
   const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
@@ -1648,7 +1630,6 @@ export function parseStepperCoordinatorConfig(
 
   return {
     mode,
-    toolSafety: { mutationPolicy, knownReadOnlyTools },
     reviewerAtDepths,
     maxParallelSteps,
     maxDepth,

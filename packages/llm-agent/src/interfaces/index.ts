@@ -168,7 +168,6 @@ export type {
   IStepperResult,
   ITokenLedger,
   RunIdentity,
-  ToolSafetyPolicy,
 } from './stepper.js';
 export { TokenLedger } from './stepper.js';
 export type { IStepperInterpreter } from './stepper-interpreter.js';

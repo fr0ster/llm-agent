@@ -67,10 +67,6 @@ const baseCtx = (
   executor: okExecutor().exec,
   budget: { depthRemaining: 3, tokens: new TokenLedger(100000) },
   identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'n0' },
-  toolSafety: {
-    mutationPolicy: 'confirm' as const,
-    knownReadOnlyTools: new Set<string>(),
-  },
   maxParallelSteps: 4,
   mintStepperId: () => `s${counter++}`,
   ...over,

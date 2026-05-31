@@ -7,7 +7,6 @@ import {
   type IStepperResult,
   type RunIdentity,
   TokenLedger,
-  type ToolSafetyPolicy,
 } from '../stepper.js';
 
 test('Stepper core types: minimal IStepper compiles and runs', async () => {
@@ -17,16 +16,11 @@ test('Stepper core types: minimal IStepper compiles and runs', async () => {
     sessionId: 's',
     stepperId: 'n0',
   };
-  const toolSafety: ToolSafetyPolicy = {
-    mutationPolicy: 'confirm',
-    knownReadOnlyTools: new Set(['GetProgram']),
-  };
   const budget: Budget = { depthRemaining: 3, tokens: new TokenLedger(100000) };
   const stub: IStepper = {
     name: 'stub',
     async run(input: IStepperInput): Promise<IStepperResult> {
       assert.equal(input.identity.stepperId, 'n0');
-      assert.equal(input.toolSafety.knownReadOnlyTools.has('GetProgram'), true);
       input.budget.tokens.spend({
         promptTokens: 10,
         completionTokens: 5,
@@ -44,7 +38,6 @@ test('Stepper core types: minimal IStepper compiles and runs', async () => {
     toolsRag: {} as never,
     budget,
     identity,
-    toolSafety,
   });
   assert.equal(res.status, 'ok');
   assert.equal(budget.tokens.remaining, 99985); // shared ledger decremented

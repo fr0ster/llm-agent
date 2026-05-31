@@ -173,50 +173,19 @@ including the same `KnowledgeRag` instance backed by the durable JSONL file.
 
 ---
 
-## readOnly tool-safety policy
+## Tool permissioning
 
-The Stepper executor enforces a safety gate before every MCP tool call.
-Configure it via `coordinator.mutationPolicy` and `coordinator.knownReadOnlyTools`.
+**Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
+gate.** This is not a plain MCP client; it is an agent that ENCAPSULATES MCP. When
+the consumer wires the agent to an MCP server, it exposes ONLY the permitted tools
+(e.g. a read-only MCP proxy, or a scoped tool set). Whatever the server returns from
+`tools/list` is allowed — the agent calls it.
 
-### Three policy levels
-
-| Config | Behaviour |
-|---|---|
-| `mutationPolicy: confirm` (default) | Undeclared tools raise `ClarifySignal` (budget-extension request) before calling. Tools with `readOnly: true` in the MCP schema or listed in `knownReadOnlyTools` bypass the gate. |
-| `knownReadOnlyTools: [...]` | Per-tool allowlist. A tool listed here is treated as read-only even if the MCP schema does not declare `readOnly: true`. |
-| `mutationPolicy: trusted` | All tools are permitted without confirmation. Use only on read-only MCP proxies. |
-
-### Example: safest default
-
-```yaml
-coordinator:
-  mode: planned-react
-  mutationPolicy: confirm
-  knownReadOnlyTools:
-    - GetProgram
-    - GetInclude
-    - SearchRepository
-```
-
-### Example: fully trusted (read-only MCP only)
-
-```yaml
-coordinator:
-  mode: deep-stepper
-  mutationPolicy: trusted
-```
-
-### Example: mixed (some tools trusted, mutation tools still require confirmation)
-
-```yaml
-coordinator:
-  mode: planned-react
-  mutationPolicy: confirm
-  knownReadOnlyTools:
-    - GetProgram
-    - GetClass
-    # CreateClass, ActivateObject etc. are NOT listed → require confirmation
-```
+The agent **never** classifies a tool as read-only vs mutating: it cannot reliably
+know that (it only has descriptions), and that judgement is not the agent's job —
+it belongs to the server / the deployment wiring. There is no `mutationPolicy`, no
+`knownReadOnlyTools`, no confirmation gate in the agent. If filtering is ever needed
+it belongs in the tool-RAG layer (which tools are discoverable), not at execution.
 
 ---
 

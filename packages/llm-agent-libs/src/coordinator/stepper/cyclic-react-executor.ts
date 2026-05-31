@@ -1,5 +1,4 @@
 import {
-  ClarifySignal,
   type IExecutor,
   type INeedResolver,
   type LlmComponent,
@@ -64,7 +63,6 @@ export class CyclicReActExecutor implements IExecutor {
       toolsRag,
       budget,
       identity,
-      toolSafety,
       taskSpec,
       signal,
       onProgress,
@@ -135,15 +133,6 @@ export class CyclicReActExecutor implements IExecutor {
       });
     }
 
-    const isReadOnly = (toolName: string): boolean => {
-      const t = toolsRag.lookup(toolName) as
-        | (LlmTool & { readOnly?: boolean })
-        | undefined;
-      if (t?.readOnly === true) return true;
-      if (toolSafety.knownReadOnlyTools.has(toolName)) return true;
-      return toolSafety.mutationPolicy === 'trusted';
-    };
-
     for (let iter = 0; iter < maxIterations; iter++) {
       // Gate BEFORE any further work (review R2-F1/R6-F1). The ledger is the
       // SHARED run-wide counter (not a local snapshot). If it is exhausted we
@@ -208,11 +197,6 @@ export class CyclicReActExecutor implements IExecutor {
         });
         for (const tc of toolCalls) {
           const toolName = tc.name;
-          if (!isReadOnly(toolName)) {
-            throw new ClarifySignal(
-              `about to call ${toolName}(${JSON.stringify(tc.arguments)}); this tool is not declared read-only — proceed?`,
-            );
-          }
           onProgress?.({
             kind: 'mcp-call',
             source: ref,

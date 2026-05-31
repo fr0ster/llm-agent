@@ -15,11 +15,6 @@ export interface RunIdentity {
   parentStepperId?: string;
 }
 
-export interface ToolSafetyPolicy {
-  mutationPolicy: 'confirm' | 'trusted';
-  knownReadOnlyTools: ReadonlySet<string>;
-}
-
 /** Shared, live token ledger (review R2-F1). ONE instance is created at the
  *  coordinator boundary and passed BY REFERENCE through the whole run. Every
  *  Stepper and executor reads `exhausted()` before each LLM call and calls
@@ -52,7 +47,6 @@ export interface IStepperInput {
   toolsRag: IToolsRagHandle;
   budget: Budget;
   identity: RunIdentity;
-  toolSafety: ToolSafetyPolicy;
   /** Formalized overall task (optional). Threaded down to every planner and
    *  executor as a compact anchor. Absent → behaves as before. */
   taskSpec?: ITaskSpec;
