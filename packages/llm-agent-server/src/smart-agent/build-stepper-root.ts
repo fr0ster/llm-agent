@@ -3,6 +3,7 @@ import {
   type ILlm,
   type IReviewStrategy,
   type IStepper,
+  type IStepperPlanner,
   type ITaskFormalizer,
   type LlmCallEntry,
   type PlanNode,
@@ -107,12 +108,30 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
  * runtime (`buildFromComposition`) consumes ONLY this — never raw config. This
  * is the seam that gives yaml⟷builder parity and (later) nested sub-flows.
  */
+export interface CompositionNode {
+  id: string;
+  goal: string;
+  dependsOn?: string[];
+  /**
+   * Nested composition: this node is NOT a leaf — it runs as a child Stepper
+   * built from `flow` (its own planner/executor/loop). Structural recursion:
+   * the sub-cycle is declared and visible. Omit for a leaf node.
+   */
+  flow?: StepperCompositionSpec;
+}
+
 export interface StepperCompositionSpec {
   planner: 'none' | 'llm' | 'static';
   /** LLM planner eager-decomposition knob; ignored by none/static. */
   granularity: 'shallow' | 'detailed';
   /** Declarative nodes for planner === 'static'. */
   plan?: PlanNode[];
+  /**
+   * Declared composition nodes. When present, the planner is static over these
+   * nodes; a node with a nested `flow` becomes a child Stepper (structural
+   * recursion). This is the "yaml is a composition tree" shape.
+   */
+  nodes?: CompositionNode[];
   executor: 'simple' | 'cyclic-react' | 'recursive';
   finalizer: 'llm';
   reviewerAtDepths: { has(depth: number): boolean };
@@ -263,114 +282,137 @@ export async function buildFromComposition(
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
 
-  // ---- Executor (the leaf for all flows) ------------------------------------
-  // 'simple' = single pass (one tool round + synthesis); 'cyclic-react' /
-  // 'recursive' leaves run the full ReAct loop. This is the executor.type knob.
-  const maxIter = spec.executor === 'simple' ? 2 : 10;
-  const executor = new CyclicReActExecutor({
-    llm: executorLlm,
-    callMcp,
-    component: 'tool-loop',
-    maxIterations: maxIter,
-    // Always-on context-augmenting ReAct: on a no-tool-call answer the executor
-    // asks this classifier whether the model expressed an unmet-tool need; if so
-    // it re-queries toolsRag and retries with the augmented tool set.
-    needResolver: new LlmNeedResolver(toolDefinerLlm),
-  });
-
-  // One shared interpreter.
+  // One shared interpreter + need-resolver across the whole tree.
   const interpreter = new StepperInterpreter();
+  const needResolver = new LlmNeedResolver(toolDefinerLlm);
 
-  // Planner — selected by the resolved flow (spec.planner):
-  //   'none'   → trivial single-node plan (node goal = prompt)
-  //   'static' → StaticPlanner over the declarative flow.plan
-  //   'llm'    → LlmStepperPlanner (LLM decomposition)
-  // Built BEFORE the recursion wiring so a recursive executor can reuse the
-  // SAME planner instance for its child Steppers.
-  const planner =
-    spec.planner === 'none'
-      ? {
-          name: 'trivial' as const,
-          async plan(inp: { prompt: string }) {
-            return {
-              objective: inp.prompt,
-              nodes: [{ id: 'root', goal: inp.prompt }],
-              createdAt: 0,
-            };
-          },
-        }
-      : spec.planner === 'static'
-        ? new StaticPlanner(spec.plan ?? [])
-        : new LlmStepperPlanner(plannerLlm, spec.granularity);
+  // Leaf executor per spec.executor profile (reuses the shared executor LLM +
+  // need-resolver): 'simple' = single pass (maxIter 2); cyclic-react/recursive
+  // run the full ReAct loop (maxIter 10).
+  const makeExecutor = (execType: StepperCompositionSpec['executor']) =>
+    new CyclicReActExecutor({
+      llm: executorLlm,
+      callMcp,
+      component: 'tool-loop',
+      maxIterations: execType === 'simple' ? 2 : 10,
+      needResolver,
+    });
 
-  // Depth budget + child Steppers depend on the resolved flow.executor:
-  //   'cyclic-react' → no recursion (depth 0 if planner 'none', else 1 level)
-  //   'recursive'    → may spawn child Steppers up to maxDepth (deep behaviour)
-  let depthRemaining: number;
-  let childSteppers: ReadonlyMap<string, IStepper>;
-  // Worker catalog the ROOT planner advertises (recursive executor only).
-  let rootCatalog: ReadonlyArray<{ name: string; description?: string }> = [];
+  const trivialPlanner: IStepperPlanner = {
+    name: 'trivial',
+    async plan(inp) {
+      return {
+        objective: inp.prompt,
+        nodes: [{ id: 'root', goal: inp.prompt }],
+        createdAt: 0,
+      };
+    },
+  };
 
-  if (spec.executor !== 'recursive') {
-    // Non-recursive leaf executor: depth 0 when there is no planning pass,
-    // 1 when the planner decomposes into leaves.
-    depthRemaining = spec.planner === 'none' ? 0 : 1;
-    childSteppers = new Map();
-  } else {
-    {
-      depthRemaining = spec.maxDepth;
-      const catalog = (deps.subagents ?? []).map((s) => ({
-        name: s.name,
-        description: s.description,
+  // Recursive composition builder. LLMs, token ledger, reviewer, interpreter are
+  // SHARED across the whole tree (shared-ledger invariant); only the planner, the
+  // executor profile and the childSteppers vary per (nested) spec.
+  const buildNode = (s: StepperCompositionSpec, depth: number): Stepper => {
+    const ex = makeExecutor(s.executor);
+    const childMap = new Map<string, IStepper>();
+    const nodes = s.nodes ?? [];
+
+    // Planner selection. Declared `nodes` ⇒ static plan over them (nested nodes
+    // carry agent=id so the interpreter routes them into their child Stepper).
+    let planner: IStepperPlanner;
+    if (nodes.length > 0) {
+      const planNodes: PlanNode[] = nodes.map((n) => ({
+        id: n.id,
+        goal: n.goal,
+        ...(n.dependsOn ? { dependsOn: n.dependsOn } : {}),
+        ...(n.flow ? { agent: n.id } : {}),
       }));
-      rootCatalog = catalog;
+      planner = new StaticPlanner(planNodes);
+    } else if (s.planner === 'none') {
+      planner = trivialPlanner;
+    } else if (s.planner === 'static') {
+      planner = new StaticPlanner(s.plan ?? []);
+    } else {
+      planner = new LlmStepperPlanner(plannerLlm, s.granularity);
+    }
+
+    // (a) Structural recursion: declared nested-flow nodes → child Steppers.
+    for (const n of nodes) {
+      if (n.flow) childMap.set(n.id, buildNode(n.flow, depth + 1));
+    }
+
+    // (b) Runtime subagent recursion (executor: recursive) — only when NO nested
+    // nodes were declared; preserves the existing deep-stepper behaviour. Children
+    // share this run's planner/executor/reviewer + role LLMs (shared ledger), and
+    // point childSteppers back to the SAME map so recursion continues.
+    let catalog: ReadonlyArray<{ name: string; description?: string }> = [];
+    if (s.executor === 'recursive' && nodes.length === 0) {
+      catalog = (deps.subagents ?? []).map((sa) => ({
+        name: sa.name,
+        description: sa.description,
+      }));
       if (registry.size > 0) {
-        // DI/test override: use the supplied registry verbatim.
-        childSteppers = registry;
+        for (const [k, v] of registry) childMap.set(k, v);
       } else {
-        // Build one recursive child Stepper per declared subagent, sharing this
-        // run's planner / interpreter / executor / reviewer and — crucially —
-        // the SAME role LLMs, so every child charges the ONE shared token ledger
-        // (review Finding 2). Each child's childSteppers points back to the SAME
-        // map so recursion continues, bounded by depthRemaining (decremented at
-        // each dispatch in the interpreter).
-        const childMap = new Map<string, IStepper>();
-        for (const s of catalog) {
+        for (const sa of catalog) {
           childMap.set(
-            s.name,
+            sa.name,
             new Stepper({
-              name: s.name,
+              name: sa.name,
               planner,
               interpreter,
-              executor,
+              executor: ex,
               childSteppers: childMap,
               reviewer,
-              reviewerAtDepths: spec.reviewerAtDepths,
-              depth: 1,
-              maxParallelSteps: spec.maxParallelSteps,
+              reviewerAtDepths: s.reviewerAtDepths,
+              depth: depth + 1,
+              maxParallelSteps: s.maxParallelSteps,
               mintStepperId,
               childAgentCatalog: catalog,
             }),
           );
         }
-        childSteppers = childMap;
       }
     }
-  }
 
-  const rootStepper = new Stepper({
-    name: 'root',
-    planner,
-    interpreter,
-    executor,
-    childSteppers,
-    reviewer,
-    reviewerAtDepths: spec.reviewerAtDepths,
-    depth: 0,
-    maxParallelSteps: spec.maxParallelSteps,
-    mintStepperId,
-    childAgentCatalog: rootCatalog,
-  });
+    return new Stepper({
+      name: depth === 0 ? 'root' : `node-d${depth}`,
+      planner,
+      interpreter,
+      executor: ex,
+      childSteppers: childMap,
+      reviewer,
+      reviewerAtDepths: s.reviewerAtDepths,
+      depth,
+      maxParallelSteps: s.maxParallelSteps,
+      mintStepperId,
+      childAgentCatalog: catalog,
+    });
+  };
+
+  const rootStepper = buildNode(spec, 0);
+
+  // Depth budget covers BOTH declared nesting and runtime recursion.
+  const nestingDepth = (s: StepperCompositionSpec): number => {
+    const ds = (s.nodes ?? [])
+      .filter((n) => n.flow)
+      .map((n) => 1 + nestingDepth(n.flow as StepperCompositionSpec));
+    return ds.length ? Math.max(...ds) : 0;
+  };
+  const anyRecursive = (s: StepperCompositionSpec): boolean =>
+    s.executor === 'recursive' ||
+    (s.nodes ?? []).some((n) => !!n.flow && anyRecursive(n.flow));
+  const baseDepth =
+    spec.executor === 'recursive'
+      ? spec.maxDepth
+      : spec.planner === 'none' && (spec.nodes?.length ?? 0) === 0
+        ? 0
+        : 1;
+  const depthRemaining = Math.max(
+    baseDepth,
+    nestingDepth(spec),
+    anyRecursive(spec) ? spec.maxDepth : 0,
+  );
 
   const finalizer = new RootFinalizer(finalizerLlm);
 

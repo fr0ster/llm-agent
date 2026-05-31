@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { RootFinalizer, Stepper } from '@mcp-abap-adt/llm-agent-libs';
-import { buildStepperRoot } from '../build-stepper-root.js';
+import {
+  buildFromComposition,
+  buildStepperRoot,
+  type StepperCompositionSpec,
+} from '../build-stepper-root.js';
 
 const stubLlm = {
   name: 'stub',
@@ -369,4 +373,70 @@ test('pipelineFallback is used when llmMap is absent', async () => {
     calls.every((m) => m === 'pipeline-model'),
     `all roles must use pipeline-model, got: ${calls.join(',')}`,
   );
+});
+
+// ── (б) nested flow nodes — structural recursion via buildFromComposition ──────
+const compDeps = {
+  makeLlm: async () => stubLlm as never,
+  callMcp: async () => 'result',
+  mintStepperId: (() => {
+    let i = 0;
+    return () => `s${i++}`;
+  })(),
+  registry: new Map(),
+};
+
+function leafFlow(): StepperCompositionSpec {
+  return {
+    planner: 'none',
+    granularity: 'shallow',
+    executor: 'cyclic-react',
+    finalizer: 'llm',
+    reviewerAtDepths: { has: () => false },
+    maxParallelSteps: 4,
+    maxDepth: 5,
+    tokenBudget: 100000,
+    toolSafety: {
+      mutationPolicy: 'confirm',
+      knownReadOnlyTools: new Set<string>(),
+    },
+    formalizeTask: false,
+  };
+}
+
+test('nested flow node builds a child Stepper and lifts depthRemaining to cover nesting', async () => {
+  const spec: StepperCompositionSpec = {
+    ...leafFlow(),
+    nodes: [
+      { id: 'read', goal: 'read the code' },
+      {
+        id: 'analyze',
+        goal: 'analyze',
+        // nested sub-cycle (its own composition) → structural recursion
+        flow: { ...leafFlow(), nodes: [{ id: 'sec', goal: 'security' }] },
+      },
+    ],
+  };
+  const built = await buildFromComposition(spec, compDeps as never);
+  assert.ok(built.rootStepper instanceof Stepper);
+  // one level of declared nesting ⇒ depthRemaining must allow it
+  assert.ok(built.budget.depthRemaining >= 1);
+});
+
+test('two-level nested flow lifts depthRemaining to >= 2', async () => {
+  const spec: StepperCompositionSpec = {
+    ...leafFlow(),
+    nodes: [
+      {
+        id: 'l1',
+        goal: 'level 1',
+        flow: {
+          ...leafFlow(),
+          nodes: [{ id: 'l2', goal: 'level 2', flow: leafFlow() }],
+        },
+      },
+    ],
+  };
+  const built = await buildFromComposition(spec, compDeps as never);
+  assert.ok(built.budget.depthRemaining >= 2);
 });
