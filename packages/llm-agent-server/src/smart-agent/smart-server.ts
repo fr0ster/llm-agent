@@ -881,8 +881,12 @@ export function usesStepper(
   coordCfg: Record<string, unknown> | undefined,
 ): boolean {
   if (!coordCfg) return false;
-  // Explicit opt-in only: `coordinator.mode` must be a string in the raw config.
+  // Explicit opt-in: `coordinator.mode` (preset alias) — a string in raw config.
   if (typeof coordCfg.mode === 'string') return true;
+  // OR an explicit `coordinator.flow` composition block (mode-less form). A flow
+  // with no mode is still a Stepper config; without this it would silently fall
+  // through to the plain smart pipeline.
+  if (typeof coordCfg.flow === 'object' && coordCfg.flow !== null) return true;
   // Legacy 17.0 configs with `coordinator.planner` but no `coordinator.mode`
   // stay on the deprecated DagCoordinatorHandler (removed in 19.0).
   return false;

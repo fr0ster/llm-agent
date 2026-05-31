@@ -352,3 +352,10 @@ test('usesStepper returns false for non-string mode value', () => {
   assert.equal(usesStepper({ mode: 42 } as never), false);
   assert.equal(usesStepper({ mode: null } as never), false);
 });
+
+test('usesStepper returns true for a mode-less coordinator.flow composition', () => {
+  // A flow-only config (no `mode`) must still route to the Stepper, not fall
+  // through to the plain smart pipeline.
+  assert.equal(usesStepper({ flow: { planner: { type: 'llm' } } }), true);
+  assert.equal(usesStepper({ flow: null } as never), false);
+});

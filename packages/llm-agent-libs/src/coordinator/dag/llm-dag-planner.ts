@@ -121,20 +121,22 @@ export function parseDagPlan(content: string, usage?: LlmUsage): DagPlan {
         usage,
       );
     }
-    if (n.id !== undefined && typeof n.id !== 'string') {
+    // Optional fields: LLMs frequently emit explicit `null` for an omitted
+    // field — treat null like undefined (tolerate, then normalize below).
+    if (n.id != null && typeof n.id !== 'string') {
       throw withUsage(
         new Error(`Planner node has a non-string id: ${JSON.stringify(n)}`),
         usage,
       );
     }
-    if (n.agent !== undefined && typeof n.agent !== 'string') {
+    if (n.agent != null && typeof n.agent !== 'string') {
       throw withUsage(
         new Error(`Planner node has a non-string agent: ${JSON.stringify(n)}`),
         usage,
       );
     }
     if (
-      n.dependsOn !== undefined &&
+      n.dependsOn != null &&
       (!Array.isArray(n.dependsOn) ||
         n.dependsOn.some((d) => typeof d !== 'string'))
     ) {
@@ -145,7 +147,7 @@ export function parseDagPlan(content: string, usage?: LlmUsage): DagPlan {
         usage,
       );
     }
-    if (n.needsInput !== undefined && typeof n.needsInput !== 'boolean') {
+    if (n.needsInput != null && typeof n.needsInput !== 'boolean') {
       throw withUsage(
         new Error(
           `Planner node needsInput must be a boolean: ${JSON.stringify(n)}`,
@@ -153,12 +155,14 @@ export function parseDagPlan(content: string, usage?: LlmUsage): DagPlan {
         usage,
       );
     }
+    // Normalize null → undefined so a node never carries an explicit-null agent
+    // (the interpreter would treat null as falsy anyway, but keep nodes clean).
     return {
       id: (n.id as string | undefined) ?? `n${i + 1}`,
       goal: n.goal,
-      agent: n.agent as string | undefined,
-      dependsOn: n.dependsOn as string[] | undefined,
-      needsInput: n.needsInput as boolean | undefined,
+      agent: (n.agent ?? undefined) as string | undefined,
+      dependsOn: (n.dependsOn ?? undefined) as string[] | undefined,
+      needsInput: (n.needsInput ?? undefined) as boolean | undefined,
     };
   });
   return {
