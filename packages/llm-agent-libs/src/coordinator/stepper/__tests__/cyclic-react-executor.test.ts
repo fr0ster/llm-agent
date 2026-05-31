@@ -545,7 +545,10 @@ test('executor sends a task-agnostic system prompt (tool-use protocol) so unmet 
   });
   assert.ok(firstSystem.length > 0, 'a system message must be sent');
   // Generic tool-use protocol — must NOT bind to a task type or a tool name.
-  assert.match(firstSystem, /do NOT guess|state .*the capability you still need/i);
+  assert.match(
+    firstSystem,
+    /do NOT guess|state .*the capability you still need/i,
+  );
   assert.doesNotMatch(
     firstSystem,
     /\b(ABAP|include|GetInclude|GetProgram|review|analy)/i,

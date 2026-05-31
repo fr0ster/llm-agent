@@ -207,7 +207,6 @@ test('FIX-B.1: planner, tool-loop and finalizer LLM calls are logged to logLlmCa
   // Import LoggingLlm to simulate what buildStepperRoot does internally
   const { LoggingLlm } = await import('@mcp-abap-adt/llm-agent-libs');
 
-  const ZERO = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
   const plannerUsage = {
     promptTokens: 10,
     completionTokens: 5,

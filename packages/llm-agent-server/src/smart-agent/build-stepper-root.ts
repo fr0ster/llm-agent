@@ -27,16 +27,16 @@ export interface BuildStepperRootInput {
   /** Raw coordinator config object (e.g. the `coordinator:` YAML block). */
   coordCfg: Record<string, unknown>;
   /**
-   * Pre-built named registry of subagent Steppers — DI/test override for
-   * deep-stepper mode. When non-empty it is used as childSteppers verbatim;
-   * when empty, child Steppers are built from `subagents` (the normal path).
+   * Pre-built named registry of subagent Steppers. Reserved for the recursive
+   * `deep-stepper` mode (feature/recursive-deep-stepper branch); IGNORED in
+   * 18.0 — both shipped modes run with no child Steppers. Kept on the input
+   * type so callers/DI wiring stay source-compatible across the 18.0/18.1 line.
    */
   registry: ReadonlyMap<string, IStepper>;
   /**
    * Declared subagents (name + description) from the `subagents:` YAML block.
-   * In deep-stepper mode each becomes a recursive child Stepper sharing this
-   * run's planner/executor/reviewer/ledger, and is advertised to the planner so
-   * it can delegate sub-goals via a node's `agent`. Ignored in other modes.
+   * Reserved for recursive `deep-stepper` (feature/recursive-deep-stepper
+   * branch); IGNORED in 18.0.
    */
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   /** Factory to build an ILlm from a config; used for all roles. */
@@ -93,10 +93,10 @@ const STUB_LLM_CFG: SmartServerLlmConfig = {
 /**
  * Assemble the root Stepper + finalizer from a coordinator config block.
  *
- * Three modes:
+ * Two modes ship in 18.0 (recursive `deep-stepper` is deferred to the
+ * feature/recursive-deep-stepper branch — neither mode below spawns children):
  *  - `cyclic-react`   → trivial single-node planner + CyclicReActExecutor leaf; depthRemaining=0.
  *  - `planned-react`  → LlmStepperPlanner + CyclicReActExecutor leaves; depthRemaining=1.
- *  - `deep-stepper`   → LlmStepperPlanner + registry child Steppers; depthRemaining=config.maxDepth.
  *
  * Each role (planner, executor, reviewer, finalizer) is resolved from the
  * per-role LLM map via the chain: llmMap[role] → llmMap.main → pipelineFallback.
@@ -107,7 +107,6 @@ export async function buildStepperRoot(
 ): Promise<BuiltStepperRoot> {
   const {
     coordCfg,
-    registry,
     makeLlm,
     callMcp,
     mintStepperId,
@@ -212,69 +211,22 @@ export async function buildStepperRoot(
         }
       : new LlmStepperPlanner(plannerLlm);
 
-  // Depth budget + child Steppers depend on mode.
+  // Depth budget per mode. (Recursive `deep-stepper` — child Steppers from
+  // subagents — is NOT shipped in 18.0; it lives on the
+  // feature/recursive-deep-stepper branch. 18.0 ships cyclic-react +
+  // planned-react, both with NO child Steppers / no recursion.)
   let depthRemaining: number;
-  let childSteppers: ReadonlyMap<string, IStepper>;
-  // Worker catalog the ROOT planner advertises (deep-stepper only).
-  let rootCatalog: ReadonlyArray<{ name: string; description?: string }> = [];
+  const childSteppers: ReadonlyMap<string, IStepper> = new Map();
 
   switch (config.mode) {
     case 'cyclic-react': {
       // No recursion at all: depth=0 → interpreter always routes to executor leaf.
       depthRemaining = 0;
-      childSteppers = new Map();
-      break;
-    }
-    case 'planned-react': {
-      // One level of planning; leaves execute via CyclicReActExecutor.
-      depthRemaining = 1;
-      childSteppers = new Map();
-      break;
-    }
-    case 'deep-stepper': {
-      depthRemaining = config.maxDepth;
-      const catalog = (input.subagents ?? []).map((s) => ({
-        name: s.name,
-        description: s.description,
-      }));
-      rootCatalog = catalog;
-      if (registry.size > 0) {
-        // DI/test override: use the supplied registry verbatim.
-        childSteppers = registry;
-      } else {
-        // Build one recursive child Stepper per declared subagent, sharing this
-        // run's planner / interpreter / executor / reviewer and — crucially —
-        // the SAME role LLMs, so every child charges the ONE shared token ledger
-        // (review Finding 2). Each child's childSteppers points back to the SAME
-        // map so recursion continues, bounded by depthRemaining (decremented at
-        // each dispatch in the interpreter).
-        const childMap = new Map<string, IStepper>();
-        for (const s of catalog) {
-          childMap.set(
-            s.name,
-            new Stepper({
-              name: s.name,
-              planner,
-              interpreter,
-              executor,
-              childSteppers: childMap,
-              reviewer,
-              reviewerAtDepths: config.reviewerAtDepths,
-              depth: 1,
-              maxParallelSteps: config.maxParallelSteps,
-              mintStepperId,
-              childAgentCatalog: catalog,
-            }),
-          );
-        }
-        childSteppers = childMap;
-      }
       break;
     }
     default: {
-      // Exhaustive — parseStepperCoordinatorConfig already throws on unknown modes.
+      // planned-react: one level of planning; leaves execute via CyclicReActExecutor.
       depthRemaining = 1;
-      childSteppers = new Map();
     }
   }
 
@@ -289,7 +241,6 @@ export async function buildStepperRoot(
     depth: 0,
     maxParallelSteps: config.maxParallelSteps,
     mintStepperId,
-    childAgentCatalog: rootCatalog,
   });
 
   const finalizer = new RootFinalizer(finalizerLlm);

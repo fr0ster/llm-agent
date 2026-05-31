@@ -1309,7 +1309,11 @@ export function resolveSmartServerConfig(
 /**
  * Stepper coordinator modes.
  */
-export type StepperMode = 'cyclic-react' | 'deep-stepper' | 'planned-react';
+// Note: `deep-stepper` (recursive child Steppers) is NOT shipped in 18.0 — it is
+// under development on the `feature/recursive-deep-stepper` branch (its root
+// planner needs hardening before production). 18.0 ships cyclic-react +
+// planned-react; legacy DAG configs (no `coordinator.mode`) are unaffected.
+export type StepperMode = 'cyclic-react' | 'planned-react';
 
 /**
  * Configuration for the recursive Stepper coordinator.
@@ -1336,17 +1340,13 @@ export interface StepperCoordinatorConfig {
   knowledgeSeed: ReadonlyArray<{ content: string; artifactType: string }>;
 }
 
-const MODES = new Set<StepperMode>([
-  'cyclic-react',
-  'deep-stepper',
-  'planned-react',
-]);
+const MODES = new Set<StepperMode>(['cyclic-react', 'planned-react']);
 
 /**
  * Parse stepper coordinator configuration from a raw config object.
  *
  * Supports:
- * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, deep-stepper, planned-react
+ * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, planned-react
  * - `mutationPolicy` (string) — default 'confirm'; one of confirm | trusted
  * - `knownReadOnlyTools` (string[]) — tools marked as safe for readonly execution
  * - `stepper.maxParallelSteps` (number) — default 4
