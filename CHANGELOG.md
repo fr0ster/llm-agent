@@ -9,6 +9,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [18.0.2] — 2026-06-01
+
+### Fixed
+
+- **DAG coordinator no longer double-emits the answer (#166).** A single `onPartial`
+  was passed to both the interpreter and the finalizer, so a non-streaming client
+  received the answer twice (streamed node content + the finalizer's re-emission).
+  The interpreter's node-content now goes to the session log only; the **finalizer is
+  the sole source of client-facing content**, emitting the answer once.
+- **Linear coordinator self-dispatch can now call MCP tools (#157).** `SelfDispatch`
+  (and `HybridDispatch`, which delegates self-steps to it) ran a single toolless
+  `llm.chat()`, so tool-needing steps hallucinated instead of calling MCP. It now runs
+  a **bounded tool-loop** (≤6 iterations) over the per-request RAG-selected tools when
+  the coordinator threads them: `ICoordinatorContext` gains `selectedTools` + a
+  `callTool` executor, populated by `CoordinatorHandler` from the connected MCP clients
+  (`toolClientMap`) and the request's active tools. No tools/executor → unchanged
+  single-chat behaviour. (The DAG path already gave workers real tools in 18.0.)
+
+### Notes
+
+- Reaffirms 18.0.1: the **DAG coordinator is a retained peer pipeline variant** (not
+  deprecated). Both the DAG and linear coordinators now make real MCP calls.
+
 ## [18.0.1] — 2026-06-01
 
 ### Fixed

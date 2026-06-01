@@ -5,7 +5,7 @@ import type {
   ISubAgentResult,
   SubAgentRegistry,
 } from './subagent.js';
-import type { LlmUsage } from './types.js';
+import type { LlmTool, LlmUsage } from './types.js';
 
 export interface PlanStep {
   id: string;
@@ -87,6 +87,24 @@ export interface ICoordinatorContext {
   stepResults: Record<string, StepResult>;
   signal?: AbortSignal;
   sessionId: string;
+  /**
+   * Per-request RAG-selected tools (MCP + client external) available to a
+   * self-dispatched step's tool-loop (#157). Empty/absent → the step runs a
+   * single toolless `llm.chat()` (legacy behaviour).
+   */
+  selectedTools?: readonly LlmTool[];
+  /**
+   * Executes a tool by name and returns its textual result. Built by the
+   * coordinator handler from the connected MCP clients. With `selectedTools`,
+   * this lets a self-dispatched step actually CALL MCP (read a table, list a
+   * package, …) instead of hallucinating a toolless answer (#157). Absent →
+   * no tool-loop.
+   */
+  callTool?: (
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ) => Promise<string>;
 }
 
 export interface IPlanningStrategy {
