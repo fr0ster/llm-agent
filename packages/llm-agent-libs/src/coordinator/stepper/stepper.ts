@@ -83,6 +83,7 @@ export class Stepper implements IStepper {
       budget: input.budget,
       identity: input.identity,
       taskSpec: input.taskSpec,
+      externalTools: input.externalTools,
       maxParallelSteps,
       mintStepperId,
       signal: input.signal,

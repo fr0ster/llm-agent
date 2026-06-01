@@ -72,6 +72,31 @@ const baseCtx = (
   ...over,
 });
 
+test('#167: interpreter threads ctx.externalTools into the executor leaf', async () => {
+  counter = 0;
+  let seen: ReadonlyArray<{ name: string }> | undefined;
+  const exec: IExecutor = {
+    name: 'e',
+    async execute(input) {
+      seen = input.externalTools;
+      return { status: 'ok', usage: ZERO };
+    },
+  };
+  const interp = new StepperInterpreter();
+  await interp.interpret(
+    { objective: 'o', nodes: [{ id: 'a', goal: 'g' }], createdAt: 0 },
+    baseCtx({
+      executor: exec,
+      externalTools: [{ name: 'create_file' }] as never,
+    }),
+  );
+  assert.deepEqual(
+    seen?.map((t) => t.name),
+    ['create_file'],
+    'executor leaf must receive the client external tools',
+  );
+});
+
 test('H.4b depth floor routes subagent node to executor; child.run NOT called; spawned event is the executor virtual ref', async () => {
   counter = 0;
   const child = spyStepper('w');

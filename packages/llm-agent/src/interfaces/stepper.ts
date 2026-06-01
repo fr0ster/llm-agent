@@ -1,7 +1,7 @@
 import type { IKnowledgeRagHandle, IToolsRagHandle } from './knowledge-rag.js';
 import type { StreamChunk } from './streaming.js';
 import type { ITaskSpec } from './task-spec.js';
-import type { LlmUsage } from './types.js';
+import type { LlmTool, LlmUsage } from './types.js';
 
 /** Identity carried through every layer so executors can stamp
  *  KnowledgeEntryMetadata and the coordinator can attribute streaming
@@ -50,6 +50,10 @@ export interface IStepperInput {
   /** Formalized overall task (optional). Threaded down to every planner and
    *  executor as a compact anchor. Absent → behaves as before. */
   taskSpec?: ITaskSpec;
+  /** Client-provided external tools (consumer-executed function tools from the
+   *  request, e.g. create_file). Threaded down to every executor and merged
+   *  with the seeded MCP tools (issue #167). Absent → only MCP tools. */
+  externalTools?: readonly LlmTool[];
   signal?: AbortSignal;
   sessionLogger?: { logStep(name: string, data: unknown): void };
   onProgress?: (event: StreamChunk) => void;

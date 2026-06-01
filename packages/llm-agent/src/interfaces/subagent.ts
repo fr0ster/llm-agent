@@ -1,6 +1,6 @@
 import type { EpicFailTrace } from './coordinator.js';
 import type { OnPartial } from './streaming.js';
-import type { LlmToolCall, LlmUsage } from './types.js';
+import type { LlmTool, LlmToolCall, LlmUsage } from './types.js';
 
 /**
  * Typed metadata that the planner/validator can read without invoking the
@@ -44,6 +44,11 @@ export interface ISubAgentInput {
    *  Fire-and-forget — implementations must never let the callback throw
    *  break the run. Absence preserves today's silent behaviour. */
   onPartial?: OnPartial;
+  /** Client-provided external (consumer-executed) tools from the request, e.g.
+   *  create_file / rag_add. Threaded from the coordinator into the worker's
+   *  nested pipeline so the worker can emit a tool call the client fulfils
+   *  (issue #167). Absent → the worker sees only its own MCP tools. */
+  externalTools?: readonly LlmTool[];
 }
 
 export interface ISubAgentResult {

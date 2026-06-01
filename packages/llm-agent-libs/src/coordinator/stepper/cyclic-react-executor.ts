@@ -153,6 +153,16 @@ export class CyclicReActExecutor implements IExecutor {
       });
     }
 
+    // Issue #167: MERGE client-provided external tools (consumer-executed, e.g.
+    // create_file / rag_add) with the seeded MCP tools — AFTER seeding, so they
+    // never suppress the MCP seed (which only runs when `tools.length === 0`).
+    // De-dup by name so a tool present in both sets is offered once.
+    if (input.externalTools && input.externalTools.length > 0) {
+      const have = new Set(tools.map((t) => t.name));
+      for (const t of input.externalTools)
+        if (!have.has(t.name)) tools.push(t as LlmTool);
+    }
+
     for (let iter = 0; iter < maxIterations; iter++) {
       // Gate BEFORE any further work (review R2-F1/R6-F1). The ledger is the
       // SHARED run-wide counter (not a local snapshot). If it is exhausted we

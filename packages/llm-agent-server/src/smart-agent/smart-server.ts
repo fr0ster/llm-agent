@@ -897,8 +897,8 @@ export function usesStepper(
   // with no mode is still a Stepper config; without this it would silently fall
   // through to the plain smart pipeline.
   if (typeof coordCfg.flow === 'object' && coordCfg.flow !== null) return true;
-  // Legacy 17.0 configs with `coordinator.planner` but no `coordinator.mode`
-  // stay on the deprecated DagCoordinatorHandler (removed in 19.0).
+  // `coordinator.planner` without `coordinator.mode` selects the DAG coordinator
+  // variant (a RETAINED peer pipeline, not deprecated) — not the Stepper.
   return false;
 }
 
@@ -1466,12 +1466,17 @@ export class SmartServer {
           config: rawCoordCfg,
         });
       } else if (coordCfg.planner !== undefined) {
-        // ── Legacy DAG path (deprecated §K — remove in 19.0) ─────────────────
+        // ── DAG coordinator path (a RETAINED peer pipeline variant) ──────────
+        // `coordinator.planner` (no `coordinator.mode`) selects the DAG
+        // coordinator. It is NOT deprecated — it is the strongest single-shot
+        // plan-graph variant (e.g. unaided full-include reviews). The Stepper
+        // (`coordinator.mode` / `coordinator.flow`) is a sibling, not a
+        // replacement. Informational only.
         log({
-          event: 'config_warning',
+          event: 'config_info',
           message:
-            'coordinator.planner without coordinator.mode uses the deprecated DagCoordinatorHandler; ' +
-            'set coordinator.mode to adopt the 18.0 Stepper runtime',
+            'coordinator.planner (no coordinator.mode) selects the DAG coordinator variant; ' +
+            'use coordinator.mode/flow for the Stepper variant',
         });
         // Fail loud if the config mixes DAG and linear fields.
         assertCoordinatorConfigShape(rawCoordCfg);

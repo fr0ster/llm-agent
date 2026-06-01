@@ -88,6 +88,8 @@ export class DagPlanInterpreter
               trace: ctx.trace,
               sessionLogger: ctx.sessionLogger,
               onPartial: workerOnPartial,
+              // Issue #167: thread client external tools into the worker.
+              externalTools: ctx.externalTools,
             });
             if (res.errorClass === 'epicfail') {
               outerOnPartial?.({

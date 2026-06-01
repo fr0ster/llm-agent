@@ -9,6 +9,7 @@ import type {
 } from './stepper.js';
 import type { StreamChunk } from './streaming.js';
 import type { ITaskSpec } from './task-spec.js';
+import type { LlmTool } from './types.js';
 
 export interface IStepperInterpreter {
   readonly name: string;
@@ -23,6 +24,8 @@ export interface IStepperInterpreter {
       budget: Budget;
       identity: RunIdentity;
       taskSpec?: ITaskSpec;
+      /** Client external tools, threaded to each executor (issue #167). */
+      externalTools?: readonly LlmTool[];
       maxParallelSteps: number;
       mintStepperId: () => string;
       signal?: AbortSignal;
