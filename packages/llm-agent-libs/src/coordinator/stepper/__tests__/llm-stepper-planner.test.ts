@@ -137,6 +137,14 @@ test('planner parses a shallow plan', async () => {
   assert.equal(plan.nodes[0].agent, 'w');
 });
 
+test('STEPPER_PLANNER_SYSTEM mandates dependsOn as dataflow (Phase 3)', () => {
+  // A step that uses earlier output MUST encode it as dependsOn, not prose —
+  // else it runs in parallel without the data and re-fetches.
+  assert.match(STEPPER_PLANNER_SYSTEM, /dependsOn/);
+  assert.match(STEPPER_PLANNER_SYSTEM, /dataflow|OUTPUT of earlier|MUST list/i);
+  assert.match(STEPPER_PLANNER_SYSTEM, /parallel|concurrently/i);
+});
+
 test('STEPPER_PLANNER_SYSTEM mandates RAG-first + concrete-leaf decomposition', () => {
   assert.match(
     STEPPER_PLANNER_SYSTEM,
