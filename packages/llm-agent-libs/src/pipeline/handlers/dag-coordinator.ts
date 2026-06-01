@@ -300,11 +300,20 @@ export class DagCoordinatorHandler implements IStageHandler {
           }
         }
 
-        const onPartial: OnPartial = (chunk) => {
+        // #166 fix: the FINALIZER is the single source of client-facing content.
+        // Previously ONE onPartial was passed to BOTH the interpreter and the
+        // finalizer, so a non-streaming client received the answer TWICE — once
+        // as streamed node content (A) and again as the finalizer's re-emission
+        // of the joined output (B). Now the interpreter's progress (node content,
+        // node-start/end, tool-call) goes to the session log ONLY; the finalizer's
+        // onPartial is the one that yields content to the client.
+        const interpreterOnPartial: OnPartial = (chunk) => {
+          ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
+        };
+        const finalizerOnPartial: OnPartial = (chunk) => {
           if (chunk.kind === 'content') {
             ctx.yield({ ok: true, value: { content: chunk.delta } });
           }
-          // node-start / node-end / tool-call → session log only (NOT yielded to client)
           ctx.options?.sessionLogger?.logStep('dag_stream', chunk);
         };
 
@@ -319,7 +328,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             ancestorContext,
             trace: ctx.options?.trace,
             sessionLogger: ctx.options?.sessionLogger,
-            onPartial,
+            onPartial: interpreterOnPartial,
             // Issue #167: thread the client's external tools into worker dispatch.
             externalTools: ctx.externalTools,
           });
@@ -361,7 +370,7 @@ export class DagCoordinatorHandler implements IStageHandler {
                 sessionId: ctx.sessionId,
                 signal: ctx.options?.signal,
                 trace: ctx.options?.trace,
-                onPartial,
+                onPartial: finalizerOnPartial,
               }),
           );
           if ('ended' in finalRes) return true;

@@ -1,0 +1,32 @@
+# CONTROL DAG: sonnet planner + GENERIC (agnostic) worker. Mirrors
+# 02-hybrid-sonnet-haiku.yaml but the worker has no domain systemPrompt.
+port: ${SMART_SERVER_PORT:-4017}
+host: 0.0.0.0
+mode: smart
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+coordinator:
+  activation: explicit
+  planner: { type: llm, plannerLlm: planner }
+  finalizer: { type: passthrough }
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes repository objects via available MCP tools.
+    config: ./worker-generic.yaml
+logDir: ./.run/control-dag-generic-sessions
+log: ./.run/control-dag-generic-server.log

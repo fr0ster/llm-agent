@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/openai-llm",
-  "version": "18.0.1",
+  "version": "18.0.2",
   "description": "OpenAI LLM provider (ILlm) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",

@@ -59,6 +59,10 @@ export class CoordinatorHandler implements IStageHandler {
       stepResults: {},
       signal: ctx.options?.signal,
       sessionId: ctx.sessionId,
+      // #157: thread the per-request RAG-selected tools + an MCP executor so a
+      // self-dispatched step runs a real tool-loop instead of a toolless chat.
+      selectedTools: ctx.activeTools ?? ctx.selectedTools,
+      callTool: buildCallTool(ctx),
     };
 
     let plan: Plan;
@@ -286,6 +290,32 @@ function wrapError(err: unknown, code: string): OrchestratorError {
     err instanceof Error ? err.message : String(err),
     code,
   );
+}
+
+/**
+ * Build a tool executor for self-dispatched coordinator steps (#157): resolve
+ * the owning MCP client from `toolClientMap` and call it, returning the textual
+ * result (mirrors the default tool-loop's extraction). Returns undefined when no
+ * MCP clients are connected, so SelfDispatch keeps its toolless behaviour.
+ */
+function buildCallTool(
+  ctx: PipelineContext,
+): ICoordinatorContext['callTool'] | undefined {
+  const map = ctx.toolClientMap;
+  if (!map || map.size === 0) return undefined;
+  return async (name: string, args: unknown) => {
+    const client = map.get(name);
+    if (!client) return `Tool not found: ${name}`;
+    const r = await client.callTool(
+      name,
+      (args ?? {}) as Record<string, unknown>,
+      ctx.options,
+    );
+    if (!r.ok) return r.error.message;
+    return typeof r.value.content === 'string'
+      ? r.value.content
+      : JSON.stringify(r.value.content);
+  };
 }
 
 /**
