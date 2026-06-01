@@ -1,4 +1,5 @@
 import {
+  ClarifySignal,
   type IExecutor,
   type INeedResolver,
   type LlmComponent,
@@ -35,6 +36,15 @@ export interface CyclicReActExecutorDeps {
    * EXECUTOR_SYSTEM, keeps the default prompt agnostic.
    */
   systemPrompt?: string;
+  /**
+   * How many CONSECUTIVE unmet-need iterations whose tool re-query surfaces NO
+   * new tool are tolerated before the executor escalates to the consumer
+   * (18.1): analyze answer → find tools → add (preserving existing) → retry; if
+   * after this many rounds nothing new helps, the capability is genuinely
+   * unavailable → throw ClarifySignal (exit, ask the consumer) instead of
+   * returning a silent partial. Default 2 (clamped to ≥ 1).
+   */
+  maxNoProgressNeeds?: number;
 }
 
 /**
@@ -283,15 +293,15 @@ export class CyclicReActExecutor implements IExecutor {
             added++;
           }
         if (added === 0) {
-          // Re-query surfaced nothing new. Allow one nudge (tool may already be
-          // present); on a second consecutive no-progress need, the capability
-          // is genuinely unavailable — stop honestly.
-          if (++noProgressNeeds >= 2) {
-            return {
-              status: 'incomplete',
-              missing: [need.queryToolsRag],
-              usage,
-            };
+          // Re-query surfaced nothing new. Allow a few nudges (the tool may
+          // already be present); once the cap is hit the capability is genuinely
+          // unavailable → escalate to the CONSUMER (18.1) rather than returning a
+          // silent partial: analyze → find tools → add → retry exhausted, so ask.
+          const cap = Math.max(1, this.deps.maxNoProgressNeeds ?? 2);
+          if (++noProgressNeeds >= cap) {
+            throw new ClarifySignal(
+              `I could not complete the task: I still need to ${need.queryToolsRag}, and no available tool provides that capability.`,
+            );
           }
         } else {
           noProgressNeeds = 0;

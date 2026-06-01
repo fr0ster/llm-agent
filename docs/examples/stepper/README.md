@@ -9,6 +9,7 @@ Production-shaped examples for the Stepper coordinator introduced in release
 | [`01-cyclic-react.yaml`](./01-cyclic-react.yaml) | `cyclic-react` | Bounded tasks; single executor loop, no planning overhead. |
 | [`02-planned-react.yaml`](./02-planned-react.yaml) | `planned-react` | Multi-step tasks; LLM planner + parallel Stepper workers + knowledge-RAG blackboard. |
 | [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Compose directly; granularity × executor knobs + a nested composition tree. |
+| [`05-gnostic-abap-review.yaml`](./05-gnostic-abap-review.yaml) | `planned-react` | GNOSTIC preset: same engine as 02 + a curated `knowledgeSeed` of ABAP domain rules (read all includes, security/perf/CleanCore checklists) so reviews are complete. The gnostification path made concrete. |
 
 > The recursive `deep-stepper` mode (and `flow.executor: recursive`) is **not
 > shipped in 18.0** — its recursive control runs away; both are rejected by config
@@ -218,7 +219,9 @@ thorough for YOUR MCP/domain is **the consumer's job**, supplied as DATA via `co
 knowledgeSeed` (and/or skills): procedural "how an operation is done" records — e.g. *"for a code
 review, work from the full source including all includes"* (no tool names needed), or *"the
 security checks are X/Y/Z, else fetch them from resource R"*. These are surfaced to the
-planner/executor as facts and enrich tool-search.
+planner/executor as facts and enrich tool-search. A worked example ships in
+[`05-gnostic-abap-review.yaml`](./05-gnostic-abap-review.yaml) — the agnostic 02 engine plus a
+curated ABAP `knowledgeSeed` (read all includes; security/perf/CleanCore checklists).
 
 This matters most for **`cyclic-react`**, which has NO planner — the single executor runs the raw
 prompt, so on a bare prompt it satisfices on the main object and does NOT read includes. Add a

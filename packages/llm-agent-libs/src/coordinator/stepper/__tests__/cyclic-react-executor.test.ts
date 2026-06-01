@@ -289,7 +289,7 @@ test('false-positive guard: classifier says no-need → ok with NO tool re-query
   );
 });
 
-test('stuck need with no NEW tools → incomplete (bounded, no infinite loop)', async () => {
+test('stuck need with no NEW tools → escalates to the consumer (ClarifySignal), bounded', async () => {
   const llm = scriptedLlm([
     { content: 'I need a tool.' },
     { content: 'Still need a tool.' },
@@ -308,18 +308,55 @@ test('stuck need with no NEW tools → incomplete (bounded, no infinite loop)', 
     maxIterations: 10,
     needResolver: resolver as never,
   });
-  const res = await exec.execute({
-    prompt: 'do x',
-    tools: [{ name: 'Foo' }], // Foo already present → re-query never adds anything new
-    knowledgeRag: rag as never,
-    toolsRag: toolsRag as never,
-    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
-    ...META_BASE,
+  // 18.1: after the no-progress cap (analyze → find tools → none new → retry,
+  // exhausted) the executor escalates to the consumer instead of a silent
+  // partial — it throws ClarifySignal (the handler turns it into a clarify).
+  await assert.rejects(
+    () =>
+      exec.execute({
+        prompt: 'do x',
+        tools: [{ name: 'Foo' }], // Foo already present → re-query never adds anything new
+        knowledgeRag: rag as never,
+        toolsRag: toolsRag as never,
+        budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+        ...META_BASE,
+      }),
+    (err: Error) =>
+      err.name === 'ClarifySignal' && /could not complete/i.test(err.message),
+  );
+});
+
+test('maxNoProgressNeeds is configurable (escalates after the given cap)', async () => {
+  const llm = scriptedLlm([
+    { content: 'need' },
+    { content: 'need' },
+    { content: 'need' },
+    { content: 'need' },
+  ]);
+  const { rag } = knowledgeStub();
+  const toolsRag = toolsByQuery(() => [{ name: 'Foo' }], {
+    Foo: { name: 'Foo' },
   });
-  assert.equal(res.status, 'incomplete');
-  assert.ok(
-    res.missing && res.missing.length > 0,
-    'reports the missing capability',
+  const resolver = fakeResolver([{ queryToolsRag: 'foo' }]);
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    needResolver: resolver as never,
+    maxNoProgressNeeds: 3,
+  });
+  await assert.rejects(
+    () =>
+      exec.execute({
+        prompt: 'do x',
+        tools: [{ name: 'Foo' }],
+        knowledgeRag: rag as never,
+        toolsRag: toolsRag as never,
+        budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+        ...META_BASE,
+      }),
+    /ClarifySignal/,
   );
 });
 

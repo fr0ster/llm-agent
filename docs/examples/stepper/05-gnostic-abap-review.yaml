@@ -1,0 +1,146 @@
+# GNOSTIC ABAP preset — planned-ReAct + a curated `knowledgeSeed`.
+#
+# Same agnostic engine as 02-planned-react.yaml; the ONLY difference is the
+# populated `coordinator.knowledgeSeed` below. It carries a few DEPLOYMENT-level
+# domain hints that disambiguate business-area ambiguities for the LLM (e.g.
+# "a full report review must read ALL includes, not just the main shell") so the
+# right tool is surfaced and the analysis is complete. This is the intended
+# consumer-gnostification path: the runtime stays MCP-agnostic; thoroughness is
+# DATA you supply here, not engine code. Tune the entries for YOUR MCP/domain.
+#
+# Planned-ReAct Stepper — default mode (same planning step as the DAG coordinator,
+# but workers are Steppers running their own CyclicReAct executor).
+#
+# The planner decomposes the request into named steps that are scheduled by the
+# StepperInterpreter. Each child Stepper runs its own CyclicReAct executor and
+# can write artefacts to the shared per-session knowledge-RAG. The root
+# finalizer reads the accumulated knowledge-RAG to compose the final answer.
+#
+# Cost shape:
+#   planner    — sonnet, 1 call per plan (+ replan on InsufficientSignal)
+#   executor   — haiku, N calls per step
+#   reviewer   — haiku, called at depths 0 and 1
+#   finalizer  — sonnet LLM synthesis
+#
+# This is the most common production shape: quality planning + cheap execution
+# + full knowledge-RAG accumulation between parallel branches.
+
+port: ${SMART_SERVER_PORT:-4021}
+host: 0.0.0.0
+mode: smart
+
+# Provider is env-overridable; defaults to SAP AI Core (one provider covers
+# planner sonnet + executor haiku + the embedder). To switch the WHOLE pipeline
+# to another provider, set LLM_PROVIDER (+ LLM_API_KEY / LLM_URL as needed) and
+# the per-role LLM_*_MODEL vars — keep ONE provider per pipeline (see README).
+# apiKey/url are empty by default (SAP AI Core uses AICORE_SERVICE_KEY); other
+# providers read them from the env vars below.
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+  executor:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+# Embedder is a SEPARATE choice (DeepSeek/Anthropic have no embedder, so pair
+# them with Ollama or OpenAI). Defaults to SAP AI Core.
+rag:
+  type: in-memory
+  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  apiKey: ${EMBEDDER_API_KEY:-}
+  url: ${EMBEDDER_URL:-}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  mode: planned-react            # default; explicit here for documentation
+
+  stepper:
+    maxParallelSteps: 4          # local fan-out cap per Stepper level
+    maxDepth: 4                  # interpreter recursion limit
+    tokenBudget: 400000          # soft token cap (shared ledger, all branches)
+    reviewer:
+      atDepths: [0, 1]           # review at root + first child level
+
+  # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
+  # agent calls whatever the server exposes via tools/list; safety is the
+  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
+
+  # Session-scope guidance seeded into each NEW session's knowledge-RAG. This
+  # GNOSTIC preset fills it with a few ABAP/mcp-abap-adt domain rules. They are
+  # surfaced to the planner/executor as "Known facts" AND enrich the tool-search
+  # query, so the right tool is ranked and the analysis is complete. Edit for
+  # your own MCP/domain; keep them principle-level (no brittle step recipes).
+  knowledgeSeed:
+    - artifactType: tool-rule
+      content: >-
+        To read or review the FULL source of an ABAP report/program you MUST read
+        ALL of its includes (e.g. *_TOP, *_O01, *_I01, *_F01 …), not only the main
+        program shell. The main shell only lists INCLUDE statements; the logic
+        lives in the includes.
+    - artifactType: tool-rule
+      content: >-
+        Read an include body with the dedicated include-reading tool. The
+        program-source tool returns only the main shell and does NOT resolve
+        include names into their bodies.
+    - artifactType: domain-rule
+      content: >-
+        A security review of ABAP code covers at least: authority-checks
+        (AUTHORITY-CHECK / missing checks), SQL injection via dynamic
+        WHERE/EXEC SQL, hardcoded credentials, and client handling (CLIENT
+        SPECIFIED). Report each with the offending location.
+    - artifactType: domain-rule
+      content: >-
+        A performance review covers at least: SELECT inside LOOP (nested
+        DB access), SELECT * vs field lists, missing index/WHERE coverage, and
+        internal-table reads without a sorted/hashed key.
+    - artifactType: domain-rule
+      content: >-
+        A CleanCore / maintainability review covers at least: use of released
+        APIs only (no direct table writes to SAP standard), modularization, and
+        avoidance of obsolete statements.
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects via live SAP MCP tools.
+      Produces structured findings that are stored in the knowledge-RAG
+      and consumed by sibling steps and the root finalizer.
+    config: ./worker.yaml
+
+logDir: ./.run/stepper-planned-sessions
+log: ./.run/stepper-planned-server.log

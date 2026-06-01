@@ -1,4 +1,8 @@
 // Re-export everything from core subtrees.
+export {
+  artifactIdentityKey,
+  stableArgsKey,
+} from './artifact-identity.js';
 export { ClarifySignal, NeedInfoSignal } from './coordinator-signals.js';
 export * from './errors/index.js';
 export * from './interfaces/index.js';
