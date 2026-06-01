@@ -9,6 +9,164 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [18.0.0] — 2026-06-01
+
+### Added
+
+- **Stepper coordinator + composition.** Every coordinator/worker is a `Stepper`
+  (planner + reviewer + interpreter + executor) over a per-session knowledge-RAG
+  blackboard. `coordinator.flow` describes the composition directly
+  (planner × executor × reviewer × finalizer + a nested `flow.nodes` tree);
+  `coordinator.mode` is a preset alias. Legacy DAG configs (no `coordinator.mode`
+  / `coordinator.flow`) are unaffected.
+
+- **Two execution modes** (`coordinator.mode`, presets over `flow`):
+  - `cyclic-react` — single executor loop, no planning overhead. Best for bounded tasks.
+  - `planned-react` _(default)_ — LLM planner decomposes the request; parallel Stepper
+    workers execute steps and accumulate findings in the knowledge-RAG blackboard.
+
+  > The recursive `deep-stepper` mode (and `flow.executor: recursive`) is **NOT
+  > shipped in 18.0** — its recursive control runs away. Both are rejected by
+  > config parsing; the hardening (Evaluator + identity-dedup + dependsOn-dataflow)
+  > is the 18.1 work. Declared structural recursion via nested `flow.nodes` ships.
+
+- **Knowledge-RAG blackboard + durable JSONL backend.** A per-session
+  `KnowledgeRag` is created once and passed to every Stepper in the run. Each
+  executor writes step artefacts (`knowledgeRag.store()`); planners query the
+  blackboard before planning (`knowledgeRag.query()` / `list()`) so later steps
+  can build on earlier findings. The durable `JsonlKnowledgeBackend` persists
+  entries to disk so `/v1/sessions` resume works across real process restarts
+  (not just in-process). A semantic qdrant/pg backend for relevance-ranked
+  `query()` is a planned post-18.0 enhancement; the JSONL backend uses a
+  recency-fallback query sufficient for the planner's RAG-first check.
+
+- **Context-augmenting ReAct via `INeedResolver`.** Before each tool-loop
+  iteration the executor queries the knowledge-RAG for relevant prior findings
+  and injects them into the LLM context (`INeedResolver.resolve()` returns a
+  `queryToolsRag` hint). This lets sibling-step artefacts flow into the current
+  executor without re-fetching.
+
+- **Root finalizer.** A `RootFinalizer` reads the accumulated per-session
+  knowledge-RAG at the end of the run and synthesizes the final answer via a
+  single LLM call. The LLM role is wired through the per-role `llm:` map
+  (`llm.finalizer` → `llm.main`). The `PassthroughFinalizer` (17.0 default)
+  is preserved for `cyclic-react` configs that do not need synthesis.
+
+- **No agent-side tool-safety gate.** Tool permissioning is the MCP server's
+  responsibility — the agent encapsulates MCP and calls whatever the server
+  exposes via `tools/list`. The agent never classifies tools as read-only vs
+  mutating (it cannot reliably know, and it is not its job). There is no
+  `mutationPolicy`, `knownReadOnlyTools`, or confirmation gate; deploy against a
+  read-only / scoped MCP server for a safe setup.
+
+- **Session persistence + `/v1/sessions` endpoints.** Sessions are indexed in
+  an in-memory `SessionMetaStore` (swappable to Postgres via
+  `sessionStore: pg`). New endpoints: `GET /v1/sessions` (list sessions for the
+  identity), `POST /v1/sessions/:id/resume` (claim + rehydrate), and
+  `DELETE /v1/sessions/:id` (drop metadata + evict the session's knowledge-RAG
+  entries and JSONL). Clients resume a session by replaying the `sid` cookie
+  issued on the first request. `logDir` controls where JSONL session files are
+  persisted.
+
+- **Stepper streaming progress events.** Seven new `StreamChunk` variants
+  carry `source: StepperRef` for precise attribution in nested trees:
+  `stepper-spawned`, `stepper-done`, `mcp-call`, `mcp-result`, `tokens-used`,
+  `llm-call-start`, `llm-call-end`. See BREAKING section below.
+
+- **`coordinator.stepper.*` config block.** New YAML keys:
+  `maxParallelSteps` (local fan-out cap, default 4),
+  `maxDepth` (recursion limit, default 4),
+  `tokenBudget` (soft token cap, default 1 000 000),
+  `reviewer.atDepths` (depth list or `'all'`).
+
+- **Stepper examples.** `docs/examples/stepper/` adds production-shaped configs
+  (`01-cyclic-react.yaml`, `02-planned-react.yaml`, `04-flow-composition.yaml`),
+  a shared `worker.yaml` subagent pipeline, and a `README.md` covering the modes,
+  `coordinator.flow` composition, `/v1/sessions` resume flow, gnostification
+  (consumer's job), and tool permissioning (owned by the MCP server, not the agent).
+
+- **Executor reads the shared knowledge-RAG blackboard.** Before its first turn
+  the `CyclicReActExecutor` queries the session blackboard and prepends the
+  relevant facts to its prompt, then enriches the proactive tool-search query
+  with that context BEFORE vectorizing — so guidance already present in the
+  blackboard steers which tools surface, not just the bare prompt. A tool named
+  in a blackboard fact thus takes priority over what the bare-prompt MCP search
+  would return. Tool/domain knowledge stays in RAG data, never in agent code.
+
+- **Session-scope knowledge seeding (`coordinator.knowledgeSeed`).** A config
+  PARAMETER — a list of guidance entries written into every NEW session's
+  knowledge-RAG before planning (idempotent on resume). The operator fills it
+  with guidance for THEIR actual MCP tools (e.g. which read tool reads what);
+  the agent hardcodes nothing, so the runtime stays MCP-agnostic. Combined with
+  the executor's blackboard read above, a seeded tool reliably wins over a
+  bare-prompt MCP search.
+
+- **Per-role system-prompt override.** `coordinator.flow.planner.systemPrompt`
+  and `coordinator.flow.executor.systemPrompt` (also per nested `flow.nodes[].flow`)
+  replace the built-in `STEPPER_PLANNER_SYSTEM` / `EXECUTOR_SYSTEM`. The defaults
+  stay deliberately task-agnostic — the executor never self-assesses completeness
+  (that is the planner's / the future Evaluator's job) — so a consumer that wants
+  the cheap executor to carry a domain prerequisite injects it here instead of
+  editing engine code. Blank → fail-loud; omitted → built-in default. The builder
+  exposes the same override via the `LlmStepperPlanner` / `CyclicReActExecutor`
+  constructors (front-end parity).
+
+- **Per-run MCP result cache (flow speed-up).** Identical `(tool, args)` calls
+  within one run reuse the first result, so a declared gather→analyze→synthesize
+  `flow` no longer re-reads the same sources at each stage. Cuts a representative
+  flow run from ~445s to ~263s while reading all parts. (Full dataflow along
+  `dependsOn` so analyze never re-reads is the 18.1 work.)
+
+### Changed
+
+- **`DagCoordinatorHandler` deprecated.** Existing YAML configs without an
+  explicit `coordinator.mode` continue to route through the legacy DAG path
+  (a deprecation warning is emitted at startup). To opt into the Stepper
+  hierarchy, add `coordinator.mode: planned-react` (or another mode).
+  `DagCoordinatorHandler` will be removed in 19.0.
+
+- **`coordinator.activation: explicit` replaced by `coordinator.mode`.** The
+  per-mode flag is now the primary activation signal for the Stepper path.
+  The `activation` key is still accepted on the DAG path for backward
+  compatibility.
+
+### Breaking Changes
+
+- **`StreamChunk`: `node-start`, `node-end`, and `tool-call` variants removed
+  (Task 19e).** These 17.0 variants were emitted by `DagCoordinatorHandler`
+  and the flat DAG interpreter. They have been superseded by the 18.0 Stepper
+  progress events (`stepper-spawned` / `stepper-done` / `mcp-call` /
+  `mcp-result`). SSE clients that match on `kind === 'node-start'` etc. must
+  migrate to the new variants. The `content` variant is preserved unchanged.
+
+
+### Fixed
+
+Pre-release hardening from live SAP validation of the shipped modes:
+
+- **Unmet-tool-need detection was dead code.** `INeedResolver` was never
+  instantiated nor threaded into the executor, so the context-augmenting branch
+  never ran. It is now an always-on `LlmNeedResolver` injected into the
+  executor (logged as the distinct `tool-definer` component), with a
+  false-positive gate (classifier verdict, not "toolsRag returned something")
+  and a bounded no-progress guard (honest `incomplete` instead of looping).
+
+- **Token ledger only charged the executor.** `coordinator.stepper.tokenBudget`
+  now bounds ALL roles — planner, reviewer, finalizer and tool-definer charge
+  the one shared ledger (the executor still self-spends; no double-count).
+
+- **Session metadata was never written on the request path.** `GET /v1/sessions`
+  stayed empty and resume/delete returned 404 after normal chat/stream. The live
+  request path now creates/touches the session meta row.
+
+- **Live SAP AI SDK 400 on the 2nd executor turn.** The tool relay pushed an
+  assistant message without `tool_calls` and tool messages without
+  `tool_call_id`, orphaning the `tool_result`. Corrected to the OpenAI/Anthropic
+  wire shape so the ReAct loop survives multi-tool turns.
+
+- **`/v1/usage` totals.** Confirmed correct (per-component rollup); the
+  previously-reported null was a test-harness display bug, not the product.
+
 ## [17.0.0] — 2026-05-29
 
 ### Added

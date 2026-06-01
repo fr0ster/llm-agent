@@ -63,6 +63,7 @@ import type { PipelineContext } from './context.js';
 import { PipelineExecutor } from './executor.js';
 import type { DagCoordinatorHandlerDeps } from './handlers/dag-coordinator.js';
 import { buildDefaultHandlerRegistry } from './handlers/index.js';
+import type { IStageHandler } from './stage-handler.js';
 import type { StageDefinition } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -138,6 +139,12 @@ export interface DefaultPipelineOptions {
    * Mutually exclusive with `coordinator` — `dagCoordinator` takes precedence.
    */
   dagCoordinator?: DagCoordinatorHandlerDeps;
+  /**
+   * Pre-built stage handler to register under the `coordinator` slot.
+   * Takes precedence over `dagCoordinator` and `coordinator`.
+   * Used by the 18.0 Stepper runtime.
+   */
+  stepperCoordinator?: IStageHandler;
 }
 
 export class DefaultPipeline implements IPipeline {
@@ -147,11 +154,13 @@ export class DefaultPipeline implements IPipeline {
   private readonly subAgents?: SubAgentRegistry;
   private readonly coordinator?: ICoordinatorConfig;
   private readonly dagCoordinator?: DagCoordinatorHandlerDeps;
+  private readonly stepperCoordinator?: IStageHandler;
 
   constructor(options: DefaultPipelineOptions = {}) {
     this.subAgents = options.subAgents;
     this.coordinator = options.coordinator;
     this.dagCoordinator = options.dagCoordinator;
+    this.stepperCoordinator = options.stepperCoordinator;
   }
 
   // Cached defaults (created once in initialize, reused per request)
@@ -194,7 +203,10 @@ export class DefaultPipeline implements IPipeline {
     const coordDispatch = this.coordinator?.dispatch;
     const coordinatorConfigured =
       coordPlanning != null && coordDispatch != null;
-    const anyCoordinator = coordinatorConfigured || this.dagCoordinator != null;
+    const anyCoordinator =
+      coordinatorConfigured ||
+      this.dagCoordinator != null ||
+      this.stepperCoordinator != null;
     const registry = buildDefaultHandlerRegistry({
       subAgents: this.subAgents,
       coordinator:
@@ -208,6 +220,7 @@ export class DefaultPipeline implements IPipeline {
             }
           : undefined,
       dagCoordinator: this.dagCoordinator,
+      stepperCoordinator: this.stepperCoordinator,
       // Default to ExplicitActivation when caller passes a coordinator config
       // without an activation strategy. Matches SmartAgentBuilder.withCoordinator
       // semantics: presence of coordinator config IS the opt-in signal.
@@ -347,7 +360,9 @@ export class DefaultPipeline implements IPipeline {
     const coordinatorConfigured =
       this.coordinator?.planning != null && this.coordinator?.dispatch != null;
     const anyCoordinatorStage =
-      coordinatorConfigured || this.dagCoordinator != null;
+      coordinatorConfigured ||
+      this.dagCoordinator != null ||
+      this.stepperCoordinator != null;
 
     stages.push(
       { id: 'tool-select', type: 'tool-select' },

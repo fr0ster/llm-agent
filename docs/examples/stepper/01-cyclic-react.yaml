@@ -1,0 +1,122 @@
+# Cyclic-ReAct Stepper — single executor that loops until done (no planning step).
+# Use this shape when the task is bounded, self-evident, and benefits from
+# a tight context-augmenting ReAct loop without the overhead of a separate
+# planning pass.
+#
+# Cost shape:
+#   executor   — haiku, N tool-loop iterations until answer or budget exhausted
+#   reviewer   — haiku, called at depth 0 only (root, post-iteration)
+#   finalizer  — LLM synthesis on accumulated knowledge-RAG entries
+#
+# Tool permissioning: the MCP SERVER owns it — there is NO agent-side gate. The
+# agent calls whatever the server exposes; wire it to a read-only/scoped server.
+
+port: ${SMART_SERVER_PORT:-4020}
+host: 0.0.0.0
+mode: smart
+
+# Provider is env-overridable; defaults to SAP AI Core. To run the whole
+# pipeline on another provider set LLM_PROVIDER (+ LLM_API_KEY / LLM_URL) and the
+# per-role LLM_*_MODEL vars — keep ONE provider per pipeline (see README).
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  executor:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+# Embedder is a SEPARATE choice (DeepSeek/Anthropic have no embedder → pair with
+# Ollama or OpenAI). Defaults to SAP AI Core.
+rag:
+  type: in-memory
+  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  apiKey: ${EMBEDDER_API_KEY:-}
+  url: ${EMBEDDER_URL:-}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  mode: cyclic-react
+
+  # Stepper execution parameters
+  stepper:
+    maxParallelSteps: 4        # local fan-out cap per Stepper level
+    maxDepth: 3                # interpreter will not recurse deeper than this
+    tokenBudget: 200000        # soft token cap across the whole run
+    reviewer:
+      atDepths: [0]            # review only at the root depth (cheap gate)
+
+  # Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
+  # gate. The agent calls whatever the server exposes via tools/list; safety is the
+  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
+
+  # GNOSTIFICATION IS THE CONSUMER'S RESPONSIBILITY. cyclic-react has NO planner
+  # (single executor over the raw prompt), so thoroughness/“how” comes ONLY from
+  # the consumer's RAG skills here. The agent stays agnostic; YOU supply, per
+  # deployment, the procedural knowledge for YOUR MCP — e.g. "for a code review,
+  # work from the FULL source including all includes" (no tool names needed) or
+  # "to read an include body use <your tool>". Surfaced as facts + used to enrich
+  # the executor's tool-search. Left EMPTY = agnostic default (a bare "review
+  # program X" then satisfices on the main shell — see docs).
+  #   knowledgeSeed:
+  #     - content: "<how an operation is done on your MCP, as DATA>"
+  knowledgeSeed: []
+
+  # SYSTEM-PROMPT OVERRIDE (optional). The second consumer lever besides
+  # knowledgeSeed: replace a role's built-in system prompt outright. The defaults
+  # are deliberately TASK-AGNOSTIC (the executor never self-assesses completeness
+  # — that is the planner's / the 18.1 Evaluator's job), so a bare cyclic run
+  # satisfices on the main object. If your deployment WANTS the cheap executor to
+  # carry a domain prerequisite, inject it here instead of editing engine code:
+  #
+  #   flow:
+  #     executor:
+  #       type: cyclic-react
+  #       systemPrompt: |
+  #         You complete the task by calling the available tools. Before
+  #         concluding an analysis or review of an object, ensure you have its
+  #         COMPLETE content — all of its parts/sub-parts, not only the top level.
+  #         If a capability is missing, state in ONE sentence what you still need.
+  #     planner:
+  #       systemPrompt: "<override STEPPER_PLANNER_SYSTEM>"   # planned modes
+  #
+  # Omit → the built-in agnostic defaults are used. (knowledgeSeed steers via RAG
+  # facts + tool-search; systemPrompt replaces the instruction text — use either
+  # or both.)
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+subagents:
+  - name: abap-worker
+    description: |
+      Executes a single bounded ABAP analysis task using SAP MCP tools.
+      Read-only retrieval — does not create or modify objects.
+    config: ./worker.yaml
+
+logDir: ./.run/stepper-cyclic-sessions
+log: ./.run/stepper-cyclic-server.log

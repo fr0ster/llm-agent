@@ -84,6 +84,7 @@ import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { IMetrics } from './metrics/types.js';
 import { DefaultPipeline } from './pipeline/default-pipeline.js';
 import type { DagCoordinatorHandlerDeps } from './pipeline/handlers/dag-coordinator.js';
+import type { IStageHandler } from './pipeline/stage-handler.js';
 import type { IPluginLoader } from './plugins/types.js';
 import type {
   IPromptInjectionDetector,
@@ -209,6 +210,7 @@ export class SmartAgentBuilder {
   private _subAgents?: SubAgentRegistry;
   private _coordinator?: ICoordinatorConfig;
   private _dagCoordinator?: DagCoordinatorHandlerDeps;
+  private _stepperCoordinator?: IStageHandler;
   private _historySummarizer?: IHistorySummarizer;
   private _historyMemory?: IHistoryMemory;
   private _llmCallStrategy?: ILlmCallStrategy;
@@ -560,6 +562,17 @@ export class SmartAgentBuilder {
    */
   withDagCoordinator(deps: DagCoordinatorHandlerDeps): this {
     this._dagCoordinator = deps;
+    return this;
+  }
+
+  /**
+   * Enable 18.0 Stepper coordinator mode. The caller constructs a
+   * `StepperCoordinatorHandler` and passes it in; it is registered under the
+   * `coordinator` stage slot (taking precedence over `withDagCoordinator` and
+   * `withCoordinator`). The activation strategy defaults to `ExplicitActivation`.
+   */
+  withStepperCoordinator(handler: IStageHandler): this {
+    this._stepperCoordinator = handler;
     return this;
   }
 
@@ -1259,6 +1272,7 @@ export class SmartAgentBuilder {
         subAgents: this._subAgents,
         coordinator: resolvedCoordinator,
         dagCoordinator: this._dagCoordinator,
+        stepperCoordinator: this._stepperCoordinator,
       });
     pipeline.initialize({
       mainLlm: wrappedMainLlm,

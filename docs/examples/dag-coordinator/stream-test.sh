@@ -48,7 +48,4 @@ printf -- '─%.0s' {1..80}; echo
 printf '[%s] elapsed: %ds — fetching /v1/usage\n' "$LABEL" "$((END - START))"
 
 curl -sb "$JAR" "http://localhost:${PORT}/v1/usage" \
-  | jq '{
-      totals: { promptTokens, completionTokens, totalTokens, requestCount },
-      byComponent
-    }'
+  | jq '{ totals, byComponent }'

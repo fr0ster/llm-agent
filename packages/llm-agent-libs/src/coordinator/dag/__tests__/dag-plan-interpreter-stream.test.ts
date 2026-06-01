@@ -8,7 +8,7 @@ import type {
 import { AbortErrorStrategy } from '../abort-error-strategy.js';
 import { DagPlanInterpreter } from '../dag-plan-interpreter.js';
 
-test('interpreter wraps worker.run with nodeId-annotated onPartial and emits node-start/-end', async () => {
+test('interpreter wraps worker.run with nodeId-annotated onPartial and emits stepper-spawned/-done', async () => {
   const calls: StreamChunk[] = [];
   const op: OnPartial = (c) => calls.push(c);
   const worker: ISubAgent = {
@@ -32,15 +32,19 @@ test('interpreter wraps worker.run with nodeId-annotated onPartial and emits nod
     },
   );
   assert.equal(res.ok, true);
-  // Order: start(a) → content(a) → end(a)
+  // Order: spawned(a) → content(a) → done(a)
   assert.deepEqual(calls, [
-    { kind: 'node-start', nodeId: 'a', goal: 'ga' },
+    {
+      kind: 'stepper-spawned',
+      source: { stepperId: 'a', name: 'a' },
+      goal: 'ga',
+    },
     { kind: 'content', nodeId: 'a', delta: 'X' },
-    { kind: 'node-end', nodeId: 'a', ok: true },
+    { kind: 'stepper-done', source: { stepperId: 'a', name: 'a' }, ok: true },
   ]);
 });
 
-test('interpreter emits node-end with ok:false on worker failure', async () => {
+test('interpreter emits stepper-done with ok:false on worker failure', async () => {
   const calls: StreamChunk[] = [];
   const op: OnPartial = (c) => calls.push(c);
   const failWorker: ISubAgent = {
@@ -67,8 +71,8 @@ test('interpreter emits node-end with ok:false on worker failure', async () => {
     },
   );
   assert.equal(res.ok, false);
-  const end = calls.find((c) => c.kind === 'node-end');
-  assert.ok(end && end.kind === 'node-end' && end.ok === false);
+  const end = calls.find((c) => c.kind === 'stepper-done');
+  assert.ok(end && end.kind === 'stepper-done' && end.ok === false);
 });
 
 test('interpreter without onPartial runs silently (default)', async () => {

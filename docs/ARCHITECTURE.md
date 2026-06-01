@@ -386,6 +386,18 @@ The builder selects the `tools` store by key for tool/skill vectorization at sta
 
 ### 5. MCP Layer
 
+> **Design invariant — the runtime is absolutely MCP-agnostic.** `llm-agent`
+> makes **no** assumptions about which MCP server it talks to or which tools
+> exist. Tools are discovered via `tools/list` and selected by their
+> descriptions (semantic ranking through the tools-RAG); **no tool name,
+> behaviour, or server quirk is hardcoded in the agent.** Consequence: when a
+> model misuses a tool (e.g. picks `GetProgram` instead of `GetInclude` for an
+> include), the fix belongs on the **MCP server side** — sharpen the tool
+> descriptions so selection routes correctly — or in seeded RAG guidance
+> (data), **never** in an agent code branch keyed on a specific tool name. Keep
+> domain/tool knowledge out of the agent; push it into tool descriptions (which
+> arrive via `tools/list`) or configurable RAG content.
+
 - Smart stack uses `IMcpClient` abstraction (interface in `@mcp-abap-adt/llm-agent`).
 - Default adapter wraps `MCPClientWrapper` from `@mcp-abap-adt/llm-agent-mcp`.
 - Supports multiple MCP servers simultaneously via builder/pipeline config.

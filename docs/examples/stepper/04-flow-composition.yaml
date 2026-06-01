@@ -1,0 +1,116 @@
+# Flow composition — describe the coordinator's program EXPLICITLY (no `mode`).
+#
+# `mode` (cyclic-react / planned-react) is just a PRESET that
+# expands to a `coordinator.flow`. This example writes the flow directly, which
+# also unlocks two things the mode presets cannot express:
+#   1. the planner.granularity x executor.type knobs, and
+#   2. a NESTED composition tree (a node that nests its own `flow` = a sub-cycle
+#      run by a child Stepper).
+#
+# Reading model:
+#   - yaml is a TREE: a node present = that step exists; a node with a nested
+#     `flow` = a separate sub-cycle.
+#   - Domain operations (fetch source, read includes, run a check) are NEVER
+#     declared here — the planner/executor obtain data via the consumer's RAG
+#     skills. The nodes below are analysis INTENTS, not tool calls.
+
+port: ${SMART_SERVER_PORT:-4025}
+host: 0.0.0.0
+mode: smart
+
+# One provider for every role (SAP AI Core by default). See README for swapping.
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+  executor:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+rag:
+  type: in-memory
+  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  apiKey: ${EMBEDDER_API_KEY:-}
+  url: ${EMBEDDER_URL:-}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  # The composition is described here directly — no `mode` needed.
+  flow:
+    # interpreter is the same impl at every level; listed for completeness.
+    interpreter: { type: default }
+    # finalizer synthesizes the accumulated knowledge-RAG into the answer.
+    finalizer: { type: llm }
+    # review the plan/output at the root depth only (cheap gate).
+    reviewer: { atDepths: [0] }
+
+    # Declared composition TREE — FULLY static (the yaml controls everything; no
+    # LLM sub-planner that could emit redundant/wrong fetch steps). gather reads
+    # the source ONCE; analyze nests its own declared sub-cycle; the per-run MCP
+    # cache makes any re-reference of the source instant (no re-fetch).
+    nodes:
+      # information-GATHERING — the only step that reads (consumer RAG skills /
+      # the goal tell it to read the full source incl. all includes).
+      - id: gather
+        goal: "Retrieve the full source of ZDAZ_R_DELAYED_UPDATE including all of its includes"
+      # ANALYSIS — ONE step covering all dimensions in a single executor pass
+      # (one read of the source, all four dimensions). Splitting into per-dimension
+      # steps re-reads the source in each (until dependsOn dataflow lands in 18.1),
+      # so a single analyze step is faster here.
+      - id: analyze
+        goal: "Analyze the gathered source across security, performance, Clean Core, and maintainability"
+        dependsOn: [gather]
+      - id: synthesize
+        goal: "Synthesize the analysis into a structured review report"
+        dependsOn: [analyze]
+
+  # Bounds apply to the whole tree; nested flows inherit them.
+  stepper:
+    maxParallelSteps: 4
+    maxDepth: 4
+    tokenBudget: 400000
+
+  # Tool permissioning is the MCP SERVER's responsibility — there is NO agent-side
+  # gate. The agent calls whatever the server exposes; wire it to a read-only/scoped server.
+
+  # Consumer gnostifies the agnostic agent via RAG skills — fill per deployment
+  # with HOW-TO records for YOUR MCP's tools (e.g. which tool reads what, which
+  # checks make up a security analysis). Left empty here to stay MCP-agnostic.
+  knowledgeSeed: []
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+logDir: ./.run/stepper-flow-sessions
+log: ./.run/stepper-flow-server.log

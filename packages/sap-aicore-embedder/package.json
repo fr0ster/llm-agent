@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/sap-aicore-embedder",
-  "version": "17.0.0",
+  "version": "18.0.0",
   "description": "SAP AI Core embedding provider (IEmbedder) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^17.0.0",
+    "@mcp-abap-adt/llm-agent": "^18.0.0",
     "@sap-ai-sdk/orchestration": "^2.9.0"
   },
   "license": "MIT",

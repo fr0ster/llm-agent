@@ -8,8 +8,14 @@ import {
   SubAgentDispatch,
 } from '../../coordinator/index.js';
 import type { PipelineDeps } from '../../interfaces/pipeline.js';
-import { makeDefaultDeps } from '../../testing/index.js';
+import {
+  makeAssembler,
+  makeClassifier,
+  makeDefaultDeps,
+  makeLlm,
+} from '../../testing/index.js';
 import { DefaultPipeline } from '../default-pipeline.js';
+import type { IStageHandler } from '../stage-handler.js';
 
 // Mirrors helpers from sibling default-pipeline-* tests.
 type Stage = { id: string; type: string; when?: string };
@@ -148,6 +154,95 @@ describe('DefaultPipeline coordinator stage wiring', () => {
     assert.ok(
       toolLoopIdx > activateIdx,
       'tool-loop after coordinator-activate',
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Integration: withStepperCoordinator only — regression guard for the dead-path
+// bug where anyCoordinatorStage omitted the stepperCoordinator check, causing
+// the pipeline to fall through to an unconditional tool-loop instead of emitting
+// coordinator-activate + coordinator stages. The stub handler proves the
+// registered handler IS invoked, not the tool-loop.
+// ---------------------------------------------------------------------------
+
+describe('DefaultPipeline withStepperCoordinator integration', () => {
+  it('emits coordinator stages when only withStepperCoordinator is set', () => {
+    const stub: IStageHandler = {
+      async execute() {
+        return true;
+      },
+    };
+    const pipeline = new DefaultPipeline({ stepperCoordinator: stub });
+    pipeline.initialize(buildDeps());
+    const stages = getStages(pipeline);
+
+    assert.ok(
+      findStage(stages, 'coordinator-activate'),
+      'coordinator-activate must be emitted when only stepperCoordinator is configured',
+    );
+    assert.equal(
+      findStage(stages, 'coordinator')?.when,
+      'coordinatorActive',
+      'coordinator stage must carry when:coordinatorActive guard',
+    );
+    assert.equal(
+      findStage(stages, 'tool-loop')?.when,
+      '!coordinatorActive',
+      'tool-loop must carry when:!coordinatorActive guard (not unconditional)',
+    );
+  });
+
+  it('invokes the stepper stub handler and NOT the unconditional tool-loop', async () => {
+    let stubInvoked = false;
+    let toolLoopInvoked = false;
+
+    // Stub stepper coordinator: records invocation, emits a stop chunk.
+    const stub: IStageHandler = {
+      async execute(ctx: unknown) {
+        stubInvoked = true;
+        // Yield a minimal stop chunk so the pipeline finishes cleanly.
+        (ctx as { yield: (c: unknown) => void }).yield({
+          ok: true,
+          value: { content: 'stepper-output', finishReason: 'stop' },
+        });
+        return true;
+      },
+    };
+
+    const llm = makeLlm([{ content: 'fallback', finishReason: 'stop' }]);
+    const pipeline = new DefaultPipeline({ stepperCoordinator: stub });
+    pipeline.initialize({
+      mainLlm: llm,
+      mcpClients: [],
+      classifier: makeClassifier([{ type: 'action', text: 'do it' }]),
+      assembler: makeAssembler(),
+    });
+
+    // Monkey-patch tool-loop handler to detect if it fires.
+    const executor = (
+      pipeline as unknown as {
+        executor: { handlers: Map<string, IStageHandler> };
+      }
+    ).executor;
+    const originalToolLoop = executor.handlers.get('tool-loop');
+    executor.handlers.set('tool-loop', {
+      async execute(...args: Parameters<IStageHandler['execute']>) {
+        toolLoopInvoked = true;
+        return originalToolLoop ? originalToolLoop.execute(...args) : true;
+      },
+    });
+
+    const chunks: unknown[] = [];
+    await pipeline.execute('hello', [], undefined, (chunk) =>
+      chunks.push(chunk),
+    );
+
+    assert.equal(stubInvoked, true, 'stepper stub handler must be invoked');
+    assert.equal(
+      toolLoopInvoked,
+      false,
+      'unconditional tool-loop must NOT fire when stepperCoordinator is active',
     );
   });
 });

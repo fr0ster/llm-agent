@@ -17,6 +17,7 @@ import type {
 export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   'tool-loop': 'request',
   classifier: 'auxiliary',
+  'tool-definer': 'auxiliary',
   translate: 'auxiliary',
   'query-expander': 'auxiliary',
   helper: 'auxiliary',
@@ -99,7 +100,16 @@ export class DefaultRequestLogger implements IRequestLogger {
       addToBucket(byCategory[cat], call);
     }
 
+    // Derive totals as the faithful sum of byComponent.
+    const totals = emptyBucket();
+    for (const comp of Object.values(byComponent)) {
+      totals.promptTokens += comp.promptTokens;
+      totals.completionTokens += comp.completionTokens;
+      totals.totalTokens += comp.totalTokens;
+      totals.requests += comp.requests;
+    }
     return {
+      totals,
       byModel,
       byComponent,
       byCategory,

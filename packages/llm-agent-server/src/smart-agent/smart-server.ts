@@ -9,6 +9,7 @@ import type {
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
+  IKnowledgeRagHandle,
   ILlm,
   ILlmApiAdapter,
   ILogger,
@@ -18,6 +19,8 @@ import type {
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
+  IToolsRagHandle,
+  LlmTool,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -50,6 +53,9 @@ import {
   getDefaultPluginDirs,
   HealthChecker,
   type HotReloadableConfig,
+  InMemoryKnowledgeBackend,
+  type KnowledgeBackend,
+  KnowledgeRag,
   makeLlm,
   SessionGraphFactory,
   SessionLogger,
@@ -60,6 +66,10 @@ import {
   SmartAgentSubAgent,
   SubAgentStateOracle,
 } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  MCPClientWrapper,
+  McpClientAdapter,
+} from '@mcp-abap-adt/llm-agent-mcp';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import type { PipelineConfig } from './pipeline.js';
@@ -181,7 +191,7 @@ export interface SmartServerConfig {
   host?: string;
   llm?: SmartServerLlmConfig | Record<string, SmartServerLlmConfig>;
   rag?: SmartServerRagConfig;
-  mcp?: SmartServerMcpConfig;
+  mcp?: SmartServerMcpConfig | SmartServerMcpConfig[];
   agent?: SmartServerAgentConfig;
   prompts?: SmartServerPromptsConfig;
   mode?: SmartServerMode;
@@ -340,9 +350,11 @@ const CORS_HEADERS = {
 // ---------------------------------------------------------------------------
 
 import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
+import { buildStepperRoot } from './build-stepper-root.js';
 import {
   assertCoordinatorConfigShape,
   normalizeLlmConfig,
+  parseStepperCoordinatorConfig,
   resolveCoordinatorActivation,
   resolveCoordinatorDispatch,
   resolveCoordinatorDispatchKind,
@@ -351,6 +363,13 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import type {
+  ISessionMetaStore,
+  SessionMetaRow,
+} from './session-meta-store.js';
+import { InMemorySessionMetaStore } from './session-meta-store.js';
+import { StepperCoordinatorHandler } from './stepper-coordinator-handler.js';
 
 export {
   generateConfigTemplate,
@@ -627,6 +646,262 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
 
 export type SessionLifecycle = ReturnType<typeof buildSessionLifecycle>;
 
+// ---------------------------------------------------------------------------
+// /v1/sessions extracted handlers (testable without a live HTTP server)
+// ---------------------------------------------------------------------------
+
+/** Response shape for GET /v1/sessions */
+export interface SessionListBody {
+  sessions: SessionMetaRow[];
+}
+
+/** Response shape for POST /v1/sessions/:id/resume */
+export interface SessionResumeBody {
+  ok: boolean;
+  session?: SessionMetaRow;
+  error?: string;
+}
+
+/**
+ * Seed session-scope guidance entries into a BRAND-NEW session's knowledge-RAG
+ * (deployment-supplied tool-usage guidance the planner/executor read in "Known
+ * facts"). Idempotent: rehydrates via init() and writes ONLY when the session is
+ * empty (`fingerprint() === 'n=0'`), so resumes never duplicate. Entries are
+ * config DATA — the runtime stays MCP-agnostic (no tool knowledge in agent code).
+ */
+export async function seedSessionKnowledge(
+  kr: IKnowledgeRagHandle & {
+    init?(): Promise<void>;
+    fingerprint?(): string;
+  },
+  seeds: ReadonlyArray<{ content: string; artifactType: string }>,
+  nowIso: string,
+): Promise<void> {
+  if (seeds.length === 0) return;
+  await kr.init?.();
+  if (kr.fingerprint?.() !== 'n=0') return; // not a brand-new session → skip
+  for (const s of seeds) {
+    await kr.write({
+      content: s.content,
+      metadata: {
+        traceId: 'seed',
+        turnId: 'seed',
+        stepperId: 'seed',
+        task: 'session-seed',
+        artifactType: s.artifactType,
+        createdAt: nowIso,
+      },
+    });
+  }
+}
+
+/**
+ * Record that a request for `sessionId` STARTED — create the meta row on first
+ * sight, else touch it and mark in-progress. Called from the live request path
+ * (`_withSession`) so GET /v1/sessions, resume and delete actually see sessions
+ * produced by normal chat/stream traffic (review Finding 3). `userIdentity` is
+ * the sessionId itself in the default no-auth build — matching how the
+ * /v1/sessions endpoints resolve identity (`resolved.identity.sessionId`).
+ */
+export async function recordSessionStart(
+  store: ISessionMetaStore,
+  sessionId: string,
+  nowIso: string,
+): Promise<void> {
+  const existing = await store.get(sessionId);
+  if (!existing) {
+    await store.create({
+      sessionId,
+      userIdentity: sessionId,
+      createdAt: nowIso,
+      lastUsedAt: nowIso,
+      status: 'in-progress',
+    });
+    return;
+  }
+  await store.touch(sessionId, nowIso);
+  await store.setStatus(sessionId, 'in-progress');
+}
+
+/**
+ * Record that a request for `sessionId` FINISHED — touch + mark idle (so it can
+ * be resumed). No-op if the row was deleted mid-flight.
+ */
+export async function recordSessionEnd(
+  store: ISessionMetaStore,
+  sessionId: string,
+  nowIso: string,
+): Promise<void> {
+  const existing = await store.get(sessionId);
+  if (!existing) return;
+  await store.touch(sessionId, nowIso);
+  await store.setStatus(sessionId, 'idle');
+}
+
+/**
+ * List all sessions for a given user identity.
+ * Extracted for unit-testability (mirrors the /v1/usage handler pattern).
+ */
+export async function handleListSessions(
+  store: ISessionMetaStore,
+  identity: string,
+): Promise<SessionListBody> {
+  const sessions = await store.listForUser(identity);
+  return { sessions };
+}
+
+/**
+ * Resume (claim) a session by ID for a user identity.
+ * Sets the session status to 'idle' so it can be re-entered.
+ */
+export async function handleResumeSession(
+  store: ISessionMetaStore,
+  identity: string,
+  id: string,
+): Promise<SessionResumeBody> {
+  const row = await store.get(id);
+  if (!row || row.userIdentity !== identity) {
+    return { ok: false, error: 'session not found' };
+  }
+  await store.setStatus(id, 'idle');
+  const updated = await store.get(id);
+  return { ok: true, session: updated };
+}
+
+/**
+ * Delete a session by ID for a user identity, and evict its RAG state.
+ */
+export async function handleDeleteSession(
+  store: ISessionMetaStore,
+  identity: string,
+  id: string,
+  evictFn: (sessionId: string) => Promise<void>,
+): Promise<{ ok: boolean; error?: string }> {
+  const row = await store.get(id);
+  if (!row || row.userIdentity !== identity) {
+    return { ok: false, error: 'session not found' };
+  }
+  await store.delete(id);
+  await evictFn(id);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// MCP bridge for the Stepper path (B-1)
+// ---------------------------------------------------------------------------
+
+/**
+ * Build a `callMcp(name, args, signal?)` bridge over a list of `IMcpClient`s.
+ *
+ * Dispatch strategy (mirrors the 17.0 tool-loop):
+ * - Iterate the clients; the first client whose `listTools()` contains `name` wins.
+ * - On success: return the textual content (stringify structured payloads).
+ * - On error: return the error message as a string so the LLM executor can
+ *   feed the failure back to the model as a tool result (no throw).
+ * - If no client owns the tool: return an informative "Tool not found" string.
+ *
+ * Exported for testability — tests can call this with a fake IMcpClient list.
+ */
+/**
+ * Connect MCP clients from a YAML `mcp:` config block (single or array).
+ *
+ * Mirrors the builder's connection logic (builder.ts ~lines 897-920) so the
+ * Stepper path gets the same clients that the builder would have connected
+ * internally. Exported for testability.
+ *
+ * @param mcpCfg - single `SmartServerMcpConfig` or array thereof (from
+ *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
+ *   either directly without pre-normalising.
+ */
+/** Deterministic cache key for tool args — stable regardless of key order. */
+function stableArgsKey(args: unknown): string {
+  if (args === null || typeof args !== 'object') return JSON.stringify(args);
+  if (Array.isArray(args)) return JSON.stringify(args.map((v) => v));
+  const obj = args as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+  return JSON.stringify(sorted);
+}
+
+export async function connectMcpClientsFromConfig(
+  mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+): Promise<IMcpClient[]> {
+  if (!mcpCfg) return [];
+  const list = Array.isArray(mcpCfg) ? mcpCfg : [mcpCfg];
+  const connected: IMcpClient[] = [];
+  for (const cfg of list) {
+    let wrapper: MCPClientWrapper;
+    if (cfg.type === 'stdio') {
+      wrapper = new MCPClientWrapper({
+        transport: 'stdio',
+        command: cfg.command,
+        args: cfg.args ?? [],
+      });
+    } else {
+      wrapper = new MCPClientWrapper({
+        transport: 'auto',
+        url: cfg.url,
+        headers: cfg.headers,
+      });
+    }
+    await wrapper.connect();
+    connected.push(new McpClientAdapter(wrapper));
+  }
+  return connected;
+}
+
+export function buildMcpBridge(
+  clients: IMcpClient[],
+): (name: string, args: unknown, signal?: AbortSignal) => Promise<string> {
+  return async (name: string, args: unknown, _signal?: AbortSignal) => {
+    const safeArgs =
+      args != null && typeof args === 'object' && !Array.isArray(args)
+        ? (args as Record<string, unknown>)
+        : {};
+    for (const client of clients) {
+      const listed = await client.listTools();
+      if (!listed.ok) continue;
+      const owns = listed.value.some((t) => t.name === name);
+      if (!owns) continue;
+      const result = await client.callTool(name, safeArgs);
+      if (!result.ok) {
+        return result.error.message;
+      }
+      const { content } = result.value;
+      return typeof content === 'string' ? content : JSON.stringify(content);
+    }
+    return `Tool not found: ${name}`;
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Raw-config mode routing gate (R6-F2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns `true` ONLY when the raw coordinator config has an explicit `mode`
+ * string — the opt-in gate for the 18.0 Stepper runtime.
+ *
+ * IMPORTANT: Do NOT call `parseStepperCoordinatorConfig` to decide — that
+ * function defaults `mode` to `'planned-react'`, which would silently route
+ * every 17.0 legacy config onto the Stepper path. Gate on the RAW field
+ * presence only; parse is done INSIDE the Stepper branch after this check.
+ */
+export function usesStepper(
+  coordCfg: Record<string, unknown> | undefined,
+): boolean {
+  if (!coordCfg) return false;
+  // Explicit opt-in: `coordinator.mode` (preset alias) — a string in raw config.
+  if (typeof coordCfg.mode === 'string') return true;
+  // OR an explicit `coordinator.flow` composition block (mode-less form). A flow
+  // with no mode is still a Stepper config; without this it would silently fall
+  // through to the plain smart pipeline.
+  if (typeof coordCfg.flow === 'object' && coordCfg.flow !== null) return true;
+  // Legacy 17.0 configs with `coordinator.planner` but no `coordinator.mode`
+  // stay on the deprecated DagCoordinatorHandler (removed in 19.0).
+  return false;
+}
+
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -653,6 +928,36 @@ export class SmartServer {
     deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
     oracleName?: string;
   };
+  /**
+   * 18.0 Stepper coordinator handler — stateless, session context comes through
+   * `ctx.sessionId` at execute time. Built once in `start()` when
+   * `coordinator.mode` is present in the raw config; reused across sessions.
+   */
+  private _stepperCoordinatorHandler?: StepperCoordinatorHandler;
+  /**
+   * MCP clients connected for the Stepper path from the YAML `mcp:` config
+   * block. These are connected ONCE in `start()` (lazily resolved by
+   * `connectMcpClientsFromConfig`) and reused across every Stepper request.
+   *
+   * Populated only when `this.cfg.mcp` / `pipeline.mcp` is set AND no
+   * DI/plugin clients exist (DI precedence: `this.cfg.mcpClients` > plugin >
+   * yaml). Disposed via the server's `closeFns` on shutdown.
+   */
+  private _stepperMcpClients?: IMcpClient[];
+  /**
+   * The ONE shared knowledge backend for the Stepper path (set during build).
+   * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
+   * critical for the long-lived in-memory backend, which would otherwise retain
+   * knowledge after a delete and rehydrate it on a same-id re-entry.
+   */
+  private _stepperKnowledgeBackend?: KnowledgeBackend;
+  /**
+   * Session meta-store for /v1/sessions endpoints (Task 17).
+   * Defaults to InMemorySessionMetaStore; a durable store can be injected via
+   * `cfg.sessionMetaStore` in a future extension.
+   */
+  private readonly _sessionMetaStore: ISessionMetaStore =
+    new InMemorySessionMetaStore();
 
   constructor(config: SmartServerConfig) {
     this.cfg = config;
@@ -964,11 +1269,212 @@ export class SmartServer {
     // ---- Coordinator (autonomous plan-execute loop) ------------------------
     const coordCfg = this.cfg.coordinatorYaml;
     if (coordCfg) {
-      // Fail loud if the config mixes DAG and linear fields.
-      assertCoordinatorConfigShape(coordCfg as Record<string, unknown>);
+      const rawCoordCfg = coordCfg as Record<string, unknown>;
 
-      if (coordCfg.planner !== undefined) {
-        // DAG mode: `planner` field present → use DagCoordinatorHandler.
+      if (usesStepper(rawCoordCfg)) {
+        // ── 18.0 Stepper path (opt-in via coordinator.mode) ──────────────────
+        // Parse only INSIDE this branch so parseStepperCoordinatorConfig's
+        // mode default ('planned-react') never fires for legacy configs (R6-F2).
+        const stepperCfg = parseStepperCoordinatorConfig(rawCoordCfg);
+        const logDir = this.cfg.logDir;
+
+        // KnowledgeRag factory: ONE backend instance shared across all requests.
+        // Both backends are keyed by sessionId internally, so a single instance
+        // gives correct per-session isolation AND persistence across same-cookie
+        // requests within the process. JsonlKnowledgeBackend (logDir set) adds
+        // durability across restarts; InMemoryKnowledgeBackend is the in-process
+        // default. (Previously a fresh InMemoryKnowledgeBackend was created per
+        // call, so subsequent same-session requests lost prior entries and were
+        // re-seeded — review fix.)
+        const knowledgeBackend = logDir
+          ? new JsonlKnowledgeBackend(logDir)
+          : new InMemoryKnowledgeBackend();
+        // Held on the instance so DELETE /v1/sessions/:id can evict a session's
+        // knowledge from THIS backend (not just remove the JSONL file).
+        this._stepperKnowledgeBackend = knowledgeBackend;
+        const knowledgeRagFor = async (sessionId: string) => {
+          const kr = new KnowledgeRag(knowledgeBackend, sessionId);
+          // Seed deployment-supplied guidance into a BRAND-NEW session only
+          // (idempotent on resume). Config DATA — keeps the runtime MCP-agnostic.
+          await seedSessionKnowledge(
+            kr,
+            stepperCfg.knowledgeSeed,
+            new Date().toISOString(),
+          );
+          return kr;
+        };
+
+        // ToolsRag handle: real adapter over the server's tools RAG store + MCP
+        // catalog. Implements IToolsRagHandle for the Stepper runtime:
+        //   query(text, k) — semantic search via toolsRag+embedder when available;
+        //                     catalog-order fallback when neither is present.
+        //   lookup(name)   — returns the tool schema from the MCP catalog by name
+        //                     (populated lazily on first query()).
+        //
+        // Catalog note: when DI/plugin clients are present they are already
+        // connected. When the config carries a YAML `mcp:` block instead, the
+        // builder connects those clients INSIDE builder.build() and never
+        // exposes them here. We therefore connect the YAML mcp config ONCE and
+        // cache the result in _stepperMcpClients so every subsequent Stepper
+        // request reuses the same live connections without reconnecting.
+        //
+        // DI precedence: this.cfg.mcpClients > plugin clients > yaml mcp config.
+        // NOTE: connection is NOT safe to invoke twice on the same wrapper, so
+        // the cache guard below is critical — do NOT move this inside a
+        // per-request factory.
+        if (!mcpClients && !this._stepperMcpClients) {
+          const yamlMcp = pipeline?.mcp ?? this.cfg.mcp;
+          this._stepperMcpClients = await connectMcpClientsFromConfig(yamlMcp);
+        }
+        const stepperMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
+        // Lazily-populated catalog: name → LlmTool.
+        let catalogCache: Map<string, LlmTool> | undefined;
+        const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
+          if (catalogCache) return catalogCache;
+          const catalog = new Map<string, LlmTool>();
+          await Promise.allSettled(
+            stepperMcpClients.map(async (client) => {
+              const result = await client.listTools();
+              if (result.ok) {
+                for (const t of result.value) {
+                  if (!catalog.has(t.name)) {
+                    catalog.set(t.name, t as LlmTool);
+                  }
+                }
+              }
+            }),
+          );
+          catalogCache = catalog;
+          return catalog;
+        };
+        const toolsRagHandle: IToolsRagHandle = {
+          async query(text: string, k?: number) {
+            const limit = k ?? 20;
+            const catalog = await ensureCatalog();
+            // Semantic path: requires both a vector store and an embedder.
+            if (toolsRag && resolvedEmbedder) {
+              const embedding = new QueryEmbedding(text, resolvedEmbedder);
+              const ragResult = await toolsRag.query(embedding, limit);
+              if (ragResult.ok) {
+                const hits: LlmTool[] = [];
+                for (const r of ragResult.value) {
+                  const id = r.metadata.id as string | undefined;
+                  if (id?.startsWith('tool:')) {
+                    const name = id.slice(5).replace(/:.*$/, '');
+                    const tool = catalog.get(name);
+                    if (tool) hits.push(tool);
+                  }
+                }
+                if (hits.length > 0) return hits;
+              }
+            }
+            // Catalog-order fallback: return first `limit` tools from the MCP catalog.
+            return [...catalog.values()].slice(0, limit);
+          },
+          lookup(name: string) {
+            // Synchronous: returns from the in-memory cache populated by ensureCatalog.
+            // Returns undefined before the first query() call — callers that need
+            // a schema before any query should call query() first.
+            return catalogCache?.get(name);
+          },
+        };
+
+        // Mint helpers: stable UUIDs per spec §C.1/§C.2.
+        // The server wires randomUUID(); tests can inject deterministic minters.
+        const mintStepperId = () => randomUUID();
+        const mintTurnId = () => randomUUID();
+
+        const stepperMakeLlm = async (lc: SmartServerLlmConfig) =>
+          makeLlm(
+            {
+              provider: lc.provider ?? 'deepseek',
+              apiKey: lc.apiKey,
+              baseURL: lc.url,
+              model: lc.model,
+            },
+            Number(lc.temperature ?? mainTemp),
+          );
+
+        // Real callMcp bridge — delegates to the exported buildMcpBridge helper
+        // that iterates stepperMcpClients. Exported for testability (B-1).
+        const callMcp = buildMcpBridge(stepperMcpClients);
+
+        // DI/test override registry — left empty in production so buildStepperRoot
+        // builds the recursive child Steppers itself from `subagents` (below),
+        // sharing this run's role LLMs + shared token ledger.
+        const stepperRegistry = new Map<
+          string,
+          import('@mcp-abap-adt/llm-agent').IStepper
+        >();
+
+        // Declared subagents (name + description) → advertised to the planner and
+        // turned into recursive child Steppers in deep-stepper mode (Finding 1).
+        const stepperSubagents = (this.cfg.subAgentConfigs ?? []).map((s) => ({
+          name: s.name,
+          description: s.description,
+        }));
+
+        const stepperHandler = new StepperCoordinatorHandler({
+          buildBuilt: async (_ctx, logLlmCall) => {
+            // Per-RUN MCP result cache. Identical (tool, args) calls within ONE
+            // run reuse the first result instead of re-hitting MCP — fixes the
+            // redundant re-reads we saw in flow (gather → analyze → synthesize
+            // each fetching the same source/includes) and the latency that
+            // caused. Caching the Promise also dedups concurrent identical
+            // calls. Fresh per request → never stale across requests.
+            const runMcpCache = new Map<string, Promise<string>>();
+            const cachedCallMcp = (
+              name: string,
+              args: unknown,
+              signal?: AbortSignal,
+            ): Promise<string> => {
+              const key = `${name}:${stableArgsKey(args)}`;
+              const hit = runMcpCache.get(key);
+              if (hit) return hit;
+              const p = callMcp(name, args, signal);
+              runMcpCache.set(key, p);
+              return p;
+            };
+            return buildStepperRoot({
+              coordCfg: rawCoordCfg,
+              registry: stepperRegistry,
+              subagents: stepperSubagents,
+              makeLlm: stepperMakeLlm,
+              knowledgeRagFor: (sid) => {
+                const backend =
+                  knowledgeBackend ?? new InMemoryKnowledgeBackend();
+                return new KnowledgeRag(backend, sid);
+              },
+              toolsRag: toolsRagHandle,
+              callMcp: cachedCallMcp,
+              mintStepperId,
+              llmMap,
+              pipelineFallback,
+              logLlmCall,
+            });
+          },
+          knowledgeRagFor,
+          toolsRag: toolsRagHandle,
+          mintStepperId,
+          mintTurnId,
+        });
+        this._stepperCoordinatorHandler = stepperHandler;
+        builder = builder.withStepperCoordinator(stepperHandler);
+        log({
+          event: 'stepper_coordinator_configured',
+          mode: stepperCfg.mode,
+          config: rawCoordCfg,
+        });
+      } else if (coordCfg.planner !== undefined) {
+        // ── Legacy DAG path (deprecated §K — remove in 19.0) ─────────────────
+        log({
+          event: 'config_warning',
+          message:
+            'coordinator.planner without coordinator.mode uses the deprecated DagCoordinatorHandler; ' +
+            'set coordinator.mode to adopt the 18.0 Stepper runtime',
+        });
+        // Fail loud if the config mixes DAG and linear fields.
+        assertCoordinatorConfigShape(rawCoordCfg);
         // planner shape/type already validated by assertCoordinatorConfigShape.
         // Validate interpreter.type if present — only 'dag' is supported.
         const interpKind = (
@@ -981,7 +1487,7 @@ export class SmartServer {
         }
 
         const built = await buildDagCoordinatorDeps({
-          coordCfg: coordCfg as Record<string, unknown>,
+          coordCfg: rawCoordCfg,
           llmMap,
           pipelineFallback,
           mainLlm,
@@ -1025,6 +1531,9 @@ export class SmartServer {
         };
         log({ event: 'dag_coordinator_configured', config: coordCfg });
       } else {
+        // ── Linear / flat coordinator path ────────────────────────────────────
+        // Fail loud if config mixes fields with non-linear settings.
+        assertCoordinatorConfigShape(rawCoordCfg);
         // Linear mode: route plannerLlm through the normalized map chain.
         // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
         //   pipelineFallback → mainLlm.
@@ -1149,6 +1658,17 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // Stepper-owned MCP clients (connected from YAML mcp: block when no
+    // DI/plugin clients existed). Dispose on server shutdown.
+    // TODO: IMcpClient does not currently expose a close() method; add
+    //   `for (const c of this._stepperMcpClients) await c.close?.();`
+    //   once the interface gains one.
+    if (this._stepperMcpClients && this._stepperMcpClients.length > 0) {
+      closeFns.push(async () => {
+        this._stepperMcpClients = undefined;
+      });
+    }
 
     // ---- Per-session lifecycle (cookie identity + graph factory + registry) ----
     const sessionCfg = this.cfg.session ?? {};
@@ -1664,7 +2184,11 @@ export class SmartServer {
       }
       b = b.withSubAgents(registry);
 
-      if (this._dagCoordinatorTemplate) {
+      if (this._stepperCoordinatorHandler) {
+        // Stepper coordinator is stateless — reuse the same handler instance
+        // across sessions (session context arrives via ctx.sessionId).
+        b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
+      } else if (this._dagCoordinatorTemplate) {
         const tpl = this._dagCoordinatorTemplate;
         const workers: SubAgentRegistry = new Map(
           [...registry].filter(([name]) => name !== tpl.oracleName),
@@ -1676,6 +2200,10 @@ export class SmartServer {
           stateOracle: raw ? new SubAgentStateOracle(raw) : undefined,
         });
       }
+    } else if (this._stepperCoordinatorHandler) {
+      // No sub-agent configs but stepper coordinator configured — wire it directly.
+      // (Stepper coordinator is stateless and works without sub-agents.)
+      b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
     }
 
     const handle = await b.build();
@@ -1711,9 +2239,30 @@ export class SmartServer {
       res.setHeader('Set-Cookie', resolved.setCookie);
     }
     const graph = await lifecycle.acquire(sessionId);
+    // Register/touch the session in the meta store so /v1/sessions, resume and
+    // delete reflect real chat/stream traffic (review Finding 3). Best-effort:
+    // a meta-store hiccup must never break the actual request.
+    try {
+      await recordSessionStart(
+        this._sessionMetaStore,
+        sessionId,
+        new Date().toISOString(),
+      );
+    } catch {
+      // swallow — session metadata is non-critical to serving the request
+    }
     try {
       await fn(graph, sessionId, traceId);
     } finally {
+      try {
+        await recordSessionEnd(
+          this._sessionMetaStore,
+          sessionId,
+          new Date().toISOString(),
+        );
+      } catch {
+        // swallow — see above
+      }
       graph.logger.dropRequest(traceId);
       // Pass the graph instance — `invalidateAll()` may have detached this
       // graph into the draining map while the request was in flight; we must
@@ -1832,6 +2381,102 @@ export class SmartServer {
         lifecycle.release(sessionId, graph);
       }
       return;
+    }
+    // GET /v1/sessions — list sessions for the current identity
+    if (req.method === 'GET' && urlPath === '/v1/sessions') {
+      const lifecycle = this._lifecycle;
+      if (!lifecycle) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(jsonError('Session lifecycle not initialized', 'server_error'));
+        return;
+      }
+      const isHttps =
+        (req.socket as { encrypted?: boolean }).encrypted === true ||
+        req.headers['x-forwarded-proto'] === 'https';
+      const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+      if (resolved.minted && resolved.setCookie) {
+        res.setHeader('Set-Cookie', resolved.setCookie);
+      }
+      const identity = resolved.identity.sessionId;
+      const body = await handleListSessions(this._sessionMetaStore, identity);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(body));
+      return;
+    }
+    // POST /v1/sessions/:id/resume — resume a session
+    {
+      const resumeMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)\/resume$/);
+      if (req.method === 'POST' && resumeMatch) {
+        const sessionId = resumeMatch[1];
+        const lifecycle = this._lifecycle;
+        if (!lifecycle) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (req.socket as { encrypted?: boolean }).encrypted === true ||
+          req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const body = await handleResumeSession(
+          this._sessionMetaStore,
+          identity,
+          sessionId,
+        );
+        const status = body.ok ? 200 : 404;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
+    }
+    // DELETE /v1/sessions/:id — delete a session
+    {
+      const deleteMatch = urlPath.match(/^\/v1\/sessions\/([^/]+)$/);
+      if (req.method === 'DELETE' && deleteMatch) {
+        const sessionId = deleteMatch[1];
+        const lifecycle = this._lifecycle;
+        if (!lifecycle) {
+          res.writeHead(500, { 'Content-Type': 'application/json' });
+          res.end(
+            jsonError('Session lifecycle not initialized', 'server_error'),
+          );
+          return;
+        }
+        const isHttps =
+          (req.socket as { encrypted?: boolean }).encrypted === true ||
+          req.headers['x-forwarded-proto'] === 'https';
+        const resolved = lifecycle.resolve(req.headers['cookie'], isHttps);
+        if (resolved.minted && resolved.setCookie) {
+          res.setHeader('Set-Cookie', resolved.setCookie);
+        }
+        const identity = resolved.identity.sessionId;
+        const evictFn = async (sid: string) => {
+          // (a) Evict/dispose this session's graph from the registry.
+          await lifecycle.registry.evictOne(sid);
+          // (b) Evict the session's knowledge from the shared backend. This
+          // clears the long-lived in-memory backend AND removes the JSONL files
+          // (JsonlKnowledgeBackend.deleteSession), so a same-id re-entry never
+          // rehydrates stale entries — matching the README "evicts its
+          // knowledge-RAG entries" contract.
+          await this._stepperKnowledgeBackend?.deleteSession(sid);
+        };
+        const body = await handleDeleteSession(
+          this._sessionMetaStore,
+          identity,
+          sessionId,
+          evictFn,
+        );
+        const status = body.ok ? 200 : 404;
+        res.writeHead(status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(body));
+        return;
+      }
     }
     // /v1/config or /config
     if (urlPath === '/v1/config' || urlPath === '/config') {

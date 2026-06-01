@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent-libs",
-  "version": "17.0.0",
+  "version": "18.0.0",
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -31,20 +31,20 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^17.0.0",
-    "@mcp-abap-adt/llm-agent-mcp": "^17.0.0",
-    "@mcp-abap-adt/llm-agent-rag": "^17.0.0",
+    "@mcp-abap-adt/llm-agent": "^18.0.0",
+    "@mcp-abap-adt/llm-agent-mcp": "^18.0.0",
+    "@mcp-abap-adt/llm-agent-rag": "^18.0.0",
     "@opentelemetry/api": "^1.9.1",
     "dotenv": "^17.3.1",
     "yaml": "^2.8.3",
     "zod": "^4.3.6"
   },
   "peerDependencies": {
-    "@mcp-abap-adt/openai-llm": "^17.0.0",
-    "@mcp-abap-adt/anthropic-llm": "^17.0.0",
-    "@mcp-abap-adt/deepseek-llm": "^17.0.0",
-    "@mcp-abap-adt/ollama-llm": "^17.0.0",
-    "@mcp-abap-adt/sap-aicore-llm": "^17.0.0"
+    "@mcp-abap-adt/openai-llm": "^18.0.0",
+    "@mcp-abap-adt/anthropic-llm": "^18.0.0",
+    "@mcp-abap-adt/deepseek-llm": "^18.0.0",
+    "@mcp-abap-adt/ollama-llm": "^18.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^18.0.0"
   },
   "peerDependenciesMeta": {
     "@mcp-abap-adt/openai-llm": {
@@ -64,11 +64,11 @@
     }
   },
   "devDependencies": {
-    "@mcp-abap-adt/openai-llm": "^17.0.0",
-    "@mcp-abap-adt/anthropic-llm": "^17.0.0",
-    "@mcp-abap-adt/deepseek-llm": "^17.0.0",
-    "@mcp-abap-adt/ollama-llm": "^17.0.0",
-    "@mcp-abap-adt/sap-aicore-llm": "^17.0.0"
+    "@mcp-abap-adt/openai-llm": "^18.0.0",
+    "@mcp-abap-adt/anthropic-llm": "^18.0.0",
+    "@mcp-abap-adt/deepseek-llm": "^18.0.0",
+    "@mcp-abap-adt/ollama-llm": "^18.0.0",
+    "@mcp-abap-adt/sap-aicore-llm": "^18.0.0"
   },
   "publishConfig": {
     "access": "public"

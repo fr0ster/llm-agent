@@ -32,6 +32,7 @@ export type {
   ErrorReaction,
   IErrorStrategy,
 } from './error-strategy.js';
+export type { IExecutor } from './executor.js';
 export type {
   FinalizerInput,
   FinalizerResult,
@@ -47,12 +48,20 @@ export type {
   HistoryTurn,
   IHistorySummarizer,
 } from './history-summarizer.js';
+export { InsufficientSignal } from './insufficient-signal.js';
 export type {
   IInterpreter,
   InterpretContext,
   InterpretResult,
   NodeResult,
 } from './interpreter.js';
+export type {
+  IKnowledgeRagHandle,
+  IToolsRagHandle,
+  KnowledgeEntry,
+  KnowledgeEntryMetadata,
+  KnowledgeFilter,
+} from './knowledge-rag.js';
 export type { ILlm } from './llm.js';
 export type { ILlmCallStrategy } from './llm-call-strategy.js';
 export type { IMcpClient } from './mcp-client.js';
@@ -78,6 +87,7 @@ export type {
   IModelProvider,
 } from './model-provider.js';
 export type { IModelResolver } from './model-resolver.js';
+export type { INeedResolver } from './need-resolver.js';
 export type {
   BuiltInStageType,
   ControlFlowType,
@@ -151,7 +161,18 @@ export type {
   StateOracleInput,
   StateOracleResult,
 } from './state-oracle.js';
-export type { OnPartial, StreamChunk } from './streaming.js';
+export type {
+  Budget,
+  IStepper,
+  IStepperInput,
+  IStepperResult,
+  ITokenLedger,
+  RunIdentity,
+} from './stepper.js';
+export { TokenLedger } from './stepper.js';
+export type { IStepperInterpreter } from './stepper-interpreter.js';
+export type { IStepperPlanner } from './stepper-planner.js';
+export type { OnPartial, StepperRef, StreamChunk } from './streaming.js';
 export type {
   ISubAgent,
   ISubAgentInput,
@@ -164,6 +185,8 @@ export type {
   SubAgentContextRequest,
   SubAgentContextResult,
 } from './subagent-context.js';
+export type { ITaskFormalizer, ITaskSpec } from './task-spec.js';
+export { renderTaskSpec } from './task-spec.js';
 export type { IToolSelectionStrategy } from './tool-selection-strategy.js';
 export type { ISpan, ITracer, SpanOptions, SpanStatus } from './tracer.js';
 export type {
