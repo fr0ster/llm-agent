@@ -18,7 +18,14 @@ export function stableArgsKey(args: unknown): string {
 }
 
 /** Identity of a fetched artefact: the tool name + its canonical args. Two
- *  fetches with the same (tool, args) share one key → dedup. */
+ *  fetches with the same (tool, args) share one key → dedup.
+ *
+ *  CASE-NORMALISED (lowercased): models emit the same identifier in varying case
+ *  (e.g. an include name `..._F01` vs `..._f01`), which would otherwise produce
+ *  distinct keys and defeat dedup/caching. Most fetch args are identifiers where
+ *  case is insignificant; lowercasing makes the identity stable. Trade-off
+ *  (accepted): two genuinely case-distinct fetches collapse to one — benign for a
+ *  dedup heuristic (returns a stored value), and identifiers dominate. */
 export function artifactIdentityKey(toolName: string, args: unknown): string {
-  return `${toolName}:${stableArgsKey(args)}`;
+  return `${toolName}:${stableArgsKey(args)}`.toLowerCase();
 }

@@ -29,6 +29,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
+  artifactIdentityKey,
   type ExternalToolValidationCode,
   type IRag,
   normalizeAndValidateExternalTools,
@@ -813,15 +814,6 @@ export async function handleDeleteSession(
  *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
  *   either directly without pre-normalising.
  */
-/** Deterministic cache key for tool args — stable regardless of key order. */
-function stableArgsKey(args: unknown): string {
-  if (args === null || typeof args !== 'object') return JSON.stringify(args);
-  if (Array.isArray(args)) return JSON.stringify(args.map((v) => v));
-  const obj = args as Record<string, unknown>;
-  const sorted: Record<string, unknown> = {};
-  for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
-  return JSON.stringify(sorted);
-}
 
 export async function connectMcpClientsFromConfig(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
@@ -1428,7 +1420,10 @@ export class SmartServer {
               args: unknown,
               signal?: AbortSignal,
             ): Promise<string> => {
-              const key = `${name}:${stableArgsKey(args)}`;
+              // Same case-normalised identity key as the executor's dedup, so
+              // the per-run cache and the dedup agree (and case-variant args —
+              // F01 vs f01 — hit the same entry).
+              const key = artifactIdentityKey(name, args);
               const hit = runMcpCache.get(key);
               if (hit) return hit;
               const p = callMcp(name, args, signal);

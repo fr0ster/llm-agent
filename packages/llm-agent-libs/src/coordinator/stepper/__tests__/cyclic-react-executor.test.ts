@@ -380,7 +380,8 @@ test('#Phase2 cross-step: an artefact already in the session store is injected, 
   const m = mcp({ GetInclude: 'LIVE FETCH (should not happen)' });
   // knowledge stub that reports O01 already fetched, with stored content
   const stored = 'STORED O01 BODY';
-  const key = 'GetInclude:{"n":"O01"}';
+  // artifactIdentityKey lowercases — the executor computes this for {n:'O01'}.
+  const key = 'getinclude:{"n":"o01"}';
   const rag = {
     async query() {
       return [];
