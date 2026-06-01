@@ -145,6 +145,18 @@ test('STEPPER_PLANNER_SYSTEM mandates dependsOn as dataflow (Phase 3)', () => {
   assert.match(STEPPER_PLANNER_SYSTEM, /parallel|concurrently/i);
 });
 
+test('STEPPER_PLANNER_SYSTEM forbids overlapping gather / discovery-reads-bodies (A)', () => {
+  assert.match(
+    STEPPER_PLANNER_SYSTEM,
+    /GATHER WITHOUT OVERLAP|DISJOINT|same data/i,
+  );
+  assert.match(STEPPER_PLANNER_SYSTEM, /discovery/i);
+  assert.match(
+    STEPPER_PLANNER_SYSTEM,
+    /one read per artefact|do(?: NOT|n't)? also read the full bodies/i,
+  );
+});
+
 test('STEPPER_PLANNER_SYSTEM mandates RAG-first + concrete-leaf decomposition', () => {
   assert.match(
     STEPPER_PLANNER_SYSTEM,
