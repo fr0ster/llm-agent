@@ -8,13 +8,14 @@ Production-shaped examples for the Stepper coordinator introduced in release
 |---|---|---|
 | [`01-cyclic-react.yaml`](./01-cyclic-react.yaml) | `cyclic-react` | Bounded tasks; single executor loop, no planning overhead. |
 | [`02-planned-react.yaml`](./02-planned-react.yaml) | `planned-react` | Multi-step tasks; LLM planner + parallel Stepper workers + knowledge-RAG blackboard. |
+| [`03-deep-stepper.yaml`](./03-deep-stepper.yaml) | `deep-stepper` | ADVANCED/expensive: demand-driven RECURSION (executor: recursive). A `needs-work` step recurses into its own sub-plan up to `maxDepth`; the Evaluator terminates (`executable` → leaf). Use only for deeply decompositional work. |
 | [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Compose directly; granularity × executor knobs + a nested composition tree. |
 | [`05-gnostic-abap-review.yaml`](./05-gnostic-abap-review.yaml) | `planned-react` | GNOSTIC preset: same engine as 02 + a curated `knowledgeSeed` of ABAP domain rules (read all includes, security/perf/CleanCore checklists) so reviews are complete. The gnostification path made concrete. |
 
-> The recursive `deep-stepper` mode (and `flow.executor: recursive`) is **not
-> shipped in 18.0** — its recursive control runs away; both are rejected by config
-> parsing. Hardening (Evaluator + identity-dedup + dependsOn-dataflow) is the 18.1
-> work. Declared structural recursion via nested `flow.nodes` is available.
+> `deep-stepper` / `flow.executor: recursive` is now shipped (18.1), fenced by the
+> **Evaluator** as the recursion terminator (recursion is REJECTED without it),
+> identity-dedup, and `maxDepth`. It is the expensive advanced mode — prefer
+> `planned-react`; reach for deep only for genuinely decompositional work.
 | [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Describe the composition directly (no `mode`): the `planner.granularity` × `executor.type` knobs + a NESTED composition tree (a node nests its own `flow` = a sub-cycle). |
 
 `worker.yaml` is the shared subagent pipeline referenced by the coordinator yamls.
@@ -47,11 +48,11 @@ FIXED, finite tree.
 | What yaml holds | the exact N-level tree | at most a FLAG ("recurse here") + maxDepth, or a named-flow self-reference |
 | Expansion | none — it IS the tree | RUNTIME (a node spawns a same-shaped child until termination) |
 | Depth | fixed, written by hand | unknown at config time; bounded by maxDepth + the termination check |
-| 18.0 | shipped (`04-flow-composition.yaml` is a finite 2-level tree) | NOT shipped — `executor: recursive` / `mode: deep-stepper` are rejected by parsing |
+| shipped | 18.0 (`04-flow-composition.yaml` is a finite 2-level tree) | 18.1 — `executor: recursive` / `mode: deep-stepper`, fenced by the Evaluator + dedup |
 
-So in 18.0 a `flow` gives **finite declared trees only**. True recursion (a node flag /
-self-reference + runtime expansion + a termination condition) is the 18.1 work — it needs the
-Evaluator (the termination judge) and identity-keyed dedup so it does not run away.
+A `flow` gives **finite declared trees**; true recursion (runtime expansion + a termination
+condition) ships in 18.1 as `deep-stepper`, fenced by the Evaluator (the termination judge —
+required) and identity-keyed dedup so it does not run away.
 
 Domain operations (fetch source, read includes, run a check) are **never** declared in `flow` —
 the planner/executor obtain data via the consumer's RAG skills (`knowledgeSeed`). Nodes are
@@ -85,15 +86,16 @@ Best for: multi-dimension analyses, broad reviews, tasks whose scope is clear
 upfront. The most common production shape: flagship model for planning + cheap
 model for execution.
 
-> ### `deep-stepper` — recursive multi-level hierarchy _(deferred to 18.1)_
+> ### `deep-stepper` — recursive multi-level hierarchy _(18.1, see `03-deep-stepper.yaml`)_
 >
-> A future mode where each Stepper plans and spawns child Steppers up to
-> `maxDepth`. NOT shipped in 18.0 — its recursive control runs away (re-plans
-> overlapping sub-goals; no identity-dedup); `mode: deep-stepper` and
-> `flow.executor: recursive` are rejected by config parsing. The hardening
-> (Evaluator that judges prompt completeness WITH RAG context, identity-keyed
-> blackboard dedup, dataflow along `dependsOn`, layered decomposition) is 18.1.
-> Declared structural recursion via nested `flow.nodes` is available today.
+> Each Stepper plans and recurses into child Steppers up to `maxDepth`: a step the
+> Evaluator judges `needs-work` recurses into its own sub-plan; `executable`
+> terminates it (a leaf). FENCED so it does not run away (the 18.0 problem): the
+> **Evaluator is the termination judge and is REQUIRED** (`mode: deep-stepper` /
+> `flow.executor: recursive` is rejected without it), **identity-keyed dedup**
+> stops re-doing work, and `maxDepth` + the token ledger bound it. It is the
+> expensive advanced mode — prefer `planned-react`; reach for deep only for
+> genuinely decompositional work, with a small `maxDepth`.
 
 ---
 

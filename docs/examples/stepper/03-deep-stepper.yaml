@@ -1,0 +1,122 @@
+# Deep-Stepper — demand-driven RECURSION (the advanced mode).
+#
+# Like planned-react, but executor: recursive — a step that the Evaluator judges
+# "needs-work" recurses into its own sub-plan (the executor escalates to a planner
+# for that sub-goal), up to stepper.maxDepth. Termination is the Evaluator's job:
+# "executable" → run as a leaf (stop recursing); "needs-work" → recurse;
+# "needs-consumer" → ask the consumer. Identity-dedup stops re-doing work and
+# maxDepth + tokenBudget bound it.
+#
+# COST: recursion multiplies LLM calls — this is the EXPENSIVE mode. Prefer
+# planned-react (02) for most tasks; use deep-stepper only for genuinely
+# decompositional work, and keep maxDepth small. The Evaluator is REQUIRED
+# (recursion without it is rejected — it is the terminator).
+#
+# Planned-ReAct lineage (same planner/executor/reviewer wiring; only executor
+# becomes recursive and the Evaluator gates each level).
+#
+# The planner decomposes the request into named steps that are scheduled by the
+# StepperInterpreter. Each child Stepper runs its own CyclicReAct executor and
+# can write artefacts to the shared per-session knowledge-RAG. The root
+# finalizer reads the accumulated knowledge-RAG to compose the final answer.
+#
+# Cost shape:
+#   planner    — sonnet, 1 call per plan (+ replan on InsufficientSignal)
+#   executor   — haiku, N calls per step
+#   reviewer   — haiku, called at depths 0 and 1
+#   finalizer  — sonnet LLM synthesis
+#
+# NOT the default — deep-stepper is the advanced, expensive mode (recursion).
+# Reach for planned-react (02) first; use this only for deeply decompositional work.
+
+port: ${SMART_SERVER_PORT:-4021}
+host: 0.0.0.0
+mode: smart
+
+# Provider is env-overridable; defaults to SAP AI Core (one provider covers
+# planner sonnet + executor haiku + the embedder). To switch the WHOLE pipeline
+# to another provider, set LLM_PROVIDER (+ LLM_API_KEY / LLM_URL as needed) and
+# the per-role LLM_*_MODEL vars — keep ONE provider per pipeline (see README).
+# apiKey/url are empty by default (SAP AI Core uses AICORE_SERVICE_KEY); other
+# providers read them from the env vars below.
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MAIN_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.5
+  planner:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.3
+  executor:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_EXECUTOR_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  reviewer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_REVIEWER_MODEL:-anthropic--claude-4.5-haiku}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  finalizer:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_FINALIZER_MODEL:-anthropic--claude-4.6-sonnet}
+    apiKey: ${LLM_API_KEY:-}
+    url: ${LLM_URL:-}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+
+# Embedder is a SEPARATE choice (DeepSeek/Anthropic have no embedder, so pair
+# them with Ollama or OpenAI). Defaults to SAP AI Core.
+rag:
+  type: in-memory
+  embedder: ${EMBEDDER_PROVIDER:-sap-ai-core}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  apiKey: ${EMBEDDER_API_KEY:-}
+  url: ${EMBEDDER_URL:-}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+
+coordinator:
+  mode: deep-stepper             # recursive executor; Evaluator-fenced (required)
+
+  stepper:
+    maxParallelSteps: 4          # local fan-out cap per Stepper level
+    maxDepth: 3                  # keep SMALL — recursion multiplies cost
+    tokenBudget: 400000          # soft token cap (shared ledger, all branches)
+    reviewer:
+      atDepths: [0, 1]           # review at root + first child level
+
+  # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
+  # agent calls whatever the server exposes via tools/list; safety is the
+  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
+
+  # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
+  # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's
+  # tools (the executor surfaces them as facts and prioritises the named tools
+  # over a bare-prompt tool search). Do NOT ship tool-specific rules here.
+  knowledgeSeed: []
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
+subagents:
+  - name: abap-analyst
+    description: |
+      Analyzes ABAP repository objects via live SAP MCP tools.
+      Produces structured findings that are stored in the knowledge-RAG
+      and consumed by sibling steps and the root finalizer.
+    config: ./worker.yaml
+
+logDir: ./.run/stepper-planned-sessions
+log: ./.run/stepper-planned-server.log
