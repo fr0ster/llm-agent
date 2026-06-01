@@ -10,6 +10,13 @@ export interface IExecutor {
   execute(input: {
     prompt: string;
     tools: readonly LlmTool[];
+    /**
+     * Client-provided external tools (OpenAI-style function tools sent in the
+     * request, e.g. create_file / rag_add) that the CONSUMER executes. They are
+     * MERGED with the seeded MCP tools and offered to the model so a step can
+     * emit a tool call the client fulfils (issue #167). Absent → only MCP tools.
+     */
+    externalTools?: readonly LlmTool[];
     knowledgeRag: IKnowledgeRagHandle;
     toolsRag: IToolsRagHandle;
     needResolver?: INeedResolver;

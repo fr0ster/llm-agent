@@ -55,6 +55,25 @@ describe('DagPlanInterpreter', () => {
     assert.equal(r.output, '42');
   });
 
+  it('#167: threads ctx.externalTools into the worker dispatch', async () => {
+    let seen: ReadonlyArray<{ name: string }> | undefined;
+    const w = worker('w', async (i) => {
+      seen = (i as { externalTools?: ReadonlyArray<{ name: string }> })
+        .externalTools;
+      return { output: 'ok' };
+    });
+    const base = ctx([['w', w]]);
+    await I().interpret(dag([{ id: 'n1', goal: 'g', agent: 'w' }]), {
+      ...base,
+      externalTools: [{ name: 'create_file' }] as never,
+    });
+    assert.deepEqual(
+      seen?.map((t) => t.name),
+      ['create_file'],
+      'worker must receive the client external tools',
+    );
+  });
+
   it('runs a dependency chain in order, feeding outputs forward', async () => {
     const seen: Record<string, string> = {};
     const w = worker('w', async (i) => {

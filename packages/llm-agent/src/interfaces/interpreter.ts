@@ -3,6 +3,7 @@ import type { DagPlan } from './dag-plan.js';
 import type { IErrorStrategy } from './error-strategy.js';
 import type { OnPartial } from './streaming.js';
 import type { ISubAgent } from './subagent.js';
+import type { LlmTool } from './types.js';
 
 export interface IInterpreter<TInput, TOutput> {
   readonly name: string;
@@ -31,6 +32,10 @@ export interface InterpretContext {
    *  interpreter annotates `nodeId` before calling and emits
    *  `node-start` / `node-end` itself. */
   onPartial?: OnPartial;
+  /** Client external (consumer-executed) tools, threaded into each worker
+   *  dispatch so a worker can emit a tool call the client fulfils (issue #167).
+   *  Absent → workers see only their own MCP tools. */
+  externalTools?: readonly LlmTool[];
 }
 
 export interface NodeResult {

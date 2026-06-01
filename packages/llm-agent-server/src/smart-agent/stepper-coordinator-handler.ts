@@ -142,6 +142,9 @@ export class StepperCoordinatorHandler implements IStageHandler {
         budget: built.budget,
         identity,
         taskSpec,
+        // Issue #167: thread the client's external (consumer-executed) tools so
+        // executors can emit tool calls the client fulfils. Empty → MCP-only.
+        externalTools: ctx.externalTools,
         // Thread the client abort signal so cancelling the request actually
         // stops the planner/executor/child-Stepper path, and the sessionLogger
         // so per-step logging (executor_tool_seed, etc.) reaches the request log.

@@ -320,6 +320,8 @@ export class DagCoordinatorHandler implements IStageHandler {
             trace: ctx.options?.trace,
             sessionLogger: ctx.options?.sessionLogger,
             onPartial,
+            // Issue #167: thread the client's external tools into worker dispatch.
+            externalTools: ctx.externalTools,
           });
         } catch (err) {
           ctx.error =

@@ -539,6 +539,46 @@ test('a consumer systemPrompt override replaces the default EXECUTOR_SYSTEM', as
   assert.doesNotMatch(firstSystem, /state in ONE sentence the capability/i);
 });
 
+test('#167: client externalTools are MERGED with seeded MCP tools and offered to the model', async () => {
+  let firstTools: Array<{ name: string }> = [];
+  const llm = {
+    name: 'stub',
+    async chat(_messages: unknown, tools: Array<{ name: string }>) {
+      if (firstTools.length === 0) firstTools = tools ?? [];
+      return {
+        ok: true as const,
+        value: {
+          content: 'done',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    },
+  };
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await exec.execute({
+    prompt: 'review and save a file',
+    tools: [], // no dispatcher tools → executor seeds MCP from toolsRag
+    externalTools: [{ name: 'create_file' }] as never,
+    knowledgeRag: rag as never,
+    // toolsRag seeds an MCP tool so we can assert BOTH are present (merge, not replace)
+    toolsRag: toolsStub({ GetProgram: { name: 'GetProgram' } }) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  const names = firstTools.map((t) => t.name);
+  assert.ok(names.includes('create_file'), 'external tool must be offered');
+  assert.ok(
+    names.includes('GetProgram'),
+    'seeded MCP tool must still be offered (merge, not replace)',
+  );
+});
+
 test('scenario: a multi-fetch sequence writes a SEPARATE knowledge-RAG artifact per tool result', async () => {
   // Mirrors the real review shape (read object → list parts → read each part)
   // with neutral tool names: every tool RESULT must be persisted as its own

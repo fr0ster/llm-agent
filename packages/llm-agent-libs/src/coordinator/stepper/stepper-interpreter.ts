@@ -76,6 +76,7 @@ export class StepperInterpreter implements IStepperInterpreter {
           },
           identity: childIdentity,
           taskSpec: ctx.taskSpec,
+          externalTools: ctx.externalTools,
           signal: ctx.signal,
           sessionLogger: ctx.sessionLogger,
           onProgress: ctx.onProgress,
@@ -85,6 +86,7 @@ export class StepperInterpreter implements IStepperInterpreter {
         const r = await ctx.executor.execute({
           prompt: composeTask(node, plan),
           tools: [],
+          externalTools: ctx.externalTools,
           knowledgeRag: ctx.knowledgeRag,
           toolsRag: ctx.toolsRag,
           budget: ctx.budget,

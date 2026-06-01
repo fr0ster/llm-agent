@@ -9,6 +9,37 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [18.0.1] — 2026-06-01
+
+### Fixed
+
+- **Client external tools now reach coordinator workers (#167).** Client-provided
+  external (consumer-executed) function tools — e.g. `create_file`, `rag_add` —
+  were dropped at the worker boundary, so a worker narrated "tool unavailable"
+  instead of emitting a tool call the client fulfils. They are now threaded into
+  BOTH coordinator paths:
+  - **Stepper:** `IStepperInput.externalTools` → interpreter → executor, MERGED
+    with the seeded MCP tools (appended after the MCP seed, de-duped by name, so
+    external tools never suppress MCP seeding).
+  - **DAG:** `InterpretContext.externalTools` → `ISubAgentInput.externalTools` →
+    the worker's nested pipeline (`SmartAgent.process`).
+
+### Changed
+
+- **DAG coordinator is RETAINED, not deprecated.** The 18.0.0 note that
+  `DagCoordinatorHandler` was deprecated and "removed in 19.0" is **reverted**.
+  The DAG coordinator is a supported peer pipeline variant (the strongest
+  single-shot plan-graph; e.g. unaided full-include reviews) alongside the
+  Stepper — `coordinator.planner` selects DAG, `coordinator.mode` / `coordinator.flow`
+  selects the Stepper. The startup `config_warning` is now an informational
+  `config_info` note. No removal is planned.
+
+### Notes
+
+- Issues #157 (coordinator self-dispatch ran toolless → hallucinated) and #166
+  (DAG double-emitted the answer) were verified resolved in the 18.0 Stepper path
+  and closed; use the Stepper for tool-using / streaming coordinator workloads.
+
 ## [18.0.0] — 2026-06-01
 
 ### Added
