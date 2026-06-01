@@ -1310,10 +1310,11 @@ export function resolveSmartServerConfig(
 /**
  * Stepper coordinator modes.
  */
-// `deep-stepper` is NOT shipped in 18.0 (its recursive control runs away — see
-// the 18.1 design: Evaluator + identity-dedup + dependsOn-dataflow). It is
-// rejected by parsing; structural recursion via nested `flow.nodes` remains.
-export type StepperMode = 'cyclic-react' | 'planned-react';
+// `deep-stepper` (18.1): flow + demand-driven recursion. Re-enabled now that the
+// runaway is fenced — the Evaluator is the per-level TERMINATION judge (executable
+// → leaf, needs-work → recurse), identity-dedup stops re-doing work, and maxDepth
+// + the token ledger bound it. Recursion is REJECTED unless the Evaluator is on.
+export type StepperMode = 'cyclic-react' | 'planned-react' | 'deep-stepper';
 
 /**
  * Configuration for the recursive Stepper coordinator.
@@ -1424,18 +1425,25 @@ export interface StepperCoordinatorConfig {
   };
 }
 
-const MODES = new Set<StepperMode>(['cyclic-react', 'planned-react']);
+const MODES = new Set<StepperMode>([
+  'cyclic-react',
+  'planned-react',
+  'deep-stepper',
+]);
 
 /**
  * Preset expansion: each `mode` maps to a default `flow` composition.
  * An explicit `coordinator.flow` block overrides these per-component.
+ * `deep-stepper` = llm planner + RECURSIVE executor (demand-driven recursion),
+ * relying on the Evaluator as terminator (enforced below).
  */
 const MODE_FLOW_PRESET: Record<
   StepperMode,
-  { planner: 'none' | 'llm'; executor: 'cyclic-react' }
+  { planner: 'none' | 'llm'; executor: 'cyclic-react' | 'recursive' }
 > = {
   'cyclic-react': { planner: 'none', executor: 'cyclic-react' },
   'planned-react': { planner: 'llm', executor: 'cyclic-react' },
+  'deep-stepper': { planner: 'llm', executor: 'recursive' },
 };
 
 /** Parse declarative `flow.plan` nodes (for the static planner). */
@@ -1501,10 +1509,8 @@ function parseNestedFlowSpec(
   if (!['shallow', 'detailed'].includes(granularity))
     throw new Error(`flow.planner.granularity must be shallow|detailed`);
   const executor = flowCfg?.executor?.type ?? 'cyclic-react';
-  if (!['simple', 'cyclic-react'].includes(executor))
-    throw new Error(
-      `flow.executor.type must be simple|cyclic-react (recursive is deferred to 18.1)`,
-    );
+  if (!['simple', 'cyclic-react', 'recursive'].includes(executor))
+    throw new Error(`flow.executor.type must be simple|cyclic-react|recursive`);
   const plannerSystemPrompt = parseSystemPromptOverride(
     flowCfg?.planner?.systemPrompt,
     'flow.planner.systemPrompt',
@@ -1650,9 +1656,9 @@ export function parseStepperCoordinatorConfig(
       `coordinator.flow.planner.granularity must be shallow|detailed`,
     );
   const executorType = flowCfg?.executor?.type ?? preset.executor;
-  if (!['simple', 'cyclic-react'].includes(executorType))
+  if (!['simple', 'cyclic-react', 'recursive'].includes(executorType))
     throw new Error(
-      `coordinator.flow.executor.type must be simple|cyclic-react (recursive is deferred to 18.1)`,
+      `coordinator.flow.executor.type must be simple|cyclic-react|recursive`,
     );
   const finalizerType = flowCfg?.finalizer?.type ?? 'llm';
   if (finalizerType !== 'llm')
@@ -1670,6 +1676,15 @@ export function parseStepperCoordinatorConfig(
   // 18.1 Evaluator: ON by default at all depths (per design). Disable via
   // `flow.evaluator.enabled: false`; narrow via `flow.evaluator.atDepths`.
   const evaluatorEnabled = flowCfg?.evaluator?.enabled !== false;
+  // RUNAWAY GUARD: demand-driven recursion (executor:recursive / deep-stepper)
+  // terminates via the Evaluator (executable → leaf, needs-work → recurse).
+  // Without it recursion has no termination judge — that is exactly the 18.0
+  // runaway (141 spawns). So recursion REQUIRES the Evaluator enabled.
+  if (executorType === 'recursive' && !evaluatorEnabled)
+    throw new Error(
+      'coordinator.flow.executor.type "recursive" (deep-stepper) requires the Evaluator ' +
+        '(it is the recursion terminator) — do not set coordinator.flow.evaluator.enabled: false',
+    );
   const evalAtDepths = flowCfg?.evaluator?.atDepths ?? 'all';
   const evaluatorAtDepths =
     evalAtDepths === 'all'

@@ -66,6 +66,43 @@ test('invalid mode throws', () => {
   );
 });
 
+test('Phase4: deep-stepper preset → recursive executor + llm planner + Evaluator on', () => {
+  const c = parseStepperCoordinatorConfig({ mode: 'deep-stepper' });
+  assert.equal(c.flow.executor, 'recursive');
+  assert.equal(c.flow.planner, 'llm');
+  assert.equal(c.flow.evaluatorEnabled, true);
+});
+
+test('Phase4: flow.executor recursive parses (with the Evaluator on)', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: { executor: { type: 'recursive' } },
+  });
+  assert.equal(c.flow.executor, 'recursive');
+});
+
+test('Phase4 runaway guard: recursive executor WITHOUT the Evaluator is rejected', () => {
+  assert.throws(
+    () =>
+      parseStepperCoordinatorConfig({
+        mode: 'deep-stepper',
+        flow: { evaluator: { enabled: false } },
+      }),
+    /requires the Evaluator/i,
+  );
+  assert.throws(
+    () =>
+      parseStepperCoordinatorConfig({
+        mode: 'planned-react',
+        flow: {
+          executor: { type: 'recursive' },
+          evaluator: { enabled: false },
+        },
+      }),
+    /requires the Evaluator/i,
+  );
+});
+
 // ── (б2) nested flow.nodes — yaml composition tree → spec ──────────────────────
 
 test('flow.nodes with a nested flow parses into a recursive composition spec', () => {
