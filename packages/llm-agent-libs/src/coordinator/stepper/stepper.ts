@@ -134,6 +134,20 @@ export class Stepper implements IStepper {
       taskSpec: input.taskSpec,
       signal: input.signal,
     });
+    // Log the parsed plan GRAPH (id, goal, dependsOn, agent) so the executed DAG
+    // — including dependsOn EDGES — is observable, not just the node goals from
+    // stepper-spawned events. Edges are what the Phase 3 dataflow keys off.
+    input.sessionLogger?.logStep('coordinator_plan', {
+      depth,
+      stepperId: input.identity.stepperId,
+      objective: plan.objective,
+      nodes: plan.nodes.map((n) => ({
+        id: n.id,
+        goal: n.goal,
+        ...(n.dependsOn ? { dependsOn: n.dependsOn } : {}),
+        ...(n.agent ? { agent: n.agent } : {}),
+      })),
+    });
     if (reviewer && reviewerAtDepths.has(depth)) {
       const result = await reviewer.review({
         prompt: input.prompt,
