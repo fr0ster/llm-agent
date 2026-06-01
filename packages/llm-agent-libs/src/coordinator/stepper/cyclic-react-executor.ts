@@ -251,6 +251,7 @@ export class CyclicReActExecutor implements IExecutor {
           if (fetched.has(identityKey)) {
             input.sessionLogger?.logStep('executor_fetch_dedup', {
               source: ref,
+              scope: 'in-loop',
               tool: toolName,
               identityKey,
             });
@@ -260,6 +261,34 @@ export class CyclicReActExecutor implements IExecutor {
               tool_call_id: tc.id,
             });
             continue;
+          }
+          // CROSS-step dedup: another step already fetched this exact artefact
+          // into the shared session store. Inject the STORED content (it is NOT
+          // in this executor's history) instead of re-calling the tool. No
+          // mcp-call, no duplicate write.
+          if (knowledgeRag.hasArtifact && knowledgeRag.getArtifact) {
+            let priorContent: string | undefined;
+            try {
+              if (await knowledgeRag.hasArtifact(identityKey))
+                priorContent = await knowledgeRag.getArtifact(identityKey);
+            } catch {
+              // store unavailable → fall through to a live fetch
+            }
+            if (priorContent !== undefined) {
+              fetched.add(identityKey);
+              input.sessionLogger?.logStep('executor_fetch_dedup', {
+                source: ref,
+                scope: 'cross-step',
+                tool: toolName,
+                identityKey,
+              });
+              messages.push({
+                role: 'tool',
+                content: priorContent,
+                tool_call_id: tc.id,
+              });
+              continue;
+            }
           }
           onProgress?.({
             kind: 'mcp-call',

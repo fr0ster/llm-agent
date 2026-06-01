@@ -132,6 +132,17 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
       a.createdAt.localeCompare(b.createdAt),
     );
   }
+
+  /** Content of the stored artefact with this identityKey (earliest write),
+   *  for cross-step reuse. Undefined if not present. */
+  async getArtifact(identityKey: string): Promise<string | undefined> {
+    const local = this.mirror.find(
+      (e) => e.metadata.identityKey === identityKey,
+    );
+    if (local) return local.content;
+    const durable = await this.backend.scan(this.sessionId);
+    return durable.find((e) => e.metadata.identityKey === identityKey)?.content;
+  }
 }
 
 function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {

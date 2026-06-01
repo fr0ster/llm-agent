@@ -50,6 +50,10 @@ export interface IKnowledgeRagHandle {
   listArtifacts?(): Promise<
     ReadonlyArray<{ identityKey: string; toolName?: string; createdAt: string }>
   >;
+  /** The stored content of a fetched artefact by identity (for CROSS-step reuse:
+   *  another step already fetched it, so this executor injects the stored content
+   *  instead of re-calling the tool). Undefined if absent. */
+  getArtifact?(identityKey: string): Promise<string | undefined>;
 }
 
 export interface IToolsRagHandle {

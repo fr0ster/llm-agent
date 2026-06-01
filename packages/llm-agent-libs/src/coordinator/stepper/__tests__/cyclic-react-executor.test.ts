@@ -367,6 +367,68 @@ test('#Phase2: a repeated (tool,args) call is deduped — MCP hit once; differen
   assert.equal(writes.filter((w) => w.content === 'INCLUDE BODY').length, 2);
 });
 
+test('#Phase2 cross-step: an artefact already in the session store is injected, not re-fetched', async () => {
+  // The model calls GetInclude(O01); another step already stored it → the
+  // executor injects the STORED content and does NOT hit MCP.
+  const llm = scriptedLlm([
+    {
+      content: 'a',
+      toolCalls: [{ name: 'GetInclude', arguments: { n: 'O01' } }],
+    },
+    { content: 'Final.' },
+  ]);
+  const m = mcp({ GetInclude: 'LIVE FETCH (should not happen)' });
+  // knowledge stub that reports O01 already fetched, with stored content
+  const stored = 'STORED O01 BODY';
+  const key = 'GetInclude:{"n":"O01"}';
+  const rag = {
+    async query() {
+      return [];
+    },
+    async list() {
+      return [];
+    },
+    async write() {},
+    fingerprint() {
+      return 'n=0';
+    },
+    async hasArtifact(k: string) {
+      return k === key;
+    },
+    async getArtifact(k: string) {
+      return k === key ? stored : undefined;
+    },
+  };
+  let sawStored = false;
+  const exec = new CyclicReActExecutor({
+    llm: {
+      name: 'stub',
+      async chat(msgs: Array<{ role: string; content: string }>) {
+        if (msgs.some((mm) => mm.role === 'tool' && mm.content === stored))
+          sawStored = true;
+        return (llm as { chat: () => unknown }).chat();
+      },
+    } as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  const res = await exec.execute({
+    prompt: 'analyze include O01',
+    tools: [{ name: 'GetInclude' }],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({ GetInclude: { name: 'GetInclude' } }) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok');
+  assert.deepEqual(m.calls, [], 'MCP must NOT be hit — stored content reused');
+  assert.ok(
+    sawStored,
+    'the stored artefact content was injected as the tool result',
+  );
+});
+
 test('maxNoProgressNeeds is configurable (escalates after the given cap)', async () => {
   const llm = scriptedLlm([
     { content: 'need' },
