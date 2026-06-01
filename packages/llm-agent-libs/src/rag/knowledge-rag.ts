@@ -121,7 +121,9 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
       const k = e.metadata.identityKey;
       if (!k) continue;
       const prev = byKey.get(k);
-      if (!prev || e.metadata.createdAt < prev.createdAt)
+      // Keep the LATEST write per identity (read-after-write: "the last result
+      // is read"), so a re-fetched/updated artefact supersedes the earlier one.
+      if (!prev || e.metadata.createdAt >= prev.createdAt)
         byKey.set(k, {
           identityKey: k,
           toolName: e.metadata.toolName,
@@ -133,15 +135,20 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
     );
   }
 
-  /** Content of the stored artefact with this identityKey (earliest write),
-   *  for cross-step reuse. Undefined if not present. */
+  /** Content of the stored artefact with this identityKey, for cross-step reuse.
+   *  Returns the LATEST write (read-after-write: "the last result is read"), so a
+   *  re-fetched/updated artefact supersedes an earlier one. Undefined if absent. */
   async getArtifact(identityKey: string): Promise<string | undefined> {
-    const local = this.mirror.find(
-      (e) => e.metadata.identityKey === identityKey,
-    );
-    if (local) return local.content;
+    const findLast = (arr: readonly KnowledgeEntry[]) => {
+      for (let i = arr.length - 1; i >= 0; i--)
+        if (arr[i].metadata.identityKey === identityKey) return arr[i].content;
+      return undefined;
+    };
+    // Prefer the durable scan when it is at least as complete as the mirror
+    // (it carries cross-process writes); else the in-process mirror.
     const durable = await this.backend.scan(this.sessionId);
-    return durable.find((e) => e.metadata.identityKey === identityKey)?.content;
+    const source = durable.length >= this.mirror.length ? durable : this.mirror;
+    return findLast(source);
   }
 }
 
