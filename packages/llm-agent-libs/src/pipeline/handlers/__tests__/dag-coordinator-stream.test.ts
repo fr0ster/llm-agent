@@ -9,7 +9,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { DagCoordinatorHandler } from '../dag-coordinator.js';
 
-test('handler yields content deltas as soon as interpreter/finalizer emit them', async () => {
+test('#166: the answer reaches the client once (finalizer only); interpreter node content is not double-emitted', async () => {
   const planner: IPlanner = {
     name: 'p',
     async plan() {
@@ -88,16 +88,17 @@ test('handler yields content deltas as soon as interpreter/finalizer emit them',
   });
   await h.execute(ctx, {}, {} as never);
 
-  // Content yields:
-  //   foo  (worker delta)
-  //   bar  (worker delta)
-  //   foobar (PassthroughFinalizer one-shot)
+  // #166 regression guard: the answer must reach the client EXACTLY ONCE — from
+  // the finalizer. The interpreter's node-content deltas ('foo','bar') go to the
+  // session log only, NOT to the client (previously they were ALSO yielded, so a
+  // non-streaming client got the answer twice: 'foo'+'bar' + 'foobar').
   const contentYields = yielded.filter(
     (y) => (y.content ?? '') !== '' && !y.finishReason,
   );
   assert.deepEqual(
     contentYields.map((y) => y.content),
-    ['foo', 'bar', 'foobar'],
+    ['foobar'],
+    'only the finalizer emits client content — no interpreter double-emit',
   );
 
   // Final stop yield still present (with empty content, finishReason='stop'):

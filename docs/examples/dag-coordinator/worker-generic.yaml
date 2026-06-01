@@ -1,0 +1,43 @@
+# CONTROL: DAG worker with a fully AGNOSTIC system prompt (no SAP/ABAP, no "never
+# fabricate" domain nudge). Everything else identical to worker-haiku.yaml.
+mode: smart
+agent:
+  maxIterations: 25
+  ragQueryK: 10
+  healthTimeoutMs: 15000
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+systemPrompt: |
+  You complete the task by calling the available tools. If a tool call fails or
+  returns an error / empty / "not found" result, do not guess or fabricate; try
+  another available tool or state the capability you still need. Produce your
+  final answer only once you actually have the data the task requires.
+pipeline:
+  llm:
+    main:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0.2
+    classifier:
+      provider: sap-ai-sdk
+      model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+      temperature: 0.1
+  mcp:
+    - type: http
+      url: ${MCP_ENDPOINT:-http://localhost:3001/mcp/stream/http}
+  version: "1"
+  stages:
+    - { id: classify, type: classify }
+    - id: rag-retrieval
+      type: parallel
+      stages:
+        - { id: rag-tools, type: rag-query, config: { store: tools, k: 10 } }
+      after:
+        - { id: tool-select, type: tool-select }
+    - { id: assemble, type: assemble }
+    - { id: tool-loop, type: tool-loop, config: { maxIterations: 25 } }
