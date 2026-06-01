@@ -143,6 +143,13 @@ export interface SmartAgentBuilderConfig {
   sessionPolicy?: SessionPolicy;
   /** Skip startup model validation (useful for testing). Default: false. */
   skipModelValidation?: boolean;
+  /** Attempts for the startup model-validation chat before aborting — lenient
+   *  retry on ANY transient failure (e.g. a SAP AI Core deployment-list blip at
+   *  boot). Default 3. */
+  modelValidationAttempts?: number;
+  /** Base backoff between startup-validation attempts (× attempt number).
+   *  Default 2000ms. */
+  modelValidationBackoffMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -732,23 +739,46 @@ export class SmartAgentBuilder {
         modelsToCheck.set(helperLlm.model ?? 'helper', helperLlm);
       }
 
+      // Startup validation is LENIENT on retry (unlike the request-time RetryLlm,
+      // which only retries specific HTTP status codes): a transient boot-time
+      // infra blip — e.g. SAP AI Core's "Failed to fetch the list of deployments"
+      // (token/deployment-list hiccup), which carries no retryable status code —
+      // must NOT abort startup. Retry the validation chat on ANY failure a few
+      // times with backoff; abort only if every attempt fails.
+      const maxAttempts = Math.max(1, this.cfg.modelValidationAttempts ?? 3);
+      const validationBackoffMs = this.cfg.modelValidationBackoffMs ?? 2000;
       for (const [modelName, llm] of modelsToCheck) {
-        const result = await llm.chat(
+        let result = await llm.chat(
           [{ role: 'user', content: 'Reply with OK' }],
           undefined,
           { maxTokens: 10 },
         );
+        for (let attempt = 1; !result.ok && attempt < maxAttempts; attempt++) {
+          log?.log({
+            type: 'warning',
+            traceId: 'builder',
+            message: `Model "${modelName}" validation attempt ${attempt} failed (${result.error.message}); retrying`,
+          });
+          await new Promise((r) =>
+            setTimeout(r, validationBackoffMs * attempt),
+          );
+          result = await llm.chat(
+            [{ role: 'user', content: 'Reply with OK' }],
+            undefined,
+            { maxTokens: 10 },
+          );
+        }
         if (!result.ok) {
           const detail = result.error.message;
           log?.log({
             type: 'pipeline_error',
             traceId: 'builder',
             code: 'MODEL_UNAVAILABLE',
-            message: `Model "${modelName}" is not available: ${detail}`,
+            message: `Model "${modelName}" is not available after ${maxAttempts} attempts: ${detail}`,
             durationMs: 0,
           });
           throw new Error(
-            `Startup aborted: model "${modelName}" is not available.\n${detail}`,
+            `Startup aborted: model "${modelName}" is not available after ${maxAttempts} attempts.\n${detail}`,
           );
         }
       }
