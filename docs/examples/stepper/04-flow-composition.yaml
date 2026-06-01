@@ -74,20 +74,24 @@ coordinator:
     # review the plan/output at the root depth only (cheap gate).
     reviewer: { atDepths: [0] }
 
-    # Declared composition TREE. The root level has `nodes`, so it is static over
-    # them (the declared steps ARE the plan — no LLM planning at the root).
+    # Declared composition TREE — FULLY static (the yaml controls everything; no
+    # LLM sub-planner that could emit redundant/wrong fetch steps). gather reads
+    # the source ONCE; analyze nests its own declared sub-cycle; the per-run MCP
+    # cache makes any re-reference of the source instant (no re-fetch).
     nodes:
+      # information-GATHERING — the only step that reads (consumer RAG skills /
+      # the goal tell it to read the full source incl. all includes).
+      - id: gather
+        goal: "Retrieve the full source of ZDAZ_R_DELAYED_UPDATE including all of its includes"
+      # ANALYSIS — ONE step covering all dimensions in a single executor pass
+      # (one read of the source, all four dimensions). Splitting into per-dimension
+      # steps re-reads the source in each (until dependsOn dataflow lands in 18.1),
+      # so a single analyze step is faster here.
       - id: analyze
-        goal: "Analyze the requested ABAP object across all review dimensions"
-        # NESTED flow ⇒ this node runs as a child Stepper (a sub-cycle). It has
-        # NO nodes of its own, so its planner runs dynamically: the LLM planner
-        # decomposes "analyze" into concrete dimension steps at runtime
-        # (granularity: detailed = decompose fully up front).
-        flow:
-          planner: { type: llm, granularity: detailed }
-          executor: { type: cyclic-react }
+        goal: "Analyze the gathered source across security, performance, Clean Core, and maintainability"
+        dependsOn: [gather]
       - id: synthesize
-        goal: "Synthesize the dimension findings into a structured review report"
+        goal: "Synthesize the analysis into a structured review report"
         dependsOn: [analyze]
 
   # Bounds apply to the whole tree; nested flows inherit them.

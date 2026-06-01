@@ -499,6 +499,46 @@ test('executor sends a task-agnostic system prompt (tool-use protocol) so unmet 
   );
 });
 
+test('a consumer systemPrompt override replaces the default EXECUTOR_SYSTEM', async () => {
+  let firstSystem = '';
+  const llm = {
+    name: 'stub',
+    async chat(messages: Array<{ role: string; content: string }>) {
+      if (!firstSystem)
+        firstSystem = messages.find((m) => m.role === 'system')?.content ?? '';
+      return {
+        ok: true as const,
+        value: {
+          content: 'done',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    },
+  };
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    systemPrompt: 'CONSUMER PROMPT: always read all includes first.',
+  });
+  await exec.execute({
+    prompt: 'do the task',
+    tools: [{ name: 'seed' }],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({}) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.match(
+    firstSystem,
+    /CONSUMER PROMPT: always read all includes first\./,
+  );
+  // The default protocol text must be gone — the override fully replaces it.
+  assert.doesNotMatch(firstSystem, /state in ONE sentence the capability/i);
+});
+
 test('scenario: a multi-fetch sequence writes a SEPARATE knowledge-RAG artifact per tool result', async () => {
   // Mirrors the real review shape (read object → list parts → read each part)
   // with neutral tool names: every tool RESULT must be persisted as its own

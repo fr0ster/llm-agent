@@ -225,6 +225,31 @@ prompt, so on a bare prompt it satisfices on the main object and does NOT read i
 high-level `knowledgeSeed` (a principle, no tool names) to make it thorough. `planned-react` /
 deep also benefit. The agent will not invent domain completeness rules for you.
 
+### System-prompt override (per role)
+
+Besides `knowledgeSeed` (RAG facts + tool-search), a consumer can replace a role's built-in
+**system prompt** outright — the built-in `STEPPER_PLANNER_SYSTEM` / `EXECUTOR_SYSTEM` are kept
+deliberately task-agnostic, and the executor never self-assesses completeness (that is the
+planner's / the 18.1 Evaluator's job):
+
+```yaml
+coordinator:
+  mode: cyclic-react
+  flow:
+    executor:
+      type: cyclic-react
+      systemPrompt: |
+        You complete the task by calling the available tools. Before concluding an
+        analysis or review of an object, ensure you have its COMPLETE content — all
+        of its parts/sub-parts, not only the top level.
+    planner:                       # planned modes
+      type: llm
+      systemPrompt: "<override STEPPER_PLANNER_SYSTEM>"
+```
+
+Omitted → the built-in agnostic defaults are used. Nested `flow.nodes[].flow` may carry its own
+overrides per sub-Stepper. Use `knowledgeSeed`, `systemPrompt`, or both.
+
 ---
 
 ## `coordinator.stepper.*` reference

@@ -85,6 +85,28 @@ coordinator:
   #     - content: "<how an operation is done on your MCP, as DATA>"
   knowledgeSeed: []
 
+  # SYSTEM-PROMPT OVERRIDE (optional). The second consumer lever besides
+  # knowledgeSeed: replace a role's built-in system prompt outright. The defaults
+  # are deliberately TASK-AGNOSTIC (the executor never self-assesses completeness
+  # — that is the planner's / the 18.1 Evaluator's job), so a bare cyclic run
+  # satisfices on the main object. If your deployment WANTS the cheap executor to
+  # carry a domain prerequisite, inject it here instead of editing engine code:
+  #
+  #   flow:
+  #     executor:
+  #       type: cyclic-react
+  #       systemPrompt: |
+  #         You complete the task by calling the available tools. Before
+  #         concluding an analysis or review of an object, ensure you have its
+  #         COMPLETE content — all of its parts/sub-parts, not only the top level.
+  #         If a capability is missing, state in ONE sentence what you still need.
+  #     planner:
+  #       systemPrompt: "<override STEPPER_PLANNER_SYSTEM>"   # planned modes
+  #
+  # Omit → the built-in agnostic defaults are used. (knowledgeSeed steers via RAG
+  # facts + tool-search; systemPrompt replaces the instruction text — use either
+  # or both.)
+
 mcp:
   - type: http
     url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}

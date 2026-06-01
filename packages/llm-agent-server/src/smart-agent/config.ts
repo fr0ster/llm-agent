@@ -1343,6 +1343,10 @@ export interface StepperCompositionSpec {
   nodes?: CompositionNode[];
   executor: 'simple' | 'cyclic-react' | 'recursive';
   finalizer: 'llm';
+  /** Optional system-prompt overrides (consumer-supplied via yaml/builder).
+   *  Undefined → the built-in STEPPER_PLANNER_SYSTEM / EXECUTOR_SYSTEM. */
+  plannerSystemPrompt?: string;
+  executorSystemPrompt?: string;
   reviewerAtDepths: { has(depth: number): boolean };
   maxParallelSteps: number;
   maxDepth: number;
@@ -1395,6 +1399,10 @@ export interface StepperCoordinatorConfig {
      *  loop) | 'recursive' (spawns child Steppers — lazy decomposition). */
     executor: 'simple' | 'cyclic-react' | 'recursive';
     finalizer: 'llm';
+    /** Optional per-role system-prompt overrides:
+     *  `flow.planner.systemPrompt` / `flow.executor.systemPrompt`. */
+    plannerSystemPrompt?: string;
+    executorSystemPrompt?: string;
     /** Declarative plan nodes, required when planner === 'static'. */
     plan?: PlanNode[];
     /**
@@ -1461,8 +1469,12 @@ type FlowBounds = Pick<
 function parseNestedFlowSpec(
   flowCfg:
     | {
-        planner?: { type?: string; granularity?: string };
-        executor?: { type?: string };
+        planner?: {
+          type?: string;
+          granularity?: string;
+          systemPrompt?: string;
+        };
+        executor?: { type?: string; systemPrompt?: string };
         plan?: unknown;
         nodes?: unknown;
       }
@@ -1480,6 +1492,14 @@ function parseNestedFlowSpec(
     throw new Error(
       `flow.executor.type must be simple|cyclic-react (recursive is deferred to 18.1)`,
     );
+  const plannerSystemPrompt = parseSystemPromptOverride(
+    flowCfg?.planner?.systemPrompt,
+    'flow.planner.systemPrompt',
+  );
+  const executorSystemPrompt = parseSystemPromptOverride(
+    flowCfg?.executor?.systemPrompt,
+    'flow.executor.systemPrompt',
+  );
   const plan = parseFlowPlan(flowCfg?.plan);
   const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
   return {
@@ -1491,8 +1511,21 @@ function parseNestedFlowSpec(
     ...(nodes ? { nodes } : {}),
     executor: executor as 'simple' | 'cyclic-react' | 'recursive',
     finalizer: 'llm',
+    ...(plannerSystemPrompt ? { plannerSystemPrompt } : {}),
+    ...(executorSystemPrompt ? { executorSystemPrompt } : {}),
     ...bounds,
   };
+}
+
+/** Validate an optional system-prompt override: must be a non-empty string. */
+function parseSystemPromptOverride(
+  raw: unknown,
+  label: string,
+): string | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (typeof raw !== 'string' || raw.trim() === '')
+    throw new Error(`coordinator.${label} must be a non-empty string`);
+  return raw;
 }
 
 /** Parse composition nodes; a node with a nested `flow` recurses into a sub-spec. */
@@ -1579,8 +1612,12 @@ export function parseStepperCoordinatorConfig(
   const preset = MODE_FLOW_PRESET[mode];
   const flowCfg = coord.flow as
     | {
-        planner?: { type?: string; granularity?: string };
-        executor?: { type?: string };
+        planner?: {
+          type?: string;
+          granularity?: string;
+          systemPrompt?: string;
+        };
+        executor?: { type?: string; systemPrompt?: string };
         finalizer?: { type?: string };
         plan?: unknown;
         nodes?: unknown;
@@ -1604,6 +1641,14 @@ export function parseStepperCoordinatorConfig(
     throw new Error(
       `coordinator.flow.finalizer.type 'passthrough' is not yet implemented (use 'llm')`,
     );
+  const plannerSystemPrompt = parseSystemPromptOverride(
+    flowCfg?.planner?.systemPrompt,
+    'flow.planner.systemPrompt',
+  );
+  const executorSystemPrompt = parseSystemPromptOverride(
+    flowCfg?.executor?.systemPrompt,
+    'flow.executor.systemPrompt',
+  );
   const plan = parseFlowPlan(flowCfg?.plan);
 
   const maxParallelSteps = Number(stepper.maxParallelSteps ?? 4);
@@ -1642,6 +1687,8 @@ export function parseStepperCoordinatorConfig(
       granularity: granularity as 'shallow' | 'detailed',
       executor: executorType as 'simple' | 'cyclic-react' | 'recursive',
       finalizer: 'llm',
+      ...(plannerSystemPrompt ? { plannerSystemPrompt } : {}),
+      ...(executorSystemPrompt ? { executorSystemPrompt } : {}),
       ...(plan ? { plan } : {}),
       ...(nodes ? { nodes } : {}),
     },

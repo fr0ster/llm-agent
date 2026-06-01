@@ -131,6 +131,12 @@ export function toCompositionSpec(
     ...(config.flow.nodes ? { nodes: config.flow.nodes } : {}),
     executor: config.flow.executor,
     finalizer: config.flow.finalizer,
+    ...(config.flow.plannerSystemPrompt
+      ? { plannerSystemPrompt: config.flow.plannerSystemPrompt }
+      : {}),
+    ...(config.flow.executorSystemPrompt
+      ? { executorSystemPrompt: config.flow.executorSystemPrompt }
+      : {}),
     reviewerAtDepths: config.reviewerAtDepths,
     maxParallelSteps: config.maxParallelSteps,
     maxDepth: config.maxDepth,
@@ -248,13 +254,16 @@ export async function buildFromComposition(
   // Leaf executor per spec.executor profile (reuses the shared executor LLM +
   // need-resolver): 'simple' = single pass (maxIter 2); cyclic-react/recursive
   // run the full ReAct loop (maxIter 10).
-  const makeExecutor = (execType: StepperCompositionSpec['executor']) =>
+  const makeExecutor = (s: StepperCompositionSpec) =>
     new CyclicReActExecutor({
       llm: executorLlm,
       callMcp,
       component: 'tool-loop',
-      maxIterations: execType === 'simple' ? 2 : 10,
+      maxIterations: s.executor === 'simple' ? 2 : 10,
       needResolver,
+      ...(s.executorSystemPrompt
+        ? { systemPrompt: s.executorSystemPrompt }
+        : {}),
     });
 
   const trivialPlanner: IStepperPlanner = {
@@ -272,7 +281,7 @@ export async function buildFromComposition(
   // SHARED across the whole tree (shared-ledger invariant); only the planner, the
   // executor profile and the childSteppers vary per (nested) spec.
   const buildNode = (s: StepperCompositionSpec, depth: number): Stepper => {
-    const ex = makeExecutor(s.executor);
+    const ex = makeExecutor(s);
     const childMap = new Map<string, IStepper>();
     const nodes = s.nodes ?? [];
 
@@ -292,7 +301,11 @@ export async function buildFromComposition(
     } else if (s.planner === 'static') {
       planner = new StaticPlanner(s.plan ?? []);
     } else {
-      planner = new LlmStepperPlanner(plannerLlm, s.granularity);
+      planner = new LlmStepperPlanner(
+        plannerLlm,
+        s.granularity,
+        s.plannerSystemPrompt,
+      );
     }
 
     // (a) Structural recursion: declared nested-flow nodes → child Steppers.

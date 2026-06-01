@@ -75,6 +75,27 @@ test('planner queries knowledge-RAG and embeds retrieved facts into the planning
   assert.match(userMsg, /review security/); // task present
 });
 
+test('a consumer systemPrompt override replaces STEPPER_PLANNER_SYSTEM (granularity still appended)', async () => {
+  const { obj, calls } = llm(
+    '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',
+  );
+  const planner = new LlmStepperPlanner(
+    obj as never,
+    'shallow',
+    'CONSUMER PLANNER PROMPT.',
+  );
+  await planner.plan({
+    prompt: 'p',
+    knowledgeRag: ragWith([]) as never,
+    ...BASE,
+  });
+  const sysMsg =
+    calls[0].messages.find((m) => m.role === 'system')?.content ?? '';
+  assert.match(sysMsg, /CONSUMER PLANNER PROMPT\./);
+  assert.doesNotMatch(sysMsg, /recursive Stepper hierarchy/); // default gone
+  assert.match(sysMsg, /GRANULARITY/); // directive still appended
+});
+
 test('planner parses a shallow plan', async () => {
   const { obj } = llm(
     '{"objective":"o","nodes":[{"id":"a","goal":"x","agent":"w"}]}',

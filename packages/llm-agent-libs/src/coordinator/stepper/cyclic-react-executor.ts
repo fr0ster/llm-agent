@@ -26,6 +26,15 @@ export interface CyclicReActExecutorDeps {
    * `execute` input may still override it (tests / per-call tuning).
    */
   needResolver?: INeedResolver;
+  /**
+   * Optional system-prompt override for the executor. Defaults to the
+   * task-agnostic EXECUTOR_SYSTEM. A consumer can override it via
+   * `coordinator.flow.executor.systemPrompt` (yaml) or the builder — e.g. to
+   * inject domain prerequisites for a cheap executor that lacks a smart planner
+   * above it (cyclic mode). Threading it here, not hard-coding domain text in
+   * EXECUTOR_SYSTEM, keeps the default prompt agnostic.
+   */
+  systemPrompt?: string;
 }
 
 /**
@@ -37,6 +46,14 @@ export interface CyclicReActExecutorDeps {
  * utterance is produced, which the tool-definer then turns into a toolsRag
  * re-query. Keep it generic — the runtime is MCP- and task-agnostic.
  */
+// NOTE (18.0): the executor is deliberately TASK-AGNOSTIC and does NOT
+// self-assess completeness. Completeness/prerequisite judgement is the smart
+// model's job — the planner (which now carries a completeness clause) today and
+// the dedicated 18.1 Evaluator tomorrow. A cheap executor (e.g. haiku) told to
+// "ensure the complete artifact" still satisfices (proven live: gi=0), and a
+// task-type clause here breaks the agnostic-prompt invariant. So cyclic ships
+// thin: thoroughness comes from the consumer (a knowledgeSeed / prompt
+// prerequisite) or from a smart planner above it — never from this prompt.
 export const EXECUTOR_SYSTEM = `You complete the task by calling the available tools. If you need a capability the available tools do not provide, or a tool call fails or returns an error / empty / "not found" result, do NOT guess, fabricate, or give a final answer prematurely. Instead, state in ONE sentence the capability you still need (e.g. "I need a tool to <do X>"). Produce your final answer only once you actually have the data the task requires.`;
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
@@ -99,7 +116,10 @@ export class CyclicReActExecutor implements IExecutor {
     }
 
     const messages: Message[] = [
-      { role: 'system', content: `${EXECUTOR_SYSTEM}${taskAnchor}` },
+      {
+        role: 'system',
+        content: `${this.deps.systemPrompt ?? EXECUTOR_SYSTEM}${taskAnchor}`,
+      },
       { role: 'user', content: `${factsPrefix}${prompt}` },
     ];
     const tools: LlmTool[] = [...input.tools];

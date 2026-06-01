@@ -813,6 +813,16 @@ export async function handleDeleteSession(
  *   `pipeline.mcp` or `this.cfg.mcp`). Accepts the union so callers can pass
  *   either directly without pre-normalising.
  */
+/** Deterministic cache key for tool args — stable regardless of key order. */
+function stableArgsKey(args: unknown): string {
+  if (args === null || typeof args !== 'object') return JSON.stringify(args);
+  if (Array.isArray(args)) return JSON.stringify(args.map((v) => v));
+  const obj = args as Record<string, unknown>;
+  const sorted: Record<string, unknown> = {};
+  for (const k of Object.keys(obj).sort()) sorted[k] = obj[k];
+  return JSON.stringify(sorted);
+}
+
 export async function connectMcpClientsFromConfig(
   mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
 ): Promise<IMcpClient[]> {
@@ -1405,8 +1415,27 @@ export class SmartServer {
         }));
 
         const stepperHandler = new StepperCoordinatorHandler({
-          buildBuilt: async (_ctx, logLlmCall) =>
-            buildStepperRoot({
+          buildBuilt: async (_ctx, logLlmCall) => {
+            // Per-RUN MCP result cache. Identical (tool, args) calls within ONE
+            // run reuse the first result instead of re-hitting MCP — fixes the
+            // redundant re-reads we saw in flow (gather → analyze → synthesize
+            // each fetching the same source/includes) and the latency that
+            // caused. Caching the Promise also dedups concurrent identical
+            // calls. Fresh per request → never stale across requests.
+            const runMcpCache = new Map<string, Promise<string>>();
+            const cachedCallMcp = (
+              name: string,
+              args: unknown,
+              signal?: AbortSignal,
+            ): Promise<string> => {
+              const key = `${name}:${stableArgsKey(args)}`;
+              const hit = runMcpCache.get(key);
+              if (hit) return hit;
+              const p = callMcp(name, args, signal);
+              runMcpCache.set(key, p);
+              return p;
+            };
+            return buildStepperRoot({
               coordCfg: rawCoordCfg,
               registry: stepperRegistry,
               subagents: stepperSubagents,
@@ -1417,12 +1446,13 @@ export class SmartServer {
                 return new KnowledgeRag(backend, sid);
               },
               toolsRag: toolsRagHandle,
-              callMcp,
+              callMcp: cachedCallMcp,
               mintStepperId,
               llmMap,
               pipelineFallback,
               logLlmCall,
-            }),
+            });
+          },
           knowledgeRagFor,
           toolsRag: toolsRagHandle,
           mintStepperId,

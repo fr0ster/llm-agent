@@ -109,3 +109,53 @@ test('a leaf node (no nested flow) parses without a flow field', () => {
   });
   assert.equal(c.flow.nodes?.[0]?.flow, undefined);
 });
+
+test('flow.{planner,executor}.systemPrompt overrides thread into the spec', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: {
+      planner: { type: 'llm', systemPrompt: 'PLAN OVERRIDE' },
+      executor: { type: 'cyclic-react', systemPrompt: 'EXEC OVERRIDE' },
+    },
+  });
+  assert.equal(c.flow.plannerSystemPrompt, 'PLAN OVERRIDE');
+  assert.equal(c.flow.executorSystemPrompt, 'EXEC OVERRIDE');
+});
+
+test('omitted systemPrompt leaves the overrides undefined (built-in defaults used)', () => {
+  const c = parseStepperCoordinatorConfig({ mode: 'cyclic-react' });
+  assert.equal(c.flow.plannerSystemPrompt, undefined);
+  assert.equal(c.flow.executorSystemPrompt, undefined);
+});
+
+test('a blank systemPrompt override is rejected (fail loud)', () => {
+  assert.throws(
+    () =>
+      parseStepperCoordinatorConfig({
+        mode: 'cyclic-react',
+        flow: { executor: { type: 'cyclic-react', systemPrompt: '   ' } },
+      }),
+    /flow\.executor\.systemPrompt must be a non-empty string/,
+  );
+});
+
+test('a nested flow carries its own systemPrompt overrides', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: {
+      nodes: [
+        {
+          id: 'analyze',
+          goal: 'analyze',
+          flow: {
+            planner: { type: 'llm', systemPrompt: 'NESTED PLAN' },
+            executor: { type: 'cyclic-react', systemPrompt: 'NESTED EXEC' },
+          },
+        },
+      ],
+    },
+  });
+  const nested = c.flow.nodes?.[0]?.flow;
+  assert.equal(nested?.plannerSystemPrompt, 'NESTED PLAN');
+  assert.equal(nested?.executorSystemPrompt, 'NESTED EXEC');
+});

@@ -101,6 +101,22 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   the executor's blackboard read above, a seeded tool reliably wins over a
   bare-prompt MCP search.
 
+- **Per-role system-prompt override.** `coordinator.flow.planner.systemPrompt`
+  and `coordinator.flow.executor.systemPrompt` (also per nested `flow.nodes[].flow`)
+  replace the built-in `STEPPER_PLANNER_SYSTEM` / `EXECUTOR_SYSTEM`. The defaults
+  stay deliberately task-agnostic — the executor never self-assesses completeness
+  (that is the planner's / the future Evaluator's job) — so a consumer that wants
+  the cheap executor to carry a domain prerequisite injects it here instead of
+  editing engine code. Blank → fail-loud; omitted → built-in default. The builder
+  exposes the same override via the `LlmStepperPlanner` / `CyclicReActExecutor`
+  constructors (front-end parity).
+
+- **Per-run MCP result cache (flow speed-up).** Identical `(tool, args)` calls
+  within one run reuse the first result, so a declared gather→analyze→synthesize
+  `flow` no longer re-reads the same sources at each stage. Cuts a representative
+  flow run from ~445s to ~263s while reading all parts. (Full dataflow along
+  `dependsOn` so analyze never re-reads is the 18.1 work.)
+
 ### Changed
 
 - **`DagCoordinatorHandler` deprecated.** Existing YAML configs without an

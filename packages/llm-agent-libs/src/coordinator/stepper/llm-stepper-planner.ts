@@ -10,7 +10,12 @@ import type {
 import { renderTaskSpec } from '@mcp-abap-adt/llm-agent';
 import { parseDagPlan } from '../dag/llm-dag-planner.js';
 
+// NOTE (18.0 workaround): the COMPLETENESS clause below is a SOFT stand-in for
+// the dedicated 18.1 Evaluator (judging prompt/plan completeness WITH the RAG
+// context, routing executable / needs-work / needs-consumer). When the Evaluator
+// lands, this clause may DOUBLE-JUDGE / conflict — revisit then.
 export const STEPPER_PLANNER_SYSTEM = `You are a planner in a recursive Stepper hierarchy. Decompose the task into a SHALLOW DAG of steps.
+COMPLETENESS: first assess whether the task states everything needed to execute it. If a prerequisite is implied but not stated — e.g. an analysis/review needs the COMPLETE artifact (all of its parts/sub-parts), not only its top level — add explicit steps to obtain it FIRST. Use the "Known facts" to decide what "complete" means for this domain.
 RAG-FIRST: the "Known facts" section lists what is already in the shared knowledge store. If a fact you need is already there, DO NOT add a step to re-fetch it — use it. Only add a step to obtain information that is genuinely missing.
 FETCH STEPS — NOT needInfo: Workers can read the live system by calling the tools listed in the "Available tools" section below. For ANY data a worker could fetch (program source, includes, table contents, object metadata, search results), emit a fetch STEP whose goal names the fetch — NEVER use needInfo for fetchable data.
 DECOMPOSE TO CONCRETE LEAVES: if a task is achievable by ONE tool call, emit a single-step plan whose goal is that concrete leaf call — do NOT re-emit the parent's task verbatim (that causes infinite recursion). Each node spawns a fresh worker that does NOT share your context; over-decomposition multiplies cost.
@@ -35,13 +40,19 @@ export class LlmStepperPlanner implements IStepperPlanner {
   readonly name = 'llm-stepper';
   readonly model?: string;
   private readonly granularity: 'shallow' | 'detailed';
+  /** Base system prompt; a consumer may override STEPPER_PLANNER_SYSTEM via
+   *  `coordinator.flow.planner.systemPrompt` (yaml) or the builder. The
+   *  granularity directive is still appended to whatever base is used. */
+  private readonly systemPrompt: string;
 
   constructor(
     private readonly llm: ILlm,
     granularity: 'shallow' | 'detailed' = 'shallow',
+    systemPrompt: string = STEPPER_PLANNER_SYSTEM,
   ) {
     this.model = llm.model;
     this.granularity = granularity;
+    this.systemPrompt = systemPrompt;
   }
 
   async plan(input: {
@@ -96,7 +107,7 @@ export class LlmStepperPlanner implements IStepperPlanner {
       [
         {
           role: 'system',
-          content: `${STEPPER_PLANNER_SYSTEM}${GRANULARITY_DIRECTIVE[this.granularity]}`,
+          content: `${this.systemPrompt}${GRANULARITY_DIRECTIVE[this.granularity]}`,
         },
         { role: 'user', content: user },
       ] as never,
