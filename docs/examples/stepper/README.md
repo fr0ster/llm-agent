@@ -1,14 +1,19 @@
 # Recursive Stepper — per-role configurations (18.0)
 
-Three production-shaped examples for the recursive Stepper coordinator introduced
-in release **18.0.0**. Every example sets `coordinator.mode` + a full
+Production-shaped examples for the Stepper coordinator introduced in release
+**18.0.0**. Every example sets `coordinator.mode` (or `coordinator.flow`) + a
 `coordinator.stepper.*` block.
 
 | File | Mode | Use it for |
 |---|---|---|
 | [`01-cyclic-react.yaml`](./01-cyclic-react.yaml) | `cyclic-react` | Bounded tasks; single executor loop, no planning overhead. |
 | [`02-planned-react.yaml`](./02-planned-react.yaml) | `planned-react` | Multi-step tasks; LLM planner + parallel Stepper workers + knowledge-RAG blackboard. |
-| [`03-deep-stepper.yaml`](./03-deep-stepper.yaml) | `deep-stepper` | Hierarchical tasks; each Stepper can recursively spawn child Steppers up to `maxDepth`. |
+| [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Compose directly; granularity × executor knobs + a nested composition tree. |
+
+> The recursive `deep-stepper` mode (and `flow.executor: recursive`) is **not
+> shipped in 18.0** — its recursive control runs away; both are rejected by config
+> parsing. Hardening (Evaluator + identity-dedup + dependsOn-dataflow) is the 18.1
+> work. Declared structural recursion via nested `flow.nodes` is available.
 | [`04-flow-composition.yaml`](./04-flow-composition.yaml) | _(explicit `flow`)_ | Describe the composition directly (no `mode`): the `planner.granularity` × `executor.type` knobs + a NESTED composition tree (a node nests its own `flow` = a sub-cycle). |
 
 `worker.yaml` is the shared subagent pipeline referenced by the coordinator yamls.
@@ -22,8 +27,8 @@ Stepper executor dispatches steps to.
 
 - **`flow.planner`** — `{ type: none | llm | static, granularity: shallow | detailed }`.
   `granularity` is the eager-decomposition knob (how much the LLM planner decomposes up front).
-- **`flow.executor`** — `{ type: simple | cyclic-react | recursive }`. `simple` = single pass;
-  `cyclic-react` = ReAct loop; `recursive` = spawns child Steppers (runtime/lazy recursion).
+- **`flow.executor`** — `{ type: simple | cyclic-react }`. `simple` = single pass;
+  `cyclic-react` = ReAct loop. (`recursive` is deferred to 18.1.)
 - **`flow.reviewer` / `flow.finalizer`** — orchestration phases.
 - **`flow.nodes`** — a declared composition TREE. A node is a leaf (`id`, `goal`, `dependsOn`)
   or nests its own `flow` → a **child Stepper / sub-cycle** (structural recursion, visible in
@@ -35,7 +40,7 @@ analysis/orchestration intents, not tool calls.
 
 ---
 
-## The three modes
+## The modes
 
 ### `cyclic-react` — tight executor loop
 
@@ -61,16 +66,15 @@ Best for: multi-dimension analyses, broad reviews, tasks whose scope is clear
 upfront. The most common production shape: flagship model for planning + cheap
 model for execution.
 
-### `deep-stepper` — recursive multi-level hierarchy
-
-Each Stepper can itself plan and spawn child Steppers, building a recursive
-execution tree up to `coordinator.stepper.maxDepth`. Every level shares the
-same per-session knowledge-RAG blackboard, so a grandchild can read artefacts
-written by its uncle. The root finalizer synthesizes the full accumulated tree.
-
-Best for: hierarchical tasks (system review → package → object → function),
-long-horizon discovery tasks where intermediate findings open new questions.
-Wider token budgets and tighter `maxParallelSteps` are recommended.
+> ### `deep-stepper` — recursive multi-level hierarchy _(deferred to 18.1)_
+>
+> A future mode where each Stepper plans and spawns child Steppers up to
+> `maxDepth`. NOT shipped in 18.0 — its recursive control runs away (re-plans
+> overlapping sub-goals; no identity-dedup); `mode: deep-stepper` and
+> `flow.executor: recursive` are rejected by config parsing. The hardening
+> (Evaluator that judges prompt completeness WITH RAG context, identity-keyed
+> blackboard dedup, dataflow along `dependsOn`, layered decomposition) is 18.1.
+> Declared structural recursion via nested `flow.nodes` is available today.
 
 ---
 

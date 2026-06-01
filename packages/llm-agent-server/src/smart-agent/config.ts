@@ -1310,7 +1310,10 @@ export function resolveSmartServerConfig(
 /**
  * Stepper coordinator modes.
  */
-export type StepperMode = 'cyclic-react' | 'deep-stepper' | 'planned-react';
+// `deep-stepper` is NOT shipped in 18.0 (its recursive control runs away — see
+// the 18.1 design: Evaluator + identity-dedup + dependsOn-dataflow). It is
+// rejected by parsing; structural recursion via nested `flow.nodes` remains.
+export type StepperMode = 'cyclic-react' | 'planned-react';
 
 /**
  * Configuration for the recursive Stepper coordinator.
@@ -1403,23 +1406,18 @@ export interface StepperCoordinatorConfig {
   };
 }
 
-const MODES = new Set<StepperMode>([
-  'cyclic-react',
-  'deep-stepper',
-  'planned-react',
-]);
+const MODES = new Set<StepperMode>(['cyclic-react', 'planned-react']);
 
 /**
- * Preset expansion: each legacy `mode` maps to a default `flow` composition.
+ * Preset expansion: each `mode` maps to a default `flow` composition.
  * An explicit `coordinator.flow` block overrides these per-component.
  */
 const MODE_FLOW_PRESET: Record<
   StepperMode,
-  { planner: 'none' | 'llm'; executor: 'cyclic-react' | 'recursive' }
+  { planner: 'none' | 'llm'; executor: 'cyclic-react' }
 > = {
   'cyclic-react': { planner: 'none', executor: 'cyclic-react' },
   'planned-react': { planner: 'llm', executor: 'cyclic-react' },
-  'deep-stepper': { planner: 'llm', executor: 'recursive' },
 };
 
 /** Parse declarative `flow.plan` nodes (for the static planner). */
@@ -1478,8 +1476,10 @@ function parseNestedFlowSpec(
   if (!['shallow', 'detailed'].includes(granularity))
     throw new Error(`flow.planner.granularity must be shallow|detailed`);
   const executor = flowCfg?.executor?.type ?? 'cyclic-react';
-  if (!['simple', 'cyclic-react', 'recursive'].includes(executor))
-    throw new Error(`flow.executor.type must be simple|cyclic-react|recursive`);
+  if (!['simple', 'cyclic-react'].includes(executor))
+    throw new Error(
+      `flow.executor.type must be simple|cyclic-react (recursive is deferred to 18.1)`,
+    );
   const plan = parseFlowPlan(flowCfg?.plan);
   const nodes = parseCompositionNodes(flowCfg?.nodes, bounds);
   return {
@@ -1525,7 +1525,7 @@ function parseCompositionNodes(
  * Parse stepper coordinator configuration from a raw config object.
  *
  * Supports:
- * - `mode` (string) — default 'planned-react'; must be one of cyclic-react, deep-stepper, planned-react
+ * - `mode` (string) — default 'planned-react'; one of cyclic-react | planned-react
  * - `stepper.maxParallelSteps` (number) — default 4
  * - `stepper.maxDepth` (number) — default 4
  * - `stepper.tokenBudget` (number) — default 1,000,000
@@ -1595,9 +1595,9 @@ export function parseStepperCoordinatorConfig(
       `coordinator.flow.planner.granularity must be shallow|detailed`,
     );
   const executorType = flowCfg?.executor?.type ?? preset.executor;
-  if (!['simple', 'cyclic-react', 'recursive'].includes(executorType))
+  if (!['simple', 'cyclic-react'].includes(executorType))
     throw new Error(
-      `coordinator.flow.executor.type must be simple|cyclic-react|recursive`,
+      `coordinator.flow.executor.type must be simple|cyclic-react (recursive is deferred to 18.1)`,
     );
   const finalizerType = flowCfg?.finalizer?.type ?? 'llm';
   if (finalizerType !== 'llm')

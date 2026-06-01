@@ -1,5 +1,5 @@
 # Planned-ReAct Stepper — default mode (same planning step as the DAG coordinator,
-# but workers become recursive Steppers instead of flat subagents).
+# but workers are Steppers running their own CyclicReAct executor).
 #
 # The planner decomposes the request into named steps that are scheduled by the
 # StepperInterpreter. Each child Stepper runs its own CyclicReAct executor and

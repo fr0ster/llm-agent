@@ -129,62 +129,6 @@ const perRoleLlmMap = {
   },
 };
 
-test('Finding 1: deep-stepper builds recursive child Steppers from subagents and the interpreter recurses into them', async () => {
-  // The planner returns a plan that delegates to the 'analyst' worker every
-  // time; with maxDepth=2 recursion engages then bottoms out at the executor
-  // leaf. We assert a 'stepper-spawned' event names the CHILD ('analyst') —
-  // proving the registry was populated and the interpreter recursed, rather
-  // than falling straight to the executor (the Finding-1 bug).
-  const delegatingLlm = {
-    name: 'stub',
-    model: 'm',
-    async chat() {
-      return {
-        ok: true as const,
-        value: {
-          // valid as a planner plan (delegates to analyst) AND a reviewer
-          // verdict (pass:true); the executor treats it as a final answer.
-          content:
-            '{"pass":true,"objective":"o","nodes":[{"id":"a","goal":"analyze","agent":"analyst"}]}',
-          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
-        },
-      };
-    },
-    async *streamChat() {
-      yield {
-        ok: true as const,
-        value: { content: 'done', finishReason: 'stop' },
-      };
-    },
-  };
-
-  const built = await buildStepperRoot({
-    ...baseInput,
-    coordCfg: { mode: 'deep-stepper', stepper: { maxDepth: 2 } },
-    makeLlm: async () => delegatingLlm as never,
-    subagents: [{ name: 'analyst', description: 'analyzes ABAP objects' }],
-  } as never);
-
-  const spawned: string[] = [];
-  await built.rootStepper.run({
-    prompt: 'review program Z',
-    knowledgeRag: baseInput.knowledgeRagFor() as never,
-    toolsRag: baseInput.toolsRag as never,
-    budget: built.budget as never,
-    identity: { traceId: 't', turnId: 'u', sessionId: 's', stepperId: 'root' },
-    onProgress: (e: { kind: string; source?: { name?: string } }) => {
-      if (e.kind === 'stepper-spawned' && e.source?.name) {
-        spawned.push(e.source.name);
-      }
-    },
-  } as never);
-
-  assert.ok(
-    spawned.includes('analyst'),
-    `interpreter must recurse into the 'analyst' child Stepper; spawned: ${spawned.join(',') || '(none)'}`,
-  );
-});
-
 test('Finding 2: shared token ledger is charged by NON-executor roles too (planner/reviewer/tool-definer), not just the executor', async () => {
   // Every LLM call (chat or streamChat) spends exactly 100 total tokens and bumps
   // a shared counter. After a full planned-react run the ledger must have been

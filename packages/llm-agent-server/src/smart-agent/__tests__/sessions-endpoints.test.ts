@@ -334,7 +334,7 @@ test('DELETE evictFn is a no-op for missing JSONL (force:true, no error)', async
 // ---------------------------------------------------------------------------
 
 test('usesStepper gates on raw coordinator.mode, not on the defaulted parse', () => {
-  assert.equal(usesStepper({ mode: 'deep-stepper' }), true);
+  assert.equal(usesStepper({ mode: 'cyclic-react' }), true);
   assert.equal(usesStepper({ planner: { type: 'llm' } }), false); // legacy 17.0 → Dag path
   assert.equal(usesStepper({}), false);
   assert.equal(usesStepper(undefined), false);

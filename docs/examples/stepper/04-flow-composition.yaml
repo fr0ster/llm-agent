@@ -1,6 +1,6 @@
 # Flow composition — describe the coordinator's program EXPLICITLY (no `mode`).
 #
-# `mode` (cyclic-react / planned-react / deep-stepper) is just a PRESET that
+# `mode` (cyclic-react / planned-react) is just a PRESET that
 # expands to a `coordinator.flow`. This example writes the flow directly, which
 # also unlocks two things the mode presets cannot express:
 #   1. the planner.granularity x executor.type knobs, and
