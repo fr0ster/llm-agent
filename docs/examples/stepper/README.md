@@ -31,26 +31,26 @@ Stepper executor dispatches steps to.
   `cyclic-react` = ReAct loop. (`recursive` is deferred to 18.1.)
 - **`flow.reviewer` / `flow.finalizer`** — orchestration phases.
 - **`flow.nodes`** — a declared composition TREE. A node is a leaf (`id`, `goal`, `dependsOn`)
-  or nests its own `flow` → a **child Stepper / sub-cycle** (structural recursion, visible in
-  yaml). A level with `nodes` is static over them (the nodes ARE the plan).
+  or nests its own `flow` → a child Stepper. A level with `nodes` is static over them (the nodes
+  ARE the plan). This is a **FINITE** tree (you write N levels and stop) — NOT recursion.
 
-### Declared vs dynamic recursion
+### Finite composition vs recursion
 
-A `flow` is **declarative — the yaml controls everything**, recursion included. If you need
-recursion, you DECLARE it as nested `flow.nodes`:
+A `flow` is declarative — the yaml controls everything. But **recursion cannot be expressed as a
+finite yaml structure**: recursion is unbounded self-similar expansion to a termination condition,
+and its depth is unknown at config time (data-dependent). Nesting `flow.nodes` only gives a
+FIXED, finite tree.
 
-| | Declared (structural) | Dynamic (runtime) |
+| | Finite composition (`flow.nodes`) | Recursion |
 |---|---|---|
-| Who decides the tree | the operator, in yaml | the LLM, at runtime |
-| When | config time (fixed) | during execution (generated) |
-| Visible in yaml | yes | no (only in the trace) |
-| Determinism | same yaml → same tree | same yaml → different tree each run |
-| Mechanism | `buildNode` recurses on a node's nested `flow` | `executor: recursive` spawns children at runtime |
-| 18.0 | shipped (see `04-flow-composition.yaml`) | deferred to 18.1 (it ran away — `executor: recursive` and `mode: deep-stepper` are rejected by parsing) |
+| What yaml holds | the exact N-level tree | at most a FLAG ("recurse here") + maxDepth, or a named-flow self-reference |
+| Expansion | none — it IS the tree | RUNTIME (a node spawns a same-shaped child until termination) |
+| Depth | fixed, written by hand | unknown at config time; bounded by maxDepth + the termination check |
+| 18.0 | shipped (`04-flow-composition.yaml` is a finite 2-level tree) | NOT shipped — `executor: recursive` / `mode: deep-stepper` are rejected by parsing |
 
-In short: in a `flow`, recursion is whatever you nested in the yaml — nothing recurses on its
-own. Runtime/generative recursion (the LLM deciding to spawn children) is the deep-stepper
-paradigm, deferred to 18.1.
+So in 18.0 a `flow` gives **finite declared trees only**. True recursion (a node flag /
+self-reference + runtime expansion + a termination condition) is the 18.1 work — it needs the
+Evaluator (the termination judge) and identity-keyed dedup so it does not run away.
 
 Domain operations (fetch source, read includes, run a check) are **never** declared in `flow` —
 the planner/executor obtain data via the consumer's RAG skills (`knowledgeSeed`). Nodes are
