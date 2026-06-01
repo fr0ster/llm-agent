@@ -189,6 +189,22 @@ it belongs in the tool-RAG layer (which tools are discoverable), not at executio
 
 ---
 
+## Gnostification is the consumer's responsibility
+
+The engine is **agnostic** — it hardcodes no tool names and no domain procedures. Making it
+thorough for YOUR MCP/domain is **the consumer's job**, supplied as DATA via `coordinator.
+knowledgeSeed` (and/or skills): procedural "how an operation is done" records — e.g. *"for a code
+review, work from the full source including all includes"* (no tool names needed), or *"the
+security checks are X/Y/Z, else fetch them from resource R"*. These are surfaced to the
+planner/executor as facts and enrich tool-search.
+
+This matters most for **`cyclic-react`**, which has NO planner — the single executor runs the raw
+prompt, so on a bare prompt it satisfices on the main object and does NOT read includes. Add a
+high-level `knowledgeSeed` (a principle, no tool names) to make it thorough. `planned-react` /
+deep also benefit. The agent will not invent domain completeness rules for you.
+
+---
+
 ## `coordinator.stepper.*` reference
 
 | Key | Type | Default | Description |

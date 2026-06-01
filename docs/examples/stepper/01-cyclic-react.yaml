@@ -73,14 +73,16 @@ coordinator:
   # gate. The agent calls whatever the server exposes via tools/list; safety is the
   # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
 
-  # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
-  # EMPTY to stay MCP-agnostic — the agent assumes nothing about your MCP's
-  # tools. Fill per deployment with rules for the tools YOUR MCP exposes (which
-  # tool reads source, which lists/reads sub-objects). The executor surfaces
-  # these as facts and prioritises the named tools over a bare-prompt tool
-  # search. Example shape (do NOT ship tool-specific rules in agnostic configs):
+  # GNOSTIFICATION IS THE CONSUMER'S RESPONSIBILITY. cyclic-react has NO planner
+  # (single executor over the raw prompt), so thoroughness/“how” comes ONLY from
+  # the consumer's RAG skills here. The agent stays agnostic; YOU supply, per
+  # deployment, the procedural knowledge for YOUR MCP — e.g. "for a code review,
+  # work from the FULL source including all includes" (no tool names needed) or
+  # "to read an include body use <your tool>". Surfaced as facts + used to enrich
+  # the executor's tool-search. Left EMPTY = agnostic default (a bare "review
+  # program X" then satisfices on the main shell — see docs).
   #   knowledgeSeed:
-  #     - content: "<which tool reads what, for your MCP>"
+  #     - content: "<how an operation is done on your MCP, as DATA>"
   knowledgeSeed: []
 
 mcp:
