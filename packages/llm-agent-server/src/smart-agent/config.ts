@@ -1347,6 +1347,11 @@ export interface StepperCompositionSpec {
    *  Undefined → the built-in STEPPER_PLANNER_SYSTEM / EXECUTOR_SYSTEM. */
   plannerSystemPrompt?: string;
   executorSystemPrompt?: string;
+  /** 18.1 Evaluator: ON by default at all depths. Judges (sub-)prompt
+   *  completeness WITH the RAG context before planning. */
+  evaluatorEnabled: boolean;
+  evaluatorAtDepths: { has(depth: number): boolean };
+  evaluatorSystemPrompt?: string;
   reviewerAtDepths: { has(depth: number): boolean };
   maxParallelSteps: number;
   maxDepth: number;
@@ -1403,6 +1408,11 @@ export interface StepperCoordinatorConfig {
      *  `flow.planner.systemPrompt` / `flow.executor.systemPrompt`. */
     plannerSystemPrompt?: string;
     executorSystemPrompt?: string;
+    /** 18.1 Evaluator (ON by default at all depths). Configure via
+     *  `flow.evaluator: { enabled?, atDepths?, systemPrompt? }`. */
+    evaluatorEnabled: boolean;
+    evaluatorAtDepths: { has(depth: number): boolean };
+    evaluatorSystemPrompt?: string;
     /** Declarative plan nodes, required when planner === 'static'. */
     plan?: PlanNode[];
     /**
@@ -1455,6 +1465,9 @@ function parseFlowPlan(raw: unknown): PlanNode[] | undefined {
 type FlowBounds = Pick<
   StepperCompositionSpec,
   | 'reviewerAtDepths'
+  | 'evaluatorEnabled'
+  | 'evaluatorAtDepths'
+  | 'evaluatorSystemPrompt'
   | 'maxParallelSteps'
   | 'maxDepth'
   | 'tokenBudget'
@@ -1619,6 +1632,11 @@ export function parseStepperCoordinatorConfig(
         };
         executor?: { type?: string; systemPrompt?: string };
         finalizer?: { type?: string };
+        evaluator?: {
+          enabled?: boolean;
+          atDepths?: number[] | 'all';
+          systemPrompt?: string;
+        };
         plan?: unknown;
         nodes?: unknown;
       }
@@ -1649,6 +1667,21 @@ export function parseStepperCoordinatorConfig(
     flowCfg?.executor?.systemPrompt,
     'flow.executor.systemPrompt',
   );
+  // 18.1 Evaluator: ON by default at all depths (per design). Disable via
+  // `flow.evaluator.enabled: false`; narrow via `flow.evaluator.atDepths`.
+  const evaluatorEnabled = flowCfg?.evaluator?.enabled !== false;
+  const evalAtDepths = flowCfg?.evaluator?.atDepths ?? 'all';
+  const evaluatorAtDepths =
+    evalAtDepths === 'all'
+      ? { has: () => true }
+      : (() => {
+          const s = new Set(evalAtDepths as number[]);
+          return { has: (d: number) => s.has(d) };
+        })();
+  const evaluatorSystemPrompt = parseSystemPromptOverride(
+    flowCfg?.evaluator?.systemPrompt,
+    'flow.evaluator.systemPrompt',
+  );
   const plan = parseFlowPlan(flowCfg?.plan);
 
   const maxParallelSteps = Number(stepper.maxParallelSteps ?? 4);
@@ -1660,6 +1693,9 @@ export function parseStepperCoordinatorConfig(
   // parallelism / depth / budget / safety unless the runtime threads otherwise).
   const bounds: FlowBounds = {
     reviewerAtDepths,
+    evaluatorEnabled,
+    evaluatorAtDepths,
+    ...(evaluatorSystemPrompt ? { evaluatorSystemPrompt } : {}),
     maxParallelSteps,
     maxDepth,
     tokenBudget,
@@ -1689,6 +1725,9 @@ export function parseStepperCoordinatorConfig(
       finalizer: 'llm',
       ...(plannerSystemPrompt ? { plannerSystemPrompt } : {}),
       ...(executorSystemPrompt ? { executorSystemPrompt } : {}),
+      evaluatorEnabled,
+      evaluatorAtDepths,
+      ...(evaluatorSystemPrompt ? { evaluatorSystemPrompt } : {}),
       ...(plan ? { plan } : {}),
       ...(nodes ? { nodes } : {}),
     },

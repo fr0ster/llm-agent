@@ -23,6 +23,7 @@ export const CATEGORY_MAP: Record<LlmComponent, TokenCategory> = {
   helper: 'auxiliary',
   embedding: 'initialization',
   planner: 'auxiliary',
+  evaluator: 'auxiliary',
   reviewer: 'auxiliary',
   finalizer: 'auxiliary',
   oracle: 'auxiliary',

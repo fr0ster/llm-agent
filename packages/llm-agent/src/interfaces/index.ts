@@ -32,6 +32,11 @@ export type {
   ErrorReaction,
   IErrorStrategy,
 } from './error-strategy.js';
+export type {
+  EvaluatorRoute,
+  EvaluatorVerdict,
+  IEvaluator,
+} from './evaluator.js';
 export type { IExecutor } from './executor.js';
 export type {
   FinalizerInput,

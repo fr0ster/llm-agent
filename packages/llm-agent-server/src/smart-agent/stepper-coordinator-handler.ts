@@ -1,4 +1,5 @@
 import {
+  ClarifySignal,
   type IKnowledgeRagHandle,
   InsufficientSignal,
   type ISpan,
@@ -158,10 +159,37 @@ export class StepperCoordinatorHandler implements IStageHandler {
         },
       });
 
+    // Surface a clarify question to the consumer (content chunk + terminal stop
+    // chunk with usage). Shared by the NeedInfoSignal and the Evaluator
+    // (ClarifySignal / needs-consumer) paths.
+    const surfaceClarify = (question: string): void => {
+      ctx.options?.sessionLogger?.logStep('coordinator_clarify', { question });
+      ctx.yield({
+        ok: true,
+        value: { content: `To proceed, please provide: ${question}` },
+      });
+      const usageNeed = traceId
+        ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
+        : undefined;
+      ctx.yield({
+        ok: true,
+        value: {
+          content: '',
+          finishReason: 'stop',
+          ...(usageNeed ? { usage: usageNeed } : {}),
+        },
+      });
+    };
+
     let result: IStepperResult;
     try {
       result = await runOnce(ctx.inputText);
     } catch (firstErr) {
+      // Evaluator needs-consumer (ClarifySignal) → surface immediately.
+      if (firstErr instanceof ClarifySignal) {
+        surfaceClarify(firstErr.question);
+        return true;
+      }
       if (!(firstErr instanceof NeedInfoSignal)) throw firstErr;
 
       // First NeedInfoSignal: retry with guidance so planner plans a fetch step.
@@ -169,27 +197,14 @@ export class StepperCoordinatorHandler implements IStageHandler {
       try {
         result = await runOnce(guidedPrompt);
       } catch (secondErr) {
+        if (secondErr instanceof ClarifySignal) {
+          surfaceClarify(secondErr.question);
+          return true;
+        }
         if (!(secondErr instanceof NeedInfoSignal)) throw secondErr;
 
         // Second NeedInfoSignal: surface as clarify content to the consumer.
-        ctx.options?.sessionLogger?.logStep('coordinator_clarify', {
-          question: secondErr.query,
-        });
-        ctx.yield({
-          ok: true,
-          value: { content: `To proceed, please provide: ${secondErr.query}` },
-        });
-        const usageNeed = traceId
-          ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
-          : undefined;
-        ctx.yield({
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'stop',
-            ...(usageNeed ? { usage: usageNeed } : {}),
-          },
-        });
+        surfaceClarify(secondErr.query);
         return true;
       }
     }

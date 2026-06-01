@@ -213,9 +213,14 @@ test('bridge dispatched through buildStepperRoot: tool result reaches knowledgeR
   // Build the stepper root using the real buildMcpBridge
   const callMcp = buildMcpBridge([client]);
   const built = await buildStepperRoot({
-    // reviewer.atDepths=[] → reviewer is never invoked; this test focuses on
-    // the MCP bridge, not reviewer behaviour.
-    coordCfg: { mode: 'cyclic-react', stepper: { reviewer: { atDepths: [] } } },
+    // reviewer.atDepths=[] → reviewer is never invoked; evaluator disabled —
+    // this test focuses on the MCP bridge, not reviewer/Evaluator behaviour
+    // (the Evaluator would otherwise consume the first scripted LLM response).
+    coordCfg: {
+      mode: 'cyclic-react',
+      flow: { evaluator: { enabled: false } },
+      stepper: { reviewer: { atDepths: [] } },
+    },
     registry: new Map(),
     makeLlm: async () => stubLlm as never,
     knowledgeRagFor: () => knowledgeRag as never,

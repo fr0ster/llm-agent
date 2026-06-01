@@ -199,6 +199,15 @@ Must prove:
 3. **flow** re-verified after identity-keyed reads: analyze never re-reads.
 4. No regression in DAG / the 18.0 green test suites.
 
+Prompts to run (each pipeline, full answer saved separately + COMPARISON):
+- **A. Old review prompt:** `Review ABAP program ZDAZ_R_DELAYED_UPDATE, check security, performance,
+  CleanCore, maintainability` — must now read all 6 includes via the Evaluator (vs 18.0 gi=0 bare).
+- **B. Create-class prompt:** describe creating a `hello_world`-style class in the `$TMP` package
+  (a WRITE/mutation task). Exercises: (i) no agent-side mutation gate (the MCP server permits the
+  write); (ii) the Evaluator routing — likely `executable` (well-specified) or `needs-consumer` if
+  essential params are missing; (iii) the executor actually emitting the create tool call. Confirms
+  the agent does not refuse/hallucinate a write it is allowed to perform.
+
 ## Build order & dependencies
 
 ```
@@ -211,16 +220,23 @@ Phase 5 (reviewer completeness) ────┘
 Phase 1 first (spine). Phase 2 before Phase 4 (recursion needs dedup). Phases 3 & 5 are
 independently valuable and can land in any order after Phase 1.
 
-## Open questions (resolve during planning)
+## Decisions (resolved 2026-06-01)
 
-1. **Clarify plumbing for `needs-consumer`:** reuse the existing `ClarifySignal` / budget-extension
-   path, or a dedicated `IStepperResult.status: 'clarify'`? (Lean: extend the existing signal.)
-2. **Evaluator default for cyclic:** off by default (cyclic stays thin, consumer-driven) or on?
-   (Lean: off for `mode: cyclic-react`; on for planned/deep — confirm with user.)
-3. **Hard vs soft gather/analyze tool-gating** (Phase 3): refuse fetch tools on analyze nodes, or
-   only steer via context + prompt? (Lean: soft first, measure.)
-4. **One Evaluator LLM role or reuse `planner`?** (Lean: its own `evaluator` role → `main`, so a
-   deployment can point it at a strong model independently.)
+1. **Clarify plumbing for `needs-consumer`:** reuse the existing `ClarifySignal` — `Stepper.run`
+   throws it; the coordinator handler surfaces it as a clarify response. ✅ DONE (Phase 1).
+2. **Evaluator default:** **ON in ALL modes** (cyclic + planned + deep), `atDepths: 'all'`.
+   Disable via `coordinator.flow.evaluator.enabled: false`; narrow via `…atDepths`. ✅ DONE.
+3. **Hard vs soft gather/analyze tool-gating** (Phase 3): soft first, measure. (Open — Phase 3.)
+4. **Evaluator LLM role:** its OWN `evaluator` role → `main` fallback. ✅ DONE.
+
+## Phase 1 status — DONE (2026-06-01)
+
+`IEvaluator`/`EvaluatorVerdict` + `LlmEvaluator`/`EVALUATOR_SYSTEM` + `parseVerdict`; `Stepper.run`
+routing (executable → single-node interpret; needs-work → planner with gap prerequisites;
+needs-consumer → `ClarifySignal`); `coordinator.flow.evaluator` config (enabled/atDepths/systemPrompt,
+ON by default, nested-inherited); build wires a shared `LlmEvaluator` (role `evaluator`); handler
+surfaces `ClarifySignal`. The 18.0 soft completeness clause REMOVED from `STEPPER_PLANNER_SYSTEM`
+(Evaluator owns it). libs 623 / server 286 green; lint clean. Phases 2–5 still pending.
 
 ## Decisions already fixed (do NOT re-litigate)
 

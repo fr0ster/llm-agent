@@ -1,5 +1,10 @@
 export { CyclicReActExecutor } from './cyclic-react-executor.js';
 export {
+  EVALUATOR_SYSTEM,
+  LlmEvaluator,
+  parseVerdict,
+} from './llm-evaluator.js';
+export {
   LlmStepperPlanner,
   STEPPER_PLANNER_SYSTEM,
 } from './llm-stepper-planner.js';

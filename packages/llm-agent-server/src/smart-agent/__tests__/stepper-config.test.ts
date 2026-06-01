@@ -139,6 +139,43 @@ test('a blank systemPrompt override is rejected (fail loud)', () => {
   );
 });
 
+test('Evaluator is ON by default at all depths', () => {
+  const c = parseStepperCoordinatorConfig({ mode: 'planned-react' });
+  assert.equal(c.flow.evaluatorEnabled, true);
+  assert.equal(c.flow.evaluatorAtDepths.has(0), true);
+  assert.equal(c.flow.evaluatorAtDepths.has(5), true);
+});
+
+test('flow.evaluator can be disabled and narrowed to depths + systemPrompt override', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: {
+      evaluator: {
+        enabled: false,
+        atDepths: [0],
+        systemPrompt: 'EVAL OVERRIDE',
+      },
+    },
+  });
+  assert.equal(c.flow.evaluatorEnabled, false);
+  assert.equal(c.flow.evaluatorAtDepths.has(0), true);
+  assert.equal(c.flow.evaluatorAtDepths.has(1), false);
+  assert.equal(c.flow.evaluatorSystemPrompt, 'EVAL OVERRIDE');
+});
+
+test('a nested flow inherits the evaluator settings', () => {
+  const c = parseStepperCoordinatorConfig({
+    mode: 'planned-react',
+    flow: {
+      evaluator: { enabled: false },
+      nodes: [
+        { id: 'analyze', goal: 'analyze', flow: { planner: { type: 'llm' } } },
+      ],
+    },
+  });
+  assert.equal(c.flow.nodes?.[0]?.flow?.evaluatorEnabled, false);
+});
+
 test('a nested flow carries its own systemPrompt overrides', () => {
   const c = parseStepperCoordinatorConfig({
     mode: 'planned-react',

@@ -1,4 +1,5 @@
 import {
+  type IEvaluator,
   type IKnowledgeRagHandle,
   type ILlm,
   type IReviewStrategy,
@@ -11,6 +12,7 @@ import {
 } from '@mcp-abap-adt/llm-agent';
 import {
   CyclicReActExecutor,
+  LlmEvaluator,
   LlmNeedResolver,
   LlmReviewStrategy,
   LlmStepperPlanner,
@@ -137,6 +139,11 @@ export function toCompositionSpec(
     ...(config.flow.executorSystemPrompt
       ? { executorSystemPrompt: config.flow.executorSystemPrompt }
       : {}),
+    evaluatorEnabled: config.flow.evaluatorEnabled,
+    evaluatorAtDepths: config.flow.evaluatorAtDepths,
+    ...(config.flow.evaluatorSystemPrompt
+      ? { evaluatorSystemPrompt: config.flow.evaluatorSystemPrompt }
+      : {}),
     reviewerAtDepths: config.reviewerAtDepths,
     maxParallelSteps: config.maxParallelSteps,
     maxDepth: config.maxDepth,
@@ -247,6 +254,16 @@ export async function buildFromComposition(
   // ---- Reviewer (always built; Stepper only invokes at configured depths) ---
   const reviewer: IReviewStrategy = new LlmReviewStrategy(reviewerLlm);
 
+  // ---- Evaluator (18.1; built only when enabled by the spec) ----------------
+  // Its own LLM role 'evaluator' → main, so a deployment can point it at a
+  // strong model independently. Shared across the whole tree.
+  const evaluator: IEvaluator | undefined = spec.evaluatorEnabled
+    ? new LlmEvaluator(
+        await resolveRoleLlm('evaluator', 'evaluator', true),
+        spec.evaluatorSystemPrompt,
+      )
+    : undefined;
+
   // One shared interpreter + need-resolver across the whole tree.
   const interpreter = new StepperInterpreter();
   const needResolver = new LlmNeedResolver(toolDefinerLlm);
@@ -337,6 +354,8 @@ export async function buildFromComposition(
               childSteppers: childMap,
               reviewer,
               reviewerAtDepths: s.reviewerAtDepths,
+              ...(evaluator ? { evaluator } : {}),
+              evaluatorAtDepths: s.evaluatorAtDepths,
               depth: depth + 1,
               maxParallelSteps: s.maxParallelSteps,
               mintStepperId,
@@ -355,6 +374,8 @@ export async function buildFromComposition(
       childSteppers: childMap,
       reviewer,
       reviewerAtDepths: s.reviewerAtDepths,
+      ...(evaluator ? { evaluator } : {}),
+      evaluatorAtDepths: s.evaluatorAtDepths,
       depth,
       maxParallelSteps: s.maxParallelSteps,
       mintStepperId,

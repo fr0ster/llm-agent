@@ -7,6 +7,7 @@ export type LlmComponent =
   | 'query-expander'
   | 'embedding'
   | 'planner'
+  | 'evaluator'
   | 'reviewer'
   | 'finalizer'
   | 'oracle';

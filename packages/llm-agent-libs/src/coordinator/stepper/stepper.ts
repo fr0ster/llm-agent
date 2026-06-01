@@ -1,11 +1,13 @@
-import type {
-  IExecutor,
-  IReviewStrategy,
-  IStepper,
-  IStepperInput,
-  IStepperInterpreter,
-  IStepperPlanner,
-  IStepperResult,
+import {
+  ClarifySignal,
+  type IEvaluator,
+  type IExecutor,
+  type IReviewStrategy,
+  type IStepper,
+  type IStepperInput,
+  type IStepperInterpreter,
+  type IStepperPlanner,
+  type IStepperResult,
 } from '@mcp-abap-adt/llm-agent';
 
 export interface StepperDeps {
@@ -19,6 +21,11 @@ export interface StepperDeps {
    *  works — see Task 14. A plain `new Set([0,1])` also satisfies this
    *  shape, so tests can pass a Set directly. */
   reviewerAtDepths: { has(depth: number): boolean };
+  /** 18.1 Evaluator (optional): judges the INPUT (sub-)prompt completeness WITH
+   *  the RAG context before planning. Absent → behaves as 18.0 (plan → interpret). */
+  evaluator?: IEvaluator;
+  /** Depths at which the Evaluator runs (same predicate shape as reviewer). */
+  evaluatorAtDepths?: { has(depth: number): boolean };
   depth: number;
   maxParallelSteps: number;
   mintStepperId: () => string;
@@ -46,14 +53,79 @@ export class Stepper implements IStepper {
       childSteppers,
       reviewer,
       reviewerAtDepths,
+      evaluator,
+      evaluatorAtDepths,
       depth,
       maxParallelSteps,
       mintStepperId,
       parentPath,
       childAgentCatalog,
     } = this.deps;
-    const plan = await planner.plan({
+
+    // Shared interpret context (same for the executable-terminal and the
+    // planned paths). The top-level prompt drives composeTask; plan nodes carry
+    // the decomposition.
+    const interpretCtx = {
       prompt: input.prompt,
+      knowledgeRag: input.knowledgeRag,
+      toolsRag: input.toolsRag,
+      childSteppers,
+      executor,
+      budget: input.budget,
+      identity: input.identity,
+      taskSpec: input.taskSpec,
+      externalTools: input.externalTools,
+      maxParallelSteps,
+      mintStepperId,
+      signal: input.signal,
+      sessionLogger: input.sessionLogger,
+      onProgress: input.onProgress,
+    };
+
+    // 18.1 Evaluator: assess the INPUT (sub-)prompt WITH the RAG context BEFORE
+    // planning, and route. Absent / not-at-this-depth → 18.0 behaviour.
+    let plannerPrompt = input.prompt;
+    if (evaluator && (evaluatorAtDepths?.has(depth) ?? true)) {
+      const verdict = await evaluator.evaluate({
+        prompt: input.prompt,
+        knowledgeRag: input.knowledgeRag,
+        toolsRag: input.toolsRag,
+        taskSpec: input.taskSpec,
+        identity: input.identity,
+        signal: input.signal,
+      });
+      input.sessionLogger?.logStep('evaluator_verdict', {
+        depth,
+        route: verdict.route,
+        missing: verdict.missing,
+        reason: verdict.reason,
+      });
+      if (verdict.route === 'needs-consumer') {
+        // Only the consumer can resolve this → surface a clarify up the stack
+        // (the coordinator handler turns it into a clarify response).
+        throw new ClarifySignal(
+          verdict.missing.join('; ') ||
+            'additional information is required to proceed',
+        );
+      }
+      if (verdict.route === 'executable') {
+        // Terminal: run the prompt as ONE executor leaf; do NOT plan/recurse.
+        return interpreter.interpret(
+          {
+            objective: input.prompt,
+            nodes: [{ id: 'root', goal: input.prompt }],
+            createdAt: 0,
+          },
+          interpretCtx,
+        );
+      }
+      // needs-work → feed the named gaps to the planner as prerequisites.
+      if (verdict.missing.length > 0)
+        plannerPrompt = `${input.prompt}\n\n[Prerequisites to address FIRST: ${verdict.missing.join('; ')}]`;
+    }
+
+    const plan = await planner.plan({
+      prompt: plannerPrompt,
       knowledgeRag: input.knowledgeRag,
       toolsRag: input.toolsRag,
       parentPath: parentPath ?? [this.name],
@@ -74,21 +146,6 @@ export class Stepper implements IStepper {
       // v1: log and proceed if reviewer has no hard-fail contract.
       void result;
     }
-    return interpreter.interpret(plan, {
-      prompt: input.prompt,
-      knowledgeRag: input.knowledgeRag,
-      toolsRag: input.toolsRag,
-      childSteppers,
-      executor,
-      budget: input.budget,
-      identity: input.identity,
-      taskSpec: input.taskSpec,
-      externalTools: input.externalTools,
-      maxParallelSteps,
-      mintStepperId,
-      signal: input.signal,
-      sessionLogger: input.sessionLogger,
-      onProgress: input.onProgress,
-    });
+    return interpreter.interpret(plan, interpretCtx);
   }
 }
