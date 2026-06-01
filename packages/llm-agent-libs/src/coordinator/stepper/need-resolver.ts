@@ -14,11 +14,19 @@ export class RegexNeedResolver implements INeedResolver {
   }
 }
 
-const CLASSIFY_SYSTEM =
-  'Classify whether the assistant utterance expresses an unmet capability ' +
-  'need (it cannot proceed because it lacks a tool or data). Respond with ' +
-  'ONLY JSON: {"need":boolean,"capability":string}. capability is the ' +
-  'short description of what is needed, or "" when need is false.';
+export const CLASSIFY_SYSTEM =
+  'You decide whether an assistant answer is INCOMPLETE because it is missing ' +
+  'data or a capability — so the agent should obtain it and try again. Two cases ' +
+  'count as a need:\n' +
+  '1. It explicitly cannot proceed (it says it lacks a tool, access, or data).\n' +
+  '2. It DID produce an answer but TRANSPARENTLY caveats that the answer is based ' +
+  'on PARTIAL/INCOMPLETE input — e.g. a part/sub-part was missing, returned ' +
+  '"not found", was inaccessible or could not be read, or the result is "based ' +
+  'on X only". A self-flagged incompleteness IS a need, even when the assistant ' +
+  'still gave an answer.\n' +
+  'Respond with ONLY JSON: {"need":boolean,"capability":string}. capability = a ' +
+  'short description of the missing data/capability to obtain (e.g. "read the ' +
+  'include bodies of the program"), or "" when the answer is genuinely complete.';
 
 /** LLM-driven need classifier. Opt-in (more accurate on paraphrase, costs a
  *  small classifier call). */

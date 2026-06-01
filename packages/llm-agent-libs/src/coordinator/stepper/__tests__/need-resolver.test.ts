@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { LlmNeedResolver, RegexNeedResolver } from '../need-resolver.js';
+import {
+  CLASSIFY_SYSTEM,
+  LlmNeedResolver,
+  RegexNeedResolver,
+} from '../need-resolver.js';
 
 test('RegexNeedResolver detects need phrasings and maps to a tools-RAG query', async () => {
   const nr = new RegexNeedResolver();
@@ -28,4 +32,13 @@ test('LlmNeedResolver delegates classification to its llm', async () => {
   assert.deepEqual(await nr.resolve('cannot proceed'), {
     queryToolsRag: 'read program source',
   });
+});
+
+test('CLASSIFY_SYSTEM flags self-caveated incompleteness, not only "cannot proceed"', () => {
+  // The model often PRODUCES an answer but transparently caveats missing input
+  // ("includes returned not found; based on the main shell only"). That is a
+  // need too — the classifier prompt must cover the partial-data / not-found /
+  // inaccessible case, not just an explicit "I cannot proceed".
+  assert.match(CLASSIFY_SYSTEM, /partial|incomplete/i);
+  assert.match(CLASSIFY_SYSTEM, /not found|inaccessible|could not be read/i);
 });
