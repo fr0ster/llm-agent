@@ -165,19 +165,27 @@ test('STEPPER_PLANNER_SYSTEM mandates RAG-first + concrete-leaf decomposition', 
   assert.match(STEPPER_PLANNER_SYSTEM, /one (?:tool call|step)|concrete leaf/i);
 });
 
-test('STEPPER_PLANNER_SYSTEM instructs planner to use fetch steps and restricts needInfo to non-fetchable data', () => {
-  // Must tell planner workers can fetch via tools
+test('STEPPER_PLANNER_SYSTEM: fetching is the executor job (plan work, not granular fetches); needInfo only for non-fetchable', () => {
+  // Fetching is the executor's job at execution time, not granular planned steps.
   assert.match(
     STEPPER_PLANNER_SYSTEM,
-    /fetch.*step|workers can.*fetch|FETCH STEPS/i,
+    /FETCHING IS THE EXECUTOR|plan WORK, not granular fetches|executor's job/i,
   );
-  // Must say needInfo is only for non-fetchable data
+  // Gather as a SINGLE shared step (dependsOn) — never several parallel fetches.
+  assert.match(STEPPER_PLANNER_SYSTEM, /ONE gather step|fetched once/i);
+  // needInfo only for what no tool can obtain.
   assert.match(
     STEPPER_PLANNER_SYSTEM,
-    /ONLY for a fact that NO.*tool|no listed tool/i,
+    /needInfo ONLY for a fact no listed tool|ONLY for a fact that NO.*tool|no listed tool/i,
   );
-  // Must forbid needInfo for fetchable data
-  assert.match(STEPPER_PLANNER_SYSTEM, /NEVER use needInfo for fetchable/i);
+});
+
+test('STEPPER_PLANNER_SYSTEM forbids parallelizing dependent / data-sharing steps', () => {
+  assert.match(
+    STEPPER_PLANNER_SYSTEM,
+    /NEVER place in parallel|never two parallel/i,
+  );
+  assert.match(STEPPER_PLANNER_SYSTEM, /sequential is safe|CHAIN them/i);
 });
 
 test('planner embeds toolsRag catalog into the planning prompt', async () => {
