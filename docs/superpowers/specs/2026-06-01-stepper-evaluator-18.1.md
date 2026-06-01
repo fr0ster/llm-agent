@@ -238,6 +238,23 @@ ON by default, nested-inherited); build wires a shared `LlmEvaluator` (role `eva
 surfaces `ClarifySignal`. The 18.0 soft completeness clause REMOVED from `STEPPER_PLANNER_SYSTEM`
 (Evaluator owns it). libs 623 / server 286 green; lint clean. Phases 2–5 still pending.
 
+## Completeness-on-analysis — design decision (2026-06-01)
+
+Incompleteness usually surfaces at the **analysis** step, not the read step. Division of labour:
+- **Pre-hoc = the per-step Evaluator** (after read, before analyze): judge "is the needed context
+  present for THIS sub-task?" WITH the RAG context. Today the Evaluator runs at each `Stepper.run`
+  level; a leaf-executor analyze node does not get it — closing that is open work.
+- **Post-hoc = the need-classifier** (DONE): analyzes the produced answer + the model's own
+  transparent caveat ("includes not found; based on the shell only") and re-queries before retrying;
+  if still unmet after the cap → escalate to the consumer (ClarifySignal).
+
+**The point of truth is the KNOWLEDGE, not the placement.** Any mechanism needs the domain fact
+"an ABAP report analysis needs its includes" — a model either has it (not all do) or it comes from
+the consumer. Path chosen: **(a)+(b)** — squeeze the AGNOSTIC pipeline as far as it goes (classifier
++ escalation + per-step evaluator + tool-search-after-fetch self-discovery), and rely on **consumer
+gnostification** (`knowledgeSeed` / the 05 preset) for correctness. (a) = best-effort; (b) = the
+guarantee. Strategy: "take as much as possible from agnostic, then gnostify."
+
 ## Decisions already fixed (do NOT re-litigate)
 
 - Evaluator + reviewer both judge WITH RAG context.
