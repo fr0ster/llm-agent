@@ -97,6 +97,52 @@ test('#167: interpreter threads ctx.externalTools into the executor leaf', async
   );
 });
 
+test('#Phase3: a dependsOn predecessor output is hydrated into the dependent node prompt (by stepperId)', async () => {
+  counter = 0; // gather → s0, analyze → s1
+  let analyzePrompt = '';
+  const exec: IExecutor = {
+    name: 'e',
+    async execute(input) {
+      // capture the SECOND node's (analyze) prompt
+      if (input.prompt.includes('analyze')) analyzePrompt = input.prompt;
+      return { status: 'ok', usage: ZERO };
+    },
+  };
+  // knowledgeRag whose list({stepperId:'s0'}) returns the gather node's artifact
+  const knowledgeRag = {
+    async query() {
+      return [];
+    },
+    async list(filter: { stepperId?: string }) {
+      return filter.stepperId === 's0'
+        ? [{ content: 'GATHERED INCLUDE SOURCE', metadata: {} }]
+        : [];
+    },
+    async write() {},
+    fingerprint() {
+      return '';
+    },
+  };
+  const interp = new StepperInterpreter();
+  await interp.interpret(
+    {
+      objective: 'review',
+      nodes: [
+        { id: 'gather', goal: 'gather the source' },
+        { id: 'analyze', goal: 'analyze the source', dependsOn: ['gather'] },
+      ],
+      createdAt: 0,
+    },
+    baseCtx({ executor: exec, knowledgeRag: knowledgeRag as never }),
+  );
+  assert.match(analyzePrompt, /Gathered inputs from prerequisite steps/);
+  assert.match(
+    analyzePrompt,
+    /GATHERED INCLUDE SOURCE/,
+    'the predecessor (gather) output must be in the analyze prompt — no re-fetch',
+  );
+});
+
 test('H.4b depth floor routes subagent node to executor; child.run NOT called; spawned event is the executor virtual ref', async () => {
   counter = 0;
   const child = spyStepper('w');

@@ -1,10 +1,17 @@
 import type {
   DagPlan,
+  IKnowledgeRagHandle,
   IStepperInterpreter,
   IStepperResult,
   LlmUsage,
   RunIdentity,
 } from '@mcp-abap-adt/llm-agent';
+
+/** Total cap on injected dependsOn-dataflow content per node — a backstop against
+ *  context explosion. dependsOn already scopes it to predecessors (selective);
+ *  this bounds a pathological accumulation. Generous: a few large include bodies
+ *  fit. On overflow the block is truncated with an explicit note. */
+const DEPS_CONTEXT_CAP = 60_000;
 
 const ZERO: LlmUsage = { promptTokens: 0, completionTokens: 0, totalTokens: 0 };
 const addUsage = (a: LlmUsage, b: LlmUsage): LlmUsage => ({
@@ -23,6 +30,9 @@ export class StepperInterpreter implements IStepperInterpreter {
   ): Promise<IStepperResult> {
     const done = new Set<string>();
     const results = new Map<string, IStepperResult>();
+    // node.id → the stepperId minted for it, so a dependent node can pull its
+    // predecessors' artifacts by identity (Phase 3 dataflow).
+    const stepperIdByNode = new Map<string, string>();
     let usage = ZERO;
     let worst: IStepperResult['status'] = 'ok';
 
@@ -33,6 +43,16 @@ export class StepperInterpreter implements IStepperInterpreter {
 
     const runNode = async (node: DagPlan['nodes'][number]): Promise<void> => {
       const childId = ctx.mintStepperId();
+      stepperIdByNode.set(node.id, childId);
+      // Phase 3 dataflow: hydrate this node's context with the FULL output of its
+      // dependsOn predecessors (by identity / stepperId — NOT lossy semantic
+      // top-k), so e.g. an `analyze` step receives the source a `gather` step
+      // already fetched and never re-fetches it.
+      const depsBlock = await gatherDepsContext(
+        node,
+        ctx.knowledgeRag,
+        stepperIdByNode,
+      );
       const childIdentity: RunIdentity = {
         ...ctx.identity,
         stepperId: childId,
@@ -67,7 +87,7 @@ export class StepperInterpreter implements IStepperInterpreter {
         // (review R2-F1) so spend is accounted across all branches (soft cap,
         // bounded overshoot under parallelism — review R3-F2).
         result = await subagent.run({
-          prompt: composeTask(node, plan),
+          prompt: composeTask(node, plan, depsBlock),
           knowledgeRag: ctx.knowledgeRag,
           toolsRag: ctx.toolsRag,
           budget: {
@@ -84,7 +104,7 @@ export class StepperInterpreter implements IStepperInterpreter {
       } else if (ctx.executor) {
         // Case 2 (depth floor) + Case 3 (no agent) — terminal executor leaf
         const r = await ctx.executor.execute({
-          prompt: composeTask(node, plan),
+          prompt: composeTask(node, plan, depsBlock),
           tools: [],
           externalTools: ctx.externalTools,
           knowledgeRag: ctx.knowledgeRag,
@@ -139,10 +159,57 @@ export class StepperInterpreter implements IStepperInterpreter {
   }
 }
 
-function composeTask(node: DagPlan['nodes'][number], plan: DagPlan): string {
-  return plan.objective
+function composeTask(
+  node: DagPlan['nodes'][number],
+  plan: DagPlan,
+  depsBlock = '',
+): string {
+  const base = plan.objective
     ? `Objective: ${plan.objective}\nTask: ${node.goal}`
     : node.goal;
+  return depsBlock ? `${base}\n\n${depsBlock}` : base;
+}
+
+/**
+ * Phase 3 dataflow: assemble the FULL output of a node's dependsOn predecessors
+ * (their blackboard artefacts, fetched by stepperId — exact identity, NOT lossy
+ * semantic top-k) into a "Gathered inputs" block. The dependent node thus has
+ * the source/data its prerequisites produced already in context, and does not
+ * re-fetch it. Scoped to predecessors (selective) + capped (explosion backstop).
+ */
+async function gatherDepsContext(
+  node: DagPlan['nodes'][number],
+  knowledgeRag: IKnowledgeRagHandle,
+  stepperIdByNode: Map<string, string>,
+): Promise<string> {
+  const deps = node.dependsOn ?? [];
+  if (deps.length === 0) return '';
+  const parts: string[] = [];
+  for (const depId of deps) {
+    const sid = stepperIdByNode.get(depId);
+    if (!sid) continue;
+    let entries: ReadonlyArray<{ content: string }> = [];
+    try {
+      entries = await knowledgeRag.list({ stepperId: sid });
+    } catch {
+      continue; // store unavailable for this dep → skip it
+    }
+    for (const e of entries) parts.push(e.content);
+  }
+  if (parts.length === 0) return '';
+  let block = parts.join('\n\n');
+  let truncated = false;
+  if (block.length > DEPS_CONTEXT_CAP) {
+    block = block.slice(0, DEPS_CONTEXT_CAP);
+    truncated = true;
+  }
+  return (
+    'Gathered inputs from prerequisite steps (use these — do NOT re-fetch them):\n' +
+    block +
+    (truncated
+      ? '\n\n[…gathered inputs truncated; query the knowledge store for the rest if needed]'
+      : '')
+  );
 }
 
 function collectMissing(results: Map<string, IStepperResult>): string[] {
