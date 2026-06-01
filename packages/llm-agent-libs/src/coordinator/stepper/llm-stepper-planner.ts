@@ -86,6 +86,23 @@ export class LlmStepperPlanner implements IStepperPlanner {
       // toolsRag unavailable — omit the section gracefully
     }
 
+    // 18.1 dedup manifest: the EXACT artefacts already fetched this run (by
+    // identity, not lossy semantic top-k). The planner must NOT plan a step to
+    // re-fetch any of these — backs the "RAG-FIRST: don't re-fetch" rule with a
+    // hard lookup. Feature-detected (older handles omit it).
+    let fetchedBlock = '';
+    try {
+      const arts = (await input.knowledgeRag.listArtifacts?.()) ?? [];
+      if (arts.length > 0) {
+        fetchedBlock =
+          'Already fetched (DO NOT plan a step to re-fetch these — they are in the store):\n' +
+          arts.map((a) => `- ${a.identityKey}`).join('\n') +
+          '\n\n';
+      }
+    } catch {
+      // listArtifacts unavailable / failed — omit the manifest gracefully
+    }
+
     const agentsBlock =
       input.agents && input.agents.length > 0
         ? `Available workers (set a node's "agent" to delegate a sub-goal):\n${input.agents
@@ -102,7 +119,7 @@ export class LlmStepperPlanner implements IStepperPlanner {
       ? `${renderTaskSpec(input.taskSpec)}\n\n`
       : '';
 
-    const user = `${taskBlock}${factBlock}${toolsBlock}${agentsBlock}Task: ${input.prompt}`;
+    const user = `${taskBlock}${factBlock}${fetchedBlock}${toolsBlock}${agentsBlock}Task: ${input.prompt}`;
 
     const res = await this.llm.chat(
       [

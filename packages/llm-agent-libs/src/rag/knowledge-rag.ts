@@ -95,6 +95,43 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
   fingerprint(): string {
     return `n=${this.mirror.length}`;
   }
+
+  /** Exact-match identity lookup (18.1 dedup): true if a fetched artefact with
+   *  this identityKey is already in the store. Uses the durable scan ∪ mirror so
+   *  it is correct across a resume and within-process writes. */
+  async hasArtifact(identityKey: string): Promise<boolean> {
+    if (this.mirror.some((e) => e.metadata.identityKey === identityKey))
+      return true;
+    const durable = await this.backend.scan(this.sessionId);
+    return durable.some((e) => e.metadata.identityKey === identityKey);
+  }
+
+  /** The set of fetched-artefact identities (for the planner's "already fetched"
+   *  manifest). De-duplicated by identityKey, earliest createdAt kept. */
+  async listArtifacts(): Promise<
+    ReadonlyArray<{ identityKey: string; toolName?: string; createdAt: string }>
+  > {
+    const durable = await this.backend.scan(this.sessionId);
+    const source = durable.length >= this.mirror.length ? durable : this.mirror;
+    const byKey = new Map<
+      string,
+      { identityKey: string; toolName?: string; createdAt: string }
+    >();
+    for (const e of source) {
+      const k = e.metadata.identityKey;
+      if (!k) continue;
+      const prev = byKey.get(k);
+      if (!prev || e.metadata.createdAt < prev.createdAt)
+        byKey.set(k, {
+          identityKey: k,
+          toolName: e.metadata.toolName,
+          createdAt: e.metadata.createdAt,
+        });
+    }
+    return [...byKey.values()].sort((a, b) =>
+      a.createdAt.localeCompare(b.createdAt),
+    );
+  }
 }
 
 function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {

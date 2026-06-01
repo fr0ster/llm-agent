@@ -326,6 +326,47 @@ test('stuck need with no NEW tools → escalates to the consumer (ClarifySignal)
   );
 });
 
+test('#Phase2: a repeated (tool,args) call is deduped — MCP hit once; different args still fetched', async () => {
+  // O01 fetched, then O01 AGAIN (dedup → no 2nd MCP hit), then O02 (new args →
+  // real fetch), then a final answer.
+  const llm = scriptedLlm([
+    {
+      content: 'a',
+      toolCalls: [{ name: 'GetInclude', arguments: { n: 'O01' } }],
+    },
+    {
+      content: 'b',
+      toolCalls: [{ name: 'GetInclude', arguments: { n: 'O01' } }],
+    },
+    {
+      content: 'c',
+      toolCalls: [{ name: 'GetInclude', arguments: { n: 'O02' } }],
+    },
+    { content: 'Final.' },
+  ]);
+  const m = mcp({ GetInclude: 'INCLUDE BODY' });
+  const { rag, writes } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  const res = await exec.execute({
+    prompt: 'read includes',
+    tools: [{ name: 'GetInclude' }],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({ GetInclude: { name: 'GetInclude' } }) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok');
+  // 2 distinct (tool,args) → exactly 2 MCP calls (the duplicate O01 was deduped).
+  assert.deepEqual(m.calls, ['GetInclude', 'GetInclude']);
+  // Only the 2 real fetches were written to the store (not the deduped repeat).
+  assert.equal(writes.filter((w) => w.content === 'INCLUDE BODY').length, 2);
+});
+
 test('maxNoProgressNeeds is configurable (escalates after the given cap)', async () => {
   const llm = scriptedLlm([
     { content: 'need' },

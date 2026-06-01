@@ -75,6 +75,33 @@ test('planner queries knowledge-RAG and embeds retrieved facts into the planning
   assert.match(userMsg, /review security/); // task present
 });
 
+test('#Phase2: planner renders an "Already fetched" manifest from listArtifacts (do not re-fetch)', async () => {
+  const { obj, calls } = llm(
+    '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',
+  );
+  const ragWithManifest = {
+    ...ragWith([]),
+    async listArtifacts() {
+      return [
+        {
+          identityKey: 'GetInclude:{"n":"O01"}',
+          toolName: 'GetInclude',
+          createdAt: '2026-06-01T00:00:00Z',
+        },
+      ];
+    },
+  };
+  const planner = new LlmStepperPlanner(obj as never);
+  await planner.plan({
+    prompt: 'review program Z',
+    knowledgeRag: ragWithManifest as never,
+    ...BASE,
+  });
+  const user = calls[0].messages.find((m) => m.role === 'user')?.content ?? '';
+  assert.match(user, /Already fetched/);
+  assert.match(user, /GetInclude:\{"n":"O01"\}/);
+});
+
 test('a consumer systemPrompt override replaces STEPPER_PLANNER_SYSTEM (granularity still appended)', async () => {
   const { obj, calls } = llm(
     '{"objective":"o","nodes":[{"id":"a","goal":"x"}]}',

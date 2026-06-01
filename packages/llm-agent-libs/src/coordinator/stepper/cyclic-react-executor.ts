@@ -1,4 +1,5 @@
 import {
+  artifactIdentityKey,
   ClarifySignal,
   type IExecutor,
   type INeedResolver,
@@ -134,6 +135,12 @@ export class CyclicReActExecutor implements IExecutor {
     ];
     const tools: LlmTool[] = [...input.tools];
     let usage = ZERO;
+    // Phase 2 identity dedup: remember every (tool, canonical-args) fetched THIS
+    // run. A repeat call short-circuits — no MCP round-trip and, crucially, no
+    // re-injection of the (often large) payload into the context. The model is
+    // told it already has the data instead. Cuts the redundant include re-reads
+    // seen live (gi≈34 calls for 6 includes) + the context bloat they cause.
+    const fetched = new Set<string>();
     // Counts consecutive unmet-need iterations whose tool re-query surfaced NO
     // new tool. One such "nudge" is allowed (the tool may already be present and
     // the model just needs prompting); a second consecutive no-progress need
@@ -237,6 +244,23 @@ export class CyclicReActExecutor implements IExecutor {
         });
         for (const tc of toolCalls) {
           const toolName = tc.name;
+          const identityKey = artifactIdentityKey(toolName, tc.arguments ?? {});
+          // Already fetched THIS run → do NOT re-call MCP and do NOT re-inject the
+          // payload; reply with a short note so the model stops re-requesting it
+          // (the full result is already earlier in this conversation + the store).
+          if (fetched.has(identityKey)) {
+            input.sessionLogger?.logStep('executor_fetch_dedup', {
+              source: ref,
+              tool: toolName,
+              identityKey,
+            });
+            messages.push({
+              role: 'tool',
+              content: `(Already retrieved ${toolName} with these exact arguments earlier in this run — reuse the prior result above; do not fetch it again.)`,
+              tool_call_id: tc.id,
+            });
+            continue;
+          }
           onProgress?.({
             kind: 'mcp-call',
             source: ref,
@@ -244,6 +268,7 @@ export class CyclicReActExecutor implements IExecutor {
             args: tc.arguments,
           });
           const result = await callMcp(toolName, tc.arguments, signal);
+          fetched.add(identityKey);
           onProgress?.({
             kind: 'mcp-result',
             source: ref,
@@ -261,6 +286,7 @@ export class CyclicReActExecutor implements IExecutor {
               task: prompt,
               artifactType: 'mcp-result',
               toolName,
+              identityKey,
               createdAt: nowIso(),
             },
           });

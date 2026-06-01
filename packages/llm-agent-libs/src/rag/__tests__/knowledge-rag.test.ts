@@ -90,3 +90,45 @@ test('ToolsRag delegates query and lookup', async () => {
   const notFound = tr.lookup('NotExist');
   assert.equal(notFound, undefined);
 });
+
+test('#Phase2: hasArtifact + listArtifacts track fetched identities (dedup)', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  const kr = new KnowledgeRag(backend, 'session-d');
+  await kr.write({
+    content: 'O01 body',
+    metadata: {
+      ...META,
+      artifactType: 'mcp-result',
+      toolName: 'GetInclude',
+      identityKey: 'GetInclude:{"n":"O01"}',
+    },
+  });
+  // a duplicate of the SAME identity (re-fetch) — dedup keeps one entry
+  await kr.write({
+    content: 'O01 body again',
+    metadata: {
+      ...META,
+      artifactType: 'mcp-result',
+      toolName: 'GetInclude',
+      identityKey: 'GetInclude:{"n":"O01"}',
+      createdAt: '2026-05-29T00:01:00Z',
+    },
+  });
+  await kr.write({
+    content: 'O02 body',
+    metadata: {
+      ...META,
+      artifactType: 'mcp-result',
+      toolName: 'GetInclude',
+      identityKey: 'GetInclude:{"n":"O02"}',
+    },
+  });
+  assert.equal(await kr.hasArtifact('GetInclude:{"n":"O01"}'), true);
+  assert.equal(await kr.hasArtifact('GetInclude:{"n":"O99"}'), false);
+  const arts = await kr.listArtifacts();
+  assert.deepEqual(
+    arts.map((a) => a.identityKey).sort(),
+    ['GetInclude:{"n":"O01"}', 'GetInclude:{"n":"O02"}'],
+    'two distinct identities (the O01 re-fetch deduped to one)',
+  );
+});

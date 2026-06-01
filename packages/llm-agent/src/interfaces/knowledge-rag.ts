@@ -8,6 +8,10 @@ export interface KnowledgeEntryMetadata {
   task: string;
   artifactType: string;
   toolName?: string;
+  /** Identity of a fetched artefact: tool + canonical args (artifactIdentityKey).
+   *  Set on `mcp-result` entries so the same fetch is recognised exactly (not
+   *  via lossy semantic top-k) — backs the "already fetched" dedup (18.1). */
+  identityKey?: string;
   createdAt: string;
 }
 
@@ -36,6 +40,16 @@ export interface IKnowledgeRagHandle {
     metadata: KnowledgeEntryMetadata;
   }): Promise<void>;
   fingerprint(): string;
+  /**
+   * 18.1 identity dedup (optional): exact-match "is this fetch already done?"
+   * and the list of fetched-artefact identities, so planners/executors do not
+   * re-fetch the same object. Backed by `metadata.identityKey`, NOT by lossy
+   * semantic query. Implementations without it fall back to no-dedup behaviour.
+   */
+  hasArtifact?(identityKey: string): Promise<boolean>;
+  listArtifacts?(): Promise<
+    ReadonlyArray<{ identityKey: string; toolName?: string; createdAt: string }>
+  >;
 }
 
 export interface IToolsRagHandle {
