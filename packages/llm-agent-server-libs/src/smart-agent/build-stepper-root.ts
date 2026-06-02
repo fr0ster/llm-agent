@@ -234,7 +234,9 @@ export async function buildFromComposition(
       cfgModel = cfg.model;
       // makeLlm is safe here: this branch only runs when makeRoleLlm is absent.
       // If both are absent the call throws at runtime, matching prior behaviour
-      // where makeLlm was required.
+      // where makeLlm was required. The `?.` auto-fix is wrong — it would return
+      // undefined instead of throwing, masking a misconfiguration.
+      // biome-ignore lint/style/noNonNullAssertion: legacy path requires makeLlm; throwing when absent is intended
       inner = await makeLlm!(cfg);
     }
     if (!logLlmCall && !spendOnLedger) return inner;
