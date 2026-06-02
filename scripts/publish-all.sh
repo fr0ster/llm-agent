@@ -30,6 +30,7 @@ PACKAGES=(
   hana-vector-rag
   pg-vector-rag
   llm-agent-libs
+  llm-agent-server-libs
   llm-agent-server
 )
 
