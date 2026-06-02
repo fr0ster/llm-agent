@@ -1,5 +1,12 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 18.1.0
+
+### Patch Changes
+
+- Updated dependencies
+  - @mcp-abap-adt/llm-agent@18.1.0
+
 ## 12.0.3
 
 ### Patch Changes
