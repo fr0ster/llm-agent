@@ -1,5 +1,16 @@
 # @mcp-abap-adt/hana-vector-rag
 
+## 18.1.1
+
+### Patch Changes
+
+- Version alignment — unify ALL workspace packages to a single version.
+
+  18.1.0 bumped only the six core packages (the changeset `fixed` group at the time), leaving the eleven provider / embedder / RAG-backend packages at 18.0.2. The `fixed` group now contains all 17 packages so every release moves them together. This release carries no functional change — it only realigns the provider/embedder/backend packages (18.0.2 → 18.1.1) and the core packages (18.1.0 → 18.1.1) to one version.
+
+- Updated dependencies
+  - @mcp-abap-adt/llm-agent@18.1.1
+
 ## 12.0.0
 
 ### Major Changes
