@@ -571,7 +571,8 @@ export class SmartAgent {
     const indexToPosition = new Map<number, number>();
     for await (const chunk of this.streamProcess(textOrMessages, options)) {
       if (!chunk.ok) return chunk;
-      if (chunk.value.content) content += chunk.value.content;
+      if (chunk.value.content && !chunk.value.ephemeral)
+        content += chunk.value.content;
       if (chunk.value.toolCalls) {
         for (const tc of chunk.value.toolCalls) {
           const delta = toToolCallDelta(tc, collectedToolCalls.length);
@@ -1764,7 +1765,10 @@ export class SmartAgent {
       for (const tc of batch) {
         yield {
           ok: true,
-          value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` },
+          value: {
+            content: `\n\n[SmartAgent: Executing ${tc.name}...]\n`,
+            ephemeral: true,
+          },
         };
       }
 

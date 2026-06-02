@@ -441,7 +441,11 @@ export class ToolLoopHandler implements IStageHandler {
           content += chunk.content;
           ctx.yield({ ok: true, value: { content: chunk.content } });
           if (ctx.onPartial) {
-            ctx.onPartial({ kind: 'content', delta: chunk.content });
+            ctx.onPartial({
+              kind: 'content',
+              delta: chunk.content,
+              ephemeral: chunk.ephemeral,
+            });
           }
         }
         if (chunk.toolCalls) {
@@ -757,7 +761,10 @@ export class ToolLoopHandler implements IStageHandler {
       for (const tc of batch) {
         ctx.yield({
           ok: true,
-          value: { content: `\n\n[SmartAgent: Executing ${tc.name}...]\n` },
+          value: {
+            content: `\n\n[SmartAgent: Executing ${tc.name}...]\n`,
+            ephemeral: true,
+          },
         });
       }
 

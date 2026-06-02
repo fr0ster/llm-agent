@@ -85,6 +85,9 @@ export interface LlmStreamChunk {
   timing?: TimingEntry[];
   /** When true, consumer must discard previously accumulated chunks — stream is being retried from scratch. */
   reset?: boolean;
+  /** Liveness/progress chunk (e.g. "[SmartAgent: Executing X]"). Streaming clients
+   *  see it; non-streaming accumulation MUST skip it so it never lands in the final answer. */
+  ephemeral?: boolean;
 }
 
 // ---------------------------------------------------------------------------

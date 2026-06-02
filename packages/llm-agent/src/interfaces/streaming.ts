@@ -29,7 +29,7 @@ export interface StepperRef {
  * `mcp-call` / `mcp-result` / `stepper-spawned` / `stepper-done`.
  */
 export type StreamChunk =
-  | { kind: 'content'; nodeId?: string; delta: string }
+  | { kind: 'content'; nodeId?: string; delta: string; ephemeral?: boolean }
   // --- 18.0 Stepper progress events ---
   | { kind: 'stepper-spawned'; source: StepperRef; goal: string }
   | { kind: 'stepper-done'; source: StepperRef; ok: boolean }
