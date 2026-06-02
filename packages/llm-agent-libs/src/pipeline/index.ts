@@ -17,8 +17,16 @@ export {
 } from './default-pipeline.js';
 // Executor
 export { PipelineExecutor } from './executor.js';
-// DAG coordinator handler deps (used by withDagCoordinator builder method)
-export type { DagCoordinatorHandlerDeps } from './handlers/dag-coordinator.js';
+// Linear coordinator handler (class + deps) — used by builder factories
+export {
+  CoordinatorHandler,
+  type CoordinatorHandlerDeps,
+} from './handlers/coordinator.js';
+// DAG coordinator handler (class + deps) — used by builder factories
+export {
+  DagCoordinatorHandler,
+  type DagCoordinatorHandlerDeps,
+} from './handlers/dag-coordinator.js';
 // Handler registry
 // Individual handlers (for subclassing or direct use)
 export {
