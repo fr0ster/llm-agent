@@ -52,8 +52,24 @@ test('CyclicFactory: kind=cyclic, build() returns a coordinator handler', async 
   );
 });
 
-test('PlannedFactory: kind=planned', () =>
-  assert.equal(new PlannedFactory().kind, 'planned'));
+test('PlannedFactory: kind=planned, build() returns a coordinator handler', async () => {
+  const f = new PlannedFactory();
+  assert.equal(f.kind, 'planned');
+  const built = await f.build(cfg, deps as never);
+  assert.equal(
+    typeof built.handler.execute,
+    'function',
+    'handler is a stage handler',
+  );
+});
 
-test('DeepStepperFactory: kind=deep-stepper', () =>
-  assert.equal(new DeepStepperFactory().kind, 'deep-stepper'));
+test('DeepStepperFactory: kind=deep-stepper, build() returns a coordinator handler', async () => {
+  const f = new DeepStepperFactory();
+  assert.equal(f.kind, 'deep-stepper');
+  const built = await f.build(cfg, deps as never);
+  assert.equal(
+    typeof built.handler.execute,
+    'function',
+    'handler is a stage handler',
+  );
+});
