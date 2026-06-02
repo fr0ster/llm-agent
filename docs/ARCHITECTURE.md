@@ -2,7 +2,7 @@
 
 ## Scope
 
-The codebase is split across **five npm packages**:
+The codebase is split across **six npm packages**:
 
 ```
 @mcp-abap-adt/llm-agent          contracts: interfaces, public types, lightweight helpers

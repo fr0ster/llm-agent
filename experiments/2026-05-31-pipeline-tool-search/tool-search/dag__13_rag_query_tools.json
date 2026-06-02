@@ -1,0 +1,57 @@
+{
+  "query": "# ABAP Program Review: ZDAZ_R_DELAYED_UPDATE\n\n## Analysis Request Status\n\nI appreciate the detailed review request, but I must clarify an important limitation:\n\n**I cannot directly access SAP systems ",
+  "k": 10,
+  "resultCount": 10,
+  "results": [
+    {
+      "id": "tool:GetAbapSemanticAnalysis",
+      "score": 0.656612181122195,
+      "text": "Tool: GetAbapSemanticAnalysis — [read-only] Perform semantic analysis on ABAP code and return symbols, types, scopes, an"
+    },
+    {
+      "id": "tool:CheckProgram",
+      "score": 0.6204535758677701,
+      "text": "Tool: CheckProgram — Perform syntax check on an ABAP program. Returns syntax errors, warnings, and messages. Not availab"
+    },
+    {
+      "id": "tool:SearchSource",
+      "score": 0.6068024125175204,
+      "text": "Tool: SearchSource — [read-only] Search ABAP source text inside one or more packages (programs, function groups, classes"
+    },
+    {
+      "id": "tool:GetProgram",
+      "score": 0.6046454150059776,
+      "text": "Tool: GetProgram — Retrieve ABAP program definition. Supports reading active or inactive version."
+    },
+    {
+      "id": "tool:UpdateBehaviorImplementation",
+      "score": 0.5955714373507981,
+      "text": "Tool: UpdateBehaviorImplementation — Update source code of an existing ABAP behavior implementation class. Updates both "
+    },
+    {
+      "id": "tool:CheckStructure",
+      "score": 0.5953335431388959,
+      "text": "Tool: CheckStructure — Perform syntax check on an ABAP structure. Can check existing structure (active/inactive) or vali"
+    },
+    {
+      "id": "tool:DeleteProgram",
+      "score": 0.589639904856792,
+      "text": "Tool: DeleteProgram — Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transp"
+    },
+    {
+      "id": "tool:RuntimeRunProgram",
+      "score": 0.5857133518026003,
+      "text": "Tool: RuntimeRunProgram — [runtime] Execute an ABAP program (report) and return its output. Set profile=true to also sta"
+    },
+    {
+      "id": "tool:GetAbapSystemSymbols",
+      "score": 0.5840958547394381,
+      "text": "Tool: GetAbapSystemSymbols — [read-only] Resolve ABAP symbols from semantic analysis with SAP system information includi"
+    },
+    {
+      "id": "tool:UpdateProgram",
+      "score": 0.5835285257116869,
+      "text": "Tool: UpdateProgram — Operation: Update, Create. Subject: Program. Will be useful for updating or creating program. Upda"
+    }
+  ]
+}

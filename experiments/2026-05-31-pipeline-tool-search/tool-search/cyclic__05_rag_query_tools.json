@@ -1,0 +1,57 @@
+{
+  "query": "Review ABAP program ZDAZ_R_DELAYED_UPDATE, check security, performance, CleanCore, maintainability",
+  "k": 10,
+  "resultCount": 10,
+  "results": [
+    {
+      "id": "tool:UpdateLocalDefinitions",
+      "score": 0.6377528107547876,
+      "text": "Tool: UpdateLocalDefinitions — Update local definitions in an ABAP class (definitions include). Manages lock, check, upd"
+    },
+    {
+      "id": "tool:UpdateProgram",
+      "score": 0.6365386893087757,
+      "text": "Tool: UpdateProgram — Operation: Update, Create. Subject: Program. Will be useful for updating or creating program. Upda"
+    },
+    {
+      "id": "tool:UpdateLocalTypes",
+      "score": 0.6241951242531352,
+      "text": "Tool: UpdateLocalTypes — Update local types in an ABAP class (implementations include). Manages lock, check, update, unl"
+    },
+    {
+      "id": "tool:UpdateLocalTestClass",
+      "score": 0.6202798800295701,
+      "text": "Tool: UpdateLocalTestClass — Update a local test class in an ABAP class. Manages lock, check, update, unlock, and option"
+    },
+    {
+      "id": "tool:CheckProgram",
+      "score": 0.6196682100288468,
+      "text": "Tool: CheckProgram — Perform syntax check on an ABAP program. Returns syntax errors, warnings, and messages. Not availab"
+    },
+    {
+      "id": "tool:UpdateLocalMacros",
+      "score": 0.5934940076506354,
+      "text": "Tool: UpdateLocalMacros — Update local macros in an ABAP class (macros include). Manages lock, check, update, unlock, an"
+    },
+    {
+      "id": "tool:DeleteProgram",
+      "score": 0.5867446071425235,
+      "text": "Tool: DeleteProgram — Delete an ABAP program from the SAP system. Includes deletion check before actual deletion. Transp"
+    },
+    {
+      "id": "tool:GetProgram",
+      "score": 0.4890331638202947,
+      "text": "Tool: GetProgram — Retrieve ABAP program definition. Supports reading active or inactive version."
+    },
+    {
+      "id": "tool:ActivateProgram",
+      "score": 0.48680769051514333,
+      "text": "Tool: ActivateProgram — Activate an ABAP program. Use after CreateProgram or UpdateProgram if the object remains inactiv"
+    },
+    {
+      "id": "tool:CreateProgram",
+      "score": 0.4844233240975262,
+      "text": "Tool: CreateProgram — Operation: Create. Subject: Program. Will be useful for creating program. Create a new ABAP progra"
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "totalMcp": 183,
+  "ragMatchedTools": [
+    "UpdateLocalDefinitions",
+    "UpdateProgram",
+    "UpdateLocalTypes",
+    "UpdateLocalTestClass",
+    "CheckProgram",
+    "UpdateLocalMacros",
+    "DeleteProgram",
+    "GetProgram",
+    "ActivateProgram",
+    "CreateProgram"
+  ],
+  "selectedCount": 10,
+  "selectedNames": [
+    "ActivateProgram",
+    "UpdateLocalTestClass",
+    "UpdateLocalTypes",
+    "UpdateLocalDefinitions",
+    "UpdateLocalMacros",
+    "CreateProgram",
+    "GetProgram",
+    "UpdateProgram",
+    "DeleteProgram",
+    "CheckProgram"
+  ],
+  "activeCount": 10,
+  "toolSelectionStrategy": "top-k"
+}

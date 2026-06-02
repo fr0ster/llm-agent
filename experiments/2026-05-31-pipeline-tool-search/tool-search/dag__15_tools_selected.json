@@ -1,0 +1,30 @@
+{
+  "totalMcp": 183,
+  "ragMatchedTools": [
+    "GetAbapSemanticAnalysis",
+    "CheckProgram",
+    "SearchSource",
+    "GetProgram",
+    "UpdateBehaviorImplementation",
+    "CheckStructure",
+    "DeleteProgram",
+    "RuntimeRunProgram",
+    "GetAbapSystemSymbols",
+    "UpdateProgram"
+  ],
+  "selectedCount": 10,
+  "selectedNames": [
+    "GetProgram",
+    "UpdateProgram",
+    "DeleteProgram",
+    "UpdateBehaviorImplementation",
+    "CheckProgram",
+    "CheckStructure",
+    "RuntimeRunProgram",
+    "GetAbapSemanticAnalysis",
+    "GetAbapSystemSymbols",
+    "SearchSource"
+  ],
+  "activeCount": 10,
+  "toolSelectionStrategy": "top-k"
+}

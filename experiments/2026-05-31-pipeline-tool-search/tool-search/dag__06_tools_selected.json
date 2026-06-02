@@ -1,0 +1,8 @@
+{
+  "totalMcp": 0,
+  "ragMatchedTools": [],
+  "selectedCount": 0,
+  "selectedNames": [],
+  "activeCount": 0,
+  "toolSelectionStrategy": "top-k"
+}

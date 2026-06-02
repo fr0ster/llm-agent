@@ -19,7 +19,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "prebuild": "node scripts/generate-version.js",
     "build": "tsc -p tsconfig.json",
     "clean": "tsc -p tsconfig.json --clean",
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'",
