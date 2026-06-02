@@ -46,6 +46,19 @@ export interface CyclicReActExecutorDeps {
    * returning a silent partial. Default 2 (clamped to ≥ 1).
    */
   maxNoProgressNeeds?: number;
+  /**
+   * Guard 2b — explicit "no capability" error instead of silent hallucination.
+   * When the executor starts with NO tools (empty `input.tools`), the toolsRag
+   * seed + needs search return NOTHING, and there are no external tools, the
+   * tool subsystem yielded zero capability. A model handed an empty toolset for
+   * a task that needs tools will fabricate an answer (observed live: a DAG
+   * worker that hit a dead MCP proxy got 0 tools and invented a review from the
+   * program name, promptTokens=1224 vs 507650 with a live proxy). By default the
+   * executor REFUSES to run toolless and throws ClarifySignal so the consumer
+   * learns the capability is missing. Set `true` only for genuinely tool-free
+   * reasoning steps. Default false.
+   */
+  allowToolless?: boolean;
 }
 
 /**
@@ -200,6 +213,41 @@ export class CyclicReActExecutor implements IExecutor {
         if (!have.has(t.name)) tools.push(t as LlmTool);
     }
 
+    // Guard 2b — explicit "no capability" error, never a silent hallucination.
+    // The trigger is precise: the Evaluator established a NEED for this step
+    // (evaluatorNeeds non-empty → it judged the input needs-work and named the
+    // missing data/capability), yet every seeding path (input tools, prompt
+    // search, the needs search itself, external tools) left the toolset EMPTY.
+    // So a need exists and NO tool in RAG can satisfy it — calling the LLM now
+    // would fabricate the missing data (the live DAG-on-dead-proxy failure:
+    // 0 tools → invented review, promptTokens=1224 vs 507650 with a live proxy).
+    // We surface the gap to the consumer instead of returning invented content.
+    // NOTE the condition is gated on evaluatorNeeds — a step with NO established
+    // need is allowed to answer tool-free (legitimate reasoning); only an UNMET
+    // established need is an error. Opt out entirely with deps.allowToolless.
+    if (
+      tools.length === 0 &&
+      !this.deps.allowToolless &&
+      (input.evaluatorNeeds?.length ?? 0) > 0
+    ) {
+      input.sessionLogger?.logStep('executor_no_tools', {
+        source: ref,
+        reason: 'evaluator established a need but the toolset is empty',
+        evaluatorNeeds: input.evaluatorNeeds ?? [],
+      });
+      throw new ClarifySignal(
+        `I cannot complete this task: it requires ${(input.evaluatorNeeds ?? []).join('; ')}, but no tool is available to provide that (the tool subsystem returned an empty set — the MCP connection may be down, or no tool matches). I am stopping rather than inventing an answer.`,
+      );
+    }
+
+    // Guard 1 — groundedness/hallucination detector (token-based). Track whether
+    // the model ever actually called a tool and the size of the context the final
+    // answer was produced from. An answer emitted with ZERO tool calls, no seeded
+    // facts, and a tiny prompt — while tools WERE offered — is the hallucination
+    // signature (answered from the model's prior, not from retrieved data).
+    let toolCallsMade = 0;
+    let lastPromptTokens = 0;
+
     for (let iter = 0; iter < maxIterations; iter++) {
       // Gate BEFORE any further work (review R2-F1/R6-F1). The ledger is the
       // SHARED run-wide counter (not a local snapshot). If it is exhausted we
@@ -233,6 +281,7 @@ export class CyclicReActExecutor implements IExecutor {
         };
       const v = res.value;
       usage = add(usage, v.usage);
+      if (v.usage) lastPromptTokens = v.usage.promptTokens;
       if (v.usage) {
         budget.tokens.spend(v.usage); // decrement the shared ledger immediately
         onProgress?.({
@@ -245,6 +294,7 @@ export class CyclicReActExecutor implements IExecutor {
 
       const toolCalls = v.toolCalls ?? [];
       if (toolCalls.length > 0) {
+        toolCallsMade += toolCalls.length;
         // Relay the assistant turn WITH its tool_calls, then one tool message
         // per call carrying the matching tool_call_id. Anthropic/SAP AI SDK (and
         // the DeepSeek/OpenAI protocol) reject a `tool` message that does not
@@ -387,6 +437,25 @@ export class CyclicReActExecutor implements IExecutor {
           content: `You now have additional tools available. ${prompt}`,
         });
         continue;
+      }
+
+      // Guard 1 — flag a likely hallucination BEFORE accepting the answer. The
+      // model produced a final answer without ever calling a tool, with no seeded
+      // facts to ground it, while tools WERE on offer — and the answer-producing
+      // call ingested only a small prompt (no retrieved data). That is content
+      // generated from the model's prior, not from this session's sources. We do
+      // not hard-fail (a legitimately tool-free answer is possible) but we emit a
+      // structured, token-backed signal so the coordinator/consumer can audit it.
+      if (toolCallsMade === 0 && factsPrefix === '' && tools.length > 0) {
+        input.sessionLogger?.logStep('hallucination_suspected', {
+          source: ref,
+          reason:
+            'final answer produced with no tool calls and no grounding facts',
+          toolsOffered: tools.length,
+          toolCallsMade,
+          finalPromptTokens: lastPromptTokens,
+          answerChars: (v.content ?? '').length,
+        });
       }
 
       // Clean final answer → write + return ok.

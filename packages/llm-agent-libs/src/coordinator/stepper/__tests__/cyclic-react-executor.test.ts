@@ -1175,3 +1175,153 @@ test('FIX-A.3: reactive injection deduplicates tools already seeded proactively'
     `ReadProgram must appear exactly once (no duplicate); got ${readProgramCount}`,
   );
 });
+
+// A sessionLogger that captures every logStep call for assertions.
+function loggerStub() {
+  const steps: { name: string; data: unknown }[] = [];
+  return {
+    steps,
+    logger: {
+      logStep: (name: string, data: unknown) => steps.push({ name, data }),
+    },
+  };
+}
+
+test('Guard 2b: established need + empty toolset → explicit ClarifySignal, no LLM answer', async () => {
+  // The Evaluator named a need (evaluatorNeeds) but toolsRag returns nothing →
+  // there is no tool to satisfy it. The executor must refuse to invent an answer:
+  // throw ClarifySignal, make zero MCP calls, and log executor_no_tools.
+  const llm = scriptedLlm([{ content: 'A fabricated answer.' }]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  const { steps, logger } = loggerStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  await assert.rejects(
+    () =>
+      exec.execute({
+        prompt: 'review the program including its includes',
+        tools: [],
+        evaluatorNeeds: ['read the include bodies of the program'],
+        knowledgeRag: rag as never,
+        toolsRag: toolsStub({}) as never, // empty → cannot satisfy the need
+        sessionLogger: logger as never,
+        budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+        ...META_BASE,
+      }),
+    /no tool is available|empty set/,
+    'must throw ClarifySignal instead of answering',
+  );
+  assert.deepEqual(m.calls, [], 'no MCP calls when toolset is empty');
+  assert.ok(
+    steps.some((s) => s.name === 'executor_no_tools'),
+    'logs executor_no_tools',
+  );
+});
+
+test('Guard 2b: established need but allowToolless → no error (escape hatch)', async () => {
+  const llm = scriptedLlm([{ content: 'Reasoned answer.' }]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+    allowToolless: true,
+  });
+  const res = await exec.execute({
+    prompt: 'reason about X',
+    tools: [],
+    evaluatorNeeds: ['some need'],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({}) as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.equal(res.status, 'ok', 'allowToolless lets a tool-free step answer');
+});
+
+test('Guard 1: tools offered but final answer made with no tool calls/facts → hallucination_suspected', async () => {
+  // toolsRag seeds a tool (tools.length>0), no facts in the store, and the model
+  // answers immediately without calling anything → ungrounded answer signature.
+  // Status stays ok (not a hard fail) but a token-backed signal is logged.
+  const llm = scriptedLlm([
+    {
+      content: 'An answer with no grounding.',
+      usage: { promptTokens: 42, completionTokens: 10, totalTokens: 52 },
+    },
+  ]);
+  const m = mcp({});
+  const { rag } = knowledgeStub();
+  const { steps, logger } = loggerStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  const res = await exec.execute({
+    prompt: 'analyze something',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({ Foo: { name: 'Foo' } }) as never, // seeds → tools.length>0
+    sessionLogger: logger as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+
+  assert.equal(
+    res.status,
+    'ok',
+    'detector does not hard-fail a tool-free answer',
+  );
+  const flag = steps.find((s) => s.name === 'hallucination_suspected');
+  assert.ok(flag, 'emits hallucination_suspected');
+  assert.equal(
+    (flag?.data as { finalPromptTokens: number }).finalPromptTokens,
+    42,
+    'records the answer-producing call prompt tokens as evidence',
+  );
+});
+
+test('Guard 1: a tool WAS called → no hallucination flag', async () => {
+  const llm = scriptedLlm([
+    { content: '', toolCalls: [{ name: 'Foo', arguments: {} }] },
+    { content: 'Grounded answer.' },
+  ]);
+  const m = mcp({ Foo: 'data' });
+  const { rag } = knowledgeStub();
+  const { steps, logger } = loggerStub();
+
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: m.call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+
+  const res = await exec.execute({
+    prompt: 'analyze something',
+    tools: [],
+    knowledgeRag: rag as never,
+    toolsRag: toolsStub({ Foo: { name: 'Foo' } }) as never,
+    sessionLogger: logger as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+
+  assert.equal(res.status, 'ok');
+  assert.ok(
+    !steps.some((s) => s.name === 'hallucination_suspected'),
+    'no flag when a tool was actually called',
+  );
+});
