@@ -378,3 +378,46 @@ test('two-level nested flow lifts depthRemaining to >= 2', async () => {
   const built = await buildFromComposition(spec, compDeps as never);
   assert.ok(built.budget.depthRemaining >= 2);
 });
+
+test('buildFromComposition: makeRoleLlm supersedes llmMap/makeLlm resolution', async () => {
+  const stub = {
+    name: 'stub',
+    model: 'stub',
+    async chat() {
+      return {
+        ok: true as const,
+        value: {
+          content: 'ok',
+          usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+        },
+      };
+    },
+  };
+  const calledRoles: string[] = [];
+  const built = await buildFromComposition(
+    {
+      planner: 'none',
+      executor: 'cyclic-react',
+      granularity: 'shallow',
+      finalizer: 'llm',
+      evaluatorEnabled: false,
+      evaluatorAtDepths: { has: () => false },
+      reviewerAtDepths: { has: () => false },
+      maxParallelSteps: 1,
+      maxDepth: 1,
+      tokenBudget: 100000,
+      formalizeTask: false,
+    } satisfies StepperCompositionSpec,
+    {
+      makeRoleLlm: async (role: string) => {
+        calledRoles.push(role);
+        return stub as never;
+      },
+      callMcp: async () => '',
+      mintStepperId: () => 'id',
+      registry: new Map(),
+    } as never,
+  );
+  assert.ok(built.rootStepper, 'root stepper built without llmMap/makeLlm');
+  assert.ok(calledRoles.length > 0, 'makeRoleLlm was used');
+});

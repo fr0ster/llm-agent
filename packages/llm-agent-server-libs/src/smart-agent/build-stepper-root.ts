@@ -108,18 +108,31 @@ export type { CompositionNode, StepperCompositionSpec } from './config.js';
 
 /** Build-time dependencies (everything not part of the composition itself). */
 export interface BuildFromCompositionDeps {
-  makeLlm: (config: SmartServerLlmConfig) => Promise<ILlm>;
+  /**
+   * Factory to build an ILlm from a server config. Used by the legacy
+   * llmMap/pipelineFallback resolution path. Optional when makeRoleLlm is
+   * supplied instead.
+   */
+  makeLlm?: (config: SmartServerLlmConfig) => Promise<ILlm>;
   callMcp: (
     name: string,
     args: unknown,
     signal?: AbortSignal,
   ) => Promise<string>;
   mintStepperId: () => string;
+  /** Optional per-role LLM map (legacy server path). */
   llmMap?: NormalizedLlmMap;
+  /** Pipeline fallback config (legacy server path). */
   pipelineFallback?: SmartServerLlmConfig;
   logLlmCall?: (entry: LlmCallEntry) => void;
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   registry: ReadonlyMap<string, IStepper>;
+  /**
+   * When present, supersedes llmMap/makeLlm resolution: resolve a role's LLM
+   * directly. Enables config-decoupled pipeline builder-factories that live in a
+   * library without depending on SmartServerLlmConfig.
+   */
+  makeRoleLlm?: (role: string) => Promise<ILlm>;
 }
 
 /** Map a parsed coordinator config to the front-end-agnostic composition spec. */
@@ -211,9 +224,19 @@ export async function buildFromComposition(
     component: import('@mcp-abap-adt/llm-agent').LlmComponent,
     spendOnLedger: boolean,
   ): Promise<ILlm> => {
-    const cfg =
-      resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
-    const inner = await makeLlm(cfg);
+    let inner: ILlm;
+    let cfgModel: string | undefined;
+    if (deps.makeRoleLlm) {
+      inner = await deps.makeRoleLlm(role);
+    } else {
+      const cfg =
+        resolveLlmConfig(llmMap, role, pipelineFallback) ?? STUB_LLM_CFG;
+      cfgModel = cfg.model;
+      // makeLlm is safe here: this branch only runs when makeRoleLlm is absent.
+      // If both are absent the call throws at runtime, matching prior behaviour
+      // where makeLlm was required.
+      inner = await makeLlm!(cfg);
+    }
     if (!logLlmCall && !spendOnLedger) return inner;
     // Wrap with LoggingLlm so every call to this role's LLM is (a) logged to
     // byComponent and (b) charged to the shared ledger. Fires once per call
@@ -222,7 +245,7 @@ export async function buildFromComposition(
       if (logLlmCall) {
         logLlmCall({
           component,
-          model: inner.model ?? cfg.model ?? 'unknown',
+          model: inner.model ?? cfgModel ?? 'unknown',
           promptTokens: usage.promptTokens,
           completionTokens: usage.completionTokens,
           totalTokens: usage.totalTokens,
