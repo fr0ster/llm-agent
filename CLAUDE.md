@@ -17,17 +17,19 @@ There is no unit test framework. `npm run test` is just `build + start` (smoke t
 
 ## Architecture
 
-This monorepo publishes five npm packages forming the SmartAgent runtime:
+This monorepo publishes six npm packages forming the SmartAgent runtime:
 
 ```
-@mcp-abap-adt/llm-agent          contracts: interfaces, public types, lightweight helpers
-@mcp-abap-adt/llm-agent-mcp      MCP client wrapper + adapter + connection strategies
-@mcp-abap-adt/llm-agent-rag      RAG/embedder composition (makeRag, resolveEmbedder, factories)
-@mcp-abap-adt/llm-agent-libs     core composition: builder, agent, pipeline, sessions, ...
-@mcp-abap-adt/llm-agent-server   binary only (CLI + HTTP server, no library exports)
+@mcp-abap-adt/llm-agent             contracts: interfaces, public types, lightweight helpers
+@mcp-abap-adt/llm-agent-mcp         MCP client wrapper + adapter + connection strategies
+@mcp-abap-adt/llm-agent-rag         RAG/embedder composition (makeRag, resolveEmbedder, factories)
+@mcp-abap-adt/llm-agent-libs        core composition: builder, agent, pipeline, sessions, ...
+@mcp-abap-adt/llm-agent-server-libs SmartServer composition library: build-stepper-root, DAG/stepper
+                                    coordinator handlers, config parsing, sessions, pipeline factories
+@mcp-abap-adt/llm-agent-server      binary only (CLI + HTTP server, no library exports)
 ```
 
-Dependency order: `llm-agent-server → llm-agent-libs → {llm-agent-mcp, llm-agent-rag} → llm-agent`.
+Dependency order: `llm-agent-server → llm-agent-server-libs → llm-agent-libs → {llm-agent-mcp, llm-agent-rag} → llm-agent`.
 
 LLM provider, embedder, and RAG backend packages are bundled as regular
 dependencies of `@mcp-abap-adt/llm-agent-server` so `npm install -g
@@ -51,7 +53,8 @@ still install only what they need.)
 | **MCP client** | `@mcp-abap-adt/llm-agent-mcp` | `MCPClientWrapper`, `McpClientAdapter`, connection strategies |
 | **RAG/embedder** | `@mcp-abap-adt/llm-agent-rag` | `makeRag`, `resolveEmbedder`, prefetch helpers, backend factories |
 | **Composition runtime** | `@mcp-abap-adt/llm-agent-libs` | `SmartAgentBuilder`, `SmartAgent`, pipeline, sessions, history, metrics, skills, plugins, `makeLlm` |
-| **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + `SmartServer` HTTP server |
+| **SmartServer library** | `@mcp-abap-adt/llm-agent-server-libs` | `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, config parsing, sessions, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`) |
+| **Binary** | `@mcp-abap-adt/llm-agent-server` | CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) + HTTP listen; thin wrapper over `llm-agent-server-libs` |
 
 ### MCP transports
 

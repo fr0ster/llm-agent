@@ -2779,3 +2779,61 @@ review uses Claude Haiku (fast). All three providers are exercised in a single e
 `parent.agent.process(task)` call.
 
 See `docs/PERFORMANCE.md` for cost analysis and token-budget tuning guidance.
+
+## Reusing pipeline builder-factories
+
+The five coordinator pipelines are exposed as standalone, importable builder-factories from
+`@mcp-abap-adt/llm-agent-server-libs`, so you can build any pipeline's `coordinator` stage handler
+in your own project without going through the YAML/`SmartServer` front-end.
+
+| Factory | `kind` | Pipeline |
+|---|---|---|
+| `LinearFactory` | `linear` | linear tool-loop coordinator |
+| `DagFactory` | `dag` | DAG coordinator (parallel workers) |
+| `CyclicFactory` | `cyclic` | Stepper, planner `none` + cyclic-react executor |
+| `PlannedFactory` | `planned` | Stepper, LLM planner + cyclic-react executor |
+| `DeepStepperFactory` | `deep-stepper` | Stepper, LLM planner + recursive executor |
+
+All factories implement `IPipelineFactory<TConfig>` (from `@mcp-abap-adt/llm-agent`):
+
+```ts
+import { CyclicFactory } from '@mcp-abap-adt/llm-agent-server-libs';
+
+const { handler } = await new CyclicFactory().build(
+  // StepperFactoryConfig: the composition spec MINUS the {planner, executor} preset
+  // (those are baked by the factory). evaluatorAtDepths/reviewerAtDepths are
+  // `{ has(depth: number): boolean }` predicates.
+  {
+    granularity: 'coarse',
+    finalizer: 'llm',
+    evaluatorEnabled: true,
+    evaluatorAtDepths: { has: () => true },
+    reviewerAtDepths: { has: () => false },
+    maxParallelSteps: 4,
+    maxDepth: 2,
+    tokenBudget: 200_000,
+    formalizeTask: false,
+  },
+  {
+    // makeRoleLlm resolves the LLM per logical role ('planner'|'executor'|'finalizer'|
+    // 'reviewer'|'evaluator'|'classifier') — supersedes the server's YAML llm-map.
+    makeRoleLlm: async (_role) => myLlm,
+    callMcp,                 // (name, args, signal?) => Promise<string>
+    knowledgeRagFor,         // (sessionId) => Promise<IKnowledgeRagHandle>
+    toolsRag,                // IToolsRagHandle
+    mintStepperId: () => crypto.randomUUID(),
+    mintTurnId:   () => crypto.randomUUID(),
+  },
+);
+
+// `handler` is the `coordinator` stage handler — register it in a pipeline:
+registry.set('coordinator', handler);
+```
+
+`DagFactory` / `LinearFactory` take their wrapped handler's deps directly as the config and
+construct the existing `DagCoordinatorHandler` / `CoordinatorHandler` (behaviour unchanged):
+
+```ts
+import { DagFactory } from '@mcp-abap-adt/llm-agent-server-libs';
+const { handler } = await new DagFactory().build(dagCoordinatorHandlerDeps, baseDeps);
+```

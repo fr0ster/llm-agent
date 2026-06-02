@@ -9,6 +9,7 @@ The codebase is split across **five npm packages**:
 @mcp-abap-adt/llm-agent-mcp      MCP client wrapper + adapter + connection strategies
 @mcp-abap-adt/llm-agent-rag      RAG/embedder composition (makeRag, resolveEmbedder, factories)
 @mcp-abap-adt/llm-agent-libs     core composition: builder, agent, pipeline, sessions, ...
+@mcp-abap-adt/llm-agent-server-libs SmartServer composition library + pipeline builder-factories
 @mcp-abap-adt/llm-agent-server   binary only (CLI + HTTP server, no library exports)
 ```
 
@@ -22,18 +23,21 @@ The codebase is split across **five npm packages**:
 
 - **`@mcp-abap-adt/llm-agent-libs`** — core composition runtime: `SmartAgentBuilder`, agent, pipeline, sessions, history, resilience, observability, plugins, skills, plus LLM factories (`makeLlm`, `makeDefaultLlm` — both **async**). LLM provider packages are optional peers of this package — library-mode consumers install only what they use. (At the binary level, `@mcp-abap-adt/llm-agent-server` ≥ 13.1.0 bundles all providers as regular deps.) `SmartAgentBuilder.build()` is async (unchanged externally). Depends on `llm-agent`, `llm-agent-mcp`, `llm-agent-rag`.
 
-- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server (`SmartServer`). **Not a library** — importing from this package as a library is not supported as of 12.0.1. Depends on `llm-agent-libs`.
+- **`@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime as an importable library: `SmartServer`, `buildFromComposition`/`buildStepperRoot`, `StepperCoordinatorHandler`, coordinator config parsing, session stores, and the **pipeline builder-factories** (`LinearFactory`, `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory` — each builds one pipeline's `coordinator` stage handler from a typed config + role-resolving deps). Depends on `llm-agent`, `llm-agent-libs`, `llm-agent-mcp`, `llm-agent-rag`.
+
+- **`@mcp-abap-adt/llm-agent-server`** — binary only: CLI (`llm-agent`, `llm-agent-check`, `claude-via-agent`) and HTTP server. **Not a library** — importing from this package as a library is not supported as of 12.0.1. A thin wrapper over `llm-agent-server-libs`. Depends on `llm-agent-server-libs`.
 
 ### Package dependency graph
 
 ```
 llm-agent-server
-  └── llm-agent-libs
-        ├── llm-agent-mcp
-        │     └── llm-agent
-        ├── llm-agent-rag
-        │     └── llm-agent
-        └── llm-agent
+  └── llm-agent-server-libs
+        └── llm-agent-libs
+              ├── llm-agent-mcp
+              │     └── llm-agent
+              ├── llm-agent-rag
+              │     └── llm-agent
+              └── llm-agent
 ```
 
 Optional peer dependencies (not in the graph above):
