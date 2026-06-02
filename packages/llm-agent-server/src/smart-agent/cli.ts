@@ -54,15 +54,15 @@ import {
   prefetchEmbedderFactories,
   prefetchRagFactories,
 } from '@mcp-abap-adt/llm-agent-rag';
-import { configDotenv } from 'dotenv';
 import {
   generateConfigTemplate,
   loadYamlConfig,
   type ResolveConfigArgs,
   resolveSmartServerConfig,
-} from './config.js';
-import type { SmartServerConfig } from './smart-server.js';
-import { SmartServer } from './smart-server.js';
+  SmartServer,
+  type SmartServerConfig,
+} from '@mcp-abap-adt/llm-agent-server-libs';
+import { configDotenv } from 'dotenv';
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing — must happen before dotenv so --env is available

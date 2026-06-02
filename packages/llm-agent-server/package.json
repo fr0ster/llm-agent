@@ -37,6 +37,7 @@
     "@mcp-abap-adt/hana-vector-rag": "^18.0.0",
     "@mcp-abap-adt/llm-agent": "^18.0.0",
     "@mcp-abap-adt/llm-agent-libs": "^18.0.0",
+    "@mcp-abap-adt/llm-agent-server-libs": "^18.0.0",
     "@mcp-abap-adt/llm-agent-mcp": "^18.0.0",
     "@mcp-abap-adt/llm-agent-rag": "^18.0.0",
     "@mcp-abap-adt/ollama-embedder": "^18.0.0",
