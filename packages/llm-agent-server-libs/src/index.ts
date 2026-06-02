@@ -1,3 +1,4 @@
+export * from './factories/index.js';
 export * from './smart-agent/build-dag-coordinator-deps.js';
 export * from './smart-agent/build-stepper-root.js';
 export * from './smart-agent/config.js';
