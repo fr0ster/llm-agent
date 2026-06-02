@@ -158,23 +158,35 @@ export class CyclicReActExecutor implements IExecutor {
     // program" task, so the model would fall back to the wrong tool. This is the
     // contextual-RAG-then-tool-search ordering.
     if (tools.length === 0) {
-      // The seed query reflects the OVERALL intent (taskSpec) + shared guidance
-      // (factsPrefix) + the Evaluator's NEEDS + this node's prompt. The needs
-      // ("read the include bodies") make the search STRICTER — they semantically
-      // match the right read-tool descriptions, so the correct tool surfaces on
-      // the first turn instead of the vague prompt ranking write tools higher
-      // (18.1 needs-driven search). This is the contextual-RAG-then-tool-search
-      // ordering.
-      const needsHint =
-        input.evaluatorNeeds && input.evaluatorNeeds.length > 0
-          ? `Needed: ${input.evaluatorNeeds.join('; ')}\n`
-          : '';
-      const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${needsHint}${factsPrefix}${prompt}`;
+      // TWO ADDITIVE single-intent searches, UNIONed — never one mixed query.
+      // (1) PROMPT search: the overall intent (taskSpec) + guidance + node prompt
+      //     → the main-task tools (e.g. GetProgram for the program shell).
+      // (2) NEEDS search: each Evaluator gap ("read the include bodies") queried
+      //     SEPARATELY → the specific tool for that gap (GetInclude /
+      //     GetIncludesList). Kept separate because a single mixed query DILUTES
+      //     and DEMOTES the prompt-driven tools (measured: GetProgram #8 → #18
+      //     when needs are mixed in). Single-intent queries each match their tool
+      //     cleanly; the union covers both intents without lexical collision.
+      const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${factsPrefix}${prompt}`;
       const seeded = await toolsRag.query(seedQuery, 10);
       for (const t of seeded) tools.push(t as LlmTool);
+      let needSeeded = 0;
+      if (input.evaluatorNeeds && input.evaluatorNeeds.length > 0) {
+        const have = new Set(tools.map((t) => t.name));
+        const byNeeds = await toolsRag.query(
+          input.evaluatorNeeds.join('; '),
+          10,
+        );
+        for (const t of byNeeds)
+          if (!have.has((t as LlmTool).name)) {
+            tools.push(t as LlmTool);
+            needSeeded++;
+          }
+      }
       input.sessionLogger?.logStep('executor_tool_seed', {
         source: ref,
         seededCount: seeded.length,
+        needSeededCount: needSeeded,
       });
     }
 

@@ -367,21 +367,32 @@ test('#Phase2: a repeated (tool,args) call is deduped — MCP hit once; differen
   assert.equal(writes.filter((w) => w.content === 'INCLUDE BODY').length, 2);
 });
 
-test('needs-driven search: the Evaluator needs seed the tool-search query', async () => {
+test('needs-driven search: a SEPARATE need-query unions in the need tool (prompt tool kept)', async () => {
   const llm = scriptedLlm([{ content: 'done' }]);
-  let seedQuery = '';
+  const queries: string[] = [];
   const toolsRag = {
     async query(q: string) {
-      if (!seedQuery) seedQuery = q;
-      return [{ name: 'GetInclude' }];
+      queries.push(q);
+      // prompt query → GetProgram (main); needs query → GetInclude (additive)
+      return /include/i.test(q)
+        ? [{ name: 'GetInclude' }]
+        : [{ name: 'GetProgram' }];
     },
     lookup() {
       return undefined;
     },
   };
+  let offered: Array<{ name: string }> = [];
+  const llmCapture = {
+    name: 'stub',
+    async chat(_m: unknown, tools: Array<{ name: string }>) {
+      if (offered.length === 0) offered = tools ?? [];
+      return (llm as { chat: () => unknown }).chat();
+    },
+  };
   const { rag } = knowledgeStub();
   const exec = new CyclicReActExecutor({
-    llm: llm as never,
+    llm: llmCapture as never,
     callMcp: mcp({}).call,
     component: 'tool-loop',
     maxIterations: 10,
@@ -395,11 +406,14 @@ test('needs-driven search: the Evaluator needs seed the tool-search query', asyn
     budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
     ...META_BASE,
   });
-  assert.match(
-    seedQuery,
-    /Needed: read the include bodies/,
-    'the seed query must carry the Evaluator needs so the right tools surface',
+  // TWO searches: the prompt seed + a SEPARATE query keyed on the needs.
+  assert.ok(
+    queries.some((q) => /read the include bodies/.test(q)),
+    'a separate tool-search query must be keyed on the Evaluator needs',
   );
+  const names = offered.map((t) => t.name);
+  assert.ok(names.includes('GetProgram'), 'prompt tool kept (main program)');
+  assert.ok(names.includes('GetInclude'), 'need tool unioned in (includes)');
 });
 
 test('#Phase2 cross-step: an artefact already in the session store is injected, not re-fetched', async () => {
