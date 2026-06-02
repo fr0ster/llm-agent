@@ -100,6 +100,12 @@ export type {
   StageType,
 } from './pipeline.js';
 export type {
+  BuiltCoordinator,
+  IPipelineFactory,
+  PipelineFactoryDepsBase,
+  PipelineFactoryKind,
+} from './pipeline-factory.js';
+export type {
   IPlanner,
   PlannerCatalogEntry,
   PlannerInput,
