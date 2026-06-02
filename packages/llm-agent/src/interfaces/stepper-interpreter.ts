@@ -26,6 +26,9 @@ export interface IStepperInterpreter {
       taskSpec?: ITaskSpec;
       /** Client external tools, threaded to each executor (issue #167). */
       externalTools?: readonly LlmTool[];
+      /** Evaluator's named gaps, threaded to the executor for needs-driven
+       *  tool-search (18.1). */
+      evaluatorNeeds?: readonly string[];
       maxParallelSteps: number;
       mintStepperId: () => string;
       signal?: AbortSignal;

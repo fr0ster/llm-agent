@@ -367,6 +367,41 @@ test('#Phase2: a repeated (tool,args) call is deduped — MCP hit once; differen
   assert.equal(writes.filter((w) => w.content === 'INCLUDE BODY').length, 2);
 });
 
+test('needs-driven search: the Evaluator needs seed the tool-search query', async () => {
+  const llm = scriptedLlm([{ content: 'done' }]);
+  let seedQuery = '';
+  const toolsRag = {
+    async query(q: string) {
+      if (!seedQuery) seedQuery = q;
+      return [{ name: 'GetInclude' }];
+    },
+    lookup() {
+      return undefined;
+    },
+  };
+  const { rag } = knowledgeStub();
+  const exec = new CyclicReActExecutor({
+    llm: llm as never,
+    callMcp: mcp({}).call,
+    component: 'tool-loop',
+    maxIterations: 10,
+  });
+  await exec.execute({
+    prompt: 'review program Z',
+    tools: [], // empty → executor seeds from toolsRag
+    evaluatorNeeds: ['read the include bodies of the program'],
+    knowledgeRag: rag as never,
+    toolsRag: toolsRag as never,
+    budget: { depthRemaining: 0, tokens: new TokenLedger(100000) },
+    ...META_BASE,
+  });
+  assert.match(
+    seedQuery,
+    /Needed: read the include bodies/,
+    'the seed query must carry the Evaluator needs so the right tools surface',
+  );
+});
+
 test('#Phase2 cross-step: an artefact already in the session store is injected, not re-fetched', async () => {
   // The model calls GetInclude(O01); another step already stored it → the
   // executor injects the STORED content and does NOT hit MCP.

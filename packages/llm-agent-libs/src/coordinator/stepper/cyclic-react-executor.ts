@@ -159,9 +159,17 @@ export class CyclicReActExecutor implements IExecutor {
     // contextual-RAG-then-tool-search ordering.
     if (tools.length === 0) {
       // The seed query reflects the OVERALL intent (taskSpec) + shared guidance
-      // (factsPrefix) + this node's prompt — so tool-search ranks tools for the
-      // whole task, not just the narrow sub-goal.
-      const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${factsPrefix}${prompt}`;
+      // (factsPrefix) + the Evaluator's NEEDS + this node's prompt. The needs
+      // ("read the include bodies") make the search STRICTER — they semantically
+      // match the right read-tool descriptions, so the correct tool surfaces on
+      // the first turn instead of the vague prompt ranking write tools higher
+      // (18.1 needs-driven search). This is the contextual-RAG-then-tool-search
+      // ordering.
+      const needsHint =
+        input.evaluatorNeeds && input.evaluatorNeeds.length > 0
+          ? `Needed: ${input.evaluatorNeeds.join('; ')}\n`
+          : '';
+      const seedQuery = `${taskAnchor ? `${renderTaskSpec(taskSpec as NonNullable<typeof taskSpec>)}\n` : ''}${needsHint}${factsPrefix}${prompt}`;
       const seeded = await toolsRag.query(seedQuery, 10);
       for (const t of seeded) tools.push(t as LlmTool);
       input.sessionLogger?.logStep('executor_tool_seed', {

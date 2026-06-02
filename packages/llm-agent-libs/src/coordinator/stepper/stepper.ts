@@ -75,6 +75,7 @@ export class Stepper implements IStepper {
       identity: input.identity,
       taskSpec: input.taskSpec,
       externalTools: input.externalTools,
+      evaluatorNeeds: input.evaluatorNeeds,
       maxParallelSteps,
       mintStepperId,
       signal: input.signal,
@@ -119,9 +120,13 @@ export class Stepper implements IStepper {
           interpretCtx,
         );
       }
-      // needs-work → feed the named gaps to the planner as prerequisites.
-      if (verdict.missing.length > 0)
+      // needs-work → feed the named gaps to the planner as prerequisites AND
+      // thread them down so the executor's tool-search is keyed on the needs
+      // (needs-driven search — surfaces the right tools on the first turn).
+      if (verdict.missing.length > 0) {
         plannerPrompt = `${input.prompt}\n\n[Prerequisites to address FIRST: ${verdict.missing.join('; ')}]`;
+        interpretCtx.evaluatorNeeds = verdict.missing;
+      }
     }
 
     const plan = await planner.plan({

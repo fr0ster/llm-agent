@@ -255,9 +255,35 @@ the consumer. Path chosen: **(a)+(b)** — squeeze the AGNOSTIC pipeline as far 
 gnostification** (`knowledgeSeed` / the 05 preset) for correctness. (a) = best-effort; (b) = the
 guarantee. Strategy: "take as much as possible from agnostic, then gnostify."
 
+## The per-step evaluation loop — settled model (2026-06-02)
+
+Evaluation BRACKETS execution: an input judge before, an output judge after. Both are LLM judgements
+WITH the RAG context. The step iteration:
+
+1. **Hydrate context** from knowledge-RAG (consumer hints/skills) — queried by the prompt.
+2. **Evaluator — INPUT judge (pre-hoc).** Judges prompt completeness WITH that context and emits
+   `route` + `needs` (what is missing). Crucially, the `needs` make the subsequent search STRICTER:
+   tool/RAG search is keyed on the SPECIFIC needs (e.g. "read the include bodies"), not the vague
+   prompt ("review program") — so the right tools surface on the FIRST try. (`needs` semantically
+   match read-tool descriptions like GetInclude's `[read-only] read include source`, so this fixes
+   the weak prompt-query path WITHOUT touching the embedder.)
+3. **Search + plan** driven by `needs` → planner builds the plan with the right actions/tools.
+4. **Executor runs** the step.
+5. **Executor's LLM output — OUTPUT judge (post-hoc), the LAST evaluator of the iteration.** The
+   need-classifier analyses the answer (incl. self-caveats "couldn't read X / partial"); incomplete
+   → re-query tools by the new need / escalate to the consumer (ClarifySignal) → next iteration.
+   Complete → done.
+
+Implemented: pre-hoc Evaluator (Phase 1), post-hoc need-classifier (caveat-aware) + escalation.
+OPEN refinement: thread the Evaluator's `needs` into the tool-search QUERY (planner + executor seed),
+not just the planner prompt — so step 2's "stricter search" fires reliably (esp. in cyclic, where the
+trivial planner ignores the prereq text). Eval-gated.
+
 ## Decisions already fixed (do NOT re-litigate)
 
 - Evaluator + reviewer both judge WITH RAG context.
+- A SEPARATE Evaluator is required — the planner alone plans from the prompt and does NOT reliably
+  self-assess completeness (18.0 planned-react under-planned: no include step). Validated empirically.
 - "What completeness means" = consumer RAG skills, never hardcoded.
 - Planner ≠ executor (smart plans, cheap executes); executor never self-assesses completeness.
 - deep-stepper = flow + recursion flag (not a separate mode).

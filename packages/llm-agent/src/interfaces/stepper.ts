@@ -54,6 +54,9 @@ export interface IStepperInput {
    *  request, e.g. create_file). Threaded down to every executor and merged
    *  with the seeded MCP tools (issue #167). Absent → only MCP tools. */
   externalTools?: readonly LlmTool[];
+  /** The Evaluator's named gaps (`needs`) for this task — threaded so the
+   *  executor's tool-search is keyed on what is needed (18.1 needs-driven search). */
+  evaluatorNeeds?: readonly string[];
   signal?: AbortSignal;
   sessionLogger?: { logStep(name: string, data: unknown): void };
   onProgress?: (event: StreamChunk) => void;

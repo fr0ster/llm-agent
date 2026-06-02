@@ -17,6 +17,14 @@ export interface IExecutor {
      * emit a tool call the client fulfils (issue #167). Absent → only MCP tools.
      */
     externalTools?: readonly LlmTool[];
+    /**
+     * The Evaluator's named gaps for this (sub-)task ("read the include bodies",
+     * …). Used to make the proactive tool-search STRICTER — the seed query is
+     * keyed on what is actually needed, not just the node goal, so the right
+     * tools surface on the first turn (18.1 needs-driven search). Absent → seed
+     * by the prompt only.
+     */
+    evaluatorNeeds?: readonly string[];
     knowledgeRag: IKnowledgeRagHandle;
     toolsRag: IToolsRagHandle;
     needResolver?: INeedResolver;
