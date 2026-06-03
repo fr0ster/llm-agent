@@ -19,6 +19,7 @@
 - `packages/llm-agent/src/interfaces/interpreter.ts` — `NodeResult.status += 'awaiting-external'`; `InterpretResult.pendingExternalToolCalls`.
 - `packages/llm-agent/src/external-results.ts` — CREATE `buildExternalResults(messages)` (validated map + sanitized messages). (contracts — pure, reusable by flat + DAG)
 - `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — external surfacing (drop hard-mode external drop; extId rewrite; map lookup; awaiting-external).
+- `packages/llm-agent-libs/src/agent.ts` — flat (non-pipeline) hard-mode external-tool drop fix (`:912`, `:1087`) so D4 holds in the flat flow too.
 - `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — map a worker external-tool result (stopReason tool_calls) → `ISubAgentResult{status:'awaiting-external', pendingExternalToolCalls}` (the chunk→result bridge).
 - `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — collect `pendingExternalToolCalls` FIFO; collect-all-at-settle barrier.
 - `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — no-finalizer branch: emit terminal turn with collected calls.
@@ -182,6 +183,19 @@ Write concrete `node:test` cases asserting (against the OpenAI-normalized intern
 
 ---
 
+### Task 4c: flat (non-pipeline) SmartAgent hard-mode external drop (libs)
+
+**Files:** `packages/llm-agent-libs/src/agent.ts`; test `.../__tests__/agent-hard-mode-external.test.ts`.
+
+**Why (review#11 Medium):** D4 says external tools are offered in flat AND DAG. The legacy/non-pipeline SmartAgent flow still DROPS them in hard mode at `agent.ts:912` (`mode==='hard' ? selectedMcpTools : [...mcp, ...external]`) and `agent.ts:1087` (`mode==='hard' ? [] : externalTools`). Without this, a flat (no-coordinator) consumer using `mode:'hard'` loses its client tools — contradicting D4.
+
+- [ ] **Step 1 — failing test:** a flat SmartAgent run with `mode:'hard'` and a client external tool → the tool is PRESENT in the tools passed to the LLM (assert the external tool name is in the `finalTools`/the LLM-call tools), and an external tool_call surfaces (standard round-trip), exactly as `mode:'smart'`.
+- [ ] **Step 2 — run → FAIL**.
+- [ ] **Step 3 — implement:** at `agent.ts:912` make `finalTools` ALWAYS include `externalTools` regardless of mode (`[...(selectedMcpTools as LlmTool[]), ...externalTools]`); at `agent.ts:1087` pass `externalTools` (not `[]`) in hard mode. Mode continues to govern only the worker's INTERNAL execution posture (D4). Leave internal-tool handling unchanged.
+- [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent packages/llm-agent-libs`; **Step 6 — commit** `fix(libs): flat SmartAgent hard mode keeps client external tools (#171, D4)`.
+
+---
+
 ### Task 5: DAG interpreter collects pending external calls (collect-all-at-settle) (libs)
 
 **Files:** `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts`; test `.../__tests__/dag-interpreter-external.test.ts`.
@@ -211,7 +225,7 @@ Write concrete `node:test` cases asserting (against the OpenAI-normalized intern
     8. the DAG interpreter / `SubAgentDispatch` — pass `ctx.externalResults` into each `worker.run({ ..., externalResults })` `ISubAgentInput`.
     - **Chain test (required):** set one `extId→result` at the TOP-level context, run a (stubbed) DAG worker, and assert the WORKER's tool-loop received that `externalResults` map (e.g. via a spy tool-loop / a worker that echoes `ctx.externalResults.has(extId)`).
   - In `dag-coordinator.ts`, after `interpreter.interpret(...)`: if `result.pendingExternalToolCalls?.length` → `ctx.yield` an assistant chunk with `toolCalls` = the collected calls + a terminal chunk with `finishReason:'tool_calls'`; RETURN without calling `this.finalizer.finalize(...)`. Else → existing finalizer path.
-  - In `smart-server.ts` chat handler: `const { results, sanitizedMessages } = buildExternalResults(normalizedMessages);` set `ctx.externalResults = results` and pass `sanitizedMessages` (not raw) into the agent so internal LLM calls never see unmatched tool_calls (review#5).
+  - In `smart-server.ts` chat handler: `const { results, sanitizedMessages } = buildExternalResults(normalizedMessages);`. The server has NO `PipelineContext` to mutate (review#10) — thread the map via the AGENT OPTIONS on BOTH paths: streaming `smartAgent.streamProcess(sanitizedMessages, { ...opts, externalResults: results })` (~line 2874) and non-streaming `smartAgent.process(sanitizedMessages, { ...opts, externalResults: results })` (~line 3005). Pass `sanitizedMessages` (NOT the raw `normalizedMessages`) so internal LLM calls never see an unmatched assistant tool_calls (review#5). `AgentCallOptions.externalResults` (Task 6 chain) flows into the built `PipelineContext` inside `_runStructuredPipeline`.
 - [ ] **Step 4 — PASS**; **Step 5 — build** all 4 packages; **Step 6 — commit** `feat: DAG coordinator emits collected external tool_calls (no-finalizer) + externalResults threading (#171)`.
 
 ---
