@@ -136,11 +136,13 @@ Implements spec D1 adjacency validation + review#5 sanitization. Pure function o
 //   map has that one; sanitizedMessages contains NO assistant tool_calls/tool turns
 //   (so no provider-facing list has an unmatched tool_calls)
 ```
-Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b) orphan result → rejected; (c) partial set → 1 in map + `sanitizedMessages` has zero `role:'tool'` and zero assistant-with-tool_calls messages; (d) Anthropic shape (tool_result first in a user turn immediately after the tool_use turn) → accepted. **(e) REQUIRED (review#6): `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` → BOTH a and b in the map, and `sanitizedMessages` contains none of those three turns** (the multi-tool-call-per-turn case the literal 'a following role:tool' wording would have under-consumed).
+Write concrete `node:test` cases asserting (against the OpenAI-normalized internal `Message[]` — see scope note): (a) adjacent `role:'tool'` result → in map; (b) orphan/non-adjacent result → rejected; (c) partial set → 1 in map + `sanitizedMessages` has zero `role:'tool'` and zero assistant-with-tool_calls messages; **(d) REQUIRED (review#6): `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` → BOTH a and b in the map, and `sanitizedMessages` contains none of those three turns** (the multi-tool-call-per-turn case).
 - [ ] **Step 2 — run → FAIL**.
-- [ ] **Step 3 — implement** `buildExternalResults(messages, opts?): { results: Map<string, string>; sanitizedMessages: Message[] }`:
+**Scope (review#7 Medium):** `buildExternalResults` operates on the **OpenAI-normalized internal `Message[]`** (`role:'tool'` + `tool_call_id`; content `string|null`) — the shape the `/v1/chat/completions` handler already produces. The internal `Message` type does NOT model Anthropic `tool_result` blocks, so DO NOT parse raw Anthropic shapes here (a `tool_result` test would not type cleanly). The Anthropic `/v1/messages` adapter is responsible for normalizing its `tool_result` blocks into the same internal `role:'tool'` + `tool_call_id` form BEFORE calling `buildExternalResults` — tracked as an adapter-specific follow-up (Task 8 note), not part of this contract function.
+
+- [ ] **Step 3 — implement** `buildExternalResults(messages: Message[], opts?): { results: Map<string, string>; sanitizedMessages: Message[] }`:
   - Walk `messages`; identify assistant turns whose `tool_calls` ids match `/^ext:/`.
-  - Accept the results that immediately follow the declaring assistant turn. **OpenAI emits ONE `role:'tool'` message PER tool_call** — so `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` is the normal shape: consume the WHOLE consecutive run of `role:'tool'` messages right after the assistant turn, mapping EACH by its `tool_call_id` (`results.set(id, content)`). Anthropic packs all `tool_result` blocks into the single `user` turn immediately after the `tool_use` turn — consume all of them. A result is accepted ONLY if its id was declared in that adjacent assistant/`tool_use` turn.
+  - Accept the results that immediately follow the declaring assistant turn. **OpenAI emits ONE `role:'tool'` message PER tool_call** — so `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` is the normal shape: consume the WHOLE consecutive run of `role:'tool'` messages right after the assistant turn, mapping EACH by its `tool_call_id` (`results.set(id, content)`). A result is accepted ONLY if its `tool_call_id` was declared in that adjacent assistant turn. (Anthropic shapes are pre-normalized by the adapter to this same `role:'tool'` form — see the scope note.)
   - **Strip the WHOLE consumed group** (the assistant external turn + every adjacent `role:'tool'`/`tool_result` it owns) from `sanitizedMessages` together — never leave a half-consumed pair.
   - `sanitizedMessages` = `messages` with EVERY external-`assistant(tool_calls)` turn and its paired `tool`/`tool_result` turn REMOVED (so internal LLM calls never see an unmatched `tool_calls`). Non-external messages pass through unchanged.
   - Reject (do not add) any `ext:` tool result that is orphan/non-adjacent.
@@ -154,13 +156,13 @@ Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b
 
 - [ ] **Step 1 — failing tests:**
   - hard mode now KEEPS external tools (`externalTools` length unchanged when `mode:'hard'`).
-  - an external tool_call is NOT executed server-side; the node ends with `status:'awaiting-external'` + `pendingExternalToolCalls` carrying the `extId`-rewritten call.
+  - an external tool_call is NOT executed server-side; the worker STREAM ends with `finishReason:'tool_calls'` carrying the `extId`-rewritten external call. (NOTE: `LlmStreamChunk` has NO `status` field — `packages/llm-agent/src/interfaces/types.ts:73` — so Task 4 only rewrites ids + yields the call + exits `tool_calls`; the `status:'awaiting-external'` translation is Task 4b's job, at the `ISubAgentResult` boundary.)
   - when `externalResults` has the `extId` → the result is injected as a tool message and the loop CONTINUES (no awaiting-external).
 - [ ] **Step 2 — run → FAIL**.
 - [ ] **Step 3 — implement:**
   - line ~112: `const externalTools = ctx.externalTools;` (drop the `mode==='hard' ? []`).
   - Thread `ctx.externalResults?: Map<string,string>` (added in Task 6 to the pipeline context; for the unit test, inject via the test ctx).
-  - When the streamed assistant turn contains a tool_call whose name ∈ `externalToolNames`: compute `extId = externalToolCallId(name, args)`; if `externalResults?.has(extId)` → push a `role:'tool'` message with that content + the `extId` id and CONTINUE the loop; else → set `status:'awaiting-external'`, push the call (id rewritten to `extId`) into `pendingExternalToolCalls`, and END the worker turn (do NOT loop, do NOT execute).
+  - When the streamed assistant turn contains a tool_call whose name ∈ `externalToolNames`: compute `extId = externalToolCallId(name, args)`; if `externalResults?.has(extId)` → push a `role:'tool'` message with that content + the `extId` id and CONTINUE the loop; else → rewrite the call's id to `extId`, YIELD it as a `toolCalls` chunk, and END the worker turn with `finishReason:'tool_calls'` (do NOT loop, do NOT execute). Do NOT attempt to set a `status` here — the chunk type has none; Task 4b reads `stopReason==='tool_calls'` + these external `toolCalls` to produce `ISubAgentResult.status:'awaiting-external'`.
   - Keep the existing internal-tool path unchanged.
 - [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent packages/llm-agent-libs`; **Step 6 — commit** `feat(libs): tool-loop surfaces external tool calls with deterministic ids (#171)`.
 
@@ -229,6 +231,7 @@ Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b
 - [ ] **Step 1 — ARCHITECTURE.md** decision point (1): change `hard` wording to "`hard` forces the worker to execute only internal MCP tools; client/external tools are still offered and their calls surfaced to the consumer" (D4).
 - [ ] **Step 2 — INTEGRATION.md:** short "external/client tools under the coordinator" note (always available, consumer-executed, standard round-trip, deterministic ids, stateless resume).
 - [ ] **Step 3 — integration test:** extend the (env-gated) DAG↔MCP test with an external-tool round-trip case (assistant surfaces an `ext:*` call → simulated client result fed back → run completes), gated like the existing one.
+- [ ] **Step 3b — Anthropic adapter follow-up (review#8):** in the `/v1/messages` adapter, normalize incoming `tool_result` blocks into the internal `role:'tool'` + `tool_call_id` shape BEFORE `buildExternalResults` runs (so the OpenAI-scoped extractor covers Anthropic too). Add a test that an Anthropic `tool_use`→`tool_result` round-trip yields the same validated `externalResults` map.
 - [ ] **Step 4 — commit** `docs+test: external tools under the DAG coordinator (#171)`.
 
 ---
