@@ -6,6 +6,8 @@
  * the same object (the redundant-read problem in the 2026-06-01 live matrix).
  */
 
+import { createHash } from 'node:crypto';
+
 /** Canonical, order-independent serialization of tool arguments so that
  *  `{a:1,b:2}` and `{b:2,a:1}` produce the SAME key. */
 export function stableArgsKey(args: unknown): string {
@@ -28,4 +30,31 @@ export function stableArgsKey(args: unknown): string {
  *  dedup heuristic (returns a stored value), and identifiers dominate. */
 export function artifactIdentityKey(toolName: string, args: unknown): string {
   return `${toolName}:${stableArgsKey(args)}`.toLowerCase();
+}
+
+/** DEEP canonical JSON: recursively sort object keys at every depth; arrays keep
+ *  order; case-PRESERVING. Used for external tool-call identity (NOT lowercased). */
+export function deepStableArgsKey(args: unknown): string {
+  const canon = (v: unknown): unknown => {
+    if (v === null || typeof v !== 'object') return v;
+    if (Array.isArray(v)) return v.map(canon);
+    const o = v as Record<string, unknown>;
+    const out: Record<string, unknown> = {};
+    for (const k of Object.keys(o).sort()) out[k] = canon(o[k]);
+    return out;
+  };
+  return JSON.stringify(canon(args));
+}
+
+/** First 16 hex chars of sha256. */
+export function shortHash(s: string): string {
+  return createHash('sha256').update(s).digest('hex').slice(0, 16);
+}
+
+/** Deterministic, content-addressed id for a client-provided external tool call
+ *  (spec D1). The toolName/args boundary uses a NUL separator (\x00). A space
+ *  would let ('a b','c') and ('a','b c') collide. */
+const EXT_SEP = '\x00';
+export function externalToolCallId(toolName: string, args: unknown): string {
+  return `ext:${shortHash(`${toolName}${EXT_SEP}${deepStableArgsKey(args)}`)}`;
 }
