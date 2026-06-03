@@ -39,24 +39,32 @@ A single sequential executor could use pure stateless round-trips with no specia
 
 ## Resolved design decisions (review findings)
 
-### D1 — `tool_call_id` correlation on stateless re-run (was High open Q)
+### D1 — `tool_call_id` correlation on stateless re-run (was High open Q; revised after review #2)
 
 The risk: turn 1 ends with an assistant tool_call id `call_X`; the client returns a `role:tool` result bound to `call_X`. On the stateless re-run the worker LLM would mint a NEW id (`call_Y`) and the result no longer matches.
 
-**Decision — deterministic synthetic ids.** External tool_call ids are NOT the LLM's random ids; the coordinator/executor REWRITES each surfaced external call to a deterministic id:
+**Decision — CONTENT-ADDRESSED deterministic ids (no nodeId).** The coordinator/executor REWRITES each surfaced external call to a deterministic id derived ONLY from the call's content:
 
 ```
-extId = `ext:${nodeId}:${artifactIdentityKey(toolName, args)}`
+extId = `ext:${shortHash(artifactIdentityKey(toolName, args))}`
+        // shortHash = first 16 hex chars of sha256(identity); identity = stableArgsKey-based
+        //             key from packages/llm-agent/src/artifact-identity.ts
 ```
 
-reusing the existing `stableArgsKey` / `artifactIdentityKey` (18.1, `packages/llm-agent/src/artifact-identity.ts`). Same node + tool + canonical args ⇒ same id across re-runs.
+- **No `nodeId` in the id** (review-#2 High): planner node ids are LLM-generated and may change between re-runs, which would orphan the result. Content-addressing removes that dependency entirely — the id is a pure function of `(toolName, canonical args)`. This is consistent with the 18.1 artifact-identity dedup philosophy (same tool+args = same logical artefact/call). Two distinct nodes issuing the *identical* external call collapse to one id — acceptable and idempotent-consistent; per-node distinctness, if ever needed, would use a coordinator-assigned **canonical plan-order ordinal** (assigned at execution start, NOT the planner's raw LLM id) — out of scope unless a real case appears.
+- **shortHash, not raw identity** (review-#2 Medium): `artifactIdentityKey` is `toolName:${JSON.stringify(args)}` lowercased — it can be large and carry quotes/braces/user data. Never put that in a `tool_call_id` / `tool_use_id`. Hash it (16 hex). The full `artifactIdentityKey` is kept in node metadata + the session log for debugging, never in protocol metadata.
 
-**Resume mechanism (concrete).** At request start the coordinator builds `externalResults: Map<extId, resultContent>` from the incoming history's `role:"tool"` / `tool_result` messages (keyed by their `tool_call_id` / `tool_use_id`, which carry the deterministic `extId` from the prior turn). This map is threaded down to executors. When an executor's LLM emits a call to an external tool:
+**Resume mechanism (concrete) + adjacency validation (review-#2 Medium).** At request start the coordinator builds `externalResults: Map<extId, resultContent>` from the incoming history — but ONLY for results that satisfy protocol adjacency:
+1. scan assistant turns for external tool_calls whose id matches the `ext:` shape;
+2. accept a `role:"tool"` / `tool_result` message into the map ONLY if its `tool_call_id` / `tool_use_id` matches such a PRECEDING assistant external call in the SAME submitted history (OpenAI: any prior assistant external call; Anthropic: the `tool_result` must immediately follow its `tool_use` turn — enforce that ordering);
+3. a tool-result with no matching prior assistant external call is **rejected/ignored** (a malformed or over-eager client cannot inject arbitrary results into the map, even though external tools are consumer-owned).
+
+The validated map is threaded down to executors. When an executor's LLM emits a call to an external tool:
 1. compute `extId`;
-2. if `externalResults.has(extId)` → inject that result as the tool message and CONTINUE the worker (no re-surface) — this is "picks up from history", made concrete;
+2. if `externalResults.has(extId)` → inject that result as the tool message and CONTINUE the worker (no re-surface) — "picks up from history", made concrete;
 3. else → rewrite the call's id to `extId`, mark the node `awaiting-external`, surface it (collected).
 
-Determinism of args across re-runs is held by the **session-knowledge short-circuit**: upstream nodes (e.g. the review) are not recomputed — their artefacts are reused — so the inputs that produce the external call's args are stable, hence `extId` is stable. If args genuinely differ on re-run, the `extId` differs and it is correctly a NEW call (not a mismatch).
+Determinism of args across re-runs is held by the **session-knowledge short-circuit**: upstream nodes (e.g. the review) are not recomputed — their artefacts are reused — so the inputs that produce the external call's args are stable, hence `extId` is stable. If args genuinely differ on re-run, `extId` differs and it is correctly a NEW call (not a mismatch).
 
 ### D2 — typed "awaiting-external" path (was High open Q)
 
