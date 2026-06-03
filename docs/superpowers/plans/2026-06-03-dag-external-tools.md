@@ -19,6 +19,7 @@
 - `packages/llm-agent/src/interfaces/interpreter.ts` — `NodeResult.status += 'awaiting-external'`; `InterpretResult.pendingExternalToolCalls`.
 - `packages/llm-agent/src/external-results.ts` — CREATE `buildExternalResults(messages)` (validated map + sanitized messages). (contracts — pure, reusable by flat + DAG)
 - `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — external surfacing (drop hard-mode external drop; extId rewrite; map lookup; awaiting-external).
+- `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — map a worker external-tool result (finishReason tool_calls) → `ISubAgentResult{status:'awaiting-external', pendingExternalToolCalls}` (the chunk→result bridge).
 - `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — collect `pendingExternalToolCalls` FIFO; collect-all-at-settle barrier.
 - `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — no-finalizer branch: emit terminal turn with collected calls.
 - `packages/llm-agent-libs/src/coordinator/dag/<planner>` — route a "call external X" objective to a node (#171 obs 2c).
@@ -51,6 +52,10 @@ test('externalToolCallId: same tool+args → same id; shape ext:<16hex>', () => 
   assert.equal(id, externalToolCallId('rag_add', { collection: 'context', content: 'x' }));
   assert.match(id, /^ext:[0-9a-f]{16}$/);
 });
+test('externalToolCallId: known vector pins the NUL separator (regression guard)', () => {
+  // If the separator silently regresses to a space the hash changes → this fails.
+  assert.equal(externalToolCallId('rag_add', { a: 1 }), 'ext:e99d19aab4a77c50');
+});
 ```
 - [ ] **Step 2 — run → FAIL** `cd packages/llm-agent && node --import tsx/esm --test src/__tests__/external-tool-id.test.ts`.
 - [ ] **Step 3 — implement** in `artifact-identity.ts` (leave `stableArgsKey`/`artifactIdentityKey` untouched):
@@ -77,9 +82,12 @@ export function shortHash(s: string): string {
 }
 
 /** Deterministic, content-addressed id for a client-provided external tool call
- *  (spec D1). NUL separator avoids toolName/args boundary collisions. */
+ *  (spec D1). The toolName/args boundary uses a NUL separator (a real NUL char
+ *  via the \u0000 escape) so ("a b","c") and ("a","b c") cannot collide. NOTE:
+ *  use the escape in SOURCE; never embed a literal control byte in docs. */
+const EXT_SEP = '\u0000';
 export function externalToolCallId(toolName: string, args: unknown): string {
-  return `ext:${shortHash(`${toolName} ${deepStableArgsKey(args)}`)}`;
+  return `ext:${shortHash(toolName + EXT_SEP + deepStableArgsKey(args))}`;
 }
 ```
 - [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent`; **Step 6 — biome + commit** `feat(contracts): deterministic content-addressed external tool-call id (#171)`.
@@ -127,11 +135,12 @@ Implements spec D1 adjacency validation + review#5 sanitization. Pure function o
 //   map has that one; sanitizedMessages contains NO assistant tool_calls/tool turns
 //   (so no provider-facing list has an unmatched tool_calls)
 ```
-Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b) orphan result → rejected; (c) partial set → 1 in map + `sanitizedMessages` has zero `role:'tool'` and zero assistant-with-tool_calls messages; (d) Anthropic shape (tool_result first in a user turn immediately after the tool_use turn) → accepted.
+Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b) orphan result → rejected; (c) partial set → 1 in map + `sanitizedMessages` has zero `role:'tool'` and zero assistant-with-tool_calls messages; (d) Anthropic shape (tool_result first in a user turn immediately after the tool_use turn) → accepted. **(e) REQUIRED (review#6): `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` → BOTH a and b in the map, and `sanitizedMessages` contains none of those three turns** (the multi-tool-call-per-turn case the literal 'a following role:tool' wording would have under-consumed).
 - [ ] **Step 2 — run → FAIL**.
 - [ ] **Step 3 — implement** `buildExternalResults(messages, opts?): { results: Map<string, string>; sanitizedMessages: Message[] }`:
   - Walk `messages`; identify assistant turns whose `tool_calls` ids match `/^ext:/`.
-  - Accept a following `role:'tool'` (OpenAI) or `tool_result` block in the next `user` turn (Anthropic) ONLY if it immediately follows the declaring assistant turn and its id is declared there → `results.set(id, content)`.
+  - Accept the results that immediately follow the declaring assistant turn. **OpenAI emits ONE `role:'tool'` message PER tool_call** — so `assistant(tool_calls=[a,b]) -> tool(a) -> tool(b)` is the normal shape: consume the WHOLE consecutive run of `role:'tool'` messages right after the assistant turn, mapping EACH by its `tool_call_id` (`results.set(id, content)`). Anthropic packs all `tool_result` blocks into the single `user` turn immediately after the `tool_use` turn — consume all of them. A result is accepted ONLY if its id was declared in that adjacent assistant/`tool_use` turn.
+  - **Strip the WHOLE consumed group** (the assistant external turn + every adjacent `role:'tool'`/`tool_result` it owns) from `sanitizedMessages` together — never leave a half-consumed pair.
   - `sanitizedMessages` = `messages` with EVERY external-`assistant(tool_calls)` turn and its paired `tool`/`tool_result` turn REMOVED (so internal LLM calls never see an unmatched `tool_calls`). Non-external messages pass through unchanged.
   - Reject (do not add) any `ext:` tool result that is orphan/non-adjacent.
 - [ ] **Step 4 — run → PASS**; **Step 5 — build**; **Step 6 — commit** `feat(contracts): buildExternalResults — validated map + history sanitization (#171)`.
@@ -153,6 +162,19 @@ Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b
   - When the streamed assistant turn contains a tool_call whose name ∈ `externalToolNames`: compute `extId = externalToolCallId(name, args)`; if `externalResults?.has(extId)` → push a `role:'tool'` message with that content + the `extId` id and CONTINUE the loop; else → set `status:'awaiting-external'`, push the call (id rewritten to `extId`) into `pendingExternalToolCalls`, and END the worker turn (do NOT loop, do NOT execute).
   - Keep the existing internal-tool path unchanged.
 - [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent packages/llm-agent-libs`; **Step 6 — commit** `feat(libs): tool-loop surfaces external tool calls with deterministic ids (#171)`.
+
+---
+
+### Task 4b: SmartAgentSubAgent maps an external-tool worker result to awaiting-external (libs)
+
+**Files:** `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts`; test `.../__tests__/smart-agent-subagent-external.test.ts`.
+
+**Why (review#6 High#2):** the DAG receives an `ISubAgentResult` from this adapter, NOT raw tool-loop chunks. Today it maps `res.value.toolCalls` into the legacy `toolCalls` field and NEVER sets `status`/`pendingExternalToolCalls` — so Task 5's `res.status==='awaiting-external'` branch would never fire. This adapter is the bridge.
+
+- [ ] **Step 1 — failing test:** a stub SmartAgent whose `process()` resolves with `{ content:'', toolCalls:[<external call>], finishReason:'tool_calls' }` (an external tool, present in `input.externalTools`) → `SmartAgentSubAgent.run(input)` returns `{ status:'awaiting-external', pendingExternalToolCalls:[{id: <extId>, name, arguments}] }`. A normal `{ content:'done', finishReason:'stop' }` → `{ status:'complete' }` (or status omitted), no pending calls.
+- [ ] **Step 2 — run → FAIL**.
+- [ ] **Step 3 — implement** in `smart-agent-subagent.ts` (the `res.value` mapping ~line 47): when `res.value.finishReason === 'tool_calls'` AND the returned tool calls are external (name ∈ `input.externalTools` names — internal MCP calls are executed inside the worker loop and never reach here), build `pendingExternalToolCalls` by mapping each call and REWRITING its id to `externalToolCallId(name, args)` (spec D1), and return `{ ...mapped, status:'awaiting-external', pendingExternalToolCalls }`. Otherwise return `{ ..., status:'complete' }`. If `finishReason` is not surfaced on `res.value`, infer "external" purely by name-membership in `input.externalTools`.
+- [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent packages/llm-agent-libs`; **Step 6 — commit** `feat(libs): SmartAgentSubAgent surfaces awaiting-external from worker external tool calls (#171)`.
 
 ---
 
