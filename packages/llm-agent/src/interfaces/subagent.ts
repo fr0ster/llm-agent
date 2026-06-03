@@ -63,6 +63,13 @@ export interface ISubAgentResult {
   errorClass?: 'epicfail';
   /** Diagnostic trace populated when errorClass === 'epicfail'. */
   epicFailTrace?: EpicFailTrace;
+  /** Set to 'awaiting-external' when the worker emitted a client-provided
+   *  (consumer-executed) external tool call and is waiting for its result
+   *  (#171). Default/absent = 'complete'. */
+  status?: 'complete' | 'awaiting-external';
+  /** The external tool calls the worker surfaced (deterministic `ext:` ids).
+   *  Present iff status === 'awaiting-external'. */
+  pendingExternalToolCalls?: LlmToolCall[];
 }
 
 /**
