@@ -19,11 +19,12 @@
 - `packages/llm-agent/src/interfaces/interpreter.ts` — `NodeResult.status += 'awaiting-external'`; `InterpretResult.pendingExternalToolCalls`.
 - `packages/llm-agent/src/external-results.ts` — CREATE `buildExternalResults(messages)` (validated map + sanitized messages). (contracts — pure, reusable by flat + DAG)
 - `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — external surfacing (drop hard-mode external drop; extId rewrite; map lookup; awaiting-external).
-- `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — map a worker external-tool result (finishReason tool_calls) → `ISubAgentResult{status:'awaiting-external', pendingExternalToolCalls}` (the chunk→result bridge).
+- `packages/llm-agent-libs/src/subagent/smart-agent-subagent.ts` — map a worker external-tool result (stopReason tool_calls) → `ISubAgentResult{status:'awaiting-external', pendingExternalToolCalls}` (the chunk→result bridge).
 - `packages/llm-agent-libs/src/coordinator/dag/dag-plan-interpreter.ts` — collect `pendingExternalToolCalls` FIFO; collect-all-at-settle barrier.
 - `packages/llm-agent-libs/src/pipeline/handlers/dag-coordinator.ts` — no-finalizer branch: emit terminal turn with collected calls.
 - `packages/llm-agent-libs/src/coordinator/dag/<planner>` — route a "call external X" objective to a node (#171 obs 2c).
 - `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — build externalResults from incoming history at the coordinator boundary; thread the validated map + sanitized messages down.
+- `packages/llm-agent/src/interfaces/{agent-contracts.ts,interpreter.ts,subagent.ts}` + `pipeline/context.ts` — add `externalResults?` so the map threads coordinator → interpreter → subagent → worker pipeline (Task 6).
 - Docs: `docs/ARCHITECTURE.md` (D4 `hard` reconciliation), `docs/INTEGRATION.md`, `scripts/integration/dag-coordinator-mcp/`.
 
 ---
@@ -171,9 +172,9 @@ Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b
 
 **Why (review#6 High#2):** the DAG receives an `ISubAgentResult` from this adapter, NOT raw tool-loop chunks. Today it maps `res.value.toolCalls` into the legacy `toolCalls` field and NEVER sets `status`/`pendingExternalToolCalls` — so Task 5's `res.status==='awaiting-external'` branch would never fire. This adapter is the bridge.
 
-- [ ] **Step 1 — failing test:** a stub SmartAgent whose `process()` resolves with `{ content:'', toolCalls:[<external call>], finishReason:'tool_calls' }` (an external tool, present in `input.externalTools`) → `SmartAgentSubAgent.run(input)` returns `{ status:'awaiting-external', pendingExternalToolCalls:[{id: <extId>, name, arguments}] }`. A normal `{ content:'done', finishReason:'stop' }` → `{ status:'complete' }` (or status omitted), no pending calls.
+- [ ] **Step 1 — failing test:** a stub SmartAgent whose `process()` resolves with `{ content:'', toolCalls:[<external call>], stopReason:'tool_calls' }` (an external tool, present in `input.externalTools`) → `SmartAgentSubAgent.run(input)` returns `{ status:'awaiting-external', pendingExternalToolCalls:[{id: <extId>, name, arguments}] }`. A normal `{ content:'done', stopReason:'stop' }` → `{ status:'complete' }` (or status omitted), no pending calls.
 - [ ] **Step 2 — run → FAIL**.
-- [ ] **Step 3 — implement** in `smart-agent-subagent.ts` (the `res.value` mapping ~line 47): when `res.value.finishReason === 'tool_calls'` AND the returned tool calls are external (name ∈ `input.externalTools` names — internal MCP calls are executed inside the worker loop and never reach here), build `pendingExternalToolCalls` by mapping each call and REWRITING its id to `externalToolCallId(name, args)` (spec D1), and return `{ ...mapped, status:'awaiting-external', pendingExternalToolCalls }`. Otherwise return `{ ..., status:'complete' }`. If `finishReason` is not surfaced on `res.value`, infer "external" purely by name-membership in `input.externalTools`.
+- [ ] **Step 3 — implement** in `smart-agent-subagent.ts` (the `res.value` mapping ~line 47): when `res.value.stopReason === 'tool_calls'` (the real field — `SmartAgentResponse.stopReason`, `packages/llm-agent/src/interfaces/agent-contracts.ts:23`; NOT `finishReason`) AND the returned tool calls are external (name ∈ `input.externalTools` names — internal MCP calls are executed inside the worker loop and never reach here), build `pendingExternalToolCalls` by mapping each call and REWRITING its id to `externalToolCallId(name, args)` (spec D1), and return `{ ...mapped, status:'awaiting-external', pendingExternalToolCalls }`. Otherwise return `{ ..., status:'complete' }`. If `stopReason` is absent on `res.value`, infer "external" purely by name-membership in `input.externalTools`.
 - [ ] **Step 4 — run → PASS**; **Step 5 — build** `npx tsc -b packages/llm-agent packages/llm-agent-libs`; **Step 6 — commit** `feat(libs): SmartAgentSubAgent surfaces awaiting-external from worker external tool calls (#171)`.
 
 ---
@@ -196,7 +197,16 @@ Write 4 concrete `node:test` cases asserting: (a) adjacent result → in map; (b
 - [ ] **Step 1 — failing test:** when `InterpretResult.pendingExternalToolCalls` is non-empty, the coordinator yields a terminal assistant turn carrying those calls with `finishReason:'tool_calls'` and does NOT invoke the finalizer; when empty, the finalizer runs as today.
 - [ ] **Step 2 — run → FAIL**.
 - [ ] **Step 3 — implement:**
-  - Add `externalResults?: Map<string,string>` to `PipelineContext` (threaded to the interpreter/workers).
+  - **Thread `externalResults` end-to-end** (review#7 High — DAG workers are NESTED SmartAgentSubAgent runs, so the map must reach the WORKER's pipeline context or Task 4's lookup never fires inside workers and completed calls re-surface). Add the field to EACH hop, with a chain test:
+    1. `interfaces/agent-contracts.ts` — `AgentCallOptions.externalResults?: Map<string,string>`.
+    2. `interfaces/interpreter.ts` — `InterpretContext.externalResults?`.
+    3. `interfaces/subagent.ts` — `ISubAgentInput.externalResults?`.
+    4. `pipeline/context.ts` — `PipelineContext.externalResults?` (top-level AND worker pipeline contexts).
+    5. `pipeline` context construction (`agent.ts` `_runStructuredPipeline` / `_buildContext`) — copy `options.externalResults` onto the built `PipelineContext`.
+    6. `subagent/smart-agent-subagent.ts` — pass `input.externalResults` into `agent.process(prompt, { ..., externalResults })`.
+    7. `pipeline/handlers/dag-coordinator.ts` — pass `ctx.externalResults` into the `interpreter.interpret(plan, { ..., externalResults })` `InterpretContext`.
+    8. the DAG interpreter / `SubAgentDispatch` — pass `ctx.externalResults` into each `worker.run({ ..., externalResults })` `ISubAgentInput`.
+    - **Chain test (required):** set one `extId→result` at the TOP-level context, run a (stubbed) DAG worker, and assert the WORKER's tool-loop received that `externalResults` map (e.g. via a spy tool-loop / a worker that echoes `ctx.externalResults.has(extId)`).
   - In `dag-coordinator.ts`, after `interpreter.interpret(...)`: if `result.pendingExternalToolCalls?.length` → `ctx.yield` an assistant chunk with `toolCalls` = the collected calls + a terminal chunk with `finishReason:'tool_calls'`; RETURN without calling `this.finalizer.finalize(...)`. Else → existing finalizer path.
   - In `smart-server.ts` chat handler: `const { results, sanitizedMessages } = buildExternalResults(normalizedMessages);` set `ctx.externalResults = results` and pass `sanitizedMessages` (not raw) into the agent so internal LLM calls never see unmatched tool_calls (review#5).
 - [ ] **Step 4 — PASS**; **Step 5 — build** all 4 packages; **Step 6 — commit** `feat: DAG coordinator emits collected external tool_calls (no-finalizer) + externalResults threading (#171)`.
