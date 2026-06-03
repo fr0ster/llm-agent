@@ -1,5 +1,31 @@
 # @mcp-abap-adt/llm-agent-server
 
+## 18.1.2
+
+### Patch Changes
+
+- Fix: `usage.models` now keys by the LIVE (hot-swapped) model, not the stale initial one (#164).
+
+  `SmartAgent.reconfigure()` swapped its own `_mainLlm` but the `DefaultPipeline` held a separate `deps.mainLlm` snapshot, so a hot-swapped request kept logging — and aggregating `usage.models` under — the initial model name. `reconfigure()` now propagates the swap into the pipeline. Also lands an env-gated `node:test` integration check that the DAG coordinator dispatches real MCP-tool work to its worker (regression gate for the toolless/hallucination path, #159), and the reviewed design spec + implementation plan for client-provided external tools under the DAG coordinator (#171).
+
+- Updated dependencies
+  - @mcp-abap-adt/llm-agent@18.1.2
+  - @mcp-abap-adt/llm-agent-libs@18.1.2
+  - @mcp-abap-adt/llm-agent-server-libs@18.1.2
+  - @mcp-abap-adt/llm-agent-mcp@18.1.2
+  - @mcp-abap-adt/llm-agent-rag@18.1.2
+  - @mcp-abap-adt/openai-llm@18.1.2
+  - @mcp-abap-adt/anthropic-llm@18.1.2
+  - @mcp-abap-adt/deepseek-llm@18.1.2
+  - @mcp-abap-adt/sap-aicore-llm@18.1.2
+  - @mcp-abap-adt/ollama-llm@18.1.2
+  - @mcp-abap-adt/openai-embedder@18.1.2
+  - @mcp-abap-adt/ollama-embedder@18.1.2
+  - @mcp-abap-adt/sap-aicore-embedder@18.1.2
+  - @mcp-abap-adt/qdrant-rag@18.1.2
+  - @mcp-abap-adt/hana-vector-rag@18.1.2
+  - @mcp-abap-adt/pg-vector-rag@18.1.2
+
 ## 18.1.1
 
 ### Patch Changes

@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/ollama-llm",
-  "version": "18.1.1",
+  "version": "18.1.2",
   "description": "Ollama LLM provider (ILlm, extends OpenAIProvider — Ollama's OpenAI-compatible /v1 API) for @mcp-abap-adt/llm-agent.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,8 +23,8 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "@mcp-abap-adt/llm-agent": "^18.1.1",
-    "@mcp-abap-adt/openai-llm": "^18.1.1"
+    "@mcp-abap-adt/llm-agent": "^18.1.2",
+    "@mcp-abap-adt/openai-llm": "^18.1.2"
   },
   "license": "MIT",
   "repository": {

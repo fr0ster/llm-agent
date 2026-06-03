@@ -1,5 +1,13 @@
 # @mcp-abap-adt/llm-agent
 
+## 18.1.2
+
+### Patch Changes
+
+- Fix: `usage.models` now keys by the LIVE (hot-swapped) model, not the stale initial one (#164).
+
+  `SmartAgent.reconfigure()` swapped its own `_mainLlm` but the `DefaultPipeline` held a separate `deps.mainLlm` snapshot, so a hot-swapped request kept logging — and aggregating `usage.models` under — the initial model name. `reconfigure()` now propagates the swap into the pipeline. Also lands an env-gated `node:test` integration check that the DAG coordinator dispatches real MCP-tool work to its worker (regression gate for the toolless/hallucination path, #159), and the reviewed design spec + implementation plan for client-provided external tools under the DAG coordinator (#171).
+
 ## 18.1.1
 
 ### Patch Changes

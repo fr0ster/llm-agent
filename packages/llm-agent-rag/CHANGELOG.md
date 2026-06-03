@@ -1,5 +1,18 @@
 # @mcp-abap-adt/llm-agent-rag
 
+## 18.1.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @mcp-abap-adt/llm-agent@18.1.2
+  - @mcp-abap-adt/openai-embedder@18.1.2
+  - @mcp-abap-adt/ollama-embedder@18.1.2
+  - @mcp-abap-adt/sap-aicore-embedder@18.1.2
+  - @mcp-abap-adt/qdrant-rag@18.1.2
+  - @mcp-abap-adt/hana-vector-rag@18.1.2
+  - @mcp-abap-adt/pg-vector-rag@18.1.2
+
 ## 18.1.1
 
 ### Patch Changes

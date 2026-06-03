@@ -1,5 +1,13 @@
 # @mcp-abap-adt/deepseek-llm
 
+## 18.1.2
+
+### Patch Changes
+
+- Updated dependencies
+  - @mcp-abap-adt/llm-agent@18.1.2
+  - @mcp-abap-adt/openai-llm@18.1.2
+
 ## 18.1.1
 
 ### Patch Changes
