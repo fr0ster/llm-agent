@@ -37,6 +37,11 @@ export interface SmartAgentResponse {
 
 export interface AgentCallOptions extends CallOptions {
   externalTools?: unknown[];
+  /** Validated `extId → result` map built at the server boundary from the
+   *  incoming history's external tool results (#171, review#7). Threaded down
+   *  to the worker pipeline context so a re-surfaced external call resolves
+   *  from history instead of pausing again on stateless resume. */
+  externalResults?: Map<string, string>;
 }
 
 // ---------------------------------------------------------------------------

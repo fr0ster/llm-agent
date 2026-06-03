@@ -36,6 +36,10 @@ export interface InterpretContext {
    *  dispatch so a worker can emit a tool call the client fulfils (issue #167).
    *  Absent → workers see only their own MCP tools. */
   externalTools?: readonly LlmTool[];
+  /** Validated `extId → result` map from the incoming history (#171,
+   *  review#7). Threaded into each worker dispatch so a re-surfaced external
+   *  call resolves from history on stateless resume. */
+  externalResults?: Map<string, string>;
 }
 
 export interface NodeResult {

@@ -39,6 +39,11 @@ export class SmartAgentSubAgent implements ISubAgent {
       ...(input.externalTools && input.externalTools.length > 0
         ? { externalTools: [...input.externalTools] }
         : {}),
+      // #171 (review#7): thread the validated extId→result map into the
+      // worker pipeline so a re-surfaced external call resolves from history.
+      ...(input.externalResults
+        ? { externalResults: input.externalResults }
+        : {}),
     });
 
     if (!res.ok) {

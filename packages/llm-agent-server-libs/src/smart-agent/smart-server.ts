@@ -30,6 +30,7 @@ import type {
 import {
   AdapterValidationError,
   artifactIdentityKey,
+  buildExternalResults,
   type ExternalToolValidationCode,
   type IRag,
   normalizeAndValidateExternalTools,
@@ -2852,6 +2853,16 @@ export class SmartServer {
         return normalizedMessage;
       })
       .filter((m): m is Message => m !== null);
+
+    // #171 (review#11): consume external (client-executed) tool result turns
+    // from the incoming history into a validated `extId → result` map and strip
+    // those raw turns from the messages forwarded to the agent (so no internal
+    // LLM call ever sees an unmatched assistant tool_calls). On a normal request
+    // with no external history this returns the messages unchanged + an empty
+    // map — a safe no-op. The map is threaded via options.externalResults.
+    const { results: externalResults, sanitizedMessages } =
+      buildExternalResults(normalizedMessages);
+
     const invalidToolsHeader =
       externalToolsValidation.errors.length > 0
         ? {
@@ -2871,7 +2882,10 @@ export class SmartServer {
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
 
-      const stream = smartAgent.streamProcess(normalizedMessages, opts);
+      const stream = smartAgent.streamProcess(sanitizedMessages, {
+        ...opts,
+        externalResults,
+      });
       let firstChunk = true;
       let finishReasonSent = false;
       let lastUsage: {
@@ -3002,7 +3016,10 @@ export class SmartServer {
       return;
     }
 
-    const result = await smartAgent.process(normalizedMessages, opts);
+    const result = await smartAgent.process(sanitizedMessages, {
+      ...opts,
+      externalResults,
+    });
     log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
     const finalContent = result.ok
       ? result.value.content ||

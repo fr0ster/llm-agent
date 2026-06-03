@@ -49,6 +49,11 @@ export interface ISubAgentInput {
    *  nested pipeline so the worker can emit a tool call the client fulfils
    *  (issue #167). Absent → the worker sees only its own MCP tools. */
   externalTools?: readonly LlmTool[];
+  /** Validated `extId → result` map from the incoming history (#171,
+   *  review#7). Threaded from the coordinator into the worker's nested
+   *  pipeline context so a re-surfaced external call resolves from history
+   *  on stateless resume instead of pausing again. */
+  externalResults?: Map<string, string>;
 }
 
 export interface ISubAgentResult {

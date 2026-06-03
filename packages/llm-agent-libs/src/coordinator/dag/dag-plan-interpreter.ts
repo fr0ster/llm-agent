@@ -112,6 +112,9 @@ export class DagPlanInterpreter
               onPartial: workerOnPartial,
               // Issue #167: thread client external tools into the worker.
               externalTools: ctx.externalTools,
+              // #171 (review#7): thread the validated extId→result map so a
+              // re-surfaced external call resolves from history on resume.
+              externalResults: ctx.externalResults,
             });
             if (res.errorClass === 'epicfail') {
               outerOnPartial?.({
