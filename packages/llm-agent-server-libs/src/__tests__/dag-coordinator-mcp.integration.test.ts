@@ -39,7 +39,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -126,7 +125,6 @@ function walk(dir: string): string[] {
 
 let skipReason = '';
 let child: import('node:child_process').ChildProcess | undefined;
-let tmpCwd = '';
 let logSessionsDir = '';
 
 before(async () => {
@@ -137,16 +135,19 @@ before(async () => {
     return;
   }
 
-  tmpCwd = fs.mkdtempSync(path.join(os.tmpdir(), 'dag-coord-mcp-'));
-  // yaml: `logDir: ./.run/sessions`, `log: ./.run/server.log` — cwd-relative.
-  logSessionsDir = path.join(tmpCwd, '.run', 'sessions');
+  // Run the child from REPO_ROOT so `tsx/esm` and the workspace packages resolve
+  // (a temp cwd breaks Node's node_modules resolution → the CLI crashes at load).
+  // The yaml writes cwd-relative `logDir: ./.run/sessions` → <repo>/.run/sessions;
+  // clean it first so we read only THIS run's trace.
+  logSessionsDir = path.join(REPO_ROOT, '.run', 'sessions');
+  fs.rmSync(logSessionsDir, { recursive: true, force: true });
   fs.mkdirSync(logSessionsDir, { recursive: true });
 
   child = spawn(
     'node',
     ['--import', 'tsx/esm', CLI, '--config', CONFIG, '--port', String(PORT)],
     {
-      cwd: tmpCwd,
+      cwd: REPO_ROOT,
       detached: true, // own process group → clean group-kill on teardown
       stdio: ['ignore', 'pipe', 'pipe'],
       env: {
@@ -159,19 +160,22 @@ before(async () => {
   child.stdout?.on('data', (d) => process.stderr.write(`[server] ${d}`));
   child.stderr?.on('data', (d) => process.stderr.write(`[server] ${d}`));
 
-  // Wait for HTTP readiness (poll /health) up to ~120s.
+  // Wait for HTTP readiness up to ~120s. ANY HTTP response means the server is
+  // listening and routing — do NOT require 200: `/health` returns 503 for a
+  // DAG-coordinator config (MCP lives in the worker, not at the coordinator, so
+  // the server-level health check reports unhealthy) yet the server still
+  // dispatches requests fine (the manual run.sh waited on the `server_started`
+  // log line for the same reason).
   const deadline = Date.now() + 120_000;
   for (;;) {
     if (Date.now() > deadline) {
       throw new Error('DAG server did not become ready within 120s');
     }
     try {
-      const res = await fetch(`${BASE}/health`, {
-        signal: AbortSignal.timeout(2000),
-      });
-      if (res.ok) break;
+      await fetch(`${BASE}/health`, { signal: AbortSignal.timeout(2000) });
+      break; // any response (incl. 503) → the server is up and routing
     } catch {
-      // not up yet
+      // not up yet (connection refused / timeout)
     }
     await new Promise((r) => setTimeout(r, 2000));
   }
