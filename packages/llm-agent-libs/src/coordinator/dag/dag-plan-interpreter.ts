@@ -4,6 +4,7 @@ import type {
   InterpretContext,
   InterpretResult,
   ISubAgent,
+  LlmToolCall,
   NodeResult,
   PlanNode,
   StreamChunk,
@@ -29,6 +30,21 @@ export class DagPlanInterpreter
     const results: Record<string, NodeResult> = {};
     const done = new Set<string>();
     const executionOrder: string[] = [];
+    // #171: collect-all-at-settle. Accumulate external tool calls surfaced by
+    // awaiting-external nodes, preserving plan/topological wave order, deduped
+    // by deterministic `ext:` id. An awaiting-external node is recorded in
+    // `results` (so its wave excludes it) but NOT added to `done`, so its
+    // dependents never become ready and fall through to the skipped-assignment
+    // loop below — they re-run on resume once the client returns the result.
+    const pendingExternalAccumulator: LlmToolCall[] = [];
+    const seenExternalIds = new Set<string>();
+    const collectExternal = (calls: readonly LlmToolCall[] | undefined) => {
+      for (const call of calls ?? []) {
+        if (seenExternalIds.has(call.id)) continue;
+        seenExternalIds.add(call.id);
+        pendingExternalAccumulator.push(call);
+      }
+    };
     let currentPlan = plan;
     const maxReplans = ctx.errorStrategy.maxReplans ?? 4;
     let replansUsed = 0;
@@ -42,6 +58,12 @@ export class DagPlanInterpreter
 
       type Outcome =
         | { node: PlanNode; kind: 'done'; output: string; durationMs: number }
+        | {
+            node: PlanNode;
+            kind: 'awaiting-external';
+            pendingExternalToolCalls: LlmToolCall[];
+            durationMs: number;
+          }
         | {
             node: PlanNode;
             kind: 'failed';
@@ -105,6 +127,21 @@ export class DagPlanInterpreter
                 durationMs: Date.now() - started,
               };
             }
+            if (res.status === 'awaiting-external') {
+              // #171: the worker surfaced a client external tool call and is
+              // waiting for its result. Not a failure — settle as awaiting.
+              outerOnPartial?.({
+                kind: 'stepper-done',
+                source: { stepperId: n.id, name: n.id },
+                ok: true,
+              });
+              return {
+                node: n,
+                kind: 'awaiting-external',
+                pendingExternalToolCalls: res.pendingExternalToolCalls ?? [],
+                durationMs: Date.now() - started,
+              };
+            }
             outerOnPartial?.({
               kind: 'stepper-done',
               source: { stepperId: n.id, name: n.id },
@@ -145,6 +182,21 @@ export class DagPlanInterpreter
         };
         done.add(o.node.id);
         executionOrder.push(o.node.id);
+      }
+      // #171: record awaiting-external nodes in wave (plan/topo) order. They go
+      // into `results` so the next wave's `ready` filter excludes them, but are
+      // intentionally NOT added to `done` — so their dependents never become
+      // ready this run and fall through to the skipped-assignment loop.
+      for (const o of outcomes) {
+        if (o.kind !== 'awaiting-external') continue;
+        results[o.node.id] = {
+          nodeId: o.node.id,
+          output: '',
+          status: 'awaiting-external',
+          durationMs: o.durationMs,
+        };
+        executionOrder.push(o.node.id);
+        collectExternal(o.pendingExternalToolCalls);
       }
       const failures = outcomes.filter(
         (o): o is Extract<Outcome, { kind: 'failed' }> => o.kind === 'failed',
@@ -197,6 +249,28 @@ export class DagPlanInterpreter
           durationMs: 0,
         };
       }
+    }
+
+    // #171: an awaiting-external run is NOT a failure. If at least one node is
+    // awaiting-external and no node actually failed, settle as ok=true and let
+    // the coordinator branch on pendingExternalToolCalls (Task 6). Dependents of
+    // awaiting nodes are 'skipped' this run and re-run on resume; they must not
+    // be counted as failures here.
+    const anyAwaiting = currentPlan.nodes.some(
+      (n) => results[n.id].status === 'awaiting-external',
+    );
+    const anyFailed = currentPlan.nodes.some(
+      (n) => results[n.id].status === 'failed',
+    );
+    if (anyAwaiting && !anyFailed) {
+      return {
+        nodeResults: results,
+        ok: true,
+        output: '',
+        executedPlan: currentPlan,
+        executionOrder,
+        pendingExternalToolCalls: pendingExternalAccumulator,
+      };
     }
 
     const failed = currentPlan.nodes.filter(
