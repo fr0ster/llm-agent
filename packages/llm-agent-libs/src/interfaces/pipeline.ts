@@ -169,4 +169,16 @@ export interface IPipeline {
    * Called when RAG stores are added/removed at runtime.
    */
   rebuildStages?(): void;
+
+  /**
+   * Propagate a runtime LLM hot-swap into the pipeline's own dependency
+   * snapshot. Called by `SmartAgent.reconfigure()` so that subsequent
+   * `execute()` calls (and the usage/`byModel` accounting derived from
+   * `ctx.mainLlm.model`) reflect the new model rather than the initial one.
+   */
+  reconfigure?(update: {
+    mainLlm?: ILlm;
+    helperLlm?: ILlm;
+    classifierLlm?: ILlm;
+  }): void;
 }

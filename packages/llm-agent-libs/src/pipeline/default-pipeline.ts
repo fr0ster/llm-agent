@@ -27,6 +27,7 @@
 import type {
   CallOptions,
   ICoordinatorConfig,
+  ILlm,
   LlmStreamChunk,
   LlmTool,
   Message,
@@ -275,6 +276,31 @@ export class DefaultPipeline implements IPipeline {
 
   rebuildStages(): void {
     this.stages = this._buildStages();
+  }
+
+  /**
+   * Propagate a runtime LLM hot-swap (from `SmartAgent.reconfigure()`) into
+   * the pipeline's own dependency snapshot. `_buildContext()` reads
+   * `this.deps.mainLlm` per request and the tool-loop logs the usage `byModel`
+   * key from `ctx.mainLlm.model`, so without this update the pipeline would
+   * keep logging the INITIAL model after a swap (issue #164).
+   */
+  reconfigure(update: {
+    mainLlm?: ILlm;
+    helperLlm?: ILlm;
+    classifierLlm?: ILlm;
+  }): void {
+    if (update.mainLlm) this.deps.mainLlm = update.mainLlm;
+    if (update.helperLlm) this.deps.helperLlm = update.helperLlm;
+    if (update.classifierLlm) this.deps.classifierLlm = update.classifierLlm;
+    // Rebuild the classifier ONLY when it is derived from a classifier/main LLM
+    // (i.e. no explicit classifier instance was injected). An explicitly
+    // injected classifier is owned by the caller and must not be replaced.
+    if ((update.classifierLlm || update.mainLlm) && !this.deps.classifier) {
+      this.resolvedClassifier = new LlmClassifier(
+        this.deps.classifierLlm ?? this.deps.mainLlm,
+      );
+    }
   }
 
   // -------------------------------------------------------------------------

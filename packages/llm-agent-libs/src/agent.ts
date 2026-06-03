@@ -339,6 +339,15 @@ export class SmartAgent {
         this.requestLogger,
       );
     }
+    // Propagate the swap into the structured pipeline (when configured via the
+    // Builder). The pipeline keeps its own deps snapshot and derives the usage
+    // `byModel` key from `ctx.mainLlm.model`; without this, post-swap requests
+    // would keep being logged under the INITIAL model (issue #164).
+    this.deps.pipeline?.reconfigure?.({
+      mainLlm: update.mainLlm,
+      helperLlm: update.helperLlm,
+      classifierLlm: update.classifierLlm,
+    });
   }
 
   /**
