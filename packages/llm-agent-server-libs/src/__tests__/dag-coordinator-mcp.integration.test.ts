@@ -20,12 +20,15 @@
  *       records real MCP tool execution (dag_stream chunks of kind mcp-call /
  *       mcp-result naming real tools, plus a dag_coordinator_final trace)
  *
- * ── Env gating (MUST skip cleanly in CI) ────────────────────────────────────
- * CI runs `npm run test --workspaces` with NO live services. This test SKIPS
+ * ── Env gating (MUST skip cleanly in CI and on a plain `npm test`) ───────────
+ * This is a LIVE test (spawns a server, calls real MCP + LLMs). It SKIPS
  * (exit 0, not fail) unless ALL preconditions hold:
+ *   - RUN_LIVE_INTEGRATION=1 set (explicit opt-in — so a plain `npm test`/CI
+ *     NEVER runs it even if API keys happen to be present in the environment)
  *   - MCP_ENDPOINT reachable (probed via a short `tools/list` POST)
  *   - DEEPSEEK_API_KEY present (planner + worker LLM)
  *   - AICORE_SERVICE_KEY present (SAP AI Core embedder for tool-select)
+ * Run it: `RUN_LIVE_INTEGRATION=1 MCP_ENDPOINT=... node --import tsx/esm --env-file=.env --test <this file>`
  *
  * ── Server boot/teardown ────────────────────────────────────────────────────
  * We SPAWN the same entrypoint the manual script uses
@@ -95,6 +98,14 @@ async function mcpReachable(): Promise<boolean> {
 
 /** Compute the skip reason (empty string ⇒ run). */
 async function computeSkip(): Promise<string> {
+  // Explicit opt-in: a LIVE test (spawns a server, calls real MCP + LLMs) must
+  // NEVER run on a plain `npm test`, even when API keys happen to be present in
+  // the environment — otherwise it slows/flakes ordinary test runs and CI. It
+  // runs ONLY when explicitly requested, so `npm test` is deterministically
+  // green everywhere. To run it: `RUN_LIVE_INTEGRATION=1 ... node --test ...`.
+  if (!process.env.RUN_LIVE_INTEGRATION) {
+    return 'live integration not opted in (set RUN_LIVE_INTEGRATION=1)';
+  }
   const missing: string[] = [];
   if (!process.env.DEEPSEEK_API_KEY) missing.push('DEEPSEEK_API_KEY');
   if (!process.env.AICORE_SERVICE_KEY) missing.push('AICORE_SERVICE_KEY');
