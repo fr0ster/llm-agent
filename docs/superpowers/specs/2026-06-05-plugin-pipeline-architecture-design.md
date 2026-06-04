@@ -91,33 +91,32 @@ llm-agent (contracts)     IPipelinePlugin, IPipelineContext; reuses ISmartAgent.
 
 ## 5. The contract (in `@mcp-abap-adt/llm-agent`)
 
+The contract lives in core `@mcp-abap-adt/llm-agent` (so the existing plugin
+loader, `PluginExports` and `LoadedPlugins` — all core — can carry it; see §7).
+Therefore it must reference **only core types**. Server-specific config
+(`SmartServerLlmConfig`, `NormalizedLlmMap`) and libs-only services
+(`IToolPolicy`, `ISessionManager`, `ITracer`, …) **must not** leak into core. LLM
+provisioning is exposed as an **opaque per-role resolver**; the server hides its
+config behind it.
+
 ```ts
 /** Infra handles the host provides to a pipeline. NOT the flow — the pipeline
- *  owns its flow. This is the SmartAgentBuilder/PipelineDeps surface: the host
- *  builds these once and hands the same set to every pipeline. */
+ *  owns its flow. Core-only types; the server hides its config behind resolveLlm. */
 export interface IPipelineContext {
-  // LLM (per-role)
-  makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>;
-  llmMap?: NormalizedLlmMap;
-  pipelineFallback?: SmartServerLlmConfig;
-  // RAG handles (the pipeline decides how to USE them; stores owned by the host)
-  knowledgeRagFor(sessionId: string): IKnowledgeRagHandle;
+  // LLM — opaque, per role. The server closes over SmartServerLlmConfig/llmMap.
+  resolveLlm(role: string): Promise<ILlm>;
+  // RAG handles (the pipeline decides how to USE them; stores owned by the host).
+  // MaybePromise: a session-scoped store may need async init (see F4).
+  knowledgeRagFor(sessionId: string): MaybePromise<IKnowledgeRagHandle>;
   toolsRag: IToolsRagHandle;
   ragRegistry?: IRagRegistry;
   // MCP / tools
   callMcp(name: string, args: unknown, signal?: AbortSignal): Promise<unknown>;
   mcpClients?: IMcpClient[];
-  // cross-cutting services (optional — present when the host configures them)
-  sessionManager?: ISessionManager;
-  tracer?: ITracer;
-  metrics?: IMetrics;
-  logger?: ILogger;
-  toolCache?: IToolCache;
-  toolPolicy?: IToolPolicy;
-  outputValidator?: IOutputValidator;
-  // composition helpers
+  // composition helpers (core types only)
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   mintStepperId(): string;
+  logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
 }
 
@@ -131,8 +130,41 @@ export interface IPipelinePlugin<Config = unknown> {
 }
 ```
 
+**Server-side richer context (in `llm-agent-server-libs`).** Built-in pipelines
+need libs/server services beyond the core set. The host passes a subtype; a
+third-party plugin codes against the portable core `IPipelineContext`, while
+built-ins downcast to use the extras:
+
+```ts
+// llm-agent-server-libs
+export interface IServerPipelineContext extends IPipelineContext {
+  sessionManager?: ISessionManager;
+  tracer?: ITracer;
+  metrics?: IMetrics;
+  toolCache?: IToolCache;
+  toolPolicy?: IToolPolicy;
+  outputValidator?: IOutputValidator;
+}
+```
+
 **The agent a pipeline builds** is the existing `ISmartAgent`
 (`process` / `streamProcess`). No new runnable interface, no `IPipeline` collision.
+
+**Runtime hot-swap is optional (F1).** `ISmartAgent` exposes only `process`/
+`streamProcess`; `reconfigure()` lives on the concrete `SmartAgent`. A host typed
+on the contract cannot call it without a cast. Resolution: a small core interface
+
+```ts
+export interface IReconfigurableSmartAgent extends ISmartAgent {
+  reconfigure(update: { mainLlm?: ILlm; helperLlm?: ILlm; classifierLlm?: ILlm }): void;
+}
+```
+
+`build()` returns `ISmartAgent`. On LLM hot-swap the host feature-detects: if the
+returned agent satisfies `IReconfigurableSmartAgent`, it calls `reconfigure()`;
+otherwise it **recreates** the agent (the lifecycle fallback in §7). The built-ins
+return the concrete `SmartAgent`, which already satisfies it; custom plugins that
+do not implement it simply get recreate-on-change.
 
 **Each pipeline owns its flow.** Inside `build`, a pipeline wires its own
 orchestration over the `ctx` handles, including a **per-run global context** — an
@@ -175,6 +207,25 @@ export interface PluginExports {
   pipelinePlugins?: Record<string, IPipelinePlugin>;
 }
 ```
+
+The existing loader (`packages/llm-agent-libs/src/plugins/loader.ts`) dynamic-imports
+each file and merges its `PluginExports` into a **`LoadedPlugins`** result — it does
+**not** hand back raw module exports. So adding the field to `PluginExports` alone is
+not enough (F2): the loader plumbing must carry it through too:
+
+```ts
+// @mcp-abap-adt/llm-agent — LoadedPlugins gains the resolved registry:
+export interface LoadedPlugins {
+  stageHandlers: Map<string, IStageHandler>;
+  // …existing maps…
+  pipelinePlugins: Map<string, IPipelinePlugin>;   // NEW
+}
+```
+
+- `emptyLoadedPlugins()` must initialise `pipelinePlugins: new Map()`.
+- `mergePluginExports()` must copy `mod.pipelinePlugins` entries into
+  `result.pipelinePlugins` (same shape as the existing `stageHandlers` merge),
+  returning `true` when any were registered.
 
 - `PluginExports` (stageHandlers, adapters, skills) extends an agent's **internals**;
   `pipelinePlugins` contributes **whole agent variants**. The two levels compose:
@@ -333,11 +384,15 @@ pipeline:
   `legacy/*`); consumers import them **directly, in code, without YAML**.
 - Removed: `coordinator:` parsing in `config.ts`; the handler-selection switch in
   `pipeline/handlers/index.ts`. Replaced by the pipeline registry in the host.
-- Added: `IPipelinePlugin` / `IPipelineContext` in `llm-agent` + `pipelinePlugins`
-  on `PluginExports`; built-in pipelines + `legacy/*` exports in
-  `llm-agent-server-libs`; registry + dynamic-load wiring in `llm-agent-server`,
-  including the `plugins: [<specifier>]` loader (cwd-based resolution) alongside the
-  existing `pluginDir` scan.
+- Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineContext` (core-only,
+  opaque `resolveLlm`), `IReconfigurableSmartAgent`; `pipelinePlugins` on
+  `PluginExports` **and** on `LoadedPlugins` (+ `emptyLoadedPlugins`/
+  `mergePluginExports` plumbing).
+- Added in `llm-agent-server-libs`: `IServerPipelineContext` (libs/server-service
+  extension); built-in pipelines + `legacy/*` exports.
+- Added in `llm-agent-server`: registry + dynamic-load wiring, including the
+  `plugins: [<specifier>]` loader (cwd-based resolution) alongside the existing
+  `pluginDir` scan; feature-detected `reconfigure()` else recreate.
 - This is a **major** lockstep bump.
 
 ## 12. Future (out of scope here)
