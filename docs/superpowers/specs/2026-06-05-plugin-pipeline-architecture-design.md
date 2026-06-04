@@ -156,8 +156,23 @@ export interface IServerPipelineContext extends IPipelineContext {
   toolCache?: IToolCache;
   toolPolicy?: IToolPolicy;
   outputValidator?: IOutputValidator;
+  /**
+   * A SmartAgentBuilder PRE-WIRED with all shared infra (RAG, MCP, embedder,
+   * adapters, request-logger, subagents, options, hot-reload) — everything
+   * EXCEPT the coordinator. The pipeline only registers its coordinator and
+   * builds. This is the host-owns-assembly decision: a built-in variant differs
+   * from another ONLY by which coordinator stage handler it wires, so the host
+   * assembles everything else once and hands it over, avoiding per-plugin
+   * duplication (and the resulting loss of RAG/adapters/logger/subagents).
+   */
+  createAgentBuilder(): Promise<SmartAgentBuilder>;
 }
 ```
+
+`SmartAgentBuilder` lives in `llm-agent-libs`, so `createAgentBuilder` sits on the
+server-libs `IServerPipelineContext`, not the core `IPipelineContext` — keeping
+core free of libs types. Every pipeline plugin builds a `SmartAgent`, so it
+depends on server-libs and uses `IServerPipelineContext` anyway.
 
 **The agent inside the instance** is the existing `ISmartAgent`
 (`process` / `streamProcess`). No new runnable interface, no `IPipeline` collision.
@@ -192,18 +207,32 @@ custom pipeline may implement its own accumulator. The host never sees it.
 The four variants become **thin `IPipelinePlugin` wrappers** over the existing
 components — orchestration is *not* rewritten, only re-packaged as agent builders.
 
+Each built-in wraps the EXISTING `IPipelineFactory` (in `src/factories/`), which
+produces a `BuiltCoordinator { handler }` — the coordinator stage handler. The
+plugin gets the pre-wired builder from `ctx.createAgentBuilder()`, registers that
+handler, and builds:
+
 ```ts
 // llm-agent-server-libs/src/pipelines/dag.ts
-export class DagPipelinePlugin implements IPipelinePlugin<DagConfig> {
+export class DagPipelinePlugin implements IPipelinePlugin<DagCoordinatorHandlerDeps> {
   readonly name = 'dag';
-  parseConfig(raw: unknown): DagConfig { /* validate the dag dialect */ }
-  async build(cfg: DagConfig, ctx: IPipelineContext): Promise<IPipelineInstance> {
-    // compose a SmartAgentHandle whose pipeline uses the DAG coordinator over ctx handles
-    const handle = await buildDagAgent(cfg, ctx);
+  parseConfig(raw: unknown): DagCoordinatorHandlerDeps { /* validate the dag dialect */ }
+  async build(cfg: DagCoordinatorHandlerDeps, ctx: IServerPipelineContext): Promise<IPipelineInstance> {
+    const { handler } = await new DagFactory().build(cfg, {
+      makeRoleLlm: ctx.resolveLlm,
+      callMcp: ctx.callMcp as never,   // factory wants Promise<string>; host adapts
+    });
+    const builder = await ctx.createAgentBuilder();          // pre-wired infra
+    const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };
   }
 }
 ```
+
+(`withStepperCoordinator(handler: IStageHandler)` is the builder's generic
+"register the coordinator stage handler" path — highest precedence — so any
+factory's `BuiltCoordinator.handler` registers through it. Stepper variants pass
+the richer `StepperFactoryDeps` from `ctx`; see the factories.)
 
 Built-ins: `flat`, `linear`, `dag`, `stepper`. New variants (e.g.
 *planner+reviewer → controller+executor*) are new pipeline plugins added
@@ -331,10 +360,17 @@ await inst.close();
   name across sources → fail-fast (see §7 merge rule); `parseConfig` throw →
   fail-fast naming the field; `build` throw (e.g. LLM/RAG unavailable) → startup
   error, server does not come up with a broken pipeline.
-- **Lifecycle:** `build` once (startup); requests via `inst.agent.streamProcess`.
-  Config change → `inst.close()` then **recreate**. Runtime LLM hot-swap uses the
-  existing `SmartAgent.reconfigure()` when `inst.agent` is reconfigurable, else the
-  same close-then-recreate; `rebuildStages?` / `reconfigure?` stay internal to the
+- **Lifecycle:** `build(cfg, ctx)` produces one `IPipelineInstance`. The host calls
+  it wherever it builds an agent today — including **per session** (the existing
+  `buildSessionAgent` path, smart-server.ts ~2098): `ctx.createAgentBuilder()`
+  returns a builder wired with that session's infra (fresh subagent registry,
+  session MCP/logger), the plugin registers its coordinator and builds, and the
+  host disposes the session instance via `inst.close()`. This replaces today's
+  per-session coordinator re-wire (`withStepperCoordinator`/`withDagCoordinator`
+  inside `buildSessionAgent`) with a single `plugin.build(sessionCtx)` call. Config
+  change → `inst.close()` then **recreate**. Runtime LLM hot-swap uses the existing
+  `SmartAgent.reconfigure()` when `inst.agent` is reconfigurable, else
+  close-then-recreate; `rebuildStages?` / `reconfigure?` stay internal to the
   agent's `IPipeline` (unchanged). No new lifecycle surface on the plugin beyond
   `IPipelineInstance.close()`.
 - **State ownership:** the **agent owns** its pipeline, its per-run global context,
@@ -429,13 +465,20 @@ pipeline:
 
 ## 11. Migration (clean break)
 
-- The old YAML `coordinator:` dialect and the structured-pipeline `StageDefinition`
-  DSL are **removed** in the new major; no compat shim.
+- The old YAML `coordinator:` dialect and the **YAML `pipeline.stages` authoring**
+  (the user-facing structured-pipeline DSL) are **removed** in the new major; no
+  compat shim. **The internal `StageDefinition` type and `DefaultPipeline` stage
+  executor STAY** — they are how every agent's request pipeline runs (classify →
+  rag → assemble → tool-loop → coordinator). We remove only the YAML parsing /
+  docs / examples that let users hand-author a stage tree, not the engine.
 - Consumers needing the old behavior pin a version **≤ 18** on npm.
 - The components that implemented the old flows **remain exported** (relocated to
   `legacy/*`); consumers import them **directly, in code, without YAML**.
-- Removed: `coordinator:` parsing in `config.ts`; the handler-selection switch in
-  `pipeline/handlers/index.ts`. Replaced by the pipeline registry in the host.
+- Removed: `coordinator:` parsing in `config.ts` (`parseStepperCoordinatorConfig`,
+  `MODE_FLOW_PRESET`, `assertCoordinatorConfigShape`, `YamlCoordinator`); the
+  per-session coordinator re-wire and the 3-way coordinator gate in
+  `smart-server.ts` (~1267–1628); YAML `pipeline.stages` parsing. Replaced by the
+  pipeline registry + `plugin.build(ctx)` in the host.
 - Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineInstance` (agent +
   `close()`), `IPipelineContext` (core-only, opaque `resolveLlm`),
   `IReconfigurableSmartAgent`, `MaybePromise<T>`; `pipelinePlugins` on `PluginExports` **and** on
@@ -443,7 +486,8 @@ pipeline:
   `mergePluginExports` plumbing, with **reject-duplicate** merge for pipeline names
   naming both sources, unlike last-wins `stageHandlers`).
 - Added in `llm-agent-server-libs`: `IServerPipelineContext` (libs/server-service
-  extension); built-in pipelines + `legacy/*` exports.
+  extension + `createAgentBuilder()` returning the pre-wired builder); built-in
+  pipelines wrapping the existing factories; `legacy/*` exports.
 - Added in `llm-agent-server`: registry + dynamic-load wiring, including the
   `plugins: [<specifier>]` loader (cwd-based resolution, routed through
   `mergePluginExports` like `pluginDir`) alongside the existing `pluginDir` scan;
