@@ -180,8 +180,45 @@ export interface PluginExports {
   `pipelinePlugins` contributes **whole agent variants**. The two levels compose:
   a built-in pipeline's internal `DefaultPipeline` still consumes
   `stageHandlers` from loaded plugins.
-- The host builds the registry = built-ins (static) + every loaded
-  `pipelinePlugins`. Duplicate name → fail-fast.
+- The host builds the registry from **three sources**, in order; duplicate name
+  → fail-fast:
+  1. **Built-ins** — `flat`/`linear`/`dag`/`stepper`, statically registered (they
+     ship in `@mcp-abap-adt/llm-agent-server-libs`, a dependency of the server, so
+     they are always present — no import needed even on a global install).
+  2. **`pluginDir`** (existing) — the loader scans the directory and dynamic-imports
+     `.js`/`.mjs`/`.ts` files, reading each file's `PluginExports`.
+  3. **`plugins: [<module-specifier>]`** (new) — the host `await import(specifier)`
+     for each entry and reads its `PluginExports.pipelinePlugins`. The package
+     self-declares its pipeline names via that map; YAML does not need per-export
+     import syntax.
+
+### 7.1 Loading a pipeline by module specifier
+
+```yaml
+plugins:
+  - '@acme/superpuper-pipeline'      # npm package exporting PluginExports.pipelinePlugins
+pipeline:
+  name: superpuper                   # a name from that package's pipelinePlugins map
+  config: { ... }
+```
+
+```ts
+// @acme/superpuper-pipeline (entry)
+export const pipelinePlugins = { superpuper: new SuperPuperPipelinePlugin() };
+```
+
+**Global-install resolution.** When `llm-agent-server` is installed `-g`, a bare
+specifier resolves relative to the *server's* location, not the user's cwd:
+
+- A pipeline bundled as a server dependency (e.g. the built-ins in
+  `@mcp-abap-adt/llm-agent-server-libs`) is already on the global `node_modules`
+  path → resolves out of the box (and, being a built-in, needs no `plugins:` entry
+  at all).
+- A separately-installed third-party package (`@acme/…`) may not resolve from the
+  global server. The host therefore resolves `plugins:` specifiers **against the
+  user's project / cwd** (`createRequire(process.cwd())` or `import.meta.resolve`
+  with a cwd base), and accepts absolute paths. This is the one resolution rule
+  the host must implement deliberately.
 
 ```ts
 const reg = new Map<string, IPipelinePlugin>();        // built-ins + loaded pipelinePlugins
@@ -255,6 +292,10 @@ rag:
 subagents:
   - { name: reviewer, description: "checks completeness" }
 
+# optional — dynamically load additional agent variants (built-ins need no entry)
+plugins:
+  - '@acme/superpuper-pipeline'
+
 # the ONLY pipeline-facing block — defines which agent we build
 pipeline:
   name: dag                 # resolved in the plugin registry (built-in or loaded)
@@ -266,6 +307,7 @@ pipeline:
 | Block | Validated/consumed by | Becomes |
 |---|---|---|
 | `llm` / `mcp` / `rag` / `subagents` | **host** | `IPipelineContext` (LLM roles, RAG handles, MCP, sessions, …) |
+| `plugins` | **host** | dynamic `import()` (resolved against cwd) → register `pipelinePlugins` into the registry |
 | `pipeline.name` | **host** | registry lookup; unknown → fail-fast with available names |
 | `pipeline.config` | **plugin** (`parseConfig`) | typed, flow-specific config owned by the pipeline |
 
@@ -293,7 +335,9 @@ pipeline:
   `pipeline/handlers/index.ts`. Replaced by the pipeline registry in the host.
 - Added: `IPipelinePlugin` / `IPipelineContext` in `llm-agent` + `pipelinePlugins`
   on `PluginExports`; built-in pipelines + `legacy/*` exports in
-  `llm-agent-server-libs`; registry + dynamic-load wiring in `llm-agent-server`.
+  `llm-agent-server-libs`; registry + dynamic-load wiring in `llm-agent-server`,
+  including the `plugins: [<specifier>]` loader (cwd-based resolution) alongside the
+  existing `pluginDir` scan.
 - This is a **major** lockstep bump.
 
 ## 12. Future (out of scope here)
