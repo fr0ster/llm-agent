@@ -49,7 +49,7 @@ variant becomes a pipeline plugin that owns its flow.
 **Goals**
 
 - A pipeline plugin = an agent-variant implementation, wrapping the component(s)
-  that realize it, exposed as an `ISmartAgent`.
+  that realize it, exposed as an `IPipelineInstance` (the `ISmartAgent` + `close()`).
 - The plugin system loads agent variants **dynamically into the server**; the
   server is the default host. Built-ins are statically present in it.
 - **Two entry points into one library:** the plugin system (server, dynamic) and
@@ -71,7 +71,7 @@ variant becomes a pipeline plugin that owns its flow.
 
 ```
 llm-agent-server          DEFAULT HOST: parse YAML → resolve pipeline by name →
-                          build(config, ctx) → ISmartAgent (once) → streamProcess
+                          build(config, ctx) → IPipelineInstance (once) → streamProcess
                           per request. Statically registers the built-ins; collects
                           dynamically-loaded ones from PluginExports.pipelinePlugins.
 llm-agent-server-libs     PIPELINE PLUGINS: built-in IPipelinePlugin wrappers
@@ -225,21 +225,27 @@ each file and merges its `PluginExports` into a **`LoadedPlugins`** result — i
 not enough (F2): the loader plumbing must carry it through too:
 
 ```ts
-// @mcp-abap-adt/llm-agent — LoadedPlugins gains the resolved registry:
+// @mcp-abap-adt/llm-agent — LoadedPlugins gains the resolved registry + source map:
 export interface LoadedPlugins {
   stageHandlers: Map<string, IStageHandler>;
   // …existing maps…
-  pipelinePlugins: Map<string, IPipelinePlugin>;   // NEW
+  pipelinePlugins: Map<string, IPipelinePlugin>;        // NEW
+  pipelinePluginSources: Map<string, string>;           // NEW: name → first-seen source
 }
 ```
 
-- `emptyLoadedPlugins()` must initialise `pipelinePlugins: new Map()`.
+- `emptyLoadedPlugins()` must initialise both `pipelinePlugins: new Map()` and
+  `pipelinePluginSources: new Map()`.
 - `mergePluginExports()` copies `mod.pipelinePlugins` entries into
   `result.pipelinePlugins`, returning `true` when any were registered — but with a
   **different rule than `stageHandlers`** (F1). `stageHandlers` is *last-wins*
   (`.set()` overwrites); pipeline names must instead **reject duplicates**: if
-  `result.pipelinePlugins.has(name)`, record a duplicate-name error (with both
-  `source`s) in the loader's `errors` and keep the first. The host then fails fast
+  `result.pipelinePlugins.has(name)`, record a duplicate-name error naming **both
+  sources** — the prior one from `pipelinePluginSources.get(name)` and the current
+  `source` param — in the loader's `errors`, and keep the first. On first insert it
+  also records `pipelinePluginSources.set(name, source)`. (The source map exists
+  precisely because a bare `Map<string, IPipelinePlugin>` loses the prior source.)
+  The host then fails fast
   at startup on any collision, which silent last-wins would hide.
 
 - `PluginExports` (stageHandlers, adapters, skills) extends an agent's **internals**;
@@ -260,6 +266,23 @@ export interface LoadedPlugins {
      `mcpClients` / `apiAdapters`, and they register and compose with the built-ins
      exactly as directory-loaded plugins do. The package self-declares its pipeline
      names via the `pipelinePlugins` map; YAML needs no per-export import syntax.
+
+**Startup order matters (F2).** Because module plugins can register
+`embedderFactories` / `mcpClients` that the infra (RAG/embedder, MCP) needs, all
+`PluginExports` must be merged **before** the infra context is built. The host
+sequence is fixed:
+
+1. parse YAML;
+2. load **both** `pluginDir` **and** `plugins: [<specifier>]` through
+   `mergePluginExports()` → one `LoadedPlugins` (this is also where duplicate
+   pipeline names fail fast);
+3. build infra / `IPipelineContext` (RAG, embedders, MCP) — now able to see
+   plugin-contributed `embedderFactories` / `mcpClients`;
+4. resolve `pipeline.name` in the registry (built-ins + `LoadedPlugins.pipelinePlugins`)
+   and `build()` the instance.
+
+This mirrors the current server, which pre-loads plugins before RAG precisely so
+embedder factories are available.
 
 ### 7.1 Loading a pipeline by module specifier
 
@@ -412,8 +435,9 @@ pipeline:
 - Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineInstance` (agent +
   `close()`), `IPipelineContext` (core-only, opaque `resolveLlm`),
   `IReconfigurableSmartAgent`; `pipelinePlugins` on `PluginExports` **and** on
-  `LoadedPlugins` (+ `emptyLoadedPlugins`/`mergePluginExports` plumbing, with
-  **reject-duplicate** merge for pipeline names, unlike last-wins `stageHandlers`).
+  `LoadedPlugins` (+ `pipelinePluginSources` map, `emptyLoadedPlugins`/
+  `mergePluginExports` plumbing, with **reject-duplicate** merge for pipeline names
+  naming both sources, unlike last-wins `stageHandlers`).
 - Added in `llm-agent-server-libs`: `IServerPipelineContext` (libs/server-service
   extension); built-in pipelines + `legacy/*` exports.
 - Added in `llm-agent-server`: registry + dynamic-load wiring, including the
