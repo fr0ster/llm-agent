@@ -33,8 +33,9 @@ identified concretely from the codebase, with file:line anchors.
 | `packages/llm-agent/src/interfaces/plugin.ts` (modify) | add `pipelinePlugins` to `PluginExports`; add `pipelinePlugins` + `pipelinePluginSources` to `LoadedPlugins` | 1 |
 | `packages/llm-agent-libs/src/plugins/types.ts` (modify) | init new maps in `emptyLoadedPlugins`; reject-duplicate merge + source tracking in `mergePluginExports` | 2 |
 | `packages/llm-agent-libs/src/plugins/__tests__/plugin-types.test.ts` (modify) | tests for the merge behavior | 2 |
-| `packages/llm-agent-server-libs/src/pipelines/server-context.ts` (create) | `IServerPipelineContext` | 3 |
-| `packages/llm-agent-server-libs/src/pipelines/{flat,linear,dag,stepper}.ts` (create) | built-in `IPipelinePlugin` wrappers over the existing factories | 3 |
+| `packages/llm-agent-server-libs/src/pipelines/server-context.ts` (create) | `IServerPipelineContext` (adds `createAgentBuilder()` + libs services) | 3 |
+| `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (modify) | extract `buildBaseBuilder` (keystone) feeding `createAgentBuilder` | 3 |
+| `packages/llm-agent-server-libs/src/pipelines/{flat,linear,dag,stepper}.ts` (create) | built-in `IPipelinePlugin` wrappers: factory→`BuiltCoordinator`→`builder.withStepperCoordinator` | 3 |
 | `packages/llm-agent-server-libs/src/legacy/{flat,linear,dag,stepper}.ts` (create) | curated re-export bundles of the old components | 4 |
 | `packages/llm-agent-server-libs/package.json` (modify) | subpath `exports` for `./<flow>` and `./legacy/<flow>` | 4 |
 | `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (modify) | replace the coordinator gate with registry resolve + `build()`; `plugins:` loader; close/recreate | 5 |
@@ -475,83 +476,137 @@ git commit -m "feat(plugins): merge pipeline plugins with reject-duplicate + sou
 
 ---
 
-## Phases 3–6 — Built-ins, legacy, host, conformance
+## Phases 3–6 — Built-ins, legacy, host, conformance (roadmap → expand to TDD)
 
-> These phases build on the Phase 1–2 foundation. Their entry points are identified
-> below from the codebase; each must be written into full bite-sized tasks **after
-> Phase 1–2 lands**, when the implementer reads the referenced wiring in detail. The
-> design spec sections in parentheses are the source of truth.
+> **Status / scope honesty (plan-review F5):** Phases 1–2 above are full executable
+> TDD. Phases 3–6 below are a **grounded roadmap**, not yet bite-sized TDD — they
+> rewrite sections of the ~3000-line `smart-server.ts` and must be expanded into
+> step-by-step tasks against a close read **before** an agentic worker runs them.
+> The wiring below is verified from the codebase (the plan-review corrections
+> F1–F4 are folded in); the design spec is the source of truth.
+>
+> **Keystone correction (F1/F2 — builder ownership, decided):** the existing
+> factories return `BuiltCoordinator { handler: IStageHandler }` (the coordinator
+> stage handler) — **NOT** a `SmartAgentHandle`. The agent variant is determined
+> ONLY by which coordinator handler is wired; all other infra
+> (RAG/MCP/embedder/adapters/request-logger/subagents/options) is assembled
+> identically by the host. Therefore the host owns assembly and exposes it to
+> plugins via `IServerPipelineContext.createAgentBuilder()` (spec §5).
 
-### Task 5: `IServerPipelineContext` (spec §5)
+### Task 5: `IServerPipelineContext` + `createAgentBuilder` (spec §5)
 
 - Create `packages/llm-agent-server-libs/src/pipelines/server-context.ts` exporting
-  `IServerPipelineContext extends IPipelineContext` adding the libs/server services
-  (`sessionManager?`, `tracer?`, `metrics?`, `toolCache?`, `toolPolicy?`,
-  `outputValidator?`) imported from `@mcp-abap-adt/llm-agent-libs`.
-- Test: a shape test mirroring Task 1.
+  `IServerPipelineContext extends IPipelineContext` (from `@mcp-abap-adt/llm-agent`)
+  adding: the libs services `sessionManager?`/`tracer?`/`metrics?`/`toolCache?`/
+  `toolPolicy?`/`outputValidator?` (imported from `@mcp-abap-adt/llm-agent-libs`)
+  **and** `createAgentBuilder(): Promise<SmartAgentBuilder>` (the builder pre-wired
+  with all shared infra EXCEPT the coordinator).
+- Test: shape test mirroring Task 1 (assert `createAgentBuilder` is a function).
 
-### Tasks 6–9: Built-in pipeline plugins (spec §6)
+### Task 6 (keystone): extract `createAgentBuilder` from smart-server.ts
 
-One task per variant — `flat`, `linear`, `dag`, `stepper` — under
-`packages/llm-agent-server-libs/src/pipelines/<flow>.ts`. Each `IPipelinePlugin`:
-- `parseConfig` delegates to the existing config parser for that variant
-  (`parseStepperCoordinatorConfig` at `config.ts:1586` for `stepper`;
-  `buildDagCoordinatorDeps` inputs at `build-dag-coordinator-deps.ts` for `dag`;
-  the linear `YamlCoordinator` fields at `config.ts:159-167` for `linear`).
-- `build` wraps the corresponding existing factory in
-  `packages/llm-agent-server-libs/src/factories/` (`DagFactory`, `LinearFactory`,
-  `CyclicFactory`/`PlannedFactory`/`DeepStepperFactory` for the three stepper modes,
-  and the no-coordinator path for `flat`) — each factory `.build(config, deps)`
-  returns a `SmartAgentHandle`; wrap it as `{ agent: handle.agent, close: handle.close }`.
-- Each task: a unit test driving `parseConfig` → `build(stubServerCtx)` →
-  `inst.agent.streamProcess` with fake LLM/MCP → `inst.close()`.
+This is the load-bearing refactor; do it before the built-in plugins.
+- In `smart-server.ts`, the builder assembly is lines **~1091–1259** (everything
+  from `new SmartAgentBuilder(...)` through `.withSubAgents(...)`) followed by the
+  **3-way coordinator gate at ~1267–1628** and `builder.build()` at **~1631**. The
+  per-session variant is `buildSessionAgent` at **~2098–2212**.
+- Extract the assembly **up to but excluding** the coordinator gate into a private
+  method `private buildBaseBuilder(parts): SmartAgentBuilder` used by BOTH the
+  startup path and `buildSessionAgent` (DRY — they wire the same `withXxx` set).
+- The server's `IServerPipelineContext.createAgentBuilder` delegates to
+  `buildBaseBuilder(...)` for the current (session) scope.
+- Test: an integration-style test (gated like the existing
+  `dag-coordinator-mcp.integration.test.ts`) asserting a built base builder
+  produces a working agent for a no-coordinator config.
 
-### Tasks 10–11: legacy/* relocation + subpath exports (spec §8)
+### Tasks 7–10: Built-in pipeline plugins (spec §6) — one per variant
 
-- **Task 10:** create `packages/llm-agent-server-libs/src/legacy/{flat,linear,dag,stepper}.ts`,
+Under `packages/llm-agent-server-libs/src/pipelines/<flow>.ts`. Each
+`IPipelinePlugin` uses the **factory → BuiltCoordinator → builder** flow:
+
+```ts
+// dag.ts (pattern; linear/stepper analogous)
+export class DagPipelinePlugin implements IPipelinePlugin<DagCoordinatorHandlerDeps> {
+  readonly name = 'dag';
+  parseConfig(raw: unknown): DagCoordinatorHandlerDeps { /* validate dag dialect */ }
+  async build(cfg: DagCoordinatorHandlerDeps, ctx: IServerPipelineContext): Promise<IPipelineInstance> {
+    const { handler } = await new DagFactory().build(cfg, {
+      makeRoleLlm: ctx.resolveLlm,
+      callMcp: async (n, a, s) => String(await ctx.callMcp(n, a, s)),
+    });
+    const builder = await ctx.createAgentBuilder();
+    const handle = await builder.withStepperCoordinator(handler).build();
+    return { agent: handle.agent, close: () => handle.close() };
+  }
+}
+```
+
+- `parseConfig` per variant: `linear` → linear `YamlCoordinator` fields
+  (`config.ts:159-167`) → `CoordinatorHandlerDeps`; `dag` → `DagCoordinatorHandlerDeps`
+  (via the inputs `buildDagCoordinatorDeps` consumes); `stepper` → the three
+  modes map to `CyclicFactory`/`PlannedFactory`/`DeepStepperFactory` with
+  `StepperFactoryConfig` (`parseStepperCoordinatorConfig` at `config.ts:1586`
+  produces the spec); `flat` → no factory: `(await ctx.createAgentBuilder()).build()`
+  directly (no coordinator).
+- Stepper plugins pass the richer `StepperFactoryDeps` (`knowledgeRagFor`,
+  `toolsRag`, `mintStepperId`, `mintTurnId`, `subagents`, `logLlmCall`) — all from `ctx`.
+- `withStepperCoordinator(handler)` is the builder's generic register-coordinator
+  path; any factory's `BuiltCoordinator.handler` registers through it.
+- Each task: unit test — `parseConfig(fixture)` → `build(stubServerCtx)` (stub
+  `createAgentBuilder` to return a builder over fake LLM/MCP) → `inst.agent.streamProcess`
+  → `inst.close()`.
+
+### Tasks 11–12: legacy/* relocation + subpath exports (spec §8)
+
+- **Task 11:** create `packages/llm-agent-server-libs/src/legacy/{flat,linear,dag,stepper}.ts`,
   each re-exporting the low-level classes for that flow (`DagCoordinatorHandler`,
   `StepperCoordinatorHandler`, `Stepper`, `CoordinatorHandler`, `CyclicReActExecutor`,
-  `buildStepperRoot`, `buildDagCoordinatorDeps`, the factories) needed to rebuild it
-  by hand. No logic — re-exports only.
-- **Task 11:** replace the single `.` export in
+  `buildStepperRoot`, `buildDagCoordinatorDeps`, the factories). Re-exports only.
+- **Task 12:** replace the single `.` export in
   `packages/llm-agent-server-libs/package.json` with subpath `exports` for `.`,
   `./flat`, `./linear`, `./dag`, `./stepper`, `./legacy/flat`, `./legacy/linear`,
-  `./legacy/dag`, `./legacy/stepper` (see spec §8 for the exact map). Verify
-  `npm run build` then `node -e "import('@mcp-abap-adt/llm-agent-server-libs/legacy/dag')"`.
+  `./legacy/dag`, `./legacy/stepper` (spec §8 has the exact map). Verify
+  `npm run build` then `node -e "import('@mcp-abap-adt/llm-agent-server-libs/legacy/dag').then(m=>console.log(Object.keys(m)))"`.
 
-### Tasks 12–15: Host integration (spec §7, §7.1, §9, §11)
+### Tasks 13–16: Host integration (spec §7, §7.1, §9, §11)
 
-In `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` and
-`config.ts`. The current coordinator gate is `smart-server.ts:1267-1628`; plugins
-load at `:1058` (before RAG at `:1084`); `builder.build()` is `:1631`.
+In `smart-server.ts` + `config.ts`. Plugins load at `:1058` (before RAG `:1084`).
 
-- **Task 12 (registry + build):** build a `Map<string, IPipelinePlugin>` from the 4
-  built-ins (static) + `LoadedPlugins.pipelinePlugins`; resolve `pipeline.name`;
-  `parseConfig` then `build(serverCtx)`; **replace** the 3-way coordinator gate
-  (`:1267-1628`) with `const inst = await plugin.build(cfg, ctx)`. Unknown name →
+- **Task 13 (empty toolsRag + serverCtx, F3):** build the `IServerPipelineContext`
+  the host passes to plugins. `resolveLlm` closes over the role-LLM map;
+  `createAgentBuilder` = Task 6; `knowledgeRagFor`/`toolsRag`/`mintStepperId`/
+  `mintTurnId` from the existing session wiring. **`toolsRag` is always present**:
+  when no tools RAG is configured, supply an **empty `IToolsRagHandle`** (a handle
+  whose query returns `[]`) so the contract never yields `undefined`. Test: a
+  no-RAG/no-MCP config still yields a working `ctx.toolsRag` (query returns `[]`).
+- **Task 14 (registry + build, replaces gate):** build `Map<string, IPipelinePlugin>`
+  = 4 built-ins (static) + `LoadedPlugins.pipelinePlugins`; resolve `pipeline.name`;
+  `parseConfig` then `build(serverCtx)`. **Replace** the 3-way coordinator gate
+  (`:1267-1628`) AND the per-session coordinator re-wire in `buildSessionAgent`
+  (`:2098-2212`) with `const inst = await plugin.build(sessionCtx)`. Unknown name →
   fail-fast listing available names.
-- **Task 13 (`plugins:` loader + order):** add `plugins: string[]` to the config;
+- **Task 15 (`plugins:` loader + order):** add `plugins: string[]` to the config;
   resolve each specifier with `createRequire(process.cwd())` / `import.meta.resolve`
-  (cwd base) + absolute-path support; `await import()` and route the full module
+  (cwd base) + absolute-path support; `await import()` and route the **full module**
   through `mergePluginExports()` **alongside** `pluginDir`, **before** RAG/embedder
-  build (keep the `:1058`-before-`:1084` ordering). Duplicate names fail-fast via the
-  Task-4 merge.
-- **Task 14 (lifecycle):** hold `inst`; per request `inst.agent.streamProcess`; on
-  shutdown / before recreate call `inst.close()`; on LLM hot-swap feature-detect
-  `IReconfigurableSmartAgent` on `inst.agent`, else `close()`-then-recreate.
-- **Task 15 (config clean break):** in `config.ts`, **remove** `coordinator:` parsing
-  (`parseStepperCoordinatorConfig` `:1586-1750`, `MODE_FLOW_PRESET` `:1440-1447`,
-  `assertCoordinatorConfigShape` `:231-278`, `YamlCoordinator` `:131-176`) and the
-  structured-pipeline `StageDefinition` DSL; add `pipeline: { name, config }` +
-  `plugins: string[]` parsing. Update example YAMLs under `examples/`.
+  build (preserve the `:1058`-before-`:1084` order). Duplicate names fail-fast via
+  the Task-4 merge.
+- **Task 16 (config clean break, F4):** in `config.ts`, **remove** `coordinator:`
+  parsing (`parseStepperCoordinatorConfig` `:1586-1750`, `MODE_FLOW_PRESET`
+  `:1440-1447`, `assertCoordinatorConfigShape` `:231-278`, `YamlCoordinator`
+  `:131-176`) and the **YAML `pipeline.stages` authoring path** — but **KEEP** the
+  internal `StageDefinition` type (`packages/llm-agent/src/interfaces/pipeline.ts:49`)
+  and `DefaultPipeline`'s stage executor (`default-pipeline.ts:314`); they run every
+  agent's request pipeline. Add `pipeline: { name, config }` + `plugins: string[]`
+  parsing. Update example YAMLs under `examples/`.
 
-### Task 16: Conformance + generic-host test (spec §10)
+### Task 17: Conformance + generic-host test (spec §10)
 
 - Create `packages/llm-agent-server-libs/src/pipelines/__tests__/conformance.test.ts`:
   iterate the built-in registry — each must `parseConfig` a minimal config, `build`
-  an `IPipelineInstance`, `streamProcess` a trivial request (stub LLM/MCP), and
-  `close()` cleanly. Add a negative case asserting duplicate pipeline names across
-  two sources produce a fail-fast error (reuse the Task-4 merge).
+  an `IPipelineInstance` (stub `createAgentBuilder`/LLM/MCP), `streamProcess` a
+  trivial request, and `close()` cleanly. Add a negative case asserting duplicate
+  pipeline names across two sources produce a fail-fast error (reuse the Task-4 merge).
 
 ---
 
@@ -559,30 +614,35 @@ load at `:1058` (before RAG at `:1084`); `builder.build()` is `:1631`.
 
 **1. Spec coverage:**
 - §1 core idea / §5 contract → Tasks 1–3 (IPipelinePlugin, IPipelineInstance, IPipelineContext, IReconfigurableSmartAgent, MaybePromise). ✓
-- §5 server context → Task 5 (IServerPipelineContext). ✓
-- §6 built-ins as factory wrappers → Tasks 6–9. ✓
+- §5 server context + `createAgentBuilder` → Tasks 5–6 (IServerPipelineContext, extraction). ✓
+- §6 built-ins as factory → BuiltCoordinator → builder wrappers → Tasks 7–10. ✓
 - §7 loader plumbing (LoadedPlugins, merge reject-duplicate, source tracking) → Tasks 3–4. ✓
-- §7/§7.1 host registry + `plugins:` loader + cwd resolution + startup order → Tasks 12–13. ✓
-- §7 lifecycle (build once, close, recreate, reconfigure feature-detect) → Tasks 1, 14. ✓
-- §8 legacy/* + subpath exports → Tasks 10–11. ✓
-- §9 YAML `pipeline:`/`plugins:` parsing + responsibility split → Tasks 13, 15. ✓
-- §10 testing → Tasks 4, 6–9, 16. ✓
-- §11 migration / clean break (remove coordinator: + StageDefinition DSL) → Task 15. ✓
+- §7/§7.1 host registry + `plugins:` loader + cwd resolution + startup order → Tasks 14–15. ✓
+- §7 lifecycle (build per session, close, recreate, reconfigure feature-detect) → Tasks 1, 6, 14. ✓
+- §5 empty `toolsRag` for no-RAG/no-MCP (F3) → Task 13. ✓
+- §8 legacy/* + subpath exports → Tasks 11–12. ✓
+- §9 YAML `pipeline:`/`plugins:` parsing + responsibility split → Tasks 15–16. ✓
+- §10 testing → Tasks 4, 7–10, 17. ✓
+- §11 migration / clean break (remove `coordinator:` + YAML `pipeline.stages`; KEEP internal StageDefinition, F4) → Task 16. ✓
 
 **2. Placeholder scan:** Phases 1–2 (Tasks 1–4) contain complete code and exact
-commands. Tasks 5–16 are intentionally specified at entry-point granularity (with
-file:line anchors and the exact factories/parsers to wrap), to be expanded into
-bite-sized steps when implemented — this is the planned phase boundary, not a
-content gap.
+commands. Tasks 5–17 are a **grounded roadmap** (file:line anchors + the exact
+factories/parsers/builder calls), explicitly flagged as needing bite-sized
+expansion before execution — the planned phase boundary, not a hidden content gap.
 
 **3. Type consistency:** Symbols are consistent across tasks — `IPipelineInstance`
 (`{ agent, close() }`), `IPipelinePlugin` (`name` / `parseConfig` / `build`),
 `IPipelineContext` (`resolveLlm`, `knowledgeRagFor: MaybePromise`, `toolsRag`),
+`IServerPipelineContext` (adds `createAgentBuilder`), `BuiltCoordinator { handler }`
+wired via `builder.withStepperCoordinator(handler)`,
 `LoadedPlugins.pipelinePlugins` + `pipelinePluginSources`. The merge error string
-(`'duplicate pipeline …'`) used in Task 4 is the same one Task 16 asserts.
+(`'duplicate pipeline …'`) used in Task 4 is the same one Task 17 asserts.
 
 > **Note on scope:** Phases 1–2 are a complete, shippable, tested foundation. Phases
-> 3–6 should be split into their own detailed plan(s) before implementation, since
-> the host integration (Tasks 12–15) rewrites sections of the ~3000-line
-> `smart-server.ts` and warrants its own task-by-task expansion grounded in a close
-> read of that file. The anchors above make that expansion mechanical.
+> 3–6 (Tasks 5–17) carry the plan-review corrections (factories return
+> `BuiltCoordinator` not `SmartAgentHandle`; host owns assembly via
+> `createAgentBuilder`; empty `toolsRag`; internal `StageDefinition` stays) and
+> should be expanded into their own bite-sized plan before implementation — the
+> host integration (Tasks 13–16) rewrites sections of the ~3000-line
+> `smart-server.ts`. The keystone is Task 6 (extract `createAgentBuilder`); the
+> anchors make the rest mechanical.
