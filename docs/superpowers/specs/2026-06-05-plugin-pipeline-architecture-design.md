@@ -12,9 +12,10 @@ actually realize that variant (flat / linear / dag / stepper / custom). The term
 "pipeline" is kept deliberately: it is precisely the thing that determines the
 agent's shape.
 
-- `IPipelinePlugin.build(config, ctx)` returns an **`ISmartAgent`** (the existing
-  public agent contract — `process` / `streamProcess`). It does **not** introduce
-  a new `IPipeline`; the existing `IPipeline`/`DefaultPipeline` lives *inside* the
+- `IPipelinePlugin.build(config, ctx)` returns an **`IPipelineInstance`** — the
+  runnable `ISmartAgent` (`process` / `streamProcess`) plus a `close()` disposal
+  contract. It does **not** introduce a new `IPipeline`; the existing
+  `IPipeline`/`DefaultPipeline` lives *inside* the
   agent a plugin builds, untouched.
 - Each pipeline **owns its own flow**: how it uses RAG, how it threads a
   per-run **global context** (an accumulator that components write to and the
@@ -126,7 +127,14 @@ export interface IPipelineContext {
 export interface IPipelinePlugin<Config = unknown> {
   readonly name: string;                       // = YAML `pipeline.name`
   parseConfig(raw: unknown): Config;           // YAML block → typed (+ validation error)
-  build(config: Config, ctx: IPipelineContext): Promise<ISmartAgent>;
+  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+}
+
+/** What build() hands back: the runnable agent + a disposal contract so the host
+ *  can free MCP / RAG / session resources on recreate or shutdown (F2). */
+export interface IPipelineInstance {
+  readonly agent: ISmartAgent;
+  close(): Promise<void>;                       // may be a no-op; required so recreate never leaks
 }
 ```
 
@@ -147,8 +155,10 @@ export interface IServerPipelineContext extends IPipelineContext {
 }
 ```
 
-**The agent a pipeline builds** is the existing `ISmartAgent`
+**The agent inside the instance** is the existing `ISmartAgent`
 (`process` / `streamProcess`). No new runnable interface, no `IPipeline` collision.
+The built-ins wrap their `SmartAgentHandle` — `{ agent: handle.agent, close:
+handle.close }` — so `close()` reuses the handle's existing graceful MCP shutdown.
 
 **Runtime hot-swap is optional (F1).** `ISmartAgent` exposes only `process`/
 `streamProcess`; `reconfigure()` lives on the concrete `SmartAgent`. A host typed
@@ -160,11 +170,11 @@ export interface IReconfigurableSmartAgent extends ISmartAgent {
 }
 ```
 
-`build()` returns `ISmartAgent`. On LLM hot-swap the host feature-detects: if the
-returned agent satisfies `IReconfigurableSmartAgent`, it calls `reconfigure()`;
-otherwise it **recreates** the agent (the lifecycle fallback in §7). The built-ins
+On LLM hot-swap the host feature-detects `instance.agent`: if it satisfies
+`IReconfigurableSmartAgent`, it calls `reconfigure()`; otherwise it calls
+`instance.close()` and **recreates** (the lifecycle fallback in §7). The built-ins
 return the concrete `SmartAgent`, which already satisfies it; custom plugins that
-do not implement it simply get recreate-on-change.
+do not implement it simply get close-then-recreate.
 
 **Each pipeline owns its flow.** Inside `build`, a pipeline wires its own
 orchestration over the `ctx` handles, including a **per-run global context** — an
@@ -183,9 +193,10 @@ components — orchestration is *not* rewritten, only re-packaged as agent build
 export class DagPipelinePlugin implements IPipelinePlugin<DagConfig> {
   readonly name = 'dag';
   parseConfig(raw: unknown): DagConfig { /* validate the dag dialect */ }
-  async build(cfg: DagConfig, ctx: IPipelineContext): Promise<ISmartAgent> {
-    // compose a SmartAgent whose pipeline uses the DAG coordinator over ctx handles
-    return buildDagAgent(cfg, ctx);
+  async build(cfg: DagConfig, ctx: IPipelineContext): Promise<IPipelineInstance> {
+    // compose a SmartAgentHandle whose pipeline uses the DAG coordinator over ctx handles
+    const handle = await buildDagAgent(cfg, ctx);
+    return { agent: handle.agent, close: () => handle.close() };
   }
 }
 ```
@@ -223,9 +234,13 @@ export interface LoadedPlugins {
 ```
 
 - `emptyLoadedPlugins()` must initialise `pipelinePlugins: new Map()`.
-- `mergePluginExports()` must copy `mod.pipelinePlugins` entries into
-  `result.pipelinePlugins` (same shape as the existing `stageHandlers` merge),
-  returning `true` when any were registered.
+- `mergePluginExports()` copies `mod.pipelinePlugins` entries into
+  `result.pipelinePlugins`, returning `true` when any were registered — but with a
+  **different rule than `stageHandlers`** (F1). `stageHandlers` is *last-wins*
+  (`.set()` overwrites); pipeline names must instead **reject duplicates**: if
+  `result.pipelinePlugins.has(name)`, record a duplicate-name error (with both
+  `source`s) in the loader's `errors` and keep the first. The host then fails fast
+  at startup on any collision, which silent last-wins would hide.
 
 - `PluginExports` (stageHandlers, adapters, skills) extends an agent's **internals**;
   `pipelinePlugins` contributes **whole agent variants**. The two levels compose:
@@ -239,9 +254,12 @@ export interface LoadedPlugins {
   2. **`pluginDir`** (existing) — the loader scans the directory and dynamic-imports
      `.js`/`.mjs`/`.ts` files, reading each file's `PluginExports`.
   3. **`plugins: [<module-specifier>]`** (new) — the host `await import(specifier)`
-     for each entry and reads its `PluginExports.pipelinePlugins`. The package
-     self-declares its pipeline names via that map; YAML does not need per-export
-     import syntax.
+     for each entry and feeds the module's **full `PluginExports` through the same
+     `mergePluginExports()`** as `pluginDir` (F3) — not only `pipelinePlugins`. So a
+     pipeline package may also ship `stageHandlers` / `embedderFactories` /
+     `mcpClients` / `apiAdapters`, and they register and compose with the built-ins
+     exactly as directory-loaded plugins do. The package self-declares its pipeline
+     names via the `pipelinePlugins` map; YAML needs no per-export import syntax.
 
 ### 7.1 Loading a pipeline by module specifier
 
@@ -275,18 +293,23 @@ specifier resolves relative to the *server's* location, not the user's cwd:
 const reg = new Map<string, IPipelinePlugin>();        // built-ins + loaded pipelinePlugins
 const plugin = reg.get(yaml.pipeline.name) ?? failUnknown(yaml.pipeline.name, [...reg.keys()]);
 const cfg    = plugin.parseConfig(yaml.pipeline.config);  // throws → fail-fast (which field)
-const agent  = await plugin.build(cfg, ctx);              // throws → server does not start
+const inst   = await plugin.build(cfg, ctx);              // throws → server does not start
 // per request:
-for await (const chunk of agent.streamProcess(input, options)) yield chunk;  // signal cancels through
+for await (const chunk of inst.agent.streamProcess(input, options)) yield chunk;  // signal cancels through
+// on shutdown / before recreate:
+await inst.close();
 ```
 
-- **Resolution:** unknown name → error listing available names; `parseConfig`
-  throw → fail-fast naming the field; `build` throw (e.g. LLM/RAG unavailable) →
-  startup error, server does not come up with a broken pipeline.
-- **Lifecycle:** `build` once (startup); requests via `streamProcess`. Config
-  change → **recreate** the agent. Runtime LLM hot-swap uses the existing
-  `SmartAgent.reconfigure()`; `rebuildStages?` / `reconfigure?` stay internal to
-  the agent's `IPipeline` (unchanged). No new lifecycle surface on the plugin.
+- **Resolution:** unknown name → error listing available names; duplicate pipeline
+  name across sources → fail-fast (see §7 merge rule); `parseConfig` throw →
+  fail-fast naming the field; `build` throw (e.g. LLM/RAG unavailable) → startup
+  error, server does not come up with a broken pipeline.
+- **Lifecycle:** `build` once (startup); requests via `inst.agent.streamProcess`.
+  Config change → `inst.close()` then **recreate**. Runtime LLM hot-swap uses the
+  existing `SmartAgent.reconfigure()` when `inst.agent` is reconfigurable, else the
+  same close-then-recreate; `rebuildStages?` / `reconfigure?` stay internal to the
+  agent's `IPipeline` (unchanged). No new lifecycle surface on the plugin beyond
+  `IPipelineInstance.close()`.
 - **State ownership:** the **agent owns** its pipeline, its per-run global context,
   and uses the host-owned infra stores via handles (`knowledgeRagFor(sessionId)`,
   `toolsRag`, `ragRegistry`, `sessionManager`). The **host** holds only the
@@ -369,11 +392,13 @@ pipeline:
   a pipeline-name parameter.
 - **Pipeline unit test without a server:** `ctx` is an interface, trivially
   stubbed. `plugin.parseConfig(fixture)` → `build(stubCtx)` → drive
-  `streamProcess()` with fake LLM/MCP → assert the stream. No HTTP, no process.
+  `inst.agent.streamProcess()` with fake LLM/MCP → assert the stream → `inst.close()`.
+  No HTTP, no process.
 - **Conformance test over the registry:** one test iterates every registered
-  pipeline — each must `parseConfig` a minimal config, `build` an `ISmartAgent`,
-  and `streamProcess` a trivial request producing a valid stream. New pipelines
-  are covered automatically.
+  pipeline — each must `parseConfig` a minimal config, `build` an `IPipelineInstance`,
+  `streamProcess` a trivial request producing a valid stream, and `close()` cleanly.
+  New pipelines are covered automatically. A negative case asserts duplicate pipeline
+  names across sources fail-fast.
 
 ## 11. Migration (clean break)
 
@@ -384,15 +409,17 @@ pipeline:
   `legacy/*`); consumers import them **directly, in code, without YAML**.
 - Removed: `coordinator:` parsing in `config.ts`; the handler-selection switch in
   `pipeline/handlers/index.ts`. Replaced by the pipeline registry in the host.
-- Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineContext` (core-only,
-  opaque `resolveLlm`), `IReconfigurableSmartAgent`; `pipelinePlugins` on
-  `PluginExports` **and** on `LoadedPlugins` (+ `emptyLoadedPlugins`/
-  `mergePluginExports` plumbing).
+- Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineInstance` (agent +
+  `close()`), `IPipelineContext` (core-only, opaque `resolveLlm`),
+  `IReconfigurableSmartAgent`; `pipelinePlugins` on `PluginExports` **and** on
+  `LoadedPlugins` (+ `emptyLoadedPlugins`/`mergePluginExports` plumbing, with
+  **reject-duplicate** merge for pipeline names, unlike last-wins `stageHandlers`).
 - Added in `llm-agent-server-libs`: `IServerPipelineContext` (libs/server-service
   extension); built-in pipelines + `legacy/*` exports.
 - Added in `llm-agent-server`: registry + dynamic-load wiring, including the
-  `plugins: [<specifier>]` loader (cwd-based resolution) alongside the existing
-  `pluginDir` scan; feature-detected `reconfigure()` else recreate.
+  `plugins: [<specifier>]` loader (cwd-based resolution, routed through
+  `mergePluginExports` like `pluginDir`) alongside the existing `pluginDir` scan;
+  feature-detected `reconfigure()` else `close()`-then-recreate.
 - This is a **major** lockstep bump.
 
 ## 12. Future (out of scope here)
