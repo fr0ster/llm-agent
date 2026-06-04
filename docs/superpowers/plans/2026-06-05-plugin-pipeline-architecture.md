@@ -20,14 +20,15 @@ Run from inside the package dir (e.g. `packages/llm-agent` or `packages/llm-agen
 
 ## File Structure
 
-This plan is organized in phases. **Phases 1–2 (Tasks 1–4)** are fully specified
+This plan is organized in phases. **Phase 1–2 (Tasks 0–4)** are fully specified
 with complete TDD code — they form a self-contained, compilable, testable
 foundation (the contract layer + loader support that everything else depends on).
-**Phases 3–6 (Tasks 5–16)** build on that foundation; their entry points are
+**Phases 3–6 (Tasks 5–17)** build on that foundation; their entry points are
 identified concretely from the codebase, with file:line anchors.
 
 | File | Responsibility | Phase |
 |------|----------------|-------|
+| `packages/llm-agent/tsconfig.test.json` (create) | test-inclusive config for the type-only red/green gate | 1 |
 | `packages/llm-agent/src/interfaces/pipeline-plugin.ts` (create) | `MaybePromise`, `IPipelineInstance`, `IReconfigurableSmartAgent`, `IPipelineContext`, `IPipelinePlugin` | 1 |
 | `packages/llm-agent/src/interfaces/index.ts` (modify) | re-export the new contract symbols | 1 |
 | `packages/llm-agent/src/interfaces/plugin.ts` (modify) | add `pipelinePlugins` to `PluginExports`; add `pipelinePlugins` + `pipelinePluginSources` to `LoadedPlugins` | 1 |
@@ -50,11 +51,45 @@ identified concretely from the codebase, with file:line anchors.
 > **Type-only red/green gate (plan-review F1).** Tasks 1–3 add **types**, and the
 > test runner (`node --import tsx/esm --test`) **strips types without checking them**
 > — `import type` from a missing module is erased, so a node:test run can falsely
-> PASS before the type exists. Therefore the **authoritative gate for Tasks 1–3 is**
-> `npx tsc -p tsconfig.json --noEmit` (run from `packages/llm-agent`): it FAILS when
-> a referenced type is missing/wrong and PASSES once correct. The node:test runs are
-> kept as a supplementary runtime smoke (they exercise the conforming objects), but
-> **the tsc step is the one that must flip red→green**.
+> PASS before the type exists. The build `tsconfig.json` is **also** no help: it
+> **excludes** `**/__tests__/**` and `**/*.test.ts`, so a plain
+> `tsc -p tsconfig.json --noEmit` never sees the test file and passes regardless.
+>
+> **Therefore Task 0 first creates a test-inclusive config**, and the authoritative
+> red/green gate for Tasks 1–3 is `npx tsc -p tsconfig.test.json --noEmit` (from
+> `packages/llm-agent`): it type-checks the test file, so it FAILS when a referenced
+> type is missing/wrong and PASSES once correct. The node:test runs stay as a
+> supplementary runtime smoke; **the `tsconfig.test.json` step flips red→green**.
+
+### Task 0: Test-inclusive tsconfig for the type gate
+
+**Files:**
+- Create: `packages/llm-agent/tsconfig.test.json`
+
+- [ ] **Step 1: Create the config**
+
+```jsonc
+// packages/llm-agent/tsconfig.test.json — type-check sources INCLUDING tests.
+// Build still uses tsconfig.json (which excludes tests); this is gate-only.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true },
+  "include": ["src/**/*"],
+  "exclude": ["dist"]
+}
+```
+
+- [ ] **Step 2: Verify it type-checks the package as-is (baseline green)**
+
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
+Expected: PASS (no test files referencing missing types yet).
+
+- [ ] **Step 3: Commit**
+
+```bash
+git add packages/llm-agent/tsconfig.test.json
+git commit -m "chore(llm-agent): test-inclusive tsconfig for type-only gates"
+```
 
 ### Task 1: Runnable + reconfigurable contracts
 
@@ -113,7 +148,7 @@ describe('pipeline-plugin runnable contracts', () => {
 
 - [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: FAIL — `error TS2307: Cannot find module '../pipeline-plugin.js'` (and
 `TS2305` for each missing exported type). This is the authoritative gate; a bare
 `node --import tsx/esm --test ...` run would falsely pass because types are erased.
@@ -176,7 +211,7 @@ export interface IPipelineContext {
 
 - [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: PASS (no errors — types now resolve).
 Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
 Expected: PASS (3 tests — runtime smoke).
@@ -222,7 +257,7 @@ describe('IPipelinePlugin', () => {
 
 - [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: FAIL — `TS2305: Module '"../pipeline-plugin.js"' has no exported member 'IPipelinePlugin'`. (A `node --import tsx/esm --test` run would falsely pass — types erased.)
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -254,7 +289,7 @@ export type {
 
 - [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: PASS (no errors).
 Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
 Expected: PASS (4 tests).
@@ -309,7 +344,7 @@ describe('PluginExports / LoadedPlugins carry pipeline plugins', () => {
 
 - [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: FAIL — `TS2339`/`TS2305` for `pipelinePlugins` / `pipelinePluginSources` not on the types. (A `node --import tsx/esm --test` run would falsely pass — types erased.)
 
 - [ ] **Step 3: Write the minimal implementation**
@@ -339,7 +374,7 @@ Add to the `LoadedPlugins` interface (after `apiAdapters` at line ~141):
 
 - [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
 Expected: PASS (no errors).
 Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
 Expected: PASS (6 tests).
@@ -403,11 +438,15 @@ describe('pipelinePlugins merge', () => {
     mergePluginExports(r, { pipelinePlugins: { dag: stubPipeline('dag-2') } }, 'pkg-b');
     // first wins
     assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
-    // duplicate recorded with BOTH sources
-    const dupe = r.errors.find((e) => e.error.includes('duplicate pipeline'));
-    assert.ok(dupe, 'expected a duplicate-pipeline error');
-    assert.ok(dupe?.error.includes('pkg-a'));
-    assert.ok(dupe?.error.includes('pkg-b'));
+    // A duplicate error is recorded that names the pipeline AND both sources.
+    // Assert on the stable contract (name + both sources), NOT a brittle phrase.
+    const dupe = r.errors.find(
+      (e) =>
+        e.error.includes("'dag'") &&
+        e.error.includes('pkg-a') &&
+        e.error.includes('pkg-b'),
+    );
+    assert.ok(dupe, 'expected a duplicate error naming the pipeline and both sources');
   });
 });
 ```
@@ -636,7 +675,9 @@ In `smart-server.ts` + `config.ts`. Plugins load at `:1058` (before RAG `:1084`)
   iterate the built-in registry — each must `parseConfig` a minimal config, `build`
   an `IPipelineInstance` (stub `createAgentBuilder`/LLM/MCP), `streamProcess` a
   trivial request, and `close()` cleanly. Add a negative case asserting duplicate
-  pipeline names across two sources produce a fail-fast error (reuse the Task-4 merge).
+  pipeline names across two sources produce a fail-fast error — assert on the same
+  stable contract as Task 4 (the error `includes(name)` + both source ids), not a
+  fixed phrase (reuse the Task-4 merge).
 
 ---
 
@@ -665,8 +706,10 @@ expansion before execution — the planned phase boundary, not a hidden content 
 `IPipelineContext` (`resolveLlm`, `knowledgeRagFor: MaybePromise`, `toolsRag`),
 `IServerPipelineContext` (adds `createAgentBuilder`), `BuiltCoordinator { handler }`
 wired via `builder.withStepperCoordinator(handler)`,
-`LoadedPlugins.pipelinePlugins` + `pipelinePluginSources`. The merge error string
-(`'duplicate pipeline …'`) used in Task 4 is the same one Task 17 asserts.
+`LoadedPlugins.pipelinePlugins` + `pipelinePluginSources`. The duplicate-merge
+**contract** (the recorded error names the pipeline + both sources) is what Task 4
+asserts and Task 17 re-asserts — both check `includes(name)` + both sources, **not**
+a brittle exact phrase, so the wording in the merge code can change freely.
 
 > **Note on scope:** Phases 1–2 are a complete, shippable, tested foundation. Phases
 > 3–6 (Tasks 5–17) carry the plan-review corrections (factories return
