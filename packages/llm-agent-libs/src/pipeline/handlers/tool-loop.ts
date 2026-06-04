@@ -749,8 +749,8 @@ export class ToolLoopHandler implements IStageHandler {
             ok: true,
             value: {
               content: '',
-              toolCalls: misses.map((tc) => ({
-                index: 0,
+              toolCalls: misses.map((tc, index) => ({
+                index,
                 id: tc.extId,
                 name: tc.name,
                 arguments: JSON.stringify(tc.arguments),

@@ -362,8 +362,8 @@ export class DagCoordinatorHandler implements IStageHandler {
               ok: true,
               value: {
                 content: '',
-                toolCalls: result.pendingExternalToolCalls.map((tc) => ({
-                  index: 0,
+                toolCalls: result.pendingExternalToolCalls.map((tc, index) => ({
+                  index,
                   id: tc.id,
                   name: tc.name,
                   arguments: JSON.stringify(tc.arguments),

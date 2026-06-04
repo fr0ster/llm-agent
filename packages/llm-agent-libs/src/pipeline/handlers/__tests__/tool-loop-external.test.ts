@@ -293,6 +293,89 @@ test('miss: external call ends the turn with rewritten extId, not executed', asy
   assert.ok(terminal, 'terminal finishReason tool_calls chunk yielded');
 });
 
+test('regression #171: two external-miss calls get distinct indices [0,1], not [0,0]', async () => {
+  const args0 = { a: 1 };
+  const args1 = { b: 2 };
+  const extId0 = externalToolCallId('rag_add', args0);
+  const extId1 = externalToolCallId('rag_add', args1);
+
+  // Stream emits both calls in a single delta chunk then finishes with tool_calls.
+  const twoExternalStream: () => AsyncIterable<
+    Result<LlmStreamChunk, LlmError>
+  > = async function* () {
+    yield {
+      ok: true,
+      value: {
+        content: '',
+        toolCalls: [
+          {
+            index: 0,
+            id: 'raw_0',
+            name: 'rag_add',
+            arguments: JSON.stringify(args0),
+          },
+          {
+            index: 1,
+            id: 'raw_1',
+            name: 'rag_add',
+            arguments: JSON.stringify(args1),
+          },
+        ],
+      },
+    } as Result<LlmStreamChunk, LlmError>;
+    yield {
+      ok: true,
+      value: {
+        content: '',
+        finishReason: 'tool_calls',
+        usage: { promptTokens: 1, completionTokens: 1, totalTokens: 2 },
+      },
+    } as Result<LlmStreamChunk, LlmError>;
+  };
+
+  const { ctx, yielded } = makeCtx({
+    mode: 'smart',
+    externalTools: [RAG_ADD],
+    streams: [twoExternalStream],
+  });
+
+  const ok = await new ToolLoopHandler().execute(ctx, {}, makeSpan());
+  assert.equal(ok, true);
+
+  // Find the toolCalls chunk surfaced by the miss path.
+  const callChunks = yielded.filter(
+    (c) => c.ok && Array.isArray((c.value as LlmStreamChunk).toolCalls),
+  ) as Array<Result<LlmStreamChunk, unknown>>;
+  assert.ok(callChunks.length >= 1, 'an external toolCalls chunk was yielded');
+
+  const calls = (callChunks[0].value as LlmStreamChunk).toolCalls ?? [];
+  assert.equal(calls.length, 2, 'both external calls must be surfaced');
+
+  // Regression: with the old bug both entries had index 0 (all-0). Now they
+  // must be mapped by array position.
+  const indices = calls.map((c) => (c as { index: number }).index);
+  assert.deepEqual(
+    indices,
+    [0, 1],
+    `expected distinct indices [0,1], got ${JSON.stringify(indices)}`,
+  );
+
+  const ids = calls.map((c) => (c as { id?: string }).id);
+  assert.ok(
+    ids.includes(extId0),
+    `first call must carry extId for args0 (${extId0})`,
+  );
+  assert.ok(
+    ids.includes(extId1),
+    `second call must carry extId for args1 (${extId1})`,
+  );
+
+  const terminal = yielded.find(
+    (c) => c.ok && (c.value as LlmStreamChunk).finishReason === 'tool_calls',
+  );
+  assert.ok(terminal, 'terminal finishReason tool_calls chunk yielded');
+});
+
 test('hit: matched pair injected, loop continues, no external chunk leaked', async () => {
   const args = { content: 'hello' };
   const extId = externalToolCallId('rag_add', args);

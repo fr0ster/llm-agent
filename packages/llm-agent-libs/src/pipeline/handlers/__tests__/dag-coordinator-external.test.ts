@@ -140,6 +140,60 @@ test('no-finalizer branch: pending external tool calls yield a tool_calls turn a
   assert.ok(terminal, 'expected terminal finishReason=tool_calls chunk');
 });
 
+test('regression #171: two pending external calls get distinct indices [0,1], not [0,0]', async () => {
+  const pending: LlmToolCall[] = [
+    { id: 'ext:aaa111', name: 'rag_add', arguments: { a: 1 } },
+    { id: 'ext:bbb222', name: 'rag_add', arguments: { b: 2 } },
+  ];
+  const h = new DagCoordinatorHandler({
+    planner,
+    interpreter: pendingInterpreter(pending),
+    workers: new Map([['w', worker]]),
+  });
+  const { ctx, yields } = makeCtx();
+  await h.execute(ctx, {}, {} as never);
+
+  // Find the toolCalls chunk.
+  const tcYield = yields.find(
+    (y) =>
+      Array.isArray(y.value.toolCalls) &&
+      (y.value.toolCalls as unknown[]).length > 0,
+  );
+  assert.ok(tcYield, 'expected a chunk carrying toolCalls');
+
+  const calls = tcYield.value.toolCalls as Array<{
+    index: number;
+    id: string;
+    name: string;
+    arguments: string;
+  }>;
+  assert.equal(calls.length, 2, 'both external calls must be surfaced');
+
+  // Regression: with the old bug both entries had index 0 (all-0). Now they
+  // must be mapped by array position.
+  const indices = calls.map((c) => c.index);
+  assert.deepEqual(
+    indices,
+    [0, 1],
+    `expected distinct indices [0,1], got ${JSON.stringify(indices)}`,
+  );
+
+  const ids = calls.map((c) => c.id);
+  assert.deepEqual(
+    ids,
+    ['ext:aaa111', 'ext:bbb222'],
+    `expected ids in order, got ${JSON.stringify(ids)}`,
+  );
+
+  // Arguments serialised correctly.
+  assert.equal(calls[0].arguments, JSON.stringify({ a: 1 }));
+  assert.equal(calls[1].arguments, JSON.stringify({ b: 2 }));
+
+  // Terminal chunk present.
+  const terminal = yields.find((y) => y.value.finishReason === 'tool_calls');
+  assert.ok(terminal, 'expected terminal finishReason=tool_calls chunk');
+});
+
 test('no-finalizer branch: empty pending → finalizer IS invoked (existing path)', async () => {
   let finalizeCalls = 0;
   const finalizer: IFinalizer = {
