@@ -287,7 +287,7 @@ sequenceDiagram
 
 ### Key decision points
 
-1. **Mode selection** — `pass` skips the entire pipeline and streams directly from LLM. `smart` runs full orchestration. `hard` forces MCP-only tools (no external tools).
+1. **Mode selection** — `pass` skips the entire pipeline and streams directly from LLM. `smart` runs full orchestration. `hard` forces the worker to execute only internal MCP tools; client/external tools are still offered and their calls surfaced to the consumer.
 2. **RAG retrieval** — When RAG stores are configured, they are queried in parallel. Each store can have its own search strategy (`ISearchStrategy`) and query preprocessors (`IQueryPreprocessor`). The preprocessor chain runs before embedding — e.g. `TranslatePreprocessor` translates non-English queries, `ExpandPreprocessor` adds synonyms. The search strategy scores candidates — `RrfStrategy` (Reciprocal Rank Fusion) is recommended for best results. `CompositeStrategy` allows combining multiple strategies with configurable weights.
 3. **Tool routing** — Tool calls from LLM are classified as: internal (MCP), external (client-provided), hallucinated (unknown), or blocked (temporarily unavailable). Each category has distinct handling.
 4. **Loop termination** — The tool loop exits on: `finishReason: stop`, `maxIterations` reached, `maxToolCalls` exhausted, abort signal, or external tool call delegation.
@@ -493,7 +493,8 @@ Configured via `SmartAgentConfig.mode` and `SmartServerMode`:
 
 - `hard`:
 - SAP/MCP-focused behavior with strict internal tool context.
-- External tools are not active in MCP execution loop.
+- The worker executes only internal MCP tools; client/external tools remain
+  offered and their calls are surfaced to the consumer (consumer-executed).
 
 - `pass`:
 - Pure passthrough to main LLM stream over provided history/tools.

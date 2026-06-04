@@ -8,6 +8,7 @@ import type {
   Result,
   SmartAgentResponse,
 } from '@mcp-abap-adt/llm-agent';
+import { buildExternalResults } from '../../external-results.js';
 import type {
   ApiRequestContext,
   ApiSseEvent,
@@ -592,5 +593,82 @@ describe('AnthropicApiAdapter.transformStream', () => {
     for (const e of events) {
       assert.ok(e.event, `Expected event field to be set, got: ${e.event}`);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// External-tool round-trip normalization (#171, review#8)
+//
+// An Anthropic tool round-trip (assistant tool_use -> user tool_result) must,
+// after adapter normalization, look identical to the OpenAI-normalized shape
+// that buildExternalResults consumes: assistant.tool_calls[{id}] followed by a
+// role:'tool' message carrying tool_call_id. The deterministic `ext:` id then
+// lets a stateless re-run correlate the client-executed result by id.
+// ---------------------------------------------------------------------------
+
+describe('AnthropicApiAdapter external-tool normalization', () => {
+  const adapter = new AnthropicApiAdapter();
+
+  it('normalizes a tool_use/tool_result round-trip into the OpenAI shape that buildExternalResults consumes', () => {
+    const extId = 'ext:abc123';
+    const request = {
+      model: 'claude-test',
+      messages: [
+        { role: 'user', content: 'call the weather tool' },
+        {
+          role: 'assistant',
+          content: [
+            { type: 'text', text: 'Let me check.' },
+            {
+              type: 'tool_use',
+              id: extId,
+              name: 'get_weather',
+              input: { city: 'Kyiv' },
+            },
+          ],
+        },
+        {
+          role: 'user',
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: extId,
+              content: 'sunny, 21C',
+            },
+          ],
+        },
+      ],
+    };
+
+    const normalized = adapter.normalizeRequest(request);
+
+    // Adapter produced the internal OpenAI shape.
+    const assistant = normalized.messages.find((m) => m.role === 'assistant');
+    assert.ok(assistant, 'expected an assistant message');
+    assert.equal(assistant.tool_calls?.[0]?.id, extId);
+    assert.equal(assistant.tool_calls?.[0]?.type, 'function');
+    assert.equal(assistant.tool_calls?.[0]?.function.name, 'get_weather');
+
+    const toolMsg = normalized.messages.find((m) => m.role === 'tool');
+    assert.ok(toolMsg, 'expected a role:tool message');
+    assert.equal(toolMsg.tool_call_id, extId);
+    assert.equal(toolMsg.content, 'sunny, 21C');
+
+    // buildExternalResults consumes those turns and keys the result by ext id.
+    const { results, sanitizedMessages } = buildExternalResults(
+      normalized.messages,
+    );
+    assert.equal(results.get(extId), 'sunny, 21C');
+    // The consumed external assistant/tool turns are stripped from history.
+    assert.equal(
+      sanitizedMessages.some((m) => m.role === 'tool'),
+      false,
+    );
+    assert.equal(
+      sanitizedMessages.some(
+        (m) => m.role === 'assistant' && (m.tool_calls?.length ?? 0) > 0,
+      ),
+      false,
+    );
   });
 });

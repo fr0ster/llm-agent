@@ -2590,6 +2590,15 @@ export class SmartServer {
       throw err;
     }
 
+    // #171 (review#8): the adapter has already normalized Anthropic
+    // tool_use/tool_result blocks into the OpenAI-shaped Message[]
+    // (assistant.tool_calls + role:'tool' with tool_call_id). Run the same
+    // external-results extraction the OpenAI path uses so Anthropic clients get
+    // identical stateless-resume behaviour: consumed external turns are stripped
+    // and their results threaded to the agent keyed by deterministic `ext:` id.
+    const { results: externalResults, sanitizedMessages } =
+      buildExternalResults(normalized.messages);
+
     const augmentedOptions = session
       ? {
           ...normalized.options,
@@ -2597,8 +2606,9 @@ export class SmartServer {
           trace: { traceId: session.traceId },
           toolAvailability: session.graph.toolAvailability,
           pendingToolResults: session.graph.pendingToolResults,
+          externalResults,
         }
-      : normalized.options;
+      : { ...normalized.options, externalResults };
 
     if (normalized.stream) {
       res.writeHead(200, {
@@ -2608,7 +2618,7 @@ export class SmartServer {
       });
 
       for await (const event of adapter.transformStream(
-        agent.streamProcess(normalized.messages, augmentedOptions),
+        agent.streamProcess(sanitizedMessages, augmentedOptions),
         normalized.context,
       )) {
         const eventLine = event.event ? `event: ${event.event}\n` : '';
@@ -2619,7 +2629,7 @@ export class SmartServer {
     }
 
     // Non-streaming
-    const result = await agent.process(normalized.messages, augmentedOptions);
+    const result = await agent.process(sanitizedMessages, augmentedOptions);
     res.setHeader('Content-Type', 'application/json');
     if (!result.ok) {
       res.writeHead(500);

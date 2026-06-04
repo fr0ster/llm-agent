@@ -280,4 +280,105 @@ describe('DAG-coordinator ↔ MCP integration (#159)', () => {
       `[#159] PASS — prompt_tokens=${promptTokens}, tool=${toolHit.tool} (${toolHit.kind}), trace=${path.basename(finalTrace)}`,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // #171: external (client-provided) tool round-trip under the coordinator.
+  //
+  // Declare a simple external tool in the request `tools`, ask the model to
+  // call it, and assert the response SURFACES the call (finish_reason
+  // tool_calls + an `ext:`-prefixed tool_call id) instead of the worker
+  // executing it. This proves external tools are consumer-executed and that
+  // the deterministic `ext:` id is exposed for stateless resume.
+  //
+  // Scope limit: we assert only the FIRST half of the round-trip (the call is
+  // surfaced). Sending the result back and asserting the follow-up answer is
+  // covered by the unit tests for buildExternalResults + adapter
+  // normalization; wiring a full live two-leg round-trip here would add
+  // significant flakiness for little extra signal. Same env-gating as above.
+  // -------------------------------------------------------------------------
+  it('surfaces a client external-tool call (ext: id) instead of executing it', {
+    timeout: 600_000,
+  }, async (t) => {
+    if (skipReason) {
+      t.skip(skipReason);
+      return;
+    }
+
+    const res = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        stream: false,
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Call the client tool get_current_time to get the current time. Do not answer from your own knowledge — you must use the tool.',
+          },
+        ],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'get_current_time',
+              description:
+                'Returns the current wall-clock time. Runs on the client.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  timezone: {
+                    type: 'string',
+                    description: 'IANA timezone, e.g. Europe/Kyiv',
+                  },
+                },
+                required: [],
+              },
+            },
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(590_000),
+    });
+
+    assert.equal(res.status, 200, `expected HTTP 200, got ${res.status}`);
+    const body = (await res.json()) as {
+      choices?: Array<{
+        finish_reason?: string;
+        message?: {
+          tool_calls?: Array<{ id?: string; function?: { name?: string } }>;
+        };
+      }>;
+    };
+
+    const choice = body.choices?.[0];
+    const toolCalls = choice?.message?.tool_calls ?? [];
+    assert.ok(
+      toolCalls.length > 0,
+      `expected the response to surface tool_calls, got finish_reason=${choice?.finish_reason}`,
+    );
+    assert.equal(
+      choice?.finish_reason,
+      'tool_calls',
+      `expected finish_reason=tool_calls, got ${choice?.finish_reason}`,
+    );
+
+    const extCall = toolCalls.find((c) => c.id?.startsWith('ext:'));
+    assert.ok(
+      extCall,
+      `expected a surfaced tool_call with an ext: id (consumer-executed), got ids: ${toolCalls
+        .map((c) => c.id)
+        .join(', ')}`,
+    );
+    assert.equal(
+      extCall.function?.name,
+      'get_current_time',
+      'surfaced external call must name the client tool',
+    );
+
+    // eslint-disable-next-line no-console
+    console.error(
+      `[#171] PASS — surfaced external call id=${extCall.id} name=${extCall.function?.name}`,
+    );
+  });
 });
