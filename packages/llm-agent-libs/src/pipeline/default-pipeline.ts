@@ -506,6 +506,13 @@ export class DefaultPipeline implements IPipeline {
       mcpTools: [],
       selectedTools: [],
       externalTools: externalTools ?? [],
+      // #171 (review#7): the validated `extId → result` map built at the server
+      // boundary is threaded down via AgentCallOptions; the worker tool-loop
+      // reads ctx.externalResults to resolve a re-surfaced external call from
+      // history on stateless resume. Typed as CallOptions here (the field lives
+      // on AgentCallOptions, structurally present at runtime).
+      externalResults: (options as { externalResults?: Map<string, string> })
+        ?.externalResults,
       assembledMessages: [],
       activeTools: [],
       selectedSkills: [],

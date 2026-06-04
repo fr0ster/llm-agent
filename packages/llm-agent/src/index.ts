@@ -1,10 +1,14 @@
 // Re-export everything from core subtrees.
 export {
   artifactIdentityKey,
+  deepStableArgsKey,
+  externalToolCallId,
+  shortHash,
   stableArgsKey,
 } from './artifact-identity.js';
 export { ClarifySignal, NeedInfoSignal } from './coordinator-signals.js';
 export * from './errors/index.js';
+export * from './external-results.js';
 export * from './interfaces/index.js';
 export { BaseLLMProvider, type LLMProvider } from './llm/base-llm-provider.js';
 export { NeedsDecompositionError } from './needs-decomposition-error.js';

@@ -20,12 +20,15 @@
  *       records real MCP tool execution (dag_stream chunks of kind mcp-call /
  *       mcp-result naming real tools, plus a dag_coordinator_final trace)
  *
- * ── Env gating (MUST skip cleanly in CI) ────────────────────────────────────
- * CI runs `npm run test --workspaces` with NO live services. This test SKIPS
+ * ── Env gating (MUST skip cleanly in CI and on a plain `npm test`) ───────────
+ * This is a LIVE test (spawns a server, calls real MCP + LLMs). It SKIPS
  * (exit 0, not fail) unless ALL preconditions hold:
+ *   - RUN_LIVE_INTEGRATION=1 set (explicit opt-in — so a plain `npm test`/CI
+ *     NEVER runs it even if API keys happen to be present in the environment)
  *   - MCP_ENDPOINT reachable (probed via a short `tools/list` POST)
  *   - DEEPSEEK_API_KEY present (planner + worker LLM)
  *   - AICORE_SERVICE_KEY present (SAP AI Core embedder for tool-select)
+ * Run it: `RUN_LIVE_INTEGRATION=1 MCP_ENDPOINT=... node --import tsx/esm --env-file=.env --test <this file>`
  *
  * ── Server boot/teardown ────────────────────────────────────────────────────
  * We SPAWN the same entrypoint the manual script uses
@@ -33,8 +36,9 @@
  * process with its own process group, rather than importing SmartServer
  * in-process. Spawning mirrors the manual check exactly, exercises the real CLI
  * config + env-substitution path, and gives a clean kill (process group) on
- * teardown. The child's cwd is a fresh temp dir so the yaml's cwd-relative
- * `logDir: ./.run/sessions` lands at a path the test fully controls.
+ * teardown. The child runs from REPO_ROOT (so `tsx/esm` + workspace packages
+ * resolve); the yaml's cwd-relative `logDir: ./.run/sessions` therefore lands at
+ * `<repo>/.run/sessions`, which the test cleans before the run and reads after.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
@@ -94,6 +98,14 @@ async function mcpReachable(): Promise<boolean> {
 
 /** Compute the skip reason (empty string ⇒ run). */
 async function computeSkip(): Promise<string> {
+  // Explicit opt-in: a LIVE test (spawns a server, calls real MCP + LLMs) must
+  // NEVER run on a plain `npm test`, even when API keys happen to be present in
+  // the environment — otherwise it slows/flakes ordinary test runs and CI. It
+  // runs ONLY when explicitly requested, so `npm test` is deterministically
+  // green everywhere. To run it: `RUN_LIVE_INTEGRATION=1 ... node --test ...`.
+  if (!process.env.RUN_LIVE_INTEGRATION) {
+    return 'live integration not opted in (set RUN_LIVE_INTEGRATION=1)';
+  }
   const missing: string[] = [];
   if (!process.env.DEEPSEEK_API_KEY) missing.push('DEEPSEEK_API_KEY');
   if (!process.env.AICORE_SERVICE_KEY) missing.push('AICORE_SERVICE_KEY');
@@ -278,6 +290,107 @@ describe('DAG-coordinator ↔ MCP integration (#159)', () => {
     // eslint-disable-next-line no-console
     console.error(
       `[#159] PASS — prompt_tokens=${promptTokens}, tool=${toolHit.tool} (${toolHit.kind}), trace=${path.basename(finalTrace)}`,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // #171: external (client-provided) tool round-trip under the coordinator.
+  //
+  // Declare a simple external tool in the request `tools`, ask the model to
+  // call it, and assert the response SURFACES the call (finish_reason
+  // tool_calls + an `ext:`-prefixed tool_call id) instead of the worker
+  // executing it. This proves external tools are consumer-executed and that
+  // the deterministic `ext:` id is exposed for stateless resume.
+  //
+  // Scope limit: we assert only the FIRST half of the round-trip (the call is
+  // surfaced). Sending the result back and asserting the follow-up answer is
+  // covered by the unit tests for buildExternalResults + adapter
+  // normalization; wiring a full live two-leg round-trip here would add
+  // significant flakiness for little extra signal. Same env-gating as above.
+  // -------------------------------------------------------------------------
+  it('surfaces a client external-tool call (ext: id) instead of executing it', {
+    timeout: 600_000,
+  }, async (t) => {
+    if (skipReason) {
+      t.skip(skipReason);
+      return;
+    }
+
+    const res = await fetch(`${BASE}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: 'deepseek-chat',
+        stream: false,
+        messages: [
+          {
+            role: 'user',
+            content:
+              'Call the client tool get_current_time to get the current time. Do not answer from your own knowledge — you must use the tool.',
+          },
+        ],
+        tools: [
+          {
+            type: 'function',
+            function: {
+              name: 'get_current_time',
+              description:
+                'Returns the current wall-clock time. Runs on the client.',
+              parameters: {
+                type: 'object',
+                properties: {
+                  timezone: {
+                    type: 'string',
+                    description: 'IANA timezone, e.g. Europe/Kyiv',
+                  },
+                },
+                required: [],
+              },
+            },
+          },
+        ],
+      }),
+      signal: AbortSignal.timeout(590_000),
+    });
+
+    assert.equal(res.status, 200, `expected HTTP 200, got ${res.status}`);
+    const body = (await res.json()) as {
+      choices?: Array<{
+        finish_reason?: string;
+        message?: {
+          tool_calls?: Array<{ id?: string; function?: { name?: string } }>;
+        };
+      }>;
+    };
+
+    const choice = body.choices?.[0];
+    const toolCalls = choice?.message?.tool_calls ?? [];
+    assert.ok(
+      toolCalls.length > 0,
+      `expected the response to surface tool_calls, got finish_reason=${choice?.finish_reason}`,
+    );
+    assert.equal(
+      choice?.finish_reason,
+      'tool_calls',
+      `expected finish_reason=tool_calls, got ${choice?.finish_reason}`,
+    );
+
+    const extCall = toolCalls.find((c) => c.id?.startsWith('ext:'));
+    assert.ok(
+      extCall,
+      `expected a surfaced tool_call with an ext: id (consumer-executed), got ids: ${toolCalls
+        .map((c) => c.id)
+        .join(', ')}`,
+    );
+    assert.equal(
+      extCall.function?.name,
+      'get_current_time',
+      'surfaced external call must name the client tool',
+    );
+
+    // eslint-disable-next-line no-console
+    console.error(
+      `[#171] PASS — surfaced external call id=${extCall.id} name=${extCall.function?.name}`,
     );
   });
 });

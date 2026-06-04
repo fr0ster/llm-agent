@@ -139,6 +139,15 @@ export interface PipelineContext {
   selectedTools: LlmTool[];
   /** External tools provided by the client. */
   externalTools: LlmTool[];
+  /**
+   * Results for previously-surfaced external (client-executed) tool calls,
+   * keyed by deterministic `externalToolCallId(name, args)` (spec D1). Built by
+   * the coordinator from the incoming history on a stateless resume. When the
+   * worker LLM re-emits an external call whose `extId` is present here, the
+   * tool-loop injects the result as a matched assistant→tool pair and CONTINUES
+   * instead of re-surfacing it. Absent on a first request.
+   */
+  externalResults?: Map<string, string>;
   /** Final assembled messages for LLM input. */
   assembledMessages: Message[];
   /** Currently active tools (after availability filtering). */

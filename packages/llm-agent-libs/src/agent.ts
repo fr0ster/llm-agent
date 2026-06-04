@@ -908,10 +908,9 @@ export class SmartAgent {
           ragResults: rerankedMap,
           tools: selectedMcpTools,
         };
-        finalTools =
-          mode === 'hard'
-            ? (selectedMcpTools as LlmTool[])
-            : [...(selectedMcpTools as LlmTool[]), ...externalTools];
+        // D4: external (client) tools are always offered regardless of mode;
+        // mode governs only the worker's INTERNAL execution posture.
+        finalTools = [...(selectedMcpTools as LlmTool[]), ...externalTools];
         opts?.sessionLogger?.logStep('external_tools_merge', {
           mode,
           mcpCount: selectedMcpTools.length,
@@ -1084,7 +1083,7 @@ export class SmartAgent {
         opts,
         rootSpan,
         sessionId,
-        mode === 'hard' ? [] : externalTools,
+        externalTools,
         finalTools,
         detectedAdapter,
       );

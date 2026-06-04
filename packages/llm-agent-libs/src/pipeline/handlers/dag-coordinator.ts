@@ -331,6 +331,9 @@ export class DagCoordinatorHandler implements IStageHandler {
             onPartial: interpreterOnPartial,
             // Issue #167: thread the client's external tools into worker dispatch.
             externalTools: ctx.externalTools,
+            // #171 (review#7): thread the validated extId→result map so a
+            // re-surfaced external call resolves from history on resume.
+            externalResults: ctx.externalResults,
           });
         } catch (err) {
           ctx.error =
@@ -344,6 +347,43 @@ export class DagCoordinatorHandler implements IStageHandler {
         }
 
         if (result.ok) {
+          // #171 (D2): no-finalizer branch. If the run settled with pending
+          // external (client-executed) tool calls, end the turn carrying those
+          // calls as a standard `tool_calls` assistant turn — the consumer runs
+          // them and re-sends results (stateless round-trip). Do NOT run the
+          // finalizer. The wire toolCalls shape matches the tool-loop's external
+          // surface yield (LlmToolCallDelta: index/id/name/arguments-as-string).
+          if (result.pendingExternalToolCalls?.length) {
+            ctx.options?.sessionLogger?.logStep('dag_coordinator_external', {
+              count: result.pendingExternalToolCalls.length,
+              ids: result.pendingExternalToolCalls.map((c) => c.id),
+            });
+            ctx.yield({
+              ok: true,
+              value: {
+                content: '',
+                toolCalls: result.pendingExternalToolCalls.map((tc, index) => ({
+                  index,
+                  id: tc.id,
+                  name: tc.name,
+                  arguments: JSON.stringify(tc.arguments),
+                })),
+              },
+            });
+            const traceIdExt = ctx.options?.trace?.traceId;
+            const usageExt = traceIdExt
+              ? summaryToUsage(ctx.requestLogger.getSummary(traceIdExt))
+              : undefined;
+            ctx.yield({
+              ok: true,
+              value: {
+                content: '',
+                finishReason: 'tool_calls',
+                ...(usageExt ? { usage: usageExt } : {}),
+              },
+            });
+            return true;
+          }
           ctx.options?.sessionLogger?.logStep('dag_coordinator_final', {
             nodeCount: plan.nodes.length,
             outputLength: result.output.length,

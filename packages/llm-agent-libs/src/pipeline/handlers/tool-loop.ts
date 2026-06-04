@@ -32,6 +32,7 @@ import type {
   TimingEntry,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  externalToolCallId,
   getStreamToolCallName,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
@@ -108,8 +109,11 @@ export class ToolLoopHandler implements IStageHandler {
       ctx.config.heartbeatIntervalMs ??
       5000;
 
-    const mode = ctx.config.mode || 'smart';
-    const externalTools = mode === 'hard' ? [] : ctx.externalTools;
+    // External (client-provided) tools are mode-independent (spec D1/D4): the
+    // worker never executes them, so `hard` (which constrains only INTERNAL
+    // execution posture) must still OFFER them and surface their calls. The
+    // previous `mode === 'hard' ? []` drop is removed.
+    const externalTools = ctx.externalTools;
     const externalToolNames = new Set(externalTools.map((t) => t.name));
 
     let toolCallCount = 0;
@@ -449,23 +453,17 @@ export class ToolLoopHandler implements IStageHandler {
           }
         }
         if (chunk.toolCalls) {
-          // Register newly seen external tool indices
+          // Track which streaming indices belong to external tools. External
+          // tool-call deltas are BUFFERED (accumulated into toolCallsMap) and
+          // NOT yielded live: an external call is surfaced only AFTER the stream
+          // settles — and only if it has no resume result (miss). This avoids
+          // leaking a call we may instead resolve from `ctx.externalResults`.
           for (const tc of chunk.toolCalls) {
             const name = getStreamToolCallName(tc);
             if (name && externalToolNames.has(name)) {
               const delta = toToolCallDelta(tc, 0);
               externalToolIndices.add(delta.index);
             }
-          }
-          const externalDeltas = chunk.toolCalls.filter((tc) => {
-            const delta = toToolCallDelta(tc, 0);
-            return externalToolIndices.has(delta.index);
-          });
-          if (externalDeltas.length > 0) {
-            ctx.yield({
-              ok: true,
-              value: { content: '', toolCalls: externalDeltas },
-            });
           }
           for (const [
             fallbackIndex,
@@ -673,43 +671,117 @@ export class ToolLoopHandler implements IStageHandler {
         continue;
       }
 
-      // -- Handle external tool calls (delegate to consumer) -----------------
+      // -- Handle external (client-provided) tool calls (spec D1) ------------
+      // Each external call is rewritten to a deterministic content-addressed id
+      // (`externalToolCallId`). Two paths:
+      //   HIT  — `ctx.externalResults` already has the result (stateless resume
+      //          from the client's prior round-trip): inject a MATCHED
+      //          assistant(tool_calls=[extId]) -> tool(tool_call_id=extId) pair
+      //          and CONTINUE the loop (no re-surface).
+      //   MISS — no result yet: surface the call (with extId) to the consumer
+      //          and END the worker turn (`finish_reason: tool_calls`); never
+      //          execute it server-side.
       if (validExternalCalls.length > 0) {
-        if (internalCalls.length > 0) {
-          fireInternalToolsAsync(
-            content,
-            internalCalls,
-            ctx.pendingToolResults,
-            ctx.sessionId,
+        const externalWithId = validExternalCalls.map((tc) => ({
+          ...tc,
+          extId: externalToolCallId(tc.name, tc.arguments),
+        }));
+        const hits = externalWithId.filter((tc) =>
+          ctx.externalResults?.has(tc.extId),
+        );
+        const misses = externalWithId.filter(
+          (tc) => !ctx.externalResults?.has(tc.extId),
+        );
+
+        // HIT path: inject matched pairs (assistant tool_call + tool result),
+        // each correlated by the SAME extId, and resolve them in-conversation.
+        if (hits.length > 0) {
+          messages = [
+            ...messages,
             {
-              toolClientMap: ctx.toolClientMap,
-              toolCache: ctx.toolCache,
-              metrics: ctx.metrics,
-              options: ctx.options,
+              role: 'assistant' as const,
+              content: null,
+              tool_calls: hits.map((tc) => ({
+                id: tc.extId,
+                type: 'function' as const,
+                function: {
+                  name: tc.name,
+                  arguments: JSON.stringify(tc.arguments),
+                },
+              })),
             },
-          );
-          ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
-            internal: internalCalls.map((tc) => tc.name),
-            external: validExternalCalls.map((tc) => tc.name),
+            ...hits.map((tc) => ({
+              role: 'tool' as const,
+              content: ctx.externalResults?.get(tc.extId) ?? '',
+              tool_call_id: tc.extId,
+            })),
+          ];
+          ctx.options?.sessionLogger?.logStep('external_results_resumed', {
+            extIds: hits.map((tc) => tc.extId),
+            toolNames: hits.map((tc) => tc.name),
           });
         }
 
-        timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
-        ctx.timing.push(...timingLog);
-        ctx.yield({
-          ok: true,
-          value: {
-            content: '',
-            finishReason: 'tool_calls',
-            usage: {
-              ...usage,
-              models: ctx.requestLogger.getSummary().byModel,
-              components: ctx.requestLogger.getSummary().byComponent,
+        // MISS path: surface the unresolved external call(s) and end the turn.
+        if (misses.length > 0) {
+          if (internalCalls.length > 0) {
+            fireInternalToolsAsync(
+              content,
+              internalCalls,
+              ctx.pendingToolResults,
+              ctx.sessionId,
+              {
+                toolClientMap: ctx.toolClientMap,
+                toolCache: ctx.toolCache,
+                metrics: ctx.metrics,
+                options: ctx.options,
+              },
+            );
+            ctx.options?.sessionLogger?.logStep('mixed_tool_calls', {
+              internal: internalCalls.map((tc) => tc.name),
+              external: misses.map((tc) => tc.name),
+            });
+          }
+
+          // Surface the external calls with their deterministic extId so the
+          // consumer executes them and re-sends results (correlated on resume).
+          ctx.yield({
+            ok: true,
+            value: {
+              content: '',
+              toolCalls: misses.map((tc, index) => ({
+                index,
+                id: tc.extId,
+                name: tc.name,
+                arguments: JSON.stringify(tc.arguments),
+              })),
             },
-            timing: timingLog,
-          },
-        });
-        return true;
+          });
+
+          timingLog.push({ phase: 'total', duration: Date.now() - loopStart });
+          ctx.timing.push(...timingLog);
+          ctx.yield({
+            ok: true,
+            value: {
+              content: '',
+              finishReason: 'tool_calls',
+              usage: {
+                ...usage,
+                models: ctx.requestLogger.getSummary().byModel,
+                components: ctx.requestLogger.getSummary().byComponent,
+              },
+              timing: timingLog,
+            },
+          });
+          return true;
+        }
+
+        // Only hits (no misses): if there are no internal calls to execute,
+        // continue the loop directly so the worker consumes the injected
+        // results. With internal calls present, fall through to execute them.
+        if (internalCalls.length === 0) {
+          continue;
+        }
       }
 
       // -- Execute internal MCP tool calls -----------------------------------

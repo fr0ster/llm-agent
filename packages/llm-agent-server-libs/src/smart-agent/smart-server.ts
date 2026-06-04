@@ -30,6 +30,7 @@ import type {
 import {
   AdapterValidationError,
   artifactIdentityKey,
+  buildExternalResults,
   type ExternalToolValidationCode,
   type IRag,
   normalizeAndValidateExternalTools,
@@ -2589,6 +2590,15 @@ export class SmartServer {
       throw err;
     }
 
+    // #171 (review#8): the adapter has already normalized Anthropic
+    // tool_use/tool_result blocks into the OpenAI-shaped Message[]
+    // (assistant.tool_calls + role:'tool' with tool_call_id). Run the same
+    // external-results extraction the OpenAI path uses so Anthropic clients get
+    // identical stateless-resume behaviour: consumed external turns are stripped
+    // and their results threaded to the agent keyed by deterministic `ext:` id.
+    const { results: externalResults, sanitizedMessages } =
+      buildExternalResults(normalized.messages);
+
     const augmentedOptions = session
       ? {
           ...normalized.options,
@@ -2596,8 +2606,9 @@ export class SmartServer {
           trace: { traceId: session.traceId },
           toolAvailability: session.graph.toolAvailability,
           pendingToolResults: session.graph.pendingToolResults,
+          externalResults,
         }
-      : normalized.options;
+      : { ...normalized.options, externalResults };
 
     if (normalized.stream) {
       res.writeHead(200, {
@@ -2607,7 +2618,7 @@ export class SmartServer {
       });
 
       for await (const event of adapter.transformStream(
-        agent.streamProcess(normalized.messages, augmentedOptions),
+        agent.streamProcess(sanitizedMessages, augmentedOptions),
         normalized.context,
       )) {
         const eventLine = event.event ? `event: ${event.event}\n` : '';
@@ -2618,7 +2629,7 @@ export class SmartServer {
     }
 
     // Non-streaming
-    const result = await agent.process(normalized.messages, augmentedOptions);
+    const result = await agent.process(sanitizedMessages, augmentedOptions);
     res.setHeader('Content-Type', 'application/json');
     if (!result.ok) {
       res.writeHead(500);
@@ -2852,6 +2863,16 @@ export class SmartServer {
         return normalizedMessage;
       })
       .filter((m): m is Message => m !== null);
+
+    // #171 (review#11): consume external (client-executed) tool result turns
+    // from the incoming history into a validated `extId → result` map and strip
+    // those raw turns from the messages forwarded to the agent (so no internal
+    // LLM call ever sees an unmatched assistant tool_calls). On a normal request
+    // with no external history this returns the messages unchanged + an empty
+    // map — a safe no-op. The map is threaded via options.externalResults.
+    const { results: externalResults, sanitizedMessages } =
+      buildExternalResults(normalizedMessages);
+
     const invalidToolsHeader =
       externalToolsValidation.errors.length > 0
         ? {
@@ -2871,7 +2892,10 @@ export class SmartServer {
       const id = `chatcmpl-${randomUUID()}`;
       const created = Math.floor(Date.now() / 1000);
 
-      const stream = smartAgent.streamProcess(normalizedMessages, opts);
+      const stream = smartAgent.streamProcess(sanitizedMessages, {
+        ...opts,
+        externalResults,
+      });
       let firstChunk = true;
       let finishReasonSent = false;
       let lastUsage: {
@@ -3002,7 +3026,10 @@ export class SmartServer {
       return;
     }
 
-    const result = await smartAgent.process(normalizedMessages, opts);
+    const result = await smartAgent.process(sanitizedMessages, {
+      ...opts,
+      externalResults,
+    });
     log({ event: 'request_done', ok: result.ok, durationMs: Date.now() - t0 });
     const finalContent = result.ok
       ? result.value.content ||

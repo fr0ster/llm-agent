@@ -642,6 +642,36 @@ A browser frontend on a different origin (e.g. `https://app.example.com` calling
 
 Auth-enabled downstream builds (bearer tokens / OIDC / mTLS) may handle session identity differently — those flows are out of scope for the default cookie path.
 
+## External (client-provided) tools under the coordinator
+
+Tools you declare in the request `tools` array (the standard OpenAI/Anthropic
+field) are treated as **external** — they are always available regardless of
+`mode` (including `hard`), and they are **consumer-executed**: the worker never
+runs them. When a worker decides to call an external tool, the agent surfaces a
+standard `tool_call` with `finish_reason: tool_calls` (Anthropic: a `tool_use`
+block, `stop_reason: tool_use`) and stops. Your client executes the tool and
+sends the result back via the normal round-trip — append the assistant
+`tool_calls` turn and a `role:'tool'` / `tool_result` message, then re-issue the
+request. External call ids are deterministic and prefixed `ext:`, so a stateless
+re-run correlates each returned result by id (the server extracts those turns
+into an `extId → result` map and strips them before re-planning). When several
+parallel DAG workers each emit an external call, they are collected into a single
+assistant turn carrying all the `ext:` `tool_calls`, so the client can run them
+together and answer in one follow-up.
+
+```jsonc
+// follow-up request after running ext:abc locally
+{
+  "messages": [
+    /* ...prior turns... */
+    { "role": "assistant", "tool_calls": [{ "id": "ext:abc", "type": "function",
+      "function": { "name": "get_weather", "arguments": "{\"city\":\"Kyiv\"}" } }] },
+    { "role": "tool", "tool_call_id": "ext:abc", "content": "sunny, 21C" }
+  ],
+  "tools": [ /* the same external tool declaration */ ]
+}
+```
+
 ## IMcpClient
 
 **File:** `packages/llm-agent/src/interfaces/mcp-client.ts`
