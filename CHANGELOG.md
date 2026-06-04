@@ -9,6 +9,69 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [18.2.0] — 2026-06-04
+
+### Added
+
+- **Client-provided external tools under the DAG coordinator (#171).** Client/external
+  (consumer-executed) tools now work under the DAG coordinator, not just the flat flow.
+  They are **mode-independent** (always offered; `hard` governs only the worker's internal
+  MCP execution — fixed in both the pipeline tool-loop and the flat SmartAgent path),
+  **consumer-executed** (the worker surfaces a standard `tool_call` via the normal
+  OpenAI/Anthropic round-trip — no custom transport), and carry **deterministic
+  content-addressed `ext:` ids** so a stateless re-run correlates the returned result by id.
+  Parallel DAG workers' external calls are collected (collect-all-at-settle) into one
+  terminal assistant turn; incoming external results are adjacency-validated and the
+  consumed external turns stripped from internal LLM message lists so no provider call sees
+  an unmatched `tool_calls`. The planner emits a fallback node for a bare external-tool
+  request. Anthropic `/v1/messages` normalizes `tool_result` into the same internal shape.
+
+### Changed
+
+- **Release tooling: replaced changesets with `scripts/bump-version.mjs`.** All packages are
+  versioned in lock-step (one version); changesets' `fixed` group mis-bumped the 17-package
+  set (minor → major). The new script sets one version across all non-private packages,
+  rewrites internal `^` ranges, and prepends CHANGELOG entries. `release:publish`
+  (`publish-all.sh`, fail-fast, all-sync) is unchanged.
+
+## [18.1.2] — 2026-06-03
+
+### Fixed
+
+- **`usage.models` keys by the live (hot-swapped) model, not the stale initial one (#164).**
+  `SmartAgent.reconfigure()` swapped its own `_mainLlm` but the `DefaultPipeline` held a
+  separate `deps.mainLlm` snapshot, so a hot-swapped request kept aggregating `usage.models`
+  under the initial model name. `reconfigure()` now propagates the swap into the pipeline.
+
+### Added
+
+- **Env-gated DAG↔MCP integration test (#159).** Automates the manual check that the DAG
+  coordinator dispatches real MCP-tool work to its worker (not toolless). Gated behind
+  `RUN_LIVE_INTEGRATION=1` + keys + a reachable MCP, so `npm test`/CI skip it deterministically.
+
+## [18.1.1] — 2026-06-02
+
+### Changed
+
+- **Version alignment — all 17 workspace packages unified to one version.** 18.1.0 bumped
+  only the six core packages, leaving the provider/embedder/RAG-backend packages at 18.0.2;
+  this release realigns every package to a single version (lock-step).
+
+## [18.1.0] — 2026-06-02
+
+### Added
+
+- **Evaluator spine + hallucination guards (Stepper).** A per-level LLM Evaluator routes a
+  step `executable | needs-work | needs-consumer` and drives an additive needs tool-search;
+  an explicit no-capability error replaces fabrication when a needed tool is absent, and a
+  token-grounding detector flags ungrounded answers.
+- **New package `@mcp-abap-adt/llm-agent-server-libs`** — the SmartServer composition runtime
+  as an importable library, exposing the pipeline builder-factories `LinearFactory`,
+  `DagFactory`, `CyclicFactory`, `PlannedFactory`, `DeepStepperFactory`. `llm-agent-server`
+  is now a thin binary depending on it.
+- **Clean plain-mode content.** Tool-loop liveness markers (`[SmartAgent: Executing X]`) are
+  flagged `ephemeral` and excluded from non-streaming content; streaming clients still see them.
+
 ## [18.0.2] — 2026-06-01
 
 ### Fixed

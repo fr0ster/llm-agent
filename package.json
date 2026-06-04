@@ -17,14 +17,11 @@
     "dev:ollama": "npm run dev -- --config examples/docker-ollama/smart-server.yaml",
     "dev:deepseek": "npm run dev -- --config examples/docker-deepseek/smart-server.yaml",
     "dev:sap-ai-core": "npm run dev -- --config examples/docker-sap-ai-core/smart-server.yaml",
-    "changeset": "changeset",
-    "version": "changeset version",
-    "release": "npm run build && changeset publish",
+    "bump": "node scripts/bump-version.mjs",
     "release:publish": "bash scripts/publish-all.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.4.13",
-    "@changesets/cli": "^2.31.0",
     "@types/node": "^25.6.0",
     "rimraf": "^6.1.3",
     "tsx": "^4.21.0",
