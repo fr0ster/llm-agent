@@ -121,6 +121,7 @@ export interface IPipelineContext {
   // composition helpers (core types only)
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   mintStepperId(): string;
+  mintTurnId(): string;
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
 }

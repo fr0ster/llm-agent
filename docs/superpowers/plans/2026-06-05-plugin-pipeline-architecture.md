@@ -39,12 +39,22 @@ identified concretely from the codebase, with file:line anchors.
 | `packages/llm-agent-server-libs/src/legacy/{flat,linear,dag,stepper}.ts` (create) | curated re-export bundles of the old components | 4 |
 | `packages/llm-agent-server-libs/package.json` (modify) | subpath `exports` for `./<flow>` and `./legacy/<flow>` | 4 |
 | `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (modify) | replace the coordinator gate with registry resolve + `build()`; `plugins:` loader; close/recreate | 5 |
-| `packages/llm-agent-server-libs/src/smart-agent/config.ts` (modify) | remove `coordinator:` parsing; add `pipeline:` + `plugins:` parsing | 5 |
+| `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (create) | relocated variant parsers (stepper/dag/linear) the plugins call | 5 |
+| `packages/llm-agent-server-libs/src/smart-agent/config.ts` (modify) | remove top-level `coordinator:` dispatch (parsers relocated, not deleted); add `pipeline:` + `plugins:` parsing | 5 |
 | `packages/llm-agent-server-libs/src/pipelines/__tests__/conformance.test.ts` (create) | registry conformance + duplicate fail-fast | 6 |
 
 ---
 
 ## Phase 1 — Core contracts (`@mcp-abap-adt/llm-agent`)
+
+> **Type-only red/green gate (plan-review F1).** Tasks 1–3 add **types**, and the
+> test runner (`node --import tsx/esm --test`) **strips types without checking them**
+> — `import type` from a missing module is erased, so a node:test run can falsely
+> PASS before the type exists. Therefore the **authoritative gate for Tasks 1–3 is**
+> `npx tsc -p tsconfig.json --noEmit` (run from `packages/llm-agent`): it FAILS when
+> a referenced type is missing/wrong and PASSES once correct. The node:test runs are
+> kept as a supplementary runtime smoke (they exercise the conforming objects), but
+> **the tsc step is the one that must flip red→green**.
 
 ### Task 1: Runnable + reconfigurable contracts
 
@@ -101,10 +111,12 @@ describe('pipeline-plugin runnable contracts', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
-Expected: FAIL — `Cannot find module '../pipeline-plugin.js'`.
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: FAIL — `error TS2307: Cannot find module '../pipeline-plugin.js'` (and
+`TS2305` for each missing exported type). This is the authoritative gate; a bare
+`node --import tsx/esm --test ...` run would falsely pass because types are erased.
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -156,15 +168,18 @@ export interface IPipelineContext {
   mcpClients?: IMcpClient[];
   subagents?: ReadonlyArray<{ name: string; description?: string }>;
   mintStepperId(): string;
+  mintTurnId(): string;
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
 }
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
-Expected: PASS (3 tests).
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: PASS (no errors — types now resolve).
+Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
+Expected: PASS (3 tests — runtime smoke).
 
 - [ ] **Step 5: Commit**
 
@@ -205,10 +220,10 @@ describe('IPipelinePlugin', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
-Expected: FAIL — `IPipelinePlugin` is not exported.
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: FAIL — `TS2305: Module '"../pipeline-plugin.js"' has no exported member 'IPipelinePlugin'`. (A `node --import tsx/esm --test` run would falsely pass — types erased.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -237,9 +252,11 @@ export type {
 } from './pipeline-plugin.js';
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: PASS (no errors).
+Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
 Expected: PASS (4 tests).
 
 - [ ] **Step 5: Verify the package barrel re-exports compile**
@@ -290,10 +307,10 @@ describe('PluginExports / LoadedPlugins carry pipeline plugins', () => {
 });
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [ ] **Step 2: Run the type gate to verify it fails**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
-Expected: FAIL — `pipelinePlugins` / `pipelinePluginSources` not on the types.
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: FAIL — `TS2339`/`TS2305` for `pipelinePlugins` / `pipelinePluginSources` not on the types. (A `node --import tsx/esm --test` run would falsely pass — types erased.)
 
 - [ ] **Step 3: Write the minimal implementation**
 
@@ -320,9 +337,11 @@ Add to the `LoadedPlugins` interface (after `apiAdapters` at line ~141):
   pipelinePluginSources: Map<string, string>;
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [ ] **Step 4: Run the type gate + runtime smoke to verify they pass**
 
-Run: `cd packages/llm-agent && node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
+Run: `cd packages/llm-agent && npx tsc -p tsconfig.json --noEmit`
+Expected: PASS (no errors).
+Then: `node --import tsx/esm --test --test-reporter=spec 'src/interfaces/__tests__/pipeline-plugin.test.ts'`
 Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
@@ -541,12 +560,13 @@ export class DagPipelinePlugin implements IPipelinePlugin<DagCoordinatorHandlerD
 }
 ```
 
-- `parseConfig` per variant: `linear` → linear `YamlCoordinator` fields
-  (`config.ts:159-167`) → `CoordinatorHandlerDeps`; `dag` → `DagCoordinatorHandlerDeps`
-  (via the inputs `buildDagCoordinatorDeps` consumes); `stepper` → the three
-  modes map to `CyclicFactory`/`PlannedFactory`/`DeepStepperFactory` with
-  `StepperFactoryConfig` (`parseStepperCoordinatorConfig` at `config.ts:1586`
-  produces the spec); `flat` → no factory: `(await ctx.createAgentBuilder()).build()`
+- `parseConfig` per variant calls the **relocated** parser (moved to
+  `src/pipelines/parsers.ts` in Task 16, not deleted): `linear` → linear
+  `YamlCoordinator` field reader → `CoordinatorHandlerDeps`; `dag` → the DAG deps
+  reader → `DagCoordinatorHandlerDeps`; `stepper` → `parseStepperCoordinatorConfig`
+  → `StepperCompositionSpec`, with the three modes selecting
+  `CyclicFactory`/`PlannedFactory`/`DeepStepperFactory` and `StepperFactoryConfig`;
+  `flat` → no factory and no parser: `(await ctx.createAgentBuilder()).build()`
   directly (no coordinator).
 - Stepper plugins pass the richer `StepperFactoryDeps` (`knowledgeRagFor`,
   `toolsRag`, `mintStepperId`, `mintTurnId`, `subagents`, `logLlmCall`) — all from `ctx`.
@@ -583,22 +603,32 @@ In `smart-server.ts` + `config.ts`. Plugins load at `:1058` (before RAG `:1084`)
   = 4 built-ins (static) + `LoadedPlugins.pipelinePlugins`; resolve `pipeline.name`;
   `parseConfig` then `build(serverCtx)`. **Replace** the 3-way coordinator gate
   (`:1267-1628`) AND the per-session coordinator re-wire in `buildSessionAgent`
-  (`:2098-2212`) with `const inst = await plugin.build(sessionCtx)`. Unknown name →
-  fail-fast listing available names.
+  (`:2098-2212`) with `const cfg = plugin.parseConfig(yaml.pipeline.config); const inst = await plugin.build(cfg, sessionCtx)`.
+  Unknown name → fail-fast listing available names.
 - **Task 15 (`plugins:` loader + order):** add `plugins: string[]` to the config;
   resolve each specifier with `createRequire(process.cwd())` / `import.meta.resolve`
   (cwd base) + absolute-path support; `await import()` and route the **full module**
   through `mergePluginExports()` **alongside** `pluginDir`, **before** RAG/embedder
   build (preserve the `:1058`-before-`:1084` order). Duplicate names fail-fast via
   the Task-4 merge.
-- **Task 16 (config clean break, F4):** in `config.ts`, **remove** `coordinator:`
-  parsing (`parseStepperCoordinatorConfig` `:1586-1750`, `MODE_FLOW_PRESET`
-  `:1440-1447`, `assertCoordinatorConfigShape` `:231-278`, `YamlCoordinator`
-  `:131-176`) and the **YAML `pipeline.stages` authoring path** — but **KEEP** the
-  internal `StageDefinition` type (`packages/llm-agent/src/interfaces/pipeline.ts:49`)
-  and `DefaultPipeline`'s stage executor (`default-pipeline.ts:314`); they run every
-  agent's request pipeline. Add `pipeline: { name, config }` + `plugins: string[]`
-  parsing. Update example YAMLs under `examples/`.
+- **Task 16 (config clean break, F2 + F4):** the variant config parsers are
+  **relocated, not deleted** (F2) — the built-in plugins (Tasks 7–10) own their
+  `parseConfig`, so the parsing logic must survive. Concretely:
+  - **Relocate** the variant parsers into a shared module the plugins import — e.g.
+    `packages/llm-agent-server-libs/src/pipelines/parsers.ts` — moving
+    `parseStepperCoordinatorConfig` (`config.ts:1586-1750`), `MODE_FLOW_PRESET`
+    (`:1440-1447`), the linear `YamlCoordinator` field reader (`:159-167`), and the
+    DAG deps reader. Each plugin's `parseConfig` calls its relocated parser.
+  - **Remove** from `config.ts` only the **top-level `coordinator:` dispatch** —
+    the `usesStepper()` gate, the 3-way selection, and
+    `assertCoordinatorConfigShape` (`:231-278`) — i.e. the SERVER-level orchestration
+    that chose a coordinator, not the per-variant field parsing.
+  - **Remove** the **YAML `pipeline.stages` authoring path** — but **KEEP** the
+    internal `StageDefinition` type (`packages/llm-agent/src/interfaces/pipeline.ts:49`)
+    and `DefaultPipeline`'s stage executor (`default-pipeline.ts:314`); they run
+    every agent's request pipeline (F4).
+  - **Add** `pipeline: { name, config }` + `plugins: string[]` parsing. Update
+    example YAMLs under `examples/`.
 
 ### Task 17: Conformance + generic-host test (spec §10)
 
