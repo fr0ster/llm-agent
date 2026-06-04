@@ -103,12 +103,16 @@ config behind it.
 ```ts
 /** Infra handles the host provides to a pipeline. NOT the flow — the pipeline
  *  owns its flow. Core-only types; the server hides its config behind resolveLlm. */
+export type MaybePromise<T> = T | Promise<T>;   // NEW core export (see §11)
+
 export interface IPipelineContext {
   // LLM — opaque, per role. The server closes over SmartServerLlmConfig/llmMap.
   resolveLlm(role: string): Promise<ILlm>;
   // RAG handles (the pipeline decides how to USE them; stores owned by the host).
   // MaybePromise: a session-scoped store may need async init (see F4).
   knowledgeRagFor(sessionId: string): MaybePromise<IKnowledgeRagHandle>;
+  // Always present: the host supplies an EMPTY IToolsRagHandle when no tools RAG
+  // is configured, so the contract stays stable for no-RAG/no-MCP deployments.
   toolsRag: IToolsRagHandle;
   ragRegistry?: IRagRegistry;
   // MCP / tools
@@ -404,7 +408,7 @@ pipeline:
 | Block | Validated/consumed by | Becomes |
 |---|---|---|
 | `llm` / `mcp` / `rag` / `subagents` | **host** | `IPipelineContext` (LLM roles, RAG handles, MCP, sessions, …) |
-| `plugins` | **host** | dynamic `import()` (resolved against cwd) → register `pipelinePlugins` into the registry |
+| `plugins` | **host** | dynamic `import()` (resolved against cwd) → merge **full `PluginExports`** via `mergePluginExports()`; `pipelinePlugins` enter the registry |
 | `pipeline.name` | **host** | registry lookup; unknown → fail-fast with available names |
 | `pipeline.config` | **plugin** (`parseConfig`) | typed, flow-specific config owned by the pipeline |
 
@@ -434,7 +438,7 @@ pipeline:
   `pipeline/handlers/index.ts`. Replaced by the pipeline registry in the host.
 - Added in core `llm-agent`: `IPipelinePlugin`, `IPipelineInstance` (agent +
   `close()`), `IPipelineContext` (core-only, opaque `resolveLlm`),
-  `IReconfigurableSmartAgent`; `pipelinePlugins` on `PluginExports` **and** on
+  `IReconfigurableSmartAgent`, `MaybePromise<T>`; `pipelinePlugins` on `PluginExports` **and** on
   `LoadedPlugins` (+ `pipelinePluginSources` map, `emptyLoadedPlugins`/
   `mergePluginExports` plumbing, with **reject-duplicate** merge for pipeline names
   naming both sources, unlike last-wins `stageHandlers`).
