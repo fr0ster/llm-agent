@@ -33,8 +33,9 @@
  * process with its own process group, rather than importing SmartServer
  * in-process. Spawning mirrors the manual check exactly, exercises the real CLI
  * config + env-substitution path, and gives a clean kill (process group) on
- * teardown. The child's cwd is a fresh temp dir so the yaml's cwd-relative
- * `logDir: ./.run/sessions` lands at a path the test fully controls.
+ * teardown. The child runs from REPO_ROOT (so `tsx/esm` + workspace packages
+ * resolve); the yaml's cwd-relative `logDir: ./.run/sessions` therefore lands at
+ * `<repo>/.run/sessions`, which the test cleans before the run and reads after.
  */
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
