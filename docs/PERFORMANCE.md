@@ -485,16 +485,18 @@ Route each stage to the cheapest model that meets its quality bar:
 | reviewer subagent | DeepSeek | Structured JSON evaluation; fast |
 | doc-writer subagent | Ollama (local) | Free; markdown formatting is forgiving |
 
-Use `plannerLlm: helper` in YAML to assign a cheap model for planning while the parent and subagents use stronger ones.
+Use `pipeline.config.plannerLlm: helper` in YAML to assign a cheap model for planning while the parent and subagents use stronger ones.
 
 ### Tuning knobs
 
 | YAML key | Default | Effect |
 |---|---|---|
-| `coordinator.maxSteps` | unlimited | Hard cap on generated step count |
-| `coordinator.maxRetriesPerStep` | 1 | How many times to retry a failed step |
-| `coordinator.failPolicy` | `abort` | `abort` stops the plan; `continue` skips the failed step |
-| `coordinator.plannerLlm` | `main` | `main` / `helper` / `planner` — which LLM the planner uses |
+| `pipeline.config.maxSteps` | unlimited | Hard cap on generated step count |
+| `pipeline.config.maxRetriesPerStep` | 1 | How many times to retry a failed step |
+| `pipeline.config.failPolicy` | `abort` | `abort` stops the plan; `continue` skips the failed step |
+| `pipeline.config.plannerLlm` | `main` | `main` / `helper` / `planner` — which LLM the planner uses |
+
+(These knobs belong to the `linear` pipeline dialect — `pipeline: { name: linear, config: { ... } }`.)
 
 `OneShotPlanning` (default) issues a single planner call per request. `ReplanOnErrorPlanning` issues one additional call per step failure. For deterministic, well-defined flows `OneShotPlanning` is sufficient.
 
@@ -502,6 +504,6 @@ Use `plannerLlm: helper` in YAML to assign a cheap model for planning while the 
 
 ### When NOT worth activating
 
-Simple single-shot requests pay the planner overhead unless the Coordinator stage is conditionally gated. To opt into automatic fallback (keep `tool-loop` when there are no subagents and no skill steps), pass `coordinator.activation: auto` in YAML or `new AutoActivation()` in the builder. Without that override the default `ExplicitActivation` always engages once `withCoordinator()` / a `coordinator:` YAML block is present.
+The coordinator-bearing pipelines (`linear`, `dag`, `stepper`) pay the planner overhead on every request. For simple single-shot traffic prefer the default `flat` pipeline (single-shot tool-loop, no coordinator). When you do select a coordinator-bearing pipeline but want it to gate itself — keeping `tool-loop` when there are no subagents and no skill steps — set `pipeline.config.activation: auto` in YAML (linear) or pass `new AutoActivation()` in the builder. Without that override the default `ExplicitActivation` always engages once `withCoordinator()` is wired (which the coordinator-bearing pipelines do internally per their `config`).
 
 Cross-reference: see `docs/ARCHITECTURE.md` section `## Coordinator orchestration` for the strategy interfaces.

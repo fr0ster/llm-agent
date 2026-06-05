@@ -2581,7 +2581,8 @@ plan immediately with `OrchestratorError('COORDINATOR_EPICFAIL', ...)`.
 Phase 1 supports EXPLICIT epicfail only; auto-conversion of thrown
 errors is deferred to Phase 2 of the error policy.
 
-**Known limitation (Phase 1):** when using the YAML `coordinator:` block,
+**Known limitation (Phase 1):** when configuring a coordinator-bearing
+pipeline via the YAML `pipeline: { name, config }` envelope,
 the subagent context-builder's `toolSource` is wired from
 `SmartServerConfig.embedder` (DI-injected). If the deployment configures
 its embedder solely via YAML `rag.embedder`, the embedder is encapsulated
@@ -2718,10 +2719,12 @@ Builder:
 YAML:
 
 ```yaml
-coordinator:
-  planning: skill-steps          # NEW
-  dispatch: hybrid               # default for skill-steps; falls back to self for steps without `agent:`
-  activation: explicit
+pipeline:
+  name: linear
+  config:
+    planning: skill-steps          # NEW
+    dispatch: hybrid               # default for skill-steps; falls back to self for steps without `agent:`
+    activation: explicit
 ```
 
 A custom resolver function can be passed to `new SkillStepsPlanning((ctx) => ...)`

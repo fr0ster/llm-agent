@@ -247,18 +247,35 @@ docker exec <core> node -e 'import("@mcp-abap-adt/llm-agent-mcp").then(async ({M
 
 ---
 
-### Coordinator stays inactive even with explicit `coordinator:` block
+### Coordinator-bearing pipeline stays inactive
 
 **Symptom.** `coordinator_configured` event appears in `smart-server.log` at startup. Live requests show no `coordinator_plan` / `coordinator_step_*` events, but `tool-loop iteration 1` warnings do. Response content looks like a normal tool-loop reply.
 
-**Cause.** The YAML or builder config set `activation: auto` (or `new AutoActivation()`). `AutoActivation` requires either subagents in the registry OR the active skill to declare `steps:` in its frontmatter. With neither, the pipeline keeps `tool-loop`.
+**Cause.** Either no coordinator-bearing pipeline is selected (the default `flat` pipeline is single-shot tool-loop, no coordinator), or the `linear` pipeline was given `pipeline.config.activation: auto` (equivalently `new AutoActivation()` in the builder). `AutoActivation` requires either subagents in the registry OR the active skill to declare `steps:` in its frontmatter. With neither, the pipeline keeps `tool-loop`.
 
 **Fix.**
-- Remove the `activation:` field entirely — the new default is `explicit` and always activates when a `coordinator:` block is present.
+- Confirm `pipeline.name` is set to a coordinator-bearing pipeline (`linear`, `dag`, or `stepper`) — `flat` (the default) never coordinates.
+- For `linear`, remove the `pipeline.config.activation` field — the default is `explicit` and always activates once the linear pipeline is selected.
 - Or confirm `subagents:` is non-empty (`grep subagent_built smart-server.log` should show one per agent on startup).
 - Or wire in a skill with explicit `steps:` to satisfy `AutoActivation`.
 
 `AutoActivation` remains useful for mixed-traffic agents that should gracefully fall back to `tool-loop` when nothing to coordinate — it is not the default any more.
+
+---
+
+### Startup fails with a legacy-config migration error
+
+**Symptom.** The server aborts at startup (before serving any request) with a fail-loud migration error complaining about a `coordinator:` block or legacy `pipeline:` overrides (`mcp` / `rag` / `stages` / `llm` under `pipeline:`).
+
+**Cause.** As of v19 the old `coordinator: { mode | planner | planning | dispatch | activation | ... }` YAML block and the legacy `pipeline: { mcp | rag | stages | llm }` overrides were removed in a clean break. The loader throws instead of silently ignoring them.
+
+**Fix.** Migrate the config to the new `pipeline: { name, config }` envelope (top-level `llm:` / `mcp:` / `rag:` / `subagents:` are unchanged):
+
+- `coordinator: { mode: deep-stepper, knowledgeSeed, maxParallelSteps, maxDepth, ... }` → `pipeline: { name: stepper, config: { mode, knowledgeSeed, maxParallelSteps, maxDepth, ... } }`
+- `coordinator: { planner, reviewer, finalizer, errorStrategy, ... }` → `pipeline: { name: dag, config: { planner, reviewer, ... } }`
+- `coordinator: { planning, dispatch, activation, plannerLlm, maxSteps, ... }` → `pipeline: { name: linear, config: { planning, dispatch, activation, ... } }`
+
+The `config:` keys are the SAME keys the old `coordinator:` block used. Load a custom pipeline via `plugins: ['@scope/my-pipeline']`. If you cannot migrate yet, pin a version ≤ 18.
 
 ---
 
