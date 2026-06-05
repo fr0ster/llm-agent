@@ -774,7 +774,7 @@ git commit -m "refactor(server): extract buildBaseBuilder + exported createServe
 ### Task 7: Stepper pipeline plugin (exemplar — full code)
 
 **Files:**
-- Create: `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (**re-export facade now**, physically filled in Task 16)
+- Create: `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (**permanent re-export facade** over `config.ts` — never moved; see Task 16, F2)
 - Create: `packages/llm-agent-server-libs/src/pipelines/stepper.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/stepper.test.ts`
 
@@ -789,7 +789,8 @@ git commit -m "refactor(server): extract buildBaseBuilder + exported createServe
 
 ```ts
 // packages/llm-agent-server-libs/src/pipelines/parsers.ts
-// Facade now; Task 16 moves the real bodies here and drops the config.ts copies.
+// PERMANENT facade: re-exports the pure parsers from config.ts (they stay there;
+// build-stepper-root.ts and others import them from config.ts). Nothing is moved.
 export {
   parseStepperCoordinatorConfig,
   type StepperCoordinatorConfig,
@@ -1222,15 +1223,25 @@ test; the end-to-end path is covered by Task 14's gated integration.)
 `this.cfg.pipeline?.name/.config`, so the schema must change before Step 2 compiles.
 The key `pipeline` is currently the old `PipelineConfig` (`mcp`/`rag`/`stages`/`llm`
 overrides, `smart-server.ts:200`, `pipeline.ts:66`); the new design repurposes it as
-`{ name, config }`. Clean-break migration:
+`{ name, config }`. **Every old `pipeline.*` read must be repointed or the type
+change won't compile.** Clean-break migration:
   - Change `SmartServerConfig.pipeline` to `{ name: string; config?: Record<string, unknown> }`.
-  - **Repoint the old reads** to top-level: `pipeline?.mcp` (`smart-server.ts:1091`)
-    → `this.cfg.mcp`; the primary `pipeline?.rag` → `this.cfg.rag`.
-  - **Drop** the per-pipeline named RAG multistore (`pipeline.rag.{name}` loop,
-    `smart-server.ts:1119-1160`) and `pipeline.stages` in the clean break — top-level
-    `rag:` remains the store; record the dropped multistore in `log()` for operators.
+  - **`pipeline.mcp`** (`smart-server.ts:1091`) → `this.cfg.mcp`.
+  - **`pipeline.rag`** (primary) → `this.cfg.rag`; **drop** the per-pipeline named
+    RAG multistore (`pipeline.rag.{name}` loop, `smart-server.ts:1119-1160`) and
+    `pipeline.stages` in the clean break — top-level `rag:` remains the store;
+    `log()` the dropped multistore for operators.
+  - **`pipeline.llm.*`** — repoint ALL reads to the top-level `llm:` map:
+    `smart-server.ts:976, 992, 1015, 1035` (the `pipelineFallback` derivation now
+    comes from `llmMap.main` instead of `pipeline.llm.main`), and the subagent path
+    `subCfg.pipeline?.llm?.main` (wherever a subagent reads its pipeline LLM) →
+    the subagent's top-level `llm:`.
+  - **Validation / error messages in `config.ts`** that reference `pipeline.llm` /
+    `pipeline.*` overrides: update or remove them so they describe the new
+    `pipeline: { name, config }` shape (grep `config.ts` for `pipeline` to find them).
   - Add the YAML parse for the new `pipeline: { name, config }`.
-  Build (`npm run build`) → clean, before proceeding.
+  Run `npm run build` → clean (it surfaces every remaining `pipeline.*` reference)
+  before proceeding.
 
 - [ ] **Step 1: Build the registry**
 
