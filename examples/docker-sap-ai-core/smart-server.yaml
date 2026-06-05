@@ -9,107 +9,45 @@ skills:
   dirs:
     - ${SKILLS_DIR:-./skills}
 
-# Multi-model pipeline: separate LLMs for main work, classification, and helper tasks.
-# Provider & model configured via LLM_PROVIDER (default: sap-ai-sdk) and LLM_MODEL_NAME.
+# Default flat pipeline — llm-agent's hardcoded request flow handles:
+# classification, RAG query, tool selection, reranking, assembly, tool-loop,
+# and client adapter wrapping automatically. Omit `pipeline:` for the same.
 pipeline:
-  llm:
-    main:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_MODEL_NAME:-anthropic--claude-4.6-sonnet}
-      temperature: 0.7
-      maxTokens: 32768
-    classifier:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
-      temperature: 0.1
-      maxTokens: 2048
-    helper:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
-      temperature: 0.1
-      maxTokens: 2048
+  name: flat
 
-  # Consumer-defined RAG stores. All stores share the embedder/scenario.
-  # Embedding models like `gemini-embedding` and `text-embedding-3-small` are typically
-  # deployed under the `foundation-models` scenario in SAP AI Core — keep that as default.
-  rag:
-    tools:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    facts:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_facts__${EMBEDDING_MODEL:-text-embedding-3-small}
-      dedupThreshold: 0.92
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    feedback:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_feedback__${EMBEDDING_MODEL:-text-embedding-3-small}
-      dedupThreshold: 0.92
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    state:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: experience_state__${EMBEDDING_MODEL:-text-embedding-3-small}
-      dedupThreshold: 0.92
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    demo_literature:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_literature__${EMBEDDING_MODEL:-text-embedding-3-small}
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    demo_news:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_news__${EMBEDDING_MODEL:-text-embedding-3-small}
-      vectorWeight: 0.7
-      keywordWeight: 0.3
-    demo_sap_cases:
-      type: ${RAG_TYPE:-in-memory}
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      url: ${QDRANT_URL:-http://localhost:6333}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      collectionName: demo_sap_cases__${EMBEDDING_MODEL:-text-embedding-3-small}
-      vectorWeight: 0.7
-      keywordWeight: 0.3
+# Multi-model LLM: separate models for main work, classification, and helper tasks.
+# Provider & model configured via LLM_PROVIDER (default: sap-ai-sdk) and LLM_MODEL_NAME.
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MODEL_NAME:-anthropic--claude-4.6-sonnet}
+    temperature: 0.7
+    maxTokens: 32768
+  classifier:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
+    temperature: 0.1
+    maxTokens: 2048
+  helper:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
+    temperature: 0.1
+    maxTokens: 2048
 
-  # Default flow (no pipeline.stages) — llm-agent's hardcoded flow handles:
-  # classification, RAG query (all stores), tool selection, reranking, assembly,
-  # tool-loop, and client adapter wrapping (ClineClientAdapter) automatically.
+# Tool/skill RAG — single top-level store (the legacy multi-store
+# `pipeline.rag.{name}` map was removed; register extra stores via a RAG plugin).
+# Embedding models like `gemini-embedding` and `text-embedding-3-small` are typically
+# deployed under the `foundation-models` scenario in SAP AI Core — keep that as default.
+rag:
+  type: ${RAG_TYPE:-in-memory}
+  embedder: ${RAG_EMBEDDER:-sap-ai-core}
+  scenario: ${RAG_SCENARIO:-foundation-models}
+  resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+  url: ${QDRANT_URL:-http://localhost:6333}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  collectionName: mcp_tools__${EMBEDDING_MODEL:-text-embedding-3-small}
+  vectorWeight: 0.7
+  keywordWeight: 0.3
 
 # MCP: YAML-based config enables auto-vectorization of tools into RAG.
 mcp:

@@ -5,15 +5,42 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "exports": {
-    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
-    "./flat": { "types": "./dist/pipelines/flat.d.ts", "default": "./dist/pipelines/flat.js" },
-    "./linear": { "types": "./dist/pipelines/linear.d.ts", "default": "./dist/pipelines/linear.js" },
-    "./dag": { "types": "./dist/pipelines/dag.d.ts", "default": "./dist/pipelines/dag.js" },
-    "./stepper": { "types": "./dist/pipelines/stepper.d.ts", "default": "./dist/pipelines/stepper.js" },
-    "./legacy/flat": { "types": "./dist/legacy/flat.d.ts", "default": "./dist/legacy/flat.js" },
-    "./legacy/linear": { "types": "./dist/legacy/linear.d.ts", "default": "./dist/legacy/linear.js" },
-    "./legacy/dag": { "types": "./dist/legacy/dag.d.ts", "default": "./dist/legacy/dag.js" },
-    "./legacy/stepper": { "types": "./dist/legacy/stepper.d.ts", "default": "./dist/legacy/stepper.js" }
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./flat": {
+      "types": "./dist/pipelines/flat.d.ts",
+      "default": "./dist/pipelines/flat.js"
+    },
+    "./linear": {
+      "types": "./dist/pipelines/linear.d.ts",
+      "default": "./dist/pipelines/linear.js"
+    },
+    "./dag": {
+      "types": "./dist/pipelines/dag.d.ts",
+      "default": "./dist/pipelines/dag.js"
+    },
+    "./stepper": {
+      "types": "./dist/pipelines/stepper.d.ts",
+      "default": "./dist/pipelines/stepper.js"
+    },
+    "./legacy/flat": {
+      "types": "./dist/legacy/flat.d.ts",
+      "default": "./dist/legacy/flat.js"
+    },
+    "./legacy/linear": {
+      "types": "./dist/legacy/linear.d.ts",
+      "default": "./dist/legacy/linear.js"
+    },
+    "./legacy/dag": {
+      "types": "./dist/legacy/dag.d.ts",
+      "default": "./dist/legacy/dag.js"
+    },
+    "./legacy/stepper": {
+      "types": "./dist/legacy/stepper.d.ts",
+      "default": "./dist/legacy/stepper.js"
+    }
   },
   "files": [
     "dist"

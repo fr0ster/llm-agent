@@ -511,3 +511,70 @@ describe('resolveSmartServerConfig — top-level mcp: array form', () => {
     );
   });
 });
+
+describe('legacy coordinator:/pipeline: migration guard (clean break)', () => {
+  const goodLlm = {
+    provider: 'ollama',
+    model: 'm',
+    url: 'http://h',
+    apiKey: 'x',
+  };
+
+  it('throws on a legacy coordinator: block', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, coordinator: { mode: 'planned-react' } },
+          {},
+        ),
+      /Legacy 'coordinator:' \/ 'pipeline:' config is no longer supported/,
+    );
+  });
+
+  it('throws on a legacy pipeline: block (llm/rag/stages, no name)', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, pipeline: { llm: { main: goodLlm } } },
+          {},
+        ),
+      /Migrate to: pipeline: \{ name:/,
+    );
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, pipeline: { stages: [] } },
+          {},
+        ),
+      /no longer supported/,
+    );
+  });
+
+  it('accepts the new pipeline: { name, config } shape', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        {
+          llm: goodLlm,
+          pipeline: { name: 'stepper', config: { mode: 'planned-react' } },
+        },
+        {},
+      ),
+    );
+  });
+
+  it('accepts the bare-string pipeline shorthand', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig({}, { llm: goodLlm, pipeline: 'flat' }, {}),
+    );
+  });
+
+  it('accepts no pipeline: block at all (defaults to flat)', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig({}, { llm: goodLlm }, {}),
+    );
+  });
+});

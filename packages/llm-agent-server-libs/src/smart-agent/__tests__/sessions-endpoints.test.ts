@@ -15,7 +15,6 @@ import {
   recordSessionEnd,
   recordSessionStart,
   seedSessionKnowledge,
-  usesStepper,
 } from '../smart-server.js';
 
 // ---------------------------------------------------------------------------
@@ -327,35 +326,4 @@ test('DELETE evictFn is a no-op for missing JSONL (force:true, no error)', async
   // Should not throw
   const r = await handleDeleteSession(store, 'user1', sid, evictFn);
   assert.equal(r.ok, true);
-});
-
-// ---------------------------------------------------------------------------
-// usesStepper mode-gating tests (plan 17b-test)
-// ---------------------------------------------------------------------------
-
-test('usesStepper gates on raw coordinator.mode, not on the defaulted parse', () => {
-  assert.equal(usesStepper({ mode: 'cyclic-react' }), true);
-  assert.equal(usesStepper({ planner: { type: 'llm' } }), false); // legacy 17.0 → Dag path
-  assert.equal(usesStepper({}), false);
-  assert.equal(usesStepper(undefined), false);
-});
-
-test('usesStepper returns true for planned-react mode string', () => {
-  assert.equal(usesStepper({ mode: 'planned-react' }), true);
-});
-
-test('usesStepper returns true for cyclic-react mode string', () => {
-  assert.equal(usesStepper({ mode: 'cyclic-react' }), true);
-});
-
-test('usesStepper returns false for non-string mode value', () => {
-  assert.equal(usesStepper({ mode: 42 } as never), false);
-  assert.equal(usesStepper({ mode: null } as never), false);
-});
-
-test('usesStepper returns true for a mode-less coordinator.flow composition', () => {
-  // A flow-only config (no `mode`) must still route to the Stepper, not fall
-  // through to the plain smart pipeline.
-  assert.equal(usesStepper({ flow: { planner: { type: 'llm' } } }), true);
-  assert.equal(usesStepper({ flow: null } as never), false);
 });

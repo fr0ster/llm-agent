@@ -262,11 +262,6 @@ export interface SmartServerConfig {
    */
   subAgentConfigs?: SmartServerSubAgentConfig[];
   /**
-   * Raw coordinator YAML block. Translated to concrete strategy instances by
-   * `SmartServer.start()` once the parent LLMs are built.
-   */
-  coordinatorYaml?: import('./config.js').YamlCoordinator;
-  /**
    * Per-session lifecycle tuning. Defaults: idleTtlMs=7_200_000 (2h),
    * maxSessions=1000, cookieName='sid'.
    */
@@ -889,34 +884,6 @@ export function buildMcpBridge(
     }
     return `Tool not found: ${name}`;
   };
-}
-
-// ---------------------------------------------------------------------------
-// Raw-config mode routing gate (R6-F2)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns `true` ONLY when the raw coordinator config has an explicit `mode`
- * string — the opt-in gate for the 18.0 Stepper runtime.
- *
- * IMPORTANT: Do NOT call `parseStepperCoordinatorConfig` to decide — that
- * function defaults `mode` to `'planned-react'`, which would silently route
- * every 17.0 legacy config onto the Stepper path. Gate on the RAW field
- * presence only; parse is done INSIDE the Stepper branch after this check.
- */
-export function usesStepper(
-  coordCfg: Record<string, unknown> | undefined,
-): boolean {
-  if (!coordCfg) return false;
-  // Explicit opt-in: `coordinator.mode` (preset alias) — a string in raw config.
-  if (typeof coordCfg.mode === 'string') return true;
-  // OR an explicit `coordinator.flow` composition block (mode-less form). A flow
-  // with no mode is still a Stepper config; without this it would silently fall
-  // through to the plain smart pipeline.
-  if (typeof coordCfg.flow === 'object' && coordCfg.flow !== null) return true;
-  // `coordinator.planner` without `coordinator.mode` selects the DAG coordinator
-  // variant (a RETAINED peer pipeline, not deprecated) — not the Stepper.
-  return false;
 }
 
 export class SmartServer {
