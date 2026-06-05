@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type { IMcpClient, ISkillManager } from '@mcp-abap-adt/llm-agent';
+import type {
+  IMcpClient,
+  IPipelinePlugin,
+  ISkillManager,
+} from '@mcp-abap-adt/llm-agent';
 import type { IStageHandler } from '../../pipeline/stage-handler.js';
 import { emptyLoadedPlugins, mergePluginExports } from '../types.js';
 
@@ -118,5 +122,66 @@ describe('mergePluginExports — mcpClients', () => {
     assert.equal(result.mcpClients.length, 1);
     assert.ok(result.stageHandlers.has('my-stage'));
     assert.equal(result.skillManager, skillManager);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mergePluginExports — pipelinePlugins
+// ---------------------------------------------------------------------------
+
+function stubPipeline(name: string): IPipelinePlugin {
+  return {
+    name,
+    parseConfig: (r) => r,
+    build: async () => ({ agent: {} as never, close: async () => {} }),
+  };
+}
+
+describe('pipelinePlugins merge', () => {
+  it('emptyLoadedPlugins initialises both pipeline maps', () => {
+    const r = emptyLoadedPlugins();
+    assert.ok(r.pipelinePlugins instanceof Map);
+    assert.ok(r.pipelinePluginSources instanceof Map);
+    assert.equal(r.pipelinePlugins.size, 0);
+  });
+
+  it('registers a pipeline plugin and records its source', () => {
+    const r = emptyLoadedPlugins();
+    const registered = mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag') } },
+      'pkg-a',
+    );
+    assert.equal(registered, true);
+    assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
+    assert.equal(r.pipelinePluginSources.get('dag'), 'pkg-a');
+  });
+
+  it('rejects a duplicate name: keeps the first, records an error naming both sources', () => {
+    const r = emptyLoadedPlugins();
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag') } },
+      'pkg-a',
+    );
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag-2') } },
+      'pkg-b',
+    );
+    // first wins
+    assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
+    // duplicate recorded with BOTH sources (stable contract: name + both sources,
+    // not a brittle exact phrase)
+    const dupe = r.errors.find(
+      (e) =>
+        e.error.includes("'dag'") &&
+        e.error.includes('pkg-a') &&
+        e.error.includes('pkg-b'),
+    );
+    assert.ok(
+      dupe,
+      'expected a duplicate error naming the pipeline and both sources',
+    );
   });
 });

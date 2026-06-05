@@ -5,6 +5,9 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
+import { createRequire } from 'node:module';
+import { resolve as pathResolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type {
   EmbedderFactory,
   IClientAdapter,
@@ -16,20 +19,23 @@ import type {
   IMcpClient,
   IModelProvider,
   IModelResolver,
+  IPipelineInstance,
+  IPipelinePlugin,
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
   IToolsRagHandle,
   LlmTool,
+  LoadedPlugins,
   Message,
   NormalizedRequest,
+  PluginExports,
   StreamToolCall,
   SubAgentRegistry,
   VectorRag,
 } from '@mcp-abap-adt/llm-agent';
 import {
   AdapterValidationError,
-  artifactIdentityKey,
   buildExternalResults,
   type ExternalToolValidationCode,
   type IRag,
@@ -38,7 +44,6 @@ import {
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
 import type {
-  DagCoordinatorHandlerDeps,
   IPluginLoader,
   SessionAgentParts,
   SessionGraph,
@@ -49,7 +54,6 @@ import {
   ClaudeSkillManager,
   CodexSkillManager,
   ConfigWatcher,
-  DefaultSubAgentContextBuilder,
   FileSystemPluginLoader,
   FileSystemSkillManager,
   getDefaultPluginDirs,
@@ -59,6 +63,7 @@ import {
   type KnowledgeBackend,
   KnowledgeRag,
   makeLlm,
+  mergePluginExports,
   SessionGraphFactory,
   SessionLogger,
   SessionRegistry,
@@ -66,7 +71,6 @@ import {
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
   SmartAgentSubAgent,
-  SubAgentStateOracle,
 } from '@mcp-abap-adt/llm-agent-libs';
 import {
   MCPClientWrapper,
@@ -74,11 +78,7 @@ import {
 } from '@mcp-abap-adt/llm-agent-mcp';
 import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
-import type { PipelineConfig } from './pipeline.js';
-import {
-  resolveAgentEmbedder,
-  resolveToolsStoreEmbedder,
-} from './resolve-agent-embedder.js';
+import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { resolveSessionIdentity } from './session-identity-resolver.js';
 
 // ---------------------------------------------------------------------------
@@ -197,7 +197,16 @@ export interface SmartServerConfig {
   agent?: SmartServerAgentConfig;
   prompts?: SmartServerPromptsConfig;
   mode?: SmartServerMode;
-  pipeline?: PipelineConfig;
+  /**
+   * Pipeline selection: which pipeline plugin runs the agent, plus its
+   * plugin-specific config dialect (validated by the plugin's `parseConfig`).
+   * Built-in names: `flat` | `linear` | `dag` | `stepper`. Plugins may register
+   * additional names. When omitted, defaults to `flat`.
+   *
+   * NOTE: this REPLACES the legacy `pipeline:` block (mcp/rag/stages/llm
+   * overrides). Top-level `mcp:`, `rag:`, and `llm:` now own those concerns.
+   */
+  pipeline?: { name: string; config?: Record<string, unknown> };
   log?: (event: Record<string, unknown>) => void;
   logDir?: string;
   circuitBreaker?: SmartServerCircuitBreakerConfig;
@@ -206,6 +215,14 @@ export interface SmartServerConfig {
   configFile?: string;
   /** Additional plugin directory (merged with defaults). Used by the default FileSystemPluginLoader. */
   pluginDir?: string;
+  /**
+   * Explicit plugin module specifiers (npm package names or paths) to
+   * dynamically import. Their full {@link PluginExports} (pipelinePlugins,
+   * embedderFactories, mcpClients, …) are merged before RAG/embedder build.
+   * Relative paths resolve against the user's cwd; bare specifiers via
+   * `require.resolve` from cwd.
+   */
+  plugins?: string[];
   /** Custom plugin loader. When set, replaces the default FileSystemPluginLoader. */
   pluginLoader?: IPluginLoader;
   /** Pre-built embedder injected via DI. Takes precedence over config-driven selection. */
@@ -244,11 +261,6 @@ export interface SmartServerConfig {
    * `SmartAgentBuilder.withSubAgents(...)`.
    */
   subAgentConfigs?: SmartServerSubAgentConfig[];
-  /**
-   * Raw coordinator YAML block. Translated to concrete strategy instances by
-   * `SmartServer.start()` once the parent LLMs are built.
-   */
-  coordinatorYaml?: import('./config.js').YamlCoordinator;
   /**
    * Per-session lifecycle tuning. Defaults: idleTtlMs=7_200_000 (2h),
    * maxSessions=1000, cookieName='sid'.
@@ -351,16 +363,17 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
-import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
-import { buildStepperRoot } from './build-stepper-root.js';
+import { DagPipelinePlugin } from '../pipelines/dag.js';
+import { FlatPipelinePlugin } from '../pipelines/flat.js';
+import { LinearPipelinePlugin } from '../pipelines/linear.js';
 import {
-  assertCoordinatorConfigShape,
+  createServerPipelineContext,
+  type IServerPipelineContext,
+} from '../pipelines/server-context.js';
+import { StepperPipelinePlugin } from '../pipelines/stepper.js';
+import type { NormalizedLlmMap } from './config.js';
+import {
   normalizeLlmConfig,
-  parseStepperCoordinatorConfig,
-  resolveCoordinatorActivation,
-  resolveCoordinatorDispatch,
-  resolveCoordinatorDispatchKind,
-  resolveCoordinatorPlanning,
   resolveLlmConfig,
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
@@ -371,7 +384,6 @@ import type {
   SessionMetaRow,
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
-import { StepperCoordinatorHandler } from './stepper-coordinator-handler.js';
 
 export {
   generateConfigTemplate,
@@ -593,6 +605,12 @@ export interface SessionLifecycleOptions {
   buildAgent: (parts: SessionAgentParts) => Promise<SmartAgent | undefined>;
   /** Optional logger forwarded to SessionGraphFactory for cleanup-failure surfacing. */
   logger?: ILogger;
+  /**
+   * Optional per-session teardown hook run during `SessionGraph.dispose()`.
+   * The host wires this to invoke the pipeline plugin's
+   * `IPipelineInstance.close()` captured by `buildPipelineInstance`.
+   */
+  onDispose?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -623,6 +641,7 @@ export function buildSessionLifecycle(opts: SessionLifecycleOptions): {
     ragRegistry: opts.ragRegistry,
     buildAgent: opts.buildAgent,
     logger: opts.logger,
+    onDispose: opts.onDispose,
   });
   const registry = new SessionRegistry({
     idleTtlMs: opts.idleTtlMs,
@@ -867,34 +886,6 @@ export function buildMcpBridge(
   };
 }
 
-// ---------------------------------------------------------------------------
-// Raw-config mode routing gate (R6-F2)
-// ---------------------------------------------------------------------------
-
-/**
- * Returns `true` ONLY when the raw coordinator config has an explicit `mode`
- * string — the opt-in gate for the 18.0 Stepper runtime.
- *
- * IMPORTANT: Do NOT call `parseStepperCoordinatorConfig` to decide — that
- * function defaults `mode` to `'planned-react'`, which would silently route
- * every 17.0 legacy config onto the Stepper path. Gate on the RAW field
- * presence only; parse is done INSIDE the Stepper branch after this check.
- */
-export function usesStepper(
-  coordCfg: Record<string, unknown> | undefined,
-): boolean {
-  if (!coordCfg) return false;
-  // Explicit opt-in: `coordinator.mode` (preset alias) — a string in raw config.
-  if (typeof coordCfg.mode === 'string') return true;
-  // OR an explicit `coordinator.flow` composition block (mode-less form). A flow
-  // with no mode is still a Stepper config; without this it would silently fall
-  // through to the plain smart pipeline.
-  if (typeof coordCfg.flow === 'object' && coordCfg.flow !== null) return true;
-  // `coordinator.planner` without `coordinator.mode` selects the DAG coordinator
-  // variant (a RETAINED peer pipeline, not deprecated) — not the Stepper.
-  return false;
-}
-
 export class SmartServer {
   private readonly cfg: SmartServerConfig;
   private readonly noop = () => {};
@@ -912,21 +903,24 @@ export class SmartServer {
   private _helperLlm?: ILlm;
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
+  /** Normalized LLM map + pipeline fallback + main temperature — captured in
+   *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
+   *  context factory (mirrors the inline DAG/linear resolution). */
+  private _llmMap?: NormalizedLlmMap;
+  private _pipelineFallback?: SmartServerLlmConfig;
+  private _mainTemp?: number;
+  private _requestLogger?: IRequestLogger;
+  /** ToolsRag handle built by `buildSharedPipelineInfra`; handed to every
+   *  pipeline's context (factory defaults to EMPTY_TOOLS_RAG if unset). */
+  private _toolsRagHandle?: IToolsRagHandle;
   /**
-   * Captured DAG coordinator template — `deps` are stateless or LLM-bound and
-   * are reused across sessions; only `workers` + `stateOracle` are re-wired per
-   * session (review HIGH #1).
+   * The tools-RAG `IRag` (the store the builder vectorizes MCP `tool:<name>`
+   * docs into) captured in `start()`. Held so the `flat`/`smart` pipeline's
+   * `ToolSelectHandler` can select MCP tools from RAG hits — and so tests can
+   * assert the YAML-path vectorization landed. Distinct from `_toolsRagHandle`
+   * (the stepper catalog handle), which falls back to catalog order regardless.
    */
-  private _dagCoordinatorTemplate?: {
-    deps: Omit<DagCoordinatorHandlerDeps, 'workers' | 'stateOracle'>;
-    oracleName?: string;
-  };
-  /**
-   * 18.0 Stepper coordinator handler — stateless, session context comes through
-   * `ctx.sessionId` at execute time. Built once in `start()` when
-   * `coordinator.mode` is present in the raw config; reused across sessions.
-   */
-  private _stepperCoordinatorHandler?: StepperCoordinatorHandler;
+  private _toolsRag?: IRag;
   /**
    * MCP clients connected for the Stepper path from the YAML `mcp:` config
    * block. These are connected ONCE in `start()` (lazily resolved by
@@ -937,6 +931,13 @@ export class SmartServer {
    * yaml). Disposed via the server's `closeFns` on shutdown.
    */
   private _stepperMcpClients?: IMcpClient[];
+  /**
+   * The MCP clients the pipeline `callMcp` bridge dispatches over — resolved
+   * UNCONDITIONALLY in `start()` as DI/plugin clients (`mcpClients`) ?? the
+   * YAML-connected `_stepperMcpClients`. Held so every pipeline (not just the
+   * stepper) gets a working `ctx.callMcp` without opening a second connection.
+   */
+  private _sharedMcpClients?: IMcpClient[];
   /**
    * The ONE shared knowledge backend for the Stepper path (set during build).
    * Held so DELETE /v1/sessions/:id can evict a session's entries from it —
@@ -951,6 +952,20 @@ export class SmartServer {
    */
   private readonly _sessionMetaStore: ISessionMetaStore =
     new InMemorySessionMetaStore();
+  /**
+   * Pipeline-plugin registry, populated in `start()` after plugins load: the 4
+   * built-ins (flat/linear/dag/stepper) plus any `plugins.pipelinePlugins`,
+   * fail-fast on name collision. `buildPipelineInstance` selects by
+   * `cfg.pipeline.name` (default 'flat').
+   */
+  private _pipelineRegistry!: Map<string, IPipelinePlugin>;
+  /**
+   * Per-session `IPipelineInstance.close()` hooks, keyed by sessionId. Populated
+   * by `buildPipelineInstance` (via `buildSessionAgent`) and invoked from the
+   * session lifecycle `onDispose` so per-session pipeline resources (MCP / builder
+   * handles owned by the plugin) are freed on eviction / shutdown / reconfigure.
+   */
+  private readonly _sessionCloseFns = new Map<string, () => Promise<void>>();
 
   constructor(config: SmartServerConfig) {
     this.cfg = config;
@@ -962,85 +977,69 @@ export class SmartServer {
       log: (e) => log(e as unknown as Record<string, unknown>),
     };
     this._fileLogger = fileLogger;
-    const pipeline = this.cfg.pipeline;
 
     // ---- Composition root: resolve config → interfaces --------------------
 
-    // LLM resolution — normalize flat/map cfg.llm and derive pipeline fallback.
+    // LLM resolution — normalize the flat/map top-level `llm:` block. The legacy
+    // per-pipeline `pipeline.llm.*` override is gone; role LLMs derive entirely
+    // from the top-level map (resolveLlmConfig falls back to map.main), so the
+    // pipelineFallback chain is no longer fed a separate config — it stays
+    // undefined and the map.main fallback in resolveLlmConfig covers it.
     const llmMap = normalizeLlmConfig(this.cfg.llm);
-
-    // Adapt pipeline.llm.main (uses `baseURL`) → SmartServerLlmConfig (uses
-    // `url`) so resolveLlmConfig's pipelineFallback parameter speaks one
-    // shape. Returns undefined when no pipeline.llm.main is configured.
-    const pipelineFallback = (() => {
-      const pm = pipeline?.llm?.main;
-      if (!pm) return undefined;
-      return {
-        provider: pm.provider,
-        apiKey: pm.apiKey ?? '',
-        url: pm.baseURL,
-        model: pm.model,
-        temperature: pm.temperature,
-      } as SmartServerLlmConfig;
-    })();
+    const pipelineFallback: SmartServerLlmConfig | undefined = undefined;
 
     const topMain = resolveLlmConfig(llmMap, 'main', pipelineFallback);
 
-    const mainTemp = Number(
-      pipeline?.llm?.main?.temperature ?? topMain?.temperature ?? 0.7,
-    );
-    const mainLlm = pipeline?.llm?.main
-      ? await makeLlm(pipeline.llm.main, mainTemp)
-      : topMain
-        ? await makeLlm(
-            {
-              provider: topMain.provider ?? 'deepseek',
-              apiKey: topMain.apiKey,
-              baseURL: topMain.url,
-              model: topMain.model,
-            },
-            mainTemp,
-          )
-        : (() => {
-            throw new Error(
-              'no LLM configured: provide top-level llm.main or pipeline.llm.main',
-            );
-          })();
-
-    const classifierTemp = Number(
-      pipeline?.llm?.classifier?.temperature ??
-        topMain?.classifierTemperature ??
-        0.1,
-    );
-    const classifierLlm = pipeline?.llm?.classifier
-      ? await makeLlm(pipeline.llm.classifier, classifierTemp)
-      : pipeline?.llm?.main
-        ? await makeLlm(pipeline.llm.main, classifierTemp)
-        : topMain
-          ? await makeLlm(
-              {
-                provider: topMain.provider ?? 'deepseek',
-                apiKey: topMain.apiKey,
-                baseURL: topMain.url,
-                model: topMain.model,
-              },
-              classifierTemp,
-            )
-          : (() => {
-              throw new Error(
-                'no LLM configured: provide top-level llm.main or pipeline.llm.main',
-              );
-            })();
-
-    const helperLlm = pipeline?.llm?.helper
+    const mainTemp = Number(topMain?.temperature ?? 0.7);
+    const mainLlm = topMain
       ? await makeLlm(
-          pipeline.llm.helper,
-          Number(pipeline.llm.helper.temperature ?? 0.1),
+          {
+            provider: topMain.provider ?? 'deepseek',
+            apiKey: topMain.apiKey,
+            baseURL: topMain.url,
+            model: topMain.model,
+          },
+          mainTemp,
+        )
+      : (() => {
+          throw new Error('no LLM configured: provide top-level llm.main');
+        })();
+
+    const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
+    const classifierLlm = topMain
+      ? await makeLlm(
+          {
+            provider: topMain.provider ?? 'deepseek',
+            apiKey: topMain.apiKey,
+            baseURL: topMain.url,
+            model: topMain.model,
+          },
+          classifierTemp,
+        )
+      : (() => {
+          throw new Error('no LLM configured: provide top-level llm.main');
+        })();
+
+    // A 'helper' role LLM derives from the top-level `llm:` map when present
+    // (built only when an explicit map entry exists).
+    const helperCfg = resolveLlmConfigStrict(llmMap, 'helper');
+    const helperLlm = helperCfg
+      ? await makeLlm(
+          {
+            provider: helperCfg.provider ?? 'deepseek',
+            apiKey: helperCfg.apiKey,
+            baseURL: helperCfg.url,
+            model: helperCfg.model,
+          },
+          Number(helperCfg.temperature ?? 0.1),
         )
       : undefined;
     this._mainLlm = mainLlm;
     this._classifierLlm = classifierLlm;
     this._helperLlm = helperLlm;
+    this._llmMap = llmMap;
+    this._pipelineFallback = pipelineFallback;
+    this._mainTemp = mainTemp;
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -1072,6 +1071,55 @@ export class SmartServer {
       log({ event: 'plugin_errors', errors: plugins.errors });
     }
 
+    // ---- Explicit plugin specifiers (`plugins: [...]`) -------------------
+    // Dynamically import each module specifier and merge its FULL
+    // PluginExports (pipelinePlugins, embedderFactories, mcpClients, …) into
+    // the same LoadedPlugins object. Done BEFORE the embedder/RAG build below
+    // so plugin-supplied embedder factories are visible.
+    const requireFromCwd = createRequire(`${process.cwd()}/`);
+    for (const spec of this.cfg.plugins ?? []) {
+      // Resolve to an ABSOLUTE path against the USER's cwd, then import via
+      // a file URL. A bare `await import('./x.js')` would resolve relative to
+      // smart-server.js, not the user's cwd.
+      const abs = spec.startsWith('.')
+        ? pathResolve(process.cwd(), spec)
+        : spec.startsWith('/')
+          ? spec
+          : requireFromCwd.resolve(spec);
+      const mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      const registered = mergePluginExports(plugins, mod, spec);
+      log({ event: 'plugin_specifier_loaded', spec, registered });
+    }
+
+    // ---- Pipeline-plugin registry (sub-goal C) ---------------------------
+    // The 4 built-ins are STATIC; plugin-supplied pipelines are merged on top.
+    // Fail-fast on a name collision so a plugin cannot silently shadow a
+    // built-in (or another plugin). `buildPipelineInstance` selects by
+    // `cfg.pipeline.name` (default 'flat') at session-build time.
+    const pipelineRegistry = new Map<string, IPipelinePlugin>();
+    for (const builtin of [
+      new FlatPipelinePlugin(),
+      new LinearPipelinePlugin(),
+      new DagPipelinePlugin(),
+      new StepperPipelinePlugin(),
+    ]) {
+      pipelineRegistry.set(builtin.name, builtin);
+    }
+    for (const [name, plugin] of plugins.pipelinePlugins) {
+      if (pipelineRegistry.has(name)) {
+        throw new Error(
+          `pipeline plugin name collision: '${name}' is already registered ` +
+            '(built-in or another plugin)',
+        );
+      }
+      pipelineRegistry.set(name, plugin);
+    }
+    this._pipelineRegistry = pipelineRegistry;
+    log({
+      event: 'pipeline_registry_loaded',
+      pipelines: [...pipelineRegistry.keys()],
+    });
+
     // Merge plugin embedder factories with config-provided ones
     const mergedEmbedderFactories = {
       ...plugins.embedderFactories,
@@ -1081,153 +1129,96 @@ export class SmartServer {
 
     // Resolve the embedder ONCE so the same instance feeds both makeRag and the
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
-    let resolvedEmbedder = await resolveAgentEmbedder(
+    const resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
       this.cfg.embedder,
       mergedEmbedderFactories,
     );
 
-    // ---- Build agent via Builder (interface-only) -------------------------
-    let builder = new SmartAgentBuilder({
-      mcp: pipeline?.mcp ?? this.cfg.mcp,
-      agent: this.cfg.agent,
-      prompts: this.cfg.prompts,
-      skipModelValidation: this.cfg.skipModelValidation,
-    })
-      .withMainLlm(mainLlm)
-      .withClassifierLlm(classifierLlm)
-      .withLogger(fileLogger)
-      .withMode(this.cfg.mode ?? 'smart');
-
-    if (helperLlm) {
-      builder = builder.withHelperLlm(helperLlm);
-    }
-
+    // ---- RAG resolution (interface-only) ----------------------------------
+    // Resolve the tools/history stores and any named collections HERE so the
+    // coordinator gate below can read the final `toolsRag`/`resolvedEmbedder`,
+    // then hand the ready stores to buildBaseBuilder for wiring.
     let toolsRag: IRag | undefined;
+    let historyRag: IRag | undefined;
+    const ragCollections: Array<{
+      name: string;
+      rag: IRag;
+      meta: { displayName: string; scope: 'global' };
+    }> = [];
     if (this.cfg.rag) {
       const ragOptions = {
         injectedEmbedder: resolvedEmbedder,
         extraFactories: mergedEmbedderFactories,
       };
       toolsRag = await makeRag(this.cfg.rag, ragOptions);
-      builder = builder.setToolsRag(toolsRag);
-      builder = builder.setHistoryRag(
-        await makeRag({ ...this.cfg.rag }, ragOptions),
-      );
+      historyRag = await makeRag({ ...this.cfg.rag }, ragOptions);
     }
+    // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
+    // (and white-box vectorization assertions). See field doc.
+    this._toolsRag = toolsRag;
 
-    // Wire pipeline.rag.{name} stores into the builder so multi-store YAML
-    // configs behave the same as the flat `rag:` block: `tools` and `history`
-    // map to the agent's built-in slots; everything else is registered as a
-    // named collection that the registry projection exposes via ragStores[name].
-    if (pipeline?.rag) {
-      for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
-        // The `tools` store feeds the subagent context-builder's toolSource
-        // (mainEmbedder below). If the flat `rag:` block produced no embedder
-        // (YAML-only multi-store deployments), resolve one from this store's
-        // own config so the tools store and the context-builder share a single
-        // embedder instance (#141, mirrors the flat-path fix in #137). Other
-        // stores keep the raw DI embedder and are never overridden.
-        if (name === 'tools') {
-          resolvedEmbedder = await resolveToolsStoreEmbedder(
-            resolvedEmbedder,
-            storeCfg as SmartServerRagConfig,
-            this.cfg.embedder,
-            mergedEmbedderFactories,
-          );
-        }
-        const ragOptions = {
-          injectedEmbedder:
-            name === 'tools'
-              ? (resolvedEmbedder ?? this.cfg.embedder)
-              : this.cfg.embedder,
-          extraFactories: mergedEmbedderFactories,
-        };
-        const rag = await makeRag(storeCfg, ragOptions);
-        if (name === 'tools') {
-          toolsRag = rag;
-          builder = builder.setToolsRag(rag);
-        } else if (name === 'history') {
-          builder = builder.setHistoryRag(rag);
-        } else {
-          builder = builder.addRagCollection({
-            name,
-            rag,
-            meta: { displayName: name, scope: 'global' },
-          });
-        }
-      }
-    }
+    // NOTE: the legacy per-pipeline named-RAG multistore (`pipeline.rag.{name}`)
+    // is GONE with the `pipeline: {name,config}` migration. The top-level `rag:`
+    // block above is the single source of truth for the tools/history stores.
+    // Deployments that previously declared `pipeline.rag.{name}` collections must
+    // move them to top-level `rag:` (or register them as plugin RAG).
 
-    if (this.cfg.circuitBreaker) {
-      builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-    }
-
-    if (plugins.reranker) {
-      builder = builder.withReranker(plugins.reranker);
-    }
-    if (plugins.queryExpander) {
-      builder = builder.withQueryExpander(plugins.queryExpander);
-    }
-    if (plugins.outputValidator) {
-      builder = builder.withOutputValidator(plugins.outputValidator);
-    }
-
-    // Skill manager (DI > YAML config > plugin)
-    const skillManager =
-      this.cfg.skillManager ??
-      plugins.skillManager ??
-      resolveSkillManager(this.cfg.skills);
-    if (skillManager) {
-      builder = builder.withSkillManager(skillManager);
-    }
-
-    // LLM call strategy (from agent config)
-    const strategyName = this.cfg.agent?.llmCallStrategy;
-    if (strategyName) {
-      const {
-        StreamingLlmCallStrategy,
-        NonStreamingLlmCallStrategy,
-        FallbackLlmCallStrategy,
-      } = await import('@mcp-abap-adt/llm-agent');
-      const strategies = {
-        streaming: () => new StreamingLlmCallStrategy(),
-        'non-streaming': () => new NonStreamingLlmCallStrategy(),
-        fallback: () => new FallbackLlmCallStrategy(fileLogger),
-      };
-      const factory = strategies[strategyName];
-      if (factory) {
-        builder = builder.withLlmCallStrategy(factory());
-      }
-    }
-
-    // Tool-selection strategy (from agent.toolSelection config)
-    const toolSelectionCfg = this.cfg.agent?.toolSelection;
-    if (toolSelectionCfg?.strategy) {
-      builder = builder.withToolSelectionStrategy(
-        resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
-          minScore: toolSelectionCfg.minScore,
-        }),
-      );
-    }
-
-    // MCP clients (DI > plugin; YAML fallback handled by builder)
-    const mcpClients =
+    // MCP clients (DI > plugin > YAML). The YAML `mcp:` block is NOT pre-connected
+    // here — see the branch below.
+    const diOrPluginMcpClients =
       this.cfg.mcpClients ??
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
-    if (mcpClients) {
-      builder = builder.withMcpClients(mcpClients);
-    }
 
-    // Client adapters (DI > plugin; ClineClientAdapter is always registered as default)
-    const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
-    const adapterSources = [
-      ...(this.cfg.clientAdapters ?? []),
-      ...plugins.clientAdapters,
-      new ClineClientAdapter(),
-    ];
-    for (const adapter of adapterSources) {
-      builder = builder.withClientAdapter(adapter);
+    // ---- Knowledge backend (no MCP dependency) ----------------------------
+    // The remaining shared pipeline infra (`_sharedMcpClients` + the
+    // `_toolsRagHandle` MCP catalog) is MCP-client-dependent and is resolved
+    // per-branch below — for the YAML-only path it must run AFTER `build()`
+    // connects + vectorizes (the builder owns that single connection).
+    this.buildKnowledgeBackend();
+
+    // ---- MCP connection strategy (exactly ONE connection) -----------------
+    // Two client sources, two orderings — both keep ONE MCP connection AND a
+    // vectorized `toolsRag`:
+    //
+    //   • DI/plugin clients present → inject them into the startup builder via
+    //     `withMcpClients` (builder.ts:923 short-circuits its own `cfg.mcp`
+    //     auto-connect). These pre-built clients were never vectorized by the
+    //     builder (unchanged behavior). `_sharedMcpClients` = that exact set,
+    //     and the `_toolsRagHandle` catalog is built now over them.
+    //
+    //   • YAML-only (no DI/plugin) → do NOT pre-connect and do NOT inject. The
+    //     startup builder receives `cfg.mcp` (via buildBaseBuilder, since
+    //     `mcpClients` is undefined) so `build()` CONNECTS the YAML block AND
+    //     VECTORIZES the tools into `toolsRag` (the `IRag`). AFTER `build()` we
+    //     harvest its connected set into `_sharedMcpClients` so `ctx.callMcp`
+    //     and per-session agents reuse the SAME single connection, then build
+    //     the `_toolsRagHandle` catalog over them. (Restores the
+    //     tool-vectorization the inject-skip regressed, with no double-connect.)
+    // DI precedence semantics: an explicitly-provided client set (even an EMPTY
+    // array) overrides YAML `mcp:`. `cfg.mcpClients: []` is a deliberate "disable
+    // MCP / override plugin+YAML" signal — it must take the DI branch (inject `[]`
+    // → builder short-circuits via withMcpClients([]) → no YAML auto-connect), NOT
+    // fall through to the YAML branch. So gate on presence (`!== undefined`), not
+    // length. (`diOrPluginMcpClients` is already undefined when neither DI nor a
+    // non-empty plugin set was provided — see its resolution above.)
+    const hasDiOrPlugin = diOrPluginMcpClients !== undefined;
+
+    let mcpClients: IMcpClient[] | undefined;
+    if (hasDiOrPlugin) {
+      // DI/plugin branch — resolve `_sharedMcpClients` + tools-RAG handle NOW
+      // (knowledge backend is idempotent; already built above).
+      await this.buildSharedPipelineInfra({
+        toolsRag,
+        resolvedEmbedder,
+        mcpClients: diOrPluginMcpClients,
+      });
+      mcpClients = diOrPluginMcpClients;
+    } else {
+      // YAML-only / no-mcp branch — let the builder connect + vectorize from
+      // `cfg.mcp`; `_sharedMcpClients` + the tools-RAG handle are resolved from
+      // the built handle AFTER `build()` (see below).
+      mcpClients = undefined;
     }
 
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
@@ -1256,377 +1247,38 @@ export class SmartServer {
             typeof sub.description === 'string' && sub.description.length > 0,
         });
       }
-      builder = builder.withSubAgents(registry);
     }
 
-    // ---- Coordinator (autonomous plan-execute loop) ------------------------
-    const coordCfg = this.cfg.coordinatorYaml;
-    if (coordCfg) {
-      const rawCoordCfg = coordCfg as Record<string, unknown>;
+    // ---- Build agent via Builder (interface-only) -------------------------
+    // Assemble everything EXCEPT the coordinator via the shared base-builder
+    // factory; the coordinator gate below wires the chosen variant.
+    const builder = await this.buildBaseBuilder({
+      mainLlm,
+      classifierLlm,
+      helperLlm,
+      fileLogger,
+      toolsRag,
+      historyRag,
+      ragCollections,
+      mcpClients,
+      plugins,
+      workerRegistry: registry,
+      applyServerExtras: true,
+    });
 
-      if (usesStepper(rawCoordCfg)) {
-        // ── 18.0 Stepper path (opt-in via coordinator.mode) ──────────────────
-        // Parse only INSIDE this branch so parseStepperCoordinatorConfig's
-        // mode default ('planned-react') never fires for legacy configs (R6-F2).
-        const stepperCfg = parseStepperCoordinatorConfig(rawCoordCfg);
-        const logDir = this.cfg.logDir;
-
-        // KnowledgeRag factory: ONE backend instance shared across all requests.
-        // Both backends are keyed by sessionId internally, so a single instance
-        // gives correct per-session isolation AND persistence across same-cookie
-        // requests within the process. JsonlKnowledgeBackend (logDir set) adds
-        // durability across restarts; InMemoryKnowledgeBackend is the in-process
-        // default. (Previously a fresh InMemoryKnowledgeBackend was created per
-        // call, so subsequent same-session requests lost prior entries and were
-        // re-seeded — review fix.)
-        const knowledgeBackend = logDir
-          ? new JsonlKnowledgeBackend(logDir)
-          : new InMemoryKnowledgeBackend();
-        // Held on the instance so DELETE /v1/sessions/:id can evict a session's
-        // knowledge from THIS backend (not just remove the JSONL file).
-        this._stepperKnowledgeBackend = knowledgeBackend;
-        const knowledgeRagFor = async (sessionId: string) => {
-          const kr = new KnowledgeRag(knowledgeBackend, sessionId);
-          // Seed deployment-supplied guidance into a BRAND-NEW session only
-          // (idempotent on resume). Config DATA — keeps the runtime MCP-agnostic.
-          await seedSessionKnowledge(
-            kr,
-            stepperCfg.knowledgeSeed,
-            new Date().toISOString(),
-          );
-          return kr;
-        };
-
-        // ToolsRag handle: real adapter over the server's tools RAG store + MCP
-        // catalog. Implements IToolsRagHandle for the Stepper runtime:
-        //   query(text, k) — semantic search via toolsRag+embedder when available;
-        //                     catalog-order fallback when neither is present.
-        //   lookup(name)   — returns the tool schema from the MCP catalog by name
-        //                     (populated lazily on first query()).
-        //
-        // Catalog note: when DI/plugin clients are present they are already
-        // connected. When the config carries a YAML `mcp:` block instead, the
-        // builder connects those clients INSIDE builder.build() and never
-        // exposes them here. We therefore connect the YAML mcp config ONCE and
-        // cache the result in _stepperMcpClients so every subsequent Stepper
-        // request reuses the same live connections without reconnecting.
-        //
-        // DI precedence: this.cfg.mcpClients > plugin clients > yaml mcp config.
-        // NOTE: connection is NOT safe to invoke twice on the same wrapper, so
-        // the cache guard below is critical — do NOT move this inside a
-        // per-request factory.
-        if (!mcpClients && !this._stepperMcpClients) {
-          const yamlMcp = pipeline?.mcp ?? this.cfg.mcp;
-          this._stepperMcpClients = await connectMcpClientsFromConfig(yamlMcp);
-        }
-        const stepperMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
-        // Lazily-populated catalog: name → LlmTool.
-        let catalogCache: Map<string, LlmTool> | undefined;
-        const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
-          if (catalogCache) return catalogCache;
-          const catalog = new Map<string, LlmTool>();
-          await Promise.allSettled(
-            stepperMcpClients.map(async (client) => {
-              const result = await client.listTools();
-              if (result.ok) {
-                for (const t of result.value) {
-                  if (!catalog.has(t.name)) {
-                    catalog.set(t.name, t as LlmTool);
-                  }
-                }
-              }
-            }),
-          );
-          catalogCache = catalog;
-          return catalog;
-        };
-        const toolsRagHandle: IToolsRagHandle = {
-          async query(text: string, k?: number) {
-            const limit = k ?? 20;
-            const catalog = await ensureCatalog();
-            // Semantic path: requires both a vector store and an embedder.
-            if (toolsRag && resolvedEmbedder) {
-              const embedding = new QueryEmbedding(text, resolvedEmbedder);
-              const ragResult = await toolsRag.query(embedding, limit);
-              if (ragResult.ok) {
-                const hits: LlmTool[] = [];
-                for (const r of ragResult.value) {
-                  const id = r.metadata.id as string | undefined;
-                  if (id?.startsWith('tool:')) {
-                    const name = id.slice(5).replace(/:.*$/, '');
-                    const tool = catalog.get(name);
-                    if (tool) hits.push(tool);
-                  }
-                }
-                if (hits.length > 0) return hits;
-              }
-            }
-            // Catalog-order fallback: return first `limit` tools from the MCP catalog.
-            return [...catalog.values()].slice(0, limit);
-          },
-          lookup(name: string) {
-            // Synchronous: returns from the in-memory cache populated by ensureCatalog.
-            // Returns undefined before the first query() call — callers that need
-            // a schema before any query should call query() first.
-            return catalogCache?.get(name);
-          },
-        };
-
-        // Mint helpers: stable UUIDs per spec §C.1/§C.2.
-        // The server wires randomUUID(); tests can inject deterministic minters.
-        const mintStepperId = () => randomUUID();
-        const mintTurnId = () => randomUUID();
-
-        const stepperMakeLlm = async (lc: SmartServerLlmConfig) =>
-          makeLlm(
-            {
-              provider: lc.provider ?? 'deepseek',
-              apiKey: lc.apiKey,
-              baseURL: lc.url,
-              model: lc.model,
-            },
-            Number(lc.temperature ?? mainTemp),
-          );
-
-        // Real callMcp bridge — delegates to the exported buildMcpBridge helper
-        // that iterates stepperMcpClients. Exported for testability (B-1).
-        const callMcp = buildMcpBridge(stepperMcpClients);
-
-        // DI/test override registry — left empty in production so buildStepperRoot
-        // builds the recursive child Steppers itself from `subagents` (below),
-        // sharing this run's role LLMs + shared token ledger.
-        const stepperRegistry = new Map<
-          string,
-          import('@mcp-abap-adt/llm-agent').IStepper
-        >();
-
-        // Declared subagents (name + description) → advertised to the planner and
-        // turned into recursive child Steppers in deep-stepper mode (Finding 1).
-        const stepperSubagents = (this.cfg.subAgentConfigs ?? []).map((s) => ({
-          name: s.name,
-          description: s.description,
-        }));
-
-        const stepperHandler = new StepperCoordinatorHandler({
-          buildBuilt: async (_ctx, logLlmCall) => {
-            // Per-RUN MCP result cache. Identical (tool, args) calls within ONE
-            // run reuse the first result instead of re-hitting MCP — fixes the
-            // redundant re-reads we saw in flow (gather → analyze → synthesize
-            // each fetching the same source/includes) and the latency that
-            // caused. Caching the Promise also dedups concurrent identical
-            // calls. Fresh per request → never stale across requests.
-            const runMcpCache = new Map<string, Promise<string>>();
-            const cachedCallMcp = (
-              name: string,
-              args: unknown,
-              signal?: AbortSignal,
-            ): Promise<string> => {
-              // Same case-normalised identity key as the executor's dedup, so
-              // the per-run cache and the dedup agree (and case-variant args —
-              // F01 vs f01 — hit the same entry).
-              const key = artifactIdentityKey(name, args);
-              const hit = runMcpCache.get(key);
-              if (hit) return hit;
-              const p = callMcp(name, args, signal);
-              runMcpCache.set(key, p);
-              return p;
-            };
-            return buildStepperRoot({
-              coordCfg: rawCoordCfg,
-              registry: stepperRegistry,
-              subagents: stepperSubagents,
-              makeLlm: stepperMakeLlm,
-              knowledgeRagFor: (sid) => {
-                const backend =
-                  knowledgeBackend ?? new InMemoryKnowledgeBackend();
-                return new KnowledgeRag(backend, sid);
-              },
-              toolsRag: toolsRagHandle,
-              callMcp: cachedCallMcp,
-              mintStepperId,
-              llmMap,
-              pipelineFallback,
-              logLlmCall,
-            });
-          },
-          knowledgeRagFor,
-          toolsRag: toolsRagHandle,
-          mintStepperId,
-          mintTurnId,
-        });
-        this._stepperCoordinatorHandler = stepperHandler;
-        builder = builder.withStepperCoordinator(stepperHandler);
-        log({
-          event: 'stepper_coordinator_configured',
-          mode: stepperCfg.mode,
-          config: rawCoordCfg,
-        });
-      } else if (coordCfg.planner !== undefined) {
-        // ── DAG coordinator path (a RETAINED peer pipeline variant) ──────────
-        // `coordinator.planner` (no `coordinator.mode`) selects the DAG
-        // coordinator. It is NOT deprecated — it is the strongest single-shot
-        // plan-graph variant (e.g. unaided full-include reviews). The Stepper
-        // (`coordinator.mode` / `coordinator.flow`) is a sibling, not a
-        // replacement. Informational only.
-        log({
-          event: 'config_info',
-          message:
-            'coordinator.planner (no coordinator.mode) selects the DAG coordinator variant; ' +
-            'use coordinator.mode/flow for the Stepper variant',
-        });
-        // Fail loud if the config mixes DAG and linear fields.
-        assertCoordinatorConfigShape(rawCoordCfg);
-        // planner shape/type already validated by assertCoordinatorConfigShape.
-        // Validate interpreter.type if present — only 'dag' is supported.
-        const interpKind = (
-          coordCfg.interpreter as { type?: string } | undefined
-        )?.type;
-        if (interpKind !== undefined && interpKind !== 'dag') {
-          throw new Error(
-            `coordinator.interpreter: unknown type '${interpKind}' (only 'dag' is supported)`,
-          );
-        }
-
-        const built = await buildDagCoordinatorDeps({
-          coordCfg: rawCoordCfg,
-          llmMap,
-          pipelineFallback,
-          mainLlm,
-          helperLlm,
-          mainTemp,
-          registry,
-          makeLlm: async (lc) =>
-            makeLlm(
-              {
-                provider: lc.provider ?? 'deepseek',
-                apiKey: lc.apiKey,
-                baseURL: lc.url,
-                model: lc.model,
-              },
-              Number(lc.temperature ?? mainTemp),
-            ),
-          warn: (m) => log({ event: 'config_warning', message: m }),
-        });
-        // built is defined when coordCfg.planner !== undefined.
-        if (!built) {
-          throw new Error(
-            'internal: buildDagCoordinatorDeps returned undefined despite planner present',
-          );
-        }
-
-        const { oracleName, ...deps } = built;
-        builder = builder.withDagCoordinator(deps);
-        // Capture template for per-session re-wire (workers + stateOracle are
-        // re-wired per session; everything else is stateless or LLM-bound).
-        this._dagCoordinatorTemplate = {
-          deps: {
-            planner: deps.planner,
-            interpreter: deps.interpreter,
-            activation: deps.activation,
-            reviewer: deps.reviewer,
-            errorStrategy: deps.errorStrategy,
-            finalizer: deps.finalizer,
-            maxRoundTrips: deps.maxRoundTrips,
-          },
-          oracleName,
-        };
-        log({ event: 'dag_coordinator_configured', config: coordCfg });
-      } else {
-        // ── Linear / flat coordinator path ────────────────────────────────────
-        // Fail loud if config mixes fields with non-linear settings.
-        assertCoordinatorConfigShape(rawCoordCfg);
-        // Linear mode: route plannerLlm through the normalized map chain.
-        // Priority: map[name] → 'helper'/'planner' alias (helperLlm) →
-        //   pipelineFallback → mainLlm.
-        const linearPlannerName = coordCfg.plannerLlm as string | undefined;
-        // Role-resolution order:
-        //   1. explicit map[name]            → build from that entry
-        //   2. name === 'helper' | 'planner' → reuse prebuilt helperLlm
-        //   3. unknown name                  → resolveLlmConfig fallback chain (map.main → pipelineFallback)
-        //   4. no name                       → mainLlm
-        const linearPlannerCfgStrict = resolveLlmConfigStrict(
-          llmMap,
-          linearPlannerName,
-        );
-        const plannerLlm = linearPlannerCfgStrict
-          ? await makeLlm(
-              {
-                provider: linearPlannerCfgStrict.provider ?? 'deepseek',
-                apiKey: linearPlannerCfgStrict.apiKey,
-                baseURL: linearPlannerCfgStrict.url,
-                model: linearPlannerCfgStrict.model,
-              },
-              Number(linearPlannerCfgStrict.temperature ?? mainTemp),
-            )
-          : linearPlannerName === 'helper' || linearPlannerName === 'planner'
-            ? (helperLlm ?? mainLlm)
-            : linearPlannerName
-              ? // Unknown name, not an alias — try pipelineFallback last.
-                await (async () => {
-                  const fb = resolveLlmConfig(
-                    llmMap,
-                    linearPlannerName,
-                    pipelineFallback,
-                  );
-                  return fb
-                    ? makeLlm(
-                        {
-                          provider: fb.provider ?? 'deepseek',
-                          apiKey: fb.apiKey,
-                          baseURL: fb.url,
-                          model: fb.model,
-                        },
-                        Number(fb.temperature ?? mainTemp),
-                      )
-                    : mainLlm;
-                })()
-              : mainLlm;
-        const planningKind = coordCfg.planning ?? 'one-shot';
-        const dispatchKind = resolveCoordinatorDispatchKind(coordCfg.dispatch);
-
-        // Build the same kind of context builder SmartAgentBuilder uses, so
-        // YAML-configured deployments get the same default behavior. Uses the
-        // embedder resolved above — DI-injected (this.cfg.embedder) when present,
-        // otherwise constructed from `rag.embedder` (#137). Stays undefined for
-        // bare in-memory BM25 stores (no embedder), in which case toolSource is
-        // skipped and constrained subagents fall back to empty context.
-        const mainEmbedder = resolvedEmbedder;
-        const toolSource =
-          mainEmbedder && toolsRag
-            ? async (text: string, k: number, signal?: AbortSignal) => {
-                const embedding = new QueryEmbedding(text, mainEmbedder, {
-                  signal,
-                });
-                const r = await toolsRag.query(embedding, k, { signal });
-                return r.ok ? r.value : [];
-              }
-            : undefined;
-        const contextBuilder = new DefaultSubAgentContextBuilder({
-          toolSource,
-        });
-
-        builder = builder.withCoordinator({
-          planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
-          dispatch: resolveCoordinatorDispatch(
-            dispatchKind,
-            plannerLlm,
-            contextBuilder,
-          ),
-          // Default to 'explicit' — the presence of a `coordinator:` block in
-          // YAML is itself the opt-in signal. Users that want the auto-fallback
-          // semantics (no subagents and no skill steps → tool-loop) must set
-          // `activation: auto` explicitly.
-          activation: resolveCoordinatorActivation(
-            coordCfg.activation ?? 'explicit',
-          ),
-          plannerLlm,
-          maxSteps: coordCfg.maxSteps,
-          maxRetriesPerStep: coordCfg.maxRetriesPerStep,
-          failPolicy: coordCfg.failPolicy,
-        });
-        log({ event: 'coordinator_configured', config: coordCfg });
-      }
-    }
+    // ---- Startup global agent = INFRA + passthrough ONLY -------------------
+    // No coordinator is wired here. The startup global agent exists purely for
+    // infrastructure (/v1/models, /v1/embedding-models, HealthChecker), session
+    // lifecycle, passthrough, and cleanup — its coordinator would never be
+    // invoked because `_handleChat`/`_handleAdapterRequest` always dispatch to
+    // the PER-SESSION agent (`graph.agent`, built by `buildSessionAgent` →
+    // `buildPipelineInstance`); the startup agent is only the `?? smartAgent`
+    // fallback when no session graph exists. The previous 3-way coordinator gate
+    // (stepper / DAG / linear) was therefore dead on this path and is removed.
+    // Real coordinated request-serving lives entirely in the session pipeline.
+    // (Shared pipeline infra — knowledge backend, tools-RAG handle, MCP bridge —
+    // was hoisted UNCONDITIONALLY above via buildSharedPipelineInfra so every
+    // pipeline's buildServerCtx resolves its dep-sources.)
 
     const agentHandle = await builder.build();
     const {
@@ -1640,6 +1292,17 @@ export class SmartServer {
     } = agentHandle;
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
+
+    // ---- YAML-only MCP harvest (single-connect + restored vectorization) ----
+    // For the YAML-only branch the startup builder connected the `mcp:` block
+    // AND vectorized its tools into `toolsRag`. Harvest the builder's connected
+    // set into `_sharedMcpClients` so `ctx.callMcp` and per-session agents reuse
+    // the SAME single connection (no second connect), then build the tools-RAG
+    // handle catalog over it. The DI/plugin branch already did this earlier.
+    if (!hasDiOrPlugin) {
+      this._sharedMcpClients = globalMcpClients ?? [];
+      await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+    }
 
     // ---- API adapter map (built-in → config DI; DI wins) --------------------
     const { OpenAiApiAdapter, AnthropicApiAdapter } = await import(
@@ -1679,10 +1342,23 @@ export class SmartServer {
       maxSessions: sessionCfg.maxSessions ?? 1000,
       cookieName: sessionCfg.cookieName ?? 'sid',
       mcpClients: globalMcpClients,
-      toolsRag,
+      // `this._toolsRag` === the `toolsRag` local captured in start(); reference
+      // the field as the single source of truth for the tools store.
+      toolsRag: this._toolsRag,
       ragRegistry: globalRagRegistry,
       buildAgent: (parts) => this.buildSessionAgent(parts),
       logger: fileLogger,
+      // Per-session pipeline teardown: run the IPipelineInstance.close captured
+      // by buildPipelineInstance, then drop the entry. Wired here so eviction /
+      // shutdown / reconfigure (everything routed through SessionGraph.dispose)
+      // frees per-session pipeline resources (MCP / builder handles).
+      onDispose: async (sessionId) => {
+        const close = this._sessionCloseFns.get(sessionId);
+        if (close) {
+          this._sessionCloseFns.delete(sessionId);
+          await close();
+        }
+      },
     });
     this._lifecycle = lifecycle;
     const sweepMs = Math.min(idleTtlMs, 60_000);
@@ -1914,12 +1590,12 @@ export class SmartServer {
     if (
       !subLlmMain?.apiKey &&
       subLlmMain?.provider !== 'sap-ai-sdk' &&
-      subLlmMain?.provider !== 'ollama' &&
-      !subCfg.pipeline?.llm?.main
+      subLlmMain?.provider !== 'ollama'
     ) {
       throw new Error(`subagent '${name}': LLM API key is required`);
     }
-    const subPipeline = subCfg.pipeline;
+    // The subagent's helper role derives from its own top-level `llm:` map.
+    const subHelperCfg = resolveLlmConfigStrict(subLlmMap, 'helper');
 
     // LLM/embedder clients: when the per-session re-wire injected them, use
     // those cached instances by reference (NEVER reconstruct). Otherwise (the
@@ -1938,52 +1614,48 @@ export class SmartServer {
     // cache hit short-circuits all factories. This keeps the worker's
     // declared RAG/MCP intact across per-session re-wires (review HIGH #1).
     const subFlatLlm = subLlmMain;
-    const mainTemp = Number(
-      subPipeline?.llm?.main?.temperature ?? subFlatLlm?.temperature ?? 0.7,
-    );
-    const classifierTemp = Number(
-      subPipeline?.llm?.classifier?.temperature ??
-        subFlatLlm?.classifierTemperature ??
-        0.1,
-    );
+    const mainTemp = Number(subFlatLlm?.temperature ?? 0.7);
+    const classifierTemp = Number(subFlatLlm?.classifierTemperature ?? 0.1);
     const cached = await resolveWorkerLlmSet({
       name,
       cache: this._workerLlmCache,
       // Preserve the existing makeLlm derivation exactly.
       makeMain: () =>
-        subPipeline?.llm?.main
-          ? makeLlm(subPipeline.llm.main, mainTemp)
-          : makeLlm(
-              {
-                // ?? 'deepseek' is a TS type-narrowing net only; the config
-                // validator rejects a missing flat-schema provider before
-                // this runs.
-                provider: subFlatLlm?.provider ?? 'deepseek',
-                apiKey: subFlatLlm?.apiKey ?? '',
-                baseURL: subFlatLlm?.url,
-                model: subFlatLlm?.model,
-              },
-              mainTemp,
-            ),
+        makeLlm(
+          {
+            // ?? 'deepseek' is a TS type-narrowing net only; the config
+            // validator rejects a missing flat-schema provider before
+            // this runs.
+            provider: subFlatLlm?.provider ?? 'deepseek',
+            apiKey: subFlatLlm?.apiKey ?? '',
+            baseURL: subFlatLlm?.url,
+            model: subFlatLlm?.model,
+          },
+          mainTemp,
+        ),
       makeClassifier: () =>
-        subPipeline?.llm?.classifier
-          ? makeLlm(subPipeline.llm.classifier, classifierTemp)
-          : subPipeline?.llm?.main
-            ? makeLlm(subPipeline.llm.main, classifierTemp)
-            : makeLlm(
-                {
-                  provider: subFlatLlm?.provider ?? 'deepseek',
-                  apiKey: subFlatLlm?.apiKey ?? '',
-                  baseURL: subFlatLlm?.url,
-                  model: subFlatLlm?.model,
-                },
-                classifierTemp,
-              ),
-      makeHelper: subPipeline?.llm?.helper
+        makeLlm(
+          {
+            provider: subFlatLlm?.provider ?? 'deepseek',
+            apiKey: subFlatLlm?.apiKey ?? '',
+            baseURL: subFlatLlm?.url,
+            model: subFlatLlm?.model,
+          },
+          classifierTemp,
+        ),
+      makeHelper: subHelperCfg
         ? (
             (h) => () =>
-              makeLlm(h, Number(h.temperature ?? 0.1))
-          )(subPipeline.llm.helper)
+              makeLlm(
+                {
+                  provider: h.provider ?? 'deepseek',
+                  apiKey: h.apiKey,
+                  baseURL: h.url,
+                  model: h.model,
+                },
+                Number(h.temperature ?? 0.1),
+              )
+          )(subHelperCfg)
         : undefined,
       // Worker-OWN tools RAG (from subCfg.rag, if declared). Built once;
       // re-wired per-session by reference — never re-vectorized.
@@ -2018,7 +1690,7 @@ export class SmartServer {
     const helperLlm: ILlm | undefined = cached.helperLlm;
 
     let subBuilder = new SmartAgentBuilder({
-      mcp: subPipeline?.mcp ?? subCfg.mcp,
+      mcp: subCfg.mcp,
       agent: subCfg.agent,
       prompts: subCfg.prompts,
       skipModelValidation: subCfg.skipModelValidation,
@@ -2087,13 +1759,590 @@ export class SmartServer {
     return handle.agent;
   }
 
+  // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
+  //    closures; consumed by buildServerCtx, which later tasks call) ----------
+
+  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG). */
+  private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
+    return makeLlm(
+      {
+        provider: lc.provider ?? 'deepseek',
+        apiKey: lc.apiKey,
+        baseURL: lc.url,
+        model: lc.model,
+      },
+      Number(lc.temperature ?? this._mainTemp ?? 0.7),
+    );
+  }
+
+  /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
+   *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
+   *  prebuilt instances when present; otherwise the map/fallback config is built. */
+  private async resolveRoleLlm(role: string): Promise<ILlm> {
+    if (role === 'main' && this._mainLlm) return this._mainLlm;
+    if ((role === 'helper' || role === 'planner') && this._helperLlm) {
+      return this._helperLlm;
+    }
+    if (role === 'classifier' && this._classifierLlm)
+      return this._classifierLlm;
+    const cfg = resolveLlmConfig(this._llmMap, role, this._pipelineFallback);
+    if (cfg) return this._makeLlm(cfg);
+    if (this._mainLlm) return this._mainLlm;
+    throw new Error(`cannot resolve LLM for role '${role}': no config`);
+  }
+
   /**
-   * Builds a per-session SmartAgent from injected globals (review HIGH #1 +
-   * MEDIUM #3). Re-wires the SubAgent registry + DAG coordinator deps FRESH per
-   * session, sharing this session's logger + the global ragRegistry/toolsRag/
-   * mcpClients + the CACHED per-worker LLM/embedder (this._workerLlmCache). It
-   * NEVER reuses the primary build()'s global `registry`/DAG-deps and NEVER
-   * constructs new LLM clients.
+   * Session-scoped knowledge RAG over the shared knowledge backend (built
+   * unconditionally in `start()`; a fresh in-memory backend is a defensive
+   * fallback). HOST-level seeding happens HERE so the stepper plugin stays
+   * agnostic (it just calls `ctx.knowledgeRagFor`): a BRAND-NEW session is
+   * seeded from `pipeline.config.knowledgeSeed` (read defensively — absent for
+   * non-stepper pipelines, where an empty seed is a harmless no-op). Idempotent
+   * on resume via `seedSessionKnowledge`.
+   */
+  private async knowledgeRagFor(
+    sessionId: string,
+  ): Promise<IKnowledgeRagHandle> {
+    const backend =
+      this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend();
+    const kr = new KnowledgeRag(backend, sessionId);
+    const rawSeed = (this.cfg.pipeline?.config as { knowledgeSeed?: unknown })
+      ?.knowledgeSeed;
+    const seeds = Array.isArray(rawSeed)
+      ? (rawSeed as Array<{ content?: unknown; artifactType?: unknown }>)
+          .filter((e) => e && typeof e.content === 'string')
+          .map((e) => ({
+            content: e.content as string,
+            artifactType:
+              typeof e.artifactType === 'string' ? e.artifactType : 'guidance',
+          }))
+      : [];
+    await seedSessionKnowledge(kr, seeds, new Date().toISOString());
+    return kr;
+  }
+
+  /** callMcp bridge over the shared connected MCP clients (empty when none). */
+  private callMcp(
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return buildMcpBridge(this._sharedMcpClients ?? [])(name, args, signal);
+  }
+
+  private _mintStepperId(): string {
+    return randomUUID();
+  }
+
+  private _mintTurnId(): string {
+    return randomUUID();
+  }
+
+  /**
+   * Build the shared pipeline infra consumed by `buildServerCtx` for EVERY
+   * pipeline (sub-goal 5). Populates, on the instance:
+   *   - `_stepperKnowledgeBackend` — the ONE knowledge backend (JSONL when a
+   *     logDir is set, else in-memory) shared across sessions; `knowledgeRagFor`
+   *     keys it by sessionId and host-seeds new sessions from
+   *     `pipeline.config.knowledgeSeed`.
+   *   - `_sharedMcpClients` — the connected clients the `callMcp` bridge
+   *     dispatches over: DI/plugin clients by reference, else the YAML `mcp:`
+   *     block connected ONCE here (never a second connection when DI clients
+   *     already exist).
+   *   - `_toolsRagHandle` — a real IToolsRagHandle over the tools RAG store +
+   *     MCP catalog (semantic when an embedder+store exist, catalog-order
+   *     fallback otherwise). Undefined toolsRag/embedder still yields a usable
+   *     catalog-backed handle.
+   */
+  private async buildSharedPipelineInfra(input: {
+    toolsRag: IRag | undefined;
+    resolvedEmbedder: IEmbedder | undefined;
+    mcpClients: IMcpClient[] | undefined;
+  }): Promise<void> {
+    const { toolsRag, resolvedEmbedder, mcpClients } = input;
+
+    this.buildKnowledgeBackend();
+
+    // MCP clients for the callMcp bridge. DI/plugin clients win; otherwise
+    // connect the YAML `mcp:` block ONCE (connect is not safe to invoke twice
+    // on the same wrapper — guard via the cache field).
+    if (!mcpClients && !this._stepperMcpClients) {
+      this._stepperMcpClients = await connectMcpClientsFromConfig(this.cfg.mcp);
+    }
+    this._sharedMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
+
+    await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+  }
+
+  /**
+   * Build the ONE knowledge backend shared across all requests (JSONL when a
+   * logDir is set, else in-memory). Keyed by sessionId internally for per-session
+   * isolation + same-cookie persistence. Idempotent (no-op once built).
+   *
+   * No MCP dependency — safe to call BEFORE the MCP client set is resolved.
+   */
+  private buildKnowledgeBackend(): void {
+    const logDir = this.cfg.logDir;
+    if (!this._stepperKnowledgeBackend) {
+      this._stepperKnowledgeBackend = logDir
+        ? new JsonlKnowledgeBackend(logDir)
+        : new InMemoryKnowledgeBackend();
+    }
+  }
+
+  /**
+   * Build `_toolsRagHandle` — a real IToolsRagHandle over the tools RAG store +
+   * MCP catalog, dispatching over the ALREADY-RESOLVED `this._sharedMcpClients`.
+   *
+   * Split out of `buildSharedPipelineInfra` so the YAML-only path can run it
+   * AFTER the startup builder connects + vectorizes (the builder owns the single
+   * connection there, and `_sharedMcpClients` is harvested from its handle). For
+   * the DI/plugin path it still runs early via `buildSharedPipelineInfra`.
+   * Requires `this._sharedMcpClients` to be set by the caller.
+   */
+  private async buildToolsRagHandle(input: {
+    toolsRag: IRag | undefined;
+    resolvedEmbedder: IEmbedder | undefined;
+  }): Promise<void> {
+    const { toolsRag, resolvedEmbedder } = input;
+
+    // Tools RAG handle over the tools store + MCP catalog.
+    const stepperMcpClients = this._sharedMcpClients ?? [];
+    let catalogCache: Map<string, LlmTool> | undefined;
+    const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
+      if (catalogCache) return catalogCache;
+      const catalog = new Map<string, LlmTool>();
+      await Promise.allSettled(
+        stepperMcpClients.map(async (client) => {
+          const result = await client.listTools();
+          if (result.ok) {
+            for (const t of result.value) {
+              if (!catalog.has(t.name)) catalog.set(t.name, t as LlmTool);
+            }
+          }
+        }),
+      );
+      catalogCache = catalog;
+      return catalog;
+    };
+    this._toolsRagHandle = {
+      async query(text: string, k?: number) {
+        const limit = k ?? 20;
+        const catalog = await ensureCatalog();
+        if (toolsRag && resolvedEmbedder) {
+          const embedding = new QueryEmbedding(text, resolvedEmbedder);
+          const ragResult = await toolsRag.query(embedding, limit);
+          if (ragResult.ok) {
+            const hits: LlmTool[] = [];
+            for (const r of ragResult.value) {
+              const id = r.metadata.id as string | undefined;
+              if (id?.startsWith('tool:')) {
+                const name = id.slice(5).replace(/:.*$/, '');
+                const tool = catalog.get(name);
+                if (tool) hits.push(tool);
+              }
+            }
+            if (hits.length > 0) return hits;
+          }
+        }
+        return [...catalog.values()].slice(0, limit);
+      },
+      lookup(name: string) {
+        return catalogCache?.get(name);
+      },
+    };
+
+    // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
+    // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
+    // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
+    // later `query()` calls reuse the cached map. Guard against a catalog-load
+    // failure so startup never crashes: on failure `catalogCache` stays unset and
+    // `lookup` returns undefined (today's worst case), while the happy path works.
+    try {
+      await ensureCatalog();
+    } catch (err) {
+      this.cfg.log?.({
+        event: 'tools_catalog_eager_load_failed',
+        message:
+          'tools catalog eager-load failed; lookup() returns undefined until first query()',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+
+  /**
+   * Build the per-session pipeline instance from the registry. Selects the
+   * plugin by `cfg.pipeline.name` (default 'flat'), parses its config dialect,
+   * and builds it against a session-scoped pipeline context. The returned
+   * `IPipelineInstance` carries `{ agent, close }` — the session consumes
+   * `agent`; `buildSessionAgent` registers `close` into the session-dispose path.
+   */
+  private async buildPipelineInstance(scope: {
+    sessionId: string;
+    parts: SessionAgentParts;
+  }): Promise<IPipelineInstance> {
+    const name = this.cfg.pipeline?.name ?? 'flat';
+    const plugin = this._pipelineRegistry.get(name);
+    if (!plugin) {
+      throw new Error(
+        `unknown pipeline '${name}'; available: ${[
+          ...this._pipelineRegistry.keys(),
+        ].join(', ')}`,
+      );
+    }
+    const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
+    return plugin.build(cfg, await this.buildServerCtx(scope));
+  }
+
+  private warn(msg: string): void {
+    (this.cfg.log ?? this.noop)({ event: 'config_warning', message: msg });
+  }
+
+  /**
+   * Build the FRESH per-session worker (sub-agent) registry from the SAME
+   * `subagents:` configs the primary build() used, injecting globals + this
+   * session's logger + the CACHED per-worker LLM/embedder (this._workerLlmCache).
+   * NEVER reconstructs LLM clients; NEVER reuses the global registry.
+   *
+   * Extracted from buildSessionAgent so both the legacy session re-wire and the
+   * pipeline-plugin context (`buildServerCtx` / `partsToBaseInput`) feed a real
+   * per-session worker map to `buildBaseBuilder` instead of an empty `new Map()`.
+   */
+  private async buildWorkerRegistry(
+    parts: SessionAgentParts,
+  ): Promise<SubAgentRegistry> {
+    const registry: SubAgentRegistry = new Map();
+    if (!this.cfg.subAgentConfigs || this.cfg.subAgentConfigs.length === 0) {
+      return registry;
+    }
+    if (!this._fileLogger) {
+      throw new Error(
+        'buildWorkerRegistry invoked before primary build() captured globals',
+      );
+    }
+    for (const sub of this.cfg.subAgentConfigs) {
+      // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
+      // clears `_workerLlmCache`, the next session build used to throw
+      // "worker LLM set not cached" because the cache was assumed
+      // pre-populated by the primary build(). buildSubAgent itself routes
+      // through `resolveWorkerLlmSet` which is build-on-miss, so calling
+      // it without an `injected` arg rebuilds the cache entry. We then
+      // re-read the entry to honour the per-worker slot priority below.
+      if (!this._workerLlmCache.has(sub.name)) {
+        await this.buildSubAgent(
+          sub.name,
+          sub.config,
+          this._fileLogger,
+          this._mergedEmbedderFactories ?? {},
+          // No `injected` → primary path: resolveWorkerLlmSet populates
+          // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
+          // mcpClients/toolsRag slots from the built handle.
+        );
+      }
+      const cached = this._workerLlmCache.get(sub.name);
+      if (!cached) {
+        // Defence in depth — should be impossible after the lazy build
+        // above unless buildSubAgent's contract changes.
+        throw new Error(`worker LLM set not cached for '${sub.name}'`);
+      }
+      // Per-worker injected slot priority (review HIGH #7):
+      //   worker-cached (from the primary build, includes backfilled
+      //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
+      //   fallback. Encoded HERE so buildSubAgent does not need to know
+      //   the difference; it just consumes injected.mcpClients/toolsRag.
+      const injectedMcpClients =
+        cached.mcpClients && cached.mcpClients.length > 0
+          ? cached.mcpClients
+          : parts.mcpClients;
+      const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
+      const subAgent = await this.buildSubAgent(
+        sub.name,
+        sub.config,
+        this._fileLogger,
+        this._mergedEmbedderFactories ?? {},
+        {
+          ragRegistry: parts.ragRegistry,
+          toolsRag: injectedToolsRag,
+          mcpClients: injectedMcpClients,
+          requestLogger: parts.logger,
+          mainLlm: cached.mainLlm,
+          classifierLlm: cached.classifierLlm,
+          helperLlm: cached.helperLlm,
+          embedder: cached.embedder,
+        },
+      );
+      registry.set(
+        sub.name,
+        new SmartAgentSubAgent(sub.name, subAgent, {
+          description: sub.description,
+        }),
+      );
+    }
+    return registry;
+  }
+
+  /**
+   * Map SessionAgentParts → buildBaseBuilder input. `workerRegistry` is the
+   * pre-built per-session worker map (from buildWorkerRegistry). `extras`
+   * carries the startup-only inputs (plugins + applyServerExtras + the global
+   * history/collection stores); omitted for the session scope.
+   */
+  private partsToBaseInput(
+    parts: SessionAgentParts,
+    workerRegistry: SubAgentRegistry,
+    extras?: {
+      applyServerExtras: boolean;
+      plugins?: LoadedPlugins;
+      historyRag?: IRag;
+      ragCollections?: Array<{
+        name: string;
+        rag: IRag;
+        meta: { displayName: string; scope: 'global' };
+      }>;
+    },
+  ): Parameters<SmartServer['buildBaseBuilder']>[0] {
+    return {
+      mainLlm: this._mainLlm as ILlm,
+      classifierLlm: this._classifierLlm as ILlm,
+      helperLlm: this._helperLlm,
+      fileLogger: this._fileLogger as ILogger,
+      toolsRag: parts.toolsRag,
+      historyRag: extras?.historyRag,
+      ragCollections: extras?.ragCollections,
+      ragRegistry: parts.ragRegistry,
+      mcpClients: parts.mcpClients,
+      requestLogger: parts.logger,
+      plugins: extras?.plugins,
+      workerRegistry,
+      applyServerExtras: extras?.applyServerExtras ?? false,
+    };
+  }
+
+  /**
+   * Assemble an IServerPipelineContext from `this` for a given scope (startup =
+   * global; session = per-session). Builds the FRESH per-session worker registry
+   * ONCE and threads it both to the `workerRegistry` field (read by the DAG
+   * plugin) and to `createAgentBuilder` (so the agent wires the same workers).
+   *
+   * `logLlmCall` is sourced from `scope.parts.logger` — the per-session
+   * SessionRequestLogger, which implements IRequestLogger.logLlmCall — so token
+   * accounting is no longer a no-op (closes the Task-6 `_requestLogger` gap).
+   */
+  private async buildServerCtx(scope: {
+    sessionId: string;
+    parts: SessionAgentParts;
+    applyServerExtras?: boolean;
+    plugins?: LoadedPlugins;
+    historyRag?: IRag;
+    ragCollections?: Array<{
+      name: string;
+      rag: IRag;
+      meta: { displayName: string; scope: 'global' };
+    }>;
+  }): Promise<IServerPipelineContext> {
+    const workerRegistry = await this.buildWorkerRegistry(scope.parts);
+    const extras = {
+      applyServerExtras: scope.applyServerExtras ?? false,
+      plugins: scope.plugins,
+      historyRag: scope.historyRag,
+      ragCollections: scope.ragCollections,
+    };
+    // Per-session request logger (SessionRequestLogger) — the live sink for
+    // logLlmCall. Falls back to the server-level _requestLogger if ever unset.
+    const requestLogger: IRequestLogger | undefined =
+      scope.parts.logger ?? this._requestLogger;
+    return createServerPipelineContext({
+      resolveLlm: (role) => this.resolveRoleLlm(role),
+      knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
+      toolsRag: this._toolsRagHandle, // undefined → EMPTY_TOOLS_RAG via factory
+      ragRegistry: scope.parts.ragRegistry,
+      callMcp: (n, a, s) => this.callMcp(n, a, s),
+      mcpClients: scope.parts.mcpClients,
+      subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
+        name: s.name,
+        description: s.description,
+      })),
+      mintStepperId: () => this._mintStepperId(),
+      mintTurnId: () => this._mintTurnId(),
+      logger: this._fileLogger,
+      logLlmCall: (e) => requestLogger?.logLlmCall?.(e),
+      createAgentBuilder: () =>
+        this.buildBaseBuilder(
+          this.partsToBaseInput(scope.parts, workerRegistry, extras),
+        ),
+      makeLlm: (c) => this._makeLlm(c),
+      llmMap: this._llmMap,
+      pipelineFallback: this._pipelineFallback,
+      mainLlm: this._mainLlm as ILlm,
+      helperLlm: this._helperLlm,
+      mainTemp: this._mainTemp ?? 0.7,
+      workerRegistry,
+      warn: (m) => this.warn(m),
+    });
+  }
+
+  /**
+   * Assemble a SmartAgentBuilder wired with all shared infra EXCEPT the
+   * coordinator — the part shared by the startup path and buildSessionAgent.
+   * The caller wires the coordinator variant AFTER this returns. Each call site
+   * supplies its own scope's values (startup = global; session = session-scoped);
+   * every `.withXxx` is applied conditionally on its `parts` field so both work.
+   *
+   * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
+   * (circuit breaker, reranker/queryExpander/outputValidator, skill manager,
+   * LLM-call & tool-selection strategies, client adapters, and the YAML `mcp:`
+   * connect path). The per-session re-wire omits these (it inherits a slimmer
+   * agent) so they stay gated to preserve behavior.
+   */
+  private async buildBaseBuilder(parts: {
+    mainLlm: ILlm;
+    classifierLlm: ILlm;
+    helperLlm?: ILlm;
+    fileLogger: ILogger;
+    toolsRag?: IRag;
+    historyRag?: IRag;
+    ragCollections?: Array<{
+      name: string;
+      rag: IRag;
+      meta: { displayName: string; scope: 'global' };
+    }>;
+    ragRegistry?: IRagRegistry;
+    mcpClients?: IMcpClient[];
+    requestLogger?: IRequestLogger;
+    plugins?: LoadedPlugins;
+    workerRegistry: SubAgentRegistry;
+    /** Apply the startup-only config/plugin-derived extras (see method doc). */
+    applyServerExtras: boolean;
+  }): Promise<SmartAgentBuilder> {
+    let builder = new SmartAgentBuilder({
+      // F1: the YAML `mcp:` block is connected ONCE up-front (in
+      // buildSharedPipelineInfra) and injected here via `withMcpClients` below.
+      // Only pass `mcp:` to the builder constructor as a LAST-RESORT auto-connect
+      // path when NO pre-connected clients are supplied — otherwise omit it so
+      // build() cannot open a second connection. (build() already short-circuits
+      // on `this._mcpClients`; dropping the key is belt-and-suspenders.)
+      ...(parts.applyServerExtras && !parts.mcpClients
+        ? { mcp: this.cfg.mcp }
+        : {}),
+      agent: this.cfg.agent,
+      prompts: this.cfg.prompts,
+      skipModelValidation: this.cfg.skipModelValidation,
+    })
+      .withMainLlm(parts.mainLlm)
+      .withClassifierLlm(parts.classifierLlm)
+      .withLogger(parts.fileLogger)
+      .withMode(this.cfg.mode ?? 'smart');
+
+    if (parts.helperLlm) {
+      builder = builder.withHelperLlm(parts.helperLlm);
+    }
+
+    if (parts.toolsRag) {
+      builder = builder.setToolsRag(parts.toolsRag);
+    }
+    if (parts.historyRag) {
+      builder = builder.setHistoryRag(parts.historyRag);
+    }
+    for (const collection of parts.ragCollections ?? []) {
+      builder = builder.addRagCollection(collection);
+    }
+    if (parts.ragRegistry) {
+      builder = builder.setRagRegistry(parts.ragRegistry);
+    }
+    if (parts.requestLogger) {
+      builder = builder.withRequestLogger(parts.requestLogger);
+    }
+
+    if (parts.applyServerExtras) {
+      const plugins = parts.plugins;
+      if (this.cfg.circuitBreaker) {
+        builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
+      }
+      if (plugins?.reranker) {
+        builder = builder.withReranker(plugins.reranker);
+      }
+      if (plugins?.queryExpander) {
+        builder = builder.withQueryExpander(plugins.queryExpander);
+      }
+      if (plugins?.outputValidator) {
+        builder = builder.withOutputValidator(plugins.outputValidator);
+      }
+
+      // Skill manager (DI > YAML config > plugin)
+      const skillManager =
+        this.cfg.skillManager ??
+        plugins?.skillManager ??
+        resolveSkillManager(this.cfg.skills);
+      if (skillManager) {
+        builder = builder.withSkillManager(skillManager);
+      }
+
+      // LLM call strategy (from agent config)
+      const strategyName = this.cfg.agent?.llmCallStrategy;
+      if (strategyName) {
+        const {
+          StreamingLlmCallStrategy,
+          NonStreamingLlmCallStrategy,
+          FallbackLlmCallStrategy,
+        } = await import('@mcp-abap-adt/llm-agent');
+        const strategies = {
+          streaming: () => new StreamingLlmCallStrategy(),
+          'non-streaming': () => new NonStreamingLlmCallStrategy(),
+          fallback: () => new FallbackLlmCallStrategy(parts.fileLogger),
+        };
+        const factory = strategies[strategyName];
+        if (factory) {
+          builder = builder.withLlmCallStrategy(factory());
+        }
+      }
+
+      // Tool-selection strategy (from agent.toolSelection config)
+      const toolSelectionCfg = this.cfg.agent?.toolSelection;
+      if (toolSelectionCfg?.strategy) {
+        builder = builder.withToolSelectionStrategy(
+          resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
+            minScore: toolSelectionCfg.minScore,
+          }),
+        );
+      }
+    }
+
+    if (parts.mcpClients) {
+      builder = builder.withMcpClients(parts.mcpClients);
+    }
+
+    if (parts.applyServerExtras) {
+      // Client adapters (DI > plugin; ClineClientAdapter is the default).
+      const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
+      const adapterSources = [
+        ...(this.cfg.clientAdapters ?? []),
+        ...(parts.plugins?.clientAdapters ?? []),
+        new ClineClientAdapter(),
+      ];
+      for (const adapter of adapterSources) {
+        builder = builder.withClientAdapter(adapter);
+      }
+    }
+
+    if (parts.workerRegistry.size > 0) {
+      builder = builder.withSubAgents(parts.workerRegistry);
+    }
+
+    return builder;
+  }
+
+  /**
+   * Builds the per-session SmartAgent by routing through the selected pipeline
+   * plugin (`buildPipelineInstance`). The pipeline owns coordinator wiring; the
+   * session-scoped pipeline context (`buildServerCtx`) supplies the FRESH
+   * per-session worker registry + session logger + the global
+   * ragRegistry/toolsRag/mcpClients + the CACHED per-worker LLM/embedder
+   * (this._workerLlmCache) via `createAgentBuilder`. It NEVER reuses the primary
+   * build()'s global registry/coordinator and NEVER constructs new LLM clients.
+   *
+   * The pipeline returns `{ agent, close }`; we register `close` under the
+   * sessionId so the lifecycle `onDispose` hook frees per-session pipeline
+   * resources on eviction / shutdown / reconfigure.
    */
   private async buildSessionAgent(
     parts: SessionAgentParts,
@@ -2105,110 +2354,26 @@ export class SmartServer {
         'buildSessionAgent invoked before primary build() captured globals',
       );
     }
-    let b = new SmartAgentBuilder({
-      agent: this.cfg.agent,
-      prompts: this.cfg.prompts,
-      skipModelValidation: this.cfg.skipModelValidation,
-    })
-      .withMainLlm(this._mainLlm)
-      .withClassifierLlm(this._classifierLlm)
-      .withLogger(this._fileLogger)
-      .withMode(this.cfg.mode ?? 'smart')
-      .withMcpClients(parts.mcpClients) // skips connect + re-vectorize
-      .setRagRegistry(parts.ragRegistry)
-      .withRequestLogger(parts.logger); // per-session token-logger
-    if (this._helperLlm) b = b.withHelperLlm(this._helperLlm);
-    if (parts.toolsRag) b = b.setToolsRag(parts.toolsRag);
-
-    // FRESH per-session workers — re-wire the registry from the SAME subagent
-    // configs the primary build() used, injecting globals + this session's
-    // logger + the CACHED per-worker LLM/embedder. No LLM reconstruction.
-    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
-      const registry: SubAgentRegistry = new Map();
-      for (const sub of this.cfg.subAgentConfigs) {
-        // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
-        // clears `_workerLlmCache`, the next buildSessionAgent used to throw
-        // "worker LLM set not cached" because the cache was assumed
-        // pre-populated by the primary build(). buildSubAgent itself routes
-        // through `resolveWorkerLlmSet` which is build-on-miss, so calling
-        // it without an `injected` arg rebuilds the cache entry. We then
-        // re-read the entry to honour the per-worker slot priority below.
-        if (!this._workerLlmCache.has(sub.name)) {
-          await this.buildSubAgent(
-            sub.name,
-            sub.config,
-            this._fileLogger,
-            this._mergedEmbedderFactories ?? {},
-            // No `injected` → primary path: resolveWorkerLlmSet populates
-            // `_workerLlmCache` and backfillWorkerCacheFromHandle fills the
-            // mcpClients/toolsRag slots from the built handle.
-          );
-        }
-        const cached = this._workerLlmCache.get(sub.name);
-        if (!cached) {
-          // Defence in depth — should be impossible after the lazy build
-          // above unless buildSubAgent's contract changes.
-          throw new Error(`worker LLM set not cached for '${sub.name}'`);
-        }
-        // Per-worker injected slot priority (review HIGH #7):
-        //   worker-cached (from the primary build, includes backfilled
-        //   subCfg.mcp / subCfg.rag results) → parent's session-scoped
-        //   fallback. Encoded HERE so buildSubAgent does not need to know
-        //   the difference; it just consumes injected.mcpClients/toolsRag.
-        const injectedMcpClients =
-          cached.mcpClients && cached.mcpClients.length > 0
-            ? cached.mcpClients
-            : parts.mcpClients;
-        const injectedToolsRag = cached.toolsRag ?? parts.toolsRag;
-        const subAgent = await this.buildSubAgent(
-          sub.name,
-          sub.config,
-          this._fileLogger,
-          this._mergedEmbedderFactories ?? {},
-          {
-            ragRegistry: parts.ragRegistry,
-            toolsRag: injectedToolsRag,
-            mcpClients: injectedMcpClients,
-            requestLogger: parts.logger,
-            mainLlm: cached.mainLlm,
-            classifierLlm: cached.classifierLlm,
-            helperLlm: cached.helperLlm,
-            embedder: cached.embedder,
-          },
-        );
-        registry.set(
-          sub.name,
-          new SmartAgentSubAgent(sub.name, subAgent, {
-            description: sub.description,
-          }),
-        );
+    const inst = await this.buildPipelineInstance({
+      sessionId: parts.sessionId,
+      parts,
+    });
+    // Register the pipeline's disposal hook keyed by sessionId. A prior
+    // instance for the same sessionId (e.g. invalidateAll rebuild) is closed
+    // first so its resources never leak.
+    const prior = this._sessionCloseFns.get(parts.sessionId);
+    if (prior) {
+      this._sessionCloseFns.delete(parts.sessionId);
+      try {
+        await prior();
+      } catch {
+        // Best-effort: a stale close failure must not block the new build.
       }
-      b = b.withSubAgents(registry);
-
-      if (this._stepperCoordinatorHandler) {
-        // Stepper coordinator is stateless — reuse the same handler instance
-        // across sessions (session context arrives via ctx.sessionId).
-        b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
-      } else if (this._dagCoordinatorTemplate) {
-        const tpl = this._dagCoordinatorTemplate;
-        const workers: SubAgentRegistry = new Map(
-          [...registry].filter(([name]) => name !== tpl.oracleName),
-        );
-        const raw = tpl.oracleName ? registry.get(tpl.oracleName) : undefined;
-        b = b.withDagCoordinator({
-          ...tpl.deps,
-          workers,
-          stateOracle: raw ? new SubAgentStateOracle(raw) : undefined,
-        });
-      }
-    } else if (this._stepperCoordinatorHandler) {
-      // No sub-agent configs but stepper coordinator configured — wire it directly.
-      // (Stepper coordinator is stateless and works without sub-agents.)
-      b = b.withStepperCoordinator(this._stepperCoordinatorHandler);
     }
-
-    const handle = await b.build();
-    return handle.agent;
+    this._sessionCloseFns.set(parts.sessionId, () => inst.close());
+    // IPipelineInstance.agent is typed as ISmartAgent; the built-in plugins
+    // return the concrete SmartAgent from SmartAgentBuilder.build().
+    return inst.agent as SmartAgent;
   }
 
   /**

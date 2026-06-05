@@ -245,17 +245,19 @@ await agent.closeSession('session-id');  // clears all session-scoped collection
 See [docs/INTEGRATION.md#iragprovider](INTEGRATION.md#iragprovider) for full provider setup,
 scope semantics, and the MCP tool factory.
 
-### Multi-step processes (Coordinator)
+### Multi-step processes (pipelines)
 
-The Coordinator stage decomposes a request into a multi-step plan and dispatches each step to a named subagent (or back to the parent agent), aggregating results into a final response.
+A pipeline decomposes a request into a multi-step plan and dispatches each step to a named subagent (or back to the parent agent), aggregating results into a final response. You select a pipeline by name under `pipeline:`, and pass its settings under `pipeline.config`.
 
-Minimal YAML to enable it:
+Minimal YAML to enable the `linear` pipeline:
 
 ```yaml
-coordinator:
-  planning: one-shot          # or replan-on-error
-  dispatch: hybrid            # subagent + self fallback
-  plannerLlm: helper
+pipeline:
+  name: linear                # flat | linear | dag | stepper | <plugin name>
+  config:
+    planning: one-shot        # or replan-on-error
+    dispatch: hybrid          # subagent + self fallback
+    plannerLlm: helper
 
 subagents:
   - name: my-coder
@@ -264,18 +266,20 @@ subagents:
     config: ./agents/reviewer.yaml
 ```
 
-The coordinator activates whenever a `coordinator:` block is present — the block itself is the opt-in signal. To fall back to `tool-loop` when there are no subagents or skill steps, set `coordinator.activation: auto`.
+The pipeline is whatever `pipeline.name` resolves to: a built-in (`flat`, `linear`, `dag`, `stepper`) or a custom pipeline plugin. Each pipeline consumes its own `config` dialect; see [docs/PIPELINES.md](PIPELINES.md). To fall back to a plain tool-loop when there are no subagents or skill steps, set `pipeline.config.activation: auto`.
 
 **Skill-driven (no planner LLM):**
 
 Use `planning: skill-steps` when the active skill encodes the process as YAML `steps:` in its frontmatter — no planner LLM round-trip.
 
 ```yaml
-coordinator:
-  planning: skill-steps    # plan comes from active skill's frontmatter `steps:`
-  # dispatch defaults to 'hybrid' for skill-steps — steps without `agent:`
-  # fall back to self-LLM via SelfDispatch.
-  activation: explicit
+pipeline:
+  name: linear
+  config:
+    planning: skill-steps    # plan comes from active skill's frontmatter `steps:`
+    # dispatch defaults to 'hybrid' for skill-steps — steps without `agent:`
+    # fall back to self-LLM via SelfDispatch.
+    activation: explicit
 ```
 
 See `docs/examples/coordinator-orchestration.yaml` and `docs/examples/coordinator-orchestration-deepseek.yaml` for complete configurations, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the full strategy and subagent infrastructure reference.

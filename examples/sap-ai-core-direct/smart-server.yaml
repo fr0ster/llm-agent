@@ -13,36 +13,40 @@ port: ${PORT:-4040}
 host: ${HOST:-127.0.0.1}
 mode: smart
 
+# Default flat pipeline (llm-agent's hardcoded request flow). Omit `pipeline:`
+# or set `pipeline: { name: flat }` explicitly.
 pipeline:
-  llm:
-    main:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-      temperature: 0.3
-      maxTokens: 32768
-    classifier:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
-      temperature: 0.1
-      maxTokens: 2048
-    helper:
-      provider: ${LLM_PROVIDER:-sap-ai-sdk}
-      model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
-      temperature: 0.1
-      maxTokens: 2048
+  name: flat
 
-  ## Tool/skill RAG — in-memory store backed by SAP AI Core embedder.
-  ## The embedder is the critical bit: without it the toolsRag stays empty,
-  ## the LLM sees no available MCP tools and falls back to generic answers.
-  rag:
-    tools:
-      type: in-memory
-      embedder: ${RAG_EMBEDDER:-sap-ai-core}
-      scenario: ${RAG_SCENARIO:-foundation-models}
-      resourceGroup: ${RAG_RESOURCE_GROUP:-default}
-      model: ${EMBEDDING_MODEL:-text-embedding-3-small}
-      vectorWeight: 0.7
-      keywordWeight: 0.3
+# Multi-model LLM: separate models for main work, classification, helper tasks.
+llm:
+  main:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+    temperature: 0.3
+    maxTokens: 32768
+  classifier:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_CLASSIFIER_MODEL:-anthropic--claude-3-haiku}
+    temperature: 0.1
+    maxTokens: 2048
+  helper:
+    provider: ${LLM_PROVIDER:-sap-ai-sdk}
+    model: ${LLM_HELPER_MODEL:-anthropic--claude-3-haiku}
+    temperature: 0.1
+    maxTokens: 2048
+
+## Tool/skill RAG — in-memory store backed by SAP AI Core embedder.
+## The embedder is the critical bit: without it the toolsRag stays empty,
+## the LLM sees no available MCP tools and falls back to generic answers.
+rag:
+  type: in-memory
+  embedder: ${RAG_EMBEDDER:-sap-ai-core}
+  scenario: ${RAG_SCENARIO:-foundation-models}
+  resourceGroup: ${RAG_RESOURCE_GROUP:-default}
+  model: ${EMBEDDING_MODEL:-text-embedding-3-small}
+  vectorWeight: 0.7
+  keywordWeight: 0.3
 
 ## MCP HTTP transport with SAP destination header for reverse-proxy routing
 ## (mcp-abap-adt running behind a destination-aware gateway).

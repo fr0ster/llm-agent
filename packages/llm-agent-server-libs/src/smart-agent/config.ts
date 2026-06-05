@@ -156,127 +156,6 @@ export interface YamlCoordinator {
   maxRoundTrips?: number;
 }
 
-const LINEAR_ONLY = [
-  'planning',
-  'dispatch',
-  'maxSteps',
-  'maxRetriesPerStep',
-  'failPolicy',
-  'maxLayer',
-  'plannerLlm',
-];
-const DAG_ONLY = [
-  'planner',
-  'interpreter',
-  'reviewer',
-  'errorStrategy',
-  'finalizer',
-  'stateOracle',
-  'maxRoundTrips',
-];
-
-/** Validate a coordinator role block shape. */
-function assertLlmRoleShape(label: string, role: unknown): void {
-  if (typeof role !== 'object' || role === null || Array.isArray(role)) {
-    throw new Error(
-      `coordinator.${label} must be an object (e.g. { type: llm }), got: ${JSON.stringify(role)}`,
-    );
-  }
-  const kind = (role as { type?: unknown }).type;
-  if (
-    kind !== undefined &&
-    kind !== 'llm' &&
-    !(label === 'finalizer' && (kind === 'passthrough' || kind === 'template'))
-  ) {
-    throw new Error(`coordinator.${label}: unknown type '${String(kind)}'`);
-  }
-  for (const field of ['plannerLlm', 'reviewerLlm', 'finalizerLlm'] as const) {
-    const sel = (role as Record<string, unknown>)[field];
-    if (sel !== undefined && typeof sel !== 'string') {
-      throw new Error(
-        `coordinator.${label}.${field} must be a string referencing an llm.* key, got: ${String(sel)}`,
-      );
-    }
-  }
-  const sp = (role as { systemPrompt?: unknown }).systemPrompt;
-  if (sp !== undefined && typeof sp !== 'string') {
-    throw new Error(
-      `coordinator.${label}.systemPrompt must be a string, got: ${String(sp)}`,
-    );
-  }
-}
-
-function assertErrorStrategyShape(es: unknown): void {
-  if (typeof es !== 'object' || es === null || Array.isArray(es)) {
-    throw new Error(
-      `coordinator.errorStrategy must be an object (e.g. { type: replan }), got: ${JSON.stringify(es)}`,
-    );
-  }
-  const type = (es as { type?: unknown }).type;
-  if (type !== undefined && type !== 'abort' && type !== 'replan') {
-    throw new Error(
-      `coordinator.errorStrategy: unknown type '${String(type)}' (only 'abort' | 'replan')`,
-    );
-  }
-  const mr = (es as { maxReplans?: unknown }).maxReplans;
-  if (mr !== undefined && (typeof mr !== 'number' || mr < 0)) {
-    throw new Error(
-      `coordinator.errorStrategy.maxReplans must be a non-negative number, got: ${String(mr)}`,
-    );
-  }
-}
-
-/** Fail-loud guard: a coordinator block is either DAG (has `planner`) or linear,
- *  never mixed. `activation` is shared and always allowed. */
-export function assertCoordinatorConfigShape(
-  coord: Record<string, unknown>,
-): void {
-  const isDag = coord.planner !== undefined;
-  if (isDag) {
-    assertLlmRoleShape('planner', coord.planner);
-    if (coord.reviewer !== undefined) {
-      assertLlmRoleShape('reviewer', coord.reviewer);
-    }
-    if (coord.finalizer !== undefined) {
-      assertLlmRoleShape('finalizer', coord.finalizer);
-    }
-    if (coord.errorStrategy !== undefined) {
-      assertErrorStrategyShape(coord.errorStrategy);
-    }
-    if (
-      coord.stateOracle !== undefined &&
-      typeof coord.stateOracle !== 'string'
-    ) {
-      throw new Error(
-        `coordinator.stateOracle must be a string (a declared subagent name), got: ${JSON.stringify(coord.stateOracle)}`,
-      );
-    }
-    if (
-      coord.maxRoundTrips !== undefined &&
-      (typeof coord.maxRoundTrips !== 'number' || coord.maxRoundTrips < 0)
-    ) {
-      throw new Error(
-        `coordinator.maxRoundTrips must be a non-negative number, got: ${String(coord.maxRoundTrips)}`,
-      );
-    }
-    for (const f of LINEAR_ONLY) {
-      if (coord[f] !== undefined) {
-        throw new Error(
-          `coordinator: '${f}' is a linear-only field and cannot be combined with 'planner' (DAG mode)`,
-        );
-      }
-    }
-  } else {
-    for (const f of DAG_ONLY) {
-      if (coord[f] !== undefined) {
-        throw new Error(
-          `coordinator: '${f}' is a DAG-only field; a linear coordinator uses 'planning'/'dispatch'`,
-        );
-      }
-    }
-  }
-}
-
 export function resolveCoordinatorPlanning(name: string, plannerLlm: ILlm) {
   switch (name) {
     case 'one-shot':
@@ -490,70 +369,25 @@ agent:
   #   retryOn: [429, 500, 502, 503]
   #   retryOnMidStream: ['SSE stream']  # Substrings triggering mid-stream retry
 
-# --- Advanced Multi-Model Pipeline (optional) -------------------------------
-# Use this section to assign different models for different internal tasks.
-# pipeline:
-#   llm:
-#     main:
-#       provider: deepseek            # deepseek | openai | anthropic | sap-ai-sdk
-#       apiKey: \${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.7
-#       streaming: true               # false to disable streaming for this provider
-#     classifier:                     # optional; if absent, main config is reused
-#       provider: deepseek
-#       apiKey: \${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.1
-#     helper:                         # optional; if absent, main config is reused
-#       provider: deepseek
-#       apiKey: \${DEEPSEEK_API_KEY}
-#       model: deepseek-chat
-#       temperature: 0.1
-#
-#   rag:
-#     tools:
-#       type: qdrant
-#       url: http://qdrant:6333
-#       embedder: openai              # ollama | openai | <custom registered name>
-#       model: text-embedding-3-small
-#       apiKey: \${OPENAI_API_KEY}
-#     history:
-#       type: in-memory
-#
-#   mcp:
-#     - type: http
-#       url: http://localhost:3001/mcp/stream/http
-
-# --- Structured Pipeline (optional) -------------------------------------------
-# Replaces the hardcoded orchestration flow with a YAML-defined stage tree.
-# When absent, the default flow runs unchanged (full backwards compatibility).
-#
-# pipeline:
-#   version: "1"
-#   stages:
-#     - id: classify
-#       type: classify
-#     - id: summarize
-#       type: summarize
-#     - id: rag-retrieval
-#       type: parallel
-#       when: "shouldRetrieve"
-#       stages:
-#         - { id: translate, type: translate }
-#         - { id: expand, type: expand }
-#       after:
-#         - id: rag-queries
-#           type: parallel
-#           stages:
-#             - { id: tools, type: rag-query, config: { store: tools, k: 10 } }
-#             - { id: history, type: rag-query, config: { store: history, k: 5 } }
-#         - { id: rerank, type: rerank }
-#         - { id: tool-select, type: tool-select }
-#     - id: assemble
-#       type: assemble
-#     - id: tool-loop
-#       type: tool-loop
+# --- Advanced Multi-Model LLM (optional) ------------------------------------
+# Assign different models for different internal roles via a top-level llm: map.
+# (The legacy pipeline.llm override was removed — use the top-level llm: map now.)
+# llm:
+#   main:
+#     provider: deepseek              # deepseek | openai | anthropic | sap-ai-sdk
+#     apiKey: \${DEEPSEEK_API_KEY}
+#     model: deepseek-chat
+#     temperature: 0.7
+#   classifier:                       # optional; if absent, main config is reused
+#     provider: deepseek
+#     apiKey: \${DEEPSEEK_API_KEY}
+#     model: deepseek-chat
+#     temperature: 0.1
+#   helper:                           # optional; if absent, main config is reused
+#     provider: deepseek
+#     apiKey: \${DEEPSEEK_API_KEY}
+#     model: deepseek-chat
+#     temperature: 0.1
 
 # prompts:
 #   system: "You are a helpful assistant specialized in SAP ABAP development."
@@ -569,6 +403,9 @@ agent:
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
 # pluginDir: ./my-plugins             # Additional plugin directory (loaded after defaults)
+# plugins:                            # Explicit plugin module specifiers (npm packages or paths)
+#   - "@scope/my-pipeline-plugin"     #   bare specifier resolved from cwd
+#   - ./local-plugin.mjs              #   relative path resolved against cwd
 
 # subagents:                          # Optional: nested agents callable from pipeline
 #   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
@@ -577,16 +414,16 @@ log: smart-server.log                 # path to log file; omit for stdout
 #       structured JSON.
 #     config: ./agents/code-reviewer.yaml
 
-# coordinator:                        # Optional: enable autonomous plan-execute loop
-#   planning: one-shot                # one-shot | replan-on-error | skill-steps
-#   dispatch: subagent                # subagent | self | hybrid
-#   activation: explicit              # explicit (default) | auto
-#   plannerLlm: main                  # main | planner | helper (unused by skill-steps)
-#   maxSteps: 12
-#   maxRetriesPerStep: 1
-#   failPolicy: abort                 # abort | continue
-#   maxLayer: 1                       # DEPRECATED — accepted but ignored (nested
-#                                     # dispatch removed; subagents are leaves)
+# pipeline:                           # Optional: select the request pipeline.
+#   name: flat                        # flat (default) | linear | dag | stepper | <plugin>
+#   config:                           # Opaque per-pipeline dialect (validated by the plugin)
+#     mode: planned-react             # e.g. stepper: cyclic-react | planned-react | deep-stepper
+#     knowledgeSeed: []               # stepper: deployment-supplied tool guidance
+#
+# NOTE: the legacy 'coordinator:' block and the old 'pipeline:' shape
+# (mcp/rag/stages/llm overrides) were REMOVED in this major. A config that
+# still uses them fails loud at startup. Top-level 'llm:', 'mcp:', 'rag:' now
+# own those concerns; pipeline behavior moves under 'pipeline.config'.
 `;
 
 export function resolveEnvVars(
@@ -789,75 +626,99 @@ function validateLlmEntry(
   checkLlmRole(label, cfg, required, env, issues);
 }
 
+/**
+ * Fail-loud migration guard for the clean break to `pipeline: { name, config }`.
+ *
+ * Throws when the raw YAML still carries either:
+ *   - a `coordinator:` block (the old runtime dispatch, removed in this major), OR
+ *   - a `pipeline:` value in the LEGACY PipelineConfig shape — an object that
+ *     carries `mcp`/`rag`/`stages`/`llm` but NO `name`.
+ *
+ * A new `pipeline: { name, ... }` object or a bare string shorthand
+ * (`pipeline: stepper`) passes untouched.
+ */
+export function assertNoLegacyPipelineConfig(yaml: YamlConfig): void {
+  const hasCoordinator =
+    (yaml as { coordinator?: unknown }).coordinator !== undefined;
+
+  const rawPipeline = (yaml as { pipeline?: unknown }).pipeline;
+  const isLegacyPipeline =
+    rawPipeline !== undefined &&
+    rawPipeline !== null &&
+    typeof rawPipeline === 'object' &&
+    !Array.isArray(rawPipeline) &&
+    typeof (rawPipeline as { name?: unknown }).name !== 'string' &&
+    ['mcp', 'rag', 'stages', 'llm'].some(
+      (k) => (rawPipeline as Record<string, unknown>)[k] !== undefined,
+    );
+
+  if (hasCoordinator || isLegacyPipeline) {
+    throw new Error(
+      "Legacy 'coordinator:' / 'pipeline:' config is no longer supported (removed in this major). " +
+        'Migrate to: pipeline: { name: <flat|linear|dag|stepper>, config: { ... } }. ' +
+        "(Stepper's knowledgeSeed moves under pipeline.config.knowledgeSeed.) " +
+        'Pin a version <= 18 for the old behavior.',
+    );
+  }
+}
+
 function validateResolvedConfig(
   _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
   env: NodeJS.ProcessEnv,
 ): void {
   const issues: string[] = [];
-  const usingPipeline = !!get(yaml, 'pipeline', 'llm', 'main');
 
-  if (usingPipeline) {
-    const llmCfg = get(yaml, 'pipeline', 'llm') as
-      | Record<
-          string,
-          { provider?: unknown; apiKey?: unknown; model?: unknown }
-        >
-      | undefined;
-    checkLlmRole('pipeline.llm.main', llmCfg?.main, true, env, issues);
-    if (llmCfg?.classifier) {
-      checkLlmRole(
-        'pipeline.llm.classifier',
-        llmCfg.classifier,
-        false,
-        env,
-        issues,
-      );
-    }
-    if (llmCfg?.helper) {
-      checkLlmRole('pipeline.llm.helper', llmCfg.helper, false, env, issues);
-    }
+  // LLM is always sourced from the top-level `llm:` block now — the legacy
+  // `pipeline.llm.*` override has been removed with the `pipeline: {name,config}`
+  // migration. Read from the raw YAML so we can distinguish flat vs map shape.
+  // `resolved.llm` is always constructed as a flat object by
+  // resolveSmartServerConfig, so it cannot be used to detect the map shape.
+  const rawLlm = get(yaml, 'llm') as
+    | { provider?: unknown; apiKey?: unknown; model?: unknown }
+    | Record<string, { provider?: unknown; apiKey?: unknown; model?: unknown }>
+    | undefined;
+  if (rawLlm === undefined) {
+    issues.push('llm: required (top-level llm.main or a flat llm block)');
+  } else if (typeof (rawLlm as { provider?: unknown }).provider === 'string') {
+    // Flat shape — existing behaviour.
+    validateLlmEntry(
+      'llm',
+      rawLlm as { provider?: unknown; apiKey?: unknown; model?: unknown },
+      true,
+      env,
+      issues,
+    );
   } else {
-    // Read from the raw YAML so we can distinguish flat vs map shape.
-    // `resolved.llm` is always constructed as a flat object by resolveSmartServerConfig,
-    // so it cannot be used to detect the map shape.
-    const rawLlm = get(yaml, 'llm') as
-      | { provider?: unknown; apiKey?: unknown; model?: unknown }
-      | Record<
-          string,
-          { provider?: unknown; apiKey?: unknown; model?: unknown }
-        >
-      | undefined;
-    if (rawLlm === undefined) {
-      // No top-level llm: AND no pipeline.llm.main → would have been caught
-      // by `usingPipeline` branch. Defensive: surface a clear issue.
-      issues.push('llm: required when pipeline.llm.main is not configured');
-    } else if (
-      typeof (rawLlm as { provider?: unknown }).provider === 'string'
-    ) {
-      // Flat shape — existing behaviour.
-      validateLlmEntry(
-        'llm',
-        rawLlm as { provider?: unknown; apiKey?: unknown; model?: unknown },
-        true,
-        env,
-        issues,
-      );
+    // Map shape — llm.main is required; every named entry is validated.
+    const map = rawLlm as Record<
+      string,
+      { provider?: unknown; apiKey?: unknown; model?: unknown }
+    >;
+    if (!map.main) {
+      issues.push("llm.main: required when 'llm' is a named map");
     } else {
-      // Map shape — llm.main is required; every named entry is validated.
-      const map = rawLlm as Record<
-        string,
-        { provider?: unknown; apiKey?: unknown; model?: unknown }
-      >;
-      if (!map.main) {
-        issues.push("llm.main: required when 'llm' is a named map");
-      } else {
-        validateLlmEntry('llm.main', map.main, true, env, issues);
-      }
-      for (const [name, entry] of Object.entries(map)) {
-        if (name === 'main') continue;
-        validateLlmEntry(`llm.${name}`, entry, true, env, issues);
-      }
+      validateLlmEntry('llm.main', map.main, true, env, issues);
+    }
+    for (const [name, entry] of Object.entries(map)) {
+      if (name === 'main') continue;
+      validateLlmEntry(`llm.${name}`, entry, true, env, issues);
+    }
+  }
+
+  // Pipeline selection shape: `pipeline:` must name a pipeline (string or
+  // { name } object). The plugin validates its own `config` dialect at build
+  // time — we only enforce the presence of a name here.
+  const rawPipeline = (yaml as { pipeline?: unknown }).pipeline;
+  if (rawPipeline !== undefined && rawPipeline !== null) {
+    const ok =
+      typeof rawPipeline === 'string' ||
+      (typeof rawPipeline === 'object' &&
+        typeof (rawPipeline as { name?: unknown }).name === 'string');
+    if (!ok) {
+      issues.push(
+        "pipeline: requires a 'name' (string, or { name, config }); built-ins: flat, linear, dag, stepper",
+      );
     }
   }
 
@@ -886,14 +747,9 @@ function validateResolvedConfig(
   if (get(yaml, 'rag')) {
     checkRagStore('rag', get(yaml, 'rag') as Record<string, unknown>, issues);
   }
-  const pipelineRag = get(yaml, 'pipeline', 'rag') as
-    | Record<string, Record<string, unknown>>
-    | undefined;
-  if (pipelineRag) {
-    for (const [name, store] of Object.entries(pipelineRag)) {
-      checkRagStore(`pipeline.rag.${name}`, store, issues);
-    }
-  }
+  // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
+  // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole
+  // RAG source, validated above.
 
   if (issues.length > 0) throw new ConfigValidationError([...new Set(issues)]);
 }
@@ -963,6 +819,9 @@ function parseSubAgents(
     if ((subYaml as { pluginDir?: unknown }).pluginDir !== undefined) {
       unsupported.push('pluginDir');
     }
+    if ((subYaml as { plugins?: unknown }).plugins !== undefined) {
+      unsupported.push('plugins');
+    }
     if ((subYaml as { clientAdapter?: unknown }).clientAdapter !== undefined) {
       unsupported.push('clientAdapter');
     }
@@ -971,23 +830,9 @@ function parseSubAgents(
     ) {
       unsupported.push('circuitBreaker');
     }
-    const subPipeline = (subYaml as { pipeline?: unknown }).pipeline;
-    if (subPipeline && typeof subPipeline === 'object') {
-      const p = subPipeline as Record<string, unknown>;
-      if (p.reranker !== undefined) unsupported.push('pipeline.reranker');
-      if (p.queryExpander !== undefined)
-        unsupported.push('pipeline.queryExpander');
-      if (p.outputValidator !== undefined)
-        unsupported.push('pipeline.outputValidator');
-      if (
-        p.rag !== undefined &&
-        p.rag !== null &&
-        typeof p.rag === 'object' &&
-        !Array.isArray(p.rag)
-      ) {
-        unsupported.push('pipeline.rag');
-      }
-    }
+    // A subagent's `pipeline:` (if present) is the new `{name, config}` shape;
+    // there are no per-subagent reranker/queryExpander/outputValidator/rag
+    // overrides to reject anymore (they were tied to the removed legacy shape).
     if (unsupported.length > 0) {
       throw new Error(
         `subagent '${name}': unsupported fields [${unsupported.join(', ')}]`,
@@ -1019,11 +864,14 @@ export function resolveSmartServerConfig(
   env: NodeJS.ProcessEnv = process.env,
   options: ResolveSmartServerConfigOptions = {},
 ): Omit<SmartServerConfig, 'log'> {
-  const flatApiKey = (get(yaml, 'llm', 'apiKey') as string) ?? '';
-  const pipelineApiKey = get(yaml, 'pipeline', 'llm', 'main', 'apiKey') as
-    | string
-    | undefined;
-  const apiKey = flatApiKey || pipelineApiKey || '';
+  // Clean-break migration guard FIRST — before any pipeline-shape parsing — so a
+  // legacy `coordinator:`/`pipeline:` config gets the actionable migration error
+  // rather than the generic "pipeline requires a name" diagnostic.
+  assertNoLegacyPipelineConfig(yaml);
+
+  // API key derives solely from the top-level `llm:` block now (the legacy
+  // `pipeline.llm.main.apiKey` override was removed with the schema migration).
+  const apiKey = (get(yaml, 'llm', 'apiKey') as string) ?? '';
 
   const rawMcp = yaml.mcp;
   const mcpIsArray = Array.isArray(rawMcp);
@@ -1273,6 +1121,12 @@ export function resolveSmartServerConfig(
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
+    plugins: (() => {
+      const raw = get(yaml, 'plugins');
+      if (!Array.isArray(raw)) return undefined;
+      const specs = raw.filter((s): s is string => typeof s === 'string');
+      return specs.length > 0 ? specs : undefined;
+    })(),
     ...(() => {
       const subAgentConfigs = parseSubAgents(
         yaml,
@@ -1283,11 +1137,28 @@ export function resolveSmartServerConfig(
       return subAgentConfigs ? { subAgentConfigs } : {};
     })(),
     ...(() => {
-      const coordinatorYaml = (yaml as { coordinator?: YamlCoordinator })
-        .coordinator;
-      return coordinatorYaml ? { coordinatorYaml } : {};
+      // Pipeline selection: `pipeline: { name, config }`. `name` is required;
+      // `config` is the plugin's opaque dialect (validated by the plugin's
+      // parseConfig at build time). A bare string (`pipeline: stepper`) is
+      // accepted as shorthand for `{ name: <string> }`.
+      const raw = (yaml as { pipeline?: unknown }).pipeline;
+      if (raw === undefined || raw === null) return {};
+      if (typeof raw === 'string') return { pipeline: { name: raw } };
+      const obj = raw as { name?: unknown; config?: unknown };
+      if (typeof obj.name !== 'string') {
+        throw new Error(
+          "pipeline: requires a 'name' (one of: flat, linear, dag, stepper, or a registered plugin)",
+        );
+      }
+      return {
+        pipeline: {
+          name: obj.name,
+          ...(obj.config && typeof obj.config === 'object'
+            ? { config: obj.config as Record<string, unknown> }
+            : {}),
+        },
+      };
     })(),
-    ...(yaml.pipeline ? { pipeline: yaml.pipeline } : {}),
     ...(yaml.skills
       ? {
           skills: {

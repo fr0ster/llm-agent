@@ -13,31 +13,32 @@ mode: smart
 agent:
   healthTimeoutMs: 15000
 
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.7
+  helper:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.1
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
+
 pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_MODEL:-gpt-4o}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.7
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
-
-coordinator:
-  planning: replan-on-error
-  dispatch: hybrid
-  activation: auto
-  plannerLlm: helper
-  maxSteps: 8
-  maxRetriesPerStep: 1
-  failPolicy: continue
+  name: linear
+  config:
+    planning: replan-on-error
+    dispatch: hybrid
+    activation: auto
+    plannerLlm: helper
+    maxSteps: 8
+    maxRetriesPerStep: 1
+    failPolicy: continue
 
 subagents:
   - name: abap-coder

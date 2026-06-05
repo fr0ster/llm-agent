@@ -253,84 +253,48 @@ describe('config validation — fail loud, human-readable', () => {
     );
   });
 
-  it('pipeline.rag store with type ollama is rejected with path + hint', () => {
+  // Pipeline selection migrated to `pipeline: { name, config }`. The legacy
+  // `pipeline.llm.*` / `pipeline.rag.*` overrides were removed; LLM/RAG now
+  // derive solely from the top-level `llm:` / `rag:` blocks. The pipeline
+  // plugin validates its own `config` dialect at build time, not here.
+
+  it('accepts a string pipeline name (shorthand)', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        pipeline: 'stepper',
+      },
+      {},
+    );
+    assert.deepEqual(cfg.pipeline, { name: 'stepper' });
+  });
+
+  it('accepts a { name, config } pipeline object', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+        pipeline: { name: 'dag', config: { planner: { type: 'dag' } } },
+      },
+      {},
+    );
+    assert.equal(cfg.pipeline?.name, 'dag');
+    assert.deepEqual(cfg.pipeline?.config, { planner: { type: 'dag' } });
+  });
+
+  it('pipeline object without a name is rejected', () => {
     assert.throws(
       () =>
         resolveSmartServerConfig(
           {},
           {
-            pipeline: {
-              llm: {
-                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-              },
-              rag: { tools: { type: 'ollama' } },
-            },
+            llm: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
+            pipeline: { config: { foo: 1 } },
           },
           {},
         ),
-      /pipeline\.rag\.tools\.type.*embedder, not a store/i,
-    );
-  });
-
-  it('pipeline.rag qdrant store without url is rejected with path', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          {
-            pipeline: {
-              llm: {
-                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-              },
-              rag: { tools: { type: 'qdrant' } },
-            },
-          },
-          {},
-        ),
-      /pipeline\.rag\.tools\.url.*required/i,
-    );
-  });
-
-  it('accepts a valid pipeline.rag store', () => {
-    const cfg = resolveSmartServerConfig(
-      {},
-      {
-        pipeline: {
-          llm: {
-            main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-          },
-          rag: { tools: { type: 'in-memory' } },
-        },
-      },
-      {},
-    );
-    assert.ok(cfg);
-  });
-
-  it('accepts a valid pipeline schema config', () => {
-    const cfg = resolveSmartServerConfig(
-      {},
-      {
-        pipeline: {
-          llm: {
-            main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-          },
-        },
-      },
-      {},
-    );
-    assert.ok(cfg);
-  });
-
-  it('pipeline schema: missing provider reports the pipeline path', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          { pipeline: { llm: { main: { apiKey: 'sk-x', model: 'gpt-4o' } } } },
-          {},
-        ),
-      /pipeline\.llm\.main\.provider.*required/i,
+      /pipeline: requires a 'name'/i,
     );
   });
 
@@ -350,65 +314,6 @@ describe('config validation — fail loud, human-readable', () => {
       {},
     );
     assert.equal(cfg.rag?.type, 'in-memory');
-  });
-
-  it('pipeline main openai without apiKey is rejected even if a flat llm.apiKey exists', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          {
-            llm: {
-              provider: 'deepseek',
-              apiKey: 'flat-key',
-              model: 'deepseek-chat',
-            },
-            pipeline: {
-              llm: { main: { provider: 'openai', model: 'gpt-4o' } },
-            },
-          },
-          {},
-        ),
-      /openai requires pipeline\.llm\.main\.apiKey/i,
-    );
-  });
-
-  it('pipeline classifier with an invalid provider is rejected', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          {
-            pipeline: {
-              llm: {
-                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-                classifier: { provider: 'cohere', model: 'c' },
-              },
-            },
-          },
-          {},
-        ),
-      /pipeline\.llm\.classifier\.provider.*invalid/i,
-    );
-  });
-
-  it('pipeline helper missing its apiKey is rejected', () => {
-    assert.throws(
-      () =>
-        resolveSmartServerConfig(
-          {},
-          {
-            pipeline: {
-              llm: {
-                main: { provider: 'openai', apiKey: 'sk-x', model: 'gpt-4o' },
-                helper: { provider: 'anthropic', model: 'claude' },
-              },
-            },
-          },
-          {},
-        ),
-      /anthropic requires pipeline\.llm\.helper\.apiKey/i,
-    );
   });
 
   it('rag block with embedder but no model is rejected', () => {
@@ -603,6 +508,73 @@ describe('resolveSmartServerConfig — top-level mcp: array form', () => {
     assert.equal(
       (cfg.mcp as { url?: string }).url,
       'http://localhost:3001/mcp',
+    );
+  });
+});
+
+describe('legacy coordinator:/pipeline: migration guard (clean break)', () => {
+  const goodLlm = {
+    provider: 'ollama',
+    model: 'm',
+    url: 'http://h',
+    apiKey: 'x',
+  };
+
+  it('throws on a legacy coordinator: block', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, coordinator: { mode: 'planned-react' } },
+          {},
+        ),
+      /Legacy 'coordinator:' \/ 'pipeline:' config is no longer supported/,
+    );
+  });
+
+  it('throws on a legacy pipeline: block (llm/rag/stages, no name)', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, pipeline: { llm: { main: goodLlm } } },
+          {},
+        ),
+      /Migrate to: pipeline: \{ name:/,
+    );
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm: goodLlm, pipeline: { stages: [] } },
+          {},
+        ),
+      /no longer supported/,
+    );
+  });
+
+  it('accepts the new pipeline: { name, config } shape', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig(
+        {},
+        {
+          llm: goodLlm,
+          pipeline: { name: 'stepper', config: { mode: 'planned-react' } },
+        },
+        {},
+      ),
+    );
+  });
+
+  it('accepts the bare-string pipeline shorthand', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig({}, { llm: goodLlm, pipeline: 'flat' }, {}),
+    );
+  });
+
+  it('accepts no pipeline: block at all (defaults to flat)', () => {
+    assert.doesNotThrow(() =>
+      resolveSmartServerConfig({}, { llm: goodLlm }, {}),
     );
   });
 });

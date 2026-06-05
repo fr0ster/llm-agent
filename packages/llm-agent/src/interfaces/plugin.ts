@@ -9,6 +9,7 @@ import type { IQueryExpander } from '../rag/query-expander.js';
 import type { ILlmApiAdapter } from './api-adapter.js';
 import type { IClientAdapter } from './client-adapter.js';
 import type { IMcpClient } from './mcp-client.js';
+import type { IPipelinePlugin } from './pipeline-plugin.js';
 import type { EmbedderFactory, IRag } from './rag.js';
 import type { IReranker } from './reranker.js';
 import type { ISkillManager } from './skill.js';
@@ -123,6 +124,9 @@ export interface PluginExports {
 
   /** API protocol adapters, keyed by adapter name. */
   apiAdapters?: Record<string, ILlmApiAdapter>;
+
+  /** Agent-variant pipelines contributed by a dynamically-loaded plugin. */
+  pipelinePlugins?: Record<string, IPipelinePlugin>;
 }
 
 /**
@@ -139,6 +143,10 @@ export interface LoadedPlugins {
   mcpClients: IMcpClient[];
   clientAdapters: IClientAdapter[];
   apiAdapters: Map<string, ILlmApiAdapter>;
+  /** Resolved pipeline plugins, keyed by pipeline name. */
+  pipelinePlugins: Map<string, IPipelinePlugin>;
+  /** name → first-seen source, so duplicate-name errors can name both sources. */
+  pipelinePluginSources: Map<string, string>;
   /** Source identifiers for successfully loaded plugins. */
   loadedFiles: string[];
   /** Plugins that failed to load, with error messages. */
