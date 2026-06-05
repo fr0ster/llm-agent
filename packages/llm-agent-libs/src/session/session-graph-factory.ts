@@ -58,6 +58,15 @@ export interface SessionGraphFactoryOptions {
    * dispose hook never throws — a failed close must not crash session teardown.
    */
   readonly logger?: ILogger;
+  /**
+   * Optional per-session teardown hook run during `SessionGraph.dispose()`,
+   * AFTER the session-RAG `closeSession`. The host uses this to free per-session
+   * pipeline resources (e.g. the pipeline plugin's `IPipelineInstance.close()` —
+   * MCP connections / builder-owned handles) that the agent itself does not own.
+   * Best-effort: a throw is swallowed (surfaced via `logger`) so teardown never
+   * crashes the registry.
+   */
+  readonly onDispose?: (sessionId: string) => Promise<void>;
 }
 
 /**
@@ -113,6 +122,26 @@ export class SessionGraphFactory {
             console.warn(
               `[session] closeSession(${sessionId}) failed: ${message}`,
             );
+          }
+        }
+        // Host-supplied per-session teardown (e.g. pipeline IPipelineInstance.close).
+        // Best-effort: a failure here must not crash session disposal.
+        if (this.opts.onDispose) {
+          try {
+            await this.opts.onDispose(sessionId);
+          } catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            if (this.opts.logger) {
+              this.opts.logger.log({
+                type: 'warning',
+                traceId: `session:${sessionId}`,
+                message: `session_dispose_hook_failed: ${message}`,
+              });
+            } else {
+              console.warn(
+                `[session] onDispose(${sessionId}) failed: ${message}`,
+              );
+            }
           }
         }
       },
