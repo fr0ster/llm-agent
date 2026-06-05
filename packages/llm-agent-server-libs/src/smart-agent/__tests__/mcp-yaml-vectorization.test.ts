@@ -105,7 +105,16 @@ async function startMcpStub(toolNames: string[]): Promise<McpStub> {
     });
   });
 
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  // Reject (not hang/throw-uncaught) if the environment forbids binding a local
+  // socket — some sandboxes block `listen` with EPERM/EACCES. The tests below
+  // turn that rejection into a clean `t.skip()` rather than a false failure.
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => {
+      server.removeListener('error', reject);
+      resolve();
+    });
+  });
   const { port } = server.address() as AddressInfo;
   return {
     url: `http://127.0.0.1:${port}/mcp/stream/http`,
@@ -124,10 +133,33 @@ type Internals = {
   _sharedMcpClients?: IMcpClient[];
 };
 
+/**
+ * Start the stub MCP server, or — if the sandbox forbids binding a local socket
+ * (EPERM/EACCES) — skip the test cleanly instead of failing. The assertions still
+ * run in CI and any environment that permits `listen` (the repo already relies on
+ * local `listen` in smart-server-session-lifecycle.test.ts).
+ */
+async function startStubOrSkip(
+  t: { skip: (m?: string) => void },
+  names: string[],
+): Promise<McpStub | null> {
+  try {
+    return await startMcpStub(names);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'EPERM' || code === 'EACCES') {
+      t.skip(`environment forbids server.listen (${code})`);
+      return null;
+    }
+    throw err;
+  }
+}
+
 // ---------------------------------------------------------------------------
 
-test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', async () => {
-  const stub = await startMcpStub(['EchoTool', 'GetTable']);
+test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', async (t) => {
+  const stub = await startStubOrSkip(t, ['EchoTool', 'GetTable']);
+  if (!stub) return;
   const server = new SmartServer({
     port: 0,
     llm: { apiKey: 'test', model: 'test-model' },
@@ -176,13 +208,14 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
   }
 });
 
-test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', async () => {
+test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', async (t) => {
   // DI precedence: an explicitly-provided client set — even an EMPTY array — must
   // override the YAML `mcp:` block. `mcpClients: []` is a deliberate "disable MCP"
   // signal; the startup builder must receive withMcpClients([]) (short-circuit) and
   // NOT auto-connect the YAML block. Regression guard for the `hasDiOrPlugin`
   // presence-vs-length check.
-  const stub = await startMcpStub(['EchoTool']);
+  const stub = await startStubOrSkip(t, ['EchoTool']);
+  if (!stub) return;
   const server = new SmartServer({
     port: 0,
     llm: { apiKey: 'test', model: 'test-model' },
