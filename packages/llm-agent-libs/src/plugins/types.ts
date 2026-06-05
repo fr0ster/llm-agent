@@ -109,7 +109,8 @@ export function mergePluginExports(
 
   if (mod.pipelinePlugins && typeof mod.pipelinePlugins === 'object') {
     for (const [name, plugin] of Object.entries(mod.pipelinePlugins)) {
-      if (!plugin || typeof (plugin as IPipelinePlugin).build !== 'function') continue;
+      if (!plugin || typeof (plugin as IPipelinePlugin).build !== 'function')
+        continue;
       if (result.pipelinePlugins.has(name)) {
         const prior = result.pipelinePluginSources.get(name) ?? 'unknown';
         result.errors.push({

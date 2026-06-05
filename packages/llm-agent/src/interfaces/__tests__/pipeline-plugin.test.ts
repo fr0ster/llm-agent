@@ -1,11 +1,12 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type {
+  IPipelineContext,
   IPipelineInstance,
+  IPipelinePlugin,
   IReconfigurableSmartAgent,
   MaybePromise,
 } from '../pipeline-plugin.js';
-import type { IPipelineContext, IPipelinePlugin } from '../pipeline-plugin.js';
 import type { LoadedPlugins, PluginExports } from '../plugin.js';
 
 describe('pipeline-plugin runnable contracts', () => {
@@ -46,7 +47,10 @@ describe('IPipelinePlugin', () => {
       name: 'demo',
       parseConfig: (raw) => ({ depth: (raw as { depth?: number }).depth ?? 1 }),
       build: async (config, _ctx: IPipelineContext) => ({
-        agent: { process: async () => ({ ok: true, value: config }) as never, streamProcess: async function* () {} },
+        agent: {
+          process: async () => ({ ok: true, value: config }) as never,
+          streamProcess: async function* () {},
+        },
         close: async () => {},
       }),
     };
@@ -69,7 +73,10 @@ describe('PluginExports / LoadedPlugins carry pipeline plugins', () => {
   });
 
   it('LoadedPlugins has pipelinePlugins + pipelinePluginSources maps', () => {
-    const loaded: Pick<LoadedPlugins, 'pipelinePlugins' | 'pipelinePluginSources'> = {
+    const loaded: Pick<
+      LoadedPlugins,
+      'pipelinePlugins' | 'pipelinePluginSources'
+    > = {
       pipelinePlugins: new Map(),
       pipelinePluginSources: new Map(),
     };

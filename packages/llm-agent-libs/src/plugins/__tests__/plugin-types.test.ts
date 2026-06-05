@@ -147,7 +147,11 @@ describe('pipelinePlugins merge', () => {
 
   it('registers a pipeline plugin and records its source', () => {
     const r = emptyLoadedPlugins();
-    const registered = mergePluginExports(r, { pipelinePlugins: { dag: stubPipeline('dag') } }, 'pkg-a');
+    const registered = mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag') } },
+      'pkg-a',
+    );
     assert.equal(registered, true);
     assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
     assert.equal(r.pipelinePluginSources.get('dag'), 'pkg-a');
@@ -155,15 +159,29 @@ describe('pipelinePlugins merge', () => {
 
   it('rejects a duplicate name: keeps the first, records an error naming both sources', () => {
     const r = emptyLoadedPlugins();
-    mergePluginExports(r, { pipelinePlugins: { dag: stubPipeline('dag') } }, 'pkg-a');
-    mergePluginExports(r, { pipelinePlugins: { dag: stubPipeline('dag-2') } }, 'pkg-b');
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag') } },
+      'pkg-a',
+    );
+    mergePluginExports(
+      r,
+      { pipelinePlugins: { dag: stubPipeline('dag-2') } },
+      'pkg-b',
+    );
     // first wins
     assert.equal(r.pipelinePlugins.get('dag')?.name, 'dag');
     // duplicate recorded with BOTH sources (stable contract: name + both sources,
     // not a brittle exact phrase)
     const dupe = r.errors.find(
-      (e) => e.error.includes("'dag'") && e.error.includes('pkg-a') && e.error.includes('pkg-b'),
+      (e) =>
+        e.error.includes("'dag'") &&
+        e.error.includes('pkg-a') &&
+        e.error.includes('pkg-b'),
     );
-    assert.ok(dupe, 'expected a duplicate error naming the pipeline and both sources');
+    assert.ok(
+      dupe,
+      'expected a duplicate error naming the pipeline and both sources',
+    );
   });
 });

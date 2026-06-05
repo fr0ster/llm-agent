@@ -17,7 +17,11 @@ export type MaybePromise<T> = T | Promise<T>;
 
 /** A SmartAgent that supports runtime LLM hot-swap. Feature-detected by the host. */
 export interface IReconfigurableSmartAgent extends ISmartAgent {
-  reconfigure(update: { mainLlm?: ILlm; helperLlm?: ILlm; classifierLlm?: ILlm }): void;
+  reconfigure(update: {
+    mainLlm?: ILlm;
+    helperLlm?: ILlm;
+    classifierLlm?: ILlm;
+  }): void;
 }
 
 /** What IPipelinePlugin.build() returns: the runnable agent + a disposal contract
