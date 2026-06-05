@@ -167,6 +167,23 @@ export interface IServerPipelineContext extends IPipelineContext {
    * duplication (and the resulting loss of RAG/adapters/logger/subagents).
    */
   createAgentBuilder(): Promise<SmartAgentBuilder>;
+
+  // ── Raw materials the DAG / linear coordinator builders need ──────────────
+  // The stepper variant is fully served by IPipelineContext (resolveLlm /
+  // callMcp / knowledgeRagFor / toolsRag / mint* / subagents). DAG and linear,
+  // however, call buildDagCoordinatorDeps / the linear strategy resolvers, which
+  // need these server-internal pieces. The host already has them; it just
+  // exposes them so the dag/linear plugins own their flow without re-deriving.
+  /** Build an LLM from a provider config (for DAG/linear role resolution). */
+  makeLlm(cfg: SmartServerLlmConfig): Promise<ILlm>;
+  llmMap?: NormalizedLlmMap;
+  pipelineFallback?: SmartServerLlmConfig;
+  mainLlm: ILlm;
+  helperLlm?: ILlm;
+  mainTemp: number;
+  /** Session-scoped worker registry (DAG workers / linear subagents). */
+  workerRegistry: ReadonlyMap<string, ISubAgent>;
+  warn(msg: string): void;
 }
 ```
 
