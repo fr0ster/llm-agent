@@ -21,6 +21,7 @@ import type {
   ISkillManager,
   IToolsRagHandle,
   LlmTool,
+  LoadedPlugins,
   Message,
   NormalizedRequest,
   StreamToolCall,
@@ -351,8 +352,13 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import {
+  createServerPipelineContext,
+  type IServerPipelineContext,
+} from '../pipelines/server-context.js';
 import { buildDagCoordinatorDeps } from './build-dag-coordinator-deps.js';
 import { buildStepperRoot } from './build-stepper-root.js';
+import type { NormalizedLlmMap } from './config.js';
 import {
   assertCoordinatorConfigShape,
   normalizeLlmConfig,
@@ -912,6 +918,16 @@ export class SmartServer {
   private _helperLlm?: ILlm;
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
+  /** Normalized LLM map + pipeline fallback + main temperature — captured in
+   *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
+   *  context factory (mirrors the inline DAG/linear resolution). */
+  private _llmMap?: NormalizedLlmMap;
+  private _pipelineFallback?: SmartServerLlmConfig;
+  private _mainTemp?: number;
+  private _requestLogger?: IRequestLogger;
+  /** ToolsRag handle built on the Stepper path; undefined elsewhere (factory
+   *  defaults it to EMPTY_TOOLS_RAG). */
+  private _toolsRagHandle?: IToolsRagHandle;
   /**
    * Captured DAG coordinator template — `deps` are stateless or LLM-bound and
    * are reused across sessions; only `workers` + `stateOracle` are re-wired per
@@ -1041,6 +1057,9 @@ export class SmartServer {
     this._mainLlm = mainLlm;
     this._classifierLlm = classifierLlm;
     this._helperLlm = helperLlm;
+    this._llmMap = llmMap;
+    this._pipelineFallback = pipelineFallback;
+    this._mainTemp = mainTemp;
 
     // ---- Plugin loader -------------------------------------------------------
     const pluginLoader: IPluginLoader =
@@ -1087,39 +1106,30 @@ export class SmartServer {
       mergedEmbedderFactories,
     );
 
-    // ---- Build agent via Builder (interface-only) -------------------------
-    let builder = new SmartAgentBuilder({
-      mcp: pipeline?.mcp ?? this.cfg.mcp,
-      agent: this.cfg.agent,
-      prompts: this.cfg.prompts,
-      skipModelValidation: this.cfg.skipModelValidation,
-    })
-      .withMainLlm(mainLlm)
-      .withClassifierLlm(classifierLlm)
-      .withLogger(fileLogger)
-      .withMode(this.cfg.mode ?? 'smart');
-
-    if (helperLlm) {
-      builder = builder.withHelperLlm(helperLlm);
-    }
-
+    // ---- RAG resolution (interface-only) ----------------------------------
+    // Resolve the tools/history stores and any named collections HERE so the
+    // coordinator gate below can read the final `toolsRag`/`resolvedEmbedder`,
+    // then hand the ready stores to buildBaseBuilder for wiring.
     let toolsRag: IRag | undefined;
+    let historyRag: IRag | undefined;
+    const ragCollections: Array<{
+      name: string;
+      rag: IRag;
+      meta: { displayName: string; scope: 'global' };
+    }> = [];
     if (this.cfg.rag) {
       const ragOptions = {
         injectedEmbedder: resolvedEmbedder,
         extraFactories: mergedEmbedderFactories,
       };
       toolsRag = await makeRag(this.cfg.rag, ragOptions);
-      builder = builder.setToolsRag(toolsRag);
-      builder = builder.setHistoryRag(
-        await makeRag({ ...this.cfg.rag }, ragOptions),
-      );
+      historyRag = await makeRag({ ...this.cfg.rag }, ragOptions);
     }
 
-    // Wire pipeline.rag.{name} stores into the builder so multi-store YAML
-    // configs behave the same as the flat `rag:` block: `tools` and `history`
-    // map to the agent's built-in slots; everything else is registered as a
-    // named collection that the registry projection exposes via ragStores[name].
+    // Resolve pipeline.rag.{name} stores so multi-store YAML configs behave the
+    // same as the flat `rag:` block: `tools` and `history` map to the agent's
+    // built-in slots; everything else is registered as a named collection that
+    // the registry projection exposes via ragStores[name].
     if (pipeline?.rag) {
       for (const [name, storeCfg] of Object.entries(pipeline.rag)) {
         // The `tools` store feeds the subagent context-builder's toolSource
@@ -1146,11 +1156,10 @@ export class SmartServer {
         const rag = await makeRag(storeCfg, ragOptions);
         if (name === 'tools') {
           toolsRag = rag;
-          builder = builder.setToolsRag(rag);
         } else if (name === 'history') {
-          builder = builder.setHistoryRag(rag);
+          historyRag = rag;
         } else {
-          builder = builder.addRagCollection({
+          ragCollections.push({
             name,
             rag,
             meta: { displayName: name, scope: 'global' },
@@ -1159,76 +1168,11 @@ export class SmartServer {
       }
     }
 
-    if (this.cfg.circuitBreaker) {
-      builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
-    }
-
-    if (plugins.reranker) {
-      builder = builder.withReranker(plugins.reranker);
-    }
-    if (plugins.queryExpander) {
-      builder = builder.withQueryExpander(plugins.queryExpander);
-    }
-    if (plugins.outputValidator) {
-      builder = builder.withOutputValidator(plugins.outputValidator);
-    }
-
-    // Skill manager (DI > YAML config > plugin)
-    const skillManager =
-      this.cfg.skillManager ??
-      plugins.skillManager ??
-      resolveSkillManager(this.cfg.skills);
-    if (skillManager) {
-      builder = builder.withSkillManager(skillManager);
-    }
-
-    // LLM call strategy (from agent config)
-    const strategyName = this.cfg.agent?.llmCallStrategy;
-    if (strategyName) {
-      const {
-        StreamingLlmCallStrategy,
-        NonStreamingLlmCallStrategy,
-        FallbackLlmCallStrategy,
-      } = await import('@mcp-abap-adt/llm-agent');
-      const strategies = {
-        streaming: () => new StreamingLlmCallStrategy(),
-        'non-streaming': () => new NonStreamingLlmCallStrategy(),
-        fallback: () => new FallbackLlmCallStrategy(fileLogger),
-      };
-      const factory = strategies[strategyName];
-      if (factory) {
-        builder = builder.withLlmCallStrategy(factory());
-      }
-    }
-
-    // Tool-selection strategy (from agent.toolSelection config)
-    const toolSelectionCfg = this.cfg.agent?.toolSelection;
-    if (toolSelectionCfg?.strategy) {
-      builder = builder.withToolSelectionStrategy(
-        resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
-          minScore: toolSelectionCfg.minScore,
-        }),
-      );
-    }
-
-    // MCP clients (DI > plugin; YAML fallback handled by builder)
+    // MCP clients (DI > plugin; YAML fallback handled by builder).
+    // Resolved HERE because the Stepper coordinator gate below also reads it.
     const mcpClients =
       this.cfg.mcpClients ??
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
-    if (mcpClients) {
-      builder = builder.withMcpClients(mcpClients);
-    }
-
-    // Client adapters (DI > plugin; ClineClientAdapter is always registered as default)
-    const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
-    const adapterSources = [
-      ...(this.cfg.clientAdapters ?? []),
-      ...plugins.clientAdapters,
-      new ClineClientAdapter(),
-    ];
-    for (const adapter of adapterSources) {
-      builder = builder.withClientAdapter(adapter);
-    }
 
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
     // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
@@ -1256,8 +1200,24 @@ export class SmartServer {
             typeof sub.description === 'string' && sub.description.length > 0,
         });
       }
-      builder = builder.withSubAgents(registry);
     }
+
+    // ---- Build agent via Builder (interface-only) -------------------------
+    // Assemble everything EXCEPT the coordinator via the shared base-builder
+    // factory; the coordinator gate below wires the chosen variant.
+    let builder = await this.buildBaseBuilder({
+      mainLlm,
+      classifierLlm,
+      helperLlm,
+      fileLogger,
+      toolsRag,
+      historyRag,
+      ragCollections,
+      mcpClients,
+      plugins,
+      workerRegistry: registry,
+      applyServerExtras: true,
+    });
 
     // ---- Coordinator (autonomous plan-execute loop) ------------------------
     const coordCfg = this.cfg.coordinatorYaml;
@@ -1371,6 +1331,9 @@ export class SmartServer {
             return catalogCache?.get(name);
           },
         };
+        // Held on the instance so buildServerCtx can hand the same handle to the
+        // pipeline context (undefined elsewhere → EMPTY_TOOLS_RAG via factory).
+        this._toolsRagHandle = toolsRagHandle;
 
         // Mint helpers: stable UUIDs per spec §C.1/§C.2.
         // The server wires randomUUID(); tests can inject deterministic minters.
@@ -2087,6 +2050,286 @@ export class SmartServer {
     return handle.agent;
   }
 
+  // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
+  //    closures; consumed by buildServerCtx, which later tasks call) ----------
+
+  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG). */
+  private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
+    return makeLlm(
+      {
+        provider: lc.provider ?? 'deepseek',
+        apiKey: lc.apiKey,
+        baseURL: lc.url,
+        model: lc.model,
+      },
+      Number(lc.temperature ?? this._mainTemp ?? 0.7),
+    );
+  }
+
+  /** Resolve a per-role LLM through the normalized map → pipelineFallback chain.
+   *  'main' returns the captured mainLlm; 'helper'/'classifier' return the
+   *  prebuilt instances when present; otherwise the map/fallback config is built. */
+  private async resolveRoleLlm(role: string): Promise<ILlm> {
+    if (role === 'main' && this._mainLlm) return this._mainLlm;
+    if ((role === 'helper' || role === 'planner') && this._helperLlm) {
+      return this._helperLlm;
+    }
+    if (role === 'classifier' && this._classifierLlm)
+      return this._classifierLlm;
+    const cfg = resolveLlmConfig(this._llmMap, role, this._pipelineFallback);
+    if (cfg) return this._makeLlm(cfg);
+    if (this._mainLlm) return this._mainLlm;
+    throw new Error(`cannot resolve LLM for role '${role}': no config`);
+  }
+
+  /** Session-scoped knowledge RAG over the shared Stepper backend (or a fresh
+   *  in-memory backend when the Stepper path was not configured). */
+  private knowledgeRagFor(sessionId: string): IKnowledgeRagHandle {
+    const backend =
+      this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend();
+    return new KnowledgeRag(backend, sessionId);
+  }
+
+  /** callMcp bridge over the connected Stepper MCP clients (empty when none). */
+  private callMcp(
+    name: string,
+    args: unknown,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    return buildMcpBridge(this._stepperMcpClients ?? [])(name, args, signal);
+  }
+
+  private _mintStepperId(): string {
+    return randomUUID();
+  }
+
+  private _mintTurnId(): string {
+    return randomUUID();
+  }
+
+  private warn(msg: string): void {
+    (this.cfg.log ?? this.noop)({ event: 'config_warning', message: msg });
+  }
+
+  /** Map SessionAgentParts → buildBaseBuilder input (session scope). */
+  private partsToBaseInput(
+    parts: SessionAgentParts,
+  ): Parameters<SmartServer['buildBaseBuilder']>[0] {
+    return {
+      mainLlm: this._mainLlm as ILlm,
+      classifierLlm: this._classifierLlm as ILlm,
+      helperLlm: this._helperLlm,
+      fileLogger: this._fileLogger as ILogger,
+      toolsRag: parts.toolsRag,
+      ragRegistry: parts.ragRegistry,
+      mcpClients: parts.mcpClients,
+      requestLogger: parts.logger,
+      // TODO(task-13): source workerRegistry — building the per-session worker
+      // set requires the buildSessionAgent re-wire loop (cached LLM/embedder +
+      // per-worker slot priority), which is not yet promoted to a standalone
+      // method. Empty until that extraction lands; buildServerCtx is unused so
+      // far, so no caller observes this.
+      workerRegistry: new Map(),
+      applyServerExtras: false,
+    };
+  }
+
+  /**
+   * Assemble an IServerPipelineContext from `this` for a given session scope.
+   * NOT called yet — later tasks invoke it to hand a pipeline plugin its infra.
+   * It just needs to compile here.
+   */
+  /**
+   * Bound reference to buildServerCtx so later tasks can wire it into the
+   * pipeline-plugin path. Also keeps the (currently uncalled) method from
+   * tripping noUnusedLocals until that wiring lands.
+   */
+  protected readonly _buildServerCtx = (scope: {
+    sessionId: string;
+    parts: SessionAgentParts;
+  }): IServerPipelineContext => this.buildServerCtx(scope);
+
+  private buildServerCtx(scope: {
+    sessionId: string;
+    parts: SessionAgentParts;
+  }): IServerPipelineContext {
+    return createServerPipelineContext({
+      resolveLlm: (role) => this.resolveRoleLlm(role),
+      knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
+      toolsRag: this._toolsRagHandle, // undefined → EMPTY_TOOLS_RAG via factory
+      ragRegistry: scope.parts.ragRegistry,
+      callMcp: (n, a, s) => this.callMcp(n, a, s),
+      mcpClients: scope.parts.mcpClients,
+      subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({
+        name: s.name,
+        description: s.description,
+      })),
+      mintStepperId: () => this._mintStepperId(),
+      mintTurnId: () => this._mintTurnId(),
+      logger: this._fileLogger,
+      logLlmCall: (e) => this._requestLogger?.logLlmCall?.(e),
+      createAgentBuilder: () =>
+        this.buildBaseBuilder(this.partsToBaseInput(scope.parts)),
+      makeLlm: (c) => this._makeLlm(c),
+      llmMap: this._llmMap,
+      pipelineFallback: this._pipelineFallback,
+      mainLlm: this._mainLlm as ILlm,
+      helperLlm: this._helperLlm,
+      mainTemp: this._mainTemp ?? 0.7,
+      // TODO(task-13): source workerRegistry — see partsToBaseInput; the
+      // per-session worker re-wire is not yet a standalone method.
+      workerRegistry: new Map(),
+      warn: (m) => this.warn(m),
+    });
+  }
+
+  /**
+   * Assemble a SmartAgentBuilder wired with all shared infra EXCEPT the
+   * coordinator — the part shared by the startup path and buildSessionAgent.
+   * The caller wires the coordinator variant AFTER this returns. Each call site
+   * supplies its own scope's values (startup = global; session = session-scoped);
+   * every `.withXxx` is applied conditionally on its `parts` field so both work.
+   *
+   * `applyServerExtras` gates the startup-only, config/plugin-derived wiring
+   * (circuit breaker, reranker/queryExpander/outputValidator, skill manager,
+   * LLM-call & tool-selection strategies, client adapters, and the YAML `mcp:`
+   * connect path). The per-session re-wire omits these (it inherits a slimmer
+   * agent) so they stay gated to preserve behavior.
+   */
+  private async buildBaseBuilder(parts: {
+    mainLlm: ILlm;
+    classifierLlm: ILlm;
+    helperLlm?: ILlm;
+    fileLogger: ILogger;
+    toolsRag?: IRag;
+    historyRag?: IRag;
+    ragCollections?: Array<{
+      name: string;
+      rag: IRag;
+      meta: { displayName: string; scope: 'global' };
+    }>;
+    ragRegistry?: IRagRegistry;
+    mcpClients?: IMcpClient[];
+    requestLogger?: IRequestLogger;
+    plugins?: LoadedPlugins;
+    workerRegistry: SubAgentRegistry;
+    /** Apply the startup-only config/plugin-derived extras (see method doc). */
+    applyServerExtras: boolean;
+  }): Promise<SmartAgentBuilder> {
+    const pipeline = this.cfg.pipeline;
+    let builder = new SmartAgentBuilder({
+      // Startup connects the YAML `mcp:` block inside builder.build(); the
+      // per-session path injects ready clients via withMcpClients instead.
+      ...(parts.applyServerExtras
+        ? { mcp: pipeline?.mcp ?? this.cfg.mcp }
+        : {}),
+      agent: this.cfg.agent,
+      prompts: this.cfg.prompts,
+      skipModelValidation: this.cfg.skipModelValidation,
+    })
+      .withMainLlm(parts.mainLlm)
+      .withClassifierLlm(parts.classifierLlm)
+      .withLogger(parts.fileLogger)
+      .withMode(this.cfg.mode ?? 'smart');
+
+    if (parts.helperLlm) {
+      builder = builder.withHelperLlm(parts.helperLlm);
+    }
+
+    if (parts.toolsRag) {
+      builder = builder.setToolsRag(parts.toolsRag);
+    }
+    if (parts.historyRag) {
+      builder = builder.setHistoryRag(parts.historyRag);
+    }
+    for (const collection of parts.ragCollections ?? []) {
+      builder = builder.addRagCollection(collection);
+    }
+    if (parts.ragRegistry) {
+      builder = builder.setRagRegistry(parts.ragRegistry);
+    }
+    if (parts.requestLogger) {
+      builder = builder.withRequestLogger(parts.requestLogger);
+    }
+
+    if (parts.applyServerExtras) {
+      const plugins = parts.plugins;
+      if (this.cfg.circuitBreaker) {
+        builder = builder.withCircuitBreaker(this.cfg.circuitBreaker);
+      }
+      if (plugins?.reranker) {
+        builder = builder.withReranker(plugins.reranker);
+      }
+      if (plugins?.queryExpander) {
+        builder = builder.withQueryExpander(plugins.queryExpander);
+      }
+      if (plugins?.outputValidator) {
+        builder = builder.withOutputValidator(plugins.outputValidator);
+      }
+
+      // Skill manager (DI > YAML config > plugin)
+      const skillManager =
+        this.cfg.skillManager ??
+        plugins?.skillManager ??
+        resolveSkillManager(this.cfg.skills);
+      if (skillManager) {
+        builder = builder.withSkillManager(skillManager);
+      }
+
+      // LLM call strategy (from agent config)
+      const strategyName = this.cfg.agent?.llmCallStrategy;
+      if (strategyName) {
+        const {
+          StreamingLlmCallStrategy,
+          NonStreamingLlmCallStrategy,
+          FallbackLlmCallStrategy,
+        } = await import('@mcp-abap-adt/llm-agent');
+        const strategies = {
+          streaming: () => new StreamingLlmCallStrategy(),
+          'non-streaming': () => new NonStreamingLlmCallStrategy(),
+          fallback: () => new FallbackLlmCallStrategy(parts.fileLogger),
+        };
+        const factory = strategies[strategyName];
+        if (factory) {
+          builder = builder.withLlmCallStrategy(factory());
+        }
+      }
+
+      // Tool-selection strategy (from agent.toolSelection config)
+      const toolSelectionCfg = this.cfg.agent?.toolSelection;
+      if (toolSelectionCfg?.strategy) {
+        builder = builder.withToolSelectionStrategy(
+          resolveToolSelectionStrategy(toolSelectionCfg.strategy, {
+            minScore: toolSelectionCfg.minScore,
+          }),
+        );
+      }
+    }
+
+    if (parts.mcpClients) {
+      builder = builder.withMcpClients(parts.mcpClients);
+    }
+
+    if (parts.applyServerExtras) {
+      // Client adapters (DI > plugin; ClineClientAdapter is the default).
+      const { ClineClientAdapter } = await import('@mcp-abap-adt/llm-agent');
+      const adapterSources = [
+        ...(this.cfg.clientAdapters ?? []),
+        ...(parts.plugins?.clientAdapters ?? []),
+        new ClineClientAdapter(),
+      ];
+      for (const adapter of adapterSources) {
+        builder = builder.withClientAdapter(adapter);
+      }
+    }
+
+    if (parts.workerRegistry.size > 0) {
+      builder = builder.withSubAgents(parts.workerRegistry);
+    }
+
+    return builder;
+  }
+
   /**
    * Builds a per-session SmartAgent from injected globals (review HIGH #1 +
    * MEDIUM #3). Re-wires the SubAgent registry + DAG coordinator deps FRESH per
@@ -2105,26 +2348,16 @@ export class SmartServer {
         'buildSessionAgent invoked before primary build() captured globals',
       );
     }
-    let b = new SmartAgentBuilder({
-      agent: this.cfg.agent,
-      prompts: this.cfg.prompts,
-      skipModelValidation: this.cfg.skipModelValidation,
-    })
-      .withMainLlm(this._mainLlm)
-      .withClassifierLlm(this._classifierLlm)
-      .withLogger(this._fileLogger)
-      .withMode(this.cfg.mode ?? 'smart')
-      .withMcpClients(parts.mcpClients) // skips connect + re-vectorize
-      .setRagRegistry(parts.ragRegistry)
-      .withRequestLogger(parts.logger); // per-session token-logger
-    if (this._helperLlm) b = b.withHelperLlm(this._helperLlm);
-    if (parts.toolsRag) b = b.setToolsRag(parts.toolsRag);
-
+    const mainLlm = this._mainLlm;
+    const classifierLlm = this._classifierLlm;
+    const fileLogger = this._fileLogger;
+    const helperLlm = this._helperLlm;
     // FRESH per-session workers — re-wire the registry from the SAME subagent
     // configs the primary build() used, injecting globals + this session's
     // logger + the CACHED per-worker LLM/embedder. No LLM reconstruction.
+    // Built BEFORE the base builder so buildBaseBuilder receives it as input.
+    const registry: SubAgentRegistry = new Map();
     if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
-      const registry: SubAgentRegistry = new Map();
       for (const sub of this.cfg.subAgentConfigs) {
         // Lazy build-on-miss (Fix #18). After PUT /v1/config or hot-reload
         // clears `_workerLlmCache`, the next buildSessionAgent used to throw
@@ -2183,8 +2416,28 @@ export class SmartServer {
           }),
         );
       }
-      b = b.withSubAgents(registry);
+    }
 
+    // Base builder (everything EXCEPT the coordinator). Session-scoped values:
+    // globals captured by the primary build() + this session's logger/registry.
+    // applyServerExtras: false — the per-session agent inherits a slimmer wiring
+    // (no config/plugin-derived extras), matching the prior inline assembly.
+    let b = await this.buildBaseBuilder({
+      mainLlm,
+      classifierLlm,
+      helperLlm,
+      fileLogger,
+      toolsRag: parts.toolsRag,
+      ragRegistry: parts.ragRegistry,
+      mcpClients: parts.mcpClients, // skips connect + re-vectorize
+      requestLogger: parts.logger, // per-session token-logger
+      workerRegistry: registry,
+      applyServerExtras: false,
+    });
+
+    // Per-session coordinator re-wire (workers + stateOracle are fresh per
+    // session; everything else is stateless or LLM-bound).
+    if (this.cfg.subAgentConfigs && this.cfg.subAgentConfigs.length > 0) {
       if (this._stepperCoordinatorHandler) {
         // Stepper coordinator is stateless — reuse the same handler instance
         // across sessions (session context arrives via ctx.sessionId).

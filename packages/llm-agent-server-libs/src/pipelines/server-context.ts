@@ -1,4 +1,9 @@
-import type { ILlm, IPipelineContext, ISubAgent } from '@mcp-abap-adt/llm-agent';
+import type {
+  ILlm,
+  IPipelineContext,
+  ISubAgent,
+  IToolsRagHandle,
+} from '@mcp-abap-adt/llm-agent';
 import type { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import type { NormalizedLlmMap } from '../smart-agent/config.js';
 import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
@@ -22,4 +27,24 @@ export interface IServerPipelineContext extends IPipelineContext {
   /** Session-scoped worker registry (DAG workers / linear subagents). */
   workerRegistry: ReadonlyMap<string, ISubAgent>;
   warn(msg: string): void;
+}
+
+/** Always-present empty handle for no-RAG/no-MCP deployments. */
+export const EMPTY_TOOLS_RAG: IToolsRagHandle = {
+  query: async () => [],
+  lookup: () => undefined,
+};
+
+/** Deps = the full context minus toolsRag (which the factory defaults). */
+export type ServerPipelineContextDeps = Omit<
+  IServerPipelineContext,
+  'toolsRag'
+> & {
+  toolsRag?: IToolsRagHandle;
+};
+
+export function createServerPipelineContext(
+  deps: ServerPipelineContextDeps,
+): IServerPipelineContext {
+  return { ...deps, toolsRag: deps.toolsRag ?? EMPTY_TOOLS_RAG };
 }
