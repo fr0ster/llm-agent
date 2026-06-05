@@ -47,3 +47,11 @@ export interface IPipelineContext {
   logger?: ILogger;
   logLlmCall?(entry: LlmCallEntry): void;
 }
+
+/** A pipeline plugin = the implementation of an agent variant. It names itself,
+ *  validates its own config dialect, and builds the agent. */
+export interface IPipelinePlugin<Config = unknown> {
+  readonly name: string;
+  parseConfig(raw: unknown): Config;
+  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+}

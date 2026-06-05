@@ -106,6 +106,13 @@ export type {
   PipelineFactoryKind,
 } from './pipeline-factory.js';
 export type {
+  IPipelineContext,
+  IPipelineInstance,
+  IPipelinePlugin,
+  IReconfigurableSmartAgent,
+  MaybePromise,
+} from './pipeline-plugin.js';
+export type {
   IPlanner,
   PlannerCatalogEntry,
   PlannerInput,
