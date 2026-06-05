@@ -41,7 +41,7 @@ captured from the codebase). Build after each task so `tsc` validates wiring.
 | `packages/llm-agent-server-libs/src/legacy/{flat,linear,dag,stepper}.ts` (create) | curated re-export bundles of the old components | 4 |
 | `packages/llm-agent-server-libs/package.json` (modify) | subpath `exports` for `./<flow>` and `./legacy/<flow>` | 4 |
 | `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (modify) | replace the coordinator gate with registry resolve + `build()`; `plugins:` loader; close/recreate | 5 |
-| `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (create) | relocated variant parsers (stepper/dag/linear) the plugins call | 5 |
+| `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (create) | permanent facade: re-exports the stepper/dag parsers from `config.ts` (nothing moves) + native `parseLinearConfig` | 3 |
 | `packages/llm-agent-server-libs/src/smart-agent/config.ts` (modify) | remove top-level `coordinator:` dispatch (parsers relocated, not deleted); add `pipeline:` + `plugins:` parsing | 5 |
 | `packages/llm-agent-server-libs/src/pipelines/__tests__/conformance.test.ts` (create) | registry conformance + duplicate fail-fast | 6 |
 
@@ -1243,37 +1243,47 @@ change won't compile.** Clean-break migration:
   Run `npm run build` → clean (it surfaces every remaining `pipeline.*` reference)
   before proceeding.
 
-- [ ] **Step 1: Build the registry**
+- [ ] **Step 1: Build the registry INTO A FIELD (F1)**
 
-After plugins are loaded (~`:1058`), assemble:
+The registry must outlive the startup scope — `buildSessionAgent` (`:2098`, a
+separate method) resolves from it per session. Store it on the instance, not a
+local. Add `private _pipelineRegistry!: Map<string, IPipelinePlugin>;` and, right
+after plugins are loaded (~`:1058`), populate it:
 
 ```ts
 const builtins: IPipelinePlugin[] = [
   new FlatPipelinePlugin(), new LinearPipelinePlugin(),
   new DagPipelinePlugin(), new StepperPipelinePlugin(),
 ];
-const registry = new Map<string, IPipelinePlugin>();
-for (const p of builtins) registry.set(p.name, p);
+this._pipelineRegistry = new Map<string, IPipelinePlugin>();
+for (const p of builtins) this._pipelineRegistry.set(p.name, p);
 for (const [name, p] of plugins.pipelinePlugins) {
-  if (registry.has(name)) throw new Error(`pipeline name '${name}' from a plugin collides with a built-in`);
-  registry.set(name, p);
+  if (this._pipelineRegistry.has(name)) {
+    throw new Error(`pipeline name '${name}' from a plugin collides with a built-in`);
+  }
+  this._pipelineRegistry.set(name, p);
 }
 ```
 
-- [ ] **Step 2: Resolve + build, replacing the gate**
+- [ ] **Step 2: Resolve + build via a shared private method, replacing the gate**
+
+Add one private method that BOTH the startup path and `buildSessionAgent` call —
+so resolution reads from `this._pipelineRegistry` regardless of scope:
+
+```ts
+private async buildPipelineInstance(scope: { sessionId: string; parts: SessionAgentParts }): Promise<IPipelineInstance> {
+  const name = this.cfg.pipeline?.name ?? 'flat';
+  const plugin = this._pipelineRegistry.get(name);
+  if (!plugin) throw new Error(`unknown pipeline '${name}'; available: ${[...this._pipelineRegistry.keys()].join(', ')}`);
+  const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
+  return plugin.build(cfg, this.buildServerCtx(scope));
+}
+```
 
 Replace the 3-way coordinator gate (`smart-server.ts:1267-1628`) AND the
 per-session coordinator re-wire (`buildSessionAgent` `:2098-2212` coordinator part)
-with:
-
-```ts
-const name = this.cfg.pipeline?.name ?? 'flat';
-const plugin = registry.get(name);
-if (!plugin) throw new Error(`unknown pipeline '${name}'; available: ${[...registry.keys()].join(', ')}`);
-const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
-const inst = await plugin.build(cfg, this.buildServerCtx({ sessionId, parts }));
-// inst.agent → serve; inst.close() → on session dispose / shutdown.
-```
+with a call to `this.buildPipelineInstance({ sessionId, parts })`; serve
+`inst.agent`, dispose via `inst.close()`.
 
 - [ ] **Step 3: Lifecycle** — hold `inst` per session; on shutdown / before recreate
 call `inst.close()`; on LLM hot-swap, if `'reconfigure' in inst.agent` call it, else
