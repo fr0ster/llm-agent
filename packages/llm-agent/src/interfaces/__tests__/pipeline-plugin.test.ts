@@ -6,6 +6,7 @@ import type {
   MaybePromise,
 } from '../pipeline-plugin.js';
 import type { IPipelineContext, IPipelinePlugin } from '../pipeline-plugin.js';
+import type { LoadedPlugins, PluginExports } from '../plugin.js';
 
 describe('pipeline-plugin runnable contracts', () => {
   it('IPipelineInstance exposes agent + close()', async () => {
@@ -53,5 +54,26 @@ describe('IPipelinePlugin', () => {
     assert.deepEqual(plugin.parseConfig({ depth: 3 }), { depth: 3 });
     const inst = await plugin.build({ depth: 3 }, {} as IPipelineContext);
     assert.equal(typeof inst.close, 'function');
+  });
+});
+
+describe('PluginExports / LoadedPlugins carry pipeline plugins', () => {
+  it('PluginExports.pipelinePlugins is an optional record', () => {
+    const p: IPipelinePlugin = {
+      name: 'x',
+      parseConfig: (r) => r,
+      build: async () => ({ agent: {} as never, close: async () => {} }),
+    };
+    const exports: PluginExports = { pipelinePlugins: { x: p } };
+    assert.equal(exports.pipelinePlugins?.x.name, 'x');
+  });
+
+  it('LoadedPlugins has pipelinePlugins + pipelinePluginSources maps', () => {
+    const loaded: Pick<LoadedPlugins, 'pipelinePlugins' | 'pipelinePluginSources'> = {
+      pipelinePlugins: new Map(),
+      pipelinePluginSources: new Map(),
+    };
+    assert.ok(loaded.pipelinePlugins instanceof Map);
+    assert.ok(loaded.pipelinePluginSources instanceof Map);
   });
 });

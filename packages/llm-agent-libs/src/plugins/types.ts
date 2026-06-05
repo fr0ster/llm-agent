@@ -26,6 +26,8 @@ export function emptyLoadedPlugins(): LoadedPlugins {
     mcpClients: [],
     clientAdapters: [],
     apiAdapters: new Map(),
+    pipelinePlugins: new Map(),
+    pipelinePluginSources: new Map(),
     loadedFiles: [],
     errors: [],
   };
