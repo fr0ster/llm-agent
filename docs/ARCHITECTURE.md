@@ -982,7 +982,7 @@ pluggable:
   - `SelfDispatch` — call the agent's own LLM (no subagent needed).
   - `HybridDispatch` — try a primary, fall back to a secondary.
 - **`IActivationStrategy`** — when the coordinator activates at all.
-  - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or setting a YAML `coordinator:` block is itself the opt-in signal.
+  - `ExplicitActivation` (default) — always activate; calling `withCoordinator()` or selecting a coordinator-bearing pipeline (`pipeline.name: linear|dag|stepper`) is itself the opt-in signal.
   - `AutoActivation` — activate only when subagents are registered OR the active skill declares `steps:`. Use for graceful fallback to `tool-loop` in mixed traffic.
 
 ### Task composition & clarification
@@ -1046,18 +1046,27 @@ new SmartAgentBuilder()
   .build();
 ```
 
-YAML usage:
+YAML usage — select a coordinator-bearing pipeline by name and pass its
+settings under `pipeline.config`:
 
 ```yaml
-coordinator:
-  planning: replan-on-error
-  dispatch: hybrid
-  plannerLlm: helper
+pipeline:
+  name: linear              # flat | linear | dag | stepper | <plugin name>
+  config:
+    planning: replan-on-error
+    dispatch: hybrid
+    plannerLlm: helper
 ```
 
-The coordinator does NOT replace `DefaultPipeline`; it is one optional stage
-inside it. All earlier stages (classify, rag, tool-select, assemble) still run
-and feed the coordinator's planner context.
+The pipeline is resolved by `pipeline.name` — a built-in (`flat`, `linear`,
+`dag`, `stepper`) or a custom pipeline plugin (loaded via `plugins: [<specifier>]`).
+The old top-level `coordinator:` block has been removed; its keys now live under
+`pipeline.config`, where each pipeline's `parseConfig` consumes the same dialect
+(linear → `planning`/`dispatch`; dag → `planner`/`reviewer`/`finalizer`; stepper →
+`mode`/`knowledgeSeed`/`maxParallelSteps`). The coordinator does NOT replace
+`DefaultPipeline`; it is one optional stage inside it. All earlier stages
+(classify, rag, tool-select, assemble) still run and feed the coordinator's
+planner context. See [docs/PIPELINES.md](PIPELINES.md) for per-pipeline config.
 
 See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
 
