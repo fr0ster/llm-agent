@@ -175,3 +175,41 @@ test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects
     await stub.close();
   }
 });
+
+test('explicit empty mcpClients: [] disables MCP and overrides YAML mcp: (no connect)', async () => {
+  // DI precedence: an explicitly-provided client set — even an EMPTY array — must
+  // override the YAML `mcp:` block. `mcpClients: []` is a deliberate "disable MCP"
+  // signal; the startup builder must receive withMcpClients([]) (short-circuit) and
+  // NOT auto-connect the YAML block. Regression guard for the `hasDiOrPlugin`
+  // presence-vs-length check.
+  const stub = await startMcpStub(['EchoTool']);
+  const server = new SmartServer({
+    port: 0,
+    llm: { apiKey: 'test', model: 'test-model' },
+    skipModelValidation: true,
+    mode: 'smart',
+    rag: { type: 'in-memory' },
+    // Explicit empty DI set ⇒ MCP disabled, even though a YAML mcp: is present.
+    mcpClients: [],
+    mcp: { type: 'http', url: stub.url },
+  });
+
+  let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
+  try {
+    handle = await server.start();
+    const internals = server as unknown as Internals;
+    // The YAML mcp: must NOT have been connected.
+    assert.equal(
+      stub.initializeCount(),
+      0,
+      'explicit mcpClients: [] must override YAML mcp: — zero connections',
+    );
+    assert.ok(
+      internals._sharedMcpClients && internals._sharedMcpClients.length === 0,
+      'shared client set is the explicit empty DI array (MCP disabled)',
+    );
+  } finally {
+    if (handle) await handle.close();
+    await stub.close();
+  }
+});

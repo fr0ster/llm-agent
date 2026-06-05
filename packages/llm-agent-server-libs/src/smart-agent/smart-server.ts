@@ -1195,8 +1195,14 @@ export class SmartServer {
     //     and per-session agents reuse the SAME single connection, then build
     //     the `_toolsRagHandle` catalog over them. (Restores the
     //     tool-vectorization the inject-skip regressed, with no double-connect.)
-    const hasDiOrPlugin =
-      diOrPluginMcpClients !== undefined && diOrPluginMcpClients.length > 0;
+    // DI precedence semantics: an explicitly-provided client set (even an EMPTY
+    // array) overrides YAML `mcp:`. `cfg.mcpClients: []` is a deliberate "disable
+    // MCP / override plugin+YAML" signal — it must take the DI branch (inject `[]`
+    // → builder short-circuits via withMcpClients([]) → no YAML auto-connect), NOT
+    // fall through to the YAML branch. So gate on presence (`!== undefined`), not
+    // length. (`diOrPluginMcpClients` is already undefined when neither DI nor a
+    // non-empty plugin set was provided — see its resolution above.)
+    const hasDiOrPlugin = diOrPluginMcpClients !== undefined;
 
     let mcpClients: IMcpClient[] | undefined;
     if (hasDiOrPlugin) {
