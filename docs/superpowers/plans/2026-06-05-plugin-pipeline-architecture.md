@@ -558,38 +558,22 @@ git commit -m "feat(plugins): merge pipeline plugins with reject-duplicate + sou
 
 **Files:**
 - Create: `packages/llm-agent-server-libs/src/pipelines/server-context.ts`
-- Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/server-context.test.ts`
 
-- [ ] **Step 1: Write the failing test**
+> Type-only interface — no runtime export. A `node:test` would falsely pass (tsx
+> erases types), so the gate here is `npm run build` (server-context.ts is a real
+> src file `tsc` compiles) PLUS its real behavioral validation downstream: Task 7's
+> `fakeServerCtx(): IServerPipelineContext` and the built-in plugins' `build(_, ctx)`
+> signatures force a full structural check when those tasks compile. No standalone
+> type-only test (avoids the Phase-1 F1 trap at the server-libs layer).
 
-```ts
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-import type { IServerPipelineContext } from '../server-context.js';
-
-describe('IServerPipelineContext', () => {
-  it('extends IPipelineContext with createAgentBuilder + dag/linear materials', () => {
-    // Compile-time shape check via a partial stub; assert the keys we rely on.
-    const keys: (keyof IServerPipelineContext)[] = [
-      'resolveLlm', 'createAgentBuilder', 'makeLlm', 'workerRegistry', 'mintTurnId',
-    ];
-    assert.equal(keys.length, 5);
-  });
-});
-```
-
-- [ ] **Step 2: Run to verify it fails**
-
-Run: `cd packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec 'src/pipelines/__tests__/server-context.test.ts'`
-Expected: FAIL — `Cannot find module '../server-context.js'`.
-
-- [ ] **Step 3: Write the implementation**
+- [ ] **Step 1: Write the implementation**
 
 ```ts
 // packages/llm-agent-server-libs/src/pipelines/server-context.ts
 import type { ILlm, IPipelineContext, ISubAgent } from '@mcp-abap-adt/llm-agent';
 import type { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import type { NormalizedLlmMap, SmartServerLlmConfig } from '../smart-agent/config.js';
+import type { NormalizedLlmMap } from '../smart-agent/config.js';
+import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
 /**
  * Server-side pipeline context. Extends the portable core IPipelineContext with
@@ -613,21 +597,24 @@ export interface IServerPipelineContext extends IPipelineContext {
 }
 ```
 
-> NOTE: `SmartAgentBuilder` is exported from `@mcp-abap-adt/llm-agent-libs`
-> (`builder.ts`). `ISubAgent` is a core type (`@mcp-abap-adt/llm-agent`).
-> `NormalizedLlmMap` / `SmartServerLlmConfig` are exported from `config.js`
-> (re-exported by the server-libs barrel). If `tsc` reports any of these as
-> not exported, add the missing `export` at its source — do not duplicate the type.
+> NOTE on imports (verified): `SmartAgentBuilder` ← `@mcp-abap-adt/llm-agent-libs`
+> (`builder.ts`); `ISubAgent` ← core `@mcp-abap-adt/llm-agent`; `NormalizedLlmMap`
+> ← `../smart-agent/config.js` (declared there, `config.ts:38`); **`SmartServerLlmConfig`
+> ← `../smart-agent/smart-server.js`** (declared/exported at `smart-server.ts:88`;
+> `config.ts` only imports it as a type and does NOT re-export it). All are
+> `import type`, so there is no runtime import cycle with `smart-server.ts`.
 
-- [ ] **Step 4: Run to verify it passes**
+- [ ] **Step 2: Verify it compiles**
 
-Run: `cd packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec 'src/pipelines/__tests__/server-context.test.ts'`
-Expected: PASS (1 test). Then `npm run build` (root) — clean compile.
+Run: `cd /home/okyslytsia/prj/llm-agent && npm run build`
+Expected: clean compile (the interface is a valid src file). Its structural
+correctness is enforced downstream when Task 7's `fakeServerCtx` and the plugins'
+`build(_, ctx)` compile against it.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 3: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/pipelines/server-context.ts packages/llm-agent-server-libs/src/pipelines/__tests__/server-context.test.ts
+git add packages/llm-agent-server-libs/src/pipelines/server-context.ts
 git commit -m "feat(pipelines): IServerPipelineContext (createAgentBuilder + dag/linear materials)"
 ```
 
@@ -751,9 +738,27 @@ git commit -m "refactor(server): extract buildBaseBuilder + createServerPipeline
 ### Task 7: Stepper pipeline plugin (exemplar — full code)
 
 **Files:**
-- Create: `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (relocation target; see Task 16)
+- Create: `packages/llm-agent-server-libs/src/pipelines/parsers.ts` (**re-export facade now**, physically filled in Task 16)
 - Create: `packages/llm-agent-server-libs/src/pipelines/stepper.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/stepper.test.ts`
+
+> **Parser facade (fixes the Task-7↔Task-16 ordering, F2/F3).** All plugins and the
+> legacy bundles import parsers from `./parsers.js` (or `../pipelines/parsers.js`)
+> from the start. `parsers.ts` begins as a **thin re-export facade** over the
+> still-in-place `config.ts` definitions, so every task builds green; Task 16 later
+> physically MOVES the bodies into `parsers.ts` and removes the `config.ts`
+> originals together with the coordinator gate — importers never change.
+
+- [ ] **Step 0: Create the parser facade**
+
+```ts
+// packages/llm-agent-server-libs/src/pipelines/parsers.ts
+// Facade now; Task 16 moves the real bodies here and drops the config.ts copies.
+export {
+  parseStepperCoordinatorConfig,
+  type StepperCoordinatorConfig,
+} from '../smart-agent/config.js';
+```
 
 - [ ] **Step 1: Write the failing test**
 
@@ -877,8 +882,8 @@ export class StepperPipelinePlugin implements IPipelinePlugin<StepperCoordinator
 }
 ```
 
-> `parseStepperCoordinatorConfig` + `StepperCoordinatorConfig` are RELOCATED into
-> `parsers.ts` in Task 16; until then import them from `../smart-agent/config.js`.
+> `parseStepperCoordinatorConfig` + `StepperCoordinatorConfig` import from
+> `./parsers.js` (the Step-0 facade); Task 16 moves the bodies there transparently.
 > Verify the `spec` field set against `StepperFactoryConfig =
 > Omit<StepperCompositionSpec,'planner'|'executor'>` — `tsc` will flag any
 > missing/extra field.
@@ -962,12 +967,48 @@ export class DagPipelinePlugin implements IPipelinePlugin<DagPipelineConfig> {
 - Create: `packages/llm-agent-server-libs/src/pipelines/linear.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/linear.test.ts`
 
+- [ ] **Step 0: Add `parseLinearConfig` to the parser facade** (`parsers.ts`). It
+is NEW (no config.ts original), so define it here now — wrapping the exported
+resolvers (`resolveCoordinatorPlanning`/`resolveCoordinatorDispatchKind`/
+`resolveCoordinatorDispatch`/`resolveCoordinatorActivation`, all exported from
+`config.ts:280-353`):
+
+```ts
+// append to packages/llm-agent-server-libs/src/pipelines/parsers.ts
+import type { CoordinatorHandlerDeps } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  resolveCoordinatorPlanning,
+  resolveCoordinatorDispatch,
+  resolveCoordinatorDispatchKind,
+} from '../smart-agent/config.js';
+import type { IServerPipelineContext } from './server-context.js';
+
+export async function parseLinearConfig(
+  cfg: Record<string, unknown>,
+  ctx: IServerPipelineContext,
+): Promise<CoordinatorHandlerDeps> {
+  const plannerLlm = await ctx.resolveLlm('planner');
+  const planningKind = (cfg.planning as string) ?? 'one-shot';
+  const dispatchKind = resolveCoordinatorDispatchKind(cfg.dispatch as string | undefined);
+  return {
+    planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
+    dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm, undefined),
+    maxSteps: (cfg.maxSteps as number) ?? 10,
+    maxRetriesPerStep: (cfg.maxRetriesPerStep as number) ?? 1,
+    failPolicy: ((cfg.failPolicy as 'abort' | 'continue') ?? 'abort'),
+  };
+}
+```
+
+> Verify `resolveCoordinatorDispatch`'s 3rd arg (the context-builder) against
+> `config.ts:310` — pass `undefined` if it is optional, else thread the builder
+> the server uses. `tsc` flags a mismatch. (`resolveCoordinatorActivation` is for
+> the `coordinator-activate` stage, wired by the builder, not this deps object.)
+
 - [ ] **Step 1–2:** failing test (`name='linear'`, config `{ planning: 'one-shot', dispatch: 'self' }`), run → FAIL.
 
-- [ ] **Step 3: Write the plugin** — linear needs RESOLVED strategies. The resolver
-helpers (`resolveCoordinatorPlanning`/`Dispatch`/`Activation`, `config.ts:280-353`)
-are relocated to `parsers.ts` in Task 16; the plugin builds `CoordinatorHandlerDeps`
-and wraps `LinearFactory`:
+- [ ] **Step 3: Write the plugin** — linear builds `CoordinatorHandlerDeps` via the
+`parseLinearConfig` facade helper and wraps `LinearFactory`:
 
 ```ts
 import type { IPipelineInstance, IPipelinePlugin } from '@mcp-abap-adt/llm-agent';
@@ -998,11 +1039,9 @@ export class LinearPipelinePlugin implements IPipelinePlugin<LinearPipelineConfi
 }
 ```
 
-> `parseLinearConfig(cfg, ctx)` (created in Task 16, in `parsers.ts`) wraps the
-> existing `resolveCoordinatorPlanning`/`resolveCoordinatorDispatch`/
-> `resolveCoordinatorActivation` using `ctx.resolveLlm('planner')`, returning a
+> `parseLinearConfig(cfg, ctx)` is the Step-0 helper in `parsers.ts`; it returns a
 > `CoordinatorHandlerDeps { planning, dispatch, maxSteps, maxRetriesPerStep,
-> failPolicy }`.
+> failPolicy }` (the verbatim shape from `coordinator.ts:31-37`).
 
 - [ ] **Step 4: Run → PASS. Step 5: Commit** `feat(pipelines): built-in linear pipeline plugin`.
 
@@ -1052,7 +1091,7 @@ export { DagFactory } from '../factories/index.js';
 export { StepperCoordinatorHandler } from '../smart-agent/stepper-coordinator-handler.js';
 export { buildStepperRoot, buildFromComposition } from '../smart-agent/build-stepper-root.js';
 export { CyclicFactory, PlannedFactory, DeepStepperFactory, buildStepperCoordinator } from '../factories/index.js';
-export { parseStepperCoordinatorConfig } from '../smart-agent/config.js';
+export { parseStepperCoordinatorConfig } from '../pipelines/parsers.js'; // facade — survives the Task-16 move
 ```
 ```ts
 // src/legacy/linear.ts
@@ -1206,12 +1245,12 @@ factory in `plugins.embedderFactories`).
 
 ### Task 16: config clean break + parser relocation (F2/F4)
 
-- [ ] **Step 1: Relocate variant parsers** into
-`packages/llm-agent-server-libs/src/pipelines/parsers.ts`:
-  - move `parseStepperCoordinatorConfig` (+ `StepperCoordinatorConfig`, `MODE_FLOW_PRESET`) from `config.ts:1586-1750`/`:1440-1447`;
-  - add `parseLinearConfig(cfg, ctx)` wrapping `resolveCoordinatorPlanning`/`Dispatch`/`Activation` (relocate those from `config.ts:280-353`);
-  - re-export `buildDagCoordinatorDeps` for the dag plugin.
-  Update the plugin imports (Tasks 7/9) to `./parsers.js`.
+- [ ] **Step 1: Fill the parser facade.** `parsers.ts` already exists (Task 7
+Step 0 = re-export facade; Task 9 Step 0 added `parseLinearConfig`). Now **physically
+MOVE** the bodies in so it stops re-exporting from `config.ts`:
+  - move `parseStepperCoordinatorConfig` (+ `StepperCoordinatorConfig`, `MODE_FLOW_PRESET`) from `config.ts:1586-1750`/`:1440-1447` INTO `parsers.ts`, replacing the Step-0 `export { … } from '../smart-agent/config.js'` line with the real definitions;
+  - keep `parseLinearConfig` (already here); the resolvers it calls stay exported from `config.ts` (they are generic helpers, not coordinator dispatch).
+  Importers (plugins Tasks 7/9, legacy Task 11) already point at `parsers.js` — **no importer changes**, and the build stays green because the move + the gate removal (Step 2) happen together.
 
 - [ ] **Step 2: Remove top-level coordinator dispatch** from `config.ts`/`smart-server.ts`:
   delete `usesStepper` (`smart-server.ts:883-896`) and `assertCoordinatorConfigShape`
