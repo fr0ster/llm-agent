@@ -1153,9 +1153,9 @@ export class SmartServer {
     // Deployments that previously declared `pipeline.rag.{name}` collections must
     // move them to top-level `rag:` (or register them as plugin RAG).
 
-    // MCP clients (DI > plugin; YAML fallback handled by builder).
+    // MCP clients (DI > plugin; YAML connected ONCE by buildSharedPipelineInfra).
     // Resolved HERE because the shared pipeline infra below also reads it.
-    const mcpClients =
+    const diOrPluginMcpClients =
       this.cfg.mcpClients ??
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
 
@@ -1169,8 +1169,21 @@ export class SmartServer {
     await this.buildSharedPipelineInfra({
       toolsRag,
       resolvedEmbedder,
-      mcpClients,
+      mcpClients: diOrPluginMcpClients,
     });
+
+    // F1: connect MCP exactly ONCE. `buildSharedPipelineInfra` either reused the
+    // DI/plugin clients or connected the YAML `mcp:` block into
+    // `this._sharedMcpClients`. Hand THAT single connected set to the builder via
+    // `withMcpClients` so `SmartAgentBuilder.build()` (builder.ts:923 — `if
+    // (this._mcpClients)` short-circuits the `cfg.mcp` auto-connect) does NOT open
+    // a second connection. For YAML-only configs this replaces the previous
+    // `undefined` → builder-auto-connect path; `ctx.callMcp`, the startup agent's
+    // tools, and the per-session agent's tools now share ONE client set.
+    const mcpClients =
+      this._sharedMcpClients && this._sharedMcpClients.length > 0
+        ? this._sharedMcpClients
+        : undefined;
 
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
     // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
@@ -1861,6 +1874,23 @@ export class SmartServer {
         return catalogCache?.get(name);
       },
     };
+
+    // F2: eagerly populate the MCP tool catalog at startup (MCP is connected
+    // above), so the SYNC `lookup(name)` contract (IToolsRagHandle.lookup) returns
+    // a tool schema BEFORE any `query()` runs. `ensureCatalog` is idempotent —
+    // later `query()` calls reuse the cached map. Guard against a catalog-load
+    // failure so startup never crashes: on failure `catalogCache` stays unset and
+    // `lookup` returns undefined (today's worst case), while the happy path works.
+    try {
+      await ensureCatalog();
+    } catch (err) {
+      this.cfg.log?.({
+        event: 'tools_catalog_eager_load_failed',
+        message:
+          'tools catalog eager-load failed; lookup() returns undefined until first query()',
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**
@@ -2108,9 +2138,15 @@ export class SmartServer {
     applyServerExtras: boolean;
   }): Promise<SmartAgentBuilder> {
     let builder = new SmartAgentBuilder({
-      // Startup connects the YAML `mcp:` block inside builder.build(); the
-      // per-session path injects ready clients via withMcpClients instead.
-      ...(parts.applyServerExtras ? { mcp: this.cfg.mcp } : {}),
+      // F1: the YAML `mcp:` block is connected ONCE up-front (in
+      // buildSharedPipelineInfra) and injected here via `withMcpClients` below.
+      // Only pass `mcp:` to the builder constructor as a LAST-RESORT auto-connect
+      // path when NO pre-connected clients are supplied — otherwise omit it so
+      // build() cannot open a second connection. (build() already short-circuits
+      // on `this._mcpClients`; dropping the key is belt-and-suspenders.)
+      ...(parts.applyServerExtras && !parts.mcpClients
+        ? { mcp: this.cfg.mcp }
+        : {}),
       agent: this.cfg.agent,
       prompts: this.cfg.prompts,
       skipModelValidation: this.cfg.skipModelValidation,
