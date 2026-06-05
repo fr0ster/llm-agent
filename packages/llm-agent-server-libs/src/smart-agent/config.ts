@@ -569,6 +569,9 @@ agent:
 log: smart-server.log                 # path to log file; omit for stdout
 # logDir: sessions                    # Directory for detailed session debug logs
 # pluginDir: ./my-plugins             # Additional plugin directory (loaded after defaults)
+# plugins:                            # Explicit plugin module specifiers (npm packages or paths)
+#   - "@scope/my-pipeline-plugin"     #   bare specifier resolved from cwd
+#   - ./local-plugin.mjs              #   relative path resolved against cwd
 
 # subagents:                          # Optional: nested agents callable from pipeline
 #   - name: code-reviewer             # Used as stage config: { agent: code-reviewer }
@@ -946,6 +949,9 @@ function parseSubAgents(
     if ((subYaml as { pluginDir?: unknown }).pluginDir !== undefined) {
       unsupported.push('pluginDir');
     }
+    if ((subYaml as { plugins?: unknown }).plugins !== undefined) {
+      unsupported.push('plugins');
+    }
     if ((subYaml as { clientAdapter?: unknown }).clientAdapter !== undefined) {
       unsupported.push('clientAdapter');
     }
@@ -1240,6 +1246,12 @@ export function resolveSmartServerConfig(
     logDir: (args['log-dir'] as string) ?? get(yaml, 'logDir') ?? null,
     pluginDir:
       (args['plugin-dir'] as string) ?? get(yaml, 'pluginDir') ?? undefined,
+    plugins: (() => {
+      const raw = get(yaml, 'plugins');
+      if (!Array.isArray(raw)) return undefined;
+      const specs = raw.filter((s): s is string => typeof s === 'string');
+      return specs.length > 0 ? specs : undefined;
+    })(),
     ...(() => {
       const subAgentConfigs = parseSubAgents(
         yaml,

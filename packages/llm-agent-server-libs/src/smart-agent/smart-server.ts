@@ -5,6 +5,9 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import http from 'node:http';
+import { createRequire } from 'node:module';
+import { resolve as pathResolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import type {
   EmbedderFactory,
   IClientAdapter,
@@ -26,6 +29,7 @@ import type {
   LoadedPlugins,
   Message,
   NormalizedRequest,
+  PluginExports,
   StreamToolCall,
   SubAgentRegistry,
   VectorRag,
@@ -59,6 +63,7 @@ import {
   type KnowledgeBackend,
   KnowledgeRag,
   makeLlm,
+  mergePluginExports,
   SessionGraphFactory,
   SessionLogger,
   SessionRegistry,
@@ -210,6 +215,14 @@ export interface SmartServerConfig {
   configFile?: string;
   /** Additional plugin directory (merged with defaults). Used by the default FileSystemPluginLoader. */
   pluginDir?: string;
+  /**
+   * Explicit plugin module specifiers (npm package names or paths) to
+   * dynamically import. Their full {@link PluginExports} (pipelinePlugins,
+   * embedderFactories, mcpClients, …) are merged before RAG/embedder build.
+   * Relative paths resolve against the user's cwd; bare specifiers via
+   * `require.resolve` from cwd.
+   */
+  plugins?: string[];
   /** Custom plugin loader. When set, replaces the default FileSystemPluginLoader. */
   pluginLoader?: IPluginLoader;
   /** Pre-built embedder injected via DI. Takes precedence over config-driven selection. */
@@ -1081,6 +1094,26 @@ export class SmartServer {
     }
     if (plugins.errors.length > 0) {
       log({ event: 'plugin_errors', errors: plugins.errors });
+    }
+
+    // ---- Explicit plugin specifiers (`plugins: [...]`) -------------------
+    // Dynamically import each module specifier and merge its FULL
+    // PluginExports (pipelinePlugins, embedderFactories, mcpClients, …) into
+    // the same LoadedPlugins object. Done BEFORE the embedder/RAG build below
+    // so plugin-supplied embedder factories are visible.
+    const requireFromCwd = createRequire(`${process.cwd()}/`);
+    for (const spec of this.cfg.plugins ?? []) {
+      // Resolve to an ABSOLUTE path against the USER's cwd, then import via
+      // a file URL. A bare `await import('./x.js')` would resolve relative to
+      // smart-server.js, not the user's cwd.
+      const abs = spec.startsWith('.')
+        ? pathResolve(process.cwd(), spec)
+        : spec.startsWith('/')
+          ? spec
+          : requireFromCwd.resolve(spec);
+      const mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+      const registered = mergePluginExports(plugins, mod, spec);
+      log({ event: 'plugin_specifier_loaded', spec, registered });
     }
 
     // ---- Pipeline-plugin registry (sub-goal C) ---------------------------
