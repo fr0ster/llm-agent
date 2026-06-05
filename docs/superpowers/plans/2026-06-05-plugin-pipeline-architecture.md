@@ -69,20 +69,25 @@ identified concretely from the codebase, with file:line anchors.
 - [ ] **Step 1: Create the config**
 
 ```jsonc
-// packages/llm-agent/tsconfig.test.json — type-check sources INCLUDING tests.
-// Build still uses tsconfig.json (which excludes tests); this is gate-only.
+// packages/llm-agent/tsconfig.test.json — type-checks ONLY the new contract test
+// (and, transitively, everything it imports). NOT a blanket src/**/* — the package
+// already has many src/interfaces/__tests__/*.contract.test.ts that the build
+// excludes and that were never type-checked; a wide include would fail the gate on
+// unrelated old tests. tsc follows the test file's imports, so the contract types
+// still get checked. Build still uses tsconfig.json; this is gate-only.
 {
   "extends": "./tsconfig.json",
   "compilerOptions": { "noEmit": true },
-  "include": ["src/**/*"],
-  "exclude": ["dist"]
+  "include": ["src/interfaces/__tests__/pipeline-plugin.test.ts"]
 }
 ```
 
-- [ ] **Step 2: Verify it type-checks the package as-is (baseline green)**
+- [ ] **Step 2: Note — no baseline run yet**
 
-Run: `cd packages/llm-agent && npx tsc -p tsconfig.test.json --noEmit`
-Expected: PASS (no test files referencing missing types yet).
+The included file does not exist until Task 1 Step 1, so
+`tsc -p tsconfig.test.json` would report `TS18003: No inputs were found`. That is
+expected; the gate is first exercised (RED) in Task 1 Step 2 once the test file
+exists. Do not run it here.
 
 - [ ] **Step 3: Commit**
 
@@ -635,9 +640,11 @@ In `smart-server.ts` + `config.ts`. Plugins load at `:1058` (before RAG `:1084`)
   the host passes to plugins. `resolveLlm` closes over the role-LLM map;
   `createAgentBuilder` = Task 6; `knowledgeRagFor`/`toolsRag`/`mintStepperId`/
   `mintTurnId` from the existing session wiring. **`toolsRag` is always present**:
-  when no tools RAG is configured, supply an **empty `IToolsRagHandle`** (a handle
-  whose query returns `[]`) so the contract never yields `undefined`. Test: a
-  no-RAG/no-MCP config still yields a working `ctx.toolsRag` (query returns `[]`).
+  when no tools RAG is configured, supply an **empty `IToolsRagHandle`** that
+  implements **both** members per `knowledge-rag.ts:59` —
+  `{ query: async () => [], lookup: () => undefined }` — so neither method is
+  `undefined`. Test: a no-RAG/no-MCP config yields a working `ctx.toolsRag` where
+  `await query('x')` is `[]` and `lookup('x')` is `undefined`.
 - **Task 14 (registry + build, replaces gate):** build `Map<string, IPipelinePlugin>`
   = 4 built-ins (static) + `LoadedPlugins.pipelinePlugins`; resolve `pipeline.name`;
   `parseConfig` then `build(serverCtx)`. **Replace** the 3-way coordinator gate
