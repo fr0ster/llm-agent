@@ -628,24 +628,15 @@ Do it before the host integration (Tasks 13–16) and before wiring built-ins.
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/build-base-builder.test.ts` (env-gated integration, like `dag-coordinator-mcp.integration.test.ts`)
 
-- [ ] **Step 1: Write the failing test (gated)**
+> **Gating note.** Task 6 is a pure extraction (no behavior change). Its
+> **unconditional gate is `npm run build`** (the refactor must compile and the
+> server must still wire identically). The `createServerPipelineContext` factory is
+> made a **standalone exported function** (Step 2) so it is unit-testable WITHOUT
+> reaching into private server state (Step 3, and Task 13). End-to-end no-regression
+> is covered by Task 14's gated integration test — there is no fake `assert.ok(true)`
+> placeholder here.
 
-```ts
-import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
-
-const RUN = process.env.RUN_LIVE_INTEGRATION === '1';
-describe('buildBaseBuilder', { skip: !RUN }, () => {
-  it('builds a working agent for a no-coordinator config', async () => {
-    // Start a SmartServer from a minimal flat config; assert it serves a request
-    // WITHOUT any coordinator wired (base builder + .build()).
-    // (Reuse the harness from dag-coordinator-mcp.integration.test.ts.)
-    assert.ok(true); // placeholder asserted by the harness wiring
-  });
-});
-```
-
-- [ ] **Step 2: Extract `buildBaseBuilder`**
+- [ ] **Step 1: Extract `buildBaseBuilder`**
 
 In `smart-server.ts`, the builder assembly is **lines ~1091–1259** (from
 `new SmartAgentBuilder({...})` through the final `.withSubAgents(registry)` —
@@ -654,8 +645,6 @@ private method that BOTH the startup path and `buildSessionAgent` (~2098–2122)
 call, so the `withXxx` set is wired once (DRY). Target signature:
 
 ```ts
-// Inputs are the per-(session-)scope locals the chain reads. Make them a params
-// object so startup and buildSessionAgent can both supply their scope's values.
 private buildBaseBuilder(parts: {
   mainLlm: ILlm;
   classifierLlm: ILlm;
@@ -668,43 +657,60 @@ private buildBaseBuilder(parts: {
   requestLogger?: IRequestLogger;
   plugins: LoadedPlugins;
   mergedEmbedderFactories: Record<string, EmbedderFactory>;
-  workerRegistry: SubAgentRegistry; // built subagents (SmartAgentSubAgent map)
+  workerRegistry: SubAgentRegistry;
 }): SmartAgentBuilder {
-  // body = the relocated lines 1091–1259, reading from `parts.*` instead of the
-  // surrounding start() locals. Returns the builder WITHOUT any with*Coordinator.
+  // body = the relocated lines 1091–1259, reading from `parts.*`.
+  // Returns the builder WITHOUT any with*Coordinator.
 }
 ```
 
-Replace the inline chain at ~1091–1259 (startup) and the chain at ~2108–2122
-(`buildSessionAgent`) with calls to `this.buildBaseBuilder(parts)`. The startup
-path then continues to the (soon-removed) coordinator gate; `buildSessionAgent`
-continues to its (soon-removed) coordinator re-wire. Those gates are removed in
-Task 14 — for now keep them, calling `buildBaseBuilder` first.
+Replace the inline chain at ~1091–1259 (startup) and ~2108–2122 (`buildSessionAgent`)
+with calls to `this.buildBaseBuilder(parts)`. Keep the coordinator gates for now —
+Task 14 removes them; here they just run after `buildBaseBuilder`.
 
-- [ ] **Step 3: Add `createServerPipelineContext`**
+- [ ] **Step 2: Add the standalone `createServerPipelineContext` factory**
 
-Add a private method that assembles an `IServerPipelineContext` for a given
-session scope, sourcing each field from the existing wiring (anchors verified):
+Append to `packages/llm-agent-server-libs/src/pipelines/server-context.ts` a
+testable factory + the empty tools-RAG default (moved here from Task 13 so it is
+reusable and unit-testable). Deps are passed explicitly — no `this`:
 
 ```ts
-private createServerPipelineContext(scope: {
-  sessionId: string;
-  parts: SessionAgentParts; // mcpClients, ragRegistry, requestLogger, toolsRag
-}): IServerPipelineContext {
-  return {
-    // core surface
-    resolveLlm: (role) => this.resolveRoleLlm(role),          // llmMap → fallback → mainLlm
-    knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),      // smart-server.ts:1288
-    toolsRag: this.toolsRagHandle ?? EMPTY_TOOLS_RAG,         // :1343 ; empty handle = Task 13
+import type { IToolsRagHandle } from '@mcp-abap-adt/llm-agent';
+
+/** Always-present empty handle for no-RAG/no-MCP deployments (F3). */
+export const EMPTY_TOOLS_RAG: IToolsRagHandle = {
+  query: async () => [],
+  lookup: () => undefined,
+};
+
+/** Deps = the full context minus toolsRag (which the factory defaults). */
+export type ServerPipelineContextDeps =
+  Omit<IServerPipelineContext, 'toolsRag'> & { toolsRag?: IToolsRagHandle };
+
+export function createServerPipelineContext(
+  deps: ServerPipelineContextDeps,
+): IServerPipelineContext {
+  return { ...deps, toolsRag: deps.toolsRag ?? EMPTY_TOOLS_RAG };
+}
+```
+
+In `smart-server.ts`, a thin private wrapper assembles `deps` from `this` (sourcing
+each field at the verified anchors) and calls the exported factory:
+
+```ts
+private buildServerCtx(scope: { sessionId: string; parts: SessionAgentParts }): IServerPipelineContext {
+  return createServerPipelineContext({
+    resolveLlm: (role) => this.resolveRoleLlm(role),            // llmMap → fallback → mainLlm
+    knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),        // :1288
+    toolsRag: this.toolsRagHandle,                              // :1343 (undefined → EMPTY_TOOLS_RAG)
     ragRegistry: scope.parts.ragRegistry,
-    callMcp: (n, a, s) => this.callMcp(n, a, s),              // buildMcpBridge :1393
+    callMcp: (n, a, s) => this.callMcp(n, a, s),                // buildMcpBridge :1393
     mcpClients: scope.parts.mcpClients,
     subagents: (this.cfg.subAgentConfigs ?? []).map((s) => ({ name: s.name, description: s.description })), // :1405
-    mintStepperId: () => this._mintStepperId(),               // :1377 randomUUID
-    mintTurnId: () => this._mintTurnId(),                     // :1378 randomUUID
+    mintStepperId: () => this._mintStepperId(),                 // :1377
+    mintTurnId: () => this._mintTurnId(),                       // :1378
     logger: this._fileLogger,
     logLlmCall: (e) => this._requestLogger?.logLlmCall?.(e),
-    // server surface
     createAgentBuilder: async () => this.buildBaseBuilder(this.partsToBaseInput(scope.parts)),
     makeLlm: (c) => this._makeLlm(c),
     llmMap: this._llmMap,
@@ -712,27 +718,57 @@ private createServerPipelineContext(scope: {
     mainLlm: this._mainLlm,
     helperLlm: this._helperLlm,
     mainTemp: this._mainTemp,
-    workerRegistry: this.buildWorkerRegistry(scope.parts), // fresh ISubAgent map per session
+    workerRegistry: this.buildWorkerRegistry(scope.parts),
     warn: (m) => this._fileLogger?.({ level: 'warn', msg: m } as never),
-  };
+  });
 }
 ```
 
-(The helper names `resolveRoleLlm`, `knowledgeRagFor`, `callMcp`, `_mintStepperId`,
-`_makeLlm`, `buildWorkerRegistry`, `partsToBaseInput` correspond to existing
-inline logic at the cited anchors — promote the inline closures to methods as you
-extract. `EMPTY_TOOLS_RAG` is defined in Task 13.)
+(`resolveRoleLlm`/`knowledgeRagFor`/`callMcp`/`_mintStepperId`/`_makeLlm`/
+`buildWorkerRegistry`/`partsToBaseInput` are the inline closures at the cited
+anchors — promote them to methods as you extract.)
 
-- [ ] **Step 4: Build + gated test**
+- [ ] **Step 3: Write the factory unit test (real assertions, NOT gated)**
 
-Run: `cd /home/okyslytsia/prj/llm-agent && npm run build` → clean.
-Run (if a live MCP is available): `RUN_LIVE_INTEGRATION=1 cd packages/llm-agent-server-libs && node --import tsx/esm --test 'src/smart-agent/__tests__/build-base-builder.test.ts'` → PASS.
+`packages/llm-agent-server-libs/src/pipelines/__tests__/server-context.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import { createServerPipelineContext } from '../server-context.js';
+
+const stubLlm = { chat: async () => ({}) as never, streamChat: async function* () {}, model: 's' } as never;
+
+describe('createServerPipelineContext', () => {
+  it('defaults toolsRag to an empty handle when omitted', async () => {
+    const ctx = createServerPipelineContext({
+      resolveLlm: async () => stubLlm,
+      knowledgeRagFor: async () => ({}) as never,
+      callMcp: async () => '',
+      mintStepperId: () => 's', mintTurnId: () => 't',
+      createAgentBuilder: async () => new SmartAgentBuilder({}).withMainLlm(stubLlm),
+      makeLlm: async () => stubLlm, mainLlm: stubLlm, mainTemp: 0,
+      workerRegistry: new Map(), warn: () => {},
+    });
+    assert.deepEqual(await ctx.toolsRag.query('x'), []);
+    assert.equal(ctx.toolsRag.lookup('x'), undefined);
+    assert.equal(typeof ctx.mintTurnId(), 'string');
+  });
+});
+```
+
+- [ ] **Step 4: Run the unit test + build**
+
+Run: `cd packages/llm-agent-server-libs && node --import tsx/esm --test --test-reporter=spec 'src/pipelines/__tests__/server-context.test.ts'`
+Expected: PASS (1 test).
+Run: `cd /home/okyslytsia/prj/llm-agent && npm run build` → clean (the smart-server extraction compiles).
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/build-base-builder.test.ts
-git commit -m "refactor(server): extract buildBaseBuilder + createServerPipelineContext"
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/pipelines/server-context.ts packages/llm-agent-server-libs/src/pipelines/__tests__/server-context.test.ts
+git commit -m "refactor(server): extract buildBaseBuilder + exported createServerPipelineContext factory"
 ```
 
 ### Task 7: Stepper pipeline plugin (exemplar — full code)
@@ -988,8 +1024,12 @@ export async function parseLinearConfig(
   ctx: IServerPipelineContext,
 ): Promise<CoordinatorHandlerDeps> {
   const plannerLlm = await ctx.resolveLlm('planner');
-  const planningKind = (cfg.planning as string) ?? 'one-shot';
-  const dispatchKind = resolveCoordinatorDispatchKind(cfg.dispatch as string | undefined);
+  const planningKind = (cfg.planning as 'one-shot' | 'replan-on-error' | 'skill-steps') ?? 'one-shot';
+  // resolveCoordinatorDispatchKind accepts only the dispatch union (config.ts:304);
+  // cast after the YAML schema has constrained it (parse-time validation upstream).
+  const dispatchKind = resolveCoordinatorDispatchKind(
+    cfg.dispatch as 'subagent' | 'self' | 'hybrid' | undefined,
+  );
   return {
     planning: resolveCoordinatorPlanning(planningKind, plannerLlm),
     dispatch: resolveCoordinatorDispatch(dispatchKind, plannerLlm, undefined),
@@ -1144,33 +1184,27 @@ Expected: prints `[ 'DagCoordinatorHandler', 'buildDagCoordinatorDeps', 'DagFact
 > These edit the live large files. Each gives the target behavior + the test +
 > exact anchors. Plugins load at `smart-server.ts:1058` (BEFORE RAG at `:1084`).
 
-### Task 13: serverCtx wiring + empty `toolsRag` (F3)
+### Task 13: wire `buildServerCtx` into the request/session path
 
-- [ ] **Step 1: Define the empty tools-RAG handle**
+> The empty-`toolsRag` default (F3) and its unit test already landed in Task 6
+> (`EMPTY_TOOLS_RAG` + `createServerPipelineContext` in `server-context.ts`). This
+> task only WIRES the server's private `buildServerCtx` (Task 6) into the place
+> that builds the agent, so a plugin receives a real per-session context.
 
-In `smart-server.ts` (module scope), add the always-present empty handle so
-`IServerPipelineContext.toolsRag` is never `undefined`:
+- [ ] **Step 1: Call `buildServerCtx` where the agent is built**
 
-```ts
-import type { IToolsRagHandle } from '@mcp-abap-adt/llm-agent';
-const EMPTY_TOOLS_RAG: IToolsRagHandle = {
-  query: async () => [],
-  lookup: () => undefined,
-};
-```
+In `buildSessionAgent` (~2098) and the startup path, construct the context once
+per scope: `const ctx = this.buildServerCtx({ sessionId, parts });` and hold it for
+the registry/build step (Task 14). `parts.toolsRag` being absent flows through to
+`EMPTY_TOOLS_RAG` via the Task-6 factory — no extra handling here.
 
-- [ ] **Step 2: Test (no-RAG/no-MCP)** — assert `createServerPipelineContext(...).toolsRag`
-satisfies both members:
+- [ ] **Step 2: Build to verify wiring compiles**
 
-```ts
-const ctx = server.createServerPipelineContext({ sessionId: 's', parts });
-assert.deepEqual(await ctx.toolsRag.query('x'), []);
-assert.equal(ctx.toolsRag.lookup('x'), undefined);
-```
+Run: `cd /home/okyslytsia/prj/llm-agent && npm run build` → clean.
+(The behavioral no-RAG assertion is already covered by the Task-6 factory unit
+test; the end-to-end path is covered by Task 14's gated integration.)
 
-- [ ] **Step 3:** wire `createServerPipelineContext` (Task 6) to use
-`this.toolsRagHandle ?? EMPTY_TOOLS_RAG`.
-- [ ] **Step 4: build + test → PASS. Step 5: Commit** `feat(server): empty toolsRag + serverCtx`.
+- [ ] **Step 3: Commit** `feat(server): wire per-session IServerPipelineContext`.
 
 ### Task 14: pipeline registry + `plugin.build` (replace the coordinator gate)
 
@@ -1202,7 +1236,7 @@ const name = this.cfg.pipeline?.name ?? 'flat';
 const plugin = registry.get(name);
 if (!plugin) throw new Error(`unknown pipeline '${name}'; available: ${[...registry.keys()].join(', ')}`);
 const cfg = plugin.parseConfig(this.cfg.pipeline?.config ?? {});
-const inst = await plugin.build(cfg, this.createServerPipelineContext({ sessionId, parts }));
+const inst = await plugin.build(cfg, this.buildServerCtx({ sessionId, parts }));
 // inst.agent → serve; inst.close() → on session dispose / shutdown.
 ```
 
@@ -1334,7 +1368,7 @@ describe('built-in pipeline conformance', () => {
 - §7 loader plumbing (LoadedPlugins, merge reject-duplicate, source tracking) → Tasks 3–4. ✓
 - §7/§7.1 host registry + `plugins:` loader + cwd resolution + startup order → Tasks 14–15. ✓
 - §7 lifecycle (build per session, close, recreate, reconfigure feature-detect) → Tasks 1, 6, 14. ✓
-- §5 empty `toolsRag` for no-RAG/no-MCP (F3) → Task 13. ✓
+- §5 empty `toolsRag` for no-RAG/no-MCP (F3) → Task 6 (EMPTY_TOOLS_RAG + factory default + unit test), wired in Task 13. ✓
 - §8 legacy/* + subpath exports → Tasks 11–12. ✓
 - §9 YAML `pipeline:`/`plugins:` parsing + responsibility split → Tasks 15–16. ✓
 - §10 testing → Tasks 4, 7–10, 17. ✓
