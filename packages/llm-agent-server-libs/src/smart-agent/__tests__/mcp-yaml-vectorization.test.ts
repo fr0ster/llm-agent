@@ -1,0 +1,177 @@
+/**
+ * Regression test for the YAML `mcp:` tool-vectorization fix (PR #173).
+ *
+ * Background: collapsing the double MCP connection (inject the shared clients
+ * into the startup builder via `withMcpClients`) regressed tool vectorization —
+ * `SmartAgentBuilder.build()` only writes `tool:<name>` docs into the agent's
+ * `toolsRag` (an `IRag`) when it CONNECTS from `cfg.mcp` itself; for INJECTED
+ * clients it skips that step. So a YAML `mcp:` + `smart`/`flat` pipeline ended up
+ * with an empty `toolsRag` and `ToolSelectHandler` selected NO MCP tools.
+ *
+ * The fix reverses the direction for the YAML-only case: the startup builder
+ * CONNECTS + VECTORIZES from `cfg.mcp` (so `toolsRag` is seeded), and `start()`
+ * HARVESTS the builder's connected set into `_sharedMcpClients` for `ctx.callMcp`
+ * — keeping EXACTLY ONE connection.
+ *
+ * These tests prove BOTH invariants end-to-end against a minimal in-process MCP
+ * streamable-HTTP server (no stdio spawn, no external network — a localhost
+ * ephemeral port):
+ *   1. After startup the agent's `toolsRag` CONTAINS the MCP tool docs
+ *      (`tool:<name>`), i.e. vectorization is restored for the YAML path.
+ *   2. The MCP server observed EXACTLY ONE `initialize` — single-connect is
+ *      preserved (no regression of the double-connect fix).
+ */
+
+import assert from 'node:assert/strict';
+import http from 'node:http';
+import type { AddressInfo } from 'node:net';
+import { test } from 'node:test';
+import type { IMcpClient, IRag } from '@mcp-abap-adt/llm-agent';
+import { SmartServer } from '../smart-server.js';
+
+// ---------------------------------------------------------------------------
+// Minimal in-process MCP streamable-HTTP server (hermetic — no SDK, no spawn).
+// Implements just enough of the JSON-RPC handshake the SDK client drives:
+// `initialize` (with a session id), the `notifications/initialized` ACK, and
+// `tools/list`. Counts `initialize` calls to assert single-connect.
+// ---------------------------------------------------------------------------
+
+interface McpStub {
+  url: string;
+  initializeCount: () => number;
+  listToolsCount: () => number;
+  close: () => Promise<void>;
+}
+
+async function startMcpStub(toolNames: string[]): Promise<McpStub> {
+  let initializeCount = 0;
+  let listToolsCount = 0;
+
+  const reply = (
+    res: http.ServerResponse,
+    id: unknown,
+    result: unknown,
+  ): void => {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ jsonrpc: '2.0', id, result }));
+  };
+
+  const server = http.createServer((req, res) => {
+    let body = '';
+    req.on('data', (c) => {
+      body += c;
+    });
+    req.on('end', () => {
+      let msg: { method?: string; id?: unknown };
+      try {
+        msg = JSON.parse(body);
+      } catch {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      if (msg.method === 'initialize') {
+        initializeCount += 1;
+        res.setHeader('mcp-session-id', 'session-1');
+        reply(res, msg.id, {
+          protocolVersion: '2025-11-25',
+          capabilities: { tools: {} },
+          serverInfo: { name: 'mcp-stub', version: '1.0.0' },
+        });
+        return;
+      }
+      if (msg.method?.startsWith('notifications/')) {
+        res.writeHead(202);
+        res.end();
+        return;
+      }
+      if (msg.method === 'tools/list') {
+        listToolsCount += 1;
+        reply(res, msg.id, {
+          tools: toolNames.map((name) => ({
+            name,
+            description: `Tool ${name}`,
+            inputSchema: { type: 'object', properties: {} },
+          })),
+        });
+        return;
+      }
+      if (msg.method === 'tools/call') {
+        reply(res, msg.id, { content: [{ type: 'text', text: 'ok' }] });
+        return;
+      }
+      res.writeHead(202);
+      res.end();
+    });
+  });
+
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const { port } = server.address() as AddressInfo;
+  return {
+    url: `http://127.0.0.1:${port}/mcp/stream/http`,
+    initializeCount: () => initializeCount,
+    listToolsCount: () => listToolsCount,
+    close: () =>
+      new Promise<void>((resolve, reject) =>
+        server.close((err) => (err ? reject(err) : resolve())),
+      ),
+  };
+}
+
+/** White-box reach into the server's captured tools store + shared clients. */
+type Internals = {
+  _toolsRag?: IRag;
+  _sharedMcpClients?: IMcpClient[];
+};
+
+// ---------------------------------------------------------------------------
+
+test('YAML mcp: path — build() vectorizes MCP tools into toolsRag AND connects exactly once', async () => {
+  const stub = await startMcpStub(['EchoTool', 'GetTable']);
+  const server = new SmartServer({
+    port: 0,
+    llm: { apiKey: 'test', model: 'test-model' },
+    skipModelValidation: true,
+    mode: 'smart',
+    // In-memory store needs no embedder — it hashes text internally. The
+    // builder seeds `tool:<name>` docs via `toolsRag.writer().upsertRaw`.
+    rag: { type: 'in-memory' },
+    // YAML-only MCP: no `mcpClients` DI ⇒ the startup builder owns the
+    // connection ⇒ it vectorizes.
+    mcp: { type: 'http', url: stub.url },
+  });
+
+  let handle: Awaited<ReturnType<SmartServer['start']>> | undefined;
+  try {
+    handle = await server.start();
+    const internals = server as unknown as Internals;
+
+    // --- Invariant 1: vectorization restored -------------------------------
+    const toolsRag = internals._toolsRag;
+    assert.ok(
+      toolsRag,
+      'toolsRag store must exist (rag: in-memory configured)',
+    );
+
+    const echo = await toolsRag.getById('tool:EchoTool');
+    assert.ok(echo.ok && echo.value, 'tool:EchoTool must be vectorized');
+    const table = await toolsRag.getById('tool:GetTable');
+    assert.ok(table.ok && table.value, 'tool:GetTable must be vectorized');
+
+    // --- Invariant 2: single connection ------------------------------------
+    // The builder connected once; `_sharedMcpClients` was harvested from the
+    // SAME built handle (no second connect).
+    assert.equal(
+      stub.initializeCount(),
+      1,
+      'MCP server must observe exactly ONE initialize (single connect)',
+    );
+    assert.ok(
+      internals._sharedMcpClients && internals._sharedMcpClients.length === 1,
+      'callMcp bridge reuses the single harvested client set',
+    );
+  } finally {
+    if (handle) await handle.close();
+    await stub.close();
+  }
+});

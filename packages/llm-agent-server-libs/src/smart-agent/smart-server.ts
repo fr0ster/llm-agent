@@ -914,6 +914,14 @@ export class SmartServer {
    *  pipeline's context (factory defaults to EMPTY_TOOLS_RAG if unset). */
   private _toolsRagHandle?: IToolsRagHandle;
   /**
+   * The tools-RAG `IRag` (the store the builder vectorizes MCP `tool:<name>`
+   * docs into) captured in `start()`. Held so the `flat`/`smart` pipeline's
+   * `ToolSelectHandler` can select MCP tools from RAG hits — and so tests can
+   * assert the YAML-path vectorization landed. Distinct from `_toolsRagHandle`
+   * (the stepper catalog handle), which falls back to catalog order regardless.
+   */
+  private _toolsRag?: IRag;
+  /**
    * MCP clients connected for the Stepper path from the YAML `mcp:` config
    * block. These are connected ONCE in `start()` (lazily resolved by
    * `connectMcpClientsFromConfig`) and reused across every Stepper request.
@@ -1146,6 +1154,9 @@ export class SmartServer {
       toolsRag = await makeRag(this.cfg.rag, ragOptions);
       historyRag = await makeRag({ ...this.cfg.rag }, ragOptions);
     }
+    // Capture the tools store for the flat/smart pipeline's ToolSelectHandler
+    // (and white-box vectorization assertions). See field doc.
+    this._toolsRag = toolsRag;
 
     // NOTE: the legacy per-pipeline named-RAG multistore (`pipeline.rag.{name}`)
     // is GONE with the `pipeline: {name,config}` migration. The top-level `rag:`
@@ -1153,37 +1164,56 @@ export class SmartServer {
     // Deployments that previously declared `pipeline.rag.{name}` collections must
     // move them to top-level `rag:` (or register them as plugin RAG).
 
-    // MCP clients (DI > plugin; YAML connected ONCE by buildSharedPipelineInfra).
-    // Resolved HERE because the shared pipeline infra below also reads it.
+    // MCP clients (DI > plugin > YAML). The YAML `mcp:` block is NOT pre-connected
+    // here — see the branch below.
     const diOrPluginMcpClients =
       this.cfg.mcpClients ??
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
 
-    // ---- Shared pipeline infra (sub-goal 5) -------------------------------
-    // Built UNCONDITIONALLY (not gated on a stepper config) so `buildServerCtx`
-    // can hand `knowledgeRagFor`/`toolsRag`/`callMcp` to ANY pipeline plugin.
-    // Only the stepper actually uses them, but the context contract requires
-    // them for every pipeline. The MCP bridge reuses the ALREADY-CONNECTED
-    // clients (DI/plugin) — opening a second connection only when the config
-    // provides a YAML `mcp:` block AND no DI/plugin clients exist.
-    await this.buildSharedPipelineInfra({
-      toolsRag,
-      resolvedEmbedder,
-      mcpClients: diOrPluginMcpClients,
-    });
+    // ---- Knowledge backend (no MCP dependency) ----------------------------
+    // The remaining shared pipeline infra (`_sharedMcpClients` + the
+    // `_toolsRagHandle` MCP catalog) is MCP-client-dependent and is resolved
+    // per-branch below — for the YAML-only path it must run AFTER `build()`
+    // connects + vectorizes (the builder owns that single connection).
+    this.buildKnowledgeBackend();
 
-    // F1: connect MCP exactly ONCE. `buildSharedPipelineInfra` either reused the
-    // DI/plugin clients or connected the YAML `mcp:` block into
-    // `this._sharedMcpClients`. Hand THAT single connected set to the builder via
-    // `withMcpClients` so `SmartAgentBuilder.build()` (builder.ts:923 — `if
-    // (this._mcpClients)` short-circuits the `cfg.mcp` auto-connect) does NOT open
-    // a second connection. For YAML-only configs this replaces the previous
-    // `undefined` → builder-auto-connect path; `ctx.callMcp`, the startup agent's
-    // tools, and the per-session agent's tools now share ONE client set.
-    const mcpClients =
-      this._sharedMcpClients && this._sharedMcpClients.length > 0
-        ? this._sharedMcpClients
-        : undefined;
+    // ---- MCP connection strategy (exactly ONE connection) -----------------
+    // Two client sources, two orderings — both keep ONE MCP connection AND a
+    // vectorized `toolsRag`:
+    //
+    //   • DI/plugin clients present → inject them into the startup builder via
+    //     `withMcpClients` (builder.ts:923 short-circuits its own `cfg.mcp`
+    //     auto-connect). These pre-built clients were never vectorized by the
+    //     builder (unchanged behavior). `_sharedMcpClients` = that exact set,
+    //     and the `_toolsRagHandle` catalog is built now over them.
+    //
+    //   • YAML-only (no DI/plugin) → do NOT pre-connect and do NOT inject. The
+    //     startup builder receives `cfg.mcp` (via buildBaseBuilder, since
+    //     `mcpClients` is undefined) so `build()` CONNECTS the YAML block AND
+    //     VECTORIZES the tools into `toolsRag` (the `IRag`). AFTER `build()` we
+    //     harvest its connected set into `_sharedMcpClients` so `ctx.callMcp`
+    //     and per-session agents reuse the SAME single connection, then build
+    //     the `_toolsRagHandle` catalog over them. (Restores the
+    //     tool-vectorization the inject-skip regressed, with no double-connect.)
+    const hasDiOrPlugin =
+      diOrPluginMcpClients !== undefined && diOrPluginMcpClients.length > 0;
+
+    let mcpClients: IMcpClient[] | undefined;
+    if (hasDiOrPlugin) {
+      // DI/plugin branch — resolve `_sharedMcpClients` + tools-RAG handle NOW
+      // (knowledge backend is idempotent; already built above).
+      await this.buildSharedPipelineInfra({
+        toolsRag,
+        resolvedEmbedder,
+        mcpClients: diOrPluginMcpClients,
+      });
+      mcpClients = diOrPluginMcpClients;
+    } else {
+      // YAML-only / no-mcp branch — let the builder connect + vectorize from
+      // `cfg.mcp`; `_sharedMcpClients` + the tools-RAG handle are resolved from
+      // the built handle AFTER `build()` (see below).
+      mcpClients = undefined;
+    }
 
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
     // Each sub-agent is a minimal SmartAgent reusing the parent's plugin
@@ -1257,6 +1287,17 @@ export class SmartServer {
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
 
+    // ---- YAML-only MCP harvest (single-connect + restored vectorization) ----
+    // For the YAML-only branch the startup builder connected the `mcp:` block
+    // AND vectorized its tools into `toolsRag`. Harvest the builder's connected
+    // set into `_sharedMcpClients` so `ctx.callMcp` and per-session agents reuse
+    // the SAME single connection (no second connect), then build the tools-RAG
+    // handle catalog over it. The DI/plugin branch already did this earlier.
+    if (!hasDiOrPlugin) {
+      this._sharedMcpClients = globalMcpClients ?? [];
+      await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+    }
+
     // ---- API adapter map (built-in → config DI; DI wins) --------------------
     const { OpenAiApiAdapter, AnthropicApiAdapter } = await import(
       '@mcp-abap-adt/llm-agent'
@@ -1295,7 +1336,9 @@ export class SmartServer {
       maxSessions: sessionCfg.maxSessions ?? 1000,
       cookieName: sessionCfg.cookieName ?? 'sid',
       mcpClients: globalMcpClients,
-      toolsRag,
+      // `this._toolsRag` === the `toolsRag` local captured in start(); reference
+      // the field as the single source of truth for the tools store.
+      toolsRag: this._toolsRag,
       ragRegistry: globalRagRegistry,
       buildAgent: (parts) => this.buildSessionAgent(parts),
       logger: fileLogger,
@@ -1812,14 +1855,7 @@ export class SmartServer {
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder, mcpClients } = input;
 
-    // Knowledge backend — ONE instance shared across all requests; keyed by
-    // sessionId internally for per-session isolation + same-cookie persistence.
-    const logDir = this.cfg.logDir;
-    if (!this._stepperKnowledgeBackend) {
-      this._stepperKnowledgeBackend = logDir
-        ? new JsonlKnowledgeBackend(logDir)
-        : new InMemoryKnowledgeBackend();
-    }
+    this.buildKnowledgeBackend();
 
     // MCP clients for the callMcp bridge. DI/plugin clients win; otherwise
     // connect the YAML `mcp:` block ONCE (connect is not safe to invoke twice
@@ -1829,8 +1865,43 @@ export class SmartServer {
     }
     this._sharedMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
 
+    await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
+  }
+
+  /**
+   * Build the ONE knowledge backend shared across all requests (JSONL when a
+   * logDir is set, else in-memory). Keyed by sessionId internally for per-session
+   * isolation + same-cookie persistence. Idempotent (no-op once built).
+   *
+   * No MCP dependency — safe to call BEFORE the MCP client set is resolved.
+   */
+  private buildKnowledgeBackend(): void {
+    const logDir = this.cfg.logDir;
+    if (!this._stepperKnowledgeBackend) {
+      this._stepperKnowledgeBackend = logDir
+        ? new JsonlKnowledgeBackend(logDir)
+        : new InMemoryKnowledgeBackend();
+    }
+  }
+
+  /**
+   * Build `_toolsRagHandle` — a real IToolsRagHandle over the tools RAG store +
+   * MCP catalog, dispatching over the ALREADY-RESOLVED `this._sharedMcpClients`.
+   *
+   * Split out of `buildSharedPipelineInfra` so the YAML-only path can run it
+   * AFTER the startup builder connects + vectorizes (the builder owns the single
+   * connection there, and `_sharedMcpClients` is harvested from its handle). For
+   * the DI/plugin path it still runs early via `buildSharedPipelineInfra`.
+   * Requires `this._sharedMcpClients` to be set by the caller.
+   */
+  private async buildToolsRagHandle(input: {
+    toolsRag: IRag | undefined;
+    resolvedEmbedder: IEmbedder | undefined;
+  }): Promise<void> {
+    const { toolsRag, resolvedEmbedder } = input;
+
     // Tools RAG handle over the tools store + MCP catalog.
-    const stepperMcpClients = this._sharedMcpClients;
+    const stepperMcpClients = this._sharedMcpClients ?? [];
     let catalogCache: Map<string, LlmTool> | undefined;
     const ensureCatalog = async (): Promise<Map<string, LlmTool>> => {
       if (catalogCache) return catalogCache;
