@@ -7,6 +7,7 @@
 
 import type {
   ILlmApiAdapter,
+  IPipelinePlugin,
   IPluginLoader,
   IStageHandler,
   LoadedPlugins,
@@ -103,6 +104,23 @@ export function mergePluginExports(
         result.apiAdapters.set(name, adapter as ILlmApiAdapter);
         registered = true;
       }
+    }
+  }
+
+  if (mod.pipelinePlugins && typeof mod.pipelinePlugins === 'object') {
+    for (const [name, plugin] of Object.entries(mod.pipelinePlugins)) {
+      if (!plugin || typeof (plugin as IPipelinePlugin).build !== 'function') continue;
+      if (result.pipelinePlugins.has(name)) {
+        const prior = result.pipelinePluginSources.get(name) ?? 'unknown';
+        result.errors.push({
+          file: source,
+          error: `duplicate pipeline name '${name}' from '${source}'; already registered by '${prior}' (keeping the first)`,
+        });
+        continue; // keep the first
+      }
+      result.pipelinePlugins.set(name, plugin as IPipelinePlugin);
+      result.pipelinePluginSources.set(name, source);
+      registered = true;
     }
   }
 
