@@ -828,7 +828,7 @@ Expected: FAIL — `Cannot find module '../stepper.js'`.
 `SmartAgentBuilder` over a stub LLM and no MCP:
 
 ```ts
-import type { ILlm, ISmartAgent } from '@mcp-abap-adt/llm-agent';
+import type { ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 import type { IServerPipelineContext } from '../server-context.js';
 
@@ -838,20 +838,27 @@ const stubLlm: ILlm = {
   model: 'stub',
 } as unknown as ILlm;
 
+// Minimal worker so buildDagCoordinatorDeps doesn't throw on empty workers
+// (build-dag-coordinator-deps.ts:148). Harmless for flat/linear/stepper.
+const stubWorker: ISubAgent = {
+  name: 'worker',
+  run: async () => ({ ok: true, value: { content: '' } }) as never,
+} as unknown as ISubAgent;
+
 export function fakeServerCtx(): IServerPipelineContext {
   return {
     resolveLlm: async () => stubLlm,
     knowledgeRagFor: () => ({ add: async () => {}, query: async () => [] }) as never,
     toolsRag: { query: async () => [], lookup: () => undefined },
     callMcp: async () => '',
-    subagents: [],
+    subagents: [{ name: 'worker', description: 'stub' }],
     mintStepperId: () => 's1',
     mintTurnId: () => 't1',
     createAgentBuilder: async () => new SmartAgentBuilder({}).withMainLlm(stubLlm).withMode('smart'),
     makeLlm: async () => stubLlm,
     mainLlm: stubLlm,
     mainTemp: 0,
-    workerRegistry: new Map(),
+    workerRegistry: new Map([['worker', stubWorker]]), // non-empty: DAG requires ≥1 worker
     warn: () => {},
   };
 }
@@ -942,7 +949,10 @@ git commit -m "feat(pipelines): built-in stepper pipeline plugin"
 - Create: `packages/llm-agent-server-libs/src/pipelines/dag.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/dag.test.ts`
 
-- [ ] **Step 1: Write the failing test** (mirror Task 7's test, `name='dag'`, config `{ planner: { type: 'llm' } }`).
+- [ ] **Step 1: Write the failing test** (mirror Task 7's test, `name='dag'`, config
+`{ planner: { type: 'llm' } }`, using the same `fakeServerCtx()`). Its
+`workerRegistry` is non-empty (one `stubWorker`) — **required**, because
+`buildDagCoordinatorDeps` throws on empty workers (`build-dag-coordinator-deps.ts:148`).
 
 - [ ] **Step 2: Run → FAIL** (module missing).
 
@@ -1259,12 +1269,20 @@ after the `pluginDir` scan, for each specifier:
 
 ```ts
 import { createRequire } from 'node:module';
+import { resolve as pathResolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+
 const requireFromCwd = createRequire(`${process.cwd()}/`);
 for (const spec of this.cfg.plugins ?? []) {
-  const resolved = spec.startsWith('.') || spec.startsWith('/')
-    ? spec : requireFromCwd.resolve(spec);          // cwd-based resolution
-  const mod = (await import(resolved)) as PluginExports;
-  mergePluginExports(plugins, mod, spec);           // full PluginExports, like pluginDir
+  // Resolve to an ABSOLUTE path against the USER's cwd, then import via file URL.
+  // A bare `await import('./x.js')` would resolve relative to smart-server.js,
+  // not the user's project — wrong for both relative and bare specifiers.
+  const abs =
+    spec.startsWith('.') ? pathResolve(process.cwd(), spec)     // relative → cwd
+    : spec.startsWith('/') ? spec                               // already absolute
+    : requireFromCwd.resolve(spec);                             // bare package → cwd node_modules
+  const mod = (await import(pathToFileURL(abs).href)) as PluginExports;
+  mergePluginExports(plugins, mod, spec);            // full PluginExports, like pluginDir
 }
 ```
 
