@@ -778,12 +778,12 @@ git commit -m "refactor(server): extract buildBaseBuilder + exported createServe
 - Create: `packages/llm-agent-server-libs/src/pipelines/stepper.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/stepper.test.ts`
 
-> **Parser facade (fixes the Task-7↔Task-16 ordering, F2/F3).** All plugins and the
-> legacy bundles import parsers from `./parsers.js` (or `../pipelines/parsers.js`)
-> from the start. `parsers.ts` begins as a **thin re-export facade** over the
-> still-in-place `config.ts` definitions, so every task builds green; Task 16 later
-> physically MOVES the bodies into `parsers.ts` and removes the `config.ts`
-> originals together with the coordinator gate — importers never change.
+> **Parser facade (single import surface for plugins/legacy).** All plugins and the
+> legacy bundles import parsers from `./parsers.js` (or `../pipelines/parsers.js`).
+> `parsers.ts` is a **permanent thin re-export facade** over the `config.ts`
+> definitions (which STAY there — `build-stepper-root.ts` and others still import
+> them from `config.ts`). It never destructively moves anything (see Task 16, F2);
+> `parseLinearConfig` is the only parser native to `parsers.ts`.
 
 - [ ] **Step 0: Create the parser facade**
 
@@ -926,7 +926,7 @@ export class StepperPipelinePlugin implements IPipelinePlugin<StepperCoordinator
 ```
 
 > `parseStepperCoordinatorConfig` + `StepperCoordinatorConfig` import from
-> `./parsers.js` (the Step-0 facade); Task 16 moves the bodies there transparently.
+> `./parsers.js` (the permanent Step-0 facade re-exporting them from `config.ts`).
 > Verify the `spec` field set against `StepperFactoryConfig =
 > Omit<StepperCompositionSpec,'planner'|'executor'>` — `tsc` will flag any
 > missing/extra field.
@@ -1218,6 +1218,20 @@ test; the end-to-end path is covered by Task 14's gated integration.)
 
 ### Task 14: pipeline registry + `plugin.build` (replace the coordinator gate)
 
+- [ ] **Step 0: Migrate the `pipeline:` schema FIRST (F1)** — Task 14 reads
+`this.cfg.pipeline?.name/.config`, so the schema must change before Step 2 compiles.
+The key `pipeline` is currently the old `PipelineConfig` (`mcp`/`rag`/`stages`/`llm`
+overrides, `smart-server.ts:200`, `pipeline.ts:66`); the new design repurposes it as
+`{ name, config }`. Clean-break migration:
+  - Change `SmartServerConfig.pipeline` to `{ name: string; config?: Record<string, unknown> }`.
+  - **Repoint the old reads** to top-level: `pipeline?.mcp` (`smart-server.ts:1091`)
+    → `this.cfg.mcp`; the primary `pipeline?.rag` → `this.cfg.rag`.
+  - **Drop** the per-pipeline named RAG multistore (`pipeline.rag.{name}` loop,
+    `smart-server.ts:1119-1160`) and `pipeline.stages` in the clean break — top-level
+    `rag:` remains the store; record the dropped multistore in `log()` for operators.
+  - Add the YAML parse for the new `pipeline: { name, config }`.
+  Build (`npm run build`) → clean, before proceeding.
+
 - [ ] **Step 1: Build the registry**
 
 After plugins are loaded (~`:1058`), assemble:
@@ -1295,32 +1309,35 @@ factory in `plugins.embedderFactories`).
 
 - [ ] **Step 4: Commit** `feat(server): plugins:[specifier] dynamic loader (cwd resolution)`.
 
-### Task 16: config clean break + parser relocation (F2/F4)
+### Task 16: config clean break (remove coordinator dispatch; parsers stay) (F2/F4)
 
-- [ ] **Step 1: Fill the parser facade.** `parsers.ts` already exists (Task 7
-Step 0 = re-export facade; Task 9 Step 0 added `parseLinearConfig`). Now **physically
-MOVE** the bodies in so it stops re-exporting from `config.ts`:
-  - move `parseStepperCoordinatorConfig` (+ `StepperCoordinatorConfig`, `MODE_FLOW_PRESET`) from `config.ts:1586-1750`/`:1440-1447` INTO `parsers.ts`, replacing the Step-0 `export { … } from '../smart-agent/config.js'` line with the real definitions;
-  - keep `parseLinearConfig` (already here); the resolvers it calls stay exported from `config.ts` (they are generic helpers, not coordinator dispatch).
-  Importers (plugins Tasks 7/9, legacy Task 11) already point at `parsers.js` — **no importer changes**, and the build stays green because the move + the gate removal (Step 2) happen together.
+- [ ] **Step 1: Keep the parser facade as a permanent re-export (F2).** Do **NOT**
+physically move `parseStepperCoordinatorConfig` / `StepperCoordinatorConfig` out of
+`config.ts` — they are pure parse functions/types, and `build-stepper-root.ts:26`
+(and possibly others) still import them from `./config.js`. Moving them would break
+those importers. Instead:
+  - `parsers.ts` **stays a thin facade** for them: `export { parseStepperCoordinatorConfig, type StepperCoordinatorConfig } from '../smart-agent/config.js';` (the Task-7 Step-0 form — unchanged).
+  - Only `parseLinearConfig` is native to `parsers.ts` (Task 9 Step 0).
+  - The plugins/legacy import from `parsers.ts`; `build-stepper-root.ts` keeps importing from `config.ts`. Both work; nothing moves.
+  This makes the "relocation" a stable indirection, not a destructive move — so no
+  importer (notably `build-stepper-root.ts`) breaks.
 
 - [ ] **Step 2: Remove top-level coordinator dispatch** from `config.ts`/`smart-server.ts`:
   delete `usesStepper` (`smart-server.ts:883-896`) and `assertCoordinatorConfigShape`
   (`config.ts:231-278`). Keep `YamlCoordinator` (schema, still used by parsers).
 
-- [ ] **Step 3: pipeline.stages — schema-only, no parser to remove.** Verified: the
-runtime never parses/executes `pipeline.stages` (it is a declared-but-unused schema
-field; `DefaultPipeline` builds its own stages). So **leave `StageDefinition`
-untouched** and simply drop the `stages?` field + its docs/examples from the
-`PipelineConfig` schema (`pipeline.ts:98`) if desired. Do NOT touch
+- [ ] **Step 3: pipeline.stages — schema-only, nothing to execute.** Verified: the
+runtime never parses/executes `pipeline.stages` (declared-but-unused; `DefaultPipeline`
+builds its own stages). The old `PipelineConfig` shape is already retired in Task 14
+Step 0 (the `pipeline` key became `{name, config}`). **Do NOT touch**
 `packages/llm-agent/src/interfaces/pipeline.ts:49` (internal `StageDefinition`) or
-`default-pipeline.ts`.
+`default-pipeline.ts` — they run every agent's request pipeline (F4).
 
-- [ ] **Step 4: Add `pipeline:` config** — `pipeline?: { name: string; config?: Record<string, unknown> }`
-on `SmartServerConfig` + YAML parse. Update `examples/*/smart-server.yaml` to the
-new `pipeline:`/`plugins:` form.
+- [ ] **Step 4: examples** — update `examples/*/smart-server.yaml` to the new
+`pipeline: { name, config }` / `plugins:` form. (The schema itself was migrated in
+Task 14 Step 0; this only refreshes the example YAMLs + docs.)
 
-- [ ] **Step 5: build + test** the package; **Step 6: Commit** `feat(config): pipeline:/plugins: schema; relocate parsers; remove coordinator dispatch`.
+- [ ] **Step 5: build + test** the package; **Step 6: Commit** `feat(config): remove coordinator dispatch; refresh examples`.
 
 ## Phase 6 — Conformance
 
@@ -1388,7 +1405,7 @@ describe('built-in pipeline conformance', () => {
 - §7 lifecycle (build per session, close, recreate, reconfigure feature-detect) → Tasks 1, 6, 14. ✓
 - §5 empty `toolsRag` for no-RAG/no-MCP (F3) → Task 6 (EMPTY_TOOLS_RAG + factory default + unit test), wired in Task 13. ✓
 - §8 legacy/* + subpath exports → Tasks 11–12. ✓
-- §9 YAML `pipeline:`/`plugins:` parsing + responsibility split → Tasks 15–16. ✓
+- §9 YAML `pipeline: { name, config }` migration → Task 14 Step 0; `plugins:` parsing → Task 15; responsibility split → Tasks 14–16. ✓
 - §10 testing → Tasks 4, 7–10, 17. ✓
 - §11 migration / clean break (remove `coordinator:` + YAML `pipeline.stages`; KEEP internal StageDefinition, F4) → Task 16. ✓
 
