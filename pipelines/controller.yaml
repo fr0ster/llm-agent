@@ -27,9 +27,15 @@ pipeline:
     # Three opaque subagent roles. Each is a standalone LLM endpoint; here all
     # three use SAP AI Core, but they can point at different providers/URLs.
     subagents:
-      evaluator: { provider: sap-ai-sdk, model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet} }
-      planner: { provider: sap-ai-sdk, model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet} }
-      executor: { provider: sap-ai-sdk, model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet} }
+      evaluator:
+        provider: sap-ai-sdk
+        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      planner:
+        provider: sap-ai-sdk
+        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+      executor:
+        provider: sap-ai-sdk
+        model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
     # consumer-confirm | semantic-distance | auto. A generous threshold keeps the
     # loop moving instead of asking to confirm the goal on every request.
     targetState: { strategy: auto, distanceThreshold: 0.7 }
