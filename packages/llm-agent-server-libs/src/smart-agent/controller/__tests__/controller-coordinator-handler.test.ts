@@ -5,6 +5,7 @@ import {
   type IKnowledgeRagHandle,
   type KnowledgeEntry,
   type LlmStreamChunk,
+  type LlmTool,
   type Message,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
@@ -110,6 +111,7 @@ function harness(opts: {
   config?: ControllerConfig;
   embedder?: never;
   ragQuery?: IKnowledgeRagHandle['query'];
+  internalTools?: LlmTool[];
 }): Harness {
   const backend = new InMemoryKnowledgeBackend();
   const rag = stubRag(opts.ragQuery);
@@ -125,6 +127,7 @@ function harness(opts: {
       mcpCalls.push({ name, args });
       return opts.callMcpReturns ?? 'mcp-out';
     },
+    internalTools: opts.internalTools ?? [],
     // isExternalTool is left undefined by default so the per-request
     // ctx.externalTools is the routing truth; tests that need forced routing
     // pass it explicitly.
@@ -625,6 +628,85 @@ describe('ControllerCoordinatorHandler', () => {
         m.content.includes('INCLUDE zinc.'),
     );
     assert.ok(injected, 'recalled content injected into executor messages');
+  });
+
+  it('I3: provisions internalTools to the executor; routes the call via callMcp and feeds back a role:tool message', async () => {
+    const readTable: LlmTool = {
+      name: 'ReadTable',
+      description: 'Read a DB table',
+      inputSchema: { type: 'object', properties: { name: { type: 'string' } } },
+    };
+    // Capture every (messages, tools) pair the executor is sent.
+    const sends: Array<{ messages: Message[]; tools?: LlmTool[] }> = [];
+    const executorQueue: SubagentResult[] = [
+      toolCall('ReadTable', { name: 'SCARR' }),
+      { kind: 'content', content: 'read it' },
+    ];
+    const capturingExecutor: ISubagentClient = {
+      async send(messages: Message[], tools?: LlmTool[]) {
+        sends.push({ messages, tools });
+        return (
+          executorQueue.shift() ?? ({ kind: 'content', content: '' } as const)
+        );
+      },
+    };
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'read the table' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'internal-done' }),
+        },
+      ],
+      executor: [],
+      internalTools: [readTable],
+      // ReadTable is internal → must NOT be treated as external.
+      isExternalTool: () => false,
+      callMcpReturns: 'TABLE ROWS',
+    });
+    h.deps.executor = capturingExecutor;
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    // The executor was offered the internal tool on its first send.
+    assert.ok(sends.length >= 1, 'executor was sent at least once');
+    assert.ok(
+      sends[0].tools?.some((t) => t.name === 'ReadTable'),
+      'executor offered the ReadTable internal tool',
+    );
+    // The internal call routed through callMcp.
+    assert.equal(h.mcpCalls.length, 1, 'callMcp fired once');
+    assert.equal(h.mcpCalls[0].name, 'ReadTable');
+    // The result was fed back as a proper role:'tool' message on the re-send.
+    assert.ok(sends.length >= 2, 'executor was re-sent after the tool call');
+    const toolMsg = sends[1].messages.find((m) => m.role === 'tool');
+    assert.ok(toolMsg, 'a role:tool message carries the result');
+    assert.equal(toolMsg?.content, 'TABLE ROWS');
+    assert.ok(
+      sends[1].messages.some(
+        (m) => m.role === 'assistant' && (m.tool_calls?.length ?? 0) > 0,
+      ),
+      'the assistant tool_call turn precedes the tool result',
+    );
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'internal-done',
+      ),
+      'run reached done',
+    );
   });
 
   it('goal clarify: orthogonal embedding → escalate + persist clarify pending', async () => {

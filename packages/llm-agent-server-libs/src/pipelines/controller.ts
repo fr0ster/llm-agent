@@ -1,6 +1,8 @@
 import type {
+  IMcpClient,
   IPipelineInstance,
   IPipelinePlugin,
+  LlmTool,
 } from '@mcp-abap-adt/llm-agent';
 import {
   ControllerCoordinatorHandler,
@@ -78,7 +80,14 @@ export class ControllerPipelinePlugin
       ctx.makeLlm(cfg.subagents.executor),
     ]);
 
-    const mcpBridge = buildMcpBridge(ctx.mcpClients ?? []);
+    const mcpClients = ctx.mcpClients ?? [];
+    const mcpBridge = buildMcpBridge(mcpClients);
+
+    // Enumerate the INTERNAL (MCP) tool schemas once at build time. MCP tools are
+    // stable post-connect (mirroring how the stepper/agent treat them), so we
+    // gather them here and hand the executor a stable LlmTool[] — without this the
+    // executor LLM never sees any tool schema and can never emit an internal call.
+    const internalTools = await enumerateInternalTools(mcpClients, ctx.warn);
 
     // NOTE: external-tool routing is decided PER-REQUEST inside the handler from
     // `ctx.externalTools` (the client-supplied tools for that request). We do NOT
@@ -91,6 +100,7 @@ export class ControllerPipelinePlugin
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
       callMcp: (name, args) => mcpBridge(name, args),
+      internalTools,
       config: cfg,
     };
 
@@ -99,4 +109,35 @@ export class ControllerPipelinePlugin
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };
   }
+}
+
+/**
+ * Enumerate the MCP tool schemas across every connected client and convert each
+ * {@link McpTool} into an {@link LlmTool}. The two shapes are structurally
+ * identical (`{ name, description, inputSchema }`), so the conversion is a plain
+ * field copy. A client whose `listTools()` fails is logged and skipped — one bad
+ * client must not abort the whole pipeline build.
+ */
+async function enumerateInternalTools(
+  clients: IMcpClient[],
+  warn: (msg: string) => void,
+): Promise<LlmTool[]> {
+  const tools: LlmTool[] = [];
+  for (const client of clients) {
+    const listed = await client.listTools();
+    if (!listed.ok) {
+      warn(
+        `pipeline 'controller': skipping a client whose listTools() failed: ${listed.error.message}`,
+      );
+      continue;
+    }
+    for (const t of listed.value) {
+      tools.push({
+        name: t.name,
+        description: t.description,
+        inputSchema: t.inputSchema,
+      });
+    }
+  }
+  return tools;
 }

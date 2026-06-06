@@ -5,6 +5,7 @@ import {
   type IKnowledgeRagHandle,
   type IStageHandler,
   type KnowledgeEntryMetadata,
+  type LlmTool,
   type LlmToolCall,
   type Message,
   type StreamToolCall,
@@ -40,6 +41,12 @@ export interface ControllerHandlerDeps {
   embedder: IEmbedder;
   /** Executes an INTERNAL (MCP) tool and returns its textual result. */
   callMcp: (toolName: string, args: unknown) => Promise<string>;
+  /**
+   * The INTERNAL (MCP) tool schemas enumerated once at build time. These are
+   * offered to the executor LLM (alongside the per-request `ctx.externalTools`)
+   * so it can emit tool calls. Without them the MCP path is unreachable.
+   */
+  internalTools: LlmTool[];
   /**
    * Optional override marking a tool as consumer-supplied (must round-trip to
    * the client). Production truth is the per-request `ctx.externalTools`; this
@@ -271,12 +278,21 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       messages.push({ role: 'user', content: recallBlock });
     }
 
+    // Tools offered to the executor = build-time internal (MCP) schemas PLUS the
+    // per-request external (consumer-supplied) tools. The executor decides which
+    // to call; internal calls route through `callMcp`, external calls round-trip
+    // via the `isExternalTool` predicate.
+    const offeredTools: LlmTool[] = [
+      ...deps.internalTools,
+      ...(ctx.externalTools ?? []),
+    ];
+
     let retries = 0;
 
     // Inner loop handles tool routing / error retries until the executor
     // produces content for this step (or the step suspends on an external tool).
     while (true) {
-      const res = await deps.executor.send(messages);
+      const res = await deps.executor.send(messages, offeredTools);
 
       if (res.kind === 'content') {
         await writeArtifact(rag, {
@@ -363,9 +379,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         task: step.name,
         content: result,
       });
+      // Feed the result back as a coherent assistant→tool turn (OpenAI protocol)
+      // so the executor LLM continues from its own tool call rather than seeing a
+      // bare user message. The assistant message carries the tool_call it made;
+      // the tool message carries the result keyed by the same id.
       messages.push({
-        role: 'user',
-        content: `Tool ${name} returned: ${result}`,
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: call.id,
+            type: 'function',
+            function: { name, arguments: JSON.stringify(args) },
+          },
+        ],
+      });
+      messages.push({
+        role: 'tool',
+        tool_call_id: call.id,
+        content: result,
       });
     }
   }
