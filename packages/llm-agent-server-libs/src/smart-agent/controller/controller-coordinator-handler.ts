@@ -43,12 +43,12 @@ export interface ControllerHandlerDeps {
   /** Executes an INTERNAL (MCP) tool and returns its textual result. */
   callMcp: (toolName: string, args: unknown) => Promise<string>;
   /**
-   * The INTERNAL (MCP) tool schemas enumerated once at build time. These are
-   * offered to the executor LLM (alongside the per-request `ctx.externalTools`)
-   * so it can emit tool calls. Without them the MCP path is unreachable.
-   * Optional — defaults to no internal tools (e.g. MCP-less deployments).
+   * Semantic tool selection over the vectorized MCP catalog (toolsRag): returns
+   * the top-K tools relevant to `query`. This is how INTERNAL tools reach the
+   * executor — relevant, bounded, NOT a full dump. MCP-less deployments wire a
+   * stub returning `[]`.
    */
-  internalTools?: LlmTool[];
+  selectTools: (query: string, k?: number) => Promise<readonly LlmTool[]>;
   /**
    * Optional override marking a tool as consumer-supplied (must round-trip to
    * the client). Production truth is the per-request `ctx.externalTools`; this
@@ -170,10 +170,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     }
 
     // -- Main loop ----------------------------------------------------------
-    // Name+description catalog of the tools the executor can call, so the planner
-    // knows what is fetchable and plans tool-using steps instead of answering.
+    // Catalog of the tools relevant to THIS request, surfaced semantically from
+    // the vectorized MCP catalog (toolsRag) — bounded and relevant, not a full
+    // dump — so the planner plans tool-using steps instead of answering blind.
+    const relevantForGoal = await deps.selectTools(
+      `${bundle.goal}\n${prompt}`,
+      TOOL_SELECT_K,
+    );
     const toolCatalog = buildToolCatalog([
-      ...(deps.internalTools ?? []),
+      ...relevantForGoal,
       ...(ctx.externalTools ?? []),
     ]);
     const cfg = deps.config.budgets;
@@ -309,14 +314,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       messages.push({ role: 'user', content: recallBlock });
     }
 
-    // Tools offered to the executor = build-time internal (MCP) schemas PLUS the
-    // per-request external (consumer-supplied) tools. The executor decides which
-    // to call; internal calls route through `callMcp`, external calls round-trip
-    // via the `isExternalTool` predicate.
-    const offeredTools: LlmTool[] = [
-      ...(deps.internalTools ?? []),
-      ...(ctx.externalTools ?? []),
-    ];
+    // Tools offered to the executor = the INTERNAL (MCP) tools semantically
+    // relevant to THIS step (top-K from toolsRag) PLUS the per-request external
+    // (consumer-supplied) tools. The executor decides which to call; internal
+    // calls route through `callMcp`, external calls round-trip via `isExternalTool`.
+    const relevant = await deps.selectTools(
+      step.instructions || step.name,
+      TOOL_SELECT_K,
+    );
+    const offeredTools: LlmTool[] = [...relevant, ...(ctx.externalTools ?? [])];
 
     let retries = 0;
 
@@ -502,7 +508,11 @@ function isAffirmation(answer: string): boolean {
   return AFFIRMATIONS.has(t);
 }
 
-/** Max characters of the tool catalog handed to the planner. */
+/** Top-K tools surfaced from toolsRag per planner/step query. */
+const TOOL_SELECT_K = 20;
+
+/** Max characters of the tool catalog handed to the planner (safety bound; with
+ *  top-K selection the relevant tools fit well under this). */
 const TOOL_CATALOG_MAX_CHARS = 4000;
 
 /** A bounded "name: description" list of the tools the executor can call,

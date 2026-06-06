@@ -111,7 +111,8 @@ function harness(opts: {
   config?: ControllerConfig;
   embedder?: never;
   ragQuery?: IKnowledgeRagHandle['query'];
-  internalTools?: LlmTool[];
+  /** Tools surfaced by the (stubbed) semantic selector for every query. */
+  selectTools?: LlmTool[];
 }): Harness {
   const backend = new InMemoryKnowledgeBackend();
   const rag = stubRag(opts.ragQuery);
@@ -127,7 +128,7 @@ function harness(opts: {
       mcpCalls.push({ name, args });
       return opts.callMcpReturns ?? 'mcp-out';
     },
-    internalTools: opts.internalTools ?? [],
+    selectTools: async () => opts.selectTools ?? [],
     // isExternalTool is left undefined by default so the per-request
     // ctx.externalTools is the routing truth; tests that need forced routing
     // pass it explicitly.
@@ -630,7 +631,7 @@ describe('ControllerCoordinatorHandler', () => {
     assert.ok(injected, 'recalled content injected into executor messages');
   });
 
-  it('I3: provisions internalTools to the executor; routes the call via callMcp and feeds back a role:tool message', async () => {
+  it('I3: surfaces toolsRag-selected tools to the executor; routes the call via callMcp and feeds back a role:tool message', async () => {
     const readTable: LlmTool = {
       name: 'ReadTable',
       description: 'Read a DB table',
@@ -666,7 +667,7 @@ describe('ControllerCoordinatorHandler', () => {
         },
       ],
       executor: [],
-      internalTools: [readTable],
+      selectTools: [readTable],
       // ReadTable is internal → must NOT be treated as external.
       isExternalTool: () => false,
       callMcpReturns: 'TABLE ROWS',
@@ -678,11 +679,11 @@ describe('ControllerCoordinatorHandler', () => {
     const ret = await handler.execute(ctx, {}, undefined);
 
     assert.equal(ret, true);
-    // The executor was offered the internal tool on its first send.
+    // The executor was offered the toolsRag-selected tool on its first send.
     assert.ok(sends.length >= 1, 'executor was sent at least once');
     assert.ok(
       sends[0].tools?.some((t) => t.name === 'ReadTable'),
-      'executor offered the ReadTable internal tool',
+      'executor offered the toolsRag-selected ReadTable tool',
     );
     // The internal call routed through callMcp.
     assert.equal(h.mcpCalls.length, 1, 'callMcp fired once');

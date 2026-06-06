@@ -139,6 +139,7 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
       callMcp: async () => 'mcp-out',
+      selectTools: async () => [],
       isExternalTool: () => true,
       config: baseConfig(),
     };
@@ -210,6 +211,7 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
       knowledgeRagFor: () => rag,
       embedder: stubEmbedder,
       callMcp: async () => 'mcp-out',
+      selectTools: async () => [],
       isExternalTool: () => true,
       config: baseConfig(),
     };
