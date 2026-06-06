@@ -94,12 +94,20 @@ handler" path — reused, not stepper-specific.)
 
 ## 5. Subagents
 
-A subagent role = `{ adapter, url, model, auth }`. The Coordinator talks to each via
-an `ISubagentClient` built over the existing `ILlm` / `ILlmApiAdapter` abstraction
-(which already provides OpenAI/Anthropic chat + tool_calls). The client normalizes a
-chat completion into `{ kind: 'content' | 'tool_call' | 'error', ... }`. Roles:
+A subagent role = `{ provider, url, model, auth }` (a provider/endpoint config). The
+Coordinator talks to each via an `ISubagentClient` built over the **outbound `ILlm`**
+abstraction, resolved with `ctx.makeLlm(roleConfig)` (or `ctx.resolveLlm(role)`),
+which already provides OpenAI/Anthropic chat + tool_calls. A remote OpenAI-compatible
+endpoint (e.g. another agent on `:3001`) is reached via an `openai` provider with a
+custom `baseURL`; `custom` = a consumer-supplied `ILlm`. The client normalizes a chat
+completion into `{ kind: 'content' | 'tool_call' | 'error', ... }`. Roles:
 `evaluator`, `planner`, `executor`. In the MVP they MAY point to the same endpoint,
 but they are three independently-configurable roles.
+
+> **Layer caveat (review):** do NOT build subagent clients on `ILlmApiAdapter` —
+> that abstraction normalizes the server's **inbound** HTTP API surface
+> (OpenAI/Anthropic-compatible endpoints the server exposes), not **outbound** chat
+> calls to a model. Outbound = `ILlm` via `ctx.makeLlm`/`resolveLlm`.
 
 The subagent does NOT self-classify completeness or route tools — that is the
 Coordinator's + Planner's job (§6). The subagent just runs its delegated prompt and
@@ -119,25 +127,37 @@ request start and persisted back; code + endpoints are stateless.
 - **Executor context** — the per-step working context the Coordinator injects
   (step instructions + RAG/memory enrichment for that step).
 
-**Session-memory** — a **separate RAG collection/namespace** (per session). The
-Coordinator writes objective artifacts with `{ type, name, source }` metadata so
-they are retrievable by natural language ("code of report X / its includes") and
-re-injected when a step needs them. It behaves like an episodic memory: write
-salient items during the work, recall relevant items into the next call's context.
+**Session-memory** — a **separate, DURABLE per-session store** (a
+KnowledgeRag-style backend, e.g. the JSONL knowledge backend, keyed by
+`(user, session-id)`). The Coordinator writes objective artifacts with
+`{ type, name, source }` metadata so they are retrievable by natural language
+("code of report X / its includes") and re-injected when a step needs them. It
+behaves like an episodic memory: write salient items during the work, recall
+relevant items into the next call's context.
 
-**Session = light, RAG-hydrated bundle, not a heavy/live session.** Lifecycle:
+> **Persistence target (review — critical for suspend/resume):** the session bundle
+> (session-memory + planner-private context + budgets + pending-marker) MUST persist
+> in a backend that **survives `SessionGraph.dispose()`**. Do NOT store it as a
+> `ragRegistry` `scope: session` collection — `SessionGraph.dispose()` calls
+> `ragRegistry.closeSession(sessionId)` on idle eviction / reconfigure / explicit
+> delete, which would DROP the bundle and break a pending suspend/resume across
+> requests. Use a durable backend (the JSONL knowledge backend or a dedicated
+> durable namespace) with its **own cleanup policy** decoupled from session-graph
+> eviction (e.g. a goal-scoped TTL + cleanup on goal completion).
+
+**Session = light, durably-persisted bundle, not a heavy/live session.** Lifecycle:
 1. **Hydrate** — on a request, by `(user, session-id)`, pull the user-scope +
-   session-scope namespaces from RAG into the in-memory bundle (clean-global,
+   session-scope data from the durable store into the in-memory bundle (clean-global,
    planner-private, executor-ctx, budgets, pending-marker).
 2. **Use** — the loop runs over the bundle within one request.
-3. **Persist** — write deltas back to RAG.
+3. **Persist** — write deltas back to the durable store (survives graph dispose).
 4. **Discard** — drop the in-memory bundle; the next request re-hydrates.
 
 **Isolation by construction:** state is data namespaced by `(user, session)`; code
 and endpoints are stateless; nothing cross-session is held in memory. Isolation can
 only break if code violates this principle (holds cross-session state) — which the
 design forbids. Reuses the v19 per-session model (sessionId-keyed RAG, session graph,
-dispose).
+dispose) for the EPHEMERAL graph, but the bundle's durable store outlives it.
 
 ## 7. Target-state establishment (Evaluator)
 
@@ -200,18 +220,28 @@ The loop runs within one request. Two escalation triggers: an **external tool**
 (consumer-executed) and a **clarification / missing info** (not in RAG/MCP, e.g.
 consumer-confirm of the target state). Both use a **data-persisted suspend/resume**
 (no in-memory continuation → isolation preserved):
-- **Suspend:** the Coordinator writes a **pending-marker**
-  `{ kind: 'external-tool' | 'clarify', awaiting: <ext:id | question>, position }`
-  plus the contexts into the session bundle; returns the ask (an `ext:` tool_call, or
-  clarify content); the request ends.
-- **Resume:** the next request re-hydrates the bundle, sees the pending-marker,
-  matches the incoming (tool result by `ext:id` / clarification answer), and
-  **continues from the persisted position** (feeds the result/answer onward), then
-  clears the marker. This is hydrate-and-continue from persisted state, not a full
-  re-run, and not a held in-memory continuation.
+**External tool** — MUST integrate with the v19 `ext:` history-based protocol, not a
+custom result channel:
+- **Suspend:** the Coordinator **yields a standard `toolCalls` + `finishReason:
+  'tool_calls'`** (the v19 surfacing; the `ext:` id is `externalToolCallId(name,args)`)
+  and writes a **pending-marker** `{ kind: 'external-tool', toolName, args, extId,
+  position }` + the contexts into the durable bundle; the request ends.
+- **Resume:** on the next request the **incoming history carries the matched pair**
+  `assistant(tool_calls=[ext:id]) → tool(tool_call_id=ext:id)`; the pipeline builds
+  **`ctx.externalResults`** via `buildExternalResults` (adjacency-validated, history
+  sanitized). The Coordinator **reads the result from `ctx.externalResults`**,
+  correlates it to the pending-marker by `extId` → its `position`, feeds it onward,
+  clears the marker. (It does NOT invent a separate "incoming tool result" path —
+  the v19 adapter/history validation stays the single source.)
 
-Reuses the v19 `ext:` mechanism (`externalToolCallId`, `buildExternalResults`,
-adjacency validation, history sanitization) and `ClarifySignal`.
+**Clarification / missing info** — separate path: the marker is
+`{ kind: 'clarify', question, position }`; the Coordinator returns clarify content
+(via `ClarifySignal`); the answer arrives as **new user input** on the next request
+(not `externalResults`) and the marker correlates it to the parked position.
+
+Both are **hydrate-and-continue from persisted state**, not a full re-run, and not a
+held in-memory continuation. Reuses the v19 `ext:` mechanism (`externalToolCallId`,
+`buildExternalResults`, adjacency validation, history sanitization) + `ClarifySignal`.
 
 ## 11. need-resolver + memorizer (deterministic Coordinator helpers)
 
@@ -239,9 +269,11 @@ adjacency validation, history sanitization) and `ClarifySignal`.
 
 **Reuse (no duplication):** the plugin contract (`IPipelinePlugin`/`IPipelineInstance`/
 `IServerPipelineContext`/`createAgentBuilder`/`withStepperCoordinator`); knowledge-RAG
-+ per-session hydration; the `ext:` external round-trip + `ClarifySignal`; `ILlm` /
-api-adapters (OpenAI/Anthropic) for subagent clients; `callMcp`; the embedder (for
-semantic-distance).
++ per-session hydration; the `ext:` external round-trip + `ClarifySignal`; **outbound
+`ILlm`** (OpenAI/Anthropic providers, resolved via `ctx.makeLlm`/`resolveLlm`) for
+subagent clients — NOT `ILlmApiAdapter` (that is the inbound server-API layer);
+`callMcp`; the embedder (for semantic-distance). The durable bundle store reuses a
+KnowledgeRag-style backend (JSONL) that outlives `SessionGraph.dispose()`.
 
 **New (concentrated in the Coordinator):**
 
@@ -249,8 +281,8 @@ semantic-distance).
 |---|---|
 | `pipelines/controller.ts` | `ControllerPipelinePlugin` — `parseConfig` + `build` |
 | `smart-agent/controller/controller-coordinator-handler.ts` | the deterministic loop (`IStageHandler`): hydrate → evaluator → loop[planner→executor→route→memorize→observe] → finalize → persist/escalate |
-| `smart-agent/controller/session-bundle.ts` | hydrate/persist the per-session bundle over knowledge-RAG namespaces |
-| `smart-agent/controller/subagent-client.ts` | role-endpoint client over `ILlm`/adapters; normalizes `content|tool_call|error` |
+| `smart-agent/controller/session-bundle.ts` | hydrate/persist the per-session bundle over a DURABLE store (JSONL knowledge backend) that outlives `SessionGraph.dispose()` — NOT a ragRegistry `scope:session` collection |
+| `smart-agent/controller/subagent-client.ts` | role-endpoint client over outbound `ILlm` (via `ctx.makeLlm`/`resolveLlm`); normalizes `content|tool_call|error` |
 | `smart-agent/controller/target-state.ts` | Evaluator strategies (formulate[LLM] + distance[embedder] + confirm[escalation]) |
 | `smart-agent/controller/need-resolver.ts` | deterministic RAG/MCP search for a referenced need |
 | `smart-agent/controller/memorizer.ts` | deterministic artifact write to session-memory |
@@ -266,9 +298,9 @@ pipeline:
   name: controller
   config:
     subagents:
-      evaluator: { adapter: openai, url: …, model: … }   # target-state
-      planner:   { adapter: openai, url: …, model: … }   # incremental next-step + review
-      executor:  { adapter: openai, url: …, model: … }    # may = planner endpoint in MVP
+      evaluator: { provider: openai, url: …, model: … }   # target-state
+      planner:   { provider: openai, url: …, model: … }   # incremental next-step + review
+      executor:  { provider: openai, url: …, model: … }    # may = planner endpoint in MVP
     targetState:
       strategy: auto            # consumer-confirm | semantic-distance | auto
       distanceThreshold: 0.25   # for semantic-distance
