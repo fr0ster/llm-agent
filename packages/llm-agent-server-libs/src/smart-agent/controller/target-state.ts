@@ -40,7 +40,11 @@ export async function establishTargetState(
   const r = await deps.evaluator.send([
     {
       role: 'system',
-      content: 'Formulate a concise target state (goal) for the user prompt.',
+      content:
+        'Restate the user request as a SHORT objective — the target state to ' +
+        'achieve — in one or two sentences. Do NOT answer the request, and do ' +
+        'NOT include any data, results, code, or explanations. Output only the ' +
+        'objective.',
     },
     { role: 'user', content: prompt },
   ]);

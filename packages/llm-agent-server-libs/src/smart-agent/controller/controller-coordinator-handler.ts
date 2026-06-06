@@ -170,9 +170,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     }
 
     // -- Main loop ----------------------------------------------------------
+    // Name+description catalog of the tools the executor can call, so the planner
+    // knows what is fetchable and plans tool-using steps instead of answering.
+    const toolCatalog = buildToolCatalog([
+      ...(deps.internalTools ?? []),
+      ...(ctx.externalTools ?? []),
+    ]);
     const cfg = deps.config.budgets;
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
-      const next = await this.planNext(bundle, prompt);
+      const next = await this.planNext(bundle, prompt, toolCatalog);
 
       if (next.kind === 'done') {
         bundle.pending = undefined;
@@ -224,6 +230,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   private async planNext(
     bundle: SessionBundle,
     prompt: string,
+    toolCatalog: string,
   ): Promise<NextStep> {
     const res = await this.deps.planner.send([
       {
@@ -232,11 +239,19 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           'You are the planner. Given the goal and progress, return a SINGLE JSON ' +
           'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
           'next step, {"kind":"done","result":...} when the goal is met, or ' +
-          '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.',
+          '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.\n' +
+          'An executor carries out each step against the LIVE SAP system using the ' +
+          'tools listed below. Any fact about the system MUST be obtained by planning a ' +
+          'step that fetches it with a tool — do NOT answer from prior knowledge, and do ' +
+          'NOT mark the goal "done" until the required data has actually been fetched ' +
+          '(fetched results appear under Progress). Until then, return a concrete ' +
+          '"next" fetch step.',
       },
       {
         role: 'user',
-        content: `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}`,
+        content:
+          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}\n` +
+          `Available tools (the executor picks the exact one):\n${toolCatalog}`,
       },
     ]);
     if (res.kind !== 'content') {
@@ -268,8 +283,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       {
         role: 'system',
         content:
-          'You are the executor. Carry out the step. Emit a tool call when you ' +
-          'need a tool, otherwise return the step result as content.',
+          'You are the executor. You have tools that read the LIVE SAP system. ' +
+          'You MUST obtain any fact about the system (table structure, package ' +
+          'contents, dumps, source, etc.) by CALLING the appropriate tool — never ' +
+          'answer such facts from prior knowledge or memory. Emit a tool call when ' +
+          'you need data; only return the step result as content once you have the ' +
+          'tool results.',
       },
       {
         role: 'user',
@@ -481,6 +500,29 @@ function isAffirmation(answer: string): boolean {
     .toLowerCase()
     .replace(/[.!]+$/, '');
   return AFFIRMATIONS.has(t);
+}
+
+/** Max characters of the tool catalog handed to the planner. */
+const TOOL_CATALOG_MAX_CHARS = 4000;
+
+/** A bounded "name: description" list of the tools the executor can call,
+ *  handed to the planner so it plans tool-using fetch steps. */
+function buildToolCatalog(tools: LlmTool[]): string {
+  if (tools.length === 0) return '(no tools available)';
+  const lines: string[] = [];
+  let total = 0;
+  for (let i = 0; i < tools.length; i++) {
+    const t = tools[i];
+    const desc = (t.description ?? '').split('\n')[0].slice(0, 100);
+    const line = `- ${t.name}: ${desc}`;
+    if (total + line.length + 1 > TOOL_CATALOG_MAX_CHARS) {
+      lines.push(`… (+${tools.length - i} more tools)`);
+      break;
+    }
+    lines.push(line);
+    total += line.length + 1;
+  }
+  return lines.join('\n');
 }
 
 /** Top-k recalled artifacts injected into the executor context per step. */
