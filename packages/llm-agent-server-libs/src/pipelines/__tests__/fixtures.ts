@@ -39,6 +39,7 @@ export function fakeServerCtx(): IServerPipelineContext {
     mainTemp: 0,
     workerRegistry: new Map([['worker', stubWorker]]),
     warn: () => {},
+    stepperKnowledgeBackend: new InMemoryKnowledgeBackend(),
   };
 }
 

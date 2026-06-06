@@ -363,6 +363,7 @@ const CORS_HEADERS = {
 // SmartServer
 // ---------------------------------------------------------------------------
 
+import { ControllerPipelinePlugin } from '../pipelines/controller.js';
 import { DagPipelinePlugin } from '../pipelines/dag.js';
 import { FlatPipelinePlugin } from '../pipelines/flat.js';
 import { LinearPipelinePlugin } from '../pipelines/linear.js';
@@ -903,6 +904,13 @@ export class SmartServer {
   private _helperLlm?: ILlm;
   private _fileLogger?: ILogger;
   private _mergedEmbedderFactories?: Record<string, EmbedderFactory>;
+  /**
+   * The embedder resolved ONCE in `start()` (`resolveAgentEmbedder` over
+   * `rag.embedder` / `embedder` config). Held so `buildServerCtx` can hand it to
+   * every pipeline context (the controller pipeline needs it for target-state
+   * semantic distance). Undefined when no embedder is configured.
+   */
+  private _resolvedEmbedder?: IEmbedder;
   /** Normalized LLM map + pipeline fallback + main temperature — captured in
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
@@ -1102,6 +1110,7 @@ export class SmartServer {
       new LinearPipelinePlugin(),
       new DagPipelinePlugin(),
       new StepperPipelinePlugin(),
+      new ControllerPipelinePlugin(),
     ]) {
       pipelineRegistry.set(builtin.name, builtin);
     }
@@ -1134,6 +1143,9 @@ export class SmartServer {
       this.cfg.embedder,
       mergedEmbedderFactories,
     );
+    // Hold the resolved embedder so buildServerCtx can thread it onto every
+    // pipeline context (the controller pipeline needs it for target-state).
+    this._resolvedEmbedder = resolvedEmbedder;
 
     // ---- RAG resolution (interface-only) ----------------------------------
     // Resolve the tools/history stores and any named collections HERE so the
@@ -2151,9 +2163,26 @@ export class SmartServer {
     // logLlmCall. Falls back to the server-level _requestLogger if ever unset.
     const requestLogger: IRequestLogger | undefined =
       scope.parts.logger ?? this._requestLogger;
+    // Durable knowledge backend is built unconditionally in start()
+    // (buildKnowledgeBackend); guard idempotently so the ctx field is always
+    // populated even if buildServerCtx is ever reached before start() finishes.
+    this.buildKnowledgeBackend();
     return createServerPipelineContext({
       resolveLlm: (role) => this.resolveRoleLlm(role),
       knowledgeRagFor: (sid) => this.knowledgeRagFor(sid),
+      // Durable backend + resolved embedder shared with every pipeline; the
+      // controller pipeline consumes both (session-bundle persistence +
+      // target-state semantic distance).
+      stepperKnowledgeBackend:
+        this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend(),
+      embedder: this._resolvedEmbedder,
+      // NOTE(follow-up): external tool DEFINITIONS arrive per-REQUEST
+      // (HTTP body.tools, see the request handler), NOT at session/ctx-build
+      // time. So this session-scoped ctx carries an empty set; per-request
+      // external-tool routing into the controller handler's `isExternalTool`
+      // is a follow-up (the handler currently takes external tools at build
+      // time). Wiring the best available session-level source (none today).
+      externalTools: [],
       toolsRag: this._toolsRagHandle, // undefined → EMPTY_TOOLS_RAG via factory
       ragRegistry: scope.parts.ragRegistry,
       callMcp: (n, a, s) => this.callMcp(n, a, s),

@@ -32,29 +32,36 @@ export interface IServerPipelineContext extends IPipelineContext {
   /** Session-scoped worker registry (DAG workers / linear subagents). */
   workerRegistry: ReadonlyMap<string, ISubAgent>;
   warn(msg: string): void;
+  /**
+   * Durable knowledge backend (session-bundle persistence + artifacts). The
+   * server always builds exactly one (`buildKnowledgeBackend`): JSONL when a
+   * `logDir` is set, else in-memory. Shared across sessions; consumed by the
+   * stepper/controller coordinators.
+   */
+  stepperKnowledgeBackend: KnowledgeBackend;
+  /**
+   * The embedder resolved once at startup from `rag.embedder` (or the configured
+   * embedder), shared with makeRag and the subagent context-builder. Used by the
+   * controller pipeline for target-state semantic distance. Undefined when no
+   * embedder is configured.
+   */
+  embedder?: IEmbedder;
+  /**
+   * Consumer-supplied external tools that must round-trip to the client.
+   * NOTE: external tool DEFINITIONS arrive per-REQUEST (HTTP `body.tools`), not
+   * at session/ctx-build time, so this is empty on the session-scoped server
+   * ctx. See the follow-up note in `buildServerCtx` (smart-server.ts).
+   */
+  externalTools?: readonly LlmTool[];
 }
 
 /**
- * Controller-pipeline extension of the server context. Adds the durable
- * knowledge backend, the session-memory embedder, and the consumer-supplied
- * external tools the {@link ControllerCoordinatorHandler} needs.
- *
- * TODO(Task 9): the host (smart-server.ts → createServerPipelineContext) must
- * populate these three fields on the context it hands to the controller plugin:
- *   - `stepperKnowledgeBackend` — the durable KnowledgeBackend (JSONL/in-memory)
- *   - `embedder`                — the session-memory embedder (rag.embedder)
- *   - `externalTools`           — consumer-supplied tool descriptors (LlmTool[])
- * (`knowledgeRagFor` and `mcpClients` already live on the core context.)
+ * Controller-pipeline view of the server context. With the durable knowledge
+ * backend, embedder, and external tools now folded into the base
+ * {@link IServerPipelineContext}, this is a transparent alias retained for the
+ * controller plugin / fixtures that reference it by name.
  */
-export interface IControllerServerPipelineContext
-  extends IServerPipelineContext {
-  /** Durable knowledge backend (session-bundle persistence + artifacts). */
-  stepperKnowledgeBackend: KnowledgeBackend;
-  /** Session-memory embedder (target-state semantic distance). */
-  embedder?: IEmbedder;
-  /** Consumer-supplied external tools that must round-trip to the client. */
-  externalTools?: readonly LlmTool[];
-}
+export type IControllerServerPipelineContext = IServerPipelineContext;
 
 /** Always-present empty handle for no-RAG/no-MCP deployments. */
 export const EMPTY_TOOLS_RAG: IToolsRagHandle = {
