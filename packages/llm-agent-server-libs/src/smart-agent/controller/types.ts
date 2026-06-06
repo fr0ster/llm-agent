@@ -25,7 +25,14 @@ export type PendingMarker =
       args: unknown;
       position: string;
     }
-  | { kind: 'clarify'; question: string; position: string };
+  | {
+      kind: 'clarify';
+      question: string;
+      position: string;
+      /** For goal-confirmation clarifies: the target the evaluator proposed, so
+       *  a plain confirmation ("yes") commits IT rather than the literal answer. */
+      proposedTarget?: string;
+    };
 
 export interface SessionBundle {
   goal: string;

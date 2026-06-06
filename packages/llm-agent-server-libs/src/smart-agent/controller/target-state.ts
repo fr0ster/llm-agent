@@ -1,5 +1,4 @@
 import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
-import { ClarifySignal } from '@mcp-abap-adt/llm-agent';
 import type { ISubagentClient } from './subagent-client.js';
 import type { ControllerConfig } from './types.js';
 
@@ -8,6 +7,16 @@ export interface TargetStateDeps {
   /** Required only for distance strategies (semantic-distance/auto). */
   embedder?: IEmbedder;
 }
+
+/**
+ * Outcome of establishing the target state. `established` → the goal is settled
+ * and the loop proceeds. `needs-confirmation` → the coordinator must ask the
+ * consumer to confirm/refine `proposedTarget` (the marker carries it so a plain
+ * "yes" on resume commits the proposed target rather than the literal answer).
+ */
+export type TargetStateOutcome =
+  | { kind: 'established'; goal: string }
+  | { kind: 'needs-confirmation'; proposedTarget: string; question: string };
 
 function cosineDistance(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
@@ -27,7 +36,7 @@ export async function establishTargetState(
   deps: TargetStateDeps,
   prompt: string,
   cfg: ControllerConfig['targetState'],
-): Promise<string> {
+): Promise<TargetStateOutcome> {
   const r = await deps.evaluator.send([
     {
       role: 'system',
@@ -38,7 +47,11 @@ export async function establishTargetState(
   const target = r.kind === 'content' ? r.content : '';
 
   if (cfg.strategy === 'consumer-confirm') {
-    throw new ClarifySignal(`Confirm or refine the target state:\n${target}`);
+    return {
+      kind: 'needs-confirmation',
+      proposedTarget: target,
+      question: `Confirm or refine the target state:\n${target}`,
+    };
   }
 
   // MVP: 'auto' currently behaves as 'semantic-distance' (evaluator-self-judging is a follow-up).
@@ -54,14 +67,13 @@ export async function establishTargetState(
     ]);
     const dist = cosineDistance(te.vector, pe.vector);
     if (dist > cfg.distanceThreshold) {
-      throw new ClarifySignal(
-        'The goal may be ambiguous (distance ' +
-          dist.toFixed(2) +
-          '). Confirm or refine:\n' +
-          target,
-      );
+      return {
+        kind: 'needs-confirmation',
+        proposedTarget: target,
+        question: `The goal may be ambiguous (distance ${dist.toFixed(2)}). Confirm or refine:\n${target}`,
+      };
     }
   }
 
-  return target;
+  return { kind: 'established', goal: target };
 }

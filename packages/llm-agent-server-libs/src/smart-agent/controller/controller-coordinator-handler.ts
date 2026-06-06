@@ -1,5 +1,4 @@
 import {
-  ClarifySignal,
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
@@ -133,12 +132,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.pending = undefined;
     } else if (bundle.pending?.kind === 'clarify') {
       // The incoming prompt is the human's answer to the clarify question.
-      // For a goal-confirmation clarify (position 'goal'), the answer IS the
-      // confirmed/refined target — commit it as the goal so we do NOT re-enter
-      // the confirm loop (the empty-goal check below would otherwise re-run the
-      // evaluator and clarify again forever).
+      // For a goal-confirmation clarify (position 'goal'), commit the goal so we
+      // do NOT re-enter the confirm loop (the empty-goal check below would
+      // otherwise re-run the evaluator and clarify forever). A plain affirmation
+      // ("yes"/"так") confirms the evaluator's PROPOSED target; anything else is
+      // treated as a refinement and becomes the goal verbatim.
       if (bundle.pending.position === 'goal') {
-        bundle.goal = prompt.trim();
+        const answer = prompt.trim();
+        const proposed = bundle.pending.proposedTarget;
+        bundle.goal = proposed && isAffirmation(answer) ? proposed : answer;
       }
       bundle.plannerPrivate += `\n[clarify answer] ${prompt}`;
       bundle.pending = undefined;
@@ -146,25 +148,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     // -- Establish the goal (evaluator) -------------------------------------
     if (!bundle.goal) {
-      try {
-        bundle.goal = await establishTargetState(
-          { evaluator: deps.evaluator, embedder: deps.embedder },
-          prompt,
-          deps.config.targetState,
-        );
-      } catch (err) {
-        if (err instanceof ClarifySignal) {
-          bundle.pending = {
-            kind: 'clarify',
-            question: err.question,
-            position: 'goal',
-          };
-          await persistBundle(deps.backend, sessionId, bundle);
-          this.surfaceClarify(ctx, err.question);
-          return true;
-        }
-        throw err;
+      const outcome = await establishTargetState(
+        { evaluator: deps.evaluator, embedder: deps.embedder },
+        prompt,
+        deps.config.targetState,
+      );
+      if (outcome.kind === 'needs-confirmation') {
+        // Persist the proposed target with the pending marker so a confirmation
+        // on resume commits IT (not a bare "yes"). See the clarify-resume above.
+        bundle.pending = {
+          kind: 'clarify',
+          question: outcome.question,
+          position: 'goal',
+          proposedTarget: outcome.proposedTarget,
+        };
+        await persistBundle(deps.backend, sessionId, bundle);
+        this.surfaceClarify(ctx, outcome.question);
+        return true;
       }
+      bundle.goal = outcome.goal;
     }
 
     // -- Main loop ----------------------------------------------------------
@@ -449,6 +451,37 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 // ---------------------------------------------------------------------------
 // Episodic recall tuning
 // ---------------------------------------------------------------------------
+
+/** Bare confirmations that, on a goal clarify, commit the evaluator's proposed
+ *  target rather than the literal answer. Anything else = a refinement. */
+const AFFIRMATIONS = new Set([
+  'yes',
+  'y',
+  'ok',
+  'okay',
+  'confirm',
+  'confirmed',
+  'correct',
+  'sure',
+  'yep',
+  'yeah',
+  'так',
+  'ок',
+  'окей',
+  'підтверджую',
+  'вірно',
+  'да',
+  '+',
+]);
+
+/** True when the answer is a pure confirmation (short affirmative token). */
+function isAffirmation(answer: string): boolean {
+  const t = answer
+    .trim()
+    .toLowerCase()
+    .replace(/[.!]+$/, '');
+  return AFFIRMATIONS.has(t);
+}
 
 /** Top-k recalled artifacts injected into the executor context per step. */
 const RECALL_K = 5;

@@ -766,10 +766,15 @@ describe('ControllerCoordinatorHandler', () => {
       bundle.pending?.kind === 'clarify' && bundle.pending.position,
       'goal',
     );
+    assert.equal(
+      bundle.pending?.kind === 'clarify' && bundle.pending.proposedTarget,
+      'Goal: read T100',
+      'proposed target persisted on the pending marker',
+    );
     assert.equal(bundle.goal, '', 'goal not yet committed on leg 1');
 
-    // Leg 2: human answers; the answer is committed as the goal and the loop
-    // proceeds to done WITHOUT re-invoking the evaluator (no confirm loop).
+    // Leg 2: a REFINEMENT answer (not an affirmation) becomes the goal verbatim,
+    // and the loop proceeds to done WITHOUT re-invoking the evaluator.
     const h2 = harness({
       evaluator: [], // must NOT be called
       planner: [
@@ -806,5 +811,54 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'run reached done after goal confirmation',
     );
+  });
+
+  it('consumer-confirm: a bare affirmation commits the PROPOSED target, not "yes"', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = {
+      ...baseConfig(),
+      targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.25 },
+    };
+
+    // Leg 1: evaluator proposes a target; consumer-confirm escalates.
+    const h1 = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: read T100 structure' }],
+      planner: [],
+      executor: [],
+      config: cfg,
+    });
+    h1.deps.backend = backend;
+    await new ControllerCoordinatorHandler(h1.deps).execute(
+      fakeCtx({ textOrMessages: 'read T100' }).ctx,
+      {},
+      undefined,
+    );
+
+    // Leg 2: the human confirms with a bare "yes" → goal = the PROPOSED target.
+    const h2 = harness({
+      evaluator: [],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'ok' }),
+        },
+      ],
+      executor: [],
+      config: cfg,
+    });
+    h2.deps.backend = backend;
+    await new ControllerCoordinatorHandler(h2.deps).execute(
+      fakeCtx({ textOrMessages: 'yes' }).ctx,
+      {},
+      undefined,
+    );
+
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(
+      bundle.goal,
+      'Goal: read T100 structure',
+      'affirmation commits the proposed target, not the literal "yes"',
+    );
+    assert.equal(bundle.pending, undefined);
   });
 });
