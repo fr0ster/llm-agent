@@ -76,7 +76,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     _config: Record<string, unknown>,
     _span: unknown,
   ): Promise<boolean> {
-    const { deps } = this;
+    const deps = this.deps;
     const sessionId = ctx.sessionId;
     const prompt = extractPrompt(ctx.textOrMessages);
     const rag = await deps.knowledgeRagFor(sessionId);
@@ -139,7 +139,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // -- Main loop ----------------------------------------------------------
     const cfg = deps.config.budgets;
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
-      const next = await this.planNext(deps, bundle, prompt);
+      const next = await this.planNext(bundle, prompt);
 
       if (next.kind === 'done') {
         bundle.pending = undefined;
@@ -153,7 +153,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         if (bundle.budgets.rewindsUsed > cfg.maxRewinds) {
           return this.escalate(
             ctx,
-            deps,
             sessionId,
             bundle,
             'too many rewinds — please confirm how to proceed',
@@ -167,7 +166,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // next.kind === 'next' → execute the step.
       const completed = await this.runStep(
         ctx,
-        deps,
         sessionId,
         bundle,
         rag,
@@ -181,7 +179,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // -- Budget exhausted ---------------------------------------------------
     return this.escalate(
       ctx,
-      deps,
       sessionId,
       bundle,
       'step budget exhausted — please confirm how to proceed',
@@ -191,11 +188,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   // -- Planner ------------------------------------------------------------
 
   private async planNext(
-    deps: ControllerHandlerDeps,
     bundle: SessionBundle,
     prompt: string,
   ): Promise<NextStep> {
-    const res = await deps.planner.send([
+    const res = await this.deps.planner.send([
       {
         role: 'system',
         content:
@@ -223,14 +219,16 @@ export class ControllerCoordinatorHandler implements IStageHandler {
    *  round-trip surfaced — caller must return true). */
   private async runStep(
     ctx: PipelineContext,
-    deps: ControllerHandlerDeps,
     sessionId: string,
     bundle: SessionBundle,
     rag: IKnowledgeRagHandle,
     meta: KnowledgeEntryMetadata,
     step: Step,
   ): Promise<'advanced' | 'suspended'> {
+    const deps = this.deps;
     const cfg = deps.config.budgets;
+    const maxToolCalls = cfg.maxToolCalls ?? 10;
+    let toolCalls = 0;
     const messages: Message[] = [
       {
         role: 'system',
@@ -281,7 +279,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
 
       // res.kind === 'tool_call' → route the FIRST tool call.
-      const call = toLlmToolCall(res.toolCalls[0]);
+      const firstCall = res.toolCalls[0];
+      if (firstCall === undefined) {
+        // Empty tool-call array → treat as an executor error (retry/replan).
+        retries++;
+        if (retries <= cfg.maxRetries) {
+          messages.push({
+            role: 'user',
+            content:
+              'The previous attempt produced an empty tool call. Retry the step.',
+          });
+          continue;
+        }
+        bundle.budgets.stepsUsed++;
+        bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
+        await persistBundle(deps.backend, sessionId, bundle);
+        return 'advanced';
+      }
+      const call = toLlmToolCall(firstCall);
       const name = call.name;
       const args = call.arguments;
 
@@ -299,7 +314,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         return 'suspended';
       }
 
-      // Internal MCP tool — execute locally, memorize, re-send to the executor.
+      // Internal MCP tool — bound the inner loop so a stuck executor cannot
+      // spin forever issuing unbounded callMcp iterations.
+      toolCalls++;
+      if (toolCalls > maxToolCalls) {
+        bundle.budgets.stepsUsed++;
+        bundle.plannerPrivate += `\n[step ${step.name} aborted] tool-call budget exhausted`;
+        await persistBundle(deps.backend, sessionId, bundle);
+        return 'advanced';
+      }
+
+      // Execute locally, memorize, re-send to the executor.
       const result = await deps.callMcp(name, args);
       await writeArtifact(rag, {
         ...meta,
@@ -319,13 +344,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
   private async escalate(
     ctx: PipelineContext,
-    deps: ControllerHandlerDeps,
     sessionId: string,
     bundle: SessionBundle,
     question: string,
   ): Promise<boolean> {
     bundle.pending = { kind: 'clarify', question, position: 'loop' };
-    await persistBundle(deps.backend, sessionId, bundle);
+    await persistBundle(this.deps.backend, sessionId, bundle);
     this.surfaceClarify(ctx, question);
     return true;
   }

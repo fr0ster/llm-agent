@@ -45,5 +45,10 @@ export interface ControllerConfig {
     distanceThreshold: number;
   };
   sessionMemory: { collection: string };
-  budgets: { maxSteps: number; maxRetries: number; maxRewinds: number };
+  budgets: {
+    maxSteps: number;
+    maxRetries: number;
+    maxRewinds: number;
+    maxToolCalls?: number;
+  };
 }

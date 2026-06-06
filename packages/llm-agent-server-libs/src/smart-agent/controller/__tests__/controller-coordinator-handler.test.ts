@@ -421,6 +421,103 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(bundle.pending?.kind, 'clarify');
   });
 
+  it('error → retry exhausted → replan reaches done', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'replanned-done' }),
+        },
+      ],
+      // maxRetries = 2 → executor must fail (maxRetries + 1) = 3 times.
+      executor: [
+        { kind: 'error', error: 'boom' },
+        { kind: 'error', error: 'boom' },
+        { kind: 'error', error: 'boom' },
+      ],
+      config: baseConfig({ maxRetries: 2 }),
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1, 'failed step counted once');
+    assert.ok(
+      /failed|aborted/.test(bundle.plannerPrivate),
+      'plannerPrivate has a failed/aborted note',
+    );
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'replanned-done',
+      ),
+      'loop replanned and reached done',
+    );
+  });
+
+  it('internal tool-call budget: aborts step after maxToolCalls and run completes', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'budget-done' }),
+        },
+      ],
+      // Executor ALWAYS emits an internal tool call → would loop forever
+      // without the bound.
+      executor: Array.from({ length: 50 }, () => toolCall('LoopTool', {})),
+      isExternalTool: () => false,
+      callMcpReturns: 'mcp-out',
+      config: baseConfig({ maxToolCalls: 2 }),
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    assert.ok(
+      h.mcpCalls.length <= 2,
+      `callMcp invoked at most maxToolCalls times (got ${h.mcpCalls.length})`,
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1, 'aborted step advanced');
+    assert.ok(
+      /tool-call budget/.test(bundle.plannerPrivate),
+      'plannerPrivate has a tool-call budget note',
+    );
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'budget-done',
+      ),
+      'run completed without hanging',
+    );
+  });
+
   it('goal clarify: orthogonal embedding → escalate + persist clarify pending', async () => {
     let n = 0;
     const orthoEmbedder = {
