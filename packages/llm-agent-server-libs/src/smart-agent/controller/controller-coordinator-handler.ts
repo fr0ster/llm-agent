@@ -323,6 +323,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       TOOL_SELECT_K,
     );
     const offeredTools: LlmTool[] = [...relevant, ...(ctx.externalTools ?? [])];
+    // The executor may ONLY call a tool that was offered to it: an internal tool
+    // selected for this step, or a per-request external tool. Any other name
+    // (hallucinated / stale / not in the top-K) is rejected — never executed —
+    // so the semantic exposure boundary actually bounds what runs.
+    const offeredInternalNames = new Set(relevant.map((t) => t.name));
 
     let retries = 0;
 
@@ -395,6 +400,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         await persistBundle(deps.backend, sessionId, bundle);
         this.surfaceToolCall(ctx, { id: extId, name, arguments: args });
         return 'suspended';
+      }
+
+      // The executor may only call a tool that was OFFERED to it this step. A
+      // name that is neither external nor in the internal top-K (hallucinated /
+      // stale / out-of-scope) is rejected — NOT executed — and fed back as a
+      // tool-not-available error so the executor retries with an offered tool.
+      if (!offeredInternalNames.has(name)) {
+        retries++;
+        if (retries <= cfg.maxRetries) {
+          messages.push({
+            role: 'user',
+            content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
+          });
+          continue;
+        }
+        bundle.budgets.stepsUsed++;
+        bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
+        await persistBundle(deps.backend, sessionId, bundle);
+        return 'advanced';
       }
 
       // Internal MCP tool — bound the inner loop so a stuck executor cannot

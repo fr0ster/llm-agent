@@ -207,6 +207,7 @@ describe('ControllerCoordinatorHandler', () => {
         toolCall('GetX', { id: 1 }),
         { kind: 'content', content: 'used tool' },
       ],
+      selectTools: [{ name: 'GetX', description: '', inputSchema: {} }],
       isExternalTool: () => false,
       callMcpReturns: 'mcp-out',
     });
@@ -491,6 +492,7 @@ describe('ControllerCoordinatorHandler', () => {
       // Executor ALWAYS emits an internal tool call → would loop forever
       // without the bound.
       executor: Array.from({ length: 50 }, () => toolCall('LoopTool', {})),
+      selectTools: [{ name: 'LoopTool', description: '', inputSchema: {} }],
       isExternalTool: () => false,
       callMcpReturns: 'mcp-out',
       config: baseConfig({ maxToolCalls: 2 }),
@@ -861,5 +863,69 @@ describe('ControllerCoordinatorHandler', () => {
       'affirmation commits the proposed target, not the literal "yes"',
     );
     assert.equal(bundle.pending, undefined);
+  });
+
+  it('rejects a tool the executor was NOT offered (no callMcp; fed back as not-available)', async () => {
+    const allowed: LlmTool = {
+      name: 'AllowedTool',
+      description: 'ok',
+      inputSchema: { type: 'object' },
+    };
+    const sends: Array<{ messages: Message[]; tools?: LlmTool[] }> = [];
+    const executorQueue: SubagentResult[] = [
+      toolCall('ForbiddenTool', { x: 1 }), // not in selectTools, not external
+      toolCall('ForbiddenTool', { x: 1 }), // keeps trying → exhausts retries
+      { kind: 'content', content: 'fell back to text' },
+    ];
+    const capturingExecutor: ISubagentClient = {
+      async send(messages: Message[], tools?: LlmTool[]) {
+        sends.push({ messages, tools });
+        return (
+          executorQueue.shift() ?? ({ kind: 'content', content: '' } as const)
+        );
+      },
+    };
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'done' }),
+        },
+      ],
+      executor: [],
+      selectTools: [allowed], // only AllowedTool is offered
+      isExternalTool: () => false,
+      config: baseConfig({ maxRetries: 1 }),
+    });
+    h.deps.executor = capturingExecutor;
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    assert.equal(
+      h.mcpCalls.length,
+      0,
+      'the non-offered tool was NEVER executed',
+    );
+    assert.ok(
+      sends.some((s) =>
+        s.messages.some(
+          (m) =>
+            typeof m.content === 'string' && /not available/i.test(m.content),
+        ),
+      ),
+      'executor was told the tool is not available',
+    );
   });
 });
