@@ -68,9 +68,14 @@ export class ControllerPipelinePlugin
     cfg: ControllerConfig,
     ctx: IControllerServerPipelineContext,
   ): Promise<IPipelineInstance> {
-    if (!ctx.embedder) {
+    // Embedder is only needed for distance-based target-state strategies.
+    // consumer-confirm needs none, so an embedder-less deployment can use it.
+    const needsEmbedder =
+      cfg.targetState.strategy === 'semantic-distance' ||
+      cfg.targetState.strategy === 'auto';
+    if (needsEmbedder && !ctx.embedder) {
       throw new Error(
-        "pipeline 'controller' requires an embedder (target-state distance); configure rag.embedder",
+        `pipeline 'controller' targetState.strategy '${cfg.targetState.strategy}' requires an embedder (semantic distance); configure rag.embedder or use strategy: consumer-confirm`,
       );
     }
 

@@ -38,15 +38,18 @@ export interface ControllerHandlerDeps {
   knowledgeRagFor: (
     sessionId: string,
   ) => IKnowledgeRagHandle | Promise<IKnowledgeRagHandle>;
-  embedder: IEmbedder;
+  /** Required only for distance-based target-state strategies
+   *  (semantic-distance/auto); unused by consumer-confirm. */
+  embedder?: IEmbedder;
   /** Executes an INTERNAL (MCP) tool and returns its textual result. */
   callMcp: (toolName: string, args: unknown) => Promise<string>;
   /**
    * The INTERNAL (MCP) tool schemas enumerated once at build time. These are
    * offered to the executor LLM (alongside the per-request `ctx.externalTools`)
    * so it can emit tool calls. Without them the MCP path is unreachable.
+   * Optional — defaults to no internal tools (e.g. MCP-less deployments).
    */
-  internalTools: LlmTool[];
+  internalTools?: LlmTool[];
   /**
    * Optional override marking a tool as consumer-supplied (must round-trip to
    * the client). Production truth is the per-request `ctx.externalTools`; this
@@ -130,6 +133,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.pending = undefined;
     } else if (bundle.pending?.kind === 'clarify') {
       // The incoming prompt is the human's answer to the clarify question.
+      // For a goal-confirmation clarify (position 'goal'), the answer IS the
+      // confirmed/refined target — commit it as the goal so we do NOT re-enter
+      // the confirm loop (the empty-goal check below would otherwise re-run the
+      // evaluator and clarify again forever).
+      if (bundle.pending.position === 'goal') {
+        bundle.goal = prompt.trim();
+      }
       bundle.plannerPrivate += `\n[clarify answer] ${prompt}`;
       bundle.pending = undefined;
     }
@@ -283,7 +293,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // to call; internal calls route through `callMcp`, external calls round-trip
     // via the `isExternalTool` predicate.
     const offeredTools: LlmTool[] = [
-      ...deps.internalTools,
+      ...(deps.internalTools ?? []),
       ...(ctx.externalTools ?? []),
     ];
 

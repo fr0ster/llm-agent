@@ -5,7 +5,8 @@ import type { ControllerConfig } from './types.js';
 
 export interface TargetStateDeps {
   evaluator: ISubagentClient;
-  embedder: IEmbedder;
+  /** Required only for distance strategies (semantic-distance/auto). */
+  embedder?: IEmbedder;
 }
 
 function cosineDistance(a: number[], b: number[]): number {
@@ -42,6 +43,11 @@ export async function establishTargetState(
 
   // MVP: 'auto' currently behaves as 'semantic-distance' (evaluator-self-judging is a follow-up).
   if (cfg.strategy === 'semantic-distance' || cfg.strategy === 'auto') {
+    if (!deps.embedder) {
+      throw new Error(
+        `target-state strategy '${cfg.strategy}' requires an embedder; configure rag.embedder or use strategy: consumer-confirm`,
+      );
+    }
     const [te, pe] = await Promise.all([
       deps.embedder.embed(target),
       deps.embedder.embed(prompt),

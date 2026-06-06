@@ -737,4 +737,74 @@ describe('ControllerCoordinatorHandler', () => {
       'terminal stop after clarify surfaced',
     );
   });
+
+  it('consumer-confirm: goal-clarify resume commits the answer as goal (no confirm loop)', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = {
+      ...baseConfig(),
+      targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.25 },
+    };
+
+    // Leg 1: first request → evaluator formulates, consumer-confirm escalates.
+    const h1 = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: read T100' }],
+      planner: [],
+      executor: [],
+      config: cfg,
+    });
+    h1.deps.backend = backend;
+    const handler1 = new ControllerCoordinatorHandler(h1.deps);
+    const r1 = await handler1.execute(
+      fakeCtx({ textOrMessages: 'read T100' }).ctx,
+      {},
+      undefined,
+    );
+    assert.equal(r1, true);
+    let bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.pending?.kind, 'clarify');
+    assert.equal(
+      bundle.pending?.kind === 'clarify' && bundle.pending.position,
+      'goal',
+    );
+    assert.equal(bundle.goal, '', 'goal not yet committed on leg 1');
+
+    // Leg 2: human answers; the answer is committed as the goal and the loop
+    // proceeds to done WITHOUT re-invoking the evaluator (no confirm loop).
+    const h2 = harness({
+      evaluator: [], // must NOT be called
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'all done' }),
+        },
+      ],
+      executor: [],
+      config: cfg,
+    });
+    h2.deps.backend = backend;
+    const handler2 = new ControllerCoordinatorHandler(h2.deps);
+    const { ctx, captured } = fakeCtx({
+      textOrMessages: 'read structure of table T100',
+    });
+    const r2 = await handler2.execute(ctx, {}, undefined);
+
+    assert.equal(r2, true);
+    bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.goal, 'read structure of table T100');
+    assert.equal(bundle.pending, undefined);
+    assert.equal(
+      (h2.deps.evaluator as { calls: number }).calls,
+      0,
+      'evaluator was NOT re-invoked on resume (no confirm loop)',
+    );
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'all done',
+      ),
+      'run reached done after goal confirmation',
+    );
+  });
 });
