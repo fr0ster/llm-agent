@@ -1,7 +1,6 @@
 import type {
   IPipelineInstance,
   IPipelinePlugin,
-  LlmTool,
 } from '@mcp-abap-adt/llm-agent';
 import {
   ControllerCoordinatorHandler,
@@ -80,8 +79,10 @@ export class ControllerPipelinePlugin
     ]);
 
     const mcpBridge = buildMcpBridge(ctx.mcpClients ?? []);
-    const externalTools: readonly LlmTool[] = ctx.externalTools ?? [];
 
+    // NOTE: external-tool routing is decided PER-REQUEST inside the handler from
+    // `ctx.externalTools` (the client-supplied tools for that request). We do NOT
+    // wire `isExternalTool` here — the build-time server ctx never carries them.
     const deps: ControllerHandlerDeps = {
       evaluator: makeSubagentClient(evaluatorLlm),
       planner: makeSubagentClient(plannerLlm),
@@ -90,7 +91,6 @@ export class ControllerPipelinePlugin
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
       callMcp: (name, args) => mcpBridge(name, args),
-      isExternalTool: (name) => externalTools.some((t) => t.name === name),
       config: cfg,
     };
 

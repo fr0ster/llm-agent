@@ -40,6 +40,7 @@ export async function establishTargetState(
     throw new ClarifySignal(`Confirm or refine the target state:\n${target}`);
   }
 
+  // MVP: 'auto' currently behaves as 'semantic-distance' (evaluator-self-judging is a follow-up).
   if (cfg.strategy === 'semantic-distance' || cfg.strategy === 'auto') {
     const [te, pe] = await Promise.all([
       deps.embedder.embed(target),

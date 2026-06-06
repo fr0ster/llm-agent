@@ -4,7 +4,6 @@ import type {
   IPipelineContext,
   ISubAgent,
   IToolsRagHandle,
-  LlmTool,
 } from '@mcp-abap-adt/llm-agent';
 import type {
   KnowledgeBackend,
@@ -46,19 +45,13 @@ export interface IServerPipelineContext extends IPipelineContext {
    * embedder is configured.
    */
   embedder?: IEmbedder;
-  /**
-   * Consumer-supplied external tools that must round-trip to the client.
-   * NOTE: external tool DEFINITIONS arrive per-REQUEST (HTTP `body.tools`), not
-   * at session/ctx-build time, so this is empty on the session-scoped server
-   * ctx. See the follow-up note in `buildServerCtx` (smart-server.ts).
-   */
-  externalTools?: readonly LlmTool[];
 }
 
 /**
  * Controller-pipeline view of the server context. With the durable knowledge
- * backend, embedder, and external tools now folded into the base
- * {@link IServerPipelineContext}, this is a transparent alias retained for the
+ * backend and embedder now folded into the base {@link IServerPipelineContext}
+ * (external tools are routed per-REQUEST via `PipelineContext.externalTools`,
+ * not the build-time ctx), this is a transparent alias retained for the
  * controller plugin / fixtures that reference it by name.
  */
 export type IControllerServerPipelineContext = IServerPipelineContext;

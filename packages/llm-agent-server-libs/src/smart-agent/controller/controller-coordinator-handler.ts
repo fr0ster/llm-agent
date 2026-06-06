@@ -14,6 +14,7 @@ import type {
   PipelineContext,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { writeArtifact } from './memorizer.js';
+import { resolveNeed } from './need-resolver.js';
 import { hydrateBundle, persistBundle } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
@@ -39,8 +40,13 @@ export interface ControllerHandlerDeps {
   embedder: IEmbedder;
   /** Executes an INTERNAL (MCP) tool and returns its textual result. */
   callMcp: (toolName: string, args: unknown) => Promise<string>;
-  /** true → the tool is consumer-supplied and must round-trip to the client. */
-  isExternalTool: (toolName: string) => boolean;
+  /**
+   * Optional override marking a tool as consumer-supplied (must round-trip to
+   * the client). Production truth is the per-request `ctx.externalTools`; this
+   * override is retained ONLY so unit tests can force external routing. The
+   * effective predicate OR-combines both.
+   */
+  isExternalTool?: (toolName: string) => boolean;
   config: ControllerConfig;
 }
 
@@ -83,6 +89,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const bundle = await hydrateBundle(deps.backend, sessionId);
 
     const meta = synthMeta(ctx, sessionId);
+
+    // Route external tools by the PER-REQUEST context (the client-supplied tools
+    // for THIS request), OR-combined with the optional test-only override. The
+    // build-time server ctx never carries external tools (they arrive per-request
+    // via HTTP body.tools → ctx.externalTools), so this is the production truth.
+    const externalNames = new Set((ctx.externalTools ?? []).map((t) => t.name));
+    const isExternalTool = (name: string): boolean =>
+      externalNames.has(name) || (deps.isExternalTool?.(name) ?? false);
 
     // -- Resume from a persisted pending marker -----------------------------
     if (bundle.pending?.kind === 'external-tool') {
@@ -171,6 +185,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         rag,
         meta,
         next.step,
+        isExternalTool,
       );
       if (completed === 'suspended') return true;
       // 'advanced' → loop continues to the next planner call.
@@ -224,6 +239,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     rag: IKnowledgeRagHandle,
     meta: KnowledgeEntryMetadata,
     step: Step,
+    isExternalTool: (name: string) => boolean,
   ): Promise<'advanced' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
@@ -241,6 +257,20 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         content: `Goal: ${bundle.goal}\nStep: ${step.name}\nInstructions: ${step.instructions}`,
       },
     ];
+
+    // Episodic recall: pull prior artifacts relevant to this step from
+    // session-memory and inject them as context. The session-memory rag shares
+    // the bundle backend, so restrict to artifact types (excludes the
+    // 'controller-bundle' infrastructure record). Bounded by k and length.
+    const recallText = step.instructions || step.name;
+    const recalled = await resolveNeed(rag, recallText, RECALL_K, {
+      artifactType: RECALL_ARTIFACT_TYPES,
+    });
+    const recallBlock = buildRecallBlock(recalled);
+    if (recallBlock) {
+      messages.push({ role: 'user', content: recallBlock });
+    }
+
     let retries = 0;
 
     // Inner loop handles tool routing / error retries until the executor
@@ -300,7 +330,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       const name = call.name;
       const args = call.arguments;
 
-      if (deps.isExternalTool(name)) {
+      if (isExternalTool(name)) {
         const extId = externalToolCallId(name, args);
         bundle.pending = {
           kind: 'external-tool',
@@ -375,8 +405,42 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 }
 
 // ---------------------------------------------------------------------------
+// Episodic recall tuning
+// ---------------------------------------------------------------------------
+
+/** Top-k recalled artifacts injected into the executor context per step. */
+const RECALL_K = 5;
+/** Artifact types eligible for recall (excludes the 'controller-bundle' record
+ *  that shares the same backend). */
+const RECALL_ARTIFACT_TYPES = ['step-result', 'mcp-result'] as const;
+/** Hard cap on the total injected recall length (chars). */
+const RECALL_MAX_CHARS = 4000;
+
+// ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
+
+/** Build a bounded "Relevant prior context" block from recalled artifacts, or
+ *  undefined when there is nothing to inject. */
+function buildRecallBlock(
+  hits: readonly { content: string }[],
+): string | undefined {
+  if (hits.length === 0) return undefined;
+  const parts: string[] = [];
+  let used = 0;
+  for (const h of hits) {
+    const c = h.content ?? '';
+    if (c.length === 0) continue;
+    if (used + c.length > RECALL_MAX_CHARS) {
+      parts.push(c.slice(0, RECALL_MAX_CHARS - used));
+      break;
+    }
+    parts.push(c);
+    used += c.length;
+  }
+  if (parts.length === 0) return undefined;
+  return `Relevant prior context:\n${parts.join('\n')}`;
+}
 
 /** Extract the user prompt from the request's textOrMessages. */
 function extractPrompt(textOrMessages: string | Message[]): string {

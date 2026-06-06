@@ -44,17 +44,17 @@ export function fakeServerCtx(): IServerPipelineContext {
 }
 
 const stubEmbedder: IEmbedder = {
-  embed: async () => [0],
+  embed: async () => ({ vector: [0] }),
   dimensions: 1,
 } as unknown as IEmbedder;
 
-/** Controller-flavored ctx: extends fakeServerCtx with the Task-9 fields the
- *  ControllerCoordinatorHandler needs (backend, embedder, externalTools). */
+/** Controller-flavored ctx: extends fakeServerCtx with the fields the
+ *  ControllerCoordinatorHandler needs (backend, embedder). External tools are
+ *  routed per-request via PipelineContext.externalTools, not this ctx. */
 export function fakeControllerServerCtx(): IControllerServerPipelineContext {
   return {
     ...fakeServerCtx(),
     stepperKnowledgeBackend: new InMemoryKnowledgeBackend(),
     embedder: stubEmbedder,
-    externalTools: [],
   };
 }

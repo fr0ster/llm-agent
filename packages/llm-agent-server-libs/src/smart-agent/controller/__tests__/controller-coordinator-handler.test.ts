@@ -5,6 +5,7 @@ import {
   type IKnowledgeRagHandle,
   type KnowledgeEntry,
   type LlmStreamChunk,
+  type Message,
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
@@ -59,13 +60,13 @@ function scriptedClient(queue: SubagentResult[]): ISubagentClient & {
   };
 }
 
-function stubRag(): IKnowledgeRagHandle & { written: KnowledgeEntry[] } {
+function stubRag(
+  queryImpl?: IKnowledgeRagHandle['query'],
+): IKnowledgeRagHandle & { written: KnowledgeEntry[] } {
   const written: KnowledgeEntry[] = [];
   return {
     written,
-    async query() {
-      return [];
-    },
+    query: queryImpl ?? (async () => []),
     async list() {
       return [];
     },
@@ -108,9 +109,10 @@ function harness(opts: {
   callMcpReturns?: string;
   config?: ControllerConfig;
   embedder?: never;
+  ragQuery?: IKnowledgeRagHandle['query'];
 }): Harness {
   const backend = new InMemoryKnowledgeBackend();
-  const rag = stubRag();
+  const rag = stubRag(opts.ragQuery);
   const mcpCalls: Array<{ name: string; args: unknown }> = [];
   const deps: ControllerHandlerDeps = {
     evaluator: scriptedClient(opts.evaluator),
@@ -123,7 +125,10 @@ function harness(opts: {
       mcpCalls.push({ name, args });
       return opts.callMcpReturns ?? 'mcp-out';
     },
-    isExternalTool: opts.isExternalTool ?? (() => false),
+    // isExternalTool is left undefined by default so the per-request
+    // ctx.externalTools is the routing truth; tests that need forced routing
+    // pass it explicitly.
+    ...(opts.isExternalTool ? { isExternalTool: opts.isExternalTool } : {}),
     config: opts.config ?? baseConfig(),
   };
   return { deps, rag, backend, mcpCalls };
@@ -511,6 +516,115 @@ describe('ControllerCoordinatorHandler', () => {
       ),
       'run completed without hanging',
     );
+  });
+
+  it('I2: routes external via per-request ctx.externalTools when deps.isExternalTool is undefined', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+      ],
+      executor: [toolCall('ExtTool', { q: 'abc' })],
+      // NOTE: no isExternalTool override — routing must come from ctx.externalTools.
+    });
+    assert.equal(
+      h.deps.isExternalTool,
+      undefined,
+      'deps.isExternalTool is undefined in this case',
+    );
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx({
+      externalTools: [{ name: 'ExtTool' }] as never,
+    });
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    const surfaced = captured.find(
+      (c) =>
+        c.ok &&
+        c.value.finishReason === 'tool_calls' &&
+        (c.value.toolCalls?.length ?? 0) > 0,
+    );
+    assert.ok(surfaced, 'tool_calls chunk surfaced via per-request routing');
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.pending?.kind, 'external-tool');
+    assert.equal(
+      bundle.pending?.kind === 'external-tool' ? bundle.pending.toolName : '',
+      'ExtTool',
+    );
+  });
+
+  it('I1: recalled session-memory artifacts are injected into the executor messages', async () => {
+    const seenMessages: Message[][] = [];
+    const capturingExecutor: ISubagentClient & { calls: number } = {
+      get calls() {
+        return seenMessages.length;
+      },
+      async send(messages: Message[]) {
+        seenMessages.push(messages);
+        return { kind: 'content', content: 'did s1' } as SubagentResult;
+      },
+    };
+    const ragQuery: IKnowledgeRagHandle['query'] = async (_text, opts) => {
+      // Recall must restrict to artifact types (excludes 'controller-bundle').
+      assert.deepEqual(opts?.filter?.artifactType, [
+        'step-result',
+        'mcp-result',
+      ]);
+      return [
+        {
+          content: 'INCLUDE zinc.',
+          metadata: {
+            traceId: 't',
+            turnId: 't',
+            stepperId: 'controller',
+            task: 'ZINC',
+            artifactType: 'mcp-result',
+            createdAt: '2026-06-06T00:00:00.000Z',
+          },
+        },
+      ];
+    };
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'find includes' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'done' }),
+        },
+      ],
+      executor: [],
+      ragQuery,
+    });
+    h.deps.executor = capturingExecutor;
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx();
+
+    const ret = await handler.execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    assert.ok(seenMessages.length >= 1, 'executor was called');
+    const injected = seenMessages[0].some(
+      (m) =>
+        typeof m.content === 'string' &&
+        m.content.includes('Relevant prior context') &&
+        m.content.includes('INCLUDE zinc.'),
+    );
+    assert.ok(injected, 'recalled content injected into executor messages');
   });
 
   it('goal clarify: orthogonal embedding → escalate + persist clarify pending', async () => {

@@ -2176,13 +2176,9 @@ export class SmartServer {
       stepperKnowledgeBackend:
         this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend(),
       embedder: this._resolvedEmbedder,
-      // NOTE(follow-up): external tool DEFINITIONS arrive per-REQUEST
-      // (HTTP body.tools, see the request handler), NOT at session/ctx-build
-      // time. So this session-scoped ctx carries an empty set; per-request
-      // external-tool routing into the controller handler's `isExternalTool`
-      // is a follow-up (the handler currently takes external tools at build
-      // time). Wiring the best available session-level source (none today).
-      externalTools: [],
+      // External tools are NOT carried on this build-time ctx: definitions arrive
+      // per-REQUEST (HTTP body.tools) and the controller routes them per-request
+      // via PipelineContext.externalTools inside the coordinator handler.
       toolsRag: this._toolsRagHandle, // undefined → EMPTY_TOOLS_RAG via factory
       ragRegistry: scope.parts.ragRegistry,
       callMcp: (n, a, s) => this.callMcp(n, a, s),
