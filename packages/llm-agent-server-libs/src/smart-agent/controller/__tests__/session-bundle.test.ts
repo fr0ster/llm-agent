@@ -57,4 +57,29 @@ describe('session-bundle', () => {
     });
     assert.equal((await hydrateBundle(be, 's1')).goal, 'second');
   });
+
+  it('ignores non-bundle artifacts in the same session', async () => {
+    const be = memBackend();
+    await persistBundle(be, 's1', {
+      goal: 'real goal',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+    });
+    // a memorizer-written artifact lands in the SAME session backend AFTER the bundle:
+    await (
+      be as unknown as { put: (sid: string, e: unknown) => Promise<void> }
+    ).put('s1', {
+      content: 'REPORT z.',
+      metadata: {
+        artifactType: 'code',
+        traceId: 's1',
+        turnId: 's1',
+        stepperId: 'controller',
+        task: 't',
+        createdAt: 'x',
+      },
+    });
+    const got = await hydrateBundle(be, 's1');
+    assert.equal(got.goal, 'real goal'); // not the code artifact
+  });
 });
