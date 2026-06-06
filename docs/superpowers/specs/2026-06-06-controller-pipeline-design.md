@@ -128,8 +128,8 @@ request start and persisted back; code + endpoints are stateless.
   (step instructions + RAG/memory enrichment for that step).
 
 **Session-memory** — a **separate, DURABLE per-session store** (a
-KnowledgeRag-style backend, e.g. the JSONL knowledge backend, keyed by
-`(userKey, sessionId)` — see Bundle key below). The Coordinator writes objective artifacts with
+KnowledgeRag-style backend, e.g. the JSONL knowledge backend), with the **backend
+storage key = the raw `sessionId`** (see Bundle key below). The Coordinator writes objective artifacts with
 `{ type, name, source }` metadata so they are retrievable by natural language
 ("code of report X / its includes") and re-injected when a step needs them. It
 behaves like an episodic memory: write salient items during the work, recall
@@ -138,7 +138,8 @@ relevant items into the next call's context.
 > **Persistence target + split lifecycle (review — critical).** The session bundle
 > (session-memory + planner-private context + budgets + pending-marker) persists in a
 > durable backend (the JSONL knowledge backend, or a dedicated durable namespace)
-> keyed by `(userKey, sessionId)` — NOT a `ragRegistry` `scope: session` collection
+> **keyed by the raw `sessionId`** (so the existing delete-by-sessionId path purges
+> it — see Bundle key) — NOT a `ragRegistry` `scope: session` collection
 > (those are transient: `SessionGraph.dispose()` → `ragRegistry.closeSession` drops
 > them, which would break a pending suspend/resume). The lifecycle is **split**:
 > - **Survive:** idle eviction + reconfigure (transient graph teardown — the bundle
@@ -151,23 +152,32 @@ relevant items into the next call's context.
 >   explicit delete.) Goal-complete + a goal-scoped TTL add cleanup for abandoned
 >   sessions.
 
-> **Bundle key (review).** `userKey = ctx.options?.userId ?? sessionId`. The default
-> (non-auth) session resolver has only `sessionId` (`userId` is an optional
-> `CallOptions.userId`), so `userKey` **collapses to `sessionId`** (effectively
-> session-scoped). An auth-enabled downstream build supplies a real `userId`,
-> enabling user-scope recall across a user's sessions. The bundle is keyed by
-> `(userKey, sessionId)`; session-scope is always loaded, user-scope only when a real
-> `userId` is present.
+> **Bundle key + key/delete consistency (review).** To keep the existing
+> delete-by-`sessionId` path working, the **session bundle's backend storage key is
+> the raw `sessionId`** — NOT a composite. `userKey = ctx.options?.userId ??
+> sessionId` is stored as **metadata/attribution inside the bundle record**, not as
+> the storage key. So:
+> - **Session bundle** (session-memory + planner-private + budgets + pending-marker)
+>   → keyed by `sessionId`; the server's `DELETE /v1/sessions/:id` (which passes the
+>   raw `sessionId` to the backend, `smart-server.ts` ~2625) purges it unchanged.
+> - **User-scope cross-session recall** (auth build only, when a real `userId`
+>   exists) → a **separate, user-keyed namespace** with its **own user-level
+>   lifecycle** — it is NOT purged by a single session's delete (it spans the user's
+>   sessions; cleaned only by a user-level delete). In the default (non-auth) build
+>   this namespace is absent (`userId` undefined), so everything is session-scoped.
 
 **Session = light, durably-persisted bundle, not a heavy/live session.** Lifecycle:
-1. **Hydrate** — on a request, by `(userKey, sessionId)`, pull the user-scope (when
-   present) + session-scope data from the durable store into the in-memory bundle
-   (clean-global, planner-private, executor-ctx, budgets, pending-marker).
+1. **Hydrate** — on a request, pull the session bundle by `sessionId` from the
+   durable store into the in-memory bundle (clean-global, planner-private,
+   executor-ctx, budgets, pending-marker); if a real `userId` is present, also load
+   the user-scope namespace for cross-session recall.
 2. **Use** — the loop runs over the bundle within one request.
 3. **Persist** — write deltas back to the durable store (survives graph dispose).
 4. **Discard** — drop the in-memory bundle; the next request re-hydrates.
 
-**Isolation by construction:** state is data namespaced by `(userKey, sessionId)`; code
+**Isolation by construction:** state is data namespaced by `sessionId` (the session
+bundle) — plus an optional `userId` namespace for cross-session recall in the auth
+build; code
 and endpoints are stateless; nothing cross-session is held in memory. Isolation can
 only break if code violates this principle (holds cross-session state) — which the
 design forbids. Reuses the v19 per-session model (sessionId-keyed RAG, session graph,
