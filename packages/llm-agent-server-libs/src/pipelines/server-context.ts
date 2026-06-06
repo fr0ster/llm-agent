@@ -1,10 +1,15 @@
 import type {
+  IEmbedder,
   ILlm,
   IPipelineContext,
   ISubAgent,
   IToolsRagHandle,
+  LlmTool,
 } from '@mcp-abap-adt/llm-agent';
-import type { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  KnowledgeBackend,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { NormalizedLlmMap } from '../smart-agent/config.js';
 import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
@@ -27,6 +32,28 @@ export interface IServerPipelineContext extends IPipelineContext {
   /** Session-scoped worker registry (DAG workers / linear subagents). */
   workerRegistry: ReadonlyMap<string, ISubAgent>;
   warn(msg: string): void;
+}
+
+/**
+ * Controller-pipeline extension of the server context. Adds the durable
+ * knowledge backend, the session-memory embedder, and the consumer-supplied
+ * external tools the {@link ControllerCoordinatorHandler} needs.
+ *
+ * TODO(Task 9): the host (smart-server.ts → createServerPipelineContext) must
+ * populate these three fields on the context it hands to the controller plugin:
+ *   - `stepperKnowledgeBackend` — the durable KnowledgeBackend (JSONL/in-memory)
+ *   - `embedder`                — the session-memory embedder (rag.embedder)
+ *   - `externalTools`           — consumer-supplied tool descriptors (LlmTool[])
+ * (`knowledgeRagFor` and `mcpClients` already live on the core context.)
+ */
+export interface IControllerServerPipelineContext
+  extends IServerPipelineContext {
+  /** Durable knowledge backend (session-bundle persistence + artifacts). */
+  stepperKnowledgeBackend: KnowledgeBackend;
+  /** Session-memory embedder (target-state semantic distance). */
+  embedder?: IEmbedder;
+  /** Consumer-supplied external tools that must round-trip to the client. */
+  externalTools?: readonly LlmTool[];
 }
 
 /** Always-present empty handle for no-RAG/no-MCP deployments. */

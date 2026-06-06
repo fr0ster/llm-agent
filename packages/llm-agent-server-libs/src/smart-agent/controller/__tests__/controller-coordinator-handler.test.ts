@@ -284,16 +284,11 @@ describe('ControllerCoordinatorHandler', () => {
     const extId = externalToolCallId('ExtTool', { q: 'abc' });
 
     // Second leg: planner now completes; provide the external result.
-    (h.deps.planner as ISubagentClient & { send: unknown }).send = (() => {
-      let n = 0;
-      return async () => {
-        n++;
-        return {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'resumed-done' }),
-        } as SubagentResult;
-      };
-    })();
+    (h.deps.planner as ISubagentClient & { send: unknown }).send = async () =>
+      ({
+        kind: 'content',
+        content: JSON.stringify({ kind: 'done', result: 'resumed-done' }),
+      }) as SubagentResult;
     const { ctx, captured } = fakeCtx({
       externalResults: new Map([[extId, 'TOOL RESULT']]),
     });
