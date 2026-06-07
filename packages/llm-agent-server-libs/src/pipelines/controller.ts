@@ -60,6 +60,9 @@ export class ControllerPipelinePlugin
 
     return {
       subagents: subagents as ControllerConfig['subagents'],
+      planner: (cfg.planner === 'adaptive'
+        ? 'adaptive'
+        : 'incremental') as ControllerConfig['planner'],
       targetState: {
         strategy: 'auto',
         distanceThreshold: 0.25,
