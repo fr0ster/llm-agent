@@ -11,6 +11,23 @@ import type { ControllerConfig } from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
+// Re-export the controller building blocks so embedders (no-YAML) can compose
+// the coordinator directly onto their own SmartAgentBuilder via
+// `builder.withStepperCoordinator(new ControllerCoordinatorHandler(deps))`,
+// without going through the plugin/registry.
+export {
+  ControllerCoordinatorHandler,
+  type ControllerHandlerDeps,
+} from '../smart-agent/controller/controller-coordinator-handler.js';
+export {
+  type ISubagentClient,
+  makeSubagentClient,
+} from '../smart-agent/controller/subagent-client.js';
+export type {
+  ControllerConfig,
+  SessionBundle,
+} from '../smart-agent/controller/types.js';
+
 /**
  * Built-in `controller` pipeline plugin. Validates the controller config
  * dialect (three required subagent roles + defaulted target-state / session
