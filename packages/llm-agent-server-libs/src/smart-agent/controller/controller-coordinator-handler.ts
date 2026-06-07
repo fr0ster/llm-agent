@@ -286,7 +286,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         total,
       );
       if (completed === 'suspended') return true;
-      // 'advanced' → loop continues to the next planner call.
+      // 'advanced' OR 'failed' → loop continues to the next planner call. In the
+      // INCREMENTAL strategy a failed step is identical to advancing: the planner
+      // sees the failure note in progress and re-decides (next/done/rewind). The
+      // distinct 'failed' signal exists for the future plan-first strategy to
+      // trigger a replan; it does not change incremental behavior.
     }
 
     // -- Budget exhausted ---------------------------------------------------
@@ -357,7 +361,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     isExternalTool: (name: string) => boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
     total?: LlmUsage,
-  ): Promise<'advanced' | 'suspended'> {
+  ): Promise<'advanced' | 'failed' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
     const maxToolCalls = cfg.maxToolCalls ?? 10;
@@ -442,7 +446,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
         await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return 'failed';
       }
 
       // res.kind === 'tool_call' → route the FIRST tool call.
@@ -461,7 +465,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
         await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return 'failed';
       }
       const call = toLlmToolCall(firstCall);
       const name = call.name;
@@ -497,7 +501,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
         await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return 'failed';
       }
 
       // Internal MCP tool — bound the inner loop so a stuck executor cannot
@@ -507,7 +511,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} aborted] tool-call budget exhausted`;
         await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return 'failed';
       }
 
       // Execute locally, memorize, re-send to the executor.
