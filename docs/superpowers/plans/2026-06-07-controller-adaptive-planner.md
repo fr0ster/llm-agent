@@ -17,7 +17,7 @@
 | File | Responsibility |
 |------|----------------|
 | `smart-agent/controller/types.ts` (modify) | `ControllerConfig.planner?: 'incremental' \| 'adaptive'`; `SessionBundle.plan?: Step[]` + `planCursor?: number`; export `PlannerKind`, `PlannerNextInput`, `IControllerPlanner` |
-| `smart-agent/controller/planner.ts` (create) | `IncrementalPlanner`, `AdaptivePlanner`, `makePlanner(kind, deps)` — the pluggable planner implementations |
+| `smart-agent/controller/planner.ts` (create) | `IncrementalPlanner`, `AdaptivePlanner`, `makePlanner(kind, planner)` — the pluggable planner implementations |
 | `smart-agent/controller/controller-coordinator-handler.ts` (modify) | Move the planner system-prompt/`planNext` into `IncrementalPlanner`; make the loop planner-agnostic (construct via `makePlanner`, thread `lastOutcome`, persist plan/cursor) |
 | `pipelines/controller.ts` (modify) | `parseConfig` defaults `planner: 'incremental'`; passes it through (already in `cfg`) |
 | `smart-agent/controller/__tests__/planner.test.ts` (create) | Adaptive unit tests (create/advance/replan/finalize/parse-retry) |
@@ -66,6 +66,13 @@ export interface PlannerNextInput {
   lastOutcome?: 'advanced' | 'failed';
   /** True when re-asking after an unparsable reply (stern format reminder). */
   retrying: boolean;
+  /** True on the first call of a turn that just resumed an EXTERNAL-tool result
+   *  (the result is now in `bundle.plannerPrivate`). The adaptive planner replans
+   *  from the cursor so it incorporates the result via the planner — which reads
+   *  plannerPrivate — instead of blindly re-running the suspended step (the
+   *  executor prompt does NOT include plannerPrivate). Incremental ignores it
+   *  (its planner already sees plannerPrivate every call). */
+  resumedExternal?: boolean;
   logUsage?: (role: string, u?: LlmUsage) => void;
 }
 
@@ -206,7 +213,6 @@ State lives in the bundle: `bundle.plan` (the ordered steps) and `bundle.planCur
 ```ts
 import { AdaptivePlanner } from '../planner.js';
 
-const budgets = { maxSteps: 20, maxRetries: 3, maxRewinds: 5 };
 
 describe('AdaptivePlanner', () => {
   it('first call creates the full plan and returns step 0', async () => {
@@ -223,7 +229,6 @@ describe('AdaptivePlanner', () => {
           }),
         },
       ]),
-      budgets,
     );
     const next = await p.next({ bundle: b, prompt: 'r', toolCatalog: '', retrying: false });
     assert.equal(next?.kind, 'next');
@@ -241,7 +246,7 @@ describe('AdaptivePlanner', () => {
       ],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(planner([]), budgets);
+    const p = new AdaptivePlanner(planner([]));
     p.commit(b, 'advanced'); // ← advance happens in commit, persisted by the handler
     assert.equal(b.planCursor, 1);
     const next = await p.next({
@@ -260,7 +265,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 0,
     };
-    new AdaptivePlanner(planner([]), budgets).commit(b, 'failed');
+    new AdaptivePlanner(planner([])).commit(b, 'failed');
     assert.equal(b.planCursor, 0);
   });
 
@@ -274,7 +279,6 @@ describe('AdaptivePlanner', () => {
     };
     const p = new AdaptivePlanner(
       planner([{ kind: 'content', content: 'FINAL ANSWER' }]),
-      budgets,
     );
     const next = await p.next({
       bundle: b,
@@ -290,7 +294,6 @@ describe('AdaptivePlanner', () => {
   it('rejects a malformed plan step (missing instructions) → null', async () => {
     const p = new AdaptivePlanner(
       planner([{ kind: 'content', content: JSON.stringify({ plan: [{ name: 's1' }] }) }]),
-      budgets,
     );
     assert.equal(
       await p.next({ bundle: bundle(), prompt: 'r', toolCatalog: '', retrying: false }),
@@ -314,7 +317,6 @@ describe('AdaptivePlanner', () => {
           content: JSON.stringify({ plan: [{ name: 's1b', instructions: 'retry differently' }] }),
         },
       ]),
-      budgets,
     );
     const next = await p.next({
       bundle: b,
@@ -339,7 +341,6 @@ describe('AdaptivePlanner', () => {
         { kind: 'content', content: JSON.stringify({ plan: [] }) }, // nothing left to do
         { kind: 'content', content: 'done despite failure' }, // finalize
       ]),
-      budgets,
     );
     const next = await p.next({
       bundle: b,
@@ -354,7 +355,6 @@ describe('AdaptivePlanner', () => {
   it('unparsable create-plan reply → null (handler retries)', async () => {
     const p = new AdaptivePlanner(
       planner([{ kind: 'content', content: 'not json at all' }]),
-      budgets,
     );
     assert.equal(
       await p.next({ bundle: bundle(), prompt: 'r', toolCatalog: '', retrying: false }),
@@ -373,7 +373,6 @@ import {
 } from './controller-coordinator-handler.js';
 import type { ISubagentClient } from './subagent-client.js';
 import type {
-  ControllerConfig,
   IControllerPlanner,
   NextStep,
   PlannerKind,
@@ -431,13 +430,13 @@ function parsePlan(content: string): Step[] | null {
 }
 
 export class AdaptivePlanner implements IControllerPlanner {
-  constructor(
-    private readonly planner: ISubagentClient,
-    private readonly budgets: ControllerConfig['budgets'],
-  ) {}
+  // No budget field: replans are bounded by the loop's maxSteps (a failed step
+  // bumps stepsUsed in runStep). Replan-specific budgeting is the deferred
+  // "limits as a selectable strategy" work.
+  constructor(private readonly planner: ISubagentClient) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, toolCatalog, lastOutcome, retrying, logUsage } = input;
+    const { bundle, prompt, toolCatalog, lastOutcome, resumedExternal, retrying, logUsage } = input;
 
     // 1. No plan yet → create it.
     if (!bundle.plan) {
@@ -448,8 +447,11 @@ export class AdaptivePlanner implements IControllerPlanner {
       return this.stepAtCursor(bundle, prompt, logUsage);
     }
 
-    // 2. Previous step failed → replan the remainder (from the cursor).
-    if (lastOutcome === 'failed') {
+    // 2. Previous step failed, OR an external-tool result just arrived → replan
+    //    the remainder from the cursor. The planner reads plannerPrivate (which
+    //    now holds the failure/external result), so the revised plan incorporates
+    //    it — no reliance on the executor seeing it.
+    if (lastOutcome === 'failed' || resumedExternal) {
       const rest = await this.callPlan(REPLAN_SYSTEM, bundle, prompt, toolCatalog, retrying, logUsage);
       if (rest === null) return null;
       const cursor = bundle.planCursor ?? 0;
@@ -531,11 +533,11 @@ export class AdaptivePlanner implements IControllerPlanner {
 
 export function makePlanner(
   kind: PlannerKind,
-  deps: { planner: ISubagentClient; budgets: ControllerConfig['budgets'] },
+  planner: ISubagentClient,
 ): IControllerPlanner {
   return kind === 'adaptive'
-    ? new AdaptivePlanner(deps.planner, deps.budgets)
-    : new IncrementalPlanner(deps.planner);
+    ? new AdaptivePlanner(planner)
+    : new IncrementalPlanner(planner);
 }
 ```
 - [ ] **Step 4: run → PASS (all AdaptivePlanner cases).** `npm run build` clean. biome.
@@ -551,12 +553,20 @@ Replace the inline `this.planNext(...)` call in `execute()`'s main loop with a `
 
 - [ ] **Step 1:** Add the import at the top of the handler: `import { makePlanner } from './planner.js';`
 
-- [ ] **Step 2:** In `execute()`, just before the `while (bundle.budgets.stepsUsed < cfg.maxSteps)` loop, construct the planner and the outcome tracker:
+- [ ] **Step 2a:** Near the TOP of `execute()` (before the "Resume from a persisted pending marker" block, so the resume branch can set it), declare:
 ```ts
-    const planner = makePlanner(deps.config.planner ?? 'incremental', {
-      planner: deps.planner,
-      budgets: deps.config.budgets,
-    });
+    // True for the first planner.next of a turn that resumed an external-tool
+    // result (the result is now in plannerPrivate) → the adaptive planner replans
+    // with it rather than blindly re-running the suspended step. Set in the
+    // external-tool resume branch below.
+    let resumedExternal = false;
+```
+
+- [ ] **Step 2b:** In the existing external-tool resume branch (where the handler writes the `mcp-result` artifact, appends `[external tool … result]` to `plannerPrivate`, and clears `bundle.pending`), add `resumedExternal = true;` right after `bundle.pending = undefined;`.
+
+- [ ] **Step 2c:** Just before the `while (bundle.budgets.stepsUsed < cfg.maxSteps)` loop, construct the planner and the outcome tracker:
+```ts
+    const planner = makePlanner(deps.config.planner ?? 'incremental', deps.planner);
     let lastOutcome: 'advanced' | 'failed' | undefined;
 ```
 (The `const cfg = deps.config.budgets;` and `let planParseRetries = 0;` lines stay.)
@@ -578,9 +588,11 @@ with:
         prompt,
         toolCatalog,
         lastOutcome,
+        resumedExternal,
         retrying: planParseRetries > 0,
         logUsage,
       });
+      resumedExternal = false; // consumed by the first next() of the turn
       // The adaptive planner mutates bundle.plan/planCursor in next(); persist so
       // a stateless resume continues from the same point. (No-op for incremental.)
       await persistBundle(deps.backend, sessionId, bundle);
@@ -702,62 +714,50 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
 (`baseConfig()` returns a `ControllerConfig` without `planner` → spreading `planner: 'adaptive'` selects the adaptive path.)
 - [ ] **Step 2: run → FAIL** if the loop isn't wired; **PASS** once Tasks 3–4 are in. (If implementing in order it should pass directly — still run it.)
 
-- [ ] **Step 3: durable resume — no step repeat.** Append a test proving the persisted cursor advances with the step result (Finding 3). Leg 1: a 2-step plan, run only the FIRST step, then re-execute in a NEW handler instance sharing the same backend; assert the executor's first call in leg 2 is for step **s2**, not s1, and `s1` is NOT executed twice:
+- [ ] **Step 3: durable resume — a persisted cursor resumes from the NEXT step (no repeat).** Seed a mid-run bundle directly (`plan=[s1,s2]`, `planCursor=1`, goal set) via `persistBundle`, then run once and assert the executor's first step is **s2**, not s1. (Seeding the cursor avoids the budget-escalation side effects of a two-leg `maxSteps:1` setup — it tests the resume path cleanly.) Append:
 ```ts
-  it('adaptive: resume continues from the NEXT step (cursor persisted with result)', async () => {
+  it('adaptive: a persisted cursor resumes from the NEXT step (no repeat)', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig({ maxSteps: 1 }), planner: 'adaptive' };
-    // Leg 1 — maxSteps:1 stops the loop after exactly one executed step.
-    const h1 = harness({
-      evaluator: [{ kind: 'content', content: 'Goal' }],
-      planner: [
-        {
-          kind: 'content',
-          content: JSON.stringify({
-            plan: [
-              { name: 's1', instructions: 'fetch A' },
-              { name: 's2', instructions: 'fetch B' },
-            ],
-          }),
-        },
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    await persistBundle(backend, 'sess-1', {
+      goal: 'Goal',
+      plannerPrivate: '\n[step s1] did A',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      plan: [
+        { name: 's1', instructions: 'fetch A' },
+        { name: 's2', instructions: 'fetch B' },
       ],
-      executor: [{ kind: 'content', content: 'did s1' }],
-      config: cfg,
+      planCursor: 1, // s1 already completed + persisted
     });
-    h1.deps.backend = backend;
-    await new ControllerCoordinatorHandler(h1.deps).execute(fakeCtx().ctx, {}, undefined);
-    const mid = await hydrateBundle(backend, 'sess-1');
-    assert.equal(mid.planCursor, 1, 'cursor advanced + persisted after s1');
-
-    // Leg 2 — capture which step the executor is asked to run first.
     const seen: string[] = [];
-    const h2 = harness({
-      evaluator: [],
+    const h = harness({
+      evaluator: [], // goal already set → evaluator not called
       planner: [{ kind: 'content', content: 'FINAL' }], // finalize after s2
       executor: [],
       config: cfg,
     });
-    h2.deps.backend = backend;
-    h2.deps.executor = {
+    h.deps.backend = backend;
+    h.deps.executor = {
       async send(messages: Message[]) {
         const u = messages.find((m) => m.role === 'user');
         if (typeof u?.content === 'string') seen.push(u.content);
         return { kind: 'content', content: 'did it' };
       },
     };
-    await new ControllerCoordinatorHandler(h2.deps).execute(fakeCtx().ctx, {}, undefined);
-    assert.ok(seen.some((c) => c.includes('fetch B')), 'leg 2 ran s2');
+    await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
+    assert.ok(seen.some((c) => c.includes('fetch B')), 'resumed at s2');
     assert.ok(!seen.some((c) => c.includes('fetch A')), 's1 was NOT repeated');
   });
 ```
 
-- [ ] **Step 4: external-tool resume re-runs the SAME step, then advances.** Append a test: an adaptive step whose executor first emits an EXTERNAL tool_call (suspend, cursor unmoved), then on resume (with `ctx.externalResults`) the same step completes → cursor advances → finalize:
+- [ ] **Step 4: external-tool resume REPLANS with the result visible to the planner.** Append a test (Finding 1): leg 1 — the executor emits an EXTERNAL tool call → suspend (cursor unmoved). Leg 2 — resume with `ctx.externalResults`; the handler appends the result to `plannerPrivate` + sets `resumedExternal`, so the adaptive planner **replans** (proving the planner SEES the result — it cannot rely on the executor seeing it). Capture the planner's replan prompt and assert it contains the result:
 ```ts
-  it('adaptive + external tool: suspend keeps cursor, resume completes the same step', async () => {
+  it('adaptive + external tool: suspend keeps cursor; resume replans with the result visible to the planner', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
-    // Leg 1 — plan with one step; executor emits an external tool call → suspend.
+
+    // Leg 1 — 1-step plan; executor emits an external tool call → suspend.
     const h1 = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
@@ -767,33 +767,48 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
       config: cfg,
     });
     h1.deps.backend = backend;
-    const { ctx: c1, captured: cap1 } = fakeCtx({ externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }] });
+    const { ctx: c1, captured: cap1 } = fakeCtx({
+      externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
+    });
     await new ControllerCoordinatorHandler(h1.deps).execute(c1, {}, undefined);
     let b = await hydrateBundle(backend, 'sess-1');
     assert.equal(b.pending?.kind, 'external-tool');
     assert.equal(b.planCursor, 0, 'cursor unmoved on suspend');
     assert.ok(cap1.find((c) => c.ok && c.value.finishReason === 'tool_calls'));
 
-    // Leg 2 — resume with the tool result; same step completes → finalize.
-    const h2 = harness({
-      evaluator: [],
-      planner: [{ kind: 'content', content: 'FINAL' }],
-      executor: [{ kind: 'content', content: 'used the result' }],
-      config: cfg,
-    });
+    // Leg 2 — resume with the result. Capture the planner replan prompt to PROVE
+    // it sees the result (via plannerPrivate). Replan returns empty → finalize.
+    const seenPlanner: string[] = [];
+    let pCall = 0;
+    const h2 = harness({ evaluator: [], planner: [], executor: [], config: cfg });
     h2.deps.backend = backend;
+    h2.deps.planner = {
+      async send(messages: Message[]) {
+        const u = messages.find((m) => m.role === 'user');
+        if (typeof u?.content === 'string') seenPlanner.push(u.content);
+        return pCall++ === 0
+          ? { kind: 'content', content: JSON.stringify({ plan: [] }) } // nothing left
+          : { kind: 'content', content: 'FINAL' }; // finalize
+      },
+    };
     const { ctx: c2, captured: cap2 } = fakeCtx({
       externalResults: new Map([[extId, 'TOOL RESULT']]),
     });
     const ret = await new ControllerCoordinatorHandler(h2.deps).execute(c2, {}, undefined);
+
     assert.equal(ret, true);
     b = await hydrateBundle(backend, 'sess-1');
     assert.equal(b.pending, undefined);
-    assert.equal(b.planCursor, 1, 'cursor advanced after the resumed step');
-    assert.ok(cap2.find((c) => c.ok && c.value.finishReason === 'stop' && c.value.content === 'FINAL'));
+    assert.ok(
+      seenPlanner.some((c) => c.includes('TOOL RESULT')),
+      'the planner replan saw the external tool result (via plannerPrivate)',
+    );
+    assert.ok(
+      cap2.find((c) => c.ok && c.value.finishReason === 'stop' && c.value.content === 'FINAL'),
+    );
   });
 ```
-(Add `import { externalToolCallId } from '@mcp-abap-adt/llm-agent';` and `type { Message }` to the test file if not already imported.)
+(Add to the test file's imports if absent: `externalToolCallId` from `@mcp-abap-adt/llm-agent`, `type { Message }`, and `persistBundle` from `../session-bundle.js`.)
 
 - [ ] **Step 5:** Run the full controller + pipeline suites (TAP summary) → 0 fail. `npm run build` clean. biome on touched files.
 - [ ] **Step 6: commit** `test(controller): adaptive end-to-end + durable-resume + external-tool-resume`
@@ -813,12 +828,12 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
 - External-tool suspend/resume under adaptive: cursor unmoved on suspend, same step re-runs with the result then advances → Task 6 Step 4 test + the resume-semantics note in Task 4. ✓ *(Finding 4.)*
 - Task 2 imports only IncrementalPlanner's needs (repo has `noUnusedLocals`); Task 3 extends the import block → Task 2/Task 3 Step 3. ✓ *(Finding 1.)*
 - Core untouched (executor, subagent-client, tool-routing/offered-set, toolsRag, durable bundle, suspend/resume, token rollup) → only `types.ts`, `planner.ts`, the handler loop, and `parseConfig` change. ✓
-- Limits/budgets unchanged (future selectable strategy) → no budget logic touched; adaptive reuses `budgets`. ✓
+- Limits/budgets unchanged (future selectable strategy) → no budget logic touched. `AdaptivePlanner` takes NO budget field (replans are bounded by the loop's `maxSteps` via `stepsUsed++` on failure); the loop's existing `maxRewinds`/`maxSteps` enforcement is unchanged. ✓ *(Finding 2: removed the unused `budgets` ctor field → no TS6138.)*
 - Default `incremental` (no behavior change; adaptive opt-in) → Task 5. ✓
 
 **2. Placeholder scan:** Every code step has complete code (prompts, parsers, the state machine, the loop edits, tests). No TBD/“similar to”/vague-handling. ✓
 
-**3. Type consistency:** `IControllerPlanner.next(PlannerNextInput) → Promise<NextStep | null>` is used identically in Tasks 2/3/4. `PlannerNextInput` fields (`bundle/prompt/toolCatalog/lastOutcome/retrying/logUsage`) match across the planner impls and the handler call (Task 4 Step 3). `makePlanner(kind, {planner, budgets})` signature matches its call site. `bundle.plan: Step[]`/`planCursor: number` consistent (Tasks 1/3/4/6). `lastOutcome: 'advanced'|'failed'` matches `runStep`'s post-`540c4dfa` return.
+**3. Type consistency:** `IControllerPlanner.next(PlannerNextInput) → Promise<NextStep | null>` is used identically in Tasks 2/3/4. `PlannerNextInput` fields (`bundle/prompt/toolCatalog/lastOutcome/retrying/logUsage`) match across the planner impls and the handler call (Task 4 Step 3). `makePlanner(kind, planner)` signature matches its call site (Task 4 Step 2c). `bundle.plan: Step[]`/`planCursor: number` consistent (Tasks 1/3/4/6). `lastOutcome: 'advanced'|'failed'` matches `runStep`'s post-`540c4dfa` return.
 
 **Verify-on-implement:** confirm `parseNextStep`/`extractJsonObject` exist in the handler (they do — added in the parser-tolerance commit) before exporting them in Task 2 Step 1; confirm `types.ts` already imports `LlmUsage` (it imports `LlmUsage, StreamToolCall`).
 
