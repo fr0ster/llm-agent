@@ -715,7 +715,7 @@ function extractPrompt(textOrMessages: string | Message[]): string {
  *  surrounding prose. Returns null when no valid decision can be extracted — the
  *  caller treats that as a FORMAT error (re-ask the planner), NOT a rewind, so a
  *  badly-formatted reply never silently burns the rewind budget. */
-function parseNextStep(content: string): NextStep | null {
+export function parseNextStep(content: string): NextStep | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
@@ -735,7 +735,7 @@ function parseNextStep(content: string): NextStep | null {
 /** Extract the first balanced JSON object from a planner reply, ignoring ```json
  *  fences and prose around it. String-aware (braces inside strings don't count).
  *  Returns null if no balanced object is present. */
-function extractJsonObject(raw: string): string | null {
+export function extractJsonObject(raw: string): string | null {
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fence ? fence[1] : raw;
   const start = body.indexOf('{');
