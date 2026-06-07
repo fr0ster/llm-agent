@@ -53,24 +53,35 @@ export class IncrementalPlanner implements IControllerPlanner {
 }
 
 const CREATE_PLAN_SYSTEM =
-  'You are the planner. Produce a COMPLETE, ordered plan to achieve the goal as ' +
-  'a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. Each ' +
-  'step is one concrete action an executor performs against the LIVE SAP system ' +
-  'using the available tools. Any fact about the system MUST be fetched with a ' +
-  'tool — plan fetch steps; never answer from prior knowledge. Output JSON only.';
+  'You are the planner. Produce a MINIMAL, COMPLETE, ordered plan to achieve the ' +
+  'goal as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
+  'Each step is ONE concrete action an executor performs against the LIVE SAP ' +
+  'system using the available tools. Any fact about the system MUST be fetched ' +
+  'with a tool — plan fetch steps; never answer from prior knowledge. ' +
+  'Plan ONLY what the goal explicitly requires: one step per distinct piece of ' +
+  'information the goal asks for. Do NOT add exploratory or enrichment steps ' +
+  '(extra metadata, sample/preview rows, recursive expansion) the goal did not ' +
+  'request. Do NOT add a final step that summarizes, formats, or answers the ' +
+  'user — a separate finalizer composes the answer from the fetched results, so ' +
+  'the last step must be the last data-fetch/action the goal needs. ' +
+  'Output JSON only.';
 
 const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +
-  '(fetched results + the failure), produce a REVISED plan for the REMAINING work ' +
-  'as {"plan":[{"name":...,"instructions":...}, ...]}. If the goal is already ' +
-  'satisfied despite the failure, return {"plan":[]}. Output JSON only.';
+  '(fetched results + the failure), produce a REVISED, MINIMAL plan for the ' +
+  'REMAINING work as {"plan":[{"name":...,"instructions":...}, ...]}. Plan only ' +
+  'the data-fetch/action steps still required; do NOT add a final summarize/' +
+  'answer step (a separate finalizer composes the answer). If the goal is ' +
+  'already satisfied despite the failure, return {"plan":[]}. Output JSON only.';
 
 const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'You are the planner. A NEW external tool result just arrived (see Progress) — ' +
   'this is NOT a failure. Given the goal and the progress (including the new ' +
-  'result), produce a REVISED plan for the REMAINING work as ' +
-  '{"plan":[{"name":...,"instructions":...}, ...]}. If the goal is already ' +
-  'satisfied by the result, return {"plan":[]}. Output JSON only.';
+  'result), produce a REVISED, MINIMAL plan for the REMAINING work as ' +
+  '{"plan":[{"name":...,"instructions":...}, ...]}. Plan only the data-fetch/' +
+  'action steps still required; do NOT add a final summarize/answer step (a ' +
+  'separate finalizer composes the answer). If the goal is already satisfied by ' +
+  'the result, return {"plan":[]}. Output JSON only.';
 
 const FINALIZE_SYSTEM =
   'All planned steps are complete. Using the progress below (the fetched results), ' +
