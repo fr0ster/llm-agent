@@ -15,7 +15,7 @@ import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
 } from '../controller-coordinator-handler.js';
-import { hydrateBundle } from '../session-bundle.js';
+import { hydrateBundle, persistBundle } from '../session-bundle.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import type { ControllerConfig, SubagentResult } from '../types.js';
 
@@ -1043,5 +1043,258 @@ describe('ControllerCoordinatorHandler', () => {
       'terminal clarify chunk carries usage (not zero/absent)',
     );
     assert.equal(term.ok && term.value.usage?.totalTokens, 15);
+  });
+
+  it('adaptive planner: create plan → run steps → finalize', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      // planner queue: (1) create-plan, (2) finalize
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'fetch A' }],
+          }),
+        },
+        { kind: 'content', content: 'FINAL' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+      config: { ...baseConfig(), planner: 'adaptive' },
+    });
+    const { ctx, captured } = fakeCtx();
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'FINAL',
+      ),
+      'finalized result surfaced',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.plan?.length, 1);
+    assert.equal(bundle.budgets.stepsUsed, 1);
+  });
+
+  it('adaptive: a persisted cursor resumes from the NEXT step (no repeat)', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    await persistBundle(backend, 'sess-1', {
+      goal: 'Goal',
+      plannerPrivate: '\n[step s1] did A',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      plan: [
+        { name: 's1', instructions: 'fetch A' },
+        { name: 's2', instructions: 'fetch B' },
+      ],
+      planCursor: 1, // s1 already completed + persisted
+    });
+    const seen: string[] = [];
+    const h = harness({
+      evaluator: [], // goal already set → evaluator not called
+      planner: [{ kind: 'content', content: 'FINAL' }], // finalize after s2
+      executor: [],
+      config: cfg,
+    });
+    h.deps.backend = backend;
+    h.deps.executor = {
+      async send(messages: Message[]) {
+        const u = messages.find((m) => m.role === 'user');
+        if (typeof u?.content === 'string') seen.push(u.content);
+        return { kind: 'content', content: 'did it' };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    assert.ok(
+      seen.some((c) => c.includes('fetch B')),
+      'resumed at s2',
+    );
+    assert.ok(!seen.some((c) => c.includes('fetch A')), 's1 was NOT repeated');
+  });
+
+  it('adaptive + external tool: suspend keeps cursor; resume replans with the result visible to the planner', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const extId = externalToolCallId('ExtTool', { q: 'x' });
+
+    // Leg 1 — 1-step plan; executor emits an external tool call → suspend.
+    const h1 = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+      ],
+      executor: [toolCall('ExtTool', { q: 'x' })],
+      config: cfg,
+    });
+    h1.deps.backend = backend;
+    const { ctx: c1, captured: cap1 } = fakeCtx({
+      externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
+    });
+    await new ControllerCoordinatorHandler(h1.deps).execute(c1, {}, undefined);
+    let b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.pending?.kind, 'external-tool');
+    assert.equal(b.planCursor, 0, 'cursor unmoved on suspend');
+    assert.ok(cap1.find((c) => c.ok && c.value.finishReason === 'tool_calls'));
+
+    // Leg 2 — resume with the result. Capture the planner replan prompt to PROVE
+    // it sees the result (via plannerPrivate). Replan returns empty → finalize.
+    const seenPlanner: string[] = [];
+    let pCall = 0;
+    const h2 = harness({
+      evaluator: [],
+      planner: [],
+      executor: [],
+      config: cfg,
+    });
+    h2.deps.backend = backend;
+    h2.deps.planner = {
+      async send(messages: Message[]) {
+        const u = messages.find((m) => m.role === 'user');
+        if (typeof u?.content === 'string') seenPlanner.push(u.content);
+        return pCall++ === 0
+          ? { kind: 'content', content: JSON.stringify({ plan: [] }) } // nothing left
+          : { kind: 'content', content: 'FINAL' }; // finalize
+      },
+    };
+    const { ctx: c2, captured: cap2 } = fakeCtx({
+      externalResults: new Map([[extId, 'TOOL RESULT']]),
+    });
+    const ret = await new ControllerCoordinatorHandler(h2.deps).execute(
+      c2,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.pending, undefined);
+    assert.ok(
+      seenPlanner.some((c) => c.includes('TOOL RESULT')),
+      'the planner replan saw the external tool result (via plannerPrivate)',
+    );
+    assert.ok(
+      cap2.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'FINAL',
+      ),
+    );
+  });
+
+  it('adaptive external resume: malformed replan retries (resumedExternal survives) then replans', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const extId = externalToolCallId('ExtTool', { q: 'x' });
+    // Leg 1 — suspend on an external tool.
+    const h1 = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        },
+      ],
+      executor: [toolCall('ExtTool', { q: 'x' })],
+      config: cfg,
+    });
+    h1.deps.backend = backend;
+    await new ControllerCoordinatorHandler(h1.deps).execute(
+      fakeCtx({
+        externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
+      }).ctx,
+      {},
+      undefined,
+    );
+    assert.equal(
+      (await hydrateBundle(backend, 'sess-1')).pending?.kind,
+      'external-tool',
+    );
+
+    // Leg 2 — first replan reply malformed → parse-retry (resumedExternal must
+    // survive) → second replan valid {plan:[]} → finalize. Capture replan prompts
+    // (those whose system text is the external-result prompt) + executor calls.
+    const replanSawResult: boolean[] = [];
+    const execCalls: string[] = [];
+    let n = 0;
+    const h2 = harness({
+      evaluator: [],
+      planner: [],
+      executor: [],
+      config: cfg,
+    });
+    h2.deps.backend = backend;
+    h2.deps.planner = {
+      async send(messages: Message[]) {
+        const sys = messages.find((m) => m.role === 'system');
+        const usr = messages.find((m) => m.role === 'user');
+        if (
+          typeof sys?.content === 'string' &&
+          /external tool result/i.test(sys.content)
+        ) {
+          replanSawResult.push(
+            typeof usr?.content === 'string' &&
+              usr.content.includes('TOOL RESULT'),
+          );
+        }
+        const call = n++;
+        if (call === 0) return { kind: 'content', content: 'not json at all' }; // malformed
+        if (call === 1)
+          return { kind: 'content', content: JSON.stringify({ plan: [] }) }; // valid replan
+        return { kind: 'content', content: 'FINAL' }; // finalize
+      },
+    };
+    h2.deps.executor = {
+      async send(messages: Message[]) {
+        const u = messages.find((m) => m.role === 'user');
+        if (typeof u?.content === 'string') execCalls.push(u.content);
+        return { kind: 'content', content: 'x' };
+      },
+    };
+    const { ctx, captured } = fakeCtx({
+      externalResults: new Map([[extId, 'TOOL RESULT']]),
+    });
+    const ret = await new ControllerCoordinatorHandler(h2.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    // BOTH the malformed and the valid replan ran via the external-result prompt
+    // (proving resumedExternal survived the parse-retry), each seeing the result.
+    assert.equal(
+      replanSawResult.length,
+      2,
+      'replan was retried, not abandoned',
+    );
+    assert.ok(replanSawResult.every(Boolean), 'each replan saw TOOL RESULT');
+    assert.equal(execCalls.length, 0, 'suspended step was NOT blindly re-run');
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'FINAL',
+      ),
+    );
   });
 });
