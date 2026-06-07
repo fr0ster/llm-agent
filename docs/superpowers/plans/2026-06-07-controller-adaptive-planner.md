@@ -396,6 +396,13 @@ const REPLAN_SYSTEM =
   'as {"plan":[{"name":...,"instructions":...}, ...]}. If the goal is already ' +
   'satisfied despite the failure, return {"plan":[]}. Output JSON only.';
 
+const EXTERNAL_RESULT_REPLAN_SYSTEM =
+  'You are the planner. A NEW external tool result just arrived (see Progress) — ' +
+  'this is NOT a failure. Given the goal and the progress (including the new ' +
+  'result), produce a REVISED plan for the REMAINING work as ' +
+  '{"plan":[{"name":...,"instructions":...}, ...]}. If the goal is already ' +
+  'satisfied by the result, return {"plan":[]}. Output JSON only.';
+
 const FINALIZE_SYSTEM =
   'All planned steps are complete. Using the progress below (the fetched results), ' +
   'write the final answer to the user request. Plain text, no JSON.';
@@ -450,9 +457,13 @@ export class AdaptivePlanner implements IControllerPlanner {
     // 2. Previous step failed, OR an external-tool result just arrived → replan
     //    the remainder from the cursor. The planner reads plannerPrivate (which
     //    now holds the failure/external result), so the revised plan incorporates
-    //    it — no reliance on the executor seeing it.
+    //    it — no reliance on the executor seeing it. Use the matching prompt: an
+    //    external result is NOT a failure, so it gets its own framing.
     if (lastOutcome === 'failed' || resumedExternal) {
-      const rest = await this.callPlan(REPLAN_SYSTEM, bundle, prompt, toolCatalog, retrying, logUsage);
+      const system = resumedExternal
+        ? EXTERNAL_RESULT_REPLAN_SYSTEM
+        : REPLAN_SYSTEM;
+      const rest = await this.callPlan(system, bundle, prompt, toolCatalog, retrying, logUsage);
       if (rest === null) return null;
       const cursor = bundle.planCursor ?? 0;
       bundle.plan = [...bundle.plan.slice(0, cursor), ...rest];
@@ -592,13 +603,20 @@ with:
         retrying: planParseRetries > 0,
         logUsage,
       });
-      resumedExternal = false; // consumed by the first next() of the turn
+      // NB: do NOT reset resumedExternal here — if this replan reply was malformed
+      // (next === null), the parse-retry below must keep replanning. It is reset
+      // only after a VALID decision (Step 4, beside `planParseRetries = 0;`).
       // The adaptive planner mutates bundle.plan/planCursor in next(); persist so
       // a stateless resume continues from the same point. (No-op for incremental.)
       await persistBundle(deps.backend, sessionId, bundle);
 ```
 
-- [ ] **Step 4:** In the same loop, after the `null` (parse-retry) branch's `planParseRetries = 0;`, the `rewind` branch must clear the outcome (no step ran), and the `next` branch must record the step outcome. Change the rewind branch to add `lastOutcome = undefined;` before its `continue;`, and change the step-execution tail from:
+- [ ] **Step 4:** In the same loop: (i) the `null` (parse-retry) branch leaves `resumedExternal` as-is and `continue`s (so a malformed replan keeps replanning); (ii) right after that branch's `planParseRetries = 0;` (a VALID decision was produced), add `resumedExternal = false;` (consumed only now); (iii) the `rewind` branch adds `lastOutcome = undefined;` before its `continue;`; (iv) record the step outcome in the `next` branch tail. Concretely, after the `null`-branch:
+```ts
+      planParseRetries = 0;
+      resumedExternal = false; // a valid decision consumed any external-resume replan
+```
+and change the step-execution tail from:
 ```ts
       const completed = await this.runStep( … );
       if (completed === 'suspended') return true;
@@ -630,15 +648,17 @@ to:
 ```
 
 > **Resume semantics (adaptive).** Cursor = next-uncompleted-step index, advanced in
-> `commit` and persisted with the step result. A fresh turn / resume calls
+> `commit` and persisted with the step result. A fresh turn / plain resume calls
 > `planner.next` with `lastOutcome=undefined` → `stepAtCursor` returns the step at
-> the (already-advanced) cursor — i.e. the next pending step, never a repeat. For an
-> **external-tool** step: `runStep` returns `'suspended'` BEFORE commit, so the cursor
-> does NOT move; the pending marker is persisted. On resume the handler's existing
-> external-tool branch injects the tool result into `plannerPrivate` and clears
-> pending, then the loop runs `planner.next(lastOutcome=undefined)` → the SAME step
-> (cursor unmoved) re-runs with the result now in context → produces content →
-> `'advanced'` → commit finally advances. Tested in Task 6.
+> the (already-advanced) cursor — i.e. the next pending step, never a repeat.
+> **External-tool resume is different:** `runStep` returns `'suspended'` BEFORE commit,
+> so the cursor does NOT move and the pending marker is persisted. On resume the
+> handler's external-tool branch appends the tool result to `plannerPrivate`, clears
+> pending, and sets `resumedExternal = true`. The first `planner.next` then **replans**
+> from the cursor (NOT a blind re-run) — the planner reads `plannerPrivate`, so it sees
+> the result; the executor never needs to (its prompt excludes `plannerPrivate`). The
+> replan uses a dedicated "external result arrived" prompt (NOT the failure prompt).
+> Tested in Task 6 Step 4 (which asserts the replan prompt contains the result).
 
 - [ ] **Step 5:** Delete the `private async planNext(...) { … }` method entirely (now in `IncrementalPlanner`). Keep `parseNextStep` + `extractJsonObject` (exported, used by the planner). Run `npm run build` → clean (no references to the removed method remain).
 
@@ -825,7 +845,7 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
 - Finalize call at the end → Task 3 `stepAtCursor` when `cursor >= plan.length`. ✓
 - Malformed plan steps are a retryable format failure, not silently dropped → `parsePlan` returns null on any bad entry (Task 3) + test. ✓ *(Finding 2.)*
 - `rewind` is incremental-only; adaptive never emits it (replan IS its backtrack) → Architecture note + loop keeps the branch for incremental. ✓ *(Open question.)*
-- External-tool suspend/resume under adaptive: cursor unmoved on suspend, same step re-runs with the result then advances → Task 6 Step 4 test + the resume-semantics note in Task 4. ✓ *(Finding 4.)*
+- External-tool suspend/resume under adaptive: cursor unmoved on suspend; on resume the handler sets `resumedExternal` and the planner **replans** from the cursor (a dedicated "external result arrived" prompt, NOT the failure prompt) so the result reaches the planner via `plannerPrivate` — the executor is never relied on to see it. `resumedExternal` survives parse-retries (reset only after a valid decision). → Task 6 Step 4 test (asserts the replan prompt contains the result) + the resume-semantics note in Task 4. ✓ *(Findings 4 + 2nd-round 1/2/3.)*
 - Task 2 imports only IncrementalPlanner's needs (repo has `noUnusedLocals`); Task 3 extends the import block → Task 2/Task 3 Step 3. ✓ *(Finding 1.)*
 - Core untouched (executor, subagent-client, tool-routing/offered-set, toolsRag, durable bundle, suspend/resume, token rollup) → only `types.ts`, `planner.ts`, the handler loop, and `parseConfig` change. ✓
 - Limits/budgets unchanged (future selectable strategy) → no budget logic touched. `AdaptivePlanner` takes NO budget field (replans are bounded by the loop's `maxSteps` via `stepsUsed++` on failure); the loop's existing `maxRewinds`/`maxSteps` enforcement is unchanged. ✓ *(Finding 2: removed the unused `budgets` ctor field → no TS6138.)*
