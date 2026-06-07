@@ -38,6 +38,8 @@ export interface SessionBundle {
   goal: string;
   plannerPrivate: string;
   budgets: { stepsUsed: number; rewindsUsed: number };
+  plan?: Step[];
+  planCursor?: number;
   pending?: PendingMarker;
 }
 
@@ -52,10 +54,41 @@ export interface ControllerConfig {
     distanceThreshold: number;
   };
   sessionMemory: { collection: string };
+  planner?: 'incremental' | 'adaptive';
   budgets: {
     maxSteps: number;
     maxRetries: number;
     maxRewinds: number;
     maxToolCalls?: number;
   };
+}
+
+export type PlannerKind = 'incremental' | 'adaptive';
+
+export interface PlannerNextInput {
+  bundle: SessionBundle;
+  prompt: string;
+  toolCatalog: string;
+  /** Outcome of the step run since the previous `next()` (undefined on the first
+   *  call / after a rewind / on resume). The adaptive planner replans on 'failed';
+   *  the incremental planner ignores it. Cursor advance on 'advanced' happens in
+   *  commit(), not here. */
+  lastOutcome?: 'advanced' | 'failed';
+  /** True when re-asking after an unparsable reply (stern format reminder). */
+  retrying: boolean;
+  /** True on the first call of a turn that just resumed an EXTERNAL-tool result
+   *  (the result is now in `bundle.plannerPrivate`). The adaptive planner replans
+   *  from the cursor so it incorporates the result via the planner — which reads
+   *  plannerPrivate — instead of blindly re-running the suspended step (the
+   *  executor prompt does NOT include plannerPrivate). Incremental ignores it. */
+  resumedExternal?: boolean;
+  logUsage?: (role: string, u?: LlmUsage) => void;
+}
+
+export interface IControllerPlanner {
+  next(input: PlannerNextInput): Promise<NextStep | null>;
+  /** Optional: record a just-finished step's outcome so the planner's durable
+   *  bookkeeping (e.g. the adaptive cursor) is updated and can be persisted in the
+   *  SAME write that follows. Incremental does not implement it (no-op). */
+  commit?(bundle: SessionBundle, outcome: 'advanced' | 'failed'): void;
 }
