@@ -830,8 +830,74 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
 ```
 (Add to the test file's imports if absent: `externalToolCallId` from `@mcp-abap-adt/llm-agent`, `type { Message }`, and `persistBundle` from `../session-bundle.js`.)
 
-- [ ] **Step 5:** Run the full controller + pipeline suites (TAP summary) → 0 fail. `npm run build` clean. biome on touched files.
-- [ ] **Step 6: commit** `test(controller): adaptive end-to-end + durable-resume + external-tool-resume`
+- [ ] **Step 5: external-resume replan survives a parse retry.** Append a test proving `resumedExternal` is NOT lost when the first replan reply is malformed: after a malformed reply the loop retries, and the SECOND planner call must STILL be a replan (external-result prompt, sees the result) — not a fallback to re-running the suspended step:
+```ts
+  it('adaptive external resume: malformed replan retries (resumedExternal survives) then replans', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const extId = externalToolCallId('ExtTool', { q: 'x' });
+    // Leg 1 — suspend on an external tool.
+    const h1 = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'do' }] }) },
+      ],
+      executor: [toolCall('ExtTool', { q: 'x' })],
+      config: cfg,
+    });
+    h1.deps.backend = backend;
+    await new ControllerCoordinatorHandler(h1.deps).execute(
+      fakeCtx({ externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }] }).ctx,
+      {},
+      undefined,
+    );
+    assert.equal((await hydrateBundle(backend, 'sess-1')).pending?.kind, 'external-tool');
+
+    // Leg 2 — first replan reply malformed → parse-retry (resumedExternal must
+    // survive) → second replan valid {plan:[]} → finalize. Capture replan prompts
+    // (those whose system text is the external-result prompt) + executor calls.
+    const replanSawResult: boolean[] = [];
+    const execCalls: string[] = [];
+    let n = 0;
+    const h2 = harness({ evaluator: [], planner: [], executor: [], config: cfg });
+    h2.deps.backend = backend;
+    h2.deps.planner = {
+      async send(messages: Message[]) {
+        const sys = messages.find((m) => m.role === 'system');
+        const usr = messages.find((m) => m.role === 'user');
+        if (typeof sys?.content === 'string' && /external tool result/i.test(sys.content)) {
+          replanSawResult.push(
+            typeof usr?.content === 'string' && usr.content.includes('TOOL RESULT'),
+          );
+        }
+        const call = n++;
+        if (call === 0) return { kind: 'content', content: 'not json at all' }; // malformed
+        if (call === 1) return { kind: 'content', content: JSON.stringify({ plan: [] }) }; // valid replan
+        return { kind: 'content', content: 'FINAL' }; // finalize
+      },
+    };
+    h2.deps.executor = {
+      async send(messages: Message[]) {
+        const u = messages.find((m) => m.role === 'user');
+        if (typeof u?.content === 'string') execCalls.push(u.content);
+        return { kind: 'content', content: 'x' };
+      },
+    };
+    const { ctx, captured } = fakeCtx({ externalResults: new Map([[extId, 'TOOL RESULT']]) });
+    const ret = await new ControllerCoordinatorHandler(h2.deps).execute(ctx, {}, undefined);
+
+    assert.equal(ret, true);
+    // BOTH the malformed and the valid replan ran via the external-result prompt
+    // (proving resumedExternal survived the parse-retry), each seeing the result.
+    assert.equal(replanSawResult.length, 2, 'replan was retried, not abandoned');
+    assert.ok(replanSawResult.every(Boolean), 'each replan saw TOOL RESULT');
+    assert.equal(execCalls.length, 0, 'suspended step was NOT blindly re-run');
+    assert.ok(captured.find((c) => c.ok && c.value.finishReason === 'stop' && c.value.content === 'FINAL'));
+  });
+```
+
+- [ ] **Step 6:** Run the full controller + pipeline suites (TAP summary) → 0 fail. `npm run build` clean. biome on touched files.
+- [ ] **Step 7: commit** `test(controller): adaptive end-to-end + durable-resume + external-resume (incl. parse-retry survival)`
 
 ---
 
@@ -839,7 +905,7 @@ Proves the planner-agnostic loop drives `AdaptivePlanner` correctly with the rea
 
 **1. Spec coverage (the agreed design):**
 - New planner as a distinct named implementation, not a flavor toggle → Tasks 2/3 (`IncrementalPlanner`/`AdaptivePlanner` behind `IControllerPlanner`), selected by `config.planner` (Tasks 1/5). ✓
-- Adaptive = build full plan once → emit step-by-step → replan only on failure → Task 3 (`createPlan`/`stepAtCursor`/replan-on-`failed`). ✓
+- Adaptive = build full plan once → emit step-by-step → replan on a step failure OR an external-tool resume result → Task 3 (`createPlan`/`stepAtCursor`/replan-on-`failed`-or-`resumedExternal`). ✓
 - "Remembers which steps ran" → `bundle.plan` + `planCursor` (Task 1); the cursor advances in `commit()` and is persisted in the SAME write that follows `runStep` (Task 4 Step 4), so a resume continues from the next uncompleted step — proven by the durable-resume test (Task 6 Step 3). ✓ *(Finding 3 fixed: advance is committed-with-result, not deferred to the next `next()`.)*
 - Executor returns errors already; loop now distinguishes them → the prior `runStep → 'failed'` commit (`540c4dfa`) feeds `lastOutcome`, which drives replan (Task 3) and is committed (Task 4 Step 4). ✓
 - Finalize call at the end → Task 3 `stepAtCursor` when `cursor >= plan.length`. ✓
