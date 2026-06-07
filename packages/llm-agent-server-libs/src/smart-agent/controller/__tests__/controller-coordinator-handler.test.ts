@@ -1011,4 +1011,37 @@ describe('ControllerCoordinatorHandler', () => {
       'escalated with a clarify after parse-retries',
     );
   });
+
+  it('surfaces accumulated token usage on the clarify path (not only on done)', async () => {
+    const h = harness({
+      // evaluator reports usage; consumer-confirm → clarify before any planning.
+      evaluator: [
+        {
+          kind: 'content',
+          content: 'Goal: X',
+          usage: { promptTokens: 10, completionTokens: 5, totalTokens: 15 },
+        },
+      ],
+      planner: [],
+      executor: [],
+      config: {
+        ...baseConfig(),
+        targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.25 },
+      },
+    });
+    const { ctx, captured } = fakeCtx();
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    const term = captured.find((c) => c.ok && c.value.finishReason === 'stop');
+    assert.ok(
+      term?.ok && term.value.usage,
+      'terminal clarify chunk carries usage (not zero/absent)',
+    );
+    assert.equal(term.ok && term.value.usage?.totalTokens, 15);
+  });
 });

@@ -142,11 +142,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       const result = ctx.externalResults?.get(extId);
       if (result === undefined) {
         // No result yet → re-surface the same external tool call and suspend.
-        this.surfaceToolCall(ctx, {
-          id: extId,
-          name: toolName,
-          arguments: (bundle.pending.args ?? {}) as Record<string, unknown>,
-        });
+        this.surfaceToolCall(
+          ctx,
+          {
+            id: extId,
+            name: toolName,
+            arguments: (bundle.pending.args ?? {}) as Record<string, unknown>,
+          },
+          total,
+        );
         return true;
       }
       // Tool result arrived — record it and let the loop continue planning.
@@ -193,7 +197,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           proposedTarget: outcome.proposedTarget,
         };
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceClarify(ctx, outcome.question);
+        this.surfaceClarify(ctx, outcome.question, total);
         return true;
       }
       bundle.goal = outcome.goal;
@@ -233,6 +237,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             sessionId,
             bundle,
             'the planner did not return a valid decision — please rephrase or retry',
+            total,
           );
         }
         continue;
@@ -257,6 +262,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             sessionId,
             bundle,
             'too many rewinds — please confirm how to proceed',
+            total,
           );
         }
         bundle.plannerPrivate += `\n[rewind] ${next.reason}`;
@@ -277,6 +283,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         next.step,
         isExternalTool,
         logUsage,
+        total,
       );
       if (completed === 'suspended') return true;
       // 'advanced' → loop continues to the next planner call.
@@ -288,6 +295,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       sessionId,
       bundle,
       'step budget exhausted — please confirm how to proceed',
+      total,
     );
   }
 
@@ -348,6 +356,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     step: Step,
     isExternalTool: (name: string) => boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
+    total?: LlmUsage,
   ): Promise<'advanced' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
@@ -468,7 +477,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           position: step.name,
         };
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceToolCall(ctx, { id: extId, name, arguments: args });
+        this.surfaceToolCall(ctx, { id: extId, name, arguments: args }, total);
         return 'suspended';
       }
 
@@ -540,19 +549,27 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     sessionId: string,
     bundle: SessionBundle,
     question: string,
+    usage?: LlmUsage,
   ): Promise<boolean> {
     bundle.pending = { kind: 'clarify', question, position: 'loop' };
     await persistBundle(this.deps.backend, sessionId, bundle);
-    this.surfaceClarify(ctx, question);
+    this.surfaceClarify(ctx, question, usage);
     return true;
   }
 
-  private surfaceClarify(ctx: PipelineContext, question: string): void {
+  private surfaceClarify(
+    ctx: PipelineContext,
+    question: string,
+    usage?: LlmUsage,
+  ): void {
     ctx.yield({
       ok: true,
       value: { content: `To proceed, please provide: ${question}` },
     });
-    ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
+    ctx.yield({
+      ok: true,
+      value: { content: '', finishReason: 'stop', ...(usage ? { usage } : {}) },
+    });
   }
 
   private surfaceFinal(
@@ -566,10 +583,19 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     });
   }
 
-  private surfaceToolCall(ctx: PipelineContext, call: LlmToolCall): void {
+  private surfaceToolCall(
+    ctx: PipelineContext,
+    call: LlmToolCall,
+    usage?: LlmUsage,
+  ): void {
     ctx.yield({
       ok: true,
-      value: { content: '', toolCalls: [call], finishReason: 'tool_calls' },
+      value: {
+        content: '',
+        toolCalls: [call],
+        finishReason: 'tool_calls',
+        ...(usage ? { usage } : {}),
+      },
     });
   }
 }
