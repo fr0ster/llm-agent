@@ -1,0 +1,45 @@
+port: 4010
+host: 0.0.0.0
+mode: smart
+
+# Mixed-model controller: heavy model for the deciding roles (evaluator,
+# planner), a lighter model for the executor (which only carries out a single
+# fetch step + emits tool calls). Demonstrates per-role model assignment.
+llm:
+  provider: sap-ai-sdk
+  model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+  temperature: 0.7
+
+mcp:
+  type: http
+  url: ${MCP_ENDPOINT}
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  model: text-embedding-3-small
+
+pipeline:
+  name: controller
+  config:
+    subagents:
+      # Heavy model — goal formulation + planning (the judgment-heavy roles).
+      evaluator:
+        provider: sap-ai-sdk
+        model: ${EVAL_MODEL:-anthropic--claude-4.6-sonnet}
+      planner:
+        provider: sap-ai-sdk
+        model: ${PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+      # Light model — step execution + tool calls (mechanical role).
+      # NOTE: claude-3-haiku CANNOT do tools via this AI Core orchestration
+      # (rejects the tool `type` field → 400). Use a tool-capable light model;
+      # gpt-4o-mini uses the native function format the orchestration accepts.
+      executor:
+        provider: sap-ai-sdk
+        model: ${EXEC_MODEL:-gpt-4o-mini}
+    targetState: { strategy: auto, distanceThreshold: 0.7 }
+    sessionMemory: { collection: session-memory }
+    budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }
+
+log: smart-server.log
+logDir: sessions

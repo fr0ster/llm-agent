@@ -6,6 +6,7 @@ import {
   type KnowledgeEntryMetadata,
   type LlmTool,
   type LlmToolCall,
+  type LlmUsage,
   type Message,
   type StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
@@ -24,6 +25,16 @@ import type {
   SessionBundle,
   Step,
 } from './types.js';
+
+// ---------------------------------------------------------------------------
+// Debug logging — gated behind DEBUG_CONTROLLER (e.g. DEBUG_CONTROLLER=1).
+// Surfaces the steps the planner delegates and per-role/total token usage to
+// stderr, for tuning step granularity and watching token spend. Off by default.
+// ---------------------------------------------------------------------------
+
+function dlog(msg: string): void {
+  if (process.env.DEBUG_CONTROLLER) console.error(`[controller] ${msg}`);
+}
 
 // ---------------------------------------------------------------------------
 // Dep-injection surface
@@ -99,6 +110,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     const meta = synthMeta(ctx, sessionId);
 
+    // Token accounting: accumulate usage across every subagent call this turn,
+    // log per-call (with role + running total) for visibility, and surface the
+    // total on the terminal chunk so the HTTP response carries real token counts.
+    const total: LlmUsage = {
+      promptTokens: 0,
+      completionTokens: 0,
+      totalTokens: 0,
+    };
+    const logUsage = (role: string, u?: LlmUsage): void => {
+      if (!u) return;
+      total.promptTokens += u.promptTokens ?? 0;
+      total.completionTokens += u.completionTokens ?? 0;
+      total.totalTokens += u.totalTokens ?? 0;
+      dlog(
+        `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens} | running=${total.totalTokens}`,
+      );
+    };
+
     // Route external tools by the PER-REQUEST context (the client-supplied tools
     // for THIS request), OR-combined with the optional test-only override. The
     // build-time server ctx never carries external tools (they arrive per-request
@@ -153,6 +182,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         prompt,
         deps.config.targetState,
       );
+      logUsage('evaluator', outcome.usage);
       if (outcome.kind === 'needs-confirmation') {
         // Persist the proposed target with the pending marker so a confirmation
         // on resume commits IT (not a bare "yes"). See the clarify-resume above.
@@ -189,6 +219,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         prompt,
         toolCatalog,
         planParseRetries > 0,
+        logUsage,
       );
 
       // Format failure (not valid NextStep JSON) → re-ask the planner with a
@@ -211,7 +242,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (next.kind === 'done') {
         bundle.pending = undefined;
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceFinal(ctx, next.result);
+        dlog(
+          `turn total tokens: prompt=${total.promptTokens} completion=${total.completionTokens} total=${total.totalTokens} (steps=${bundle.budgets.stepsUsed})`,
+        );
+        this.surfaceFinal(ctx, next.result, total);
         return true;
       }
 
@@ -231,6 +265,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
 
       // next.kind === 'next' → execute the step.
+      dlog(
+        `delegate step "${next.step.name}"${next.step.type ? ` (${next.step.type})` : ''}: ${next.step.instructions}`,
+      );
       const completed = await this.runStep(
         ctx,
         sessionId,
@@ -239,6 +276,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         meta,
         next.step,
         isExternalTool,
+        logUsage,
       );
       if (completed === 'suspended') return true;
       // 'advanced' → loop continues to the next planner call.
@@ -260,6 +298,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     prompt: string,
     toolCatalog: string,
     retrying = false,
+    logUsage?: (role: string, u?: LlmUsage) => void,
   ): Promise<NextStep | null> {
     const res = await this.deps.planner.send([
       {
@@ -287,6 +326,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           `Available tools (the executor picks the exact one):\n${toolCatalog}`,
       },
     ]);
+    logUsage?.('planner', res.usage);
     if (res.kind !== 'content') {
       // The planner emitted a tool call or error instead of a decision → a
       // FORMAT failure (null), so the loop re-asks rather than burning a rewind.
@@ -307,6 +347,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     meta: KnowledgeEntryMetadata,
     step: Step,
     isExternalTool: (name: string) => boolean,
+    logUsage?: (role: string, u?: LlmUsage) => void,
   ): Promise<'advanced' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
@@ -363,6 +404,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // produces content for this step (or the step suspends on an external tool).
     while (true) {
       const res = await deps.executor.send(messages, offeredTools);
+      logUsage?.('executor', res.usage);
 
       if (res.kind === 'content') {
         await writeArtifact(rag, {
@@ -513,8 +555,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     ctx.yield({ ok: true, value: { content: '', finishReason: 'stop' } });
   }
 
-  private surfaceFinal(ctx: PipelineContext, content: string): void {
-    ctx.yield({ ok: true, value: { content, finishReason: 'stop' } });
+  private surfaceFinal(
+    ctx: PipelineContext,
+    content: string,
+    usage?: LlmUsage,
+  ): void {
+    ctx.yield({
+      ok: true,
+      value: { content, finishReason: 'stop', ...(usage ? { usage } : {}) },
+    });
   }
 
   private surfaceToolCall(ctx: PipelineContext, call: LlmToolCall): void {

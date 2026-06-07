@@ -1,4 +1,4 @@
-import type { IEmbedder } from '@mcp-abap-adt/llm-agent';
+import type { IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import type { ISubagentClient } from './subagent-client.js';
 import type { ControllerConfig } from './types.js';
 
@@ -15,8 +15,13 @@ export interface TargetStateDeps {
  * "yes" on resume commits the proposed target rather than the literal answer).
  */
 export type TargetStateOutcome =
-  | { kind: 'established'; goal: string }
-  | { kind: 'needs-confirmation'; proposedTarget: string; question: string };
+  | { kind: 'established'; goal: string; usage?: LlmUsage }
+  | {
+      kind: 'needs-confirmation';
+      proposedTarget: string;
+      question: string;
+      usage?: LlmUsage;
+    };
 
 function cosineDistance(a: number[], b: number[]): number {
   const n = Math.min(a.length, b.length);
@@ -55,6 +60,7 @@ export async function establishTargetState(
       kind: 'needs-confirmation',
       proposedTarget: target,
       question: `Confirm or refine the target state:\n${target}`,
+      usage: r.usage,
     };
   }
 
@@ -75,9 +81,10 @@ export async function establishTargetState(
         kind: 'needs-confirmation',
         proposedTarget: target,
         question: `The goal may be ambiguous (distance ${dist.toFixed(2)}). Confirm or refine:\n${target}`,
+        usage: r.usage,
       };
     }
   }
 
-  return { kind: 'established', goal: target };
+  return { kind: 'established', goal: target, usage: r.usage };
 }

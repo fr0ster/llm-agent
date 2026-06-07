@@ -15,9 +15,10 @@ export function makeSubagentClient(llm: ILlm): ISubagentClient {
           error: r.error?.message ?? 'subagent llm error',
         };
       const v = r.value;
+      const usage = v.usage ? { usage: v.usage } : {};
       if (v.toolCalls && v.toolCalls.length > 0)
-        return { kind: 'tool_call', toolCalls: v.toolCalls };
-      return { kind: 'content', content: v.content ?? '' };
+        return { kind: 'tool_call', toolCalls: v.toolCalls, ...usage };
+      return { kind: 'content', content: v.content ?? '', ...usage };
     },
   };
 }

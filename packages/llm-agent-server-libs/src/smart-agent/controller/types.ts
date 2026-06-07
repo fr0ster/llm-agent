@@ -1,10 +1,10 @@
-import type { StreamToolCall } from '@mcp-abap-adt/llm-agent';
+import type { LlmUsage, StreamToolCall } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerLlmConfig } from '../smart-server.js';
 
 export type SubagentResult =
-  | { kind: 'content'; content: string }
-  | { kind: 'tool_call'; toolCalls: StreamToolCall[] }
-  | { kind: 'error'; error: string };
+  | { kind: 'content'; content: string; usage?: LlmUsage }
+  | { kind: 'tool_call'; toolCalls: StreamToolCall[]; usage?: LlmUsage }
+  | { kind: 'error'; error: string; usage?: LlmUsage };
 
 export interface Step {
   name: string;
