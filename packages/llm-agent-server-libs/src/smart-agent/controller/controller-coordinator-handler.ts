@@ -330,8 +330,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
   // -- Step execution -----------------------------------------------------
 
-  /** Returns 'advanced' (step done, continue loop) or 'suspended' (external
-   *  round-trip surfaced — caller must return true). */
+  /** Returns 'advanced' (step succeeded — continue loop), 'failed' (retries/
+   *  tool-call budget exhausted; the failure note is in plannerPrivate so the
+   *  planner can replan), or 'suspended' (external round-trip surfaced — caller
+   *  must return true). */
   private async runStep(
     ctx: PipelineContext,
     sessionId: string,
