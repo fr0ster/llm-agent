@@ -182,8 +182,31 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       ...(ctx.externalTools ?? []),
     ]);
     const cfg = deps.config.budgets;
+    let planParseRetries = 0;
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
-      const next = await this.planNext(bundle, prompt, toolCatalog);
+      const next = await this.planNext(
+        bundle,
+        prompt,
+        toolCatalog,
+        planParseRetries > 0,
+      );
+
+      // Format failure (not valid NextStep JSON) → re-ask the planner with a
+      // stern reminder, bounded by maxRetries. This does NOT touch rewindsUsed:
+      // a malformed reply is a formatting problem, not a decision to backtrack.
+      if (next === null) {
+        planParseRetries++;
+        if (planParseRetries > cfg.maxRetries) {
+          return this.escalate(
+            ctx,
+            sessionId,
+            bundle,
+            'the planner did not return a valid decision — please rephrase or retry',
+          );
+        }
+        continue;
+      }
+      planParseRetries = 0;
 
       if (next.kind === 'done') {
         bundle.pending = undefined;
@@ -236,7 +259,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     bundle: SessionBundle,
     prompt: string,
     toolCatalog: string,
-  ): Promise<NextStep> {
+    retrying = false,
+  ): Promise<NextStep | null> {
     const res = await this.deps.planner.send([
       {
         role: 'system',
@@ -250,7 +274,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           'step that fetches it with a tool — do NOT answer from prior knowledge, and do ' +
           'NOT mark the goal "done" until the required data has actually been fetched ' +
           '(fetched results appear under Progress). Until then, return a concrete ' +
-          '"next" fetch step.',
+          '"next" fetch step.' +
+          (retrying
+            ? '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY ' +
+              'the raw JSON object — no prose, no explanation, no markdown code fences.'
+            : ''),
       },
       {
         role: 'user',
@@ -260,9 +288,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       },
     ]);
     if (res.kind !== 'content') {
-      // The planner emitted a tool call or error instead of a decision — treat
-      // as a rewind so the loop replans rather than crashing.
-      return { kind: 'rewind', reason: 'planner produced no decision' };
+      // The planner emitted a tool call or error instead of a decision → a
+      // FORMAT failure (null), so the loop re-asks rather than burning a rewind.
+      return null;
     }
     return parseNextStep(res.content);
   }
@@ -604,9 +632,15 @@ function extractPrompt(textOrMessages: string | Message[]): string {
 }
 
 /** Parse a planner content string into a NextStep, defensively. */
-function parseNextStep(content: string): NextStep {
+/** Parse the planner's reply into a NextStep, tolerating ```json fences and
+ *  surrounding prose. Returns null when no valid decision can be extracted — the
+ *  caller treats that as a FORMAT error (re-ask the planner), NOT a rewind, so a
+ *  badly-formatted reply never silently burns the rewind budget. */
+function parseNextStep(content: string): NextStep | null {
+  const json = extractJsonObject(content);
+  if (json === null) return null;
   try {
-    const obj = JSON.parse(content) as Partial<NextStep>;
+    const obj = JSON.parse(json) as Partial<NextStep>;
     if (obj.kind === 'done' && typeof obj.result === 'string')
       return { kind: 'done', result: obj.result };
     if (obj.kind === 'rewind' && typeof obj.reason === 'string')
@@ -616,7 +650,36 @@ function parseNextStep(content: string): NextStep {
   } catch {
     // fall through
   }
-  return { kind: 'rewind', reason: 'unparsable planner output' };
+  return null;
+}
+
+/** Extract the first balanced JSON object from a planner reply, ignoring ```json
+ *  fences and prose around it. String-aware (braces inside strings don't count).
+ *  Returns null if no balanced object is present. */
+function extractJsonObject(raw: string): string | null {
+  const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
+  const body = fence ? fence[1] : raw;
+  const start = body.indexOf('{');
+  if (start < 0) return null;
+  let depth = 0;
+  let inStr = false;
+  let esc = false;
+  for (let i = start; i < body.length; i++) {
+    const ch = body[i];
+    if (inStr) {
+      if (esc) esc = false;
+      else if (ch === '\\') esc = true;
+      else if (ch === '"') inStr = false;
+      continue;
+    }
+    if (ch === '"') inStr = true;
+    else if (ch === '{') depth++;
+    else if (ch === '}') {
+      depth--;
+      if (depth === 0) return body.slice(start, i + 1);
+    }
+  }
+  return null;
 }
 
 /** Normalize a StreamToolCall (full or delta) into an LlmToolCall. */

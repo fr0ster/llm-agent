@@ -928,4 +928,87 @@ describe('ControllerCoordinatorHandler', () => {
       'executor was told the tool is not available',
     );
   });
+
+  it('parses planner JSON wrapped in a ```json fence / prose (no spurious rewind)', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        // fenced JSON
+        {
+          kind: 'content',
+          content:
+            '```json\n{"kind":"next","step":{"name":"s1","instructions":"do"}}\n```',
+        },
+        // prose-wrapped JSON
+        {
+          kind: 'content',
+          content:
+            'Sure, here is my decision:\n{"kind":"done","result":"finished"}',
+        },
+      ],
+      executor: [{ kind: 'content', content: 'did it' }],
+      selectTools: [],
+    });
+    const { ctx, captured } = fakeCtx();
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(
+      bundle.budgets.rewindsUsed,
+      0,
+      'fenced/prose JSON did NOT cause a rewind',
+    );
+    assert.equal(bundle.budgets.stepsUsed, 1);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'finished',
+      ),
+      'reached done from prose-wrapped JSON',
+    );
+  });
+
+  it('unparsable planner output retries without burning the rewind budget, then escalates', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      // Always pure prose — never valid NextStep JSON.
+      planner: Array.from(
+        { length: 10 },
+        () =>
+          ({
+            kind: 'content',
+            content: 'I think we should look into it.',
+          }) as const,
+      ),
+      executor: [],
+      selectTools: [],
+      config: baseConfig({ maxRetries: 2 }),
+    });
+    const { ctx, captured } = fakeCtx();
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(
+      bundle.budgets.rewindsUsed,
+      0,
+      'parse failures did NOT consume the rewind budget',
+    );
+    assert.equal(bundle.pending?.kind, 'clarify');
+    assert.ok(
+      captured.find((c) => c.ok && c.value.finishReason === 'stop'),
+      'escalated with a clarify after parse-retries',
+    );
+  });
 });
