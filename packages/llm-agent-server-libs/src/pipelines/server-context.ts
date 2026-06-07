@@ -1,10 +1,14 @@
 import type {
+  IEmbedder,
   ILlm,
   IPipelineContext,
   ISubAgent,
   IToolsRagHandle,
 } from '@mcp-abap-adt/llm-agent';
-import type { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  KnowledgeBackend,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { NormalizedLlmMap } from '../smart-agent/config.js';
 import type { SmartServerLlmConfig } from '../smart-agent/smart-server.js';
 
@@ -27,7 +31,30 @@ export interface IServerPipelineContext extends IPipelineContext {
   /** Session-scoped worker registry (DAG workers / linear subagents). */
   workerRegistry: ReadonlyMap<string, ISubAgent>;
   warn(msg: string): void;
+  /**
+   * Durable knowledge backend (session-bundle persistence + artifacts). The
+   * server always builds exactly one (`buildKnowledgeBackend`): JSONL when a
+   * `logDir` is set, else in-memory. Shared across sessions; consumed by the
+   * stepper/controller coordinators.
+   */
+  stepperKnowledgeBackend: KnowledgeBackend;
+  /**
+   * The embedder resolved once at startup from `rag.embedder` (or the configured
+   * embedder), shared with makeRag and the subagent context-builder. Used by the
+   * controller pipeline for target-state semantic distance. Undefined when no
+   * embedder is configured.
+   */
+  embedder?: IEmbedder;
 }
+
+/**
+ * Controller-pipeline view of the server context. With the durable knowledge
+ * backend and embedder now folded into the base {@link IServerPipelineContext}
+ * (external tools are routed per-REQUEST via `PipelineContext.externalTools`,
+ * not the build-time ctx), this is a transparent alias retained for the
+ * controller plugin / fixtures that reference it by name.
+ */
+export type IControllerServerPipelineContext = IServerPipelineContext;
 
 /** Always-present empty handle for no-RAG/no-MCP deployments. */
 export const EMPTY_TOOLS_RAG: IToolsRagHandle = {

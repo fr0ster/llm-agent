@@ -25,6 +25,10 @@
       "types": "./dist/pipelines/stepper.d.ts",
       "default": "./dist/pipelines/stepper.js"
     },
+    "./controller": {
+      "types": "./dist/pipelines/controller.d.ts",
+      "default": "./dist/pipelines/controller.js"
+    },
     "./legacy/flat": {
       "types": "./dist/legacy/flat.d.ts",
       "default": "./dist/legacy/flat.js"

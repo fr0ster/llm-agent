@@ -9,6 +9,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **`controller` pipeline.** A new built-in pipeline plugin: a deterministic coordinator orchestrating three opaque subagent roles (evaluator / planner / executor) in an incremental, goal-driven loop, with a durable per-session bundle, stateless suspend/resume, and internal/external tool routing. The three subagents are independent LLM endpoints (e.g. a heavy planner + a light executor); internal MCP tools are surfaced to the executor by semantic top-K selection over the vectorized tool catalog (`toolsRag`). Select with `pipeline: { name: controller, config: { subagents, targetState, sessionMemory, budgets } }`. Importable without YAML via the `./controller` subpath export (`ControllerPipelinePlugin` + `ControllerCoordinatorHandler` building blocks). `DEBUG_CONTROLLER=1` logs the step instructions the planner delegates + per-role/total token usage; the HTTP response always carries total token `usage`. See `docs/PIPELINES.md` and the `pipelines/controller*.yaml` examples.
+
 ## [19.0.0] — 2026-06-05
 
 ### ⚠ BREAKING CHANGES

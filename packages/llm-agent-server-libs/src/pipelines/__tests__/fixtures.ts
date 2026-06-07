@@ -1,6 +1,12 @@
-import type { ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import type { IServerPipelineContext } from '../server-context.js';
+import type { IEmbedder, ILlm, ISubAgent } from '@mcp-abap-adt/llm-agent';
+import {
+  InMemoryKnowledgeBackend,
+  SmartAgentBuilder,
+} from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  IControllerServerPipelineContext,
+  IServerPipelineContext,
+} from '../server-context.js';
 
 const stubLlm: ILlm = {
   chat: async () =>
@@ -33,5 +39,22 @@ export function fakeServerCtx(): IServerPipelineContext {
     mainTemp: 0,
     workerRegistry: new Map([['worker', stubWorker]]),
     warn: () => {},
+    stepperKnowledgeBackend: new InMemoryKnowledgeBackend(),
+  };
+}
+
+const stubEmbedder: IEmbedder = {
+  embed: async () => ({ vector: [0] }),
+  dimensions: 1,
+} as unknown as IEmbedder;
+
+/** Controller-flavored ctx: extends fakeServerCtx with the fields the
+ *  ControllerCoordinatorHandler needs (backend, embedder). External tools are
+ *  routed per-request via PipelineContext.externalTools, not this ctx. */
+export function fakeControllerServerCtx(): IControllerServerPipelineContext {
+  return {
+    ...fakeServerCtx(),
+    stepperKnowledgeBackend: new InMemoryKnowledgeBackend(),
+    embedder: stubEmbedder,
   };
 }
