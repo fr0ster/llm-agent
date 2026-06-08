@@ -125,6 +125,11 @@ export class ControllerPipelinePlugin
       callMcp: (name, args) => mcpBridge(name, args),
       selectTools,
       config: cfg,
+      models: {
+        evaluator: evaluatorLlm.model ?? 'unknown',
+        planner: plannerLlm.model ?? 'unknown',
+        executor: executorLlm.model ?? 'unknown',
+      },
     };
 
     const handler = new ControllerCoordinatorHandler(deps);

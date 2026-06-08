@@ -98,6 +98,10 @@ export type {
 export { DefaultRequestLogger } from './logger/default-request-logger.js';
 export { NoopRequestLogger } from './logger/noop-request-logger.js';
 export { SessionLogger } from './logger/session-logger.js';
+export {
+  SessionRequestLogger,
+  summaryToUsage,
+} from './logger/session-request-logger.js';
 // ---------------------------------------------------------------------------
 // Metrics
 // ---------------------------------------------------------------------------
