@@ -78,8 +78,9 @@ callback for `planner`/`finalizer`).
    `process()`).
 4. **Reuse, minimal delta, additive-only** — keep every existing logging site;
    only *add* request-time logging where it is currently absent (controller LLM +
-   embeddings), *fix* the systemic traceId/derivation/stream issues, and *remove*
-   only the controller's private total + its terminal-chunk usage.
+   embeddings), *fix* the systemic traceId/derivation/stream issues, *replace* the
+   controller's terminal-chunk usage source (private total → logger-derived), and
+   *remove* only the now-unused private `total` accumulator.
 
 ## Non-Goals
 
@@ -95,7 +96,8 @@ callback for `planner`/`finalizer`).
 - Removing `process()`'s chunk-usage summation (`:616-622`).
 - Reconciling the controller's `[controller]` DEBUG per-call lines with
   `response.usage`. Those stay; only the controller's aggregate `turn total` line
-  and terminal-chunk `usage` are removed.
+  and the private `total` accumulator are removed (the terminal-chunk `usage` is
+  kept — its source becomes logger-derived).
 - Provider-side numeric accuracy.
 
 ## Architecture
@@ -128,8 +130,11 @@ Pluggability is the interface.
   The `[controller] tokens <role>` DEBUG line stays (logUsage emits it).
 - **Target-state embeddings:** `establishTargetState` already returns the
   evaluator LLM `usage`; extend it to also return the summed embedding `usage`
-  from its two `embedder.embed()` calls (`target-state.ts:75-76`). The handler
-  logs it: `logUsage('embedding', embUsage)` → `logLlmCall({ component:'embedding', model:'embedder', … })`.
+  from its two `embedder.embed()` calls (`target-state.ts:75-76`). Embeddings are
+  **not** routed through `deps.models` (which holds only the LLM roles, review #1):
+  the handler logs them with fixed `component:'embedding', model:'embedder'`
+  (matching `rag-query.ts`), `durationMs: 0`, `requestId: meta.traceId`. (Concretely,
+  `logUsage` resolves `model = role === 'embedding' ? 'embedder' : (deps.models[role] ?? 'unknown')`.)
 - **toolsRag query embeddings:** extend the `IToolsRagHandle.query` contract to be
   request-aware (see below) so the controller's `deps.selectTools` calls
   (handler `:218,:386`) log their query-embedding usage.
@@ -183,7 +188,9 @@ pipeline branch (that would double the Stepper/DAG chunk, review #1):
   across the stream, **yield each chunk as a copy with `usage` omitted**, log the
   accumulated usage once into `IRequestLogger` (pass does not run the tool-loop
   handler → additive, no double count), then emit the single `getSummary` terminal
-  chunk.
+  chunk. The pass log entry uses `component:'tool-loop'` (the main model produces
+  the answer), `model: this._mainLlm.model ?? 'unknown'`, `durationMs:` measured
+  around the pass stream, `requestId: traceId`.
 
 The agent's pipeline branch (`:736`) is **not** changed — each coordinator handler
 owns its single terminal usage chunk.
@@ -294,7 +301,7 @@ the path's component.
 | 10 | Stepper toolsRag query-embedding still unlogged | Accepted pre-existing gap; Goal #1 scoped accordingly; closable later via the optional `accounting` param. |
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
-| 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: cfg.subagents.planner.model` (review #3). |
+| 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
 | 6 | Per-model overwrite (`agent.ts:621`) | Only one usage chunk carries `models`; the terminal chunk carries the full `getSummary` `byModel`. |
 | 7 | Stream usage absent from provider | `LoggingLlm.streamChat` accumulates `chunk.usage`; providers enable `include_usage`. |
 | 8 | Concurrent requests | `SessionRequestLogger` keys deltas by `requestId`; reliable once `traceId` is normalized into `opts`. |
@@ -322,7 +329,7 @@ the path's component.
   `InsufficientSignal` still yields a terminal chunk with `getSummary`-derived
   usage (non-empty when calls were logged).
 - **Finalizer model (review #3)**: a controller turn whose finalizer fires logs a
-  `finalizer` entry under `byModel[cfg.subagents.planner.model]`.
+  `finalizer` entry under `byModel[plannerLlm.model]`.
 - **No regression**: a flat turn's `response.usage` is byte-identical to today.
 
 ## Migration / rollout
