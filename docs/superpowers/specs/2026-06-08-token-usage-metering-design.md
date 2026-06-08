@@ -153,6 +153,13 @@ instance), so the single chokepoint for every embedding token cost is
   `embedBatch(texts, options)` — delegating to `inner.embedBatch` and logging the
   summed `usage` of all results as one `embedding` entry; otherwise return the
   plain decorator. Either way `embed` is logged as above.
+- **Idempotent wrap (review #2):** the embedder is wrapped at one canonical owner —
+  `resolve-agent-embedder.ts` (the server's embedder construction). But
+  `SmartAgentBuilder.withEmbedder` is a second possible entry, so `wrapEmbedder`
+  must be **idempotent**: the decorators carry a brand (`readonly __usageLogged = true`
+  via a module symbol), and `wrapEmbedder(inner)` returns `inner` unchanged if
+  already branded. Double-wrapping (resolve + builder) therefore cannot
+  double-log; new entry points are safe by construction.
 - **Binding (global embedder, per-session logger):** the embedder is a global
   singleton (`smart-server.ts:479` locked invariant), so the wrapper resolves the
   per-request logger **per call** from `CallOptions`. Add `requestLogger?: IRequestLogger`
@@ -186,9 +193,28 @@ The handle does `new QueryEmbedding(text, resolvedEmbedder, options)`; because
 `resolvedEmbedder` is the **wrapped** embedder and `options` carries
 `requestLogger` + `trace.traceId`, its single `embed()` is logged by the boundary
 wrapper — no bespoke accounting type, same mechanism as every other site. The
-parameter is **optional** (existing callers compile unchanged); the controller
-passes `ctx.options` (or `{ requestLogger: ctx.requestLogger, trace: { traceId: meta.traceId } }`).
-The Stepper passes the same to close its toolsRag gap (Goal #1).
+parameter is **optional** (existing callers compile unchanged).
+
+**Injecting `options` without threading it through every contract (review #1).**
+The controller's `selectTools` is a `deps` function it controls, so it forwards
+`ctx.options` directly. The **Stepper** is different: it passes the raw `toolsRag`
+into `rootStepper.run({ toolsRag, … })` (`stepper-coordinator-handler.ts:142`), and
+deep internal callers (`llm-evaluator.ts:65`, planner, executor) call
+`input.toolsRag.query(prompt, 15)` with no options — threading `CallOptions` through
+`IStepperInput` and every child contract would be invasive. Instead, the **handler
+builds a request-bound facade** (it already holds `ctx.options`/`traceId`) and
+passes *that* into `rootStepper.run`:
+
+```ts
+const boundToolsRag: IToolsRagHandle = {
+  query: (text, k) => toolsRag.query(text, k, ctx.options),
+  lookup: (name) => toolsRag.lookup(name),
+};
+```
+
+Internal callers keep their 2-arg `query(text, k)` signature; the facade injects
+`ctx.options` so the wrapped embedder logs every Stepper toolsRag embed. This
+closes the Stepper gap (Goal #1) with no change to the stepper internal contracts.
 
 ### Consumer delivery — one terminal `getSummary` chunk on every path
 
@@ -324,10 +350,11 @@ usage chunk owned by the path's component.
     `'initialization'`) — review #3.
   - `adapters/usage-logging-embedder.ts` (new) — `UsageLoggingEmbedder`
     (`IEmbedder`) + a batch-capable variant (`IEmbedderBatch`, proxies `embedBatch`)
-    + a `wrapEmbedder(inner)` factory that picks the variant via
-    `isBatchEmbedder(inner)` (review #3). Wrap the global embedder at construction
-    (`resolve-agent-embedder.ts` / builder `withEmbedder`). Remove the inline
-    embedding `logLlmCall` from `rag-query.ts`.
+    + an **idempotent** `wrapEmbedder(inner)` factory: picks the variant via
+    `isBatchEmbedder(inner)` (review #3) and returns `inner` unchanged if already
+    branded (review #2). Canonical wrap owner: `resolve-agent-embedder.ts`; builder
+    `withEmbedder` also calls `wrapEmbedder` (idempotent, so no double-wrap). Remove
+    the inline embedding `logLlmCall` from `rag-query.ts`.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
     (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
     the accumulated usage once, then emit the terminal `getSummary` usage chunk.
@@ -346,7 +373,9 @@ usage chunk owned by the path's component.
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
     `turn total` line.
   - `stepper-coordinator-handler.ts`: attach the canonical terminal-usage object
-    (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`).
+    (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`); build
+    a request-bound `toolsRag` facade injecting `ctx.options` and pass it into
+    `rootStepper.run` (`:142`) — review #1.
   - `controller/target-state.ts` (review #1): `establishTargetState` gains an
     `options?: CallOptions` parameter and calls `embedder.embed(target, options)` /
     `embedder.embed(prompt, options)` (`:74-76` currently pass no options, so the
@@ -372,7 +401,8 @@ usage chunk owned by the path's component.
 | 4 | Pass path diverges from single source | Pass logs its one call into `IRequestLogger`, then emits the same `getSummary` terminal chunk → `response.usage == /v1/usage`. |
 | 5 | Double counting | Embedder IS wrapped, but logs once per `embed()` (memoized → once per `QueryEmbedding`) and the only prior embedding log (`rag-query.ts:102`) is removed; LLM sites unchanged; exactly one usage-bearing chunk per request, emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch. |
 | 9 | Controller `logUsage` lacks `durationMs` | Use `durationMs: 0` (rag-query.ts:108 precedent); per-call timing deferred. |
-| 10 | Stepper toolsRag query-embedding | Closed: the Stepper passes `CallOptions` to `toolsRag.query` → covered by the embedder wrapper. |
+| 10 | Stepper toolsRag query-embedding (deep internal callers, no options) | Handler builds a request-bound `toolsRag` facade injecting `ctx.options`, passed into `rootStepper.run` — no internal-contract threading (review #1). |
+| 20 | Double-wrap of the embedder (resolve + builder) | `wrapEmbedder` is idempotent via a brand; returns already-wrapped instances unchanged (review #2). |
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
 | 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
@@ -407,6 +437,10 @@ usage chunk owned by the path's component.
   and logs one summed `embedding` entry.
 - **target-state coverage (review #1)**: a controller turn with the distance
   strategy logs two `embedding` entries (target + prompt) under the request delta.
+- **Stepper facade (review #1)**: a Stepper turn logs `embedding` entries for its
+  internal toolsRag queries (the facade injects `ctx.options`).
+- **Idempotent wrap (review #2)**: `wrapEmbedder(wrapEmbedder(e)) === wrapEmbedder(e)`;
+  one embed → exactly one log even when both resolve + builder wrap.
 - **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
   yields exactly one usage-bearing chunk; `process()` sums it to
   `getSummary(traceId)`.
