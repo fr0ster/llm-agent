@@ -263,7 +263,8 @@ needs no traceId.
 - Pass-path single-call logging.
 
 **REPLACE**:
-- Controller terminal-chunk usage source: private `total` → `summaryToUsage(getSummary(meta.traceId))`.
+- Controller terminal-chunk usage source: private `total` → the canonical
+  terminal-usage object `{ ...summaryToUsage(summary), models: summary.byModel }`.
 
 **REMOVE**:
 - Controller private `total` accumulator + the `[controller] turn total` aggregate
@@ -314,12 +315,12 @@ the path's component.
     (subagent roles, `durationMs: 0`; model from `deps.models[role]`, finalizer →
     `deps.models.planner`) and logs target-state embedding usage; `surfaceFinal`/
     `surfaceClarify`/
-    `surfaceToolCall` (`:552-584`) emit
-    `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))` (one terminal
+    `surfaceToolCall` (`:552-584`) emit the canonical terminal-usage object
+    (`{ ...summaryToUsage(summary), models: summary.byModel }`) (one terminal
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
     `turn total` line.
-  - `stepper-coordinator-handler.ts`: attach `summaryToUsage(getSummary(traceId))`
-    to the `InsufficientSignal` terminal stop chunk (`:263`) — review #2.
+  - `stepper-coordinator-handler.ts`: attach the canonical terminal-usage object
+    (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`).
   - `controller/target-state.ts`: return summed embedding usage.
   - `controller.ts` `deps.selectTools`: pass `accounting` to `toolsRag.query`.
   - `smart-server.ts` `_toolsRagHandle.query`: accept `accounting`, log the
