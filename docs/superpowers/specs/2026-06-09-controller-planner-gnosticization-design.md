@@ -137,16 +137,26 @@ config flag enabling the reviewer + routing).
 
 Like Variant 2 it routes per step, but it **folds completeness into the step's
 executor** instead of a separate reviewer role. At plan time the planner
-classifies each step by complexity, where the operative criterion is: *does this
-step require the model to self-assess the completeness of its own execution
-(and possibly expand into a recursive sub-plan)?*
+classifies each step, where the operative criterion is **whether the step's
+decomposition is knowable at plan time**.
+
+The sharp distinction (worked through with the user):
+- **"Analyze the program"** is plan-time decomposable — the planner *can and
+  should* expand it into steps: `read the full program source`, then
+  `analyze the gathered code`.
+- **"Read the full program source"** is **not** plan-time decomposable — the
+  planner cannot pre-list the program's includes, because their names live
+  *inside the source* and are only known once it is read. Only the **executor**,
+  while reading, can discover "there are includes I must also fetch" and
+  recursively expand. Such a step must therefore run on a **capable** model.
 
 **Components**
-- **Planner-assessed step complexity.** For each step the planner emits a
-  routing tag, e.g. `Step.tier: cheap | capable`. The decision rule is not raw
-  difficulty but completeness-self-assessment: a step that might need to expand
-  into a recursive sub-plan (e.g. "analyze a program" → discover it needs the
-  includes) is `capable`; a deterministic single-shot fetch is `cheap`.
+- **Planner-assessed step decomposability.** For each step the planner emits a
+  routing tag, e.g. `Step.tier: cheap | capable`. The rule is not raw difficulty:
+  a step whose sub-structure the planner already knows is decomposed *by the
+  planner* into leaf steps (run `cheap`); a step whose sub-structure only emerges
+  during execution (must be discovered by reading/running) is `capable`, because
+  its executor has to self-assess "am I done?" and recursively sub-plan.
 - **Per-step model routing** (as in Variant 2): the controller runs each step on
   the matching executor endpoint.
 - **Recursive self-expansion on capable steps.** A `capable` step's executor may,
@@ -156,12 +166,15 @@ step require the model to self-assess the completeness of its own execution
   reviewer. A `cheap` step never recurses — it just executes and returns.
 
 **Flow (ZDAZ example)**
-1. Planner plans `analyze program ZDAZ_...` and tags it `capable` (it foresees the
-   step may need recursive expansion).
-2. The capable executor reads the source, self-assesses "the logic is in includes
-   I haven't read" → emits a sub-plan: `read include X/Y/Z` (each `cheap`).
+1. Planner *decomposes* "analyze program ZDAZ_..." into:
+   `read the full program source` (tagged **capable** — not plan-decomposable)
+   and `analyze the gathered code` (judgement → **capable**).
+2. The capable executor of `read the full program source` reads the main source,
+   self-assesses "the logic is in includes I haven't read" → emits a sub-plan:
+   `read include X/Y/Z` (each `cheap` — now plan-decomposable, names are known).
 3. Sub-steps run on the cheap model; their results return up to the capable step.
-4. The capable step self-confirms completeness and returns the grounded analysis.
+4. The capable step self-confirms it has the full source and returns it; the
+   `analyze` step then composes the grounded analysis.
 
 **Pros:** intelligence is spent only on the steps that actually need it (no extra
 reviewer round per group); completeness lives with the model doing the work, so
@@ -192,8 +205,8 @@ lives:
   intelligence only on planner-flagged complex steps).
 
 Both 2 and 3 depend on a correct capability decision: V2 on the planner's
-grouping + the reviewer firing, V3 on the planner's per-step complexity
-classification. V1's gnosticization (hints + skills RAG) *improves the inputs to
+grouping + the reviewer firing, V3 on the planner's per-step *decomposability*
+classification (is this step's sub-structure knowable now, or only at runtime?). V1's gnosticization (hints + skills RAG) *improves the inputs to
 both* — it makes the planner classify/group better and tells the reviewer/smart
 step *what* completeness means for the domain. A deployment can run pure V1, or
 layer V2 **or** V3 on top where robustness is worth the cost.
