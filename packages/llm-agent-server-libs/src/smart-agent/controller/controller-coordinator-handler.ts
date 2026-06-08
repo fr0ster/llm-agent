@@ -521,7 +521,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           position: step.name,
         };
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceToolCall(ctx, { id: extId, name, arguments: args }, usageNow?.());
+        this.surfaceToolCall(
+          ctx,
+          { id: extId, name, arguments: args },
+          usageNow?.(),
+        );
         return 'suspended';
       }
 

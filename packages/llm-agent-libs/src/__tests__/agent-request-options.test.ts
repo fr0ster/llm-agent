@@ -21,8 +21,12 @@ test('preserves an existing traceId and other trace fields', () => {
   assert.equal(out.trace?.spanId, 's1');
 });
 
-test('does not overwrite a caller-supplied requestLogger', () => {
+test('forces the agent logger over any caller-supplied one (single source)', () => {
   const other = {} as IRequestLogger;
-  const out = normalizeRequestOptions({ requestLogger: other }, 'gen-2', logger);
-  assert.equal(out.requestLogger, other);
+  const out = normalizeRequestOptions(
+    { requestLogger: other },
+    'gen-2',
+    logger,
+  );
+  assert.equal(out.requestLogger, logger);
 });

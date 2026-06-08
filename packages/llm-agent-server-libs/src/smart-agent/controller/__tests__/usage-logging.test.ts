@@ -9,7 +9,11 @@ test('logUsage routes per-role usage into the request logger with model + reques
   logger.startRequest('r1');
   const models = { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' };
   const logUsage = makeLogUsage(logger, 'r1', models);
-  const u: LlmUsage = { promptTokens: 10, completionTokens: 2, totalTokens: 12 };
+  const u: LlmUsage = {
+    promptTokens: 10,
+    completionTokens: 2,
+    totalTokens: 12,
+  };
   logUsage('planner', u);
   logUsage('finalizer', u);
   logUsage('evaluator', u);

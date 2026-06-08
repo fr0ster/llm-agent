@@ -30,7 +30,10 @@ const opts = (logger: ReturnType<typeof makeLogger>) =>
 test('logs provider-reported usage verbatim', async () => {
   const logger = makeLogger();
   const inner: IEmbedder = {
-    embed: async () => ({ vector: [1], usage: { promptTokens: 5, totalTokens: 5 } }),
+    embed: async () => ({
+      vector: [1],
+      usage: { promptTokens: 5, totalTokens: 5 },
+    }),
   };
   await wrapEmbedder(inner).embed('hi', opts(logger));
   assert.equal(logger.entries.length, 1);
@@ -67,10 +70,16 @@ test('preserves IEmbedderBatch and logs summed batch usage', async () => {
   const logger = makeLogger();
   let batchCalls = 0;
   const inner: IEmbedderBatch = {
-    embed: async () => ({ vector: [1], usage: { promptTokens: 5, totalTokens: 5 } }),
+    embed: async () => ({
+      vector: [1],
+      usage: { promptTokens: 5, totalTokens: 5 },
+    }),
     embedBatch: async (texts) => {
       batchCalls++;
-      return texts.map(() => ({ vector: [1], usage: { promptTokens: 3, totalTokens: 3 } }));
+      return texts.map(() => ({
+        vector: [1],
+        usage: { promptTokens: 3, totalTokens: 3 },
+      }));
     },
   };
   const w = wrapEmbedder(inner);
@@ -79,4 +88,22 @@ test('preserves IEmbedderBatch and logs summed batch usage', async () => {
   assert.equal(batchCalls, 1);
   assert.equal(logger.entries.length, 1);
   assert.equal(logger.entries[0].totalTokens, 6);
+  assert.notEqual(logger.entries[0].estimated, true);
+});
+
+test('mixed batch (some measured, some not) is flagged estimated', async () => {
+  const logger = makeLogger();
+  const inner: IEmbedderBatch = {
+    embed: async () => ({ vector: [1] }),
+    embedBatch: async () => [
+      { vector: [1], usage: { promptTokens: 3, totalTokens: 3 } }, // measured
+      { vector: [1] }, // no usage → estimated
+    ],
+  };
+  await (wrapEmbedder(inner) as IEmbedderBatch).embedBatch(
+    ['aaaa', 'bbbbbbbb'], // ceil(8/4)=2 for the estimated one
+    opts(logger),
+  );
+  assert.equal(logger.entries[0].estimated, true);
+  assert.equal(logger.entries[0].totalTokens, 5); // 3 measured + 2 estimated
 });

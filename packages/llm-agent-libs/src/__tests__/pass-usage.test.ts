@@ -10,9 +10,7 @@ import { SmartAgent } from '../agent.js';
 import { SessionRequestLogger } from '../logger/session-request-logger.js';
 import { makeDefaultDeps } from '../testing/index.js';
 
-function streamingLlm(
-  chunks: Array<Result<LlmStreamChunk, LlmError>>,
-): ILlm {
+function streamingLlm(chunks: Array<Result<LlmStreamChunk, LlmError>>): ILlm {
   return {
     model: 'pass-model',
     async chat() {

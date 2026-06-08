@@ -61,16 +61,16 @@ class UsageLoggingBatchEmbedder
     if (logger) {
       let prompt = 0;
       let total = 0;
-      let anyMeasured = false;
+      let anyEstimated = false;
       results.forEach((r, i) => {
         if (r.usage?.totalTokens !== undefined) {
           prompt += r.usage.promptTokens;
           total += r.usage.totalTokens;
-          anyMeasured = true;
         } else {
           const est = estimateTokens(texts[i] ?? '');
           prompt += est;
           total += est;
+          anyEstimated = true;
         }
       });
       logger.logLlmCall({
@@ -82,7 +82,8 @@ class UsageLoggingBatchEmbedder
         durationMs: 0,
         scope: 'request',
         requestId: options?.trace?.traceId,
-        ...(anyMeasured ? {} : { estimated: true }),
+        // estimated if ANY item lacked provider usage (the total is partly an estimate).
+        ...(anyEstimated ? { estimated: true } : {}),
       });
     }
     return results;

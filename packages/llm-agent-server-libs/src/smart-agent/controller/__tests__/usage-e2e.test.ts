@@ -13,8 +13,8 @@ import {
   summaryToUsage,
   wrapEmbedder,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { ControllerCoordinatorHandler } from '../controller-coordinator-handler.js';
 import type { ControllerHandlerDeps } from '../controller-coordinator-handler.js';
+import { ControllerCoordinatorHandler } from '../controller-coordinator-handler.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import type { ControllerConfig, SubagentResult } from '../types.js';
 
@@ -22,7 +22,11 @@ const usage = { promptTokens: 10, completionTokens: 4, totalTokens: 14 };
 
 function client(results: SubagentResult[]): ISubagentClient {
   let i = 0;
-  return { async send() { return results[i++] ?? { kind: 'content', content: '' }; } };
+  return {
+    async send() {
+      return results[i++] ?? { kind: 'content', content: '' };
+    },
+  };
 }
 
 const rag: IKnowledgeRagHandle = {
@@ -45,7 +49,10 @@ test('controller terminal usage == getSummary(traceId), includes subagents + emb
 
   // Wrapped embedder that reports usage → logged as component:'embedding'.
   const embedder = wrapEmbedder({
-    embed: async () => ({ vector: [1, 0, 0], usage: { promptTokens: 3, totalTokens: 3 } }),
+    embed: async () => ({
+      vector: [1, 0, 0],
+      usage: { promptTokens: 3, totalTokens: 3 },
+    }),
   });
 
   const deps: ControllerHandlerDeps = {
@@ -83,7 +90,9 @@ test('controller terminal usage == getSummary(traceId), includes subagents + emb
   // Terminal chunk carries usage.
   const terminal = captured
     .map((c) => (c.ok ? c.value : undefined))
-    .filter((v): v is LlmStreamChunk => !!v && v.finishReason === 'stop' && !!v.usage)
+    .filter(
+      (v): v is LlmStreamChunk => !!v && v.finishReason === 'stop' && !!v.usage,
+    )
     .pop();
   assert.ok(terminal, 'expected a terminal stop chunk with usage');
 

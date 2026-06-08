@@ -43,6 +43,7 @@ import {
   TextOnlyEmbedding,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
@@ -260,6 +261,9 @@ export class SmartAgent {
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
     this.requestLogger = deps.requestLogger ?? new NoopRequestLogger();
+    // Meter embedding usage even for direct `new SmartAgent(deps)` construction
+    // (the builder/resolveAgentEmbedder also wrap; wrapEmbedder is idempotent).
+    if (deps.embedder) deps.embedder = wrapEmbedder(deps.embedder);
     this.defaultLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
     this._activeClients = [...deps.mcpClients];
@@ -742,7 +746,8 @@ export class SmartAgent {
             continue;
           }
           if (chunk.value.content) passContent += chunk.value.content;
-          if (chunk.value.toolCalls) passToolCalls.push(...chunk.value.toolCalls);
+          if (chunk.value.toolCalls)
+            passToolCalls.push(...chunk.value.toolCalls);
           if (chunk.value.usage) {
             accPrompt += chunk.value.usage.promptTokens;
             accCompletion += chunk.value.usage.completionTokens;

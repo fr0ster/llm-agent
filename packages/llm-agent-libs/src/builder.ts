@@ -60,8 +60,8 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
+import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import {
   LlmClassifier,
   type LlmClassifierConfig,
