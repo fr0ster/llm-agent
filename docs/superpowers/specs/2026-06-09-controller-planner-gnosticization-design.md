@@ -41,8 +41,10 @@ runtime through two channels, so any model is **gnosticized as it works**:
   retrieved when relevant, plus runtime-accumulated context (e.g. once a
   program's source is read, the include names enter context).
 
-Two complementary variants are described below. **Variant 1 is the default**;
-**Variant 2 is an optional layer for complex/high-stakes cases.**
+Three variants are described below. **Variant 1 is the default**; **Variants 2
+and 3 are optional layers for complex/high-stakes cases** — V2 with an external
+reviewer gating sub-task groups, V3 with the planner classifying per-step
+complexity and capable steps self-expanding recursively.
 
 ---
 
@@ -131,13 +133,70 @@ config flag enabling the reviewer + routing).
 
 ---
 
-## How the two relate
+## Variant 3 — Planner-assessed per-step complexity + self-expanding smart steps
 
-Both share the same agnostic engine, the per-step tool-selection fix, and the
-hints + skills-RAG gnosticization. Variant 1 is the base. Variant 2 adds a
-reviewer gate + grouping + per-step routing *on top*, enabled only where the
-extra robustness is worth the cost. A deployment can run pure Variant 1, or
-enable the Variant 2 reviewer for the hard cases.
+Like Variant 2 it routes per step, but it **folds completeness into the step's
+executor** instead of a separate reviewer role. At plan time the planner
+classifies each step by complexity, where the operative criterion is: *does this
+step require the model to self-assess the completeness of its own execution
+(and possibly expand into a recursive sub-plan)?*
+
+**Components**
+- **Planner-assessed step complexity.** For each step the planner emits a
+  routing tag, e.g. `Step.tier: cheap | capable`. The decision rule is not raw
+  difficulty but completeness-self-assessment: a step that might need to expand
+  into a recursive sub-plan (e.g. "analyze a program" → discover it needs the
+  includes) is `capable`; a deterministic single-shot fetch is `cheap`.
+- **Per-step model routing** (as in Variant 2): the controller runs each step on
+  the matching executor endpoint.
+- **Recursive self-expansion on capable steps.** A `capable` step's executor may,
+  instead of returning a final step result, emit a **sub-plan** — the step
+  recurses into its own ordered steps (themselves classified/routed). The smart
+  model self-judges "am I done, or do I need more?" inline; there is no external
+  reviewer. A `cheap` step never recurses — it just executes and returns.
+
+**Flow (ZDAZ example)**
+1. Planner plans `analyze program ZDAZ_...` and tags it `capable` (it foresees the
+   step may need recursive expansion).
+2. The capable executor reads the source, self-assesses "the logic is in includes
+   I haven't read" → emits a sub-plan: `read include X/Y/Z` (each `cheap`).
+3. Sub-steps run on the cheap model; their results return up to the capable step.
+4. The capable step self-confirms completeness and returns the grounded analysis.
+
+**Pros:** intelligence is spent only on the steps that actually need it (no extra
+reviewer round per group); completeness lives with the model doing the work, so
+no hand-off; naturally recursive for arbitrarily deep expansion. **Cons:** the
+**planner's complexity classification is the linchpin** — if a step that needs
+self-assessment is mis-tagged `cheap`, the cheap model confabulates (the original
+failure mode returns); recursive execution is more complex to implement and
+bound (depth/budget limits needed).
+
+**When:** mixed-cost deployments that want fine-grained spend without a separate
+reviewer; tasks whose hard parts are localised to a few steps rather than whole
+sub-task groups.
+
+---
+
+## How the variants relate
+
+All three share the same agnostic engine, the per-step tool-selection fix, and
+the hints + skills-RAG gnosticization. **Variant 1 is the base** (gnosticized
+planner, no extra orchestration). Variants 2 and 3 both add per-step model
+routing for completeness on harder tasks, differing in *where* completeness
+lives:
+
+- **Variant 2** — an **external reviewer** gates whole sub-task *groups* (explicit,
+  loud, hand-off; intelligence at group boundaries).
+- **Variant 3** — completeness is **internal** to the capable step's executor,
+  which self-assesses and **recursively sub-plans** (no separate role;
+  intelligence only on planner-flagged complex steps).
+
+Both 2 and 3 depend on a correct capability decision: V2 on the planner's
+grouping + the reviewer firing, V3 on the planner's per-step complexity
+classification. V1's gnosticization (hints + skills RAG) *improves the inputs to
+both* — it makes the planner classify/group better and tells the reviewer/smart
+step *what* completeness means for the domain. A deployment can run pure V1, or
+layer V2 **or** V3 on top where robustness is worth the cost.
 
 ## Open questions / next experiments
 
@@ -148,6 +207,11 @@ enable the Variant 2 reviewer for the hard cases.
   agnostic), not in the controller.
 - Variant 2: exact config shape for per-step model routing (executor pair vs a
   selectable list) and the reviewer endpoint.
+- Variant 3: how reliably the planner can classify per-step complexity (the
+  linchpin), and how to bound recursive self-expansion (max depth / token budget
+  per recursion level) so a mis-tagged or runaway step cannot loop.
+- Whether V2's external reviewer and V3's internal self-assessment can be mixed
+  (e.g. self-expanding steps within reviewer-gated groups).
 - Whether a light completeness check belongs in Variant 1 too (cheap heuristic
   vs full reviewer).
 
