@@ -70,19 +70,22 @@ callback for `planner`/`finalizer`).
    through the embedder-boundary wrapper, so coverage does not depend on
    enumerating `QueryEmbedding` sites. LLM and embedder usage use provider-reported
    counts where available; embedders that return no `usage` (Ollama, SAP AI Core —
-   `IEmbedResult.usage` is optional) get an **estimate flagged `estimated: true`**,
-   so embeddings are always *counted*, transparently.
+   `IEmbedResult.usage` is optional) get an **estimate** (the per-entry
+   `LlmCallEntry.estimated` flag is set for diagnostics), so embeddings are always
+   *counted*. (Surfacing an estimated-vs-measured split in the aggregated
+   `RequestSummary` / `/v1/usage` is deferred — see Deferred.)
 2. **One internal aggregator** — the `IRequestLogger` interface (default impl
    `SessionRequestLogger`). The controller's private sum is removed; all paths'
    usage comes from `getSummary(traceId)`.
 3. **Internal logging decoupled from consumer delivery** — logging is uniform;
    delivery is one terminal `getSummary` usage chunk (SSE event, or summed by
    `process()`).
-4. **Reuse, minimal delta, additive-only** — keep every existing logging site;
-   only *add* request-time logging where it is currently absent (controller LLM +
-   embeddings), *fix* the systemic traceId/derivation/stream issues, *replace* the
-   controller's terminal-chunk usage source (private total → logger-derived), and
-   *remove* only the now-unused private `total` accumulator.
+4. **Reuse, minimal delta** — keep every existing logging site **except** the
+   `rag-query.ts:102` inline embedding log (superseded by the embedder wrapper to
+   avoid double-counting); *add* logging where it is currently absent (controller
+   LLM, embeddings via the wrapper); *fix* the systemic traceId/derivation/stream
+   issues; *replace* the controller's terminal-chunk usage source (private total →
+   logger-derived); and *remove* the now-unused private `total` accumulator.
 
 ## Non-Goals
 
@@ -93,8 +96,6 @@ callback for `planner`/`finalizer`).
 - A controller-side `LoggingLlm` / `LoggingEmbedder` build-time wrapper — cannot
   bind the request `traceId` nor distinguish the shared planner/finalizer client
   (review #1). Controller logs at request time instead.
-- Globally wrapping the embedder — `rag-query.ts:102` already logs flat-path
-  embeddings; a global wrap would double-count.
 - Removing `process()`'s chunk-usage summation (`:616-622`).
 - Reconciling the controller's `[controller]` DEBUG per-call lines with
   `response.usage`. Those stay; only the controller's aggregate `turn total` line
@@ -152,9 +153,11 @@ instance), so the single chokepoint for every embedding token cost is
   SAP AI Core embedders return none. When `result.usage` is absent, the wrapper
   estimates `promptTokens = ceil(text.length / 4)`, `completionTokens = 0`,
   `totalTokens = promptTokens`, and logs with `estimated: true` (the existing
-  `LlmCallEntry.estimated` flag). Provider-reported usage is used verbatim
-  (`estimated` unset). So embeddings are always counted; `/v1/usage` can tell
-  measured from estimated. (`embedBatch`: estimate per text, sum.)
+  per-entry `LlmCallEntry.estimated` flag). Provider-reported usage is used verbatim
+  (`estimated` unset). So embeddings are always counted. Note: the aggregated
+  `RequestSummary`/`TokenBucket` does **not** currently carry an estimated split, so
+  `/v1/usage` reports a combined total; surfacing the split is deferred.
+  (`embedBatch`: estimate per text, sum.)
 - **Preserve `IEmbedderBatch` (review #3):** the structural `isBatchEmbedder(e)`
   check (`rag.ts:60`, `'embedBatch' in e`) drives batch vectorization
   (`builder.ts:974`). A plain `IEmbedder` wrapper would hide `embedBatch` and force
@@ -492,5 +495,9 @@ embedding. Lockstep.
 
 ## Deferred
 
+- **Estimated-vs-measured split in the aggregate** — `LlmCallEntry.estimated` is
+  recorded per entry, but `RequestSummary`/`TokenBucket` don't aggregate it, so
+  `/v1/usage` reports a combined total. Extending `TokenBucket` with an
+  `estimatedTokens` sub-count is a follow-up (review #1).
 - Surfacing a per-component breakdown on `response.usage` (already in
   `RequestSummary.byComponent`; `/v1/usage` exposes it).
