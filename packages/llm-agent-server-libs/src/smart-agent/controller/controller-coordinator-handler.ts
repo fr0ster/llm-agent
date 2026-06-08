@@ -1,18 +1,23 @@
 import {
+  type CallOptions,
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
+  type IRequestLogger,
   type IStageHandler,
   type KnowledgeEntryMetadata,
+  type LlmComponent,
   type LlmTool,
   type LlmToolCall,
   type LlmUsage,
   type Message,
+  type ModelUsageEntry,
   type StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
-import type {
-  KnowledgeBackend,
-  PipelineContext,
+import {
+  type KnowledgeBackend,
+  type PipelineContext,
+  summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
@@ -34,6 +39,46 @@ import type {
 
 function dlog(msg: string): void {
   if (process.env.DEBUG_CONTROLLER) console.error(`[controller] ${msg}`);
+}
+
+/** Flat usage triple + per-model breakdown — the canonical terminal-chunk shape. */
+export type TerminalUsage = LlmUsage & {
+  models?: Record<string, ModelUsageEntry>;
+};
+
+/**
+ * Build a request-time `logUsage(role, usage)` that writes each subagent call
+ * into the per-request `IRequestLogger` (the single aggregator), attributing the
+ * role's configured model. The role is explicit at the call site, so the shared
+ * planner/finalizer client is attributed correctly. `durationMs: 0` — the seam
+ * carries no timing (matches the rag-query precedent).
+ */
+export function makeLogUsage(
+  requestLogger: IRequestLogger,
+  requestId: string | undefined,
+  models: { evaluator: string; planner: string; executor: string },
+): (role: string, u?: LlmUsage) => void {
+  return (role, u) => {
+    if (!u) return;
+    const model =
+      role === 'finalizer'
+        ? models.planner
+        : role === 'embedding'
+          ? 'embedder'
+          : ((models as Record<string, string>)[role] ?? 'unknown');
+    requestLogger.logLlmCall({
+      component: role as LlmComponent,
+      model,
+      promptTokens: u.promptTokens ?? 0,
+      completionTokens: u.completionTokens ?? 0,
+      totalTokens: u.totalTokens ?? 0,
+      durationMs: 0,
+      requestId,
+    });
+    dlog(
+      `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens}`,
+    );
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -59,7 +104,11 @@ export interface ControllerHandlerDeps {
    * executor — relevant, bounded, NOT a full dump. MCP-less deployments wire a
    * stub returning `[]`.
    */
-  selectTools: (query: string, k?: number) => Promise<readonly LlmTool[]>;
+  selectTools: (
+    query: string,
+    k?: number,
+    options?: CallOptions,
+  ) => Promise<readonly LlmTool[]>;
   /**
    * Optional override marking a tool as consumer-supplied (must round-trip to
    * the client). Production truth is the per-request `ctx.externalTools`; this
@@ -68,6 +117,9 @@ export interface ControllerHandlerDeps {
    */
   isExternalTool?: (toolName: string) => boolean;
   config: ControllerConfig;
+  /** Resolved model id per subagent role, for usage attribution (finalizer uses
+   *  the planner model). */
+  models: { evaluator: string; planner: string; executor: string };
 }
 
 // ---------------------------------------------------------------------------
@@ -110,22 +162,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     const meta = synthMeta(ctx, sessionId);
 
-    // Token accounting: accumulate usage across every subagent call this turn,
-    // log per-call (with role + running total) for visibility, and surface the
-    // total on the terminal chunk so the HTTP response carries real token counts.
-    const total: LlmUsage = {
-      promptTokens: 0,
-      completionTokens: 0,
-      totalTokens: 0,
-    };
-    const logUsage = (role: string, u?: LlmUsage): void => {
-      if (!u) return;
-      total.promptTokens += u.promptTokens ?? 0;
-      total.completionTokens += u.completionTokens ?? 0;
-      total.totalTokens += u.totalTokens ?? 0;
-      dlog(
-        `tokens ${role}: prompt=${u.promptTokens} completion=${u.completionTokens} total=${u.totalTokens} | running=${total.totalTokens}`,
-      );
+    // Token accounting: every subagent call is logged into the per-request
+    // IRequestLogger (the single aggregator). The terminal chunk's usage is read
+    // back from getSummary(traceId) — never a private accumulator — so it matches
+    // /v1/usage and carries the per-model breakdown.
+    const logUsage = makeLogUsage(ctx.requestLogger, meta.traceId, deps.models);
+    const usageNow = (): TerminalUsage => {
+      const s = ctx.requestLogger.getSummary(meta.traceId);
+      return { ...summaryToUsage(s), models: s.byModel };
     };
 
     // Route external tools by the PER-REQUEST context (the client-supplied tools
@@ -149,7 +193,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             name: toolName,
             arguments: (bundle.pending.args ?? {}) as Record<string, unknown>,
           },
-          total,
+          usageNow(),
         );
         return true;
       }
@@ -185,6 +229,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         { evaluator: deps.evaluator, embedder: deps.embedder },
         prompt,
         deps.config.targetState,
+        ctx.options,
       );
       logUsage('evaluator', outcome.usage);
       if (outcome.kind === 'needs-confirmation') {
@@ -197,7 +242,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           proposedTarget: outcome.proposedTarget,
         };
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceClarify(ctx, outcome.question, total);
+        this.surfaceClarify(ctx, outcome.question, usageNow());
         return true;
       }
       bundle.goal = outcome.goal;
@@ -210,6 +255,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const relevantForGoal = await deps.selectTools(
       `${bundle.goal}\n${prompt}`,
       TOOL_SELECT_K,
+      ctx.options,
     );
     const toolCatalog = buildToolCatalog([
       ...relevantForGoal,
@@ -237,7 +283,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             sessionId,
             bundle,
             'the planner did not return a valid decision — please rephrase or retry',
-            total,
+            usageNow(),
           );
         }
         continue;
@@ -247,10 +293,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (next.kind === 'done') {
         bundle.pending = undefined;
         await persistBundle(deps.backend, sessionId, bundle);
-        dlog(
-          `turn total tokens: prompt=${total.promptTokens} completion=${total.completionTokens} total=${total.totalTokens} (steps=${bundle.budgets.stepsUsed})`,
-        );
-        this.surfaceFinal(ctx, next.result, total);
+        this.surfaceFinal(ctx, next.result, usageNow());
         return true;
       }
 
@@ -262,7 +305,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             sessionId,
             bundle,
             'too many rewinds — please confirm how to proceed',
-            total,
+            usageNow(),
           );
         }
         bundle.plannerPrivate += `\n[rewind] ${next.reason}`;
@@ -283,7 +326,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         next.step,
         isExternalTool,
         logUsage,
-        total,
+        usageNow,
       );
       if (completed === 'suspended') return true;
       // 'advanced' → loop continues to the next planner call.
@@ -295,7 +338,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       sessionId,
       bundle,
       'step budget exhausted — please confirm how to proceed',
-      total,
+      usageNow(),
     );
   }
 
@@ -356,7 +399,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     step: Step,
     isExternalTool: (name: string) => boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
-    total?: LlmUsage,
+    usageNow?: () => TerminalUsage,
   ): Promise<'advanced' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
@@ -399,6 +442,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const relevant = await deps.selectTools(
       step.instructions || step.name,
       TOOL_SELECT_K,
+      ctx.options,
     );
     const offeredTools: LlmTool[] = [...relevant, ...(ctx.externalTools ?? [])];
     // The executor may ONLY call a tool that was offered to it: an internal tool
@@ -477,7 +521,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           position: step.name,
         };
         await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceToolCall(ctx, { id: extId, name, arguments: args }, total);
+        this.surfaceToolCall(
+          ctx,
+          { id: extId, name, arguments: args },
+          usageNow?.(),
+        );
         return 'suspended';
       }
 
@@ -549,7 +597,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     sessionId: string,
     bundle: SessionBundle,
     question: string,
-    usage?: LlmUsage,
+    usage?: TerminalUsage,
   ): Promise<boolean> {
     bundle.pending = { kind: 'clarify', question, position: 'loop' };
     await persistBundle(this.deps.backend, sessionId, bundle);
@@ -560,7 +608,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   private surfaceClarify(
     ctx: PipelineContext,
     question: string,
-    usage?: LlmUsage,
+    usage?: TerminalUsage,
   ): void {
     ctx.yield({
       ok: true,
@@ -575,7 +623,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   private surfaceFinal(
     ctx: PipelineContext,
     content: string,
-    usage?: LlmUsage,
+    usage?: TerminalUsage,
   ): void {
     ctx.yield({
       ok: true,
@@ -586,7 +634,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   private surfaceToolCall(
     ctx: PipelineContext,
     call: LlmToolCall,
-    usage?: LlmUsage,
+    usage?: TerminalUsage,
   ): void {
     ctx.yield({
       ok: true,

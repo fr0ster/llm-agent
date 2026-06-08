@@ -95,22 +95,9 @@ export class RagQueryHandler implements IStageHandler {
       requestId: ctx.options?.trace?.traceId,
     });
 
-    // Log embedding usage once (first rag-query stage that uses the embedding)
-    if (!ctx.embeddingUsageLogged && embedding?.getUsage) {
-      const usage = await embedding.getUsage();
-      if (usage) {
-        ctx.requestLogger.logLlmCall({
-          component: 'embedding',
-          model: 'embedder',
-          promptTokens: usage.promptTokens,
-          completionTokens: 0,
-          totalTokens: usage.totalTokens,
-          durationMs: 0, // embed completed before store.query(); not separately measurable here
-          scope: 'request',
-        });
-        ctx.embeddingUsageLogged = true;
-      }
-    }
+    // Embedding usage is logged at the embedder boundary (UsageLoggingEmbedder),
+    // not here — `QueryEmbedding` memoizes one embed() per instance, so the
+    // wrapper logs it exactly once with the request's traceId.
 
     ctx.metrics.ragQueryCount.add(1, {
       store: storeName,

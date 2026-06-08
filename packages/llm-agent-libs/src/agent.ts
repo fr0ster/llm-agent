@@ -43,6 +43,8 @@ import {
   TextOnlyEmbedding,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
+import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
@@ -259,6 +261,9 @@ export class SmartAgent {
     this.sessionManager = deps.sessionManager ?? new NoopSessionManager();
     this.pendingToolResults = new PendingToolResultsRegistry();
     this.requestLogger = deps.requestLogger ?? new NoopRequestLogger();
+    // Meter embedding usage even for direct `new SmartAgent(deps)` construction
+    // (the builder/resolveAgentEmbedder also wrap; wrapEmbedder is idempotent).
+    if (deps.embedder) deps.embedder = wrapEmbedder(deps.embedder);
     this.defaultLlmCallStrategy =
       deps.llmCallStrategy ?? new StreamingLlmCallStrategy();
     this._activeClients = [...deps.mcpClients];
@@ -663,6 +668,11 @@ export class SmartAgent {
       const merged = mergeSignals(options?.signal, signal);
       opts = { ...options, signal: merged.signal };
     }
+    // Normalize AFTER the timeout-merge (which rebuilds opts from the original
+    // options): write the generated traceId into opts.trace and attach the
+    // per-request logger, so every downstream logLlmCall is request-scoped and
+    // the embedder-boundary wrapper can attribute embedding spend.
+    opts = normalizeRequestOptions(opts, traceId, this.requestLogger);
 
     const mode = this.config.mode || 'smart';
 
@@ -697,26 +707,81 @@ export class SmartAgent {
             ? [{ role: 'user' as const, content: textOrMessages }]
             : textOrMessages;
         opts?.sessionLogger?.logStep('client_request', { textOrMessages });
+        const passStart = Date.now();
+        const traceId2 = opts?.trace?.traceId;
         const stream = this._mainLlm.streamChat(messages, externalTools, opts);
         let passContent = '';
         const passToolCalls: unknown[] = [];
+        let accPrompt = 0;
+        let accCompletion = 0;
+        let accTotal = 0;
+        let hasUsage = false;
+        const logPassUsage = (): void => {
+          // Log only if a usage chunk was actually seen (mirrors
+          // LoggingLlm.streamChat) — avoids creating a zero tool-loop bucket.
+          if (!hasUsage) return;
+          this.requestLogger.logLlmCall({
+            component: 'tool-loop',
+            model: this._mainLlm.model ?? 'unknown',
+            promptTokens: accPrompt,
+            completionTokens: accCompletion,
+            totalTokens: accTotal,
+            durationMs: Date.now() - passStart,
+            requestId: traceId2,
+          });
+        };
         for await (const chunk of stream) {
-          if (chunk.ok) {
-            if (chunk.value.reset) {
-              passContent = '';
-              passToolCalls.length = 0;
-              continue;
-            }
-            if (chunk.value.content) passContent += chunk.value.content;
-            if (chunk.value.toolCalls)
-              passToolCalls.push(...chunk.value.toolCalls);
+          if (!chunk.ok) {
+            // process() returns on the first error chunk → post-loop code never
+            // runs. Log accumulated (partial) spend BEFORE yielding the error.
+            logPassUsage();
+            yield chunk;
+            rootSpan.setStatus('ok');
+            rootSpan.end();
+            return;
           }
-          yield chunk;
+          if (chunk.value.reset) {
+            passContent = '';
+            passToolCalls.length = 0;
+            continue;
+          }
+          if (chunk.value.content) passContent += chunk.value.content;
+          if (chunk.value.toolCalls)
+            passToolCalls.push(...chunk.value.toolCalls);
+          if (chunk.value.usage) {
+            accPrompt += chunk.value.usage.promptTokens;
+            accCompletion += chunk.value.usage.completionTokens;
+            accTotal += chunk.value.usage.totalTokens;
+            hasUsage = true;
+          }
+          // Strip usage from the forwarded chunk: the single usage-bearing chunk
+          // is the terminal getSummary chunk below (one usage chunk per request).
+          const { usage: _omitUsage, ...rest } = chunk.value;
+          yield { ok: true, value: rest };
         }
         opts?.sessionLogger?.logStep('llm_response_pass', {
           content: passContent,
           toolCalls: passToolCalls.length > 0 ? passToolCalls : undefined,
         });
+        logPassUsage();
+        const passSummary = traceId2
+          ? this.requestLogger.getSummary(traceId2)
+          : undefined;
+        yield {
+          ok: true,
+          value: {
+            content: '',
+            finishReason: 'stop',
+            ...(passSummary
+              ? {
+                  usage: {
+                    ...summaryToUsage(passSummary),
+                    models: passSummary.byModel,
+                  },
+                }
+              : {}),
+          },
+        };
         rootSpan.setStatus('ok');
         rootSpan.end();
         return;

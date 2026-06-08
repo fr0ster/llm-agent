@@ -8,6 +8,7 @@ export type LlmComponent =
   | 'embedding'
   | 'planner'
   | 'evaluator'
+  | 'executor'
   | 'reviewer'
   | 'finalizer'
   | 'oracle';

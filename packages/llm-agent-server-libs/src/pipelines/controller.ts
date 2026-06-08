@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   IPipelineInstance,
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
@@ -109,8 +110,8 @@ export class ControllerPipelinePlugin
     // startup. When no toolsRag is wired (MCP-less / no embedder) selection
     // yields [] and the loop runs with external tools only.
     const toolsRag = ctx.toolsRag;
-    const selectTools = (query: string, k?: number) =>
-      toolsRag ? toolsRag.query(query, k) : Promise.resolve([]);
+    const selectTools = (query: string, k?: number, options?: CallOptions) =>
+      toolsRag ? toolsRag.query(query, k, options) : Promise.resolve([]);
 
     // NOTE: external-tool routing is decided PER-REQUEST inside the handler from
     // `ctx.externalTools` (the client-supplied tools for that request). We do NOT
@@ -125,6 +126,11 @@ export class ControllerPipelinePlugin
       callMcp: (name, args) => mcpBridge(name, args),
       selectTools,
       config: cfg,
+      models: {
+        evaluator: evaluatorLlm.model ?? 'unknown',
+        planner: plannerLlm.model ?? 'unknown',
+        executor: executorLlm.model ?? 'unknown',
+      },
     };
 
     const handler = new ControllerCoordinatorHandler(deps);

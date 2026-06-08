@@ -14,6 +14,7 @@
  */
 
 import type { EmbedderFactory, IEmbedder } from '@mcp-abap-adt/llm-agent';
+import { wrapEmbedder } from '@mcp-abap-adt/llm-agent-libs';
 import {
   prefetchEmbedderFactories,
   resolveEmbedder,
@@ -25,7 +26,11 @@ export async function resolveAgentEmbedder(
   diEmbedder: IEmbedder | undefined,
   extraFactories: Record<string, EmbedderFactory>,
 ): Promise<IEmbedder | undefined> {
-  if (diEmbedder) return diEmbedder;
+  // Canonical owner: every non-undefined embedder is wrapped here so its
+  // embed() calls log token usage to the per-request logger (carried on
+  // CallOptions). wrapEmbedder is idempotent, so a later builder.withEmbedder
+  // wrap is a no-op.
+  if (diEmbedder) return wrapEmbedder(diEmbedder);
   // No RAG, or a bare in-memory BM25 store → no embedder is used.
   if (!rag || (rag.type === 'in-memory' && rag.embedder == null)) {
     return undefined;
@@ -33,7 +38,8 @@ export async function resolveAgentEmbedder(
   // Named embedders must be built-in (ollama/openai/sap-ai-core); custom
   // embedders are supplied via DI (handled above). Mirrors makeRag's contract.
   await prefetchEmbedderFactories([rag.embedder ?? 'ollama']);
-  return resolveEmbedder(rag, { extraFactories });
+  const resolved = resolveEmbedder(rag, { extraFactories });
+  return resolved ? wrapEmbedder(resolved) : undefined;
 }
 
 /**
