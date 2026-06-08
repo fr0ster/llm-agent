@@ -1,4 +1,4 @@
-import type { LlmTool } from './types.js';
+import type { CallOptions, LlmTool } from './types.js';
 
 export interface KnowledgeEntryMetadata {
   traceId: string;
@@ -57,6 +57,10 @@ export interface IKnowledgeRagHandle {
 }
 
 export interface IToolsRagHandle {
-  query(text: string, k?: number): Promise<readonly LlmTool[]>;
+  query(
+    text: string,
+    k?: number,
+    options?: CallOptions,
+  ): Promise<readonly LlmTool[]>;
   lookup(name: string): LlmTool | undefined;
 }
