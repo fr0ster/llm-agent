@@ -65,10 +65,13 @@ callback for `planner`/`finalizer`).
 
 ## Goals
 
-1. **Accurate** — `response.usage` equals the sum of every LLM call on every path
+1. **Accurate** — `response.usage` accounts for every LLM call on every path
    (flat, stepper, controller, pass) and **every embedder call** — all routed
    through the embedder-boundary wrapper, so coverage does not depend on
-   enumerating `QueryEmbedding` sites.
+   enumerating `QueryEmbedding` sites. LLM and embedder usage use provider-reported
+   counts where available; embedders that return no `usage` (Ollama, SAP AI Core —
+   `IEmbedResult.usage` is optional) get an **estimate flagged `estimated: true`**,
+   so embeddings are always *counted*, transparently.
 2. **One internal aggregator** — the `IRequestLogger` interface (default impl
    `SessionRequestLogger`). The controller's private sum is removed; all paths'
    usage comes from `getSummary(traceId)`.
@@ -145,6 +148,13 @@ instance), so the single chokepoint for every embedding token cost is
   it logs the result `usage` via `options.requestLogger?.logLlmCall({ component:'embedding', model:'embedder', scope:'request', durationMs:0, requestId: options.trace?.traceId })`,
   then returns the result. One log per `embed()` call ⇒ one per `QueryEmbedding`
   instance (memoization) ⇒ no dedup bookkeeping needed (no `WeakSet`, review #2).
+- **Estimation fallback (review #1):** `IEmbedResult.usage` is optional and Ollama /
+  SAP AI Core embedders return none. When `result.usage` is absent, the wrapper
+  estimates `promptTokens = ceil(text.length / 4)`, `completionTokens = 0`,
+  `totalTokens = promptTokens`, and logs with `estimated: true` (the existing
+  `LlmCallEntry.estimated` flag). Provider-reported usage is used verbatim
+  (`estimated` unset). So embeddings are always counted; `/v1/usage` can tell
+  measured from estimated. (`embedBatch`: estimate per text, sum.)
 - **Preserve `IEmbedderBatch` (review #3):** the structural `isBatchEmbedder(e)`
   check (`rag.ts:60`, `'embedBatch' in e`) drives batch vectorization
   (`builder.ts:974`). A plain `IEmbedder` wrapper would hide `embedBatch` and force
@@ -403,6 +413,7 @@ usage chunk owned by the path's component.
 | 9 | Controller `logUsage` lacks `durationMs` | Use `durationMs: 0` (rag-query.ts:108 precedent); per-call timing deferred. |
 | 10 | Stepper toolsRag query-embedding (deep internal callers, no options) | Handler builds a request-bound `toolsRag` facade injecting `ctx.options`, passed into `rootStepper.run` — no internal-contract threading (review #1). |
 | 20 | Double-wrap of the embedder (resolve + builder) | `wrapEmbedder` is idempotent via a brand; returns already-wrapped instances unchanged (review #2). |
+| 21 | Embedder returns no `usage` (Ollama, SAP AI Core) | Wrapper estimates `ceil(text.length/4)` tokens, logs `estimated: true`; provider-reported usage used verbatim (review #1). |
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
 | 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
@@ -439,8 +450,12 @@ usage chunk owned by the path's component.
   strategy logs two `embedding` entries (target + prompt) under the request delta.
 - **Stepper facade (review #1)**: a Stepper turn logs `embedding` entries for its
   internal toolsRag queries (the facade injects `ctx.options`).
-- **Idempotent wrap (review #2)**: `wrapEmbedder(wrapEmbedder(e)) === wrapEmbedder(e)`;
-  one embed → exactly one log even when both resolve + builder wrap.
+- **Idempotent wrap (review #2)**: `const w = wrapEmbedder(e); assert.equal(wrapEmbedder(w), w)`
+  (re-wrapping a wrapped instance returns it unchanged); one embed → exactly one log
+  even when both resolve + builder wrap.
+- **Estimation fallback (review #1)**: an embedder returning no `usage` produces a
+  logged entry with `estimated: true` and `totalTokens = ceil(text.length/4)`; an
+  embedder that reports `usage` logs it verbatim (no `estimated`).
 - **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
   yields exactly one usage-bearing chunk; `process()` sums it to
   `getSummary(traceId)`.
