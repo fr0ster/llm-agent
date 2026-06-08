@@ -168,6 +168,10 @@ export class AdaptivePlanner implements IControllerPlanner {
       const system = resumedExternal
         ? EXTERNAL_RESULT_REPLAN_SYSTEM
         : REPLAN_SYSTEM;
+      const cursor = bundle.planCursor ?? 0;
+      // Steps before the cursor already ran successfully — pass them so the replan
+      // plans only the remaining work and never repeats a completed step.
+      const completed = bundle.plan.slice(0, cursor);
       const rest = await this.callPlan(
         system,
         bundle,
@@ -175,9 +179,9 @@ export class AdaptivePlanner implements IControllerPlanner {
         toolCatalog,
         retrying,
         logUsage,
+        completed,
       );
       if (rest === null) return null;
-      const cursor = bundle.planCursor ?? 0;
       bundle.plan = [...bundle.plan.slice(0, cursor), ...rest];
       // The failure has now been consumed into the revised plan. Clear the durable
       // failure marker BEFORE the (possible) finalize below, so that: a crash after
@@ -239,7 +243,14 @@ export class AdaptivePlanner implements IControllerPlanner {
     toolCatalog: string,
     retrying: boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
+    completed: Step[] = [],
   ): Promise<Step[] | null> {
+    // On replan, the planner MUST know which steps already ran (their results are
+    // in Progress / the step-result collection) so it plans ONLY the remaining
+    // work and never re-executes a completed step.
+    const completedBlock = completed.length
+      ? `\nALREADY-EXECUTED steps — their results are in Progress above; do NOT plan or repeat these, plan only what is still missing:\n${completed.map((s) => `- ${s.name}`).join('\n')}`
+      : '';
     const res = await this.planner.send([
       {
         role: 'system',
@@ -252,7 +263,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       {
         role: 'user',
         content:
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}\n` +
+          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}\n` +
           `Available tools (the executor picks the exact one):\n${toolCatalog}`,
       },
     ]);

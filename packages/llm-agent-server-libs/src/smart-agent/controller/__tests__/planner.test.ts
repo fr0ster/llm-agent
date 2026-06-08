@@ -285,6 +285,43 @@ describe('AdaptivePlanner', () => {
     assert.equal(b.lastOutcome, undefined); // failure consumed → no re-replan on resume
   });
 
+  it('replan tells the planner which steps ALREADY ran (so it does not repeat them)', async () => {
+    let userMsg = '';
+    const recording: ISubagentClient = {
+      async send(messages) {
+        userMsg =
+          typeof messages[1]?.content === 'string' ? messages[1].content : '';
+        return {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's3b', instructions: 'remaining' }],
+          }),
+        };
+      },
+    };
+    const b: SessionBundle = {
+      ...bundle(),
+      lastOutcome: 'failed',
+      plan: [
+        { name: 's1', instructions: 'a' },
+        { name: 's2', instructions: 'b' },
+        { name: 's3', instructions: 'c' },
+      ],
+      planCursor: 2, // s1,s2 succeeded (cursor advanced); s3 (at cursor) failed
+    };
+    await new AdaptivePlanner(recording).next({
+      bundle: b,
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+      lastOutcome: 'failed',
+    });
+    assert.match(userMsg, /ALREADY-EXECUTED/);
+    assert.match(userMsg, /- s1/);
+    assert.match(userMsg, /- s2/);
+    assert.doesNotMatch(userMsg, /- s3\b/); // the FAILED step is not "completed"
+  });
+
   it('empty replan then finalizer error: retry RE-FINALIZES, does not replan again', async () => {
     const b: SessionBundle = {
       ...bundle(),
