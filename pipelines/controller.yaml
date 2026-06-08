@@ -1,10 +1,16 @@
+# Controller pipeline — AGNOSTIC (domain-neutral) template.
+# The engine's role prompts say "the live target system" and name no domain.
+# To specialise for a concrete domain, add a per-role `subagents.<role>.hint`
+# (a short "Domain context" preamble appended to that role's system prompt) —
+# see `controller-sap.yaml` for a worked SAP/ABAP example.
 port: 4010
 host: 0.0.0.0
 mode: smart
 
 # Base main LLM (flat SmartServerLlmConfig — `provider` required so it is not
-# parsed as a multi-model named map). SAP AI Core service key comes from
-# AICORE_SERVICE_KEY in .env.
+# parsed as a multi-model named map). The LLM provider is the inference backend
+# and is INDEPENDENT of the target domain; SAP AI Core is used here only as the
+# example LLM service. Service key comes from AICORE_SERVICE_KEY in .env.
 llm:
   provider: sap-ai-sdk
   model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
@@ -24,34 +30,21 @@ rag:
 pipeline:
   name: controller
   config:
-    # Three opaque subagent roles. Each is a standalone LLM endpoint; here all
-    # three use SAP AI Core, but they can point at different providers/URLs.
-    #
-    # The engine's role prompts are DOMAIN-AGNOSTIC ("the live target system").
-    # The optional per-role `hint` re-specialises a role for THIS deployment's
-    # domain (here: SAP/ABAP) — it is appended to that role's system prompt. Drop
-    # the hints for a generic, domain-neutral controller. The dynamic counterpart
-    # — procedural skills pulled from a RAG collection — is a separate mechanism.
+    # Three opaque subagent roles. Each is a standalone LLM endpoint; they can
+    # point at different providers/URLs. No `hint` here ⇒ the prompts stay
+    # domain-agnostic. Add `hint:` under a role to specialise it (see
+    # controller-sap.yaml). The dynamic counterpart — procedural skills pulled
+    # from a RAG collection — is a separate mechanism, not configured via hint.
     subagents:
       evaluator:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-        hint: >-
-          The target system is a live SAP/ABAP system reached over ADT/MCP tools.
       planner:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-        hint: >-
-          The target system is a live SAP/ABAP system. Facts to fetch include
-          DDIC table structures, package contents, ABAP runtime dumps, and
-          source code (programs/includes/classes) — always via a tool.
       executor:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-        hint: >-
-          The target system is a live SAP/ABAP system. System facts include DDIC
-          table structures, package contents, ABAP runtime dumps, and source
-          code (programs/includes/classes) — obtain each by calling a tool.
     # Planner implementation: incremental (per-step LLM decision) | adaptive
     # (full plan upfront, replan only on failure/external result).
     planner: ${PLANNER:-incremental}

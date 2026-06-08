@@ -18,10 +18,13 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   **domain-agnostic** — they say "the live target system" instead of naming SAP.
   A deployment re-specialises a role by setting an optional `subagents.<role>.hint`
   in the pipeline config; the hint is appended as a short "Domain context"
-  preamble to that role's system prompt. Omit hints for a generic controller. The
-  shipped `pipelines/controller*.yaml` carry SAP/ABAP hints as a worked example.
-  (The dynamic counterpart — procedural skills pulled from a RAG collection — is
-  a separate, future mechanism, not part of `hint`.)
+  preamble to that role's system prompt. Omit hints for a generic controller.
+  Example configs follow the agnostic/gnostic split: `pipelines/controller.yaml`
+  is the neutral template (no hints), while gnostic configs are **named for their
+  specialization** — `pipelines/controller-sap.yaml` and
+  `pipelines/controller-sap-mixed.yaml` carry SAP/ABAP hints. (The dynamic
+  counterpart — procedural skills pulled from a RAG collection — is a separate,
+  future mechanism, not part of `hint`.)
 
 ### Deprecated
 

@@ -1,3 +1,6 @@
+# Controller pipeline — SAP/ABAP SPECIALIZATION (gnostic), mixed-model variant.
+# SAP/ABAP domain is supplied via per-role `subagents.<role>.hint`; swap the
+# hints to retarget another domain, or start from the agnostic `controller.yaml`.
 port: 4010
 host: 0.0.0.0
 mode: smart

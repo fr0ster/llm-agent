@@ -90,8 +90,11 @@ pipeline:
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)
-  (all-sonnet) and [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
-  (sonnet decider + light `gpt-4o-mini` executor).
+  (agnostic, all-sonnet, no domain hints), [`pipelines/controller-sap.yaml`](../pipelines/controller-sap.yaml)
+  (SAP/ABAP-specialised via per-role hints), and [`pipelines/controller-sap-mixed.yaml`](../pipelines/controller-sap-mixed.yaml)
+  (SAP/ABAP, sonnet decider + light `gpt-4o-mini` executor). Gnostic configs are
+  named for their specialization (`-sap`); the bare `controller.yaml` is the
+  neutral template.
 
 ## Adding a custom pipeline (plugin)
 
