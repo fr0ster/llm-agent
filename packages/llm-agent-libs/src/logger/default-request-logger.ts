@@ -97,7 +97,10 @@ export class DefaultRequestLogger implements IRequestLogger {
         byComponent[call.component] = emptyBucket();
       addToBucket(byComponent[call.component], call);
 
-      const cat = CATEGORY_MAP[call.component] ?? 'request';
+      const cat =
+        call.component === 'embedding' && call.scope === 'request'
+          ? 'request'
+          : (CATEGORY_MAP[call.component] ?? 'request');
       if (!byCategory[cat]) byCategory[cat] = emptyBucket();
       addToBucket(byCategory[cat], call);
     }
