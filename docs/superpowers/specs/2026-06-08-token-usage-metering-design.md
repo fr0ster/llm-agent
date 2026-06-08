@@ -114,12 +114,14 @@ Pluggability is the interface.
   instead of accumulating a private `total`. Components `evaluator`/`planner`/
   `executor`/`finalizer` (add `'executor'` to `LlmComponent`). The role is
   explicit at the call site, so the shared planner/finalizer client is attributed
-  correctly. **Model attribution (review #3):** the controller builds only
-  `evaluator`/`planner`/`executor` LLMs (`controller.ts:100`); there is no
-  `subagents.finalizer`, and the finalizer runs on the **planner** client — so its
-  entry uses `model: cfg.subagents.planner.model`. The per-role model lookup:
-  evaluator/planner/executor → their own `cfg.subagents.<role>.model`, finalizer →
-  `cfg.subagents.planner.model`. `durationMs` is **`0`** — the current `logUsage(role, usage)` callback
+  correctly. **Model attribution (review #1 / prev #3):** `LlmCallEntry.model` is
+  **required**, but `SmartServerLlmConfig.model` is **optional** — so do **not**
+  read the config. Pass the **actual built instances'** `.model` into the handler:
+  `evaluatorLlm.model` / `plannerLlm.model` / `executorLlm.model` (each with a
+  `?? 'unknown'` fallback). The controller builds only `evaluator`/`planner`/
+  `executor` (`controller.ts:100`); the finalizer runs on the **planner** client,
+  so its entry uses `plannerLlm.model`. Thread these three resolved model strings
+  into the handler (e.g. `deps.models = { evaluator, planner, executor }`). `durationMs` is **`0`** — the current `logUsage(role, usage)` callback
   receives no timing (review #3); this matches the existing `rag-query.ts:108`
   precedent (`durationMs: 0` when not separately measurable). Per-call timing is a
   deferred nicety (would require threading a duration through `SubagentResult`).
@@ -170,9 +172,11 @@ pipeline branch (that would double the Stepper/DAG chunk, review #1):
   stop chunk **without** usage — add `summaryToUsage(getSummary(traceId))` there so
   every Stepper terminal branch carries the chunk. (Audit all coordinator terminal
   yields for the same omission.)
-- **controller handler** — switch `surfaceFinal`/`surfaceClarify`/`surfaceToolCall`
-  (`:552-584`) to emit `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))`
-  instead of the private `total`. One chunk, same pattern as Stepper/DAG.
+- **controller handler** — the `surface*` methods (`:552-584`) already accept a
+  `usage?` parameter; `execute()` (which holds `meta.traceId`) computes
+  `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))` and passes it in
+  place of the private `total` (review #2 — `surface*` need no new access to
+  `meta`; the caller supplies the usage). One chunk, same pattern as Stepper/DAG.
 - **pass** — has no coordinator handler, so the agent handles it (`agent.ts:700-722`):
   the pass loop currently forwards provider chunks **including** `chunk.value.usage`
   (`:714`). To keep one usage-bearing chunk (review #1): accumulate provider usage
@@ -256,9 +260,13 @@ the path's component.
     **Do not** change the pipeline branch (`:736`) or `process()` (`:616-622`); the
     flat path is unchanged.
 - **`@mcp-abap-adt/llm-agent-server-libs`** —
+  - `controller.ts`: thread the built instances' resolved models into the handler
+    (`deps.models = { evaluator: evaluatorLlm.model ?? 'unknown', planner:
+    plannerLlm.model ?? 'unknown', executor: executorLlm.model ?? 'unknown' }`).
   - controller handler: `logUsage` writes to `ctx.requestLogger.logLlmCall`
-    (subagent roles, `durationMs: 0`, finalizer model = `cfg.subagents.planner.model`)
-    and logs target-state embedding usage; `surfaceFinal`/`surfaceClarify`/
+    (subagent roles, `durationMs: 0`; model from `deps.models[role]`, finalizer →
+    `deps.models.planner`) and logs target-state embedding usage; `surfaceFinal`/
+    `surfaceClarify`/
     `surfaceToolCall` (`:552-584`) emit
     `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))` (one terminal
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
@@ -321,9 +329,11 @@ the path's component.
 
 One coherent change: controller request-time logging (LLM + embeddings) + toolsRag
 `accounting` + pass logging + traceId normalization + the terminal `getSummary`
-chunk on coordinator/pass, and remove the controller private sum + terminal usage
-in the **same** commit, so there is never a window with two live `response.usage`
-derivations. Lockstep.
+chunk on coordinator/pass + the Stepper `InsufficientSignal` fix, and **replace**
+the controller's private-total terminal usage with logger-derived usage (the
+terminal chunk is kept; only its source changes) while removing the private `total`
+accumulator — all in the **same** commit, so there is never a window with two live
+`response.usage` derivations. Lockstep.
 
 ## Deferred
 
