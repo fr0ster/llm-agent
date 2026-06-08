@@ -267,6 +267,12 @@ pipeline branch (that would double the Stepper/DAG chunk, review #1-prev):
   chunk. The pass log entry uses `component:'tool-loop'` (the main model produces
   the answer), `model: this._mainLlm.model ?? 'unknown'`, `durationMs:` measured
   around the pass stream, `requestId: traceId`.
+  **Error handling (review #2):** track whether any chunk was an error
+  (`!chunk.ok`). If errored, **do not** emit the terminal success
+  (`finishReason:'stop'`) usage chunk — the error chunk is already terminal — but
+  still log whatever provider usage accumulated before the error (real, possibly
+  partial spend). The terminal `getSummary` chunk is emitted only on the
+  non-error path.
 
 The agent's pipeline branch (`:736`) is **not** changed — each coordinator handler
 owns its single terminal usage chunk.
@@ -369,8 +375,9 @@ usage chunk owned by the path's component.
     `withEmbedder` also calls `wrapEmbedder` (idempotent, so no double-wrap). Remove
     the inline embedding `logLlmCall` from `rag-query.ts`.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
-    (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
-    the accumulated usage once, then emit the terminal `getSummary` usage chunk.
+    (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, track
+    an `errored` flag (`!chunk.ok`), log the accumulated usage once, and emit the
+    terminal `getSummary` usage chunk **only when not errored** (review #2).
     **Do not** change the pipeline branch (`:736`) or `process()` (`:616-622`); the
     flat path is unchanged.
 - **`@mcp-abap-adt/llm-agent-server-libs`** —
@@ -385,10 +392,14 @@ usage chunk owned by the path's component.
     (`{ ...summaryToUsage(summary), models: summary.byModel }`) (one terminal
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
     `turn total` line.
-  - `stepper-coordinator-handler.ts`: attach the canonical terminal-usage object
-    (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`); build
-    a request-bound `toolsRag` facade injecting `ctx.options` and pass it into
+  - `stepper-coordinator-handler.ts`: **all** terminal branches use the canonical
+    terminal-usage object incl. `models` — the existing `:172,229,274` yields
+    currently emit `summaryToUsage()` without `models` (add it), and the
+    `InsufficientSignal` branch (`:263`) currently emits no usage (add it). Also
+    build a request-bound `toolsRag` facade injecting `ctx.options` and pass it into
     `rootStepper.run` (`:142`) — review #1.
+  - `pipeline/handlers/dag-coordinator.ts`: its terminal/clarify yields
+    (`:163,:160`+) emit `summaryToUsage()` without `models` — add `models: summary.byModel`.
   - `controller/target-state.ts` (review #1): `establishTargetState` gains an
     `options?: CallOptions` parameter and calls `embedder.embed(target, options)` /
     `embedder.embed(prompt, options)` (`:74-76` currently pass no options, so the
@@ -417,6 +428,8 @@ usage chunk owned by the path's component.
 | 10 | Stepper toolsRag query-embedding (deep internal callers, no options) | Handler builds a request-bound `toolsRag` facade injecting `ctx.options`, passed into `rootStepper.run` — no internal-contract threading (review #1). |
 | 20 | Double-wrap of the embedder (resolve + builder) | `wrapEmbedder` is idempotent via a brand; returns already-wrapped instances unchanged (review #2). |
 | 21 | Embedder returns no `usage` (Ollama, SAP AI Core) | Wrapper estimates `ceil(text.length/4)` tokens, logs `estimated: true`; provider-reported usage used verbatim (review #1). |
+| 22 | Stepper/DAG terminal chunks drop `models` | All Stepper (`:172,229,274,263`) and DAG terminal/clarify yields build the canonical object incl. `models` (review #1). |
+| 23 | Pass emits success usage chunk after a provider error | Track `errored`; on error, skip the terminal `stop` usage chunk (error chunk is terminal); still log partial accumulated spend (review #2). |
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
 | 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
@@ -470,16 +483,20 @@ usage chunk owned by the path's component.
   usage (non-empty when calls were logged).
 - **Finalizer model (review #3)**: a controller turn whose finalizer fires logs a
   `finalizer` entry under `byModel[plannerLlm.model]`.
-- **Per-model breakdown (review #4)**: a controller/pass turn's terminal chunk
-  carries `usage.models` (per-model buckets), not just the flat triple.
+- **Per-model breakdown (review #4/#1)**: a controller, **pass, Stepper, and DAG**
+  turn's terminal chunk carries `usage.models` (per-model buckets), not just the
+  flat triple — including the Stepper `InsufficientSignal` branch.
+- **Pass error (review #2)**: a pass stream that errors mid-way yields the error
+  chunk and **no** trailing success usage chunk; the partial spend is still logged
+  to `/v1/usage`.
 - **Embedding category (review #3)**: a request-time query embedding lands in
   `/v1/usage.byCategory.request`, not `initialization`; startup vectorization
   stays `initialization`.
 - **Flat embedding coverage (review #1)**: a turn that hits tool-select /
   skill-select / tool-loop reselection logs an `embedding` entry for each.
-- **No regression**: a flat turn's `response.usage` total is unchanged (the added
-  embedding sites were genuinely unlogged spend; assert the LLM-only components are
-  byte-identical and the new embedding delta is exactly the embed tokens).
+- **No LLM regression (review #3)**: a flat turn's **LLM** `byComponent` buckets
+  are byte-identical to today; the **total grows** by exactly the embedding delta
+  (the embed tokens that were previously unlogged) — the total is *not* unchanged.
 
 ## Migration / rollout
 
