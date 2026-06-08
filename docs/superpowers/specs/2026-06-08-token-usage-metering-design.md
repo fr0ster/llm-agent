@@ -66,10 +66,9 @@ callback for `planner`/`finalizer`).
 ## Goals
 
 1. **Accurate** — `response.usage` equals the sum of every LLM call on every path
-   (flat, stepper, controller, pass) and every embedder call **except** the
-   Stepper's toolsRag query-embedding, which remains a pre-existing minor gap
-   (deferred; trivially closable via the same `accounting` param). Controller and
-   flat embeddings are fully accounted.
+   (flat, stepper, controller, pass) and **every embedder call** — all routed
+   through the embedder-boundary wrapper, so coverage does not depend on
+   enumerating `QueryEmbedding` sites.
 2. **One internal aggregator** — the `IRequestLogger` interface (default impl
    `SessionRequestLogger`). The controller's private sum is removed; all paths'
    usage comes from `getSummary(traceId)`.
@@ -128,48 +127,61 @@ Pluggability is the interface.
   precedent (`durationMs: 0` when not separately measurable). Per-call timing is a
   deferred nicety (would require threading a duration through `SubagentResult`).
   The `[controller] tokens <role>` DEBUG line stays (logUsage emits it).
-- **Target-state embeddings:** `establishTargetState` already returns the
-  evaluator LLM `usage`; extend it to also return the summed embedding `usage`
-  from its two `embedder.embed()` calls (`target-state.ts:75-76`). Embeddings are
-  **not** routed through `deps.models` (which holds only the LLM roles, review #1):
-  the handler logs them with fixed `component:'embedding', model:'embedder'`
-  (matching `rag-query.ts`), `durationMs: 0`, `requestId: meta.traceId`. (Concretely,
-  `logUsage` resolves `model = role === 'embedding' ? 'embedder' : (deps.models[role] ?? 'unknown')`.)
-- **toolsRag query embeddings:** extend the `IToolsRagHandle.query` contract to be
-  request-aware (see below) so the controller's `deps.selectTools` calls
-  (handler `:218,:386`) log their query-embedding usage.
-- **Flat embedding sites (review #1):** today only `rag-query.ts:102` logs its
-  query embedding; `tool-select.ts:65`, `skill-select.ts:45`, and the
-  `tool-loop.ts:297` reselection each build a `QueryEmbedding` and never log. Extract
-  rag-query's inline logic into a shared helper
-  `logEmbeddingUsage(requestLogger, embedding, requestId)` (reads
-  `QueryEmbedding.getUsage()`, logs `component:'embedding', model:'embedder', scope:'request', durationMs:0`)
-  and call it at all four sites. This is what makes "flat embeddings fully
-  accounted" true; each is currently unlogged → additive.
+- **Embeddings — logged at the embedder boundary** (see the dedicated section
+  below). The controller's `target-state` and toolsRag embeddings, and every flat
+  `QueryEmbedding` site, are all covered by one wrapper — no per-site logging, no
+  `logUsage('embedding', …)`.
 - **Everything else is kept as-is** (Migration inventory).
 
-### `IToolsRagHandle` contract extension (review #2)
+### Embedding accounting — embedder boundary (enumeration-proof)
 
-`query` closes over the startup `resolvedEmbedder` (`smart-server.ts:1940`) and
-takes no `CallOptions`, so a controller-side wrapper cannot reach it. Extend the
-interface (`interfaces/knowledge-rag.ts:60`):
+There are ~10 `new QueryEmbedding(` sites and the list keeps growing, so per-site
+logging is fragile (review #1). But `QueryEmbedding` is **lazy + memoized**
+(`query-embedding.ts:_getResult` calls `embedder.embed()` **exactly once** per
+instance), so the single chokepoint for every embedding token cost is
+`embedder.embed(text, options)`. Wrap the embedder once:
+
+- **`UsageLoggingEmbedder`** — an `IEmbedder` decorator: on `embed(text, options)`
+  it logs the result `usage` via `options.requestLogger?.logLlmCall({ component:'embedding', model:'embedder', scope:'request', durationMs:0, requestId: options.trace?.traceId })`,
+  then returns the result. One log per `embed()` call ⇒ one per `QueryEmbedding`
+  instance (memoization) ⇒ no dedup bookkeeping needed (this is why no
+  `WeakSet`/idempotency flag is required, review #2).
+- **Binding (global embedder, per-session logger):** the embedder is a global
+  singleton (`smart-server.ts:479` locked invariant), so the wrapper resolves the
+  per-request logger **per call** from `CallOptions`. Add `requestLogger?: IRequestLogger`
+  to `CallOptions`; the agent populates `opts.requestLogger = this.requestLogger`
+  where it normalizes `opts.trace.traceId` (so the request-scoped logger + traceId
+  travel together). Sites that pass `ctx.options` (rag-query, tool-select,
+  skill-select, tool-loop, agent.ts:812/945/1349, vector-rag) are covered
+  automatically.
+- **Single mechanism — remove the old per-site logging:** delete the inline
+  embedding `logLlmCall` in `rag-query.ts:102` (now done by the wrapper) so each
+  embed is logged exactly once.
+- **Sites without a request logger:** `builder.ts:707` (startup vectorization,
+  `{ signal }` only) has no request context → `options.requestLogger` is absent →
+  the wrapper no-ops (correct: startup is `initialization`, not request spend).
+  toolsRag is handled via its `query` options below.
+- **No double-count vs LLM logging:** the wrapper touches only the embedder; LLM
+  logging is untouched.
+
+### `IToolsRagHandle.query` — pass `CallOptions`
+
+`query` builds its own `QueryEmbedding(text, resolvedEmbedder)` with **no**
+options (`smart-server.ts:1945`), so the embedder wrapper has no `requestLogger`/
+`traceId`. Extend the interface (`interfaces/knowledge-rag.ts:60`) to accept
+`CallOptions` and thread it into the `QueryEmbedding`:
 
 ```ts
-query(
-  text: string,
-  k?: number,
-  accounting?: { requestLogger: IRequestLogger; requestId?: string },
-): Promise<readonly LlmTool[]>;
+query(text: string, k?: number, options?: CallOptions): Promise<readonly LlmTool[]>;
 ```
 
-When `accounting` is present, the handle reads the `QueryEmbedding`'s usage
-(`QueryEmbedding.getUsage()`, as `rag-query.ts` does) and logs
-`logLlmCall({ component:'embedding', model:'embedder', …, requestId })`. The
-parameter is **optional**: existing callers (stepper, cyclic-factory,
-need-resolver) compile and behave unchanged; the controller passes
-`{ requestLogger: ctx.requestLogger, requestId: meta.traceId }`. (The Stepper has
-the same minor toolsRag-embedding gap today and can adopt the same param later;
-out of scope here.)
+The handle does `new QueryEmbedding(text, resolvedEmbedder, options)`; because
+`resolvedEmbedder` is the **wrapped** embedder and `options` carries
+`requestLogger` + `trace.traceId`, its single `embed()` is logged by the boundary
+wrapper — no bespoke accounting type, same mechanism as every other site. The
+parameter is **optional** (existing callers compile unchanged); the controller
+passes `ctx.options` (or `{ requestLogger: ctx.requestLogger, trace: { traceId: meta.traceId } }`).
+The Stepper passes the same to close its toolsRag gap (Goal #1).
 
 ### Consumer delivery — one terminal `getSummary` chunk on every path
 
@@ -230,7 +242,7 @@ unchanged — it sums the terminal chunk and never calls `getSummary` itself, so
 needs no traceId.
 
 ```
- flat sites · stepper LoggingLlm · controller logUsage→requestLogger · target-state emb · toolsRag(accounting) · pass(once)
+ flat sites · stepper LoggingLlm · controller logUsage→requestLogger · UsageLoggingEmbedder (all embeds) · pass(once)
         │   (all → logLlmCall, requestId = normalized traceId)
         ▼
    IRequestLogger (per-traceId delta + cumulative)
@@ -247,7 +259,6 @@ needs no traceId.
 - `rag/preprocessor.ts:84,141,215`, `rag/query-expander.ts:49`,
   `rag/tool-indexing-strategy.ts:103`, `classifier/llm-classifier.ts:143`
 - `pipeline/handlers/tool-loop.ts:518`, `summarize.ts:51`, `translate.ts:44`,
-  `rag-query.ts:102` (**flat-path embeddings — kept; not re-wrapped**),
   `dag-coordinator.ts:115`
 - `builder.ts:1025,1059,1094,1254`, `agent.ts:1983`
 - Stepper: `coordinator/stepper/logging-llm.ts`, `build-stepper-root.ts:242`,
@@ -255,11 +266,10 @@ needs no traceId.
 
 **ADD** (currently unlogged → additive):
 - Controller `logUsage` → `ctx.requestLogger.logLlmCall` (subagent LLMs).
-- Controller target-state embedding logging (via returned usage).
-- Controller toolsRag query-embedding logging (via `accounting` param).
-- Flat embedding sites via the shared `logEmbeddingUsage` helper:
-  `tool-select.ts:65`, `skill-select.ts:45`, `tool-loop.ts:297` (rag-query keeps
-  its logging, refactored to call the helper).
+- `UsageLoggingEmbedder` wrapping the global embedder → logs **every** embedding
+  (controller target-state, toolsRag, all flat `QueryEmbedding` sites) once each.
+- `opts.requestLogger` populated by the agent; `IToolsRagHandle.query` + Stepper
+  pass `CallOptions` so toolsRag embeds carry the logger.
 - Pass-path single-call logging.
 
 **REPLACE**:
@@ -267,41 +277,47 @@ needs no traceId.
   terminal-usage object `{ ...summaryToUsage(summary), models: summary.byModel }`.
 
 **REMOVE**:
+- `rag-query.ts:102` inline embedding `logLlmCall` — now done by the embedder
+  wrapper (kept single-logged).
 - Controller private `total` accumulator + the `[controller] turn total` aggregate
   line (per-role `[controller] tokens <role>` lines stay).
 
-No call is logged twice: every ADD targets a currently-unlogged site; no blanket
-decorator; the embedder is not globally wrapped; one terminal usage chunk owned by
-the path's component.
+No embed is logged twice: the wrapper logs once per `embed()` (memoized → once per
+`QueryEmbedding`), and the only prior embedding log (`rag-query.ts:102`) is removed.
+No LLM call is logged twice (the wrapper touches only the embedder). One terminal
+usage chunk owned by the path's component.
 
 ## Contract changes (`@mcp-abap-adt/llm-agent`)
 
 - Add `'executor'` to the `LlmComponent` union; map it to `'request'` in
   `CATEGORY_MAP`.
+- Add `requestLogger?: IRequestLogger` to `CallOptions` (`interfaces/types.ts`) —
+  the per-request logger the embedder-boundary wrapper reads (consistent with the
+  existing structural `sessionLogger` field).
 - **Embedding categorization (review #3):** `CATEGORY_MAP.embedding` is statically
-  `'initialization'`, so request-time query embeddings would be mis-bucketed as
-  `initialization` in `/v1/usage.byCategory`. The `embedding` component legitimately
-  spans both startup tool-vectorization (init) and per-request query embeds. Fix:
+  `'initialization'`, so the request-time embeddings the wrapper now logs
+  (`scope:'request'`) would be mis-bucketed in `/v1/usage.byCategory`. Fix:
   `aggregate()` categorizes `embedding` by the entry's `scope` —
   `c.component === 'embedding' && c.scope === 'request' ? 'request' : CATEGORY_MAP[c.component]`.
-  All request-time embedding entries (rag-query, controller, flat selection sites)
-  set `scope: 'request'` (rag-query already does); startup vectorization keeps
-  `initialization`.
-- Extend `IToolsRagHandle.query` with the optional `accounting` parameter above.
+  The wrapper sets `scope:'request'`; startup vectorization (no request logger →
+  unlogged here, or logged elsewhere as init) keeps `initialization`.
+- Extend `IToolsRagHandle.query` with the optional `options?: CallOptions`
+  parameter above.
 - No new aggregator/recorder interfaces. Reuse `IRequestLogger`, `LlmCallEntry`,
   `RequestSummary`, `summaryToUsage`, `QueryEmbedding.getUsage`.
 
 ## Changes by package
 
 - **`@mcp-abap-adt/llm-agent`** — `'executor'` in `LlmComponent` + `CATEGORY_MAP`;
-  `IToolsRagHandle.query` `accounting` param.
+  `requestLogger?: IRequestLogger` on `CallOptions`; `IToolsRagHandle.query`
+  `options?: CallOptions` param.
 - **`@mcp-abap-adt/llm-agent-libs`** —
   - `aggregate()` (`session-request-logger.ts` + `default-request-logger.ts`):
     categorize `embedding` by `scope` (request-scoped → `'request'`, else
     `'initialization'`) — review #3.
-  - shared `logEmbeddingUsage(requestLogger, embedding, requestId)` helper; call it
-    at `rag-query.ts` (refactor existing), `tool-select.ts:65`, `skill-select.ts:45`,
-    `tool-loop.ts:297` — review #1.
+  - `adapters/usage-logging-embedder.ts` (new `UsageLoggingEmbedder`); wrap the
+    global embedder at construction (`resolve-agent-embedder.ts` / builder
+    `withEmbedder`). Remove the inline embedding `logLlmCall` from `rag-query.ts`.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
     (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
     the accumulated usage once, then emit the terminal `getSummary` usage chunk.
@@ -321,10 +337,13 @@ the path's component.
     `turn total` line.
   - `stepper-coordinator-handler.ts`: attach the canonical terminal-usage object
     (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`).
-  - `controller/target-state.ts`: return summed embedding usage.
-  - `controller.ts` `deps.selectTools`: pass `accounting` to `toolsRag.query`.
-  - `smart-server.ts` `_toolsRagHandle.query`: accept `accounting`, log the
-    query-embedding usage via `QueryEmbedding.getUsage()`.
+  - `controller.ts` `deps.selectTools`: pass `ctx.options` (carrying
+    `requestLogger` + `trace`) to `toolsRag.query`. (target-state embeds are logged
+    by the wrapper — no change needed there beyond passing `ctx.options` to
+    `embedder.embed`, which it already does.)
+  - `smart-server.ts` `_toolsRagHandle.query`: accept `options?: CallOptions` and
+    build `new QueryEmbedding(text, resolvedEmbedder, options)` so the wrapped
+    embedder logs it.
 - **Provider packages** — touched **only** to emit streaming `usage` on a stream
   chunk (`include_usage` or equivalent) so the flat/stepper `LoggingLlm.streamChat`
   accumulation is non-empty. No provider-internal logging.
@@ -334,16 +353,16 @@ the path's component.
 | # | Risk | Handling |
 |---|------|----------|
 | 1 | Controller `LoggingLlm` can't bind traceId / distinguish shared planner+finalizer | Controller logs at **request time** via `logUsage`→`ctx.requestLogger`, role explicit at the call site, `requestId = meta.traceId`. No build-time wrapper. |
-| 2 | toolsRag embeddings (startup-bound embedder) unlogged | `IToolsRagHandle.query` gains an optional `accounting` param; the handle logs query-embedding usage; the controller passes `ctx.requestLogger` + `traceId`. |
+| 2 | toolsRag embeddings (startup-bound embedder) unlogged | `IToolsRagHandle.query` accepts `CallOptions`; the handle builds `QueryEmbedding(text, wrappedEmbedder, options)` → the boundary wrapper logs it (controller/Stepper pass `ctx.options`). |
 | 3 | `process()` can't see generated `traceId` | `process()` does not call `getSummary`; it sums the terminal chunk built (in `streamProcess`) from the locally-normalized `traceId`. |
 | 4 | Pass path diverges from single source | Pass logs its one call into `IRequestLogger`, then emits the same `getSummary` terminal chunk → `response.usage == /v1/usage`. |
-| 5 | Double counting | Every ADD is a currently-unlogged site; embedder not globally wrapped; exactly one usage-bearing chunk per request — emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch (review #1). |
+| 5 | Double counting | Embedder IS wrapped, but logs once per `embed()` (memoized → once per `QueryEmbedding`) and the only prior embedding log (`rag-query.ts:102`) is removed; LLM sites unchanged; exactly one usage-bearing chunk per request, emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch. |
 | 9 | Controller `logUsage` lacks `durationMs` | Use `durationMs: 0` (rag-query.ts:108 precedent); per-call timing deferred. |
-| 10 | Stepper toolsRag query-embedding still unlogged | Accepted pre-existing gap; Goal #1 scoped accordingly; closable later via the optional `accounting` param. |
+| 10 | Stepper toolsRag query-embedding | Closed: the Stepper passes `CallOptions` to `toolsRag.query` → covered by the embedder wrapper. |
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
 | 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
-| 14 | Flat tool/skill/reselect embeddings unlogged | Shared `logEmbeddingUsage` helper called at all four `QueryEmbedding` sites (review #1). |
+| 14 | Flat tool/skill/reselect + legacy embeddings unlogged | All covered by the embedder-boundary wrapper (every `QueryEmbedding` that passes `ctx.options`); no per-site enumeration. |
 | 15 | Request embeddings mis-bucketed as `initialization` | `aggregate()` categorizes `embedding` by `scope` (review #3). |
 | 16 | Trace normalization clobbered by timeout merge | Normalize after the timeout-merge block, spread from `opts` (review #2). |
 | 17 | Terminal chunk drops per-model breakdown | All emitters build `{ ...summaryToUsage(summary), models: summary.byModel }` (review #4). |
@@ -361,9 +380,12 @@ the path's component.
   finalizer distinct despite the shared client) + `embedding`;
   `response.usage == summaryToUsage(getSummary(traceId))` and equals the
   independent sum of all subagent + embedder calls.
-- **toolsRag accounting (review #2)**: a stubbed `toolsRag.query` with
-  `accounting` logs one `embedding` entry per `selectTools` call; without
-  `accounting`, no entry (back-compat).
+- **Embedder wrapper (review #1/#2)**: `UsageLoggingEmbedder.embed` with
+  `options.requestLogger` + `trace` logs one `embedding` entry; without
+  `requestLogger` it no-ops (startup vectorization). One log per memoized
+  `QueryEmbedding` even when reused across stages (no `WeakSet` needed).
+- **toolsRag via options**: `toolsRag.query(text, k, ctx.options)` results in one
+  `embedding` entry; `query(text, k)` (no options) logs none (back-compat).
 - **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
   yields exactly one usage-bearing chunk; `process()` sums it to
   `getSummary(traceId)`.
@@ -388,17 +410,17 @@ the path's component.
 
 ## Migration / rollout
 
-One coherent change: controller request-time logging (LLM + embeddings) + toolsRag
-`accounting` + pass logging + traceId normalization + the terminal `getSummary`
-chunk on coordinator/pass + the Stepper `InsufficientSignal` fix, and **replace**
-the controller's private-total terminal usage with logger-derived usage (the
-terminal chunk is kept; only its source changes) while removing the private `total`
-accumulator — all in the **same** commit, so there is never a window with two live
-`response.usage` derivations. Lockstep.
+One coherent change: controller request-time LLM logging + the embedder-boundary
+wrapper (with `opts.requestLogger` + `IToolsRagHandle.query` options) + pass
+logging + traceId normalization + the terminal `getSummary` chunk on coordinator/
+pass + the Stepper `InsufficientSignal` fix, and **replace** the controller's
+private-total terminal usage with logger-derived usage (the terminal chunk is kept;
+only its source changes) while removing the private `total` accumulator and the
+old `rag-query.ts:102` inline embedding log — all in the **same** commit, so there
+is never a window with two live `response.usage` derivations or a double-logged
+embedding. Lockstep.
 
 ## Deferred
 
-- Stepper toolsRag query-embedding logging (same optional `accounting` param;
-  pre-existing minor gap).
 - Surfacing a per-component breakdown on `response.usage` (already in
   `RequestSummary.byComponent`; `/v1/usage` exposes it).
