@@ -1,4 +1,5 @@
 import {
+  type CallOptions,
   externalToolCallId,
   type IEmbedder,
   type IKnowledgeRagHandle,
@@ -103,7 +104,11 @@ export interface ControllerHandlerDeps {
    * executor — relevant, bounded, NOT a full dump. MCP-less deployments wire a
    * stub returning `[]`.
    */
-  selectTools: (query: string, k?: number) => Promise<readonly LlmTool[]>;
+  selectTools: (
+    query: string,
+    k?: number,
+    options?: CallOptions,
+  ) => Promise<readonly LlmTool[]>;
   /**
    * Optional override marking a tool as consumer-supplied (must round-trip to
    * the client). Production truth is the per-request `ctx.externalTools`; this
@@ -250,6 +255,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const relevantForGoal = await deps.selectTools(
       `${bundle.goal}\n${prompt}`,
       TOOL_SELECT_K,
+      ctx.options,
     );
     const toolCatalog = buildToolCatalog([
       ...relevantForGoal,
@@ -436,6 +442,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const relevant = await deps.selectTools(
       step.instructions || step.name,
       TOOL_SELECT_K,
+      ctx.options,
     );
     const offeredTools: LlmTool[] = [...relevant, ...(ctx.externalTools ?? [])];
     // The executor may ONLY call a tool that was offered to it: an internal tool
