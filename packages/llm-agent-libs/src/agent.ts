@@ -43,6 +43,7 @@ import {
   TextOnlyEmbedding,
   toToolCallDelta,
 } from '@mcp-abap-adt/llm-agent';
+import { normalizeRequestOptions } from './agent-request-options.js';
 import type { LlmClassifierConfig } from './classifier/llm-classifier.js';
 import { LlmClassifier } from './classifier/llm-classifier.js';
 import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
@@ -663,6 +664,11 @@ export class SmartAgent {
       const merged = mergeSignals(options?.signal, signal);
       opts = { ...options, signal: merged.signal };
     }
+    // Normalize AFTER the timeout-merge (which rebuilds opts from the original
+    // options): write the generated traceId into opts.trace and attach the
+    // per-request logger, so every downstream logLlmCall is request-scoped and
+    // the embedder-boundary wrapper can attribute embedding spend.
+    opts = normalizeRequestOptions(opts, traceId, this.requestLogger);
 
     const mode = this.config.mode || 'smart';
 
