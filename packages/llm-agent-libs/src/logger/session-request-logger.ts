@@ -49,7 +49,10 @@ export function aggregate(b: Bucket): RequestSummary {
     // categorized via `c.scope ?? 'request'`, which dropped most aux calls
     // (classifier/translate/query-expander/helper have no `scope`) into
     // `request`, misreporting /v1/usage.byCategory.
-    const catKey = CATEGORY_MAP[c.component] ?? 'request';
+    const catKey =
+      c.component === 'embedding' && c.scope === 'request'
+        ? 'request'
+        : (CATEGORY_MAP[c.component] ?? 'request');
     byCategory[catKey] ??= zeroBucket();
     const cat = byCategory[catKey];
     cat.promptTokens += c.promptTokens;

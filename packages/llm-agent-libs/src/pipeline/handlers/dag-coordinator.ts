@@ -27,6 +27,13 @@ import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
 
+/** Canonical terminal-usage object: flat triple + per-model breakdown. */
+function terminalUsage(ctx: PipelineContext, traceId: string | undefined) {
+  if (!traceId) return undefined;
+  const s = ctx.requestLogger.getSummary(traceId);
+  return { ...summaryToUsage(s), models: s.byModel };
+}
+
 /**
  * Marker prefixed onto a coordinator-emitted clarification question. `Message`
  * has no metadata field, so the marker lives in the assistant content — but it is
@@ -158,9 +165,7 @@ export class DagCoordinatorHandler implements IStageHandler {
             // Without this, response.usage was zero on clarify paths even though
             // /v1/usage saw the spend (Fix #10 logged it into requestLogger).
             const traceIdClarify = ctx.options?.trace?.traceId;
-            const usageClarify = traceIdClarify
-              ? summaryToUsage(ctx.requestLogger.getSummary(traceIdClarify))
-              : undefined;
+            const usageClarify = terminalUsage(ctx, traceIdClarify);
             ctx.yield({
               ok: true,
               value: {
@@ -371,9 +376,7 @@ export class DagCoordinatorHandler implements IStageHandler {
               },
             });
             const traceIdExt = ctx.options?.trace?.traceId;
-            const usageExt = traceIdExt
-              ? summaryToUsage(ctx.requestLogger.getSummary(traceIdExt))
-              : undefined;
+            const usageExt = terminalUsage(ctx, traceIdExt);
             ctx.yield({
               ok: true,
               value: {
@@ -418,9 +421,7 @@ export class DagCoordinatorHandler implements IStageHandler {
           // The agent's response assembler accumulates usage across yielded
           // chunks; including usage on both yields would double-count.
           const traceId = ctx.options?.trace?.traceId;
-          const usage = traceId
-            ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
-            : undefined;
+          const usage = terminalUsage(ctx, traceId);
           ctx.yield({
             ok: true,
             value: {

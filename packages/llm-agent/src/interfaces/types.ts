@@ -3,6 +3,7 @@
  */
 
 import type { Message } from '../types.js';
+import type { IRequestLogger } from './request-logger.js';
 import type { OnPartial } from './streaming.js';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +45,9 @@ export interface CallOptions {
   sessionLogger?: {
     logStep(name: string, data: unknown): void;
   };
+  /** Per-request logger used by the embedder-boundary usage wrapper to attribute
+   *  embedding spend to this request. Optional; absent outside a request. */
+  requestLogger?: IRequestLogger;
   /** Per-session sessionId-keyed registries injected by the SessionGraph.
    *  Untyped here (structural) to avoid a contracts→libs cycle; libs narrows. */
   toolAvailability?: unknown;

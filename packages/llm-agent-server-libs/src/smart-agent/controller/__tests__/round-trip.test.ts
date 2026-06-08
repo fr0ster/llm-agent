@@ -8,7 +8,10 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  InMemoryKnowledgeBackend,
+  SessionRequestLogger,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -29,11 +32,14 @@ function fakeCtx(overrides: {
   externalResults?: Map<string, string>;
 }): { ctx: PipelineContext; captured: Captured[] } {
   const captured: Captured[] = [];
+  const requestLogger = new SessionRequestLogger();
+  requestLogger.startRequest(overrides.sessionId);
   const ctx = {
     sessionId: overrides.sessionId,
     textOrMessages: overrides.textOrMessages,
     options: undefined,
     externalResults: overrides.externalResults,
+    requestLogger,
     yield: (c: Captured) => {
       captured.push(c);
     },
@@ -142,6 +148,7 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
       selectTools: async () => [],
       isExternalTool: () => true,
       config: baseConfig(),
+      models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
     };
 
     const handler1 = new ControllerCoordinatorHandler(leg1Deps);
@@ -214,6 +221,7 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
       selectTools: async () => [],
       isExternalTool: () => true,
       config: baseConfig(),
+      models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
     };
 
     const handler2 = new ControllerCoordinatorHandler(leg2Deps);

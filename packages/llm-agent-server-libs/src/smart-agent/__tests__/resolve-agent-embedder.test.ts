@@ -8,13 +8,18 @@ import {
 
 describe('resolveAgentEmbedder', () => {
   it('returns the DI-injected embedder when present (wins over rag config)', async () => {
-    const di = { embed: async () => [[0]] } as unknown as IEmbedder;
+    const di = {
+      embed: async () => ({ vector: [42] }),
+    } as unknown as IEmbedder;
     const result = await resolveAgentEmbedder(
       { type: 'in-memory', embedder: 'ollama' },
       di,
       {},
     );
-    assert.strictEqual(result, di);
+    // The DI embedder wins over rag config — it is wrapped (UsageLoggingEmbedder)
+    // for usage accounting, so identity differs but it delegates to di.
+    assert.ok(result);
+    assert.deepEqual((await result.embed('x')).vector, [42]);
   });
 
   it('returns undefined when there is no rag config', async () => {
@@ -102,13 +107,17 @@ describe('resolveToolsStoreEmbedder (#141: pipeline.rag.tools sharing)', () => {
   });
 
   it('honors the DI embedder when there is no current embedder yet', async () => {
-    const di = { embed: async () => [[1]] } as unknown as IEmbedder;
+    const di = {
+      embed: async () => ({ vector: [7] }),
+    } as unknown as IEmbedder;
     const result = await resolveToolsStoreEmbedder(
       undefined,
       { type: 'in-memory', embedder: 'ollama', model: 'bge-m3' },
       di,
       {},
     );
-    assert.strictEqual(result, di, 'DI embedder must win over store config');
+    // DI embedder must win over store config (wrapped for usage accounting).
+    assert.ok(result);
+    assert.deepEqual((await result.embed('x')).vector, [7]);
   });
 });

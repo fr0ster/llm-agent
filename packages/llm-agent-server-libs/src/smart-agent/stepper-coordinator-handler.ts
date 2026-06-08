@@ -32,6 +32,16 @@ function summaryToUsage(s: RequestSummary): LlmUsage {
   return { promptTokens, completionTokens, totalTokens };
 }
 
+/** Canonical terminal-usage object: flat triple + per-model breakdown. */
+function terminalUsage(
+  ctx: PipelineContext,
+  traceId: string | undefined,
+): (LlmUsage & { models?: RequestSummary['byModel'] }) | undefined {
+  if (!traceId) return undefined;
+  const s = ctx.requestLogger.getSummary(traceId);
+  return { ...summaryToUsage(s), models: s.byModel };
+}
+
 // ---------------------------------------------------------------------------
 // Dep-injection surface
 // ---------------------------------------------------------------------------
@@ -135,11 +145,19 @@ export class StepperCoordinatorHandler implements IStageHandler {
     //     stage error).
     // If a stateOracle is configured in future, it would be routed there instead
     // of the retry-with-guidance path.
+    // Request-bound toolsRag facade: injects ctx.options (requestLogger + trace)
+    // into query() so the wrapped embedder logs the Stepper's internal toolsRag
+    // query-embeddings against this request — without threading CallOptions
+    // through IStepperInput and every child contract.
+    const boundToolsRag: IToolsRagHandle = {
+      query: (text, k) => toolsRag.query(text, k, ctx.options),
+      lookup: (name) => toolsRag.lookup(name),
+    };
     const runOnce = async (prompt: string): Promise<IStepperResult> =>
       built.rootStepper.run({
         prompt,
         knowledgeRag,
-        toolsRag,
+        toolsRag: boundToolsRag,
         budget: built.budget,
         identity,
         taskSpec,
@@ -168,9 +186,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
         ok: true,
         value: { content: `To proceed, please provide: ${question}` },
       });
-      const usageNeed = traceId
-        ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
-        : undefined;
+      const usageNeed = terminalUsage(ctx, traceId);
       ctx.yield({
         ok: true,
         value: {
@@ -225,9 +241,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
             'How many additional tokens should be allocated to continue?',
         },
       });
-      const usageBudget = traceId
-        ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
-        : undefined;
+      const usageBudget = terminalUsage(ctx, traceId);
       ctx.yield({
         ok: true,
         value: {
@@ -260,9 +274,14 @@ export class StepperCoordinatorHandler implements IStageHandler {
             content: `Missing required information: ${err.missing.join(', ')}`,
           },
         });
+        const usageInsufficient = terminalUsage(ctx, traceId);
         ctx.yield({
           ok: true,
-          value: { content: '', finishReason: 'stop' },
+          value: {
+            content: '',
+            finishReason: 'stop',
+            ...(usageInsufficient ? { usage: usageInsufficient } : {}),
+          },
         });
         return true;
       }
@@ -270,9 +289,7 @@ export class StepperCoordinatorHandler implements IStageHandler {
     }
 
     // Terminal stop yield with usage (mirror 17.0 pattern).
-    const usage = traceId
-      ? summaryToUsage(ctx.requestLogger.getSummary(traceId))
-      : undefined;
+    const usage = terminalUsage(ctx, traceId);
     ctx.yield({
       ok: true,
       value: {

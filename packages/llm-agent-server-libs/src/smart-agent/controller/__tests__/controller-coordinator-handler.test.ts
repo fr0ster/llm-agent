@@ -10,7 +10,10 @@ import {
   type Result,
 } from '@mcp-abap-adt/llm-agent';
 import type { PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import {
+  InMemoryKnowledgeBackend,
+  SessionRequestLogger,
+} from '@mcp-abap-adt/llm-agent-libs';
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -30,11 +33,14 @@ function fakeCtx(overrides: Partial<PipelineContext> = {}): {
   captured: Captured[];
 } {
   const captured: Captured[] = [];
+  const requestLogger = new SessionRequestLogger();
+  requestLogger.startRequest('sess-1');
   const ctx = {
     sessionId: 'sess-1',
     textOrMessages: 'do the thing',
     options: undefined,
     externalResults: undefined,
+    requestLogger,
     yield: (c: Captured) => {
       captured.push(c);
     },
@@ -134,6 +140,7 @@ function harness(opts: {
     // pass it explicitly.
     ...(opts.isExternalTool ? { isExternalTool: opts.isExternalTool } : {}),
     config: opts.config ?? baseConfig(),
+    models: { evaluator: 'm-eval', planner: 'm-plan', executor: 'm-exec' },
   };
   return { deps, rag, backend, mcpCalls };
 }
