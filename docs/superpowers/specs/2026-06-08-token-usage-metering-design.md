@@ -144,8 +144,15 @@ instance), so the single chokepoint for every embedding token cost is
 - **`UsageLoggingEmbedder`** — an `IEmbedder` decorator: on `embed(text, options)`
   it logs the result `usage` via `options.requestLogger?.logLlmCall({ component:'embedding', model:'embedder', scope:'request', durationMs:0, requestId: options.trace?.traceId })`,
   then returns the result. One log per `embed()` call ⇒ one per `QueryEmbedding`
-  instance (memoization) ⇒ no dedup bookkeeping needed (this is why no
-  `WeakSet`/idempotency flag is required, review #2).
+  instance (memoization) ⇒ no dedup bookkeeping needed (no `WeakSet`, review #2).
+- **Preserve `IEmbedderBatch` (review #3):** the structural `isBatchEmbedder(e)`
+  check (`rag.ts:60`, `'embedBatch' in e`) drives batch vectorization
+  (`builder.ts:974`). A plain `IEmbedder` wrapper would hide `embedBatch` and force
+  N single embeds. So wrap via a factory `wrapEmbedder(inner)`: if
+  `isBatchEmbedder(inner)`, return a batch-capable decorator that **also** proxies
+  `embedBatch(texts, options)` — delegating to `inner.embedBatch` and logging the
+  summed `usage` of all results as one `embedding` entry; otherwise return the
+  plain decorator. Either way `embed` is logged as above.
 - **Binding (global embedder, per-session logger):** the embedder is a global
   singleton (`smart-server.ts:479` locked invariant), so the wrapper resolves the
   per-request logger **per call** from `CallOptions`. Add `requestLogger?: IRequestLogger`
@@ -315,9 +322,12 @@ usage chunk owned by the path's component.
   - `aggregate()` (`session-request-logger.ts` + `default-request-logger.ts`):
     categorize `embedding` by `scope` (request-scoped → `'request'`, else
     `'initialization'`) — review #3.
-  - `adapters/usage-logging-embedder.ts` (new `UsageLoggingEmbedder`); wrap the
-    global embedder at construction (`resolve-agent-embedder.ts` / builder
-    `withEmbedder`). Remove the inline embedding `logLlmCall` from `rag-query.ts`.
+  - `adapters/usage-logging-embedder.ts` (new) — `UsageLoggingEmbedder`
+    (`IEmbedder`) + a batch-capable variant (`IEmbedderBatch`, proxies `embedBatch`)
+    + a `wrapEmbedder(inner)` factory that picks the variant via
+    `isBatchEmbedder(inner)` (review #3). Wrap the global embedder at construction
+    (`resolve-agent-embedder.ts` / builder `withEmbedder`). Remove the inline
+    embedding `logLlmCall` from `rag-query.ts`.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
     (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
     the accumulated usage once, then emit the terminal `getSummary` usage chunk.
@@ -328,19 +338,23 @@ usage chunk owned by the path's component.
     (`deps.models = { evaluator: evaluatorLlm.model ?? 'unknown', planner:
     plannerLlm.model ?? 'unknown', executor: executorLlm.model ?? 'unknown' }`).
   - controller handler: `logUsage` writes to `ctx.requestLogger.logLlmCall`
-    (subagent roles, `durationMs: 0`; model from `deps.models[role]`, finalizer →
-    `deps.models.planner`) and logs target-state embedding usage; `surfaceFinal`/
-    `surfaceClarify`/
+    (subagent roles only — `durationMs: 0`; model from `deps.models[role]`,
+    finalizer → `deps.models.planner`). **Embeddings are NOT logged here** (review
+    #4) — the embedder wrapper does that. `surfaceFinal`/`surfaceClarify`/
     `surfaceToolCall` (`:552-584`) emit the canonical terminal-usage object
     (`{ ...summaryToUsage(summary), models: summary.byModel }`) (one terminal
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
     `turn total` line.
   - `stepper-coordinator-handler.ts`: attach the canonical terminal-usage object
     (incl. `models`) to the `InsufficientSignal` terminal stop chunk (`:263`).
-  - `controller.ts` `deps.selectTools`: pass `ctx.options` (carrying
-    `requestLogger` + `trace`) to `toolsRag.query`. (target-state embeds are logged
-    by the wrapper — no change needed there beyond passing `ctx.options` to
-    `embedder.embed`, which it already does.)
+  - `controller/target-state.ts` (review #1): `establishTargetState` gains an
+    `options?: CallOptions` parameter and calls `embedder.embed(target, options)` /
+    `embedder.embed(prompt, options)` (`:74-76` currently pass no options, so the
+    wrapper would not see them); the handler passes `ctx.options`.
+  - `ControllerHandlerDeps.selectTools` (review #2): extend the signature to
+    `(query: string, k?: number, options?: CallOptions) => Promise<readonly LlmTool[]>`;
+    `controller.ts:115` forwards `options` to `toolsRag.query`; both handler call
+    sites (`:218,:386`) pass `ctx.options`.
   - `smart-server.ts` `_toolsRagHandle.query`: accept `options?: CallOptions` and
     build `new QueryEmbedding(text, resolvedEmbedder, options)` so the wrapped
     embedder logs it.
@@ -366,6 +380,8 @@ usage chunk owned by the path's component.
 | 15 | Request embeddings mis-bucketed as `initialization` | `aggregate()` categorizes `embedding` by `scope` (review #3). |
 | 16 | Trace normalization clobbered by timeout merge | Normalize after the timeout-merge block, spread from `opts` (review #2). |
 | 17 | Terminal chunk drops per-model breakdown | All emitters build `{ ...summaryToUsage(summary), models: summary.byModel }` (review #4). |
+| 18 | Wrapper hides `IEmbedderBatch` → N single embeds | `wrapEmbedder` returns a batch-capable decorator when `isBatchEmbedder(inner)`, proxying + logging `embedBatch` (review #3). |
+| 19 | target-state / toolsRag embeds bypass the wrapper (no options) | `establishTargetState` and `selectTools` gain `options?: CallOptions`; the handler passes `ctx.options` (reviews #1/#2). |
 | 6 | Per-model overwrite (`agent.ts:621`) | Only one usage chunk carries `models`; the terminal chunk carries the full `getSummary` `byModel`. |
 | 7 | Stream usage absent from provider | `LoggingLlm.streamChat` accumulates `chunk.usage`; providers enable `include_usage`. |
 | 8 | Concurrent requests | `SessionRequestLogger` keys deltas by `requestId`; reliable once `traceId` is normalized into `opts`. |
@@ -386,6 +402,11 @@ usage chunk owned by the path's component.
   `QueryEmbedding` even when reused across stages (no `WeakSet` needed).
 - **toolsRag via options**: `toolsRag.query(text, k, ctx.options)` results in one
   `embedding` entry; `query(text, k)` (no options) logs none (back-compat).
+- **Batch preservation (review #3)**: `isBatchEmbedder(wrapEmbedder(batchInner))`
+  is `true`; calling `embedBatch` delegates to `inner.embedBatch` (one call, not N)
+  and logs one summed `embedding` entry.
+- **target-state coverage (review #1)**: a controller turn with the distance
+  strategy logs two `embedding` entries (target + prompt) under the request delta.
 - **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
   yields exactly one usage-bearing chunk; `process()` sums it to
   `getSummary(traceId)`.
