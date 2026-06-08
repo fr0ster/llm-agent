@@ -53,18 +53,24 @@ export class IncrementalPlanner implements IControllerPlanner {
 }
 
 const CREATE_PLAN_SYSTEM =
-  'You are the planner. Produce a MINIMAL, COMPLETE, ordered plan to achieve the ' +
-  'goal as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
+  'You are the planner. Produce the COMPLETE, ordered plan that covers the ENTIRE ' +
+  'goal NOW, as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
+  'This is plan-once: there will be NO chance to add steps later (a replan happens ' +
+  'only if a step FAILS), so the plan MUST already contain every step the goal ' +
+  'needs from start to finish. Do NOT return a first-step-only or partial plan. ' +
+  'Decompose the whole goal: if the request lists multiple actions (e.g. joined by ' +
+  '"then"/"and"/"also"/"потім"/"і"/commas), emit ONE step per action — a ' +
+  'multi-action request MUST yield multiple steps (never a single step that lumps ' +
+  'them together). ' +
   'Each step is ONE concrete action an executor performs against the LIVE SAP ' +
   'system using the available tools. Any fact about the system MUST be fetched ' +
   'with a tool — plan fetch steps; never answer from prior knowledge. ' +
-  'Plan ONLY what the goal explicitly requires: one step per distinct piece of ' +
-  'information the goal asks for. Do NOT add exploratory or enrichment steps ' +
-  '(extra metadata, sample/preview rows, recursive expansion) the goal did not ' +
-  'request. Do NOT add a final step that summarizes, formats, or answers the ' +
-  'user — a separate finalizer composes the answer from the fetched results, so ' +
-  'the last step must be the last data-fetch/action the goal needs. ' +
-  'Output JSON only.';
+  'Keep it MINIMAL: one step per distinct piece of information the goal asks for; ' +
+  'do NOT add exploratory or enrichment steps (extra metadata, sample/preview ' +
+  'rows, recursive expansion) the goal did not request. Do NOT add a final step ' +
+  'that summarizes, formats, or answers the user — a separate finalizer composes ' +
+  'the answer from the fetched results, so the last step must be the last ' +
+  'data-fetch/action the goal needs. Output JSON only.';
 
 const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +

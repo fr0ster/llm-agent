@@ -37,6 +37,10 @@ pipeline:
       executor:
         provider: sap-ai-sdk
         model: ${EXEC_MODEL:-gpt-4o-mini}
+    # Planner implementation: adaptive (plan once upfront, replan only on failure).
+    # The whole point of mixed-model is to minimise EXPENSIVE planner LLM calls,
+    # so adaptive (1 createPlan) beats incremental (a planner call per step).
+    planner: ${PLANNER:-adaptive}
     targetState: { strategy: auto, distanceThreshold: 0.7 }
     sessionMemory: { collection: session-memory }
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }
