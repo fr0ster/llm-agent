@@ -22,14 +22,22 @@ rag:
 pipeline:
   name: controller
   config:
+    # Per-role `hint` re-specialises the agnostic engine prompts for SAP/ABAP
+    # (appended to each role's system prompt). Drop them for a generic controller.
     subagents:
       # Heavy model — goal formulation + planning (the judgment-heavy roles).
       evaluator:
         provider: sap-ai-sdk
         model: ${EVAL_MODEL:-anthropic--claude-4.6-sonnet}
+        hint: >-
+          The target system is a live SAP/ABAP system reached over ADT/MCP tools.
       planner:
         provider: sap-ai-sdk
         model: ${PLANNER_MODEL:-anthropic--claude-4.6-sonnet}
+        hint: >-
+          The target system is a live SAP/ABAP system. Facts to fetch include
+          DDIC table structures, package contents, ABAP runtime dumps, and
+          source code (programs/includes/classes) — always via a tool.
       # Light model — step execution + tool calls (mechanical role).
       # NOTE: claude-3-haiku CANNOT do tools via this AI Core orchestration
       # (rejects the tool `type` field → 400). Use a tool-capable light model;
@@ -37,6 +45,10 @@ pipeline:
       executor:
         provider: sap-ai-sdk
         model: ${EXEC_MODEL:-gpt-4o-mini}
+        hint: >-
+          The target system is a live SAP/ABAP system. System facts include DDIC
+          table structures, package contents, ABAP runtime dumps, and source
+          code (programs/includes/classes) — obtain each by calling a tool.
     # Planner implementation: adaptive (plan once upfront, replan only on failure).
     # The whole point of mixed-model is to minimise EXPENSIVE planner LLM calls,
     # so adaptive (1 createPlan) beats incremental (a planner call per step).

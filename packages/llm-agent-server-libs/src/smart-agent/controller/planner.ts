@@ -3,6 +3,7 @@ import {
   extractJsonObject,
   parseNextStep,
 } from './controller-coordinator-handler.js';
+import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 import type {
   IControllerPlanner,
@@ -18,7 +19,7 @@ const PLANNER_SYSTEM =
   'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
   'next step, {"kind":"done","result":...} when the goal is met, or ' +
   '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.\n' +
-  'An executor carries out each step against the LIVE SAP system using the ' +
+  'An executor carries out each step against the live target system using the ' +
   'tools listed below. Any fact about the system MUST be obtained by planning a ' +
   'step that fetches it with a tool — do NOT answer from prior knowledge, and do ' +
   'NOT mark the goal "done" until the required data has actually been fetched ' +
@@ -30,14 +31,19 @@ const RETRY_HINT =
   'JSON object — no prose, no explanation, no markdown code fences.';
 
 export class IncrementalPlanner implements IControllerPlanner {
-  constructor(private readonly planner: ISubagentClient) {}
+  constructor(
+    private readonly planner: ISubagentClient,
+    /** Optional consumer domain hint appended to the agnostic planner prompt. */
+    private readonly hint?: string,
+  ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
     const { bundle, prompt, toolCatalog, retrying, logUsage } = input;
     const res = await this.planner.send([
       {
         role: 'system',
-        content: PLANNER_SYSTEM + (retrying ? RETRY_HINT : ''),
+        content:
+          appendHint(PLANNER_SYSTEM, this.hint) + (retrying ? RETRY_HINT : ''),
       },
       {
         role: 'user',
@@ -62,7 +68,7 @@ const CREATE_PLAN_SYSTEM =
   '"then"/"and"/"also"/"потім"/"і"/commas), emit ONE step per action — a ' +
   'multi-action request MUST yield multiple steps (never a single step that lumps ' +
   'them together). ' +
-  'Each step is ONE concrete action an executor performs against the LIVE SAP ' +
+  'Each step is ONE concrete action an executor performs against the live target ' +
   'system using the available tools. Any fact about the system MUST be fetched ' +
   'with a tool — plan fetch steps; never answer from prior knowledge. ' +
   'Keep it MINIMAL: one step per distinct piece of information the goal asks for; ' +
@@ -126,7 +132,12 @@ export class AdaptivePlanner implements IControllerPlanner {
   // No budget field: replans are bounded by the loop's maxSteps (a failed step
   // bumps stepsUsed in runStep). Replan-specific budgeting is the deferred
   // "limits as a selectable strategy" work.
-  constructor(private readonly planner: ISubagentClient) {}
+  constructor(
+    private readonly planner: ISubagentClient,
+    /** Optional consumer domain hint appended to every agnostic planner/
+     *  create-plan/replan/finalize prompt this planner emits. */
+    private readonly hint?: string,
+  ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
     const {
@@ -221,7 +232,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     const cursor = bundle.planCursor ?? 0;
     if (cursor >= plan.length) {
       const res = await this.planner.send([
-        { role: 'system', content: FINALIZE_SYSTEM },
+        { role: 'system', content: appendHint(FINALIZE_SYSTEM, this.hint) },
         {
           role: 'user',
           content: `Goal: ${bundle.goal}\nRequest: ${prompt}\nProgress:${bundle.plannerPrivate}`,
@@ -255,7 +266,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       {
         role: 'system',
         content:
-          system +
+          appendHint(system, this.hint) +
           (retrying
             ? '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw JSON object.'
             : ''),
@@ -276,8 +287,9 @@ export class AdaptivePlanner implements IControllerPlanner {
 export function makePlanner(
   kind: PlannerKind,
   planner: ISubagentClient,
+  hint?: string,
 ): IControllerPlanner {
   return kind === 'adaptive'
-    ? new AdaptivePlanner(planner)
-    : new IncrementalPlanner(planner);
+    ? new AdaptivePlanner(planner, hint)
+    : new IncrementalPlanner(planner, hint);
 }

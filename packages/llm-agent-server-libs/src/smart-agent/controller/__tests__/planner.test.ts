@@ -37,6 +37,28 @@ describe('IncrementalPlanner', () => {
     assert.equal(next?.kind, 'next');
     assert.equal(next?.kind === 'next' && next.step.name, 's1');
   });
+  it('appends the domain hint to the agnostic planner prompt', async () => {
+    let sys = '';
+    const recording: ISubagentClient = {
+      async send(messages) {
+        sys =
+          typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        return {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'ok' }),
+        };
+      },
+    };
+    await new IncrementalPlanner(recording, 'Domain X facts.').next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.doesNotMatch(sys, /SAP|ABAP/i);
+    assert.match(sys, /Domain context: Domain X facts\./);
+  });
+
   it('non-content planner reply → null (format failure)', async () => {
     const p = new IncrementalPlanner(planner([{ kind: 'error', error: 'x' }]));
     assert.equal(
@@ -320,6 +342,47 @@ describe('AdaptivePlanner', () => {
     assert.match(userMsg, /- s1/);
     assert.match(userMsg, /- s2/);
     assert.doesNotMatch(userMsg, /- s3\b/); // the FAILED step is not "completed"
+  });
+
+  it('agnostic prompts mention no domain (no "SAP"/"ABAP") and a hint is appended', async () => {
+    let sys = '';
+    const recording: ISubagentClient = {
+      async send(messages) {
+        sys =
+          typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        return {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        };
+      },
+    };
+    // Without a hint: the create-plan prompt is domain-agnostic.
+    await new AdaptivePlanner(recording).next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.doesNotMatch(sys, /SAP|ABAP/i);
+    assert.match(sys, /live target system/);
+    assert.doesNotMatch(sys, /Domain context:/);
+
+    // With a hint: it is appended as a "Domain context" preamble.
+    await new AdaptivePlanner(
+      recording,
+      'The target is a live SAP/ABAP system.',
+    ).next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.match(
+      sys,
+      /Domain context: The target is a live SAP\/ABAP system\./,
+    );
   });
 
   it('empty replan then finalizer error: retry RE-FINALIZES, does not replan again', async () => {

@@ -26,16 +26,32 @@ pipeline:
   config:
     # Three opaque subagent roles. Each is a standalone LLM endpoint; here all
     # three use SAP AI Core, but they can point at different providers/URLs.
+    #
+    # The engine's role prompts are DOMAIN-AGNOSTIC ("the live target system").
+    # The optional per-role `hint` re-specialises a role for THIS deployment's
+    # domain (here: SAP/ABAP) — it is appended to that role's system prompt. Drop
+    # the hints for a generic, domain-neutral controller. The dynamic counterpart
+    # — procedural skills pulled from a RAG collection — is a separate mechanism.
     subagents:
       evaluator:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+        hint: >-
+          The target system is a live SAP/ABAP system reached over ADT/MCP tools.
       planner:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+        hint: >-
+          The target system is a live SAP/ABAP system. Facts to fetch include
+          DDIC table structures, package contents, ABAP runtime dumps, and
+          source code (programs/includes/classes) — always via a tool.
       executor:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
+        hint: >-
+          The target system is a live SAP/ABAP system. System facts include DDIC
+          table structures, package contents, ABAP runtime dumps, and source
+          code (programs/includes/classes) — obtain each by calling a tool.
     # Planner implementation: incremental (per-step LLM decision) | adaptive
     # (full plan upfront, replan only on failure/external result).
     planner: ${PLANNER:-incremental}

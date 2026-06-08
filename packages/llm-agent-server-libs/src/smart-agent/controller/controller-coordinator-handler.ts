@@ -22,6 +22,7 @@ import {
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
 import { makePlanner } from './planner.js';
+import { appendHint } from './prompts.js';
 import { hydrateBundle, persistBundle } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
@@ -238,6 +239,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         prompt,
         deps.config.targetState,
         ctx.options,
+        deps.config.subagents.evaluator?.hint,
       );
       logUsage('evaluator', outcome.usage);
       if (outcome.kind === 'needs-confirmation') {
@@ -274,6 +276,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const planner = makePlanner(
       deps.config.planner ?? 'incremental',
       deps.planner,
+      deps.config.subagents.planner?.hint,
     );
     // bundle.lastOutcome is the SINGLE source of truth for the last step's
     // outcome — durable, so a resume after a FAILED step replans instead of
@@ -410,13 +413,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const messages: Message[] = [
       {
         role: 'system',
-        content:
-          'You are the executor. You have tools that read the LIVE SAP system. ' +
-          'You MUST obtain any fact about the system (table structure, package ' +
-          'contents, dumps, source, etc.) by CALLING the appropriate tool — never ' +
-          'answer such facts from prior knowledge or memory. Emit a tool call when ' +
-          'you need data; only return the step result as content once you have the ' +
-          'tool results.',
+        content: appendHint(
+          EXECUTOR_SYSTEM,
+          deps.config.subagents.executor?.hint,
+        ),
       },
       {
         role: 'user',
@@ -681,6 +681,16 @@ function isAffirmation(answer: string): boolean {
 }
 
 /** Top-K tools surfaced from toolsRag per planner/step query. */
+/** Agnostic executor system prompt. Domain specifics (e.g. SAP/ABAP fact kinds)
+ *  are layered on via `subagents.executor.hint` (see {@link appendHint}). */
+const EXECUTOR_SYSTEM =
+  'You are the executor. You have tools that read the live target system. ' +
+  'You MUST obtain any fact about the system (e.g. its structure, contents, ' +
+  'status, or source — any current state) by CALLING the appropriate tool — ' +
+  'never answer such facts from prior knowledge or memory. Emit a tool call ' +
+  'when you need data; only return the step result as content once you have the ' +
+  'tool results.';
+
 const TOOL_SELECT_K = 20;
 
 /** Max characters of the tool catalog handed to the planner (safety bound; with

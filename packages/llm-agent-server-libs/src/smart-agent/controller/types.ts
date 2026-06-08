@@ -47,11 +47,18 @@ export interface SessionBundle {
   lastOutcome?: 'advanced' | 'failed';
 }
 
+/** A controller subagent role: a standalone LLM config plus an OPTIONAL
+ *  consumer-supplied domain `hint`. The engine's role system prompts are
+ *  domain-agnostic; a deployment re-specialises a role (gnostic) by setting
+ *  `hint` — a short domain preamble appended to that role's system prompt (e.g.
+ *  naming the SAP/ABAP target and its fact kinds). Absent hint → agnostic. */
+export type ControllerSubagentConfig = SmartServerLlmConfig & { hint?: string };
+
 export interface ControllerConfig {
   subagents: {
-    evaluator: SmartServerLlmConfig;
-    planner: SmartServerLlmConfig;
-    executor: SmartServerLlmConfig;
+    evaluator: ControllerSubagentConfig;
+    planner: ControllerSubagentConfig;
+    executor: ControllerSubagentConfig;
   };
   targetState: {
     strategy: 'consumer-confirm' | 'semantic-distance' | 'auto';
