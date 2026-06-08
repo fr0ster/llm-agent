@@ -231,7 +231,7 @@ Internal callers keep their 2-arg `query(text, k)` signature; the facade injects
 `ctx.options` so the wrapped embedder logs every Stepper toolsRag embed. This
 closes the Stepper gap (Goal #1) with no change to the stepper internal contracts.
 
-### Consumer delivery — one terminal `getSummary` chunk on every path
+### Consumer delivery — one terminal `getSummary` chunk per successful path
 
 Exactly one usage-bearing chunk per **successful** request (none on an error path,
 where the error chunk is terminal). **Canonical terminal-usage object
