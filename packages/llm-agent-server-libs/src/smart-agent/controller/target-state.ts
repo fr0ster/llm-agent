@@ -1,4 +1,4 @@
-import type { IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, IEmbedder, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import type { ISubagentClient } from './subagent-client.js';
 import type { ControllerConfig } from './types.js';
 
@@ -41,6 +41,7 @@ export async function establishTargetState(
   deps: TargetStateDeps,
   prompt: string,
   cfg: ControllerConfig['targetState'],
+  options?: CallOptions,
 ): Promise<TargetStateOutcome> {
   const r = await deps.evaluator.send([
     {
@@ -72,8 +73,8 @@ export async function establishTargetState(
       );
     }
     const [te, pe] = await Promise.all([
-      deps.embedder.embed(target),
-      deps.embedder.embed(prompt),
+      deps.embedder.embed(target, options),
+      deps.embedder.embed(prompt, options),
     ]);
     const dist = cosineDistance(te.vector, pe.vector);
     if (dist > cfg.distanceThreshold) {

@@ -224,6 +224,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         { evaluator: deps.evaluator, embedder: deps.embedder },
         prompt,
         deps.config.targetState,
+        ctx.options,
       );
       logUsage('evaluator', outcome.usage);
       if (outcome.kind === 'needs-confirmation') {
