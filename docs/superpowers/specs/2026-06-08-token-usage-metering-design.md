@@ -138,6 +138,14 @@ Pluggability is the interface.
 - **toolsRag query embeddings:** extend the `IToolsRagHandle.query` contract to be
   request-aware (see below) so the controller's `deps.selectTools` calls
   (handler `:218,:386`) log their query-embedding usage.
+- **Flat embedding sites (review #1):** today only `rag-query.ts:102` logs its
+  query embedding; `tool-select.ts:65`, `skill-select.ts:45`, and the
+  `tool-loop.ts:297` reselection each build a `QueryEmbedding` and never log. Extract
+  rag-query's inline logic into a shared helper
+  `logEmbeddingUsage(requestLogger, embedding, requestId)` (reads
+  `QueryEmbedding.getUsage()`, logs `component:'embedding', model:'embedder', scope:'request', durationMs:0`)
+  and call it at all four sites. This is what makes "flat embeddings fully
+  accounted" true; each is currently unlogged → additive.
 - **Everything else is kept as-is** (Migration inventory).
 
 ### `IToolsRagHandle` contract extension (review #2)
@@ -165,23 +173,33 @@ out of scope here.)
 
 ### Consumer delivery — one terminal `getSummary` chunk on every path
 
-Exactly one usage-bearing chunk per request,
-`{ content:'', usage: summaryToUsage(getSummary(traceId)) + byModel }`, emitted by
-whichever component owns the path — **not** a generic agent-level chunk on the
-pipeline branch (that would double the Stepper/DAG chunk, review #1):
+Exactly one usage-bearing chunk per request. **Canonical terminal-usage object
+(review #4)** — every emitter builds the SAME shape the flat path uses
+(`agent.ts:1243`), preserving the per-model breakdown:
+
+```ts
+const summary = ctx.requestLogger.getSummary(traceId);
+const usage = { ...summaryToUsage(summary), models: summary.byModel };
+```
+
+`summaryToUsage()` alone returns only the flat triple — callers **must** add
+`models: summary.byModel` or the per-model breakdown is lost. The chunk is emitted
+by whichever component owns the path — **not** a generic agent-level chunk on the
+pipeline branch (that would double the Stepper/DAG chunk, review #1-prev):
 
 - flat — already emits it (unchanged).
 - **Stepper / DAG handlers** — already emit it on most terminal branches
   (`stepper-coordinator-handler.ts:172,229,274`, `dag-coordinator.ts`). **Gap to
   fix (review #2):** the Stepper `InsufficientSignal` branch (`:257-267`) yields a
-  stop chunk **without** usage — add `summaryToUsage(getSummary(traceId))` there so
-  every Stepper terminal branch carries the chunk. (Audit all coordinator terminal
-  yields for the same omission.)
+  stop chunk **without** usage — add the canonical terminal-usage object (incl.
+  `models`) there so every Stepper terminal branch carries it. (Audit all
+  coordinator terminal yields for the same omission; the existing `:172,229,274`
+  yields should also carry `models`.)
 - **controller handler** — the `surface*` methods (`:552-584`) already accept a
-  `usage?` parameter; `execute()` (which holds `meta.traceId`) computes
-  `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))` and passes it in
-  place of the private `total` (review #2 — `surface*` need no new access to
-  `meta`; the caller supplies the usage). One chunk, same pattern as Stepper/DAG.
+  `usage?` parameter; `execute()` (which holds `meta.traceId`) builds the canonical
+  terminal-usage object (incl. `models: summary.byModel`) and passes it in place of
+  the private `total` (`surface*` need no new access to `meta`; the caller supplies
+  the usage). One chunk, same pattern as Stepper/DAG.
 - **pass** — has no coordinator handler, so the agent handles it (`agent.ts:700-722`):
   the pass loop currently forwards provider chunks **including** `chunk.value.usage`
   (`:714`). To keep one usage-bearing chunk (review #1): accumulate provider usage
@@ -201,11 +219,15 @@ chunk per request, so `process()`'s sum is correct and never doubles.
 
 ### Systemic fix — traceId normalization
 
-In `streamProcess` (`agent.ts:~653`), after deriving `traceId`, write it back:
-`opts = { ...opts, trace: { ...opts?.trace, traceId } }`. Every downstream
-`logLlmCall` then carries `requestId`, and the terminal-chunk `getSummary(traceId)`
-reads this request's delta. `process()` is unchanged — it sums the terminal chunk
-and never calls `getSummary` itself, so it needs no traceId (review #1).
+In `streamProcess`, write the derived `traceId` back into `opts`:
+`opts = { ...opts, trace: { ...opts?.trace, traceId } }`. **Ordering (review #2):**
+this must run **after** the timeout-merge block (`agent.ts:659-664`, which rebuilds
+`opts = { ...options, signal }` from the *original* `options` and would otherwise
+clobber the trace) — i.e. spread from `opts`, not `options`, and normalize last
+(~`:665`). Every downstream `logLlmCall` then carries `requestId`, and the
+terminal-chunk `getSummary(traceId)` reads this request's delta. `process()` is
+unchanged — it sums the terminal chunk and never calls `getSummary` itself, so it
+needs no traceId.
 
 ```
  flat sites · stepper LoggingLlm · controller logUsage→requestLogger · target-state emb · toolsRag(accounting) · pass(once)
@@ -235,6 +257,9 @@ and never calls `getSummary` itself, so it needs no traceId (review #1).
 - Controller `logUsage` → `ctx.requestLogger.logLlmCall` (subagent LLMs).
 - Controller target-state embedding logging (via returned usage).
 - Controller toolsRag query-embedding logging (via `accounting` param).
+- Flat embedding sites via the shared `logEmbeddingUsage` helper:
+  `tool-select.ts:65`, `skill-select.ts:45`, `tool-loop.ts:297` (rag-query keeps
+  its logging, refactored to call the helper).
 - Pass-path single-call logging.
 
 **REPLACE**:
@@ -252,6 +277,15 @@ the path's component.
 
 - Add `'executor'` to the `LlmComponent` union; map it to `'request'` in
   `CATEGORY_MAP`.
+- **Embedding categorization (review #3):** `CATEGORY_MAP.embedding` is statically
+  `'initialization'`, so request-time query embeddings would be mis-bucketed as
+  `initialization` in `/v1/usage.byCategory`. The `embedding` component legitimately
+  spans both startup tool-vectorization (init) and per-request query embeds. Fix:
+  `aggregate()` categorizes `embedding` by the entry's `scope` —
+  `c.component === 'embedding' && c.scope === 'request' ? 'request' : CATEGORY_MAP[c.component]`.
+  All request-time embedding entries (rag-query, controller, flat selection sites)
+  set `scope: 'request'` (rag-query already does); startup vectorization keeps
+  `initialization`.
 - Extend `IToolsRagHandle.query` with the optional `accounting` parameter above.
 - No new aggregator/recorder interfaces. Reuse `IRequestLogger`, `LlmCallEntry`,
   `RequestSummary`, `summaryToUsage`, `QueryEmbedding.getUsage`.
@@ -261,6 +295,12 @@ the path's component.
 - **`@mcp-abap-adt/llm-agent`** — `'executor'` in `LlmComponent` + `CATEGORY_MAP`;
   `IToolsRagHandle.query` `accounting` param.
 - **`@mcp-abap-adt/llm-agent-libs`** —
+  - `aggregate()` (`session-request-logger.ts` + `default-request-logger.ts`):
+    categorize `embedding` by `scope` (request-scoped → `'request'`, else
+    `'initialization'`) — review #3.
+  - shared `logEmbeddingUsage(requestLogger, embedding, requestId)` helper; call it
+    at `rag-query.ts` (refactor existing), `tool-select.ts:65`, `skill-select.ts:45`,
+    `tool-loop.ts:297` — review #1.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
     (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
     the accumulated usage once, then emit the terminal `getSummary` usage chunk.
@@ -302,6 +342,10 @@ the path's component.
 | 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
 | 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
 | 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: plannerLlm.model ?? 'unknown'`. |
+| 14 | Flat tool/skill/reselect embeddings unlogged | Shared `logEmbeddingUsage` helper called at all four `QueryEmbedding` sites (review #1). |
+| 15 | Request embeddings mis-bucketed as `initialization` | `aggregate()` categorizes `embedding` by `scope` (review #3). |
+| 16 | Trace normalization clobbered by timeout merge | Normalize after the timeout-merge block, spread from `opts` (review #2). |
+| 17 | Terminal chunk drops per-model breakdown | All emitters build `{ ...summaryToUsage(summary), models: summary.byModel }` (review #4). |
 | 6 | Per-model overwrite (`agent.ts:621`) | Only one usage chunk carries `models`; the terminal chunk carries the full `getSummary` `byModel`. |
 | 7 | Stream usage absent from provider | `LoggingLlm.streamChat` accumulates `chunk.usage`; providers enable `include_usage`. |
 | 8 | Concurrent requests | `SessionRequestLogger` keys deltas by `requestId`; reliable once `traceId` is normalized into `opts`. |
@@ -330,7 +374,16 @@ the path's component.
   usage (non-empty when calls were logged).
 - **Finalizer model (review #3)**: a controller turn whose finalizer fires logs a
   `finalizer` entry under `byModel[plannerLlm.model]`.
-- **No regression**: a flat turn's `response.usage` is byte-identical to today.
+- **Per-model breakdown (review #4)**: a controller/pass turn's terminal chunk
+  carries `usage.models` (per-model buckets), not just the flat triple.
+- **Embedding category (review #3)**: a request-time query embedding lands in
+  `/v1/usage.byCategory.request`, not `initialization`; startup vectorization
+  stays `initialization`.
+- **Flat embedding coverage (review #1)**: a turn that hits tool-select /
+  skill-select / tool-loop reselection logs an `embedding` entry for each.
+- **No regression**: a flat turn's `response.usage` total is unchanged (the added
+  embedding sites were genuinely unlogged spend; assert the LLM-only components are
+  byte-identical and the new embedding delta is exactly the embed tokens).
 
 ## Migration / rollout
 
