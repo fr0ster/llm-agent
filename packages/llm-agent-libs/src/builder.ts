@@ -61,6 +61,7 @@ import {
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
+import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import {
   LlmClassifier,
   type LlmClassifierConfig,
@@ -449,7 +450,9 @@ export class SmartAgentBuilder {
 
   /** Set the shared embedder for RAG queries. When set, queries embed once and share the vector. */
   withEmbedder(embedder: IEmbedder): this {
-    this._embedder = embedder;
+    // wrapEmbedder is idempotent — safe even if the embedder was already wrapped
+    // by resolveAgentEmbedder (the canonical owner).
+    this._embedder = wrapEmbedder(embedder);
     return this;
   }
 
