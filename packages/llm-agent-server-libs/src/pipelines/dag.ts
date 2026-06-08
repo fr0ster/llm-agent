@@ -14,6 +14,13 @@ export type DagPipelineConfig = Record<string, unknown>;
  * (requires a `planner`), assembles the coordinator deps via the shared
  * `buildDagCoordinatorDeps`, registers a `DagCoordinatorHandler` on a fresh
  * agent builder, and returns the runnable agent plus a disposal hook.
+ *
+ * @deprecated Legacy pipeline. `dag` runs on its own legacy coordinator/step
+ * interpreter and stays selectable only for backward compatibility — it is not
+ * the active development path. The newer `controller` pipeline (incremental /
+ * adaptive planner) is the maintained interpreter; new deployments should use
+ * it. The controller interpreter was not designed to drive the legacy DAG flow,
+ * so do not migrate a `dag` config onto it. May be removed in a future major.
  */
 export class DagPipelinePlugin implements IPipelinePlugin<DagPipelineConfig> {
   readonly name = 'dag';

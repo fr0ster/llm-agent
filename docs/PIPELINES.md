@@ -29,12 +29,22 @@ that variant's dialect.
 |---|---|---|
 | `flat` | Single ReAct tool-loop agent, no coordinator | *(none)* |
 | `linear` | Ordered plan → dispatch coordinator | `planning` (`one-shot`/`replan-on-error`/`skill-steps`), `dispatch` (`self`/`subagent`/`hybrid`), `maxSteps`, `maxRetriesPerStep`, `failPolicy` |
-| `dag` | Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
-| `stepper` | Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
+| `dag` ⚠️ | _(legacy — see note below)_ Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
+| `stepper` ⚠️ | _(legacy — see note below)_ Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
 | `controller` | Deterministic coordinator + three opaque subagent roles (evaluator/planner/executor); incremental loop, durable per-session bundle, stateless suspend/resume | `subagents.{evaluator,planner,executor}`, `targetState`, `sessionMemory`, `budgets` |
 
 Stepper's `knowledgeSeed` (deployment-supplied tool guidance, seeded into a new
 session's knowledge store) lives under `pipeline.config.knowledgeSeed`.
+
+> **⚠️ `dag` and `stepper` are deprecated (legacy).** They keep running on their
+> own legacy step-interpreter and remain selectable for backward compatibility,
+> but they are no longer the active development path and will not receive the
+> newer planner/replan/metering work. The `controller` pipeline (with its
+> `incremental` or `adaptive` planner) is the maintained interpreter and the
+> recommended choice for new deployments. The newer controller interpreter was
+> **not** designed to drive the legacy DAG/stepper flows — do not migrate a
+> `dag`/`stepper` config onto it; pick `controller` directly instead. These two
+> pipelines may be removed in a future major version.
 
 ### `controller` config
 
