@@ -24,13 +24,15 @@ path** (controller / stepper / dag). Two distinct causes:
    `SessionRequestLogger`; embedders never log token usage; streaming usage is
    only captured if the provider emits it on a stream chunk and someone reads it.
 
-The key realisation: **the aggregator already exists and is correct.**
-`SessionRequestLogger` keys per-traceId deltas (for `response.usage`) and a
-session-cumulative bucket (for `/v1/usage`), with `byModel` / `byComponent` /
-`byCategory` + request counts, **call-scoped `component` per `LlmCallEntry`**,
-and nested-safe coordinator/worker semantics. This design does **not** build a
-new aggregator; it routes every LLM/embedder call into the existing one and
-makes the coordinator path read from it.
+The key realisation: **the aggregator abstraction already exists and is
+correct.** It is the `IRequestLogger` interface (contracts), whose default wired
+implementation `SessionRequestLogger` keys per-traceId deltas (for
+`response.usage`) and a session-cumulative bucket (for `/v1/usage`), with
+`byModel` / `byComponent` / `byCategory` + request counts, **call-scoped
+`component` per `LlmCallEntry`**, and nested-safe coordinator/worker semantics.
+This design does **not** introduce a new aggregator interface; it routes every
+LLM/embedder call into `IRequestLogger` and makes the coordinator path read from
+it.
 
 ## Goals
 
@@ -39,15 +41,17 @@ makes the coordinator path read from it.
 2. **End-to-end (наскрізний)** — host preamble (translate/summarize/classify/
    expand), pipeline subagents, tool-loop rounds, streaming usage, and
    embeddings all counted, regardless of call site.
-3. **Single source of truth** — exactly one aggregator: `SessionRequestLogger`.
-   The coordinator path derives `response.usage` from it; the controller's
-   private summation and the chunk-usage path are removed. `/v1/usage` is
-   unchanged (already logger-fed).
-4. **One interface for the provider boundary** — `IUsageRecorder`, the seam
-   injected at the LLM/embedder boundary; the logger adapts to it.
-5. **Pluggable granularity** — the response/`/v1/usage` shape already supports
-   per-model and per-component; nothing new needed. A different rollup is a
-   different `IRequestLogger`/recorder impl, not a call-site change.
+3. **Single source of truth** — exactly one aggregator, behind the
+   `IRequestLogger` interface (default impl `SessionRequestLogger`). The
+   coordinator path derives `response.usage` from it; the controller's private
+   summation and the chunk-usage path are removed. `/v1/usage` is unchanged
+   (already logger-fed).
+4. **Work through interfaces** — providers/decorators depend on the narrow
+   `IUsageRecorder` seam, never a concrete logger; the aggregator is consumed via
+   `IRequestLogger`, never a concrete class.
+5. **Pluggable granularity** — a different rollup is a different `IRequestLogger`
+   implementation, wired once into the `SessionGraph`; no call-site change. The
+   response/`/v1/usage` shape already supports per-model and per-component.
 
 ## Non-Goals
 
@@ -64,14 +68,19 @@ makes the coordinator path read from it.
 
 ## Architecture
 
-### The aggregator — `SessionRequestLogger` (reused, unchanged core)
+### The aggregator — the `IRequestLogger` interface (default impl `SessionRequestLogger`)
 
-Stays the single authoritative aggregator. It already:
+Consumers depend on the `IRequestLogger` interface; `SessionRequestLogger` is the
+default implementation wired into the `SessionGraph`. It is the single
+authoritative aggregator and already:
 - routes each `logLlmCall(entry)` to the per-`requestId` delta **and** the
   session-cumulative bucket;
 - aggregates `byModel`/`byComponent`/`byCategory` with `requests` counts;
 - yields `response.usage` via `getSummary(traceId)` → `summaryToUsage`, and
   `/v1/usage` via `getSummary()`.
+
+Swapping the rollup later = a different `IRequestLogger` impl wired in; nothing
+else changes.
 
 ### The provider boundary — `IUsageRecorder` + a logging decorator
 
@@ -87,8 +96,10 @@ Stays the single authoritative aggregator. It already:
 - **`UsageLoggingEmbedder`** — the analogous `IEmbedder` decorator, tagged
   `component:'embedding'`, recording embedding token usage (providers that
   return it) from `embed()`.
-- **`SessionRequestLogger` implements `IUsageRecorder`** (or via a thin adapter):
-  `record(u, m)` → `logLlmCall({ ...u, model: m.model, component: m.component, requestId: m.requestId, durationMs, estimated })`. No second store.
+- **An `IRequestLogger`→`IUsageRecorder` adapter** bridges the two:
+  `record(u, m)` → `logger.logLlmCall({ ...u, model: m.model, component: m.component, requestId: m.requestId, durationMs, estimated })`. The decorator holds the
+  `IUsageRecorder`; the adapter holds the `IRequestLogger`. No second store, and
+  no concrete-class dependency at the boundary.
 
 Why a boundary decorator and not constructor injection into the five provider
 packages: the repo also accepts **injected** `ILlm`/`IEmbedder` instances,
@@ -154,7 +165,7 @@ to its terminal chunk.
  every chat()/embed()  ──►  UsageLoggingLlm/Embedder (role-tagged)
    (preamble, subagents,        │  record(usage, {model, component, requestId})
     tool-loop, embeddings)       ▼
-                          IUsageRecorder ── adapts to ──► SessionRequestLogger
+                          IUsageRecorder ── adapter ──► IRequestLogger (SessionRequestLogger)
                                                               │  (per-traceId delta + cumulative)
                                           getSummary(traceId) ▼
                               response.usage (+ byModel)   /v1/usage (cumulative)
@@ -174,9 +185,9 @@ to its terminal chunk.
 ## Data flow per request
 
 1. The server starts the request: `logger.startRequest(traceId)` (existing).
-2. Every LLM/embedder call goes through a role-tagged `UsageLogging*` decorator
+2. Every LLM/embedder call goes through a `UsageLogging*` decorator
    → `recorder.record(usage, {model, component, requestId: opts.trace.traceId})`
-   → `logger.logLlmCall(entry)` (per-traceId delta + cumulative).
+   → adapter → `IRequestLogger.logLlmCall(entry)` (per-traceId delta + cumulative).
 3. On stream completion the agent (both flat and coordinator paths) reads
    `summaryToUsage(getSummary(traceId))` + `byModel` → emits it as the terminal
    chunk usage and returns it in `SmartAgentResponse.usage`.
@@ -190,7 +201,8 @@ to its terminal chunk.
 - **`@mcp-abap-adt/llm-agent-libs`** —
   - `adapters/usage-logging-llm.ts`, `adapters/usage-logging-embedder.ts` (new
     decorators).
-  - `SessionRequestLogger` implements `IUsageRecorder` (or a small adapter).
+  - an `IRequestLogger`→`IUsageRecorder` adapter (boundary depends on the
+    interface, not `SessionRequestLogger`).
   - builder/provider wiring: wrap `_mainLlm`/`_helperLlm`/`_classifierLlm` with
     the recorder and a sensible `defaultComponent`; wrap the embedder; ensure
     usage-logging is the innermost decorator.
@@ -218,7 +230,7 @@ to its terminal chunk.
 | # | Risk | Handling |
 |---|------|----------|
 | 1 | ALS around async generator is incorrect | **No ALS.** `requestId` rides `CallOptions`; `makeSubagentClient.send` gains an options param. |
-| 2 | A second aggregator (SessionRequestLogger) exists | It is **the** aggregator. Coordinator path switched to `getSummary`; controller self-sum + chunk path removed. `/v1/usage` shape preserved. |
+| 2 | A second aggregator already exists | The `IRequestLogger` (impl `SessionRequestLogger`) is **the** aggregator. Coordinator path switched to `getSummary`; controller self-sum + chunk path removed. `/v1/usage` shape preserved. |
 | 3 | "Every call" vs factory bypass (injected/custom/plugin) | Boundary **decorator** wraps any `ILlm`/`IEmbedder` at the agent/pipeline ingestion points, not just built-in providers. A provider never handed to the agent is inherently unmetered (true of any design) — documented. |
 | 4 | Construction-time component wrong for shared instance | `component` resolved **per call** as `options.usageComponent ?? defaultComponent`; correct even when one shared instance serves translate/expand/summary/fallback. |
 | 5 | Per-model overwrite (`agent.ts:621`) | Removed with the chunk path; `byModel` merge in `aggregate()` is already additive. |
