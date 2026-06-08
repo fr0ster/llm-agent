@@ -39,11 +39,13 @@ controller/coordinator/pass paths conform, not to invent machinery:
 
 - **Internal accounting (uniform):** every LLM/embedder call logs into the
   `IRequestLogger` interface. One aggregator, many loggers.
-- **Consumer delivery (protocol-specific, single source):** `streamProcess`
-  yields **exactly one** terminal usage chunk built from
+- **Consumer delivery (protocol-specific, single source):** on a **successful**
+  request `streamProcess` yields **exactly one** terminal usage chunk built from
   `summaryToUsage(getSummary(traceId))`. The **streaming** consumer (SSE) reads it
   as the final usage event; the **non-streaming** consumer (`process()`) sums
-  chunk usage (`:616-622`) — which is just that one chunk.
+  chunk usage (`:616-622`) — which is just that one chunk. On an **error** path no
+  terminal usage chunk is emitted (the error chunk is terminal); spend already
+  logged is still in `/v1/usage`.
 
 No separate `IRequestLogger` implementation is needed for streaming vs
 non-streaming: logging is uniform, only delivery differs, and both delivery modes
@@ -231,7 +233,8 @@ closes the Stepper gap (Goal #1) with no change to the stepper internal contract
 
 ### Consumer delivery — one terminal `getSummary` chunk on every path
 
-Exactly one usage-bearing chunk per request. **Canonical terminal-usage object
+Exactly one usage-bearing chunk per **successful** request (none on an error path,
+where the error chunk is terminal). **Canonical terminal-usage object
 (review #4)** — every emitter builds the SAME shape the flat path uses
 (`agent.ts:1243`), preserving the per-model breakdown:
 
@@ -259,20 +262,21 @@ pipeline branch (that would double the Stepper/DAG chunk, review #1-prev):
   the private `total` (`surface*` need no new access to `meta`; the caller supplies
   the usage). One chunk, same pattern as Stepper/DAG.
 - **pass** — has no coordinator handler, so the agent handles it (`agent.ts:700-722`):
-  the pass loop currently forwards provider chunks **including** `chunk.value.usage`
-  (`:714`). To keep one usage-bearing chunk (review #1): accumulate provider usage
-  across the stream, **yield each chunk as a copy with `usage` omitted**, log the
-  accumulated usage once into `IRequestLogger` (pass does not run the tool-loop
-  handler → additive, no double count), then emit the single `getSummary` terminal
-  chunk. The pass log entry uses `component:'tool-loop'` (the main model produces
-  the answer), `model: this._mainLlm.model ?? 'unknown'`, `durationMs:` measured
-  around the pass stream, `requestId: traceId`.
-  **Error handling (review #2):** track whether any chunk was an error
-  (`!chunk.ok`). If errored, **do not** emit the terminal success
-  (`finishReason:'stop'`) usage chunk — the error chunk is already terminal — but
-  still log whatever provider usage accumulated before the error (real, possibly
-  partial spend). The terminal `getSummary` chunk is emitted only on the
-  non-error path.
+  the pass loop forwards provider chunks **including** `chunk.value.usage` (`:714`).
+  Accumulate provider usage across the stream, track `hasUsage` (a usage chunk was
+  actually seen) and `errored` (`!chunk.ok`), and **yield each chunk as a copy with
+  `usage` omitted** so only one usage-bearing chunk reaches the consumer.
+
+  **Logging point (review #1):** `process()` returns on the first error chunk
+  (`agent.ts:581`), which abandons this generator — so code **after** the loop does
+  not run on error. Therefore, when a chunk is an error, **log the accumulated usage
+  *before* yielding the error chunk**, then yield it and return. On normal
+  completion, log after the loop and emit the single `getSummary` terminal chunk.
+  Log **only if `hasUsage`** (review #2 — mirrors `LoggingLlm.streamChat`; avoids a
+  zero `tool-loop` bucket). The log entry: `component:'tool-loop'`,
+  `model: this._mainLlm.model ?? 'unknown'`, `durationMs:` measured around the
+  stream, `requestId: traceId`. The terminal `getSummary` chunk is emitted **only on
+  the non-error path**.
 
 The agent's pipeline branch (`:736`) is **not** changed — each coordinator handler
 owns its single terminal usage chunk.
@@ -375,9 +379,10 @@ usage chunk owned by the path's component.
     `withEmbedder` also calls `wrapEmbedder` (idempotent, so no double-wrap). Remove
     the inline embedding `logLlmCall` from `rag-query.ts`.
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
-    (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, track
-    an `errored` flag (`!chunk.ok`), log the accumulated usage once, and emit the
-    terminal `getSummary` usage chunk **only when not errored** (review #2).
+    (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted; track
+    `hasUsage` + `errored`; on an error chunk **log before yielding it** (post-loop
+    code is skipped once `process()` returns — review #1), else log after the loop
+    and emit the terminal `getSummary` chunk; log **only if `hasUsage`** (review #2).
     **Do not** change the pipeline branch (`:736`) or `process()` (`:616-622`); the
     flat path is unchanged.
 - **`@mcp-abap-adt/llm-agent-server-libs`** —
