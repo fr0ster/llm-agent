@@ -80,8 +80,8 @@ callback for `planner`/`finalizer`).
    `SessionRequestLogger`). The controller's private sum is removed; all paths'
    usage comes from `getSummary(traceId)`.
 3. **Internal logging decoupled from consumer delivery** — logging is uniform;
-   delivery is one terminal `getSummary` usage chunk (SSE event, or summed by
-   `process()`).
+   delivery on a **successful** request is one terminal `getSummary` usage chunk
+   (SSE event, or summed by `process()`); none on an error path.
 4. **Reuse, minimal delta** — keep every existing logging site **except** the
    `rag-query.ts:102` inline embedding log (superseded by the embedder wrapper to
    avoid double-counting); *add* logging where it is currently absent (controller
@@ -283,7 +283,8 @@ owns its single terminal usage chunk.
 
 Intermediate provider stream usage is logged but **not** surfaced as a
 usage-bearing chunk — preserving the flat path's invariant of exactly one usage
-chunk per request, so `process()`'s sum is correct and never doubles.
+chunk per **successful** request (none on an error path), so `process()`'s sum is
+correct and never doubles.
 
 ### Systemic fix — traceId normalization
 
@@ -304,7 +305,7 @@ needs no traceId.
    IRequestLogger (per-traceId delta + cumulative)
         │ getSummary(traceId)                          getSummary() → /v1/usage
         ▼
-   streamProcess yields ONE terminal usage chunk
+   streamProcess yields ONE terminal usage chunk (successful request)
         ├─ SSE consumer: final usage event
         └─ process(): sums chunk usage → response.usage
 ```
@@ -428,7 +429,7 @@ usage chunk owned by the path's component.
 | 2 | toolsRag embeddings (startup-bound embedder) unlogged | `IToolsRagHandle.query` accepts `CallOptions`; the handle builds `QueryEmbedding(text, wrappedEmbedder, options)` → the boundary wrapper logs it (controller/Stepper pass `ctx.options`). |
 | 3 | `process()` can't see generated `traceId` | `process()` does not call `getSummary`; it sums the terminal chunk built (in `streamProcess`) from the locally-normalized `traceId`. |
 | 4 | Pass path diverges from single source | Pass logs its one call into `IRequestLogger`, then emits the same `getSummary` terminal chunk → `response.usage == /v1/usage`. |
-| 5 | Double counting | Embedder IS wrapped, but logs once per `embed()` (memoized → once per `QueryEmbedding`) and the only prior embedding log (`rag-query.ts:102`) is removed; LLM sites unchanged; exactly one usage-bearing chunk per request, emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch. |
+| 5 | Double counting | Embedder IS wrapped, but logs once per `embed()` (memoized → once per `QueryEmbedding`) and the only prior embedding log (`rag-query.ts:102`) is removed; LLM sites unchanged; exactly one usage-bearing chunk per successful request, emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch. |
 | 9 | Controller `logUsage` lacks `durationMs` | Use `durationMs: 0` (rag-query.ts:108 precedent); per-call timing deferred. |
 | 10 | Stepper toolsRag query-embedding (deep internal callers, no options) | Handler builds a request-bound `toolsRag` facade injecting `ctx.options`, passed into `rootStepper.run` — no internal-contract threading (review #1). |
 | 20 | Double-wrap of the embedder (resolve + builder) | `wrapEmbedder` is idempotent via a brand; returns already-wrapped instances unchanged (review #2). |
@@ -477,9 +478,9 @@ usage chunk owned by the path's component.
 - **Estimation fallback (review #1)**: an embedder returning no `usage` produces a
   logged entry with `estimated: true` and `totalTokens = ceil(text.length/4)`; an
   embedder that reports `usage` logs it verbatim (no `estimated`).
-- **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
-  yields exactly one usage-bearing chunk; `process()` sums it to
-  `getSummary(traceId)`.
+- **Single-usage-chunk invariant (successful request)**: `streamProcess`
+  (controller, pass, flat) yields exactly one usage-bearing chunk; `process()` sums
+  it to `getSummary(traceId)`. On an error path, no terminal usage chunk is emitted.
 - **Pass unification + single chunk (review #1)**: a streamed pass response yields
   exactly one usage-bearing chunk (forwarded provider chunks carry no `usage`), and
   `response.usage` equals its `/v1/usage` delta.
