@@ -56,12 +56,12 @@ pipeline:
       evaluator:                     # formulates the target state (goal)
         provider: sap-ai-sdk
         model: anthropic--claude-4.6-sonnet
-        hint: The target system is a live SAP/ABAP system.   # optional, see below
       planner:                       # returns the next step / done / rewind
         provider: sap-ai-sdk
         model: anthropic--claude-4.6-sonnet
       executor:                      # carries out a step; emits tool calls
         provider: sap-ai-sdk
+        # hint: <operational steering>  # optional — mainly for weaker models
         model: anthropic--claude-4.6-sonnet
     targetState:                     # how the goal is confirmed
       strategy: auto                 # auto | semantic-distance | consumer-confirm
@@ -74,29 +74,26 @@ pipeline:
   providers/models (e.g. a heavy planner + a light executor). The executor must
   be a **tool-capable** model the backend accepts (OpenAI function format);
   `anthropic--claude-3-haiku` cannot do tool calls via SAP AI Core orchestration.
-- **Domain hints (agnostic engine, gnostic config).** The engine's role system
-  prompts are **domain-agnostic** — they say "the live target system", never
-  "SAP"/"ABAP". A deployment re-specialises a role by setting an optional
-  `subagents.<role>.hint`: a short domain preamble appended to that role's system
-  prompt (e.g. naming the SAP/ABAP target and its object kinds). The hint
-  describes the **domain only** — it must not prescribe tool usage (that is the
-  engine prompt's job); a consumer adds tool guidance itself if it wants. Omit
-  the hints for a generic, domain-neutral controller. This is the **static**
-  gnosticization channel; the **dynamic** one — procedural skills retrieved from
-  a RAG collection at the right moment — is a separate mechanism (not wired via
-  `hint`). The shipped `pipelines/controller*.yaml` carry SAP/ABAP hints as a
-  worked example.
+- **Per-role hints (operational scaffolding for weaker models).** The engine's
+  role system prompts are agnostic and concise. An optional `subagents.<role>.hint`
+  is appended to that role's system prompt to give it extra **operational
+  guidance** — how to build the plan, how to execute a step, what to be strict
+  about. Its main purpose is to **scaffold weaker models**: a capable model
+  (Opus / Sonnet) usually needs none, while a smaller executor/planner model
+  (e.g. `gpt-4o-mini`) may need the steering. A hint is **not** a domain
+  description and must **not** name tools — the self-describing tool catalog and
+  the agnostic prompt cover those, and richer per-situation procedures belong to
+  the **skills RAG** (a separate, dynamic mechanism, not wired via `hint`).
+  `controller-mixed.yaml` carries an executor hint as a worked example.
 - Internal (MCP) tools are surfaced to the executor by **semantic top-K** from
   the vectorized tool catalog (`toolsRag`); a distance-based `targetState`
   strategy therefore needs an embedder (`consumer-confirm` does not).
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)
-  (agnostic, all-sonnet, no domain hints), [`pipelines/controller-sap.yaml`](../pipelines/controller-sap.yaml)
-  (SAP/ABAP-specialised via per-role hints), and [`pipelines/controller-sap-mixed.yaml`](../pipelines/controller-sap-mixed.yaml)
-  (SAP/ABAP, sonnet decider + light `gpt-4o-mini` executor). Gnostic configs are
-  named for their specialization (`-sap`); the bare `controller.yaml` is the
-  neutral template.
+  (all-sonnet, no hints) and [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
+  (sonnet deciders + light `gpt-4o-mini` executor, with an executor hint that
+  scaffolds the smaller model).
 
 ## Adding a custom pipeline (plugin)
 

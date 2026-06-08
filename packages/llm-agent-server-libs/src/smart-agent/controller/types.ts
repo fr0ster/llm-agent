@@ -48,13 +48,15 @@ export interface SessionBundle {
 }
 
 /** A controller subagent role: a standalone LLM config plus an OPTIONAL
- *  consumer-supplied domain `hint`. The engine's role system prompts are
- *  domain-agnostic; a deployment re-specialises a role (gnostic) by setting
- *  `hint` — a short domain preamble appended to that role's system prompt (e.g.
- *  naming the SAP/ABAP target and its object kinds). The hint describes the
- *  DOMAIN only — it must NOT prescribe tool usage (that is the engine prompt's
- *  job); a consumer who wants tool guidance adds it themselves. Absent hint →
- *  agnostic. */
+ *  per-role `hint`. The hint is appended to that role's system prompt and gives
+ *  the role extra OPERATIONAL guidance about running within the pipeline — how
+ *  to build the plan, how to execute a step, what to be strict about. Its main
+ *  purpose is to scaffold WEAKER models: a capable model (Opus / Sonnet) usually
+ *  needs none, while a smaller executor/planner model (e.g. gpt-4o-mini) may
+ *  need the extra steering. It is NOT a domain description and must NOT prescribe
+ *  tool names (the self-describing tool catalog + the agnostic engine prompt
+ *  cover those; richer per-situation procedures belong to the skills RAG).
+ *  Absent hint → the role runs on the bare agnostic prompt. */
 export type ControllerSubagentConfig = SmartServerLlmConfig & { hint?: string };
 
 export interface ControllerConfig {

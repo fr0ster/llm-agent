@@ -13,18 +13,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 - **`controller` pipeline.** A new built-in pipeline plugin: a deterministic coordinator orchestrating three opaque subagent roles (evaluator / planner / executor) in an incremental, goal-driven loop, with a durable per-session bundle, stateless suspend/resume, and internal/external tool routing. The three subagents are independent LLM endpoints (e.g. a heavy planner + a light executor); internal MCP tools are surfaced to the executor by semantic top-K selection over the vectorized tool catalog (`toolsRag`). Select with `pipeline: { name: controller, config: { subagents, targetState, sessionMemory, budgets } }`. Importable without YAML via the `./controller` subpath export (`ControllerPipelinePlugin` + `ControllerCoordinatorHandler` building blocks). `DEBUG_CONTROLLER=1` logs the step instructions the planner delegates + per-role/total token usage; the HTTP response always carries total token `usage`. See `docs/PIPELINES.md` and the `pipelines/controller*.yaml` examples.
 
-- **Agnostic controller prompts + per-role domain `hint`.** The `controller`
+- **Agnostic controller prompts + optional per-role `hint`.** The `controller`
   pipeline's role system prompts (evaluator / planner / executor) are now
-  **domain-agnostic** — they say "the live target system" instead of naming SAP.
-  A deployment re-specialises a role by setting an optional `subagents.<role>.hint`
-  in the pipeline config; the hint is appended as a short "Domain context"
-  preamble to that role's system prompt. Omit hints for a generic controller.
-  Example configs follow the agnostic/gnostic split: `pipelines/controller.yaml`
-  is the neutral template (no hints), while gnostic configs are **named for their
-  specialization** — `pipelines/controller-sap.yaml` and
-  `pipelines/controller-sap-mixed.yaml` carry SAP/ABAP hints. (The dynamic
-  counterpart — procedural skills pulled from a RAG collection — is a separate,
-  future mechanism, not part of `hint`.)
+  **agnostic** — they say "the live target system" instead of naming SAP. An
+  optional `subagents.<role>.hint` is appended to a role's system prompt to give
+  extra **operational guidance** (how to build the plan, how to execute a step).
+  Its purpose is to **scaffold weaker models** — a capable model (Opus / Sonnet)
+  needs none; a smaller executor/planner (e.g. `gpt-4o-mini`) may. A hint is not
+  a domain description and must not name tools (the tool catalog + skills RAG
+  cover those). `pipelines/controller.yaml` is the all-sonnet template (no hints);
+  `pipelines/controller-mixed.yaml` carries an executor hint scaffolding its
+  light `gpt-4o-mini` executor.
 
 ### Deprecated
 

@@ -37,7 +37,7 @@ describe('IncrementalPlanner', () => {
     assert.equal(next?.kind, 'next');
     assert.equal(next?.kind === 'next' && next.step.name, 's1');
   });
-  it('appends the domain hint to the agnostic planner prompt', async () => {
+  it('appends the per-role hint to the agnostic planner prompt', async () => {
     let sys = '';
     const recording: ISubagentClient = {
       async send(messages) {
@@ -49,14 +49,14 @@ describe('IncrementalPlanner', () => {
         };
       },
     };
-    await new IncrementalPlanner(recording, 'Domain X facts.').next({
+    await new IncrementalPlanner(recording, 'Keep the plan minimal.').next({
       bundle: bundle(),
       prompt: 'r',
       toolCatalog: '',
       retrying: false,
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
-    assert.match(sys, /Domain context: Domain X facts\./);
+    assert.match(sys, /Additional guidance: Keep the plan minimal\./);
   });
 
   it('non-content planner reply → null (format failure)', async () => {
@@ -358,7 +358,7 @@ describe('AdaptivePlanner', () => {
         };
       },
     };
-    // Without a hint: the create-plan prompt is domain-agnostic.
+    // Without a hint: the create-plan prompt is agnostic, no appended guidance.
     await new AdaptivePlanner(recording).next({
       bundle: bundle(),
       prompt: 'r',
@@ -367,22 +367,16 @@ describe('AdaptivePlanner', () => {
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
     assert.match(sys, /live target system/);
-    assert.doesNotMatch(sys, /Domain context:/);
+    assert.doesNotMatch(sys, /Additional guidance:/);
 
-    // With a hint: it is appended as a "Domain context" preamble.
-    await new AdaptivePlanner(
-      recording,
-      'The target is a live SAP/ABAP system.',
-    ).next({
+    // With a hint: it is appended as an "Additional guidance" preamble.
+    await new AdaptivePlanner(recording, 'Call one tool at a time.').next({
       bundle: bundle(),
       prompt: 'r',
       toolCatalog: '',
       retrying: false,
     });
-    assert.match(
-      sys,
-      /Domain context: The target is a live SAP\/ABAP system\./,
-    );
+    assert.match(sys, /Additional guidance: Call one tool at a time\./);
   });
 
   it('empty replan then finalizer error: retry RE-FINALIZES, does not replan again', async () => {

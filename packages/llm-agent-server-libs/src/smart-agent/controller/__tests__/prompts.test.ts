@@ -3,10 +3,10 @@ import { describe, it } from 'node:test';
 import { appendHint } from '../prompts.js';
 
 describe('appendHint', () => {
-  it('appends a Domain context preamble when a hint is given', () => {
+  it('appends an Additional guidance preamble when a hint is given', () => {
     assert.equal(
-      appendHint('SYS', 'live SAP system'),
-      'SYS\n\nDomain context: live SAP system',
+      appendHint('SYS', 'call one tool at a time'),
+      'SYS\n\nAdditional guidance: call one tool at a time',
     );
   });
 
@@ -21,6 +21,6 @@ describe('appendHint', () => {
   });
 
   it('trims the hint before appending', () => {
-    assert.equal(appendHint('SYS', '  x  '), 'SYS\n\nDomain context: x');
+    assert.equal(appendHint('SYS', '  x  '), 'SYS\n\nAdditional guidance: x');
   });
 });
