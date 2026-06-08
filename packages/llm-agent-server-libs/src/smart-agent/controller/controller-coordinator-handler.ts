@@ -21,6 +21,7 @@ import {
 } from '@mcp-abap-adt/llm-agent-libs';
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
+import { makePlanner } from './planner.js';
 import { hydrateBundle, persistBundle } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
@@ -180,6 +181,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const isExternalTool = (name: string): boolean =>
       externalNames.has(name) || (deps.isExternalTool?.(name) ?? false);
 
+    // True for the first planner.next of a turn that resumed an external-tool
+    // result (the result is now in plannerPrivate) → the adaptive planner replans
+    // with it rather than blindly re-running the suspended step. Set in the
+    // external-tool resume branch below.
+    let resumedExternal = false;
+
     // -- Resume from a persisted pending marker -----------------------------
     if (bundle.pending?.kind === 'external-tool') {
       const { extId, toolName } = bundle.pending;
@@ -207,6 +214,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       });
       bundle.plannerPrivate += `\n[external tool ${toolName} result] ${result}`;
       bundle.pending = undefined;
+      resumedExternal = true;
     } else if (bundle.pending?.kind === 'clarify') {
       // The incoming prompt is the human's answer to the clarify question.
       // For a goal-confirmation clarify (position 'goal'), commit the goal so we
@@ -263,14 +271,31 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     ]);
     const cfg = deps.config.budgets;
     let planParseRetries = 0;
+    const planner = makePlanner(
+      deps.config.planner ?? 'incremental',
+      deps.planner,
+    );
+    // bundle.lastOutcome is the SINGLE source of truth for the last step's
+    // outcome — durable, so a resume after a FAILED step replans instead of
+    // repeating it. runStep.settle() sets it; the adaptive replan branch clears it
+    // once the failure has been consumed into a new plan (so a crash after the
+    // replan, or a finalizer retry after an empty replan, does NOT replan again).
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
-      const next = await this.planNext(
+      const next = await planner.next({
         bundle,
         prompt,
         toolCatalog,
-        planParseRetries > 0,
+        lastOutcome: bundle.lastOutcome,
+        resumedExternal,
+        retrying: planParseRetries > 0,
         logUsage,
-      );
+      });
+      // NB: do NOT reset resumedExternal here — if this replan reply was malformed
+      // (next === null), the parse-retry below must keep replanning. It is reset
+      // only after a VALID decision (beside planParseRetries = 0;).
+      // The adaptive planner mutates bundle.plan/planCursor in next(); persist so
+      // a stateless resume continues from the same point. (No-op for incremental.)
+      await persistBundle(deps.backend, sessionId, bundle);
 
       // Format failure (not valid NextStep JSON) → re-ask the planner with a
       // stern reminder, bounded by maxRetries. This does NOT touch rewindsUsed:
@@ -289,6 +314,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         continue;
       }
       planParseRetries = 0;
+      resumedExternal = false; // a valid decision consumed any external-resume replan
 
       if (next.kind === 'done') {
         bundle.pending = undefined;
@@ -309,6 +335,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           );
         }
         bundle.plannerPrivate += `\n[rewind] ${next.reason}`;
+        bundle.lastOutcome = undefined;
         await persistBundle(deps.backend, sessionId, bundle);
         continue;
       }
@@ -327,9 +354,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         isExternalTool,
         logUsage,
         usageNow,
+        (o) => planner.commit?.(bundle, o),
       );
       if (completed === 'suspended') return true;
-      // 'advanced' → loop continues to the next planner call.
+      // runStep.settle() already persisted the outcome ATOMICALLY (bundle.lastOutcome
+      // + cursor advance via onCommit + step result, in one persistBundle). The next
+      // planner.next reads the fresh bundle.lastOutcome; a resume continues from the
+      // next uncompleted step (or replans, if this step failed).
     }
 
     // -- Budget exhausted ---------------------------------------------------
@@ -342,54 +373,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     );
   }
 
-  // -- Planner ------------------------------------------------------------
-
-  private async planNext(
-    bundle: SessionBundle,
-    prompt: string,
-    toolCatalog: string,
-    retrying = false,
-    logUsage?: (role: string, u?: LlmUsage) => void,
-  ): Promise<NextStep | null> {
-    const res = await this.deps.planner.send([
-      {
-        role: 'system',
-        content:
-          'You are the planner. Given the goal and progress, return a SINGLE JSON ' +
-          'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
-          'next step, {"kind":"done","result":...} when the goal is met, or ' +
-          '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.\n' +
-          'An executor carries out each step against the LIVE SAP system using the ' +
-          'tools listed below. Any fact about the system MUST be obtained by planning a ' +
-          'step that fetches it with a tool — do NOT answer from prior knowledge, and do ' +
-          'NOT mark the goal "done" until the required data has actually been fetched ' +
-          '(fetched results appear under Progress). Until then, return a concrete ' +
-          '"next" fetch step.' +
-          (retrying
-            ? '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY ' +
-              'the raw JSON object — no prose, no explanation, no markdown code fences.'
-            : ''),
-      },
-      {
-        role: 'user',
-        content:
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}\n` +
-          `Available tools (the executor picks the exact one):\n${toolCatalog}`,
-      },
-    ]);
-    logUsage?.('planner', res.usage);
-    if (res.kind !== 'content') {
-      // The planner emitted a tool call or error instead of a decision → a
-      // FORMAT failure (null), so the loop re-asks rather than burning a rewind.
-      return null;
-    }
-    return parseNextStep(res.content);
-  }
-
   // -- Step execution -----------------------------------------------------
 
-  /** Returns 'advanced' (step done, continue loop) or 'suspended' (external
-   *  round-trip surfaced — caller must return true). */
+  /** Returns 'advanced' (step succeeded — continue loop), 'failed' (retries/
+   *  tool-call budget exhausted; the failure note is in plannerPrivate so the
+   *  planner can replan), or 'suspended' (external round-trip surfaced — caller
+   *  must return true). */
   private async runStep(
     ctx: PipelineContext,
     sessionId: string,
@@ -400,11 +389,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     isExternalTool: (name: string) => boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
     usageNow?: () => TerminalUsage,
-  ): Promise<'advanced' | 'suspended'> {
+    onCommit?: (outcome: 'advanced' | 'failed') => void,
+  ): Promise<'advanced' | 'failed' | 'suspended'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
     const maxToolCalls = cfg.maxToolCalls ?? 10;
     let toolCalls = 0;
+    // Persist the step outcome ATOMICALLY: record lastOutcome (durable, so a
+    // resume after a failed step replans instead of repeating it) AND advance the
+    // planner cursor (onCommit) in the SAME persistBundle that records the step
+    // result — never in a separate write, so a crash cannot replay a completed step.
+    const settle = async (
+      outcome: 'advanced' | 'failed',
+    ): Promise<'advanced' | 'failed'> => {
+      bundle.lastOutcome = outcome;
+      onCommit?.(outcome);
+      await persistBundle(deps.backend, sessionId, bundle);
+      return outcome;
+    };
     const messages: Message[] = [
       {
         role: 'system',
@@ -468,8 +470,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         });
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name}] ${res.content}`;
-        await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return settle('advanced');
       }
 
       if (res.kind === 'error') {
@@ -485,8 +486,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // planner can replan on the next iteration.
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
-        await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return settle('failed');
       }
 
       // res.kind === 'tool_call' → route the FIRST tool call.
@@ -504,8 +504,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
-        await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return settle('failed');
       }
       const call = toLlmToolCall(firstCall);
       const name = call.name;
@@ -544,8 +543,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
-        await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return settle('failed');
       }
 
       // Internal MCP tool — bound the inner loop so a stuck executor cannot
@@ -554,8 +552,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if (toolCalls > maxToolCalls) {
         bundle.budgets.stepsUsed++;
         bundle.plannerPrivate += `\n[step ${step.name} aborted] tool-call budget exhausted`;
-        await persistBundle(deps.backend, sessionId, bundle);
-        return 'advanced';
+        return settle('failed');
       }
 
       // Execute locally, memorize, re-send to the executor.
@@ -759,7 +756,7 @@ function extractPrompt(textOrMessages: string | Message[]): string {
  *  surrounding prose. Returns null when no valid decision can be extracted — the
  *  caller treats that as a FORMAT error (re-ask the planner), NOT a rewind, so a
  *  badly-formatted reply never silently burns the rewind budget. */
-function parseNextStep(content: string): NextStep | null {
+export function parseNextStep(content: string): NextStep | null {
   const json = extractJsonObject(content);
   if (json === null) return null;
   try {
@@ -779,7 +776,7 @@ function parseNextStep(content: string): NextStep | null {
 /** Extract the first balanced JSON object from a planner reply, ignoring ```json
  *  fences and prose around it. String-aware (braces inside strings don't count).
  *  Returns null if no balanced object is present. */
-function extractJsonObject(raw: string): string | null {
+export function extractJsonObject(raw: string): string | null {
   const fence = raw.match(/```(?:json)?\s*([\s\S]*?)```/i);
   const body = fence ? fence[1] : raw;
   const start = body.indexOf('{');

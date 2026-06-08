@@ -45,4 +45,17 @@ describe('controller types', () => {
     assert.equal(bundle.budgets.stepsUsed, 0);
     assert.equal(cfg.budgets.maxSteps, 20);
   });
+  it('ControllerConfig.planner + SessionBundle.plan/planCursor + planner seam types', () => {
+    const cfg: Partial<ControllerConfig> = { planner: 'adaptive' };
+    const bundle: SessionBundle = {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      plan: [{ name: 's1', instructions: 'do' }],
+      planCursor: 0,
+    };
+    assert.equal(cfg.planner, 'adaptive');
+    assert.equal(bundle.plan?.[0].name, 's1');
+    assert.equal(bundle.planCursor, 0);
+  });
 });

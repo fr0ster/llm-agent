@@ -43,6 +43,22 @@ describe('ControllerPipelinePlugin', () => {
     );
   });
 
+  it('parseConfig defaults planner to incremental and preserves an explicit choice', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const base = {
+      subagents: {
+        evaluator: { provider: 'openai' },
+        planner: { provider: 'openai' },
+        executor: { provider: 'openai' },
+      },
+    };
+    assert.equal(plugin.parseConfig(base).planner, 'incremental');
+    assert.equal(
+      plugin.parseConfig({ ...base, planner: 'adaptive' }).planner,
+      'adaptive',
+    );
+  });
+
   it('build returns an instance with agent + close', async () => {
     const plugin = new ControllerPipelinePlugin();
     const cfg = plugin.parseConfig({
