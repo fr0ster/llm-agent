@@ -5,245 +5,257 @@
 
 ## Problem
 
-`response.usage` (and the `/v1/usage` session rollup) **undercounts** real token
-spend. The host `SmartAgent` runs per-turn preamble helpers — RAG query
-translation (`_toEnglishForRag`), history summarization (`_summarizeHistory`),
-intent classification (`_classifier.classify`), query expansion
-(`queryExpander.expand`) — whose LLM usage is **discarded** (the helpers return
-values, not stream chunks). `agent.process` only sums `usage` from yielded
-stream chunks (`agent.ts:616`), so those tokens vanish.
+`response.usage` undercounts real token spend on the **coordinator pipeline
+path** (controller / stepper / dag). Two distinct causes:
 
-There is also a **structural** defect: usage is summed in **two places**. A
-pipeline (e.g. the controller) accumulates its own `total` and emits it as one
-value on its terminal chunk labelled `turn total`; the agent then sums chunk
-usage and happens to receive only that single value. The two can diverge the
-moment any call is counted in one place but not the other. A single potential
-discrepancy nullifies the point of accounting.
+1. **Two response.usage derivations.** The flat/tool-loop path already derives
+   `response.usage` from the mature `SessionRequestLogger` via
+   `getSummary(traceId)` + `summaryToUsage` (`agent.ts:1237,1595,1711,1753`). But
+   the coordinator path (`agent.ts:567-635`) instead sums `usage` from yielded
+   stream **chunks** into a private `totalUsage`. For the controller, that chunk
+   carries the controller's own hand-rolled aggregate — a *second* authoritative
+   total that can (and does) diverge from the logger. A single potential
+   discrepancy nullifies the point of accounting.
 
-Additional latent inaccuracies (see *Edge cases*): streaming responses often do
-not return `usage` in the call result; per-model attribution is **overwritten**
-rather than merged (`agent.ts:621`); embeddings are not counted at all; session
-totals use a parallel `sessionManager.addTokens` path (`session-manager.ts:15`).
+2. **Some LLM/embedder calls never reach the logger.** The agent's
+   `_toEnglishForRag` (`agent.ts:1939`) returns a string and does not
+   `logLlmCall`; controller subagent calls (`makeSubagentClient`,
+   `subagent-client.ts`) report usage to the controller's private sum but not to
+   `SessionRequestLogger`; embedders never log token usage; streaming usage is
+   only captured if the provider emits it on a stream chunk and someone reads it.
+
+The key realisation: **the aggregator already exists and is correct.**
+`SessionRequestLogger` keys per-traceId deltas (for `response.usage`) and a
+session-cumulative bucket (for `/v1/usage`), with `byModel` / `byComponent` /
+`byCategory` + request counts, **call-scoped `component` per `LlmCallEntry`**,
+and nested-safe coordinator/worker semantics. This design does **not** build a
+new aggregator; it routes every LLM/embedder call into the existing one and
+makes the coordinator path read from it.
 
 ## Goals
 
-1. **Accurate** — `response.usage` equals the sum of *every* LLM (and embedder)
-   call made during the turn, by construction.
-2. **End-to-end (наскрізний)** — captures host preamble, pipeline subagents,
-   tool-loop rounds, streaming usage, and embeddings — regardless of call site.
-3. **Single source of truth** — exactly one aggregator per turn. No second
-   "total" that can diverge. Session `/v1/usage` and `response.usage.models` are
-   fed from the same aggregator (no parallel `addTokens`).
-4. **One interface for all counting needs** — including the shape returned over
-   the llm-agent protocol.
-5. **Pluggable granularity** — total-only / per-model / per-component is a choice
-   of *implementation*, not of call sites.
+1. **Accurate** — `response.usage` equals the sum of every LLM and embedder call
+   in the request, on every pipeline path.
+2. **End-to-end (наскрізний)** — host preamble (translate/summarize/classify/
+   expand), pipeline subagents, tool-loop rounds, streaming usage, and
+   embeddings all counted, regardless of call site.
+3. **Single source of truth** — exactly one aggregator: `SessionRequestLogger`.
+   The coordinator path derives `response.usage` from it; the controller's
+   private summation and the chunk-usage path are removed. `/v1/usage` is
+   unchanged (already logger-fed).
+4. **One interface for the provider boundary** — `IUsageRecorder`, the seam
+   injected at the LLM/embedder boundary; the logger adapts to it.
+5. **Pluggable granularity** — the response/`/v1/usage` shape already supports
+   per-model and per-component; nothing new needed. A different rollup is a
+   different `IRequestLogger`/recorder impl, not a call-site change.
 
 ## Non-Goals
 
-- Reconciling the controller's internal `[controller]` DEBUG per-call log with
-  `response.usage` by special plumbing. The DEBUG lines stay as diagnostics; the
-  controller stops emitting/labelling its own aggregate "turn total". The single
-  authoritative total is `response.usage`, read from the meter.
+- A new `IUsageMeter` / AsyncLocalStorage turn scope. The earlier draft proposed
+  this; it duplicates `SessionRequestLogger` and the ALS-around-async-generator
+  scoping is error-prone. **Dropped.** Propagation is explicit via `requestId`
+  on `CallOptions` (already present as `opts.trace.traceId`).
+- Reconciling the controller's `[controller]` DEBUG per-call log with
+  `response.usage`. The per-subagent `[controller] tokens <role>` lines stay as
+  diagnostics; the controller's aggregate `turn total` line and terminal-chunk
+  usage are removed. The authoritative total is `response.usage` from the logger.
 - Fixing provider-side numeric accuracy (a provider that mis-reports its own
-  `usage` is out of our control; see *Edge cases*).
+  `usage` is out of our control).
 
 ## Architecture
 
-Two layers plus an ALS bridge.
+### The aggregator — `SessionRequestLogger` (reused, unchanged core)
 
-### Layer 1 — System (host / agent): the aggregator
+Stays the single authoritative aggregator. It already:
+- routes each `logLlmCall(entry)` to the per-`requestId` delta **and** the
+  session-cumulative bucket;
+- aggregates `byModel`/`byComponent`/`byCategory` with `requests` counts;
+- yields `response.usage` via `getSummary(traceId)` → `summaryToUsage`, and
+  `/v1/usage` via `getSummary()`.
 
-- **`IUsageMeter`** — the turn-scoped aggregator. Holds running totals, exposes a
-  `snapshot()`. The chosen *implementation* decides detail level.
-- **AsyncLocalStorage turn scope** — the agent opens
-  `usageScope.run(meter, () => <entire turn>)` at the start of each turn. A fresh
-  meter is created **inside** the scope (never a singleton) so concurrent turns
-  never share a meter.
-- **Surfacing** — at turn end, `meter.snapshot()` becomes `response.usage`
-  (including `usage.models`). The same snapshot feeds the session `/v1/usage`
-  rollup. The old paths are **removed**: the controller's self-summation +
-  terminal-chunk total, the chunk-usage aggregation at `agent.ts:616-622`, and
-  `sessionManager.addTokens` driven from `agent.ts:1514`.
+### The provider boundary — `IUsageRecorder` + a logging decorator
 
-### Layer 2 — Providers: self-reporting
+- **`IUsageRecorder`** (contracts) — narrow seam the LLM/embedder boundary
+  depends on instead of the full `IRequestLogger`:
+  `record(usage, meta: { model: string; component: LlmComponent; requestId?: string; estimated?: boolean })`.
+- **`UsageLoggingLlm`** — an `ILlm` decorator (sibling of `retry-llm`,
+  `circuit-breaker-llm`) that wraps **any** `ILlm`. It is constructed with a
+  fixed `component` tag and an `IUsageRecorder`. On `chat()` it records
+  `res.value.usage`; on `streamChat()` it records the `usage` from the terminal
+  stream chunk (`LlmStreamChunk.usage`). `requestId` is read **per call** from
+  `options.trace.traceId`.
+- **`UsageLoggingEmbedder`** — the analogous `IEmbedder` decorator, tagged
+  `component:'embedding'`, recording embedding token usage (providers that
+  return it) from `embed()`.
+- **`SessionRequestLogger` implements `IUsageRecorder`** (or via a thin adapter):
+  `record(u, m)` → `logLlmCall({ ...u, model: m.model, component: m.component, requestId: m.requestId, durationMs, estimated })`. No second store.
 
-- **`IUsageRecorder`** — a tiny contract injected into every provider:
-  `record(usage, attribution?)`.
-- Each provider (`openai`, `anthropic`, `deepseek`, `sap-aicore`, `ollama` for
-  LLM; `openai`, `ollama`, `sap-aicore` for embedders) calls
-  `recorder.record(...)` **whenever it observes usage** — on the non-stream
-  result **and** on the streaming usage event. Recording at the provider is what
-  captures streaming usage accurately: the provider is the only component that
-  sees the stream's usage frame.
+Why a boundary decorator and not constructor injection into the five provider
+packages: the repo also accepts **injected** `ILlm`/`IEmbedder` instances,
+builder-provided instances, and plugin-provided ones. Wrapping at the
+boundary meters all of them; editing built-in provider internals would miss the
+injected/custom ones (review finding #3). Provider packages are touched **only**
+if needed to emit `usage` on stream chunks (see #7).
 
-### Bridge — providers stay ignorant of ALS
+### Attribution is per-call, with a per-instance default (review #4)
 
-- Providers depend only on `IUsageRecorder` (a contracts-level type), never on
-  AsyncLocalStorage.
-- `makeLlm` / `makeDefaultLlm` (`providers.ts:176`, `:300`) and the embedder
-  factories inject a **system-supplied recorder implementation** at construction.
-  That implementation resolves the *current* turn meter from the ALS scope on
-  each `record()` and forwards to it.
-- One injected recorder reference is correct across all turns, because ALS
-  yields the right meter per async context. When `record()` fires outside any
-  turn scope (e.g. the startup health/warmup call), `getStore()` is `undefined`
-  and the call is a safe no-op.
-- Because subagent LLMs are also built via `ctx.makeLlm` (controller pipeline
-  `controller.ts:101-103`), they are injected the same recorder — no need to
-  thread `CallOptions` through `makeSubagentClient.send` (which today omits it).
+The main LLM is reused as the classifier/helper fallback, and the helper LLM is
+itself reused for **three** distinct semantic components (`translate`,
+`query-expander`, history `helper`/summary — `preprocessor.ts` /
+`query-expander.ts` already log these distinctly). So `component` cannot be fixed
+on the instance; it must be **resolved per call**:
 
 ```
-                 ┌───────────────────────── turn scope (ALS) ─────────────────────────┐
- agent.process → │ usageScope.run(meter):                                              │
-                 │   preamble helpers ─┐                                               │
-                 │   pipeline subagents├─ provider.chat()/embed() → recorder.record()  │
-                 │   tool-loop rounds ─┘        │ (resolves current meter via ALS)      │
-                 │                              ▼                                       │
-                 │                        IUsageMeter (single aggregator)              │
-                 └───────────────────────────────│──────────────────────────────────--┘
-                                                  ▼
-                              snapshot() → response.usage (+ usage.models)
-                                          → /v1/usage session rollup
+component = options?.usageComponent ?? this.defaultComponent
 ```
 
-## Contract (in `@mcp-abap-adt/llm-agent`)
+- `CallOptions` gains `usageComponent?: LlmComponent`. Call sites that know their
+  semantic role set it: translate → `'translate'`, query-expand →
+  `'query-expander'`, history summary → `'helper'`.
+- The decorator's `defaultComponent` (construction-time) is the fallback for
+  calls that don't set it — and it is correct for those: `_mainLlm` →
+  `'tool-loop'`, controller subagents via `ctx.makeLlm` →
+  `'evaluator'|'planner'|'executor'`, the finalizer call → `'finalizer'`.
+- When the helper falls back to the main provider, the call still carries
+  `usageComponent` from the call site, so it is labelled correctly regardless of
+  which underlying instance served it.
 
-`AggregatedUsage` is exactly the shape returned over the llm-agent protocol, so
-one type feeds chat `response.usage`, the per-model `usage.models` map, and the
-`/v1/usage` rollup. It reuses the existing `LlmUsage` / `ModelUsageEntry`
-(`interfaces/types.ts:192,198`).
+This makes the decorator the **single** logging path: the scattered explicit
+`logLlmCall` calls in `preprocessor.ts` / `query-expander.ts` / `_summarizeHistory`
+are **removed** (each sets `usageComponent` instead), so a call is logged exactly
+once. Wrappers wrap the **raw** provider (never another wrapper), so no double
+counting.
 
-```ts
-/** Attribution for one recorded call. component distinguishes the source. */
-export interface UsageAttribution {
-  model?: string;
-  component?:
-    | 'main' | 'helper' | 'classifier' | 'expander'   // host preamble + tool-loop
-    | 'evaluator' | 'planner' | 'executor' | 'finalizer' // controller subagents
-    | 'embedder';
-}
+### Decorator ordering
 
-/** Sink injected into providers. */
-export interface IUsageRecorder {
-  record(usage: LlmUsage, attribution?: UsageAttribution): void;
-}
+Usage logging must be **innermost** (closest to the provider) so every actual
+provider invocation is logged, including retried attempts (real spend):
+`retry( circuitBreaker( rateLimiter( usageLogging( provider ) ) ) )`.
 
-/** Protocol-facing aggregate (same shape as response.usage). */
-export interface AggregatedUsage extends LlmUsage {
-  models?: Record<string, ModelUsageEntry>;
-}
+### No ALS
 
-/** Turn-scoped aggregator. */
-export interface IUsageMeter extends IUsageRecorder {
-  snapshot(): AggregatedUsage;
-}
+`requestId` is already available at every call site via `options.trace.traceId`.
+The one site that drops it is `makeSubagentClient.send` (no `options` param) — it
+gains an `options?: CallOptions` parameter and the controller handler passes the
+turn's options. This removes the need for AsyncLocalStorage and the unsafe
+generator-scoping it would require (review #1).
+
+### Unify `response.usage` (the central fix)
+
+The coordinator branch of `agent.process` (`567-635`) stops summing chunk usage
+and instead, after the stream completes, derives
+`usage = summaryToUsage(this.requestLogger.getSummary(opts?.trace?.traceId))`
+plus the `byModel` map — exactly as the flat path already does. The private
+`totalUsage` accumulator and the `chunk.value.usage` summation are removed. The
+controller handler stops accumulating its own `total` and stops attaching `usage`
+to its terminal chunk.
+
+```
+ every chat()/embed()  ──►  UsageLoggingLlm/Embedder (role-tagged)
+   (preamble, subagents,        │  record(usage, {model, component, requestId})
+    tool-loop, embeddings)       ▼
+                          IUsageRecorder ── adapts to ──► SessionRequestLogger
+                                                              │  (per-traceId delta + cumulative)
+                                          getSummary(traceId) ▼
+                              response.usage (+ byModel)   /v1/usage (cumulative)
 ```
 
-### Default implementation — `PerModelUsageMeter` (`llm-agent-libs`)
+## Contract changes (in `@mcp-abap-adt/llm-agent`)
 
-- Accumulates `promptTokens` / `completionTokens` / `totalTokens` additively.
-- Maintains `models[model]` as a `ModelUsageEntry` with **additive** merge and a
-  `requests` counter (fixes the overwrite bug at `agent.ts:621`).
-- `component` is recorded for future per-component reporting; the default
-  snapshot exposes per-model. Swapping in a `TotalOnlyUsageMeter` or
-  `PerComponentUsageMeter` later requires no provider or call-site change.
+- Add `IUsageRecorder` to `interfaces/request-logger.ts`.
+- Add `usageComponent?: LlmComponent` to `CallOptions` (`interfaces/types.ts`) —
+  the per-call semantic component hint read by the decorator.
+- Add `'executor'` to the `LlmComponent` union (controller's executor role; the
+  others — `planner`/`evaluator`/`finalizer`/`tool-loop`/`embedding`/`translate`/
+  `query-expander`/`helper`/`classifier` — already exist). Map `'executor'` in
+  `CATEGORY_MAP` to `'request'`.
+- Reuse `LlmCallEntry`, `RequestSummary`, `summaryToUsage` as-is.
 
-### ALS bridge — `AlsUsageRecorder` + `usageScope` (`llm-agent-libs`)
+## Data flow per request
 
-- `usageScope = new AsyncLocalStorage<IUsageMeter>()`.
-- `AlsUsageRecorder` implements `IUsageRecorder`; `record()` does
-  `usageScope.getStore()?.record(...)`.
-- A single `AlsUsageRecorder` instance is injected into all providers/embedders
-  at construction.
-
-## Data flow per turn
-
-1. `agent.streamProcess` (the single generator that performs all turn work;
-   `process` only aggregates its chunks) creates `meter = new PerModelUsageMeter()`
-   at the top and runs the whole generator body inside `usageScope.run(meter, ...)`,
-   so every downstream `await`/`yield` stays in scope.
-2. Every `chat()` / `embed()` call (preamble, subagents, tool-loop, embeddings)
-   reaches a provider that calls `recorder.record(usage, {model, component})`.
-3. At turn end the agent reads `meter.snapshot()` → emits it as the turn usage on
-   the terminal stream chunk (so streaming SSE clients still get a final `usage`)
-   **and** returns it in `SmartAgentResponse.usage`.
-4. The session `/v1/usage` rollup adds `snapshot().totalTokens` to the session
-   counter (replacing the per-chunk `addTokens`).
-
-`component` attribution is set by the construction site: `makeLlm` for a given
-role passes the role tag so the injected recorder labels it (e.g. the helper LLM
-records as `helper`, the controller's executor LLM as `executor`).
+1. The server starts the request: `logger.startRequest(traceId)` (existing).
+2. Every LLM/embedder call goes through a role-tagged `UsageLogging*` decorator
+   → `recorder.record(usage, {model, component, requestId: opts.trace.traceId})`
+   → `logger.logLlmCall(entry)` (per-traceId delta + cumulative).
+3. On stream completion the agent (both flat and coordinator paths) reads
+   `summaryToUsage(getSummary(traceId))` + `byModel` → emits it as the terminal
+   chunk usage and returns it in `SmartAgentResponse.usage`.
+4. The server reads `getSummary(traceId)` for the HTTP `usage`, then
+   `dropRequest(traceId)` (existing). `/v1/usage` reads `getSummary()`.
 
 ## Changes by package
 
-- **`@mcp-abap-adt/llm-agent`** — add `IUsageRecorder`, `IUsageMeter`,
-  `AggregatedUsage`, `UsageAttribution` to `interfaces/types.ts`; export them.
+- **`@mcp-abap-adt/llm-agent`** — `IUsageRecorder`; `'executor'` added to
+  `LlmComponent` + `CATEGORY_MAP`.
 - **`@mcp-abap-adt/llm-agent-libs`** —
-  - `usage/per-model-usage-meter.ts`, `usage/als-usage-recorder.ts` (new).
-  - `providers.ts` — `makeLlm`/`makeDefaultLlm` accept + inject a recorder and a
-    `component` tag.
-  - `agent.ts` — open `usageScope.run` around the turn; build the meter; read
-    `snapshot()` for the terminal usage; **delete** the chunk-usage summation
-    (616-622) and the `addTokens(chunk…)` path (1514); feed session rollup from
-    the snapshot.
-  - embedder factory wiring (so `IEmbedder` providers receive the recorder).
-- **Provider packages** (`openai-llm`, `anthropic-llm`, `deepseek-llm`,
-  `sap-aicore-llm`, `ollama-llm`) — accept an `IUsageRecorder` (constructor
-  option); call `record()` on the non-stream result and on the stream usage
-  frame; ensure `stream_options.include_usage` (or provider equivalent) is set so
-  streaming usage is actually emitted.
-- **Embedder packages** (`openai-embedder`, `ollama-embedder`,
-  `sap-aicore-embedder`) — accept the recorder; `record()` embedding token usage
-  with `component:'embedder'` (providers that return embedding token counts).
+  - `adapters/usage-logging-llm.ts`, `adapters/usage-logging-embedder.ts` (new
+    decorators).
+  - `SessionRequestLogger` implements `IUsageRecorder` (or a small adapter).
+  - builder/provider wiring: wrap `_mainLlm`/`_helperLlm`/`_classifierLlm` with
+    the recorder and a sensible `defaultComponent`; wrap the embedder; ensure
+    usage-logging is the innermost decorator.
+  - `agent.ts`: coordinator branch (`567-635`) derives `usage` from
+    `getSummary(traceId)`; delete the `totalUsage` chunk summation. `_toEnglishForRag`
+    / `_summarizeHistory` set `options.usageComponent` and drop their explicit
+    `logLlmCall` (the decorator logs once).
+  - `rag/preprocessor.ts`, `rag/query-expander.ts`: set `options.usageComponent`
+    (`'translate'` / `'query-expander'`) and remove their explicit `logLlmCall`
+    so the decorator is the single logging path.
 - **`@mcp-abap-adt/llm-agent-server-libs`** — controller handler: delete the
-  `total` accumulator and the `[controller] turn total` aggregate line, and stop
-  carrying `usage` on the terminal chunk (the agent meter now owns the total).
-  Keep the per-subagent `[controller] tokens <role>` DEBUG lines (they read
-  `SubagentResult.usage` per call — still valid diagnostics). `ctx.makeLlm`
-  passes the role tag for subagents; the `/v1/usage` handler reads the meter-fed
-  session rollup.
+  `total` accumulator, the `[controller] turn total` aggregate line, and the
+  terminal-chunk `usage`. Keep per-subagent `[controller] tokens <role>` DEBUG
+  lines. `makeSubagentClient.send` gains `options?: CallOptions`; the handler
+  passes the turn options and tags each subagent role. `ctx.makeLlm` returns
+  role-wrapped LLMs (or the pipeline wraps them).
+- **Provider packages** (`openai`/`anthropic`/`deepseek`/`sap-aicore`/`ollama`)
+  — touched **only** to guarantee streaming `usage` is emitted on a stream chunk
+  (`stream_options.include_usage` or equivalent). No provider-internal logging.
+- **Embedder packages** — touched **only** if they must surface token usage in
+  their `IEmbedResult`/stream so the decorator can record it.
 
-## Edge cases & how they are handled
+## Edge cases & handling
 
 | # | Risk | Handling |
 |---|------|----------|
-| 1 | **Double count during migration** | Single source: remove controller self-sum, chunk aggregation (616), and `addTokens`(1514) in the *same* change that introduces the meter. |
-| 2 | **ALS context lost across async boundaries** | Whole turn wrapped in `usageScope.run`; streaming generator + tool-loop created inside the scope. Covered by a test asserting `sum(recorded) == snapshot`. Out-of-scope calls no-op safely. |
-| 3 | **Not all LLMs routed through the wrapped factory** | Inject at *both* `makeLlm` and `makeDefaultLlm`; subagents via `ctx.makeLlm`. A provider built bypassing the factory is unmetered — documented; factories are the single construction path in this repo. |
-| 4 | **Double-wrap / retries** | Recorder injected once at construction (no decorator stacking). Retries (CircuitBreaker/fallback) record each attempt — that is real spend, intentionally counted. |
-| 5 | **Per-model overwrite** | `PerModelUsageMeter` merges additively; `requests` counter per model. |
-| 6 | **Concurrent turns** | Fresh meter created inside each `run()`; ALS isolates per async context. |
-| 7 | **Streaming omits usage in result** | Provider records on the stream usage frame; enable `include_usage`. This is the main real-world accuracy fix. |
-| 8 | **Provider mis-reports usage** | Out of scope; we record what the provider returns. |
-| 9 | **Failed call consumed tokens but returned none** | Unavoidable provider gap; recorded as zero. Documented. |
-| 10 | **Worker-thread isolation** | ALS does not cross worker threads; workers already keep their own isolated accounting (separate scope). Not a regression. |
+| 1 | ALS around async generator is incorrect | **No ALS.** `requestId` rides `CallOptions`; `makeSubagentClient.send` gains an options param. |
+| 2 | A second aggregator (SessionRequestLogger) exists | It is **the** aggregator. Coordinator path switched to `getSummary`; controller self-sum + chunk path removed. `/v1/usage` shape preserved. |
+| 3 | "Every call" vs factory bypass (injected/custom/plugin) | Boundary **decorator** wraps any `ILlm`/`IEmbedder` at the agent/pipeline ingestion points, not just built-in providers. A provider never handed to the agent is inherently unmetered (true of any design) — documented. |
+| 4 | Construction-time component wrong for shared instance | `component` resolved **per call** as `options.usageComponent ?? defaultComponent`; correct even when one shared instance serves translate/expand/summary/fallback. |
+| 5 | Per-model overwrite (`agent.ts:621`) | Removed with the chunk path; `byModel` merge in `aggregate()` is already additive. |
+| 6 | Double counting | Single log path; wrappers wrap raw providers (no nesting); usage-logging innermost so each provider call logs once. |
+| 7 | Streaming omits usage | Decorator reads `LlmStreamChunk.usage`; providers must enable `include_usage`. Main real-world accuracy fix. |
+| 8 | Provider mis-reports usage | Out of scope; recorded as returned. `estimated` flag carries through `LlmCallEntry`. |
+| 9 | Failed call consumed tokens, returned none | Provider gap; recorded as zero. Documented. |
+| 10 | Concurrent requests | `SessionRequestLogger` already keys deltas by `requestId`; nested coordinator/worker semantics already handled. |
 
 ## Testing
 
-- **Unit — `PerModelUsageMeter`**: additive totals; per-model additive merge +
-  `requests`; snapshot shape equals `AggregatedUsage`.
-- **Unit — `AlsUsageRecorder`**: records into the ALS-current meter; no-op when
-  no scope; isolates two concurrent `run()` scopes.
-- **Provider unit (per package)**: a fake recorder receives `record` once per
-  non-stream call and once per stream usage frame, with the right `model`.
-- **Integration — agent turn**: a fake provider that reports fixed usage on N
-  calls (preamble + subagents + tool-loop); assert `response.usage` equals the
-  exact sum and `usage.models` is correctly partitioned. Regression test for the
-  original bug: a Cyrillic prompt (triggers `_toEnglishForRag`) must include the
-  translate call's tokens in `response.usage`.
-- **Embedder unit**: embedding call records `component:'embedder'` tokens.
+- **`UsageLoggingLlm` unit**: `chat` records once with the role `component`,
+  right `model`, and `requestId` from `options.trace.traceId`; `streamChat`
+  records the terminal chunk's `usage`; no `usage` → no record.
+- **`UsageLoggingEmbedder` unit**: records `component:'embedding'` token usage.
+- **Decorator ordering test**: a retried call (retry over usage-logging) logs
+  each attempt.
+- **Attribution test (review #4)**: one shared wrapped instance, called with
+  `options.usageComponent:'translate'` then with no hint, produces a `'translate'`
+  bucket and a `defaultComponent` bucket — proving per-call resolution.
+- **Coordinator integration (the regression)**: a controller turn with a
+  Cyrillic prompt (triggers translate) and N subagent calls — assert
+  `response.usage == summaryToUsage(getSummary(traceId))` and that it includes
+  the translate + every subagent call; assert it equals the independent sum of
+  all provider invocations.
+- **`/v1/usage`**: unchanged shape; cumulative grows by the request's total.
 
 ## Migration / rollout
 
-Single coherent change: introduce contract + meter + ALS + provider self-report,
-and in the same commit set remove the three old counting paths so there is never
-a window with two live aggregators (avoids #1). Lockstep-versioned across all
-affected packages.
+One coherent change: add `IUsageRecorder` + decorators + role wrapping + the
+coordinator `getSummary` switch, and remove the controller self-sum + chunk path
+in the **same** commit, so there is never a window with two live response.usage
+derivations. Lockstep-versioned across affected packages.
 
 ## Deferred
 
-- `PerComponentUsageMeter` exposing a per-`component` breakdown over the protocol
-  (interface already supports it; no consumer asked yet).
-- A selectable meter implementation via config (YAGNI until a second
-  implementation is needed).
+- A per-component breakdown surfaced on `response.usage` (the data already exists
+  in `RequestSummary.byComponent`; no consumer asked to expose it per-response
+  yet — `/v1/usage` already exposes it).
+- Embedder provider changes beyond surfacing token counts (e.g. cost models).
