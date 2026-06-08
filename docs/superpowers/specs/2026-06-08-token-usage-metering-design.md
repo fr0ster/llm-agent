@@ -114,7 +114,12 @@ Pluggability is the interface.
   instead of accumulating a private `total`. Components `evaluator`/`planner`/
   `executor`/`finalizer` (add `'executor'` to `LlmComponent`). The role is
   explicit at the call site, so the shared planner/finalizer client is attributed
-  correctly. `durationMs` is **`0`** — the current `logUsage(role, usage)` callback
+  correctly. **Model attribution (review #3):** the controller builds only
+  `evaluator`/`planner`/`executor` LLMs (`controller.ts:100`); there is no
+  `subagents.finalizer`, and the finalizer runs on the **planner** client — so its
+  entry uses `model: cfg.subagents.planner.model`. The per-role model lookup:
+  evaluator/planner/executor → their own `cfg.subagents.<role>.model`, finalizer →
+  `cfg.subagents.planner.model`. `durationMs` is **`0`** — the current `logUsage(role, usage)` callback
   receives no timing (review #3); this matches the existing `rag-query.ts:108`
   precedent (`durationMs: 0` when not separately measurable). Per-call timing is a
   deferred nicety (would require threading a duration through `SubagentResult`).
@@ -159,15 +164,22 @@ whichever component owns the path — **not** a generic agent-level chunk on the
 pipeline branch (that would double the Stepper/DAG chunk, review #1):
 
 - flat — already emits it (unchanged).
-- **Stepper / DAG handlers** — already emit it (`stepper-coordinator-handler.ts:172,229,274`,
-  `dag-coordinator.ts`); unchanged.
+- **Stepper / DAG handlers** — already emit it on most terminal branches
+  (`stepper-coordinator-handler.ts:172,229,274`, `dag-coordinator.ts`). **Gap to
+  fix (review #2):** the Stepper `InsufficientSignal` branch (`:257-267`) yields a
+  stop chunk **without** usage — add `summaryToUsage(getSummary(traceId))` there so
+  every Stepper terminal branch carries the chunk. (Audit all coordinator terminal
+  yields for the same omission.)
 - **controller handler** — switch `surfaceFinal`/`surfaceClarify`/`surfaceToolCall`
   (`:552-584`) to emit `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))`
   instead of the private `total`. One chunk, same pattern as Stepper/DAG.
-- **pass** — has no coordinator handler, so the agent emits it: log the single
-  passthrough call once into `IRequestLogger` (pass does not run the tool-loop
-  handler → additive, no double count), then emit the `getSummary` terminal chunk
-  (`agent.ts:722`).
+- **pass** — has no coordinator handler, so the agent handles it (`agent.ts:700-722`):
+  the pass loop currently forwards provider chunks **including** `chunk.value.usage`
+  (`:714`). To keep one usage-bearing chunk (review #1): accumulate provider usage
+  across the stream, **yield each chunk as a copy with `usage` omitted**, log the
+  accumulated usage once into `IRequestLogger` (pass does not run the tool-loop
+  handler → additive, no double count), then emit the single `getSummary` terminal
+  chunk.
 
 The agent's pipeline branch (`:736`) is **not** changed — each coordinator handler
 owns its single terminal usage chunk.
@@ -239,16 +251,20 @@ the path's component.
   `IToolsRagHandle.query` `accounting` param.
 - **`@mcp-abap-adt/llm-agent-libs`** —
   - `agent.ts`: normalize `opts.trace.traceId` at `~:653`; on the **pass** path
-    (`:722`) log the single passthrough call once and emit the terminal
-    `getSummary` usage chunk. **Do not** change the pipeline branch (`:736`) or
-    `process()` (`:616-622`); the flat path is unchanged.
+    (`:700-722`) accumulate provider usage, yield chunks with `usage` omitted, log
+    the accumulated usage once, then emit the terminal `getSummary` usage chunk.
+    **Do not** change the pipeline branch (`:736`) or `process()` (`:616-622`); the
+    flat path is unchanged.
 - **`@mcp-abap-adt/llm-agent-server-libs`** —
   - controller handler: `logUsage` writes to `ctx.requestLogger.logLlmCall`
-    (subagent roles, `durationMs: 0`) and logs target-state embedding usage;
-    `surfaceFinal`/`surfaceClarify`/`surfaceToolCall` (`:552-584`) emit
+    (subagent roles, `durationMs: 0`, finalizer model = `cfg.subagents.planner.model`)
+    and logs target-state embedding usage; `surfaceFinal`/`surfaceClarify`/
+    `surfaceToolCall` (`:552-584`) emit
     `summaryToUsage(ctx.requestLogger.getSummary(meta.traceId))` (one terminal
     chunk, like Stepper/DAG); delete the private `total` accumulator and the
     `turn total` line.
+  - `stepper-coordinator-handler.ts`: attach `summaryToUsage(getSummary(traceId))`
+    to the `InsufficientSignal` terminal stop chunk (`:263`) — review #2.
   - `controller/target-state.ts`: return summed embedding usage.
   - `controller.ts` `deps.selectTools`: pass `accounting` to `toolsRag.query`.
   - `smart-server.ts` `_toolsRagHandle.query`: accept `accounting`, log the
@@ -268,6 +284,9 @@ the path's component.
 | 5 | Double counting | Every ADD is a currently-unlogged site; embedder not globally wrapped; exactly one usage-bearing chunk per request — emitted by the owning component (flat / Stepper / DAG / controller handler / pass), **never** a generic agent-level chunk on the pipeline branch (review #1). |
 | 9 | Controller `logUsage` lacks `durationMs` | Use `durationMs: 0` (rag-query.ts:108 precedent); per-call timing deferred. |
 | 10 | Stepper toolsRag query-embedding still unlogged | Accepted pre-existing gap; Goal #1 scoped accordingly; closable later via the optional `accounting` param. |
+| 11 | Pass forwards provider `usage` chunks → double with terminal chunk | Pass yields chunk copies with `usage` omitted; accumulates + logs provider usage once; one terminal `getSummary` chunk (review #1). |
+| 12 | A coordinator terminal branch yields no usage (e.g. Stepper `InsufficientSignal` `:263`) | Fix that branch to attach `getSummary` usage; audit all terminal yields (review #2). |
+| 13 | Finalizer model unknown (no `subagents.finalizer`) | Finalizer runs on the planner client → `model: cfg.subagents.planner.model` (review #3). |
 | 6 | Per-model overwrite (`agent.ts:621`) | Only one usage chunk carries `models`; the terminal chunk carries the full `getSummary` `byModel`. |
 | 7 | Stream usage absent from provider | `LoggingLlm.streamChat` accumulates `chunk.usage`; providers enable `include_usage`. |
 | 8 | Concurrent requests | `SessionRequestLogger` keys deltas by `requestId`; reliable once `traceId` is normalized into `opts`. |
@@ -288,8 +307,14 @@ the path's component.
 - **Single-usage-chunk invariant**: `streamProcess` (controller, pass, flat)
   yields exactly one usage-bearing chunk; `process()` sums it to
   `getSummary(traceId)`.
-- **Pass unification (review #3-prev)**: a pass request's `response.usage` equals
-  its `/v1/usage` delta.
+- **Pass unification + single chunk (review #1)**: a streamed pass response yields
+  exactly one usage-bearing chunk (forwarded provider chunks carry no `usage`), and
+  `response.usage` equals its `/v1/usage` delta.
+- **Stepper InsufficientSignal (review #2)**: a Stepper turn that hits
+  `InsufficientSignal` still yields a terminal chunk with `getSummary`-derived
+  usage (non-empty when calls were logged).
+- **Finalizer model (review #3)**: a controller turn whose finalizer fires logs a
+  `finalizer` entry under `byModel[cfg.subagents.planner.model]`.
 - **No regression**: a flat turn's `response.usage` is byte-identical to today.
 
 ## Migration / rollout
