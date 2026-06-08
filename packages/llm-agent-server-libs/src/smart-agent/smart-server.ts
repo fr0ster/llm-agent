@@ -9,6 +9,7 @@ import { createRequire } from 'node:module';
 import { resolve as pathResolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import type {
+  CallOptions,
   EmbedderFactory,
   IClientAdapter,
   IEmbedder,
@@ -1938,11 +1939,13 @@ export class SmartServer {
       return catalog;
     };
     this._toolsRagHandle = {
-      async query(text: string, k?: number) {
+      async query(text: string, k?: number, options?: CallOptions) {
         const limit = k ?? 20;
         const catalog = await ensureCatalog();
         if (toolsRag && resolvedEmbedder) {
-          const embedding = new QueryEmbedding(text, resolvedEmbedder);
+          // Pass options (requestLogger + trace) so the wrapped embedder logs
+          // this query-embedding against the request.
+          const embedding = new QueryEmbedding(text, resolvedEmbedder, options);
           const ragResult = await toolsRag.query(embedding, limit);
           if (ragResult.ok) {
             const hits: LlmTool[] = [];
