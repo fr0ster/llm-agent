@@ -256,4 +256,69 @@ describe('AdaptivePlanner', () => {
       null,
     );
   });
+
+  it('a successful replan CLEARS the durable failure marker (no repeat replan)', async () => {
+    const b: SessionBundle = {
+      ...bundle(),
+      lastOutcome: 'failed',
+      plan: [{ name: 's1', instructions: 'a' }],
+      planCursor: 0,
+    };
+    const p = new AdaptivePlanner(
+      planner([
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1b', instructions: 'retry differently' }],
+          }),
+        },
+      ]),
+    );
+    const next = await p.next({
+      bundle: b,
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+      lastOutcome: 'failed',
+    });
+    assert.equal(next?.kind === 'next' && next.step.name, 's1b');
+    assert.equal(b.lastOutcome, undefined); // failure consumed → no re-replan on resume
+  });
+
+  it('empty replan then finalizer error: retry RE-FINALIZES, does not replan again', async () => {
+    const b: SessionBundle = {
+      ...bundle(),
+      lastOutcome: 'failed',
+      plannerPrivate: '\n[step s1 failed] boom',
+      plan: [{ name: 's1', instructions: 'a' }],
+      planCursor: 0,
+    };
+    const p = new AdaptivePlanner(
+      planner([
+        { kind: 'content', content: JSON.stringify({ plan: [] }) }, // empty replan (done)
+        { kind: 'error', error: 'finalizer boom' }, // finalize fails → null
+        { kind: 'content', content: 'FINAL' }, // finalize retry succeeds
+      ]),
+    );
+    // 1st: replan→[] clears lastOutcome, finalize ERRORS → null.
+    const first = await p.next({
+      bundle: b,
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+      lastOutcome: 'failed',
+    });
+    assert.equal(first, null);
+    assert.equal(b.lastOutcome, undefined); // failure already consumed by the replan
+    // 2nd (retry): lastOutcome undefined → stepAtCursor → FINALIZE (not replan).
+    const second = await p.next({
+      bundle: b,
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: true,
+      lastOutcome: b.lastOutcome,
+    });
+    assert.equal(second?.kind, 'done');
+    assert.equal(second?.kind === 'done' && second.result, 'FINAL');
+  });
 });

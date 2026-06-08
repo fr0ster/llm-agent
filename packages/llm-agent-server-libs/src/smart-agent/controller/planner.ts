@@ -179,6 +179,11 @@ export class AdaptivePlanner implements IControllerPlanner {
       if (rest === null) return null;
       const cursor = bundle.planCursor ?? 0;
       bundle.plan = [...bundle.plan.slice(0, cursor), ...rest];
+      // The failure has now been consumed into the revised plan. Clear the durable
+      // failure marker BEFORE the (possible) finalize below, so that: a crash after
+      // this replan does NOT replan again on resume, and a finalizer error after an
+      // empty replan retries only the finalizer (not another replan).
+      bundle.lastOutcome = undefined;
       return this.stepAtCursor(bundle, prompt, logUsage);
     }
 

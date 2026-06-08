@@ -275,15 +275,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       deps.config.planner ?? 'incremental',
       deps.planner,
     );
-    // Seed from the DURABLE bundle so a resume after a failed step replans
-    // (adaptive) instead of repeating it — the failure outcome survives a restart.
-    let lastOutcome: 'advanced' | 'failed' | undefined = bundle.lastOutcome;
+    // bundle.lastOutcome is the SINGLE source of truth for the last step's
+    // outcome — durable, so a resume after a FAILED step replans instead of
+    // repeating it. runStep.settle() sets it; the adaptive replan branch clears it
+    // once the failure has been consumed into a new plan (so a crash after the
+    // replan, or a finalizer retry after an empty replan, does NOT replan again).
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
       const next = await planner.next({
         bundle,
         prompt,
         toolCatalog,
-        lastOutcome,
+        lastOutcome: bundle.lastOutcome,
         resumedExternal,
         retrying: planParseRetries > 0,
         logUsage,
@@ -333,8 +335,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           );
         }
         bundle.plannerPrivate += `\n[rewind] ${next.reason}`;
+        bundle.lastOutcome = undefined;
         await persistBundle(deps.backend, sessionId, bundle);
-        lastOutcome = undefined;
         continue;
       }
 
@@ -355,10 +357,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         (o) => planner.commit?.(bundle, o),
       );
       if (completed === 'suspended') return true;
-      // runStep.settle() already persisted the outcome ATOMICALLY (lastOutcome +
-      // cursor advance via onCommit + step result, in one persistBundle), so a
-      // resume continues from the next uncompleted step. Just feed it forward.
-      lastOutcome = completed; // 'advanced' | 'failed' → next planner.next
+      // runStep.settle() already persisted the outcome ATOMICALLY (bundle.lastOutcome
+      // + cursor advance via onCommit + step result, in one persistBundle). The next
+      // planner.next reads the fresh bundle.lastOutcome; a resume continues from the
+      // next uncompleted step (or replans, if this step failed).
     }
 
     // -- Budget exhausted ---------------------------------------------------
