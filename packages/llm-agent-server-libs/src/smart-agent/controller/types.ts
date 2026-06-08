@@ -51,7 +51,10 @@ export interface SessionBundle {
  *  consumer-supplied domain `hint`. The engine's role system prompts are
  *  domain-agnostic; a deployment re-specialises a role (gnostic) by setting
  *  `hint` — a short domain preamble appended to that role's system prompt (e.g.
- *  naming the SAP/ABAP target and its fact kinds). Absent hint → agnostic. */
+ *  naming the SAP/ABAP target and its object kinds). The hint describes the
+ *  DOMAIN only — it must NOT prescribe tool usage (that is the engine prompt's
+ *  job); a consumer who wants tool guidance adds it themselves. Absent hint →
+ *  agnostic. */
 export type ControllerSubagentConfig = SmartServerLlmConfig & { hint?: string };
 
 export interface ControllerConfig {

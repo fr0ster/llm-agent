@@ -41,21 +41,23 @@ pipeline:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
         hint: >-
-          The target system is a live SAP/ABAP system reached over ADT/MCP tools.
+          The target system is a live SAP/ABAP system; its objects include DDIC
+          tables, packages, ABAP runtime dumps, and source code (programs,
+          includes, classes).
       planner:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
         hint: >-
-          The target system is a live SAP/ABAP system. Facts to fetch include
-          DDIC table structures, package contents, ABAP runtime dumps, and
-          source code (programs/includes/classes) — always via a tool.
+          The target system is a live SAP/ABAP system; its objects include DDIC
+          tables, packages, ABAP runtime dumps, and source code (programs,
+          includes, classes).
       executor:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
         hint: >-
-          The target system is a live SAP/ABAP system. System facts include DDIC
-          table structures, package contents, ABAP runtime dumps, and source
-          code (programs/includes/classes) — obtain each by calling a tool.
+          The target system is a live SAP/ABAP system; its objects include DDIC
+          tables, packages, ABAP runtime dumps, and source code (programs,
+          includes, classes).
     # Planner implementation: incremental (per-step LLM decision) | adaptive
     # (full plan upfront, replan only on failure/external result).
     planner: ${PLANNER:-incremental}

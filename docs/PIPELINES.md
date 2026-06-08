@@ -78,7 +78,9 @@ pipeline:
   prompts are **domain-agnostic** — they say "the live target system", never
   "SAP"/"ABAP". A deployment re-specialises a role by setting an optional
   `subagents.<role>.hint`: a short domain preamble appended to that role's system
-  prompt (e.g. naming the SAP/ABAP target and the kinds of facts to fetch). Omit
+  prompt (e.g. naming the SAP/ABAP target and its object kinds). The hint
+  describes the **domain only** — it must not prescribe tool usage (that is the
+  engine prompt's job); a consumer adds tool guidance itself if it wants. Omit
   the hints for a generic, domain-neutral controller. This is the **static**
   gnosticization channel; the **dynamic** one — procedural skills retrieved from
   a RAG collection at the right moment — is a separate mechanism (not wired via
