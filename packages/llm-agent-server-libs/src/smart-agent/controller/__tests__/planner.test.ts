@@ -220,4 +220,40 @@ describe('AdaptivePlanner', () => {
       null,
     );
   });
+
+  it('EMPTY create-plan {"plan":[]} → null (retry — must NOT skip to finalizer)', async () => {
+    const p = new AdaptivePlanner(
+      planner([{ kind: 'content', content: '{"plan":[]}' }]),
+    );
+    const b = bundle();
+    assert.equal(
+      await p.next({
+        bundle: b,
+        prompt: 'r',
+        toolCatalog: '',
+        retrying: false,
+      }),
+      null,
+    );
+    assert.equal(b.plan, undefined); // nothing committed → clean retry
+  });
+
+  it('finalizer non-content reply → null (retry, not a fake "completed")', async () => {
+    // plan present + cursor at end + no failure → stepAtCursor → finalize.
+    const p = new AdaptivePlanner(planner([{ kind: 'error', error: 'boom' }]));
+    const b: SessionBundle = {
+      ...bundle(),
+      plan: [{ name: 's1', instructions: 'do' }],
+      planCursor: 1,
+    };
+    assert.equal(
+      await p.next({
+        bundle: b,
+        prompt: 'r',
+        toolCatalog: '',
+        retrying: false,
+      }),
+      null,
+    );
+  });
 });

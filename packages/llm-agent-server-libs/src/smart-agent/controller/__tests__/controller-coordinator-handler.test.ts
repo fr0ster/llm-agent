@@ -1304,4 +1304,58 @@ describe('ControllerCoordinatorHandler', () => {
       ),
     );
   });
+
+  it('adaptive resume after a FAILED step REPLANS (durable lastOutcome) — not repeat', async () => {
+    const h = harness({
+      evaluator: [], // goal already in the seeded bundle → establishTargetState skipped
+      planner: [],
+      executor: [{ kind: 'content', content: 's2 done' }],
+      config: { ...baseConfig(), planner: 'adaptive' },
+    });
+    // Recording planner: capture the SYSTEM prompt of each call; reply replan→finalize.
+    const seenSystems: string[] = [];
+    const replies: SubagentResult[] = [
+      {
+        kind: 'content',
+        content: JSON.stringify({
+          plan: [{ name: 's2', instructions: 'fetch' }],
+        }),
+      },
+      { kind: 'content', content: 'FINAL ANSWER' },
+    ];
+    h.deps.planner = {
+      async send(messages) {
+        seenSystems.push(
+          typeof messages[0]?.content === 'string' ? messages[0].content : '',
+        );
+        return replies.shift() ?? { kind: 'content', content: '' };
+      },
+    };
+    // Durable bundle: a step s1 FAILED, plan=[s1], cursor=0, lastOutcome='failed'.
+    await persistBundle(h.backend, 'sess-1', {
+      goal: 'do the thing',
+      plannerPrivate: '\n[step s1 failed] boom',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      plan: [{ name: 's1', instructions: 'orig' }],
+      planCursor: 0,
+      lastOutcome: 'failed',
+    });
+    const { ctx, captured } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined as never,
+    );
+    // The FIRST planner call on resume is a REPLAN (durable lastOutcome seeded),
+    // not a re-emit of the failed step s1.
+    assert.match(seenSystems[0] ?? '', /A step just FAILED/);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'FINAL ANSWER',
+      ),
+    );
+  });
 });

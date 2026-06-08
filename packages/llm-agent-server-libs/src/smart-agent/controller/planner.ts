@@ -149,7 +149,11 @@ export class AdaptivePlanner implements IControllerPlanner {
         retrying,
         logUsage,
       );
-      if (plan === null) return null; // format failure → handler retries
+      // An EMPTY plan from createPlan is invalid: it would skip straight to the
+      // finalizer and answer WITHOUT fetching the required data. Treat it as a
+      // format failure → handler re-asks (bounded by maxRetries). (An empty plan
+      // is only valid on REPLAN, where it means "remaining work is done".)
+      if (plan === null || plan.length === 0) return null;
       bundle.plan = plan;
       bundle.planCursor = 0;
       return this.stepAtCursor(bundle, prompt, logUsage);
@@ -195,12 +199,15 @@ export class AdaptivePlanner implements IControllerPlanner {
     }
   }
 
-  /** Return the step at the cursor, or finalize → done when the plan is exhausted. */
+  /** Return the step at the cursor, or finalize → done when the plan is exhausted.
+   *  Returns null when the finalizer call fails (error / unexpected tool_call) so
+   *  the handler retries it (bounded by maxRetries) instead of emitting a fake
+   *  "completed" answer. */
   private async stepAtCursor(
     bundle: SessionBundle,
     prompt: string,
     logUsage?: (role: string, u?: LlmUsage) => void,
-  ): Promise<NextStep> {
+  ): Promise<NextStep | null> {
     const plan = bundle.plan ?? [];
     const cursor = bundle.planCursor ?? 0;
     if (cursor >= plan.length) {
@@ -212,10 +219,10 @@ export class AdaptivePlanner implements IControllerPlanner {
         },
       ]);
       logUsage?.('finalizer', res.usage);
-      return {
-        kind: 'done',
-        result: res.kind === 'content' ? res.content : 'completed',
-      };
+      // Finalizer must produce content; an error or tool_call is NOT a successful
+      // answer → null so the handler re-asks rather than faking "completed".
+      if (res.kind !== 'content') return null;
+      return { kind: 'done', result: res.content };
     }
     return { kind: 'next', step: plan[cursor] };
   }

@@ -41,6 +41,10 @@ export interface SessionBundle {
   plan?: Step[];
   planCursor?: number;
   pending?: PendingMarker;
+  /** Outcome of the last executed step, persisted so a resume after a FAILED step
+   *  makes the adaptive planner replan (rather than repeat the step). Set by
+   *  runStep.settle() together with the step result + cursor advance. */
+  lastOutcome?: 'advanced' | 'failed';
 }
 
 export interface ControllerConfig {
