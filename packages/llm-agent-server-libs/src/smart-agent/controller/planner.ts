@@ -26,7 +26,11 @@ const PLANNER_SYSTEM =
   'be obtained by planning a step that fetches it with a tool — do NOT answer ' +
   'from prior knowledge, and do NOT mark the goal "done" until the required data ' +
   'has actually been fetched (fetched results appear under Progress). Until then, ' +
-  'return a concrete "next" fetch step.';
+  'return a concrete "next" fetch step. ' +
+  'Keep each step MINIMAL and do NOT broaden the scope beyond what the goal asks, ' +
+  'at the granularity it asks: a LIST/SHOW/find request is satisfied by the list ' +
+  'itself — do NOT plan a step that fetches the full details of every listed item ' +
+  'unless the goal explicitly asks for per-item details.';
 
 const RETRY_HINT =
   '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw ' +
