@@ -31,7 +31,6 @@ describe('IncrementalPlanner', () => {
     const next = await p.next({
       bundle: bundle(),
       prompt: 'req',
-      toolCatalog: '- GetX: read',
       retrying: false,
     });
     assert.equal(next?.kind, 'next');
@@ -52,7 +51,6 @@ describe('IncrementalPlanner', () => {
     await new IncrementalPlanner(recording, 'Keep the plan minimal.').next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
@@ -65,7 +63,6 @@ describe('IncrementalPlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -92,7 +89,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.equal(next?.kind, 'next');
@@ -116,7 +112,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'advanced',
     });
@@ -147,7 +142,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'advanced',
     });
@@ -168,7 +162,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -197,7 +190,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -221,7 +213,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -236,7 +227,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -252,7 +242,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: b,
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -272,7 +261,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: b,
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -299,7 +287,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -334,7 +321,6 @@ describe('AdaptivePlanner', () => {
     await new AdaptivePlanner(recording).next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -362,7 +348,6 @@ describe('AdaptivePlanner', () => {
     await new AdaptivePlanner(recording).next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
@@ -373,7 +358,6 @@ describe('AdaptivePlanner', () => {
     await new AdaptivePlanner(recording, 'Call one tool at a time.').next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.match(sys, /Additional guidance: Call one tool at a time\./);
@@ -398,7 +382,6 @@ describe('AdaptivePlanner', () => {
     const first = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -408,7 +391,6 @@ describe('AdaptivePlanner', () => {
     const second = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: true,
       lastOutcome: b.lastOutcome,
     });

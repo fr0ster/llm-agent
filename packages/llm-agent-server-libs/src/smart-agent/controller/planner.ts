@@ -38,7 +38,7 @@ export class IncrementalPlanner implements IControllerPlanner {
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, toolCatalog, retrying, logUsage } = input;
+    const { bundle, prompt, retrying, logUsage } = input;
     const res = await this.planner.send([
       {
         role: 'system',
@@ -47,9 +47,7 @@ export class IncrementalPlanner implements IControllerPlanner {
       },
       {
         role: 'user',
-        content:
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}\n` +
-          `Available tools (the executor picks the exact one):\n${toolCatalog}`,
+        content: `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}`,
       },
     ]);
     logUsage?.('planner', res.usage);
@@ -146,15 +144,8 @@ export class AdaptivePlanner implements IControllerPlanner {
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const {
-      bundle,
-      prompt,
-      toolCatalog,
-      lastOutcome,
-      resumedExternal,
-      retrying,
-      logUsage,
-    } = input;
+    const { bundle, prompt, lastOutcome, resumedExternal, retrying, logUsage } =
+      input;
 
     // 1. No plan yet → create it.
     if (!bundle.plan) {
@@ -162,7 +153,6 @@ export class AdaptivePlanner implements IControllerPlanner {
         CREATE_PLAN_SYSTEM,
         bundle,
         prompt,
-        toolCatalog,
         retrying,
         logUsage,
       );
@@ -193,7 +183,6 @@ export class AdaptivePlanner implements IControllerPlanner {
         system,
         bundle,
         prompt,
-        toolCatalog,
         retrying,
         logUsage,
         completed,
@@ -257,7 +246,6 @@ export class AdaptivePlanner implements IControllerPlanner {
     system: string,
     bundle: SessionBundle,
     prompt: string,
-    toolCatalog: string,
     retrying: boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
     completed: Step[] = [],
@@ -279,9 +267,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       },
       {
         role: 'user',
-        content:
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}\n` +
-          `Available tools (the executor picks the exact one):\n${toolCatalog}`,
+        content: `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}`,
       },
     ]);
     logUsage?.('planner', res.usage);
