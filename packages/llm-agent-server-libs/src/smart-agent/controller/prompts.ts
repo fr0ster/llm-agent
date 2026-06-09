@@ -8,10 +8,10 @@
  * WEAKER models: a capable model (Opus / Sonnet) usually needs none, while a
  * smaller executor/planner model (e.g. gpt-4o-mini) may need the extra steering.
  *
- * A hint is NOT a domain description and must NOT name tools (the self-describing
- * tool catalog + the agnostic prompt cover those; richer per-situation
- * procedures belong to the skills RAG — a separate, dynamic mechanism). An absent
- * or blank hint leaves the agnostic prompt untouched.
+ * A hint is NOT a domain description and must NOT name tools: the planner plans
+ * by intent (no tool catalog) and the executor selects the right tool per step;
+ * richer per-situation procedures belong to the skills RAG — a separate, dynamic
+ * mechanism. An absent or blank hint leaves the agnostic prompt untouched.
  */
 export function appendHint(system: string, hint?: string): string {
   const h = hint?.trim();
