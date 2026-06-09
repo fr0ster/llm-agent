@@ -73,13 +73,7 @@ const CREATE_PLAN_SYSTEM =
   'with a tool — plan fetch steps; never answer from prior knowledge. ' +
   'Keep it MINIMAL: one step per distinct piece of information the goal asks for; ' +
   'do NOT add exploratory or enrichment steps (extra metadata, sample/preview ' +
-  'rows, recursive expansion) the goal did not request. ' +
-  'Do NOT BROADEN the scope: answer exactly what the request asks, at the ' +
-  'granularity it asks. In particular, do NOT add a "for each item, fetch its ' +
-  'details" step unless the request explicitly asks for per-item details — a ' +
-  'request to LIST/SHOW/find items is satisfied by the list itself; fetching the ' +
-  'full details of every listed item is scope creep. ' +
-  'Do NOT add a final step ' +
+  'rows, recursive expansion) the goal did not request. Do NOT add a final step ' +
   'that summarizes, formats, or answers the user — a separate finalizer composes ' +
   'the answer from the fetched results, so the last step must be the last ' +
   'data-fetch/action the goal needs. Output JSON only.';
