@@ -9,6 +9,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [19.1.0] — 2026-06-10
+
 ### Added
 
 - **`controller` pipeline.** A new built-in pipeline plugin: a deterministic coordinator orchestrating three opaque subagent roles (evaluator / planner / executor) in an incremental, goal-driven loop, with a durable per-session bundle, stateless suspend/resume, and internal/external tool routing. The three subagents are independent LLM endpoints (e.g. a heavy planner + a light executor); internal MCP tools are surfaced to the executor by semantic top-K selection over the vectorized tool catalog (`toolsRag`). Select with `pipeline: { name: controller, config: { subagents, targetState, sessionMemory, budgets } }`. Importable without YAML via the `./controller` subpath export (`ControllerPipelinePlugin` + `ControllerCoordinatorHandler` building blocks). `DEBUG_CONTROLLER=1` logs the step instructions the planner delegates + per-role/total token usage; the HTTP response always carries total token `usage`. See `docs/PIPELINES.md` and the `pipelines/controller*.yaml` examples.
@@ -24,6 +26,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   cover those). `pipelines/controller.yaml` is the all-sonnet template (no hints);
   `pipelines/controller-mixed.yaml` carries an executor hint scaffolding its
   light `gpt-4o-mini` executor.
+
+- **Adaptive controller planner.** A selectable planner (`pipeline.config.planner: adaptive | incremental`) that builds the COMPLETE plan once upfront (`createPlan`) and then emits its steps without a per-step planner LLM call; it replans only when a step FAILS or an external-tool result arrives, accounting for already-executed steps so they are never repeated. A durable per-session plan cursor + `lastOutcome` make a stateless resume continue from the next uncompleted step (or replan after a failure) instead of re-running work. The default remains `incremental` (a planner decision per step). Adaptive sharply cuts expensive-planner spend on multi-step goals (e.g. one planner call vs N).
+
+- **End-to-end token-usage metering.** Every LLM and embedder call on every path is now accounted via a single per-request aggregator (`IRequestLogger`): preamble helpers (RAG-translate, history-summary, classifier, query-expander), the embedder (wrapped once at construction; batch-preserving; estimation fallback for providers that report no usage), and each controller / DAG / Stepper subagent role. `response.usage` carries the per-request total (with a `models` per-model breakdown); the cumulative session rollup is exposed at `/v1/usage` with `byModel` / `byComponent` / `byCategory`. `IToolsRagHandle.query` accepts `CallOptions` so tool-selection embeddings are attributed to the request.
+
+### Changed
+
+- **Controller planner plans by intent (per-step tool selection).** The planner is no longer shown a tool catalog selected from the whole request; it plans steps by INTENT and never names a tool. Tool relevance is resolved PER STEP from the clean step instructions when the step runs (the executor's existing selection). This fixes coarse, prompt-level tool mis-selection that previously had the planner bake the wrong tool name into a step.
+
+### Fixed
+
+- **Scope-discipline in planning and execution.** Both planners and the executor now answer exactly what the request asks, at the granularity it asks: a LIST/SHOW/find request is satisfied by the list itself — no "fetch the full details of every listed item" step/loop unless the request explicitly asks for per-item details. Eliminates large-feed blowups (e.g. "show recent dumps" dropped from ~600k+ to ~10–60k tokens).
 
 ### Deprecated
 
