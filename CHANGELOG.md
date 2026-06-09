@@ -9,6 +9,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [19.1.1] — 2026-06-10
+
+### Changed
+
+- **Dependency refresh.** Bumped production dependency floors to the tested
+  latest minors: `axios` `^1.17.0`, `zod` `^4.4.3`, `yaml` `^2.9.0`, `pg`
+  `^8.21.0`, `@sap-ai-sdk/ai-api` & `@sap-ai-sdk/orchestration` `^2.11.0`,
+  `@sap/hana-client` `^2.28.21`. Dev tooling (`@biomejs/biome`, `@types/node`,
+  `tsx`) and the lockfile were refreshed. No source changes; build, the test
+  suites, and a live SAP AI Core round-trip were verified against the updated
+  SDK. (Deliberately-loose peer ranges were left untouched.)
+
 ## [19.1.0] — 2026-06-10
 
 ### Added

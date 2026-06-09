@@ -1,6 +1,6 @@
 {
   "name": "@mcp-abap-adt/llm-agent",
-  "version": "19.1.0",
+  "version": "19.1.1",
   "description": "Core interfaces, types, and lightweight default implementations for LLM agent orchestration.",
   "type": "module",
   "main": "dist/index.js",
@@ -23,7 +23,7 @@
     "test": "node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'"
   },
   "dependencies": {
-    "zod": "^4.3.6"
+    "zod": "^4.4.3"
   },
   "license": "MIT",
   "repository": {
@@ -34,6 +34,6 @@
     "access": "public"
   },
   "devDependencies": {
-    "@types/node": "^25.6.0"
+    "@types/node": "^25.9.2"
   }
 }
