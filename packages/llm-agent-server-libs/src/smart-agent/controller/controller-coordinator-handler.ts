@@ -683,7 +683,11 @@ const EXECUTOR_SYSTEM =
   'status, or source — any current state) by CALLING the appropriate tool — ' +
   'never answer such facts from prior knowledge or memory. Emit a tool call ' +
   'when you need data; only return the step result as content once you have the ' +
-  'tool results.';
+  'tool results. ' +
+  'Do EXACTLY what the step asks, at the granularity it asks — do NOT broaden it: ' +
+  'if the step asks for a LIST or overview, return the list; do NOT then go and ' +
+  'fetch the full details of every listed item unless the step explicitly asks ' +
+  'for per-item details.';
 
 const TOOL_SELECT_K = 20;
 
