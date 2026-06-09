@@ -37,6 +37,28 @@ describe('IncrementalPlanner', () => {
     assert.equal(next?.kind, 'next');
     assert.equal(next?.kind === 'next' && next.step.name, 's1');
   });
+  it('appends the per-role hint to the agnostic planner prompt', async () => {
+    let sys = '';
+    const recording: ISubagentClient = {
+      async send(messages) {
+        sys =
+          typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        return {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'ok' }),
+        };
+      },
+    };
+    await new IncrementalPlanner(recording, 'Keep the plan minimal.').next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.doesNotMatch(sys, /SAP|ABAP/i);
+    assert.match(sys, /Additional guidance: Keep the plan minimal\./);
+  });
+
   it('non-content planner reply → null (format failure)', async () => {
     const p = new IncrementalPlanner(planner([{ kind: 'error', error: 'x' }]));
     assert.equal(
@@ -320,6 +342,41 @@ describe('AdaptivePlanner', () => {
     assert.match(userMsg, /- s1/);
     assert.match(userMsg, /- s2/);
     assert.doesNotMatch(userMsg, /- s3\b/); // the FAILED step is not "completed"
+  });
+
+  it('agnostic prompts mention no domain (no "SAP"/"ABAP") and a hint is appended', async () => {
+    let sys = '';
+    const recording: ISubagentClient = {
+      async send(messages) {
+        sys =
+          typeof messages[0]?.content === 'string' ? messages[0].content : '';
+        return {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'do' }],
+          }),
+        };
+      },
+    };
+    // Without a hint: the create-plan prompt is agnostic, no appended guidance.
+    await new AdaptivePlanner(recording).next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.doesNotMatch(sys, /SAP|ABAP/i);
+    assert.match(sys, /live target system/);
+    assert.doesNotMatch(sys, /Additional guidance:/);
+
+    // With a hint: it is appended as an "Additional guidance" preamble.
+    await new AdaptivePlanner(recording, 'Call one tool at a time.').next({
+      bundle: bundle(),
+      prompt: 'r',
+      toolCatalog: '',
+      retrying: false,
+    });
+    assert.match(sys, /Additional guidance: Call one tool at a time\./);
   });
 
   it('empty replan then finalizer error: retry RE-FINALIZES, does not replan again', async () => {

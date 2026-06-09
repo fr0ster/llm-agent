@@ -29,12 +29,22 @@ that variant's dialect.
 |---|---|---|
 | `flat` | Single ReAct tool-loop agent, no coordinator | *(none)* |
 | `linear` | Ordered plan → dispatch coordinator | `planning` (`one-shot`/`replan-on-error`/`skill-steps`), `dispatch` (`self`/`subagent`/`hybrid`), `maxSteps`, `maxRetriesPerStep`, `failPolicy` |
-| `dag` | Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
-| `stepper` | Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
+| `dag` ⚠️ | _(legacy — see note below)_ Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
+| `stepper` ⚠️ | _(legacy — see note below)_ Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
 | `controller` | Deterministic coordinator + three opaque subagent roles (evaluator/planner/executor); incremental loop, durable per-session bundle, stateless suspend/resume | `subagents.{evaluator,planner,executor}`, `targetState`, `sessionMemory`, `budgets` |
 
 Stepper's `knowledgeSeed` (deployment-supplied tool guidance, seeded into a new
 session's knowledge store) lives under `pipeline.config.knowledgeSeed`.
+
+> **⚠️ `dag` and `stepper` are deprecated (legacy).** They keep running on their
+> own legacy step-interpreter and remain selectable for backward compatibility,
+> but they are no longer the active development path and will not receive the
+> newer planner/replan/metering work. The `controller` pipeline (with its
+> `incremental` or `adaptive` planner) is the maintained interpreter and the
+> recommended choice for new deployments. The newer controller interpreter was
+> **not** designed to drive the legacy DAG/stepper flows — do not migrate a
+> `dag`/`stepper` config onto it; pick `controller` directly instead. These two
+> pipelines may be removed in a future major version.
 
 ### `controller` config
 
@@ -51,6 +61,7 @@ pipeline:
         model: anthropic--claude-4.6-sonnet
       executor:                      # carries out a step; emits tool calls
         provider: sap-ai-sdk
+        # hint: <operational steering>  # optional — mainly for weaker models
         model: anthropic--claude-4.6-sonnet
     targetState:                     # how the goal is confirmed
       strategy: auto                 # auto | semantic-distance | consumer-confirm
@@ -63,14 +74,26 @@ pipeline:
   providers/models (e.g. a heavy planner + a light executor). The executor must
   be a **tool-capable** model the backend accepts (OpenAI function format);
   `anthropic--claude-3-haiku` cannot do tool calls via SAP AI Core orchestration.
+- **Per-role hints (operational scaffolding for weaker models).** The engine's
+  role system prompts are agnostic and concise. An optional `subagents.<role>.hint`
+  is appended to that role's system prompt to give it extra **operational
+  guidance** — how to build the plan, how to execute a step, what to be strict
+  about. Its main purpose is to **scaffold weaker models**: a capable model
+  (Opus / Sonnet) usually needs none, while a smaller executor/planner model
+  (e.g. `gpt-4o-mini`) may need the steering. A hint is **not** a domain
+  description and must **not** name tools — the self-describing tool catalog and
+  the agnostic prompt cover those, and richer per-situation procedures belong to
+  the **skills RAG** (a separate, dynamic mechanism, not wired via `hint`).
+  `controller-mixed.yaml` carries an executor hint as a worked example.
 - Internal (MCP) tools are surfaced to the executor by **semantic top-K** from
   the vectorized tool catalog (`toolsRag`); a distance-based `targetState`
   strategy therefore needs an embedder (`consumer-confirm` does not).
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)
-  (all-sonnet) and [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
-  (sonnet decider + light `gpt-4o-mini` executor).
+  (all-sonnet, no hints) and [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
+  (sonnet deciders + light `gpt-4o-mini` executor, with an executor hint that
+  scaffolds the smaller model).
 
 ## Adding a custom pipeline (plugin)
 

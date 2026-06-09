@@ -1,3 +1,8 @@
+# Controller pipeline — MIXED-MODEL variant: heavy deciders + a light executor.
+# Demonstrates the per-role `hint` as OPERATIONAL scaffolding for the weaker
+# executor model (gpt-4o-mini) — extra steering on HOW to execute. The heavy
+# sonnet deciders get no hint (capable models need none). The engine stays
+# agnostic; domain knowledge comes from the connected MCP tools + the skills RAG.
 port: 4010
 host: 0.0.0.0
 mode: smart
@@ -22,6 +27,9 @@ rag:
 pipeline:
   name: controller
   config:
+    # Per-role `hint` = optional OPERATIONAL guidance appended to a role's system
+    # prompt — used here to scaffold the weaker executor model. Capable models
+    # (the sonnet deciders below) need none, so they carry no hint.
     subagents:
       # Heavy model — goal formulation + planning (the judgment-heavy roles).
       evaluator:
@@ -37,6 +45,14 @@ pipeline:
       executor:
         provider: sap-ai-sdk
         model: ${EXEC_MODEL:-gpt-4o-mini}
+        # Operational scaffolding for the small model: keep it strict so it does
+        # not shortcut the tool loop. (A capable executor would not need this.)
+        hint: >-
+          Obtain every fact by calling a tool — never answer from prior
+          knowledge. Call ONE tool at a time and wait for its result. Use only
+          tools from the provided list, with exactly their documented arguments;
+          never invent a tool name or argument. Return the step result only once
+          the tool results are in.
     # Planner implementation: adaptive (plan once upfront, replan only on failure).
     # The whole point of mixed-model is to minimise EXPENSIVE planner LLM calls,
     # so adaptive (1 createPlan) beats incremental (a planner call per step).

@@ -20,6 +20,14 @@ import type { IServerPipelineContext } from './server-context.js';
  * picks the matching builder-factory by `mode`, builds the coordinator stage
  * handler, registers it on a fresh agent builder, and returns the runnable
  * agent plus a disposal hook.
+ *
+ * @deprecated Legacy pipeline. `stepper` runs on its own legacy composition
+ * step-interpreter and stays selectable only for backward compatibility — it is
+ * not the active development path. The newer `controller` pipeline (incremental
+ * / adaptive planner) is the maintained interpreter; new deployments should use
+ * it. The controller interpreter was not designed to drive the legacy stepper
+ * flow, so do not migrate a `stepper` config onto it. May be removed in a future
+ * major.
  */
 export class StepperPipelinePlugin
   implements IPipelinePlugin<StepperCoordinatorConfig>
