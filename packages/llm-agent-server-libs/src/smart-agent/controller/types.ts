@@ -54,9 +54,10 @@ export interface SessionBundle {
  *  purpose is to scaffold WEAKER models: a capable model (Opus / Sonnet) usually
  *  needs none, while a smaller executor/planner model (e.g. gpt-4o-mini) may
  *  need the extra steering. It is NOT a domain description and must NOT prescribe
- *  tool names (the self-describing tool catalog + the agnostic engine prompt
- *  cover those; richer per-situation procedures belong to the skills RAG).
- *  Absent hint → the role runs on the bare agnostic prompt. */
+ *  tool names: the planner plans by intent (it is shown no tool catalog) and the
+ *  executor selects the right tool per step; richer per-situation procedures
+ *  belong to the skills RAG. Absent hint → the role runs on the bare agnostic
+ *  prompt. */
 export type ControllerSubagentConfig = SmartServerLlmConfig & { hint?: string };
 
 export interface ControllerConfig {
@@ -84,7 +85,6 @@ export type PlannerKind = 'incremental' | 'adaptive';
 export interface PlannerNextInput {
   bundle: SessionBundle;
   prompt: string;
-  toolCatalog: string;
   /** Outcome of the step run since the previous `next()` (undefined on the first
    *  call / after a rewind / on resume). The adaptive planner replans on 'failed';
    *  the incremental planner ignores it. Cursor advance on 'advanced' happens in

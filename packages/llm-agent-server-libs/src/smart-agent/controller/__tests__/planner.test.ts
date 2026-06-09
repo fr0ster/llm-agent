@@ -31,7 +31,6 @@ describe('IncrementalPlanner', () => {
     const next = await p.next({
       bundle: bundle(),
       prompt: 'req',
-      toolCatalog: '- GetX: read',
       retrying: false,
     });
     assert.equal(next?.kind, 'next');
@@ -52,11 +51,13 @@ describe('IncrementalPlanner', () => {
     await new IncrementalPlanner(recording, 'Keep the plan minimal.').next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
     assert.match(sys, /Additional guidance: Keep the plan minimal\./);
+    // Contract: plan by intent, never name a tool; no dangling tool-list ref.
+    assert.match(sys, /do NOT (choose|name)/i);
+    assert.doesNotMatch(sys, /listed below/i);
   });
 
   it('non-content planner reply → null (format failure)', async () => {
@@ -65,7 +66,6 @@ describe('IncrementalPlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -92,7 +92,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.equal(next?.kind, 'next');
@@ -116,7 +115,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'advanced',
     });
@@ -147,7 +145,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'advanced',
     });
@@ -168,7 +165,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -197,7 +193,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -221,7 +216,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -236,7 +230,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: bundle(),
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -252,7 +245,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: b,
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -272,7 +264,6 @@ describe('AdaptivePlanner', () => {
       await p.next({
         bundle: b,
         prompt: 'r',
-        toolCatalog: '',
         retrying: false,
       }),
       null,
@@ -299,7 +290,6 @@ describe('AdaptivePlanner', () => {
     const next = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -334,7 +324,6 @@ describe('AdaptivePlanner', () => {
     await new AdaptivePlanner(recording).next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -362,18 +351,19 @@ describe('AdaptivePlanner', () => {
     await new AdaptivePlanner(recording).next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.doesNotMatch(sys, /SAP|ABAP/i);
     assert.match(sys, /live target system/);
     assert.doesNotMatch(sys, /Additional guidance:/);
+    // Contract: plan by intent, never name a tool; no dangling tool-list ref.
+    assert.match(sys, /do NOT (choose|name)/i);
+    assert.doesNotMatch(sys, /available tools|listed below/i);
 
     // With a hint: it is appended as an "Additional guidance" preamble.
     await new AdaptivePlanner(recording, 'Call one tool at a time.').next({
       bundle: bundle(),
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
     });
     assert.match(sys, /Additional guidance: Call one tool at a time\./);
@@ -398,7 +388,6 @@ describe('AdaptivePlanner', () => {
     const first = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: false,
       lastOutcome: 'failed',
     });
@@ -408,7 +397,6 @@ describe('AdaptivePlanner', () => {
     const second = await p.next({
       bundle: b,
       prompt: 'r',
-      toolCatalog: '',
       retrying: true,
       lastOutcome: b.lastOutcome,
     });
