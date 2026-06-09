@@ -84,6 +84,7 @@ export type PlannerKind = 'incremental' | 'adaptive';
 export interface PlannerNextInput {
   bundle: SessionBundle;
   prompt: string;
+  toolCatalog: string;
   /** Outcome of the step run since the previous `next()` (undefined on the first
    *  call / after a rewind / on resume). The adaptive planner replans on 'failed';
    *  the incremental planner ignores it. Cursor advance on 'advanced' happens in

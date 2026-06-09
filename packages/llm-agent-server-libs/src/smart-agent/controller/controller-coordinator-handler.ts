@@ -259,13 +259,18 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     }
 
     // -- Main loop ----------------------------------------------------------
-    // The planner plans by INTENT — it is NOT shown a tool catalog. A prompt-level
-    // catalog (selected once from goal+prompt) was too coarse: it mis-surfaced
-    // tools, and the planner baked the wrong tool name into the step instructions,
-    // which then poisoned the executor's own per-step selection. Tool relevance is
-    // instead resolved PER STEP from the clean step instructions when the step
-    // runs (see runStep → selectTools). The agnostic planner prompt already tells
-    // it to plan fetch steps ("the executor picks the exact one").
+    // Catalog of the tools relevant to THIS request, surfaced semantically from
+    // the vectorized MCP catalog (toolsRag) — bounded and relevant, not a full
+    // dump — so the planner plans tool-using steps instead of answering blind.
+    const relevantForGoal = await deps.selectTools(
+      `${bundle.goal}\n${prompt}`,
+      TOOL_SELECT_K,
+      ctx.options,
+    );
+    const toolCatalog = buildToolCatalog([
+      ...relevantForGoal,
+      ...(ctx.externalTools ?? []),
+    ]);
     const cfg = deps.config.budgets;
     let planParseRetries = 0;
     const planner = makePlanner(
@@ -282,6 +287,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       const next = await planner.next({
         bundle,
         prompt,
+        toolCatalog,
         lastOutcome: bundle.lastOutcome,
         resumedExternal,
         retrying: planParseRetries > 0,
@@ -686,6 +692,30 @@ const EXECUTOR_SYSTEM =
   'tool results.';
 
 const TOOL_SELECT_K = 20;
+
+/** Max characters of the tool catalog handed to the planner (safety bound; with
+ *  top-K selection the relevant tools fit well under this). */
+const TOOL_CATALOG_MAX_CHARS = 4000;
+
+/** A bounded "name: description" list of the tools the executor can call,
+ *  handed to the planner so it plans tool-using fetch steps. */
+function buildToolCatalog(tools: LlmTool[]): string {
+  if (tools.length === 0) return '(no tools available)';
+  const lines: string[] = [];
+  let total = 0;
+  for (let i = 0; i < tools.length; i++) {
+    const t = tools[i];
+    const desc = (t.description ?? '').split('\n')[0].slice(0, 100);
+    const line = `- ${t.name}: ${desc}`;
+    if (total + line.length + 1 > TOOL_CATALOG_MAX_CHARS) {
+      lines.push(`… (+${tools.length - i} more tools)`);
+      break;
+    }
+    lines.push(line);
+    total += line.length + 1;
+  }
+  return lines.join('\n');
+}
 
 /** Top-k recalled artifacts injected into the executor context per step. */
 const RECALL_K = 5;
