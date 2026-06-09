@@ -1,5 +1,9 @@
 # @mcp-abap-adt/sap-aicore-llm
 
+## 19.1.0
+
+Release 19.1.0.
+
 ## 19.0.0
 
 ### ⚠ BREAKING CHANGES
