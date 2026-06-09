@@ -19,12 +19,14 @@ const PLANNER_SYSTEM =
   'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
   'next step, {"kind":"done","result":...} when the goal is met, or ' +
   '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.\n' +
-  'An executor carries out each step against the live target system using the ' +
-  'tools listed below. Any fact about the system MUST be obtained by planning a ' +
-  'step that fetches it with a tool — do NOT answer from prior knowledge, and do ' +
-  'NOT mark the goal "done" until the required data has actually been fetched ' +
-  '(fetched results appear under Progress). Until then, return a concrete ' +
-  '"next" fetch step.';
+  'An executor carries out each step against the live target system using tools. ' +
+  'Describe each step by INTENT — WHAT to fetch or do — in plain language. Do ' +
+  'NOT choose, name, or assume a specific tool (no tool names in the step); the ' +
+  'executor selects the right tool for the step. Any fact about the system MUST ' +
+  'be obtained by planning a step that fetches it with a tool — do NOT answer ' +
+  'from prior knowledge, and do NOT mark the goal "done" until the required data ' +
+  'has actually been fetched (fetched results appear under Progress). Until then, ' +
+  'return a concrete "next" fetch step.';
 
 const RETRY_HINT =
   '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw ' +
@@ -67,7 +69,10 @@ const CREATE_PLAN_SYSTEM =
   'multi-action request MUST yield multiple steps (never a single step that lumps ' +
   'them together). ' +
   'Each step is ONE concrete action an executor performs against the live target ' +
-  'system using the available tools. Any fact about the system MUST be fetched ' +
+  'system using tools. Describe each step by INTENT — WHAT to fetch or do — in ' +
+  'plain language. Do NOT choose, name, or assume a specific tool (no tool names ' +
+  'in the step instructions); the executor selects the right tool for the step. ' +
+  'Any fact about the system MUST be fetched ' +
   'with a tool — plan fetch steps; never answer from prior knowledge. ' +
   'Keep it MINIMAL: one step per distinct piece of information the goal asks for; ' +
   'do NOT add exploratory or enrichment steps (extra metadata, sample/preview ' +
@@ -86,7 +91,9 @@ const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +
   '(fetched results + the failure), produce a REVISED, MINIMAL plan for the ' +
   'REMAINING work as {"plan":[{"name":...,"instructions":...}, ...]}. Plan only ' +
-  'the data-fetch/action steps still required; do NOT add a final summarize/' +
+  'the data-fetch/action steps still required; describe each step by INTENT — do ' +
+  'NOT name or choose a specific tool, the executor selects it. Do NOT add a ' +
+  'final summarize/' +
   'answer step (a separate finalizer composes the answer). If the goal is ' +
   'already satisfied despite the failure, return {"plan":[]}. Output JSON only.';
 
@@ -95,7 +102,9 @@ const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'this is NOT a failure. Given the goal and the progress (including the new ' +
   'result), produce a REVISED, MINIMAL plan for the REMAINING work as ' +
   '{"plan":[{"name":...,"instructions":...}, ...]}. Plan only the data-fetch/' +
-  'action steps still required; do NOT add a final summarize/answer step (a ' +
+  'action steps still required; describe each step by INTENT — do NOT name or ' +
+  'choose a specific tool, the executor selects it. Do NOT add a final summarize/' +
+  'answer step (a ' +
   'separate finalizer composes the answer). If the goal is already satisfied by ' +
   'the result, return {"plan":[]}. Output JSON only.';
 
