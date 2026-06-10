@@ -75,7 +75,7 @@ artifact ONCE** with the final `status` and the reviewer-`approved` content:
 
 ```
 writeArtifact(results-RAG, {
-  kind: 'step-result', runId, seq,
+  kind: 'step-result', runId, seq, attempt,        // attempt ∈ identity (#2/26)
   // FULL Outcome is durable, not just status+approved (#1):
   status, note, remainder,                        // control fields, from the reviewer
   content: approved,                              // reviewer-approved (full | accepted extract)
@@ -117,7 +117,12 @@ recall.
   in-flight step is
   `inFlightStep = { seq, step, attempt, resumeCount, phase, transcript, toolCallCount }`
   where `phase ∈ {executing, awaiting-replan}` (#2/25). A replayed (uncommitted) step
-  reuses the SAME `seq` (writes land at the same `(runId, seq)`).
+  reuses the SAME `seq`, and each artifact also carries its `attempt`. So there are
+  **two levels of keying (#2/26):** the **exact `(runId, seq, attempt)`** answers
+  "did THIS execution commit?" (used by crash/external-resume reconciliation, so a
+  prior attempt's `failed` artifact is never mistaken for the current attempt's
+  result), while **`(runId, seq)`** is the cross-attempt resolution scope for
+  dedup, the finalizer, and the read-side precedence rule.
   - **`transcript`** — the durable executor message log for this `seq` (the
     suspend/resume + crash-replay rebuild source; external results are appended
     here). The `external-tool` `PendingMarker` carries only the call coordinates
@@ -176,15 +181,16 @@ recall.
   artifact write and the `phase` persist are separate, so a crash AFTER
   `writeArtifact(failed)` but BEFORE persisting `phase:'awaiting-replan'` leaves
   `phase:'executing'` with a durable FAILED artifact. So resume does NOT trust
-  `phase` alone — it does an exact `get(runId, seq)` and routes by the **resolved
-  artifact status**, reconciled by precedence (`ok/exists > partial > failed`):
+  `phase` alone — it does an exact **`get(runId, seq, attempt)`** for the CURRENT
+  attempt (#2/26 — a prior attempt's artifact at the reused `seq` is not this
+  execution) and routes by the **resolved artifact status**:
   - an **approved** result (`ok`/`exists`/`partial`) → **adopt + commit**, do not
     re-run (closes the "wrote ok then crashed, replay would fail" case);
   - a **resolved `failed`** artifact (no approved one) → move to
     **`awaiting-replan` → replan**, do NOT re-execute the failed step (closes the
     write-failed-before-phase window);
-  - **no artifact** at `(runId, seq)` → the step truly did not complete →
-    re-execute.
+  - **no artifact** for this `(runId, seq, attempt)` → the attempt truly did not
+    complete → re-execute.
   `phase:'awaiting-replan'` (when it was persisted) is consistent with this and
   still routes to replan. As a backstop for any remaining
   duplicates, read-side dedup resolves a `(runId, seq)` by **outcome precedence**
@@ -454,16 +460,25 @@ Transitions:
          reply-verbatim → `goal`), clears `pending`, flips `runState → active`, AND
          advances `runPhase → planning` — all together, so recovery never sees a
          goal without its phase/state, nor `suspended` with `pending:none` (#1/22).
-       - **`external-tool`** → **first check the resolved artifact at `(runId, seq)`
-         (#2/24):** the artifact-store write and the bundle/marker clear are separate
-         ops, so a crash between them can leave a durable artifact with a stale
-         marker. If an artifact already exists at `(runId, seq)` → the continuation
-         already committed → in **ONE atomic bundle write** adopt it (executing
-         reconciliation by outcome precedence), **clear `pending`, flip
-         `runState → active`, and advance the cursor/clear `inFlightStep`** exactly
-         as the normal commit does (#3/25) — never a separate marker-clear that
-         could leave `suspended` + `pending:none`. Do NOT repeat the tool call.
-         Otherwise the awaited thing is the
+       - **`external-tool`** → **first check the resolved artifact of THIS attempt
+         at `(runId, seq, attempt)` (#2/24, #2/26):** the artifact-store write and
+         the bundle/marker clear are separate ops, so a crash between them can leave
+         a durable artifact with a stale marker. The lookup is keyed by
+         `(runId, seq, attempt)` — NOT bare `(runId, seq)` — because retry/replan
+         reuses the same `seq`, so a PRIOR attempt's `failed` artifact must not be
+         mistaken for this continuation's result (#2/26). If THIS attempt's artifact
+         exists, route by its **resolved outcome, NOT unconditional advance
+         (#1/26)** — exactly the executing reconciliation:
+         - **approved (`ok`/`exists`/`partial`)** → in **ONE atomic bundle write**
+           adopt it, clear `pending`, flip `runState → active`, advance the cursor /
+           clear `inFlightStep` (the normal commit, #3/25);
+         - **`failed`** (this attempt resolved failed) → in ONE atomic write clear
+           `pending`, flip `runState → active`, and set `inFlightStep.phase =
+           'awaiting-replan'` at the **SAME `seq`** (do NOT advance — that would skip
+           an unexecuted step) → replan.
+         Never a separate marker-clear that could leave `suspended` + `pending:none`.
+         Do NOT repeat the tool call. If THIS attempt has no artifact yet, the
+         awaited thing is the
          TOOL RESULT keyed by `extId`, NOT the incoming message (#2/22) — a plain
          re-request must never be mis-recorded as a result. **Look it up by `extId`**
          (external result/callback store):
@@ -510,11 +525,12 @@ Transitions:
 
 ## Data backbone & RAG contract changes (#5 prev)
 
-- **results-RAG** — per-session store; each artifact tagged `{runId, seq,
+- **results-RAG** — per-session store; each artifact tagged `{runId, seq, attempt,
   status}` and carrying the full `Outcome`. `KnowledgeEntryMetadata` +=
-  `runId/seq/status` (or a generic `tags` map); `KnowledgeFilter` += equality on
-  **`runId`, `seq`, `status`** (#3 — `seq` is required, not just runId/status) +
-  order by `seq`. The **semantic query must accept the `runId` filter applied
+  `runId/seq/attempt/status` (or a generic `tags` map); `KnowledgeFilter` +=
+  equality on **`runId`, `seq`, `attempt`, `status`** (#3 — `seq` required; `attempt`
+  added #2/26 so reconciliation can fetch the CURRENT execution, not just any at the
+  reused `seq`) + order by `seq`. The **semantic query must accept the `runId` filter applied
   BEFORE the top-K cap** (#2); backends do this natively or via the
   exact-`list(runId)`-then-rank-locally fallback.
 - **tool-RAG** — `selectTools` top-K per step (executor only).
@@ -586,11 +602,13 @@ context. The suspended state MUST persist on the durable `inFlightStep`: the
 `{toolName, args, extId, position}`.
 
 On resume — **artifact-first, then result-by-`extId`:**
-1. If a resolved artifact already exists at `(runId, seq)` → the continuation
-   committed before the crash → in **ONE atomic bundle write** adopt it, clear
-   `pending`, flip `runState → active`, and advance the cursor / clear
-   `inFlightStep` (the normal commit, #2/24, #3/25); no tool re-call, never a
-   bare marker-clear that leaves `suspended` + `pending:none`.
+1. If THIS attempt's artifact exists at `(runId, seq, attempt)` (#2/26) → the
+   continuation committed before the crash → route by its resolved outcome (#1/26),
+   in **ONE atomic bundle write** each: **approved** → adopt, clear `pending`, flip
+   `runState → active`, advance the cursor / clear `inFlightStep` (normal commit);
+   **failed** → clear `pending`, flip `runState → active`, set `phase:'awaiting-replan'`
+   at the SAME `seq` (do NOT advance) → replan. No tool re-call, never a bare
+   marker-clear that leaves `suspended` + `pending:none` (#2/24, #3/25).
 2. Else look up the **tool result keyed by `extId`** (not the resuming message,
    #2/22). If NOT yet available → the call is outstanding → **re-issue the SAME
    call (same `extId`, idempotent), stay `suspended`**.
@@ -610,11 +628,26 @@ to make several external round-trips. Each new call, in ONE atomic write:
 **REPLACES the (now consumed) marker with a FRESH `external-tool` marker** (new
 `extId`, new tool/args), appends to `inFlightStep.transcript`, and re-suspends — all
 on the same `inFlightStep`/`seq`. Because `toolCallCount` is durable on the step
-(not a per-resume local), the bound holds across crashes/resumes; exceeding it →
-`status:'failed'` → replan. So there is never a stale resolved marker; at most one
-*unresolved* marker is outstanding at a time, and the transcript accumulates across
-round-trips until the step commits its artifact. An external soft failure becomes
-`status:'failed'` → replan.
+(not a per-resume local), the bound holds across crashes/resumes.
+
+**`maxToolCalls` exceeded is a CONTROLLER failure, not a reviewer status (#3/26).**
+The invariant that `status` always comes from `IReviewer` holds for STEP outcomes;
+a blown round-trip budget is a control-level limit the executor never got to finish,
+so the controller does NOT synthesize a reviewer `status:'failed'`. Instead it
+emits a **controller-level step failure** (a typed control outcome
+`{ kind:'control-failed', reason:'maxToolCalls', seq }`, NOT an `Outcome`) that
+drives the SAME failed transition — `phase:'awaiting-replan'` at the same `seq` →
+replan — bypassing the reviewer (there is no reviewable executor result). This is
+the same shape as judge-failure / budget escalation: a controller transition, kept
+out of the reviewer-owned `status` channel. (A persistent over-budget step is
+ultimately bounded by `maxStepAttempts`/abort like any non-advancing step.)
+
+So there is never a stale resolved marker; at most one *unresolved* marker is
+outstanding at a time, and the transcript accumulates across round-trips until the
+step commits its artifact. An external **soft** failure (the tool ran and returned
+an error the executor surfaced) still flows the normal executor → reviewer path and
+becomes a reviewer `status:'failed'` → replan — distinct from the controller-level
+budget failure above.
 
 ## Idempotency & durability
 
@@ -742,7 +775,7 @@ mark the step advanced OR failed.
   lives on `inFlightStep`, while the `external-tool` `PendingMarker` carries only the
   call coordinates `{toolName, args, extId, position}` (#4/25). `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
-- `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
+- `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/attempt/status` (+ filter/order);
   backend filter or fetch-then-filter.
 
 ## Empirical basis
