@@ -115,8 +115,12 @@ recall.
 - **Stable `seq` + durable attempt bound (#1).** `planCursor` exists only for
   adaptive. Instead, a durable monotonic **`nextSeq`** lives in the bundle, and the
   in-flight step is
-  `inFlightStep = { seq, step, attempt, resumeCount, phase, transcript, toolCallCount }`
-  where `phase ∈ {executing, awaiting-replan}` (#2/25). A replayed (uncommitted) step
+  `inFlightStep = { seq, step, attempt, resumeCount, phase, transcript, toolCallCount, controlFailure? }`
+  where `phase ∈ {executing, awaiting-replan}` (#2/25). `controlFailure?` (#1/27) —
+  an optional `{ reason, seq }` set ATOMICALLY with `phase:'awaiting-replan'` when a
+  controller-level failure (e.g. `maxToolCalls`) drives a replan with no reviewable
+  artifact; it is the durable carrier of "why replan" for that case, fed to the
+  planner on (re)entry and cleared when the revised step is set. A replayed (uncommitted) step
   reuses the SAME `seq`, and each artifact also carries its `attempt`. So there are
   **two levels of keying (#2/26):** the **exact `(runId, seq, attempt)`** answers
   "did THIS execution commit?" (used by crash/external-resume reconciliation, so a
@@ -168,10 +172,11 @@ recall.
     (durable) — it does NOT yet have a revised step. THEN it calls the planner; on
     the planner's response it atomically sets
     `inFlightStep = { seq (same), revisedStep, attempt (unchanged here),
-    resumeCount: 0, phase: 'executing', transcript: empty, toolCallCount: 0 }` —
-    `resumeCount`, `transcript`, and `toolCallCount` are **all reset** (#3/16, #2/25:
-    a revised step is a fresh attempt — new transcript, own round-trip budget — and
-    must not inherit the prior attempt's crash/tool budget). The single fresh-execution increment then bumps `attempt` when
+    resumeCount: 0, phase: 'executing', transcript: empty, toolCallCount: 0,
+    controlFailure: cleared }` — `resumeCount`, `transcript`, `toolCallCount`, and
+    `controlFailure` are **all reset** (#3/16, #2/25, #1/27: a revised step is a fresh
+    attempt — new transcript, own round-trip budget — and must not inherit the prior
+    attempt's crash/tool budget or stale control-failure reason). The single fresh-execution increment then bumps `attempt` when
     the revised step runs (which also re-zeroes `resumeCount` per the rule that
     every fresh attempt resets it). A crash while `phase:'awaiting-replan'` resumes into
     **replan** (not re-execution of the failed step). The retry reuses the same
@@ -490,8 +495,8 @@ Transitions:
            persisted executor transcript), **clears `pending`, and flips
            `runState → active`** with `runPhase` staying `executing` (#1/24). The
            continuation is now a PLAIN `executing` step — NOT a `pending` one — so it
-           is reconciled by the resolved artifact at `(runId, seq)` like any other
-           step. Durability holds (#1/23): the result lives in the durable
+           is reconciled by the resolved artifact at `(runId, seq, attempt)` like any
+           other step. Durability holds (#1/23): the result lives in the durable
            `inFlightStep` transcript, so a crash before the artifact commit re-enters
            `executing`, rebuilds from that transcript (result already injected — no
            re-fetch, no re-issue), and is bounded by `resumeCount`. This removes the
@@ -553,10 +558,13 @@ Transitions:
   logical steps). No cursor/pagination needed. (Optional future: backend
   `DISTINCT (runId, seq)`.)
 - **Exact list/get (NOT semantic) (#3):** an exhaustive metadata query —
-  `list(runId)` / `get(runId, seq)` — returning ALL matching artifacts with no
-  relevance ranking or top-K. Used by the **finalizer full set**, **resume-adopt**
-  (`get(runId, seq)`), and **dedup**. A confirmed artifact can never be missed by
-  a semantic cutoff because this path does not rank/cut.
+  `list(runId)` / `get(runId, seq)` (all attempts) / `get(runId, seq, attempt)`
+  (one execution) — returning ALL matching artifacts with no relevance ranking or
+  top-K. Used by the **finalizer full set** and **dedup** at `(runId, seq)`
+  (cross-attempt precedence), and by **resume-adopt** at the exact
+  **`(runId, seq, attempt)`** (the current execution, #2/26, #2/27). A confirmed
+  artifact can never be missed by a semantic cutoff because this path does not
+  rank/cut.
 
 ## Dependency manifest & miss detection (not self-eval)
 
@@ -615,7 +623,7 @@ On resume — **artifact-first, then result-by-`extId`:**
 3. Else (result available) → ONE atomic write **injects it into the durable
    `inFlightStep` transcript, clears `pending`, flips `runState → active`** with
    `runPhase` staying `executing` (#1/24). The continuation is now a PLAIN
-   `executing` step (no `pending`), reconciled by `(runId, seq)` like any step.
+   `executing` step (no `pending`), reconciled by `(runId, seq, attempt)` like any step.
    Rebuild the executor context from the transcript and **re-run executor →
    reviewer** (normal path) — no bypass to `plannerPrivate`. Durability holds
    (#1/23): the injected result is in the durable transcript, so a mid-continuation
@@ -636,11 +644,23 @@ a blown round-trip budget is a control-level limit the executor never got to fin
 so the controller does NOT synthesize a reviewer `status:'failed'`. Instead it
 emits a **controller-level step failure** (a typed control outcome
 `{ kind:'control-failed', reason:'maxToolCalls', seq }`, NOT an `Outcome`) that
-drives the SAME failed transition — `phase:'awaiting-replan'` at the same `seq` →
-replan — bypassing the reviewer (there is no reviewable executor result). This is
-the same shape as judge-failure / budget escalation: a controller transition, kept
-out of the reviewer-owned `status` channel. (A persistent over-budget step is
-ultimately bounded by `maxStepAttempts`/abort like any non-advancing step.)
+drives the failed transition — `phase:'awaiting-replan'` at the same `seq` → replan
+— bypassing the reviewer (there is no reviewable executor result). **The reason is
+persisted durably (#1/27):** the awaiting-replan transition writes
+`inFlightStep.controlFailure = { reason:'maxToolCalls', seq }` ATOMICALLY with
+`phase:'awaiting-replan'` (one bundle write), so a crash before the replan does NOT
+lose it — recovery into `awaiting-replan` reads `controlFailure` and feeds the
+reason to the planner (it is cleared when the revised step is set). Without this
+field the reason lives nowhere (no artifact is written for a control failure, and
+`phase` alone doesn't carry it).
+
+This is a **replan** control transition — distinct from judge-failure / budget
+**abort** transitions (#3/27): a control-failed step is re-planned at the same
+`seq`, whereas an unverifiable reviewer outcome or an exhausted resume budget aborts
+the whole run with a control error. (A persistently over-budget step is still
+ultimately bounded — each control-failed → revised attempt increments `attempt`, so
+`maxStepAttempts` caps the replan loop and escalates to abort like any non-advancing
+step.)
 
 So there is never a stale resolved marker; at most one *unresolved* marker is
 outstanding at a time, and the transcript accumulates across round-trips until the
@@ -708,10 +728,11 @@ mark the step advanced OR failed.
   first persists `phase:'awaiting-replan'`, then (on planner response) sets the
   revised step at the same `seq` with `phase:'executing'`; `advanced`/`partial`
   commit + advance `nextSeq`. On resume: `awaiting-replan` → replan; `executing` →
-  exact `get(runId, seq)` → adopt-or-re-run. Executor result held in memory → reviewer →
-  **single** `writeArtifact` post-review; reads dedup `(runId, seq)` by outcome
-  precedence; semantic recall filters `runId` before the bounded over-fetch
-  `k×(maxStepAttempts+1)`.
+  exact `get(runId, seq, attempt)` → adopt-or-re-run (current execution, #2/26).
+  Executor result held in memory → reviewer →
+  **single** `writeArtifact` post-review; reads dedup at `(runId, seq)` by outcome
+  precedence (cross-attempt); semantic recall filters `runId` before the bounded
+  over-fetch `k×(maxStepAttempts+1)`.
 - Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
@@ -759,12 +780,13 @@ mark the step advanced OR failed.
   of re-entering its phase. A non-empty clarify answer is consumed by ONE atomic
   write that also flips `runState suspended → active` (never `suspended` with
   `pending:none`; empty answer → stay suspended, re-ask, #2/23). `external-tool`
-  resume is **artifact-first** (adopt + clear marker if `(runId,seq)` already
-  committed, #2/24), else consumes the tool result looked up by `extId` (re-issue
-  the same call + stay suspended if not yet available), NOT the incoming message.
-  A found result is **injected into the durable `inFlightStep` transcript and
-  `pending` is CLEARED** (the continuation becomes a plain `executing` step,
-  reconciled by `(runId,seq)`; no `active + pending(resolved)` state — #1/24); a
+  resume is **artifact-first, outcome-routed** (if THIS attempt's artifact at
+  `(runId,seq,attempt)` exists: approved → adopt+commit, failed → awaiting-replan
+  same seq; #1/26, #2/26), else consumes the tool result looked up by `extId`
+  (re-issue the same call + stay suspended if not yet available), NOT the incoming
+  message. A found result is **injected into the durable `inFlightStep` transcript
+  and `pending` is CLEARED** (the continuation becomes a plain `executing` step,
+  reconciled by `(runId,seq,attempt)`; no `active + pending(resolved)` state — #1/24); a
   mid-continuation crash rebuilds from that durable transcript without re-fetch
   (#1/23). The NEXT external call **replaces the consumed marker with a fresh
   unresolved one** on the same `seq`, transcript accumulating (#3/24).
