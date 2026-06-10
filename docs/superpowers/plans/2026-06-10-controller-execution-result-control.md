@@ -1658,17 +1658,20 @@ it('maxStepResumes: a crash-replay with no committed artifact charges resumeCoun
     inFlightStep: { seq: 0, step: { name: 's1', instructions: 'i' }, attempt: 0, resumeCount: 1, phase: 'executing', transcript: [], toolCallCount: 0 },
     plan: [{ name: 's1', instructions: 'i' }], planCursor: 0,
   } as never);
+  let plannerCalls = 0;
   const h = harness({
     evaluator: [], executor: [{ kind: 'content', content: 'x' }],
     planner: [], config: { ...baseConfig(), planner: 'adaptive', budgets: { ...baseConfig().budgets, maxStepResumes: 1 } },
   });
   h.deps.backend = backend;
-  // Adaptive planner re-emits the step at the cursor on resume.
-  h.deps.planner = { async send() { return { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'i' } }) }; } };
+  // The executing-recovery is planner-INDEPENDENT: the in-flight step is
+  // reconciled/aborted DIRECTLY, the planner must NOT be consulted for it.
+  h.deps.planner = { async send() { plannerCalls++; return { kind: 'content', content: JSON.stringify({ kind: 'done', result: 'should-not-run' }) }; } };
   const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
   await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
   const bundle = await hydrateBundle(backend, 'sess-1');
   assert.equal(bundle.runState, 'terminal', 'aborted at maxStepResumes');
+  assert.equal(plannerCalls, 0, 'planner was NOT consulted for the in-flight executing step');
   assert.ok(captured.find((c) => c.ok && /maxStepResumes|Error:/.test(c.value.content)));
 });
 ```
@@ -1678,84 +1681,101 @@ it('maxStepResumes: a crash-replay with no committed artifact charges resumeCoun
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts`
 Expected: the existing `internal tool-call budget` test currently passes against the LOCAL `toolCalls`; this task moves it to durable state. After Step 3 both must pass.
 
-- [ ] **Step 3: Establish + advance `inFlightStep`**
+- [ ] **Step 3: Executing recovery (planner-independent) + fresh-attempt open**
 
-In `execute`, before calling `runStep` for a `next.step` (around line 344), set/refresh the in-flight step (fresh attempt) and persist:
+First declare the transient continuation flag near the existing
+`let resumedExternal = false;` at the top of `execute` (Task 12 owns it so this
+task compiles standalone; Task 14 only SETS it):
 
 ```ts
-      // Dispatch the planner's step. Three cases, distinguished by the durable
-      // inFlightStep — this is also the executing-phase resume reconciliation
-      // (spec): adopt-if-committed, else charge the crash-replay or open a fresh
-      // attempt.
-      const seq = bundle.nextSeq ?? 0;
-      const prev = bundle.inFlightStep;
-      if (prev && prev.seq === seq && prev.phase === 'executing') {
-        // Re-entered an UNCOMMITTED executing step (crash-replay or a benign
-        // re-loop). Reconcile by THIS attempt's resolved artifact first.
-        const committed = await rag.list({ runId: bundle.runId, seq, attempt: prev.attempt, artifactType: 'step-result' });
+    let externalContinuation = false;
+```
+
+**(A) Top-of-loop executing recovery — does NOT consult the planner (#3/plan-4).**
+An in-flight executing step (a crash-replay or an external continuation) must be
+reconciled/re-run DIRECTLY from `inFlightStep.step`, because a custom/incremental
+planner is not guaranteed to re-emit the same step (it may return a different step
+or `done`). Add this as the FIRST statement inside the `while` loop body, BEFORE
+`planner.next(...)`:
+
+```ts
+      const inf = bundle.inFlightStep;
+      if (inf && inf.phase === 'executing') {
+        // Reconcile by THIS attempt's resolved artifact first.
+        const committed = await rag.list({ runId: bundle.runId, seq: inf.seq, attempt: inf.attempt, artifactType: 'step-result' });
         const resolved = resolveByPrecedence(
           committed.map((e) => ({ status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: e.metadata.remainder ?? '', note: e.metadata.note ?? '' })),
         );
         if (resolved) {
           // Already committed → adopt, do NOT re-run.
           if (resolved.status === 'failed') {
-            prev.phase = 'awaiting-replan';
+            inf.phase = 'awaiting-replan';
             bundle.lastOutcome = 'failed';
           } else {
-            bundle.nextSeq = seq + 1;
+            bundle.nextSeq = inf.seq + 1;
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
             bundle.lastOutcome = mapOutcome(resolved.status);
+            // Carry the durable remainder to the replan (crash between artifact
+            // write and plannerPrivate persist — #5/plan-4).
+            if (resolved.status === 'partial' && resolved.remainder) {
+              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`;
+            }
           }
           await persistBundle(deps.backend, sessionId, bundle);
-          continue; // back to planner.next with reconciled state
+          continue; // re-enter the loop with reconciled state → planner.next
         }
-        // No artifact for this attempt. Distinguish a live external CONTINUATION
-        // (just injected a tool result this invocation — bounded by toolCallCount,
-        // NOT a crash) from a genuine crash-replay.
+        // No artifact for this attempt → re-run the SAME step directly.
+        // Distinguish a live external CONTINUATION (bounded by toolCallCount, not a
+        // crash) from a genuine crash-replay (charged to resumeCount).
         if (externalContinuation) {
-          // Legitimate continuation: charge NEITHER attempt NOR resumeCount. Re-run
-          // the in-flight step from the (now result-bearing) transcript.
-          externalContinuation = false; // consume the transient flag
-          bundle.runPhase = 'executing';
-          await persistBundle(deps.backend, sessionId, bundle);
+          externalContinuation = false; // consume the transient flag — no charge
         } else {
-          // Genuine crash-replay: charge resumeCount, abort at the cap.
-          prev.resumeCount += 1;
-          if (prev.resumeCount > (cfg.maxStepResumes ?? 3)) {
-            await this.abortTerminal(ctx, sessionId, bundle, `step "${prev.step.name}" exceeded maxStepResumes`, now, terminalTtlMs, usageNow());
+          inf.resumeCount += 1;
+          if (inf.resumeCount > (cfg.maxStepResumes ?? 3)) {
+            await this.abortTerminal(ctx, sessionId, bundle, `step "${inf.step.name}" exceeded maxStepResumes`, now, terminalTtlMs, usageNow());
             return true;
           }
-          bundle.runPhase = 'executing';
-          await persistBundle(deps.backend, sessionId, bundle);
         }
-        // Fall through to runStep with the SAME inFlightStep (attempt unchanged,
-        // transcript reused as the rebuild source).
-      } else {
-        // Fresh attempt: first dispatch, OR a revised step after awaiting-replan
-        // (same seq → attempt+1), OR a new seq (attempt 0).
-        const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
-        // Durable fresh-attempt cap: a non-advancing step (repeated failed/
-        // control-failed replans at the same seq) cannot replan forever. `attempt`
-        // is the 0-based identity index of the execution about to run, so the
-        // count of executions is `attempt + 1`; abort when that would exceed the
-        // cap, i.e. attempt >= maxStepAttempts (cap N → executions 0..N-1 = N runs).
-        if (attempt >= (cfg.maxStepAttempts ?? 5)) {
-          await this.abortTerminal(ctx, sessionId, bundle, `step "${next.step.name}" exceeded maxStepAttempts`, now, terminalTtlMs, usageNow());
-          return true;
-        }
-        bundle.inFlightStep = {
-          seq,
-          step: next.step,
-          attempt,
-          resumeCount: 0,
-          phase: 'executing',
-          transcript: [],
-          toolCallCount: 0,
-        };
-        bundle.runPhase = 'executing';
         await persistBundle(deps.backend, sessionId, bundle);
+        const completed = await this.runStep(
+          ctx, sessionId, bundle, rag, meta, inf.step, isExternalTool,
+          logUsage, usageNow, (o) => planner.commit?.(bundle, o), now, terminalTtlMs,
+        );
+        if (completed === 'suspended' || completed === 'aborted') return true;
+        continue; // settle() already advanced/cleared inFlightStep
       }
+```
+
+**(B) Fresh-attempt open at the `next.kind === 'next'` dispatch site.** Replace the
+existing fresh dispatch (around line 344) so it ONLY opens a new in-flight step for
+a step the planner just emitted (a brand-new seq, or a revised step after
+`awaiting-replan`). Crash-replay/continuation is handled by (A) above, so this site
+never re-enters an `executing` step.
+
+```ts
+      // The planner emitted a step to run. Open a fresh attempt at the current
+      // seq: attempt 0 for a new seq, or attempt+1 for a revised step after
+      // awaiting-replan (same seq).
+      const seq = bundle.nextSeq ?? 0;
+      const prev = bundle.inFlightStep; // only ever phase 'awaiting-replan' here
+      const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
+      // Durable fresh-attempt cap (0-based index; cap N → N executions 0..N-1).
+      if (attempt >= (cfg.maxStepAttempts ?? 5)) {
+        await this.abortTerminal(ctx, sessionId, bundle, `step "${next.step.name}" exceeded maxStepAttempts`, now, terminalTtlMs, usageNow());
+        return true;
+      }
+      bundle.inFlightStep = {
+        seq,
+        step: next.step,
+        attempt,
+        resumeCount: 0,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 0,
+      };
+      bundle.runPhase = 'executing';
+      await persistBundle(deps.backend, sessionId, bundle);
 ```
 
 In `runStep`, replace the local `let toolCalls = 0;` and its increments with the durable counter:
@@ -1948,16 +1968,11 @@ Wrap the planner call in `execute` with the guard. Before each `planner.next(...
 
 Apply the SAME marker pattern around `establishTargetState` (evaluator → `evalCallInFlight`/`evalResumeCount`, `runPhase='evaluating'`); on exhausting `maxEvalResumes`, **abort the same way** (`abortTerminal('evaluator resume budget exhausted', …)` then `return true`) — NOT escalate. The replan call inside the adaptive planner runs through `planner.next`, so the planner guard above already covers the `awaiting-replan` replan (no separate site).
 
-**Finalizing-phase recovery route.** After the terminal-first stage-1 check (which already covers a crash AFTER the finalizer wrote the terminal store), add a route so a crash DURING finalizing (no terminal entry yet) re-invokes the finalizer instead of re-planning. After classification resolves to `resume` and the terminal-first check found nothing, BEFORE entering the main planner loop:
-
-```ts
-    if (bundle.runState === 'active' && bundle.runPhase === 'finalizing') {
-      // No terminal entry (checked above) → the finalizer never completed.
-      // Re-run it via the unified finalize() helper (Task 15), which charges
-      // finalizeAttempt under finalizeCallInFlight and applies onFinalizeExhausted.
-      return this.finalize(ctx, sessionId, bundle, rag, prompt, logUsage, usageNow, now, terminalTtlMs);
-    }
-```
+The finalizing-phase recovery route (a crash DURING finalizing, no terminal entry
+yet) re-invokes the finalizer — but that depends on `this.finalize()`, which is
+created in Task 15, so it is added THERE (not here) to keep this task standalone-
+buildable. Task 13 only establishes the terminal-first stage-1 check + the
+classification/eval/planner guards.
 
 Add imports: `import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';` and `import { resetRun } from './session-bundle.js';`.
 
@@ -2030,7 +2045,7 @@ Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) wi
       if (bundle.runId !== undefined && seq !== undefined && attempt !== undefined) {
         const existing = await rag.list({ runId: bundle.runId, seq, attempt, artifactType: 'step-result' });
         const resolved = resolveByPrecedence(
-          existing.map((e) => ({ status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: '', note: '' })),
+          existing.map((e) => ({ status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: e.metadata.remainder ?? '', note: e.metadata.note ?? '' })),
         );
         if (resolved) {
           bundle.pending = undefined;
@@ -2043,6 +2058,12 @@ Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) wi
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
             bundle.lastOutcome = mapOutcome(resolved.status);
+            // Ensure the durable remainder reaches the replan even if the crash
+            // landed between the artifact write and the plannerPrivate persist
+            // (#5/plan-4): reconstruct it from the adopted Outcome.
+            if (resolved.status === 'partial' && resolved.remainder) {
+              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`;
+            }
           }
           await persistBundle(deps.backend, sessionId, bundle);
           // fall through to the loop
@@ -2085,6 +2106,16 @@ In `runStep`, when an external tool is hit, persist `inFlightStep.toolCallCount+
 
 ```ts
       if (isExternalTool(name)) {
+        // Bound external round-trips by the SAME durable toolCallCount/maxToolCalls
+        // as internal calls (#4/plan-4): check BEFORE surfacing, so an external
+        // tool cannot exceed the cap. Exhausted → control-failed replan (same seq).
+        if (inFlight && inFlight.toolCallCount + 1 > maxToolCalls) {
+          bundle.budgets.stepsUsed++;
+          bundle.plannerPrivate += `\n[step ${step.name} control-failed] maxToolCalls`;
+          inFlight.phase = 'awaiting-replan';
+          inFlight.controlFailure = { reason: 'maxToolCalls', seq: inFlight.seq };
+          return settle('failed');
+        }
         const extId = externalToolCallId(name, args);
         if (inFlight) { inFlight.toolCallCount += 1; }
         bundle.pending = { kind: 'external-tool', extId, toolName: name, args, position: step.name };
@@ -2103,10 +2134,10 @@ If `runStep` rebuilds `messages` from `inFlightStep.transcript` on resume (when 
     }
 ```
 
-Declare the transient continuation flag near the existing `let resumedExternal = false;`
-at the top of `execute`: `let externalContinuation = false;` (per-invocation, never
-persisted — it distinguishes a live external continuation from a crash-replay at the
-dispatch site).
+The `externalContinuation` transient flag is already declared in Task 12 (Step 3A);
+this task only SETS it when injecting the tool result. The Task 12 top-of-loop
+executing-recovery block consumes it (re-runs the in-flight step without charging
+resumeCount).
 
 Add `import { resolveByPrecedence } from './outcome.js';` (Outcome already imported).
 
@@ -2195,6 +2226,20 @@ Replace the `next.kind === 'done'` branch (lines 316-321) with: read the approve
         // injected (3-role config) — the adaptive planner already composed it.
         return this.finalize(ctx, sessionId, bundle, rag, prompt, logUsage, usageNow, now, terminalTtlMs, next.result);
       }
+```
+
+**Finalizing-phase recovery route (now that `finalize()` exists).** In the recovery
+preamble built in Task 13 — after the terminal-first stage-1 check found NO terminal
+entry, and BEFORE the main planner loop — add: a crash DURING finalizing (no
+terminal outcome yet) re-runs the finalizer rather than re-planning:
+
+```ts
+    if (cls.kind === 'resume' && bundle.runState === 'active' && bundle.runPhase === 'finalizing') {
+      // No terminal entry (stage-1 checked) → the finalizer never completed.
+      // Re-run it; finalize() charges finalizeAttempt under finalizeCallInFlight,
+      // checks the cap before re-invoking, and applies onFinalizeExhausted.
+      return this.finalize(ctx, sessionId, bundle, rag, prompt, logUsage, usageNow, now, terminalTtlMs);
+    }
 ```
 
 Add the unified `finalize()` private method — the SINGLE finalize path for both the
