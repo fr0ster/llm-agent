@@ -84,15 +84,34 @@ writeArtifact(results-RAG, {
 written before review; no record is mutated. (If a raw-vs-approved audit trail is
 later wanted, that is an additional immutable record — out of scope now.)
 
-**Crash/replay dedup (#1).** The artifact write and the cursor/bundle persist are
-separate, so a crash between them replays the step and appends a SECOND artifact
-for the same logical step. With an append-only store we cannot overwrite, so:
-`seq` is the **stable step index** (the plan-cursor position), NOT a write
-counter — a replayed step writes at the SAME `(runId, seq)`. Every read that
-assembles results — finalizer full-set AND executor recall — **dedups by
-`(runId, seq)`, keeping the latest write** (append/ingest order or a write
-timestamp tie-breaker). So duplicates are tolerated in storage and collapsed at
-read; the finalizer never sees two copies of one step.
+**Replay identity & reconciliation.** The artifact write and the cursor/bundle
+persist are separate, so a crash between them replays a step. Append-only means
+we cannot overwrite — so we need a planner-agnostic stable id, a reconciliation
+rule that does not lose a confirmed success, and dedup that does not starve
+recall.
+
+- **Stable `seq` for BOTH planners (#1).** `planCursor` exists only for adaptive.
+  Instead, a durable monotonic **`nextSeq`** lives in the bundle; when a step is
+  dispatched the controller persists **`inFlightStep = { seq: nextSeq, step }`**
+  BEFORE executing, and only on commit does `nextSeq` advance (and `inFlightStep`
+  clear). A replayed (uncommitted) step reuses the SAME `inFlightStep.seq` →
+  writes at the SAME `(runId, seq)`. Works for incremental and adaptive alike
+  (no dependence on a plan/cursor).
+- **Resume reconciliation, NOT latest-wins (#2).** Latest-write-wins is wrong: a
+  first attempt could write an approved `ok` then crash, and a replay attempt
+  finish `failed`, hiding the real success. So: on resume of an active run,
+  BEFORE re-running `inFlightStep`, the controller **queries results-RAG for an
+  existing approved artifact at `(runId, seq)`** (`status ∈ {ok, exists,
+  partial}`); if one exists, **adopt it and commit — do NOT re-run** the step.
+  Only if none exists is the step re-executed. As a backstop for any remaining
+  duplicates, read-side dedup resolves a `(runId, seq)` by **outcome precedence**
+  `ok/exists > partial > failed` (tie-break latest), never bare chronology.
+  Committed seqs (`< nextSeq`) are authoritative and never re-run.
+- **Dedup before the cap (#3).** Duplicates of one `(runId, seq)` must not fill
+  the top-K and crowd out other steps. Recall **over-fetches** (k × a dup factor,
+  or a backend `DISTINCT (runId, seq)` where supported), **dedups to unique
+  `(runId, seq)` by the precedence above, THEN applies the top-K / budget cap** —
+  so K reflects K distinct steps, not K copies of one.
 
 ## Planner transitions (#2 — partial is a first-class outcome)
 
@@ -146,16 +165,22 @@ Transitions:
   active. Fixes stale goal/plan/cursor carrying over.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
 - **`done` (finalizer composed) or abort:** → terminal; next request resets.
-- **Crash recovery — active with NO `pending` (#5):** a process crash mid-step
-  leaves the bundle `active` but not `suspended`. The bundle persists the
-  `originalRequest`; the next HTTP request is classified against it:
-  - request **equals** `originalRequest` (a client retry of the same run) →
-    **resume from the cursor** (re-run the in-flight step; at-least-once + the
-    `(runId,seq)` dedup make replay safe for reads / idempotent writes);
-  - request **differs** → the crashed run is **abandoned** (logged) → reset →
-    fresh run for the new request.
-  So an active-without-pending bundle is never ambiguous: it is recovered or
-  explicitly abandoned, never silently continued under the wrong prompt.
+- **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
+  the bundle `active` but not `suspended`. Classification does NOT use raw request
+  equality (unreliable for `Message[]`, whitespace, transport re-delivery).
+  Instead:
+  - **Explicit resume token (primary):** the bundle exposes `runId` as a resume
+    token; a client that passes it back resumes that run unambiguously.
+  - **Canonical fingerprint (fallback):** the bundle persists
+    `originalRequestFingerprint` — a hash of the *normalized* request (messages
+    reduced to `{role, trimmed content}`, transport metadata dropped). The
+    incoming request is normalized + hashed and compared.
+  - Match (token or fingerprint) → **resume from `inFlightStep`** (adopt-or-re-run
+    per the reconciliation above). No match → the crashed run is **abandoned**
+    (logged) → reset → fresh run.
+  So an active-without-pending bundle is never ambiguous: recovered via a stable
+  identity, or explicitly abandoned — never silently continued under the wrong
+  prompt.
 
 ## Data backbone & RAG contract changes (#5 prev)
 
@@ -240,9 +265,12 @@ mark the step advanced OR failed.
   guess. Escalate: **abort the run with a control error** ("step <seq> outcome
   unverifiable") rather than advancing or failing the step. (A future option: a
   fallback `IReviewer` — e.g. a conservative deterministic judge.)
-- **Finalizer error:** retry within `maxFinalizeRetries`; exhausted → return a
-  control error, or a best-effort answer assembled from the already-approved
-  results — never a confabulated completion.
+- **Finalizer error:** retry within `maxFinalizeRetries`; on exhaustion the
+  behavior is a **single explicit config enum** `onFinalizeExhausted: 'error' |
+  'best-effort'` — **default `'error'`** (terminal control error, deterministic).
+  `'best-effort'` composes from the already-approved results with an explicit
+  "incomplete" marker. Either way: never a confabulated completion, and the
+  terminal state is well-defined per the chosen value.
 - These are LLM/role faults; they go through the same usage metering but are
   attributed to `reviewer`/`finalizer`, not the executor.
 
@@ -251,20 +279,25 @@ mark the step advanced OR failed.
 - New `IReviewer` + `IFinalizer` interfaces; handler depends on them; the factory
   builds the default LLM impls from the `reviewer`/`finalizer` config. Reviewer
   always-on, tool-less by default; usage attributed to `reviewer`/`finalizer`.
-- `runStep`: executor result held in memory → reviewer → **single** `writeArtifact`
-  at stable `(runId, seq=stepIndex)` (post-review, final status, approved
-  content); outcome from the reviewer; read-side dedup by `(runId, seq)`.
+- `runStep`: durable `nextSeq` + `inFlightStep {seq, step}` persisted BEFORE
+  execute (advance `nextSeq` only on commit) → planner-agnostic stable `seq`;
+  on resume, ADOPT an existing approved artifact at `(runId, seq)` instead of
+  re-running; executor result held in memory → reviewer → **single**
+  `writeArtifact` post-review; reads dedup `(runId, seq)` by outcome precedence
+  (over-fetch before the cap).
 - Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
 - New budgets `maxReviewRetries`, `maxFinalizeRetries`; judge-failure escalation
-  (abort-with-control-error, not silent advance/fail).
+  (abort-with-control-error, not silent advance/fail); `onFinalizeExhausted:
+  error|best-effort` (default `error`).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
-- `SessionBundle`: durable `runId` + run-state + `originalRequest` + atomic
-  run-scoped RESET + crash-recovery classification; persist full suspended-step
-  state in the external-tool `PendingMarker`.
+- `SessionBundle`: durable `runId` (also the resume token) + run-state +
+  `nextSeq` + `inFlightStep` + `originalRequestFingerprint` + atomic run-scoped
+  RESET + crash-recovery classification (token/fingerprint, not raw equality);
+  persist full suspended-step state in the external-tool `PendingMarker`.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
 
