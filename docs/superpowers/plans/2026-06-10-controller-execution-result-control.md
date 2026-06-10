@@ -267,32 +267,34 @@ insertion = its "semantic" proxy; ranking unchanged):
 
 (`matches` is exported / module-visible in `knowledge-rag.ts`.)
 
-`JsonlKnowledgeBackend.semanticQuery` (server-libs) — add the param; when a filter
-is present, prefer a native filter on the injected semantic index if it supports
-one, else use the **exhaustive `scan()`** (guaranteed complete) filtered, ranked by
-the index where possible (recency fallback otherwise — the spec's
-list-then-rank-locally):
+`JsonlKnowledgeBackend.semanticQuery` (server-libs) — add the param, AND extend the
+injected semantic-index interface so the filter reaches the index (which ranks by
+SIMILARITY within the run — the spec's native option). Recency is used ONLY when
+there is no index (then there is no similarity to rank by, so it is not a
+downgrade):
 
 ```ts
+  // The injected semantic index gains the SAME optional filter (vector adapters
+  // apply it as a metadata filter in their query, ranking within the filtered set):
+  //   semantic?: { upsert(...); query(sid, text, k?, filter?): Promise<...> }
   async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
-    if (filter) {
-      // GUARANTEED run-scoping (the semantic index may cap below the run's size):
-      // exhaustive scan → filter → most-recent K. (A future vector adapter with a
-      // metadata filter can rank semantically within the run.)
-      const all = (await this.scan(sid)).filter((e) => matchesFilter(e.metadata, filter));
-      const ranked = all.slice().sort((a, b) => b.metadata.createdAt.localeCompare(a.metadata.createdAt));
-      return k ? ranked.slice(0, k) : ranked;
+    if (this.semantic) {
+      // Native: the index applies the filter PRE-cap and ranks by similarity.
+      return this.semantic.query(sid, text, k, filter);
     }
-    if (this.semantic) return this.semantic.query(sid, text, k);
-    const all = await this.scan(sid);
+    // No index → recency-only backend (no similarity exists). Apply the filter to
+    // the exhaustive scan (guaranteed run-scoping), most-recent K.
+    let all = await this.scan(sid);
+    if (filter) all = all.filter((e) => matchesFilter(e.metadata, filter));
     return k ? all.slice(-k) : all;
   }
 ```
 
-> `matchesFilter` is a small local copy in the Jsonl backend (or import the shared
-> `matches` from `@mcp-abap-adt/llm-agent-libs` if it is exported). If `matches` is
-> not exported, export it from `knowledge-rag.ts` and import it here — one shared
-> predicate, no duplication.
+> The injected `semantic.query` signature gains `filter?: KnowledgeFilter`; vector
+> adapters (qdrant/hana/pg) apply it as a native metadata filter so similarity
+> ranking happens WITHIN the run — this is the path that actually preserves semantic
+> ranking. `matchesFilter` is the shared predicate: export `matches` from
+> `knowledge-rag.ts` and import it here (one predicate, no duplication).
 
 `KnowledgeRag.query` passes the filter through (the backend applied it pre-cap; a
 defensive post-filter is harmless):
@@ -1126,11 +1128,13 @@ describe('orderAndTruncate', () => {
 });
 
 describe('reduceToBudget', () => {
-  it('always returns a body within budget (hard guarantee), even with many small results', () => {
+  it('within budget AND explicitly counts what it cannot inline (no silent drop)', () => {
     const many = Array.from({ length: 200 }, (_, i) => ({ seq: i, content: 'x'.repeat(100) }));
     const budget = 500;
     const body = reduceToBudget(many, 1000, budget);
     assert.ok(body.length <= budget, `body ${body.length} <= budget ${budget}`);
+    // It cannot inline 200 ids in 500 chars, but the omission is EXPLICIT.
+    assert.ok(/more of 200/.test(body), 'manifest explicitly counts omitted ids');
   });
   it('keeps a compact extract of EVERY result for a feasible budget (none dropped) and logs reductions', () => {
     const logs: string[] = [];
@@ -1239,10 +1243,10 @@ export function orderAndTruncate(
  *     a `…[truncated]` marker) — so NO result is dropped, every `[#seq]` is still
  *     present. The share is sized to account for prefix+marker+separator overhead
  *     so the joined body is <= budget by construction.
- *  3. If the budget cannot hold N compact extracts, emit a single compact MANIFEST
- *     that NAMES every seq (e.g. "[results omitted — too small for budget: #0 #1
- *     #2]") so no result is silently dropped (#3/plan-8); a final hard slice
- *     guarantees <= budget for a truly pathological budget.
+ *  3. If the budget cannot hold N compact extracts, emit a MANIFEST that lists as
+ *     many seq ids as fit plus an EXPLICIT "(+M more of N)" count — so omission is
+ *     never silent even when naming all ids is physically impossible in the budget
+ *     (#3/plan-9). Guaranteed <= budget by construction.
  *  Deterministic; an LLM-summarizer map-reduce is a future variant. Pure aside
  *  from `log`. */
 export function reduceToBudget(
@@ -1290,12 +1294,24 @@ export function reduceToBudget(
     log?.(`finalizer overflow: even per-result share ${share} chars across ${n} results (none dropped)`);
     body = render();
   }
-  // Pass 3: budget too small for N compact extracts → compact MANIFEST naming
-  // every seq (no result silently dropped). A final slice guards a pathological
-  // budget smaller than even the manifest.
+  // Pass 3: budget too small for N compact extracts → a MANIFEST that lists as
+  // many seq ids as fit and an EXPLICIT count of the rest, so omission is never
+  // silent even when it is physically impossible to name all ids within the budget
+  // (#3/plan-9). Guaranteed <= budget by construction.
   if (body.length > budget) {
-    const manifest = `[results omitted — budget too small to inline: ${ordered.map((r) => `#${r.seq}`).join(' ')}]`;
-    log?.(`finalizer overflow: emitting compact manifest of ${ordered.length} seqs (budget ${budget})`);
+    const n = ordered.length;
+    const ids = ordered.map((r) => `#${r.seq}`);
+    // Reserve room for the suffix "… (+M more of N)"; drop ids from the tail until
+    // the whole manifest fits.
+    let shown = ids.length;
+    const build = (count: number) => {
+      const omitted = n - count;
+      const suffix = omitted > 0 ? ` … (+${omitted} more of ${n})` : '';
+      return `[results: ${ids.slice(0, count).join(' ')}${suffix}]`;
+    };
+    while (shown > 0 && build(shown).length > budget) shown--;
+    log?.(`finalizer overflow: manifest lists ${shown}/${n} ids, ${n - shown} explicitly counted (budget ${budget})`);
+    const manifest = build(shown);
     body = manifest.length <= budget ? manifest : manifest.slice(0, budget);
   }
   return body;
@@ -2742,14 +2758,30 @@ async function runScopedRecall(
 ): Promise<readonly KnowledgeEntry[]> {
   const kPrime = k * (maxStepAttempts + 1);
   const hits = await rag.query(text, { k: kPrime, filter: { runId, artifactType } });
-  // Dedup by (runId, seq): keep the precedence-winning entry per seq.
-  const bySeq = new Map<number, KnowledgeEntry>();
+  // Dedup ONLY entries that carry a seq (step-results = a step's retries): keep the
+  // precedence-winner per seq. Entries WITHOUT a seq (mcp-results — distinct tool
+  // fetches, not retries of one logical step) are NOT collapsed (#2/plan-9); they
+  // pass through as distinct hits. Relevance order (from query) is preserved.
+  const best = new Map<number, KnowledgeEntry>();
   for (const e of hits) {
-    const seq = e.metadata.seq ?? -1;
-    const prev = bySeq.get(seq);
-    if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) bySeq.set(seq, e);
+    const seq = e.metadata.seq;
+    if (seq === undefined) continue;
+    const prev = best.get(seq);
+    if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) best.set(seq, e);
   }
-  return [...bySeq.values()].slice(0, k);
+  const out: KnowledgeEntry[] = [];
+  const seenSeq = new Set<number>();
+  for (const e of hits) {
+    const seq = e.metadata.seq;
+    if (seq === undefined) {
+      out.push(e); // mcp-result: distinct, never deduped by seq
+    } else if (!seenSeq.has(seq)) {
+      out.push(best.get(seq)!); // one entry per step-result seq (precedence winner)
+      seenSeq.add(seq);
+    }
+    if (out.length >= k) break;
+  }
+  return out.slice(0, k);
 }
 /** Outcome-precedence rank used for dedup (ok/exists > partial > failed > none). */
 function rankStatus(s?: string): number {
