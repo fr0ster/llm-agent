@@ -114,9 +114,26 @@ recall.
 
 - **Stable `seq` + durable attempt bound (#1).** `planCursor` exists only for
   adaptive. Instead, a durable monotonic **`nextSeq`** lives in the bundle, and the
-  in-flight step is `inFlightStep = { seq, step, attempt, resumeCount, phase }`
-  where `phase ∈ {executing, awaiting-replan}`. A replayed (uncommitted) step reuses the
-  SAME `seq` (writes land at the same `(runId, seq)`).
+  in-flight step is
+  `inFlightStep = { seq, step, attempt, resumeCount, phase, transcript, toolCallCount }`
+  where `phase ∈ {executing, awaiting-replan}` (#2/25). A replayed (uncommitted) step
+  reuses the SAME `seq` (writes land at the same `(runId, seq)`).
+  - **`transcript`** — the durable executor message log for this `seq` (the
+    suspend/resume + crash-replay rebuild source; external results are appended
+    here). The `external-tool` `PendingMarker` carries only the call coordinates
+    (`{toolName, args, extId, position}`); the execution context lives on
+    `inFlightStep` (#4/25).
+  - **`toolCallCount`** — a durable count of external round-trips for this step,
+    **incremented and persisted on `inFlightStep` BEFORE each external call is
+    surfaced** (so it cannot reset across resumes); cap `maxToolCalls` (#1/25). It
+    is NOT recomputed from the transcript at runtime (the transcript may be
+    summarized/truncated for resume — see Open questions), so the durable counter is
+    authoritative.
+  - **Reset/replan (#2/25):** a fresh attempt / revised step (replan) **clears
+    `transcript` (→ empty) and `resumeCount` (→ 0)**; `toolCallCount` also resets to
+    0 (a revised step is a new transcript with its own round-trip budget). A
+    crash-replay of the SAME attempt keeps `transcript`/`toolCallCount` (it rebuilds
+    from them). `nextSeq` advance clears the whole `inFlightStep`.
 - **Three distinct durable counters (#1/14).** A resume is one of three kinds,
   distinguished by durable state, each with its own bound:
   - **Fresh execution** (first dispatch / replan's revised step = a NEW
@@ -125,7 +142,10 @@ recall.
     (closing unique-K) and retry/replan liveness.
   - **External-tool continuation** (`pending` is an external-tool marker — a
     legitimate step making several external round-trips) → increments NEITHER
-    `attempt` NOR the crash counter; bounded by the step's `maxToolCalls`.
+    `attempt` NOR the crash counter; bounded by the **durable `inFlightStep.
+    toolCallCount`** (incremented+persisted BEFORE each surfaced call, so it
+    survives resumes) against `maxToolCalls` (#1/25) — never a per-resume local
+    counter that would reset to 0 each leg.
   - **Crash-replay** (`phase:'executing'`, NO external `pending`, transcript
     exists) → increments a separate durable **`resumeCount`** (persisted on
     re-entry, BEFORE re-executing); cap `maxStepResumes` → abort. This is what
@@ -143,9 +163,10 @@ recall.
     (durable) — it does NOT yet have a revised step. THEN it calls the planner; on
     the planner's response it atomically sets
     `inFlightStep = { seq (same), revisedStep, attempt (unchanged here),
-    resumeCount: 0, phase: 'executing' }` — `resumeCount` is **reset to 0** (#3/16:
-    a revised step is a fresh attempt and must not inherit the prior attempt's
-    crash budget). The single fresh-execution increment then bumps `attempt` when
+    resumeCount: 0, phase: 'executing', transcript: empty, toolCallCount: 0 }` —
+    `resumeCount`, `transcript`, and `toolCallCount` are **all reset** (#3/16, #2/25:
+    a revised step is a fresh attempt — new transcript, own round-trip budget — and
+    must not inherit the prior attempt's crash/tool budget). The single fresh-execution increment then bumps `attempt` when
     the revised step runs (which also re-zeroes `resumeCount` per the rule that
     every fresh attempt resets it). A crash while `phase:'awaiting-replan'` resumes into
     **replan** (not re-execution of the failed step). The retry reuses the same
@@ -437,8 +458,12 @@ Transitions:
          (#2/24):** the artifact-store write and the bundle/marker clear are separate
          ops, so a crash between them can leave a durable artifact with a stale
          marker. If an artifact already exists at `(runId, seq)` → the continuation
-         already committed → **adopt it (executing reconciliation) and clear the
-         marker**, do NOT repeat the tool call. Otherwise the awaited thing is the
+         already committed → in **ONE atomic bundle write** adopt it (executing
+         reconciliation by outcome precedence), **clear `pending`, flip
+         `runState → active`, and advance the cursor/clear `inFlightStep`** exactly
+         as the normal commit does (#3/25) — never a separate marker-clear that
+         could leave `suspended` + `pending:none`. Do NOT repeat the tool call.
+         Otherwise the awaited thing is the
          TOOL RESULT keyed by `extId`, NOT the incoming message (#2/22) — a plain
          re-request must never be mis-recorded as a result. **Look it up by `extId`**
          (external result/callback store):
@@ -562,8 +587,10 @@ context. The suspended state MUST persist on the durable `inFlightStep`: the
 
 On resume — **artifact-first, then result-by-`extId`:**
 1. If a resolved artifact already exists at `(runId, seq)` → the continuation
-   committed before the crash → **adopt it, clear the marker** (#2/24); no tool
-   re-call.
+   committed before the crash → in **ONE atomic bundle write** adopt it, clear
+   `pending`, flip `runState → active`, and advance the cursor / clear
+   `inFlightStep` (the normal commit, #2/24, #3/25); no tool re-call, never a
+   bare marker-clear that leaves `suspended` + `pending:none`.
 2. Else look up the **tool result keyed by `extId`** (not the resuming message,
    #2/22). If NOT yet available → the call is outstanding → **re-issue the SAME
    call (same `extId`, idempotent), stay `suspended`**.
@@ -578,11 +605,13 @@ On resume — **artifact-first, then result-by-`extId`:**
    `resumeCount`.
 
 **A continuation that makes the NEXT external call (#3/24):** the executor is free
-to make several external round-trips (bounded by `maxToolCalls`). Each new call
+to make several external round-trips. Each new call, in ONE atomic write:
+**increments+persists `inFlightStep.toolCallCount` (cap `maxToolCalls`, #1/25)**,
 **REPLACES the (now consumed) marker with a FRESH `external-tool` marker** (new
-`extId`, new tool/args) and re-suspends — atomically persisting the
-**appended transcript** (carrying all prior injected results) on the same
-`inFlightStep`/`seq`. So there is never a stale resolved marker; at most one
+`extId`, new tool/args), appends to `inFlightStep.transcript`, and re-suspends — all
+on the same `inFlightStep`/`seq`. Because `toolCallCount` is durable on the step
+(not a per-resume local), the bound holds across crashes/resumes; exceeding it →
+`status:'failed'` → replan. So there is never a stale resolved marker; at most one
 *unresolved* marker is outstanding at a time, and the transcript accumulates across
 round-trips until the step commits its artifact. An external soft failure becomes
 `status:'failed'` → replan.
@@ -659,8 +688,9 @@ mark the step advanced OR failed.
   `maxPlannerResumes` (planning, via `plannerResumeCount` — reset to 0 after every
   persisted planner decision, so the incremental planner's per-step calls are NOT
   capped by it), `maxStepAttempts` (fresh-attempt; bounds dups + retry/replan
-  liveness) + `maxStepResumes` (crash-replay), `maxToolCalls` (external round-trips
-  per transcript), `maxFinalizeRetries` (via `finalizeAttempt`), `maxReviewRetries`;
+  liveness) + `maxStepResumes` (crash-replay), `maxToolCalls` (external round-trips,
+  via the durable `inFlightStep.toolCallCount` — persisted before each surfaced
+  call, never a per-resume local, #1/25), `maxFinalizeRetries` (via `finalizeAttempt`), `maxReviewRetries`;
   judge-failure escalation (abort-with-control-error, not silent advance/fail);
   `onFinalizeExhausted: error|best-effort` (default `error`).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
@@ -668,7 +698,9 @@ mark the step advanced OR failed.
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
   {evaluating|planning|executing|finalizing}` + `nextSeq` + `inFlightStep
-  {seq,step,attempt,resumeCount,phase}` + in-flight markers
+  {seq,step,attempt,resumeCount,phase,transcript,toolCallCount}` (#2/25 — the
+  durable executor transcript + round-trip count live ON the step; the
+  `external-tool` `PendingMarker` carries only call coordinates) + in-flight markers
   `evalCallInFlight`/`plannerCallInFlight`/`finalizeCallInFlight` +
   `evalResumeCount`/`plannerResumeCount` +
   `finalizeAttempt` + durable `originalRequest`
@@ -706,8 +738,9 @@ mark the step advanced OR failed.
   Crash-recovery routed by
   `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
-  artifact status; persist full suspended-step state in the external-tool
-  `PendingMarker`. `plannerPrivate`
+  artifact status; the full suspended-step state (Step + transcript + toolCallCount)
+  lives on `inFlightStep`, while the `external-tool` `PendingMarker` carries only the
+  call coordinates `{toolName, args, extId, position}` (#4/25). `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
