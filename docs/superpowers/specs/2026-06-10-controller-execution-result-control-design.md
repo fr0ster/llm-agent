@@ -105,13 +105,19 @@ recall.
   in-flight step is `inFlightStep = { seq, step, attempt, phase }` where
   `phase ∈ {executing, awaiting-replan}`. A replayed (uncommitted) step reuses the
   SAME `seq` (writes land at the same `(runId, seq)`).
-- **Single attempt-increment point (#3).** `attempt` is incremented+persisted at
-  **exactly ONE place — `phase:'executing'` dispatch, just before execute** —
-  never anywhere else. Because it is persisted BEFORE the LLM call, the durable
-  count survives crashes (re-entry does not reset it). A hard cap
-  **`maxStepAttempts`** aborts a crash-looping step (liveness) AND bounds the
-  duplicate count per `(runId, seq)` — closing the unique-K guarantee that
-  `maxRetries` alone did not (crashes are not retries).
+- **`attempt` counts FRESH executions, NOT continuations (#1/13).** `attempt` is
+  incremented+persisted at exactly ONE place: the **start of a FRESH execution —
+  a first dispatch of the step or a replan's revised step (a NEW transcript)**.
+  It is **NOT** incremented when an existing transcript is resumed — neither an
+  **external-tool continuation** (a legitimate step may make several external
+  round-trips) nor a crash-replay that continues a persisted transcript. So a
+  multi-round-trip step does not burn `maxStepAttempts`; round-trips within one
+  transcript are bounded separately by the step's `maxToolCalls`. Because the
+  fresh-attempt increment is persisted BEFORE the LLM call, the durable count
+  survives crashes. The cap **`maxStepAttempts`** aborts a step that keeps
+  starting fresh attempts (crash-loop/retry liveness) AND bounds the duplicate
+  count per `(runId, seq)` — closing unique-K (`maxRetries`/crashes are not the
+  same as continuations).
 - **`inFlightStep` lifecycle by outcome (#3), one atomic write each:**
   - **advanced (`ok`/`exists`) / partial:** commit at `seq` → `nextSeq` advances,
     `inFlightStep` clears. (A `partial` remainder is planned at the NEXT `seq`; the
@@ -211,17 +217,21 @@ Transitions:
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
   run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
   `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none), `runPhase`
-  (→ planning), `finalizeAttempt` (→ 0), `terminalOutcome` (→ none),
-  `originalRequest` (→ the new request; fingerprint re-derived)** — and **mints a
-  fresh `runId`** → active.
+  (→ planning), `finalizeAttempt` (→ 0), `originalRequest` (→ the new request;
+  fingerprint re-derived)** — and **mints a fresh `runId`** → active. The prior
+  run's `terminalOutcome` is NOT reset here — it lives in the separate TTL store
+  (below) so it stays replayable by its `runId` across this fresh run.
   The reset is exhaustive (#3) precisely so a fresh run cannot inherit the prior
-  run's replay state (`nextSeq`/`inFlightStep`), an exhausted `finalizeAttempt`,
-  or a stale `terminalOutcome`.
+  run's replay state (`nextSeq`/`inFlightStep`) or an exhausted `finalizeAttempt`.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
-- **`done` / abort:** persist a durable **discriminated `terminalOutcome`**
-  (#1) — `{ kind:'success', answer } | { kind:'error', error }` — keyed by
-  `runId`, then → terminal. Replay returns whichever kind was stored (success →
-  the answer, error → the error), never an undefined `finalAnswer`.
+- **`done` / abort:** write a durable **discriminated `terminalOutcome`**
+  (#1) — `{ kind:'success', answer } | { kind:'error', error }` — into a
+  **SEPARATE keyed store `{ runId → { terminalOutcome, expiresAt } }`** (#2/13),
+  NOT a single bundle field, then → terminal. Keying by `runId` with `expiresAt`
+  lets the outcome **survive subsequent runs until its TTL** (a single bundle
+  field would be wiped by the next run's reset, breaking the TTL promise). Replay
+  returns whichever kind was stored (success → answer, error → error), never an
+  undefined `finalAnswer`. The store is GC'd by TTL.
 - **Repeat request after terminal — replay needs an EXPLICIT key, not a
   fingerprint (#2):** terminal replay is gated on an **explicit idempotency key /
   resume `runId`** the client passes back; a match → **replay `terminalOutcome`**
@@ -405,13 +415,15 @@ mark the step advanced OR failed.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
   {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
   {seq,step,attempt,phase}` + `finalizeAttempt` + durable `originalRequest`
-  (finalizer input; normalized hash = identity fingerprint) + discriminated
-  `terminalOutcome {kind:'success',answer}|{kind:'error',error}` (TTL-retained)
-  replayed ONLY via an explicit token/idempotency key (`newRun` overrides) +
-  atomic run-scoped RESET (incl. `finalizeAttempt→0`, `terminalOutcome→none`) +
-  crash-recovery routed by `runPhase` (token/fingerprint for active resume, token
-  only for terminal replay); resume reconciliation by RESOLVED artifact status;
-  persist full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
+  (finalizer input; normalized hash = identity fingerprint) + atomic run-scoped
+  RESET (incl. `finalizeAttempt→0`); `attempt` increments on FRESH executions
+  only (not external-tool continuations). A SEPARATE per-session keyed store
+  `{runId → {terminalOutcome (success|error), expiresAt}}` holds terminal outcomes
+  (TTL-GC'd), replayed ONLY via an explicit token/idempotency key (`newRun`
+  overrides). Crash-recovery routed by `runPhase` (token/fingerprint for active
+  resume, token only for terminal replay); resume reconciliation by RESOLVED
+  artifact status; persist full suspended-step state in the external-tool
+  `PendingMarker`. `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
