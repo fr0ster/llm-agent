@@ -277,9 +277,14 @@ in insertion order (pure unit tests without an embedder):
     if (filter) a = a.filter((e) => matches(e.metadata, filter));
     return k ? a.slice(0, k) : a.slice();
   }
+  async deleteSession(sid: string) { this.bySession.delete(sid); this.semantic?.deleteSession(sid); }
+  get semanticRecallCapable(): boolean { return this.semantic !== undefined; }
 ```
 
-(`matches` is exported / module-visible in `knowledge-rag.ts`.)
+(`matches` is exported / module-visible in `knowledge-rag.ts`.) Add the
+**capability flag to the `KnowledgeBackend` interface** as an OPTIONAL readonly
+member — `readonly semanticRecallCapable?: boolean` — so the controller boundary can
+assert it (a backend that omits it / returns false is treated as NOT capable).
 
 `JsonlKnowledgeBackend.semanticQuery` (server-libs) — add the param, AND extend the
 injected semantic-index interface so the filter reaches the index (which ranks by
@@ -291,29 +296,49 @@ downgrade):
   // The injected semantic index:
   //   semantic?: { upsert(sid,e); query(sid,text,k?,filter?); deleteSession(sid) }
   // The in-process index is EMPTY after a restart, but the JSONL log is durable —
-  // so LAZILY REHYDRATE the index from the durable scan on first use per session
-  // (#1/plan-13), else a resumed session's semantic recall returns [].
-  private readonly rehydrated = new Set<string>();
-  private async ensureIndexed(sid: string): Promise<void> {
-    if (!this.semantic || this.rehydrated.has(sid)) return;
-    for (const e of await this.scan(sid)) await this.semantic.upsert(sid, e);
-    this.rehydrated.add(sid);
+  // so LAZILY REHYDRATE from the durable scan on first use per session (#1/plan-13).
+  // SINGLE-FLIGHT (#3/plan-14): concurrent first ops share ONE rehydrate promise so
+  // the scan-and-index runs exactly once (never double-indexes). Rehydration runs
+  // BEFORE put()'s append+upsert (#1/plan-14), so the entry being written is NOT
+  // also picked up by the scan → no duplicate of the just-written record.
+  private readonly indexing = new Map<string, Promise<void>>();
+  private ensureIndexed(sid: string): Promise<void> {
+    if (!this.semantic) return Promise.resolve();
+    let p = this.indexing.get(sid);
+    if (!p) {
+      const sem = this.semantic;
+      p = (async () => {
+        for (const e of await this.scan(sid)) await sem.upsert(sid, e);
+      })();
+      this.indexing.set(sid, p); // cached forever for this sid (single-flight + once)
+    }
+    return p;
+  }
+  async put(sid: string, entry: KnowledgeEntry): Promise<void> {
+    // Rehydrate FIRST (indexes only pre-existing JSONL), THEN append + upsert the
+    // new entry exactly once — so a later first query's scan can't re-add it.
+    await this.ensureIndexed(sid);
+    const f = this.file(sid);
+    await mkdir(dirname(f), { recursive: true });
+    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8');
+    await this.semantic?.upsert(sid, entry);
   }
   async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
     if (this.semantic) {
-      await this.ensureIndexed(sid); // rehydrate from JSONL after a restart
+      await this.ensureIndexed(sid); // shares the single-flight rehydrate promise
       return this.semantic.query(sid, text, k, filter); // filter PRE-cap, similarity-ranked
     }
-    // No index → recency-only. Apply the filter to the exhaustive scan, most-recent K.
     let all = await this.scan(sid);
     if (filter) all = all.filter((e) => matchesFilter(e.metadata, filter));
     return k ? all.slice(-k) : all;
   }
   async deleteSession(sid: string): Promise<void> {
-    await rm(dirname(this.file(sid)), { recursive: true, force: true }); // existing JSONL removal
-    this.semantic?.deleteSession(sid); // also drop the indexed vectors (#2/plan-13)
-    this.rehydrated.delete(sid);
+    await rm(dirname(this.file(sid)), { recursive: true, force: true });
+    this.semantic?.deleteSession(sid); // drop indexed vectors (#2/plan-13)
+    this.indexing.delete(sid);         // re-rehydrate on next use of a reused sid
   }
+  /** The controller asserts this before wiring recall (#2/plan-14). */
+  get semanticRecallCapable(): boolean { return this.semantic !== undefined; }
 ```
 
 > The injected `semantic` interface gains `filter?: KnowledgeFilter` on `query` AND
@@ -502,8 +527,49 @@ describe('JsonlKnowledgeBackend rehydrates the index after restart', () => {
       await rm(dir, { recursive: true, force: true });
     }
   });
+
+  it('write-before-first-query does NOT duplicate the entry in the index (#1/plan-14)', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { JsonlKnowledgeBackend } = await import('../jsonl-knowledge-backend.js');
+    const dir = await mkdtemp(join(tmpdir(), 'ctrl-dup-'));
+    try {
+      const b = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }); // upserts once
+      const hits = await b.semanticQuery('s', 'alpha', 10, { runId: 'R' }); // first query → rehydrate
+      assert.equal(hits.length, 1, 'entry indexed exactly once (no put + rehydrate duplicate)');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('concurrent first queries rehydrate exactly once (single-flight, #3/plan-14)', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { JsonlKnowledgeBackend } = await import('../jsonl-knowledge-backend.js');
+    const dir = await mkdtemp(join(tmpdir(), 'ctrl-concurrent-'));
+    try {
+      const seed = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      await seed.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
+      const b = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub)); // fresh empty index
+      const [a, c] = await Promise.all([
+        b.semanticQuery('s', 'alpha', 10, { runId: 'R' }),
+        b.semanticQuery('s', 'alpha', 10, { runId: 'R' }),
+      ]);
+      assert.equal(a.length, 1, 'no double-index from concurrent rehydration');
+      assert.equal(c.length, 1);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
 });
 ```
+
+The controller-with-embedder-but-non-semantic-backend case (#2) is covered by the
+ControllerFactory test "throws when ... the backend is NOT semantic-recall-capable"
+in Task 17.
 
 - [ ] **Step 5: Commit**
 
@@ -3144,7 +3210,7 @@ describe('ControllerFactory reviewer/finalizer', () => {
     const { handler } = await new ControllerFactory().build(cfg, {
       makeRoleLlm: async (role) => fakeLlm(`m-${role}`),
       callMcp: async () => '',
-      backend: {} as never,
+      backend: { semanticRecallCapable: true } as never, // capable backend
       knowledgeRagFor: () => ({}) as never,
       selectTools: async () => [],
       embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never, // required for recall
@@ -3152,20 +3218,33 @@ describe('ControllerFactory reviewer/finalizer', () => {
     assert.ok(handler, 'handler built with reviewer/finalizer wired');
   });
 
-  it('throws when no embedder is provided (results-RAG recall is embedding-based, any persistence mode)', async () => {
-    const cfg = {
-      subagents: { evaluator: { provider: 'x', model: 'm' }, planner: { provider: 'x', model: 'm' }, executor: { provider: 'x', model: 'm' } },
-      targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
-      sessionMemory: { collection: 'c' },
-      budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
-    } as never;
+  const minimalCfg = {
+    subagents: { evaluator: { provider: 'x', model: 'm' }, planner: { provider: 'x', model: 'm' }, executor: { provider: 'x', model: 'm' } },
+    targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
+    sessionMemory: { collection: 'c' },
+    budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
+  } as never;
+
+  it('throws when no embedder is provided (recall is embedding-based, any persistence mode)', async () => {
     await assert.rejects(
-      new ControllerFactory().build(cfg, {
-        makeRoleLlm: async () => fakeLlm('m'),
-        callMcp: async () => '', backend: {} as never, knowledgeRagFor: () => ({}) as never, selectTools: async () => [],
+      new ControllerFactory().build(minimalCfg, {
+        makeRoleLlm: async () => fakeLlm('m'), callMcp: async () => '',
+        backend: { semanticRecallCapable: true } as never, knowledgeRagFor: () => ({}) as never, selectTools: async () => [],
         // no embedder
       }),
       /embedder/,
+    );
+  });
+
+  it('throws when an embedder is present but the backend is NOT semantic-recall-capable (#2/plan-14)', async () => {
+    await assert.rejects(
+      new ControllerFactory().build(minimalCfg, {
+        makeRoleLlm: async () => fakeLlm('m'), callMcp: async () => '',
+        backend: { semanticRecallCapable: false } as never, // embedder present, but no index
+        knowledgeRagFor: () => ({}) as never, selectTools: async () => [],
+        embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never,
+      }),
+      /semantic-recall-capable/,
     );
   });
 });
@@ -3184,13 +3263,24 @@ persistence mode, so an embedder is always required, not only for distance
 target-state. Replace the existing distance-only check:
 
 ```ts
-    // results-RAG recall is embedding-based → an embedder is ALWAYS required
-    // (this also backs the server's knowledge semantic index). Fail loud here, at
-    // the controller boundary, NOT globally in buildKnowledgeBackend.
+    // results-RAG recall is embedding-based → require an embedder AND a
+    // semantic-recall-capable backend. Checking the embedder alone is not enough
+    // (#2/plan-14): a programmatic caller could pass an embedder PLUS a plain
+    // backend with no index, and recall would silently be insertion-order. Assert
+    // BOTH, at the controller boundary (NOT globally in buildKnowledgeBackend).
     if (!deps.embedder) {
       throw new Error(
         "pipeline 'controller' requires an embedder: results-RAG recall ranks by " +
           'embedding similarity (and distance target-state, if used). Provide deps.embedder.',
+      );
+    }
+    if (!deps.backend.semanticRecallCapable) {
+      throw new Error(
+        "pipeline 'controller' requires a semantic-recall-capable knowledge backend " +
+          '(one built with an embedder-backed index); the injected backend reports ' +
+          'semanticRecallCapable=false, so recall would degrade to insertion order. ' +
+          'Build the backend via buildKnowledgeBackend (with a resolved embedder) or ' +
+          'inject a semantic-capable one.',
       );
     }
 ```
