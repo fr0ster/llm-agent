@@ -27,8 +27,9 @@
 - Test files mirror each under `__tests__/`.
 
 **Modified files:**
-- `packages/llm-agent/src/interfaces/knowledge-rag.ts` — `KnowledgeEntryMetadata` += `runId/seq/attempt/status`; `KnowledgeFilter` += equality on the same.
-- `packages/llm-agent-libs/src/rag/knowledge-rag.ts` — `matches()` honours the new filter fields.
+- `packages/llm-agent/src/interfaces/knowledge-rag.ts` — `KnowledgeEntryMetadata` += `runId/seq/attempt/status`; `KnowledgeFilter` += equality on the same; `KnowledgeBackend.semanticQuery` += optional pre-cap `filter`.
+- `packages/llm-agent-libs/src/rag/knowledge-rag.ts` — `matches()` honours the new filter fields (and is exported); `KnowledgeRag.query` + `InMemoryKnowledgeBackend.semanticQuery` apply the filter pre-cap.
+- `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` — the production backend: `semanticQuery` filter param + injected semantic-index filter passthrough (the runtime recall path).
 - `controller/types.ts` — extend `SessionBundle` (runId/runState/runPhase/nextSeq/inFlightStep/markers/counters), `ControllerConfig.subagents` (+reviewer/finalizer), `ControllerConfig.budgets` (+resume/eval/finalize caps), `PlannerNextInput.lastOutcome`/`IControllerPlanner.commit` (+`partial`).
 - `controller/session-bundle.ts` — `emptyBundle()` carries the new run-scoped fields; add `resetRun()`.
 - `controller/controller-coordinator-handler.ts` — write-after-review, durable counters, three-stage recovery, attempt-keyed external resume, unified finalizer, evaluator confirmation transition.
@@ -148,8 +149,9 @@ git commit -m "feat(controller): Outcome type + precedence resolver (ok/exists>p
 **Spec:** "Data backbone & RAG contract changes" — `KnowledgeEntryMetadata += runId/seq/attempt/status`; `KnowledgeFilter += equality on runId, seq, attempt, status`.
 
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/knowledge-rag.ts:3-30`
-- Modify: `packages/llm-agent-libs/src/rag/knowledge-rag.ts:155-170` (the `matches()` function)
+- Modify: `packages/llm-agent/src/interfaces/knowledge-rag.ts:3-30` (metadata/filter + the `KnowledgeBackend.semanticQuery` filter param)
+- Modify: `packages/llm-agent-libs/src/rag/knowledge-rag.ts` (the `matches()` function — export it; `KnowledgeRag.query`; `InMemoryKnowledgeBackend.semanticQuery`; the `KnowledgeBackend` interface)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` (the production backend — `semanticQuery` filter param + injected semantic-index filter passthrough)
 - Test: `packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts` (new)
 
 - [ ] **Step 1: Write the failing test**
@@ -292,9 +294,17 @@ downgrade):
 
 > The injected `semantic.query` signature gains `filter?: KnowledgeFilter`; vector
 > adapters (qdrant/hana/pg) apply it as a native metadata filter so similarity
-> ranking happens WITHIN the run — this is the path that actually preserves semantic
-> ranking. `matchesFilter` is the shared predicate: export `matches` from
-> `knowledge-rag.ts` and import it here (one predicate, no duplication).
+> ranking happens WITHIN the run — this is the path that preserves vector ranking.
+> `matchesFilter` is the shared predicate: export `matches` from `knowledge-rag.ts`
+> and import it here (one predicate, no duplication).
+>
+> IMPORTANT — the controller's run-scoped RECALL does NOT depend on this semantic
+> path: it uses the exhaustive `list({runId})` + a LOCAL lexical-similarity ranker
+> (Task 16 `runScopedRecall`), so "top-K by meaning" holds even on the default
+> production JSONL backend, which is built WITHOUT a semantic index
+> (`smart-server.ts` → `new JsonlKnowledgeBackend(logDir)`). The `semanticQuery`
+> filter remains useful for any non-recall semantic caller and for a future native
+> vector recall path.
 
 `KnowledgeRag.query` passes the filter through (the backend applied it pre-cap; a
 defensive post-filter is harmless):
@@ -314,13 +324,13 @@ semantic cap: write `k+2` foreign-run `step-result`s + 1 target-run entry, then
 - [ ] **Step 4: Build the lower packages, then run the test**
 
 Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts`
-Expected: build OK, tests PASS. If build fails because the `status` union is duplicated, ensure the metadata and filter unions are written identically.
+Expected: build OK, tests PASS. If build fails because the `status` union is duplicated, ensure the metadata and filter unions are written identically. The build also compiles `jsonl-knowledge-backend.ts` against the widened `KnowledgeBackend.semanticQuery` signature — confirm it implements the new param.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent/src/interfaces/knowledge-rag.ts packages/llm-agent-libs/src/rag/knowledge-rag.ts packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts
-git commit -m "feat(rag): KnowledgeEntryMetadata/Filter gain runId/seq/attempt/status equality"
+git add packages/llm-agent/src/interfaces/knowledge-rag.ts packages/llm-agent-libs/src/rag/knowledge-rag.ts packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts
+git commit -m "feat(rag): KnowledgeEntryMetadata/Filter + semanticQuery filter param (runId/seq/attempt/status)"
 ```
 
 ---
@@ -1113,7 +1123,7 @@ git commit -m "feat(controller): IReviewer + LlmReviewer returning ReviewResult 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ISubagentClient } from '../subagent-client.js';
-import { LlmFinalizer, orderAndTruncate, reduceToBudget } from '../finalizer.js';
+import { LlmFinalizer, MIN_BODY_BUDGET, orderAndTruncate, reduceToBudget } from '../finalizer.js';
 
 describe('orderAndTruncate', () => {
   it('orders by seq and caps each result to C chars with a marker', () => {
@@ -1149,9 +1159,11 @@ describe('reduceToBudget', () => {
     assert.ok(logs.length > 0 && /overflow/.test(logs.join(' ')), 'reductions logged');
   });
 
-  it('never returns more than budget even when budget is below a single marker', () => {
-    const body = reduceToBudget([{ seq: 0, content: 'X'.repeat(1000) }], 1000, 5);
-    assert.ok(body.length <= 5, `tiny-budget body ${body.length} <= 5`);
+  it('clamps a sub-floor budget up and still emits an explicit count (no silent slice)', () => {
+    const many = Array.from({ length: 50 }, (_, i) => ({ seq: i, content: 'X'.repeat(1000) }));
+    const body = reduceToBudget(many, 1000, 5); // 5 is below MIN_BODY_BUDGET
+    assert.ok(body.length <= MIN_BODY_BUDGET, `body ${body.length} <= floor ${MIN_BODY_BUDGET}`);
+    assert.ok(/more of 50/.test(body), 'explicit omitted count survives the clamp (not a bare slice)');
   });
 });
 
@@ -1246,17 +1258,24 @@ export function orderAndTruncate(
  *  3. If the budget cannot hold N compact extracts, emit a MANIFEST that lists as
  *     many seq ids as fit plus an EXPLICIT "(+M more of N)" count — so omission is
  *     never silent even when naming all ids is physically impossible in the budget
- *     (#3/plan-9). Guaranteed <= budget by construction.
- *  Deterministic; an LLM-summarizer map-reduce is a future variant. Pure aside
- *  from `log`. */
+ *     (#3/plan-9). Guaranteed <= the EFFECTIVE budget by construction.
+ *  The budget is clamped UP to a small floor (`MIN_BODY_BUDGET`) so the count
+ *  manifest always fits — a sub-floor budget is degenerate; the manifest's "(+M
+ *  more of N)" suffix is short and bounded, so the clamped floor always holds the
+ *  count (no silent slice, #3/plan-10). Deterministic; an LLM-summarizer
+ *  map-reduce is a future variant. Pure aside from `log`. */
+export const MIN_BODY_BUDGET = 64;
 export function reduceToBudget(
   results: readonly ApprovedResult[],
   perResultCap: number,
-  budget: number,
+  rawBudget: number,
   log?: (msg: string) => void,
 ): string {
   const FLOOR = 80;
   const SEP = '\n\n';
+  // Clamp up so the count manifest always fits (a tiny budget is a config error).
+  const budget = Math.max(rawBudget, MIN_BODY_BUDGET);
+  if (budget !== rawBudget) log?.(`finalizer: budget ${rawBudget} clamped up to MIN_BODY_BUDGET ${MIN_BODY_BUDGET}`);
   const ordered = results.slice().sort((a, b) => a.seq - b.seq);
   if (ordered.length === 0) return '';
   const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
@@ -2744,61 +2763,82 @@ per-reference evidence above only needs hit/no-hit, so it keeps the simple
 `resolveNeed`):
 
 ```ts
-/** Run-scoped semantic recall with the spec's over-fetch → dedup → cap. Pulls
- *  k' = k × (maxStepAttempts + 1) ranked candidates filtered to `runId`, dedups
- *  each (runId, seq) to its precedence-winning artifact, returns the top-k distinct
- *  steps' content. */
+/** Run-scoped recall: rank the run's artifacts by MEANING locally and return the
+ *  top-k. Uses the EXHAUSTIVE `list({runId})` (guaranteed complete — never the
+ *  backend's semantic cap, which the production JSONL backend lacks), ranks by a
+ *  deterministic LOCAL lexical-similarity score to `text` (NOT recency — closes
+ *  the "no top-K by meaning on the default runtime backend" gap, #1/plan-10), then
+ *  dedups and caps. The spec's "exact list(runId) → rank locally by similarity →
+ *  top-K" fallback, applied uniformly. (A native vector backend can later supply
+ *  its own ranking via the semanticQuery filter; this local path is the guaranteed
+ *  floor.)
+ *  Dedup: step-results (have `seq`) collapse to the precedence-winner per seq (a
+ *  step's retries); mcp-results (distinct tool fetches) dedup by `identityKey` so
+ *  duplicate fetches collapse but distinct ones survive — both bounded because the
+ *  source is the FINITE run set, not an unbounded stream (#2/plan-10). */
 async function runScopedRecall(
   rag: IKnowledgeRagHandle,
   text: string,
   k: number,
   runId: string | undefined,
-  maxStepAttempts: number,
   artifactType: readonly string[],
 ): Promise<readonly KnowledgeEntry[]> {
-  const kPrime = k * (maxStepAttempts + 1);
-  const hits = await rag.query(text, { k: kPrime, filter: { runId, artifactType } });
-  // Dedup ONLY entries that carry a seq (step-results = a step's retries): keep the
-  // precedence-winner per seq. Entries WITHOUT a seq (mcp-results — distinct tool
-  // fetches, not retries of one logical step) are NOT collapsed (#2/plan-9); they
-  // pass through as distinct hits. Relevance order (from query) is preserved.
-  const best = new Map<number, KnowledgeEntry>();
-  for (const e of hits) {
-    const seq = e.metadata.seq;
-    if (seq === undefined) continue;
-    const prev = best.get(seq);
-    if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) best.set(seq, e);
-  }
-  const out: KnowledgeEntry[] = [];
-  const seenSeq = new Set<number>();
-  for (const e of hits) {
-    const seq = e.metadata.seq;
-    if (seq === undefined) {
-      out.push(e); // mcp-result: distinct, never deduped by seq
-    } else if (!seenSeq.has(seq)) {
-      out.push(best.get(seq)!); // one entry per step-result seq (precedence winner)
-      seenSeq.add(seq);
+  const all = await rag.list({ runId, artifactType });
+  // Collapse duplicates first: step-results by seq-precedence; mcp-results by identityKey.
+  const bestStep = new Map<number, KnowledgeEntry>();
+  const bestMcp = new Map<string, KnowledgeEntry>();
+  const passthrough: KnowledgeEntry[] = [];
+  for (const e of all) {
+    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
+      const prev = bestStep.get(e.metadata.seq);
+      if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) bestStep.set(e.metadata.seq, e);
+    } else if (e.metadata.identityKey) {
+      bestMcp.set(e.metadata.identityKey, e); // latest distinct fetch wins
+    } else {
+      passthrough.push(e);
     }
-    if (out.length >= k) break;
   }
-  return out.slice(0, k);
+  const candidates = [...bestStep.values(), ...bestMcp.values(), ...passthrough];
+  // Rank by local lexical similarity to the query text, then cap.
+  const q = tokenize(text);
+  return candidates
+    .map((e) => ({ e, score: lexicalScore(q, tokenize(e.content)) }))
+    .sort((a, b) => b.score - a.score)
+    .slice(0, k)
+    .map((x) => x.e);
 }
-/** Outcome-precedence rank used for dedup (ok/exists > partial > failed > none). */
+/** Outcome-precedence rank for step-result dedup (ok/exists > partial > failed). */
 function rankStatus(s?: string): number {
   return s === 'ok' || s === 'exists' ? 3 : s === 'partial' ? 2 : s === 'failed' ? 1 : 0;
+}
+/** Lowercase word tokens. */
+function tokenize(s: string): Set<string> {
+  return new Set((s.toLowerCase().match(/[a-z0-9_]+/g) ?? []));
+}
+/** Local similarity: overlap of query tokens present in the candidate, normalized
+ *  by query size (deterministic, no embedder). Bigger = more relevant. */
+function lexicalScore(q: Set<string>, c: Set<string>): number {
+  if (q.size === 0) return 0;
+  let hit = 0;
+  for (const t of q) if (c.has(t)) hit++;
+  return hit / q.size;
 }
 ```
 
 Replace the existing whole-step episodic recall call in `runStep`
 (`resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`)
-with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, cfg.maxStepAttempts ?? 5, RECALL_ARTIFACT_TYPES)`.
+with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, RECALL_ARTIFACT_TYPES)`.
 Add `KnowledgeEntry` to the existing `@mcp-abap-adt/llm-agent` type import in the handler.
 
-**Run-scope the artifact writes (#1/plan-6).** Add `runId: bundle.runId` to every
-`mcp-result` write (the internal-tool round-trip write and the external resume
-write) so internal tool results are recalled within the run too. The `step-result`
-write already carries `runId` (Task 11). With all artifacts tagged and every recall
-run-scoped, recall is strictly per-run.
+**Tag the artifact writes (#1/plan-6, #2/plan-10).** Tag every `mcp-result` write
+(the internal-tool round-trip write and the external resume write) with
+`runId: bundle.runId`, `seq: bundle.inFlightStep?.seq`, `attempt:
+bundle.inFlightStep?.attempt` (the step that fetched it) — the spec requires every
+artifact carry `{runId, seq, attempt}` so recall can scope/dedup it. `mcp-result`s
+also already set `identityKey` (tool+args), which `runScopedRecall` uses to dedup
+duplicate fetches. The `step-result` write carries `runId/seq/attempt/status`
+(Task 11). With all artifacts tagged and recall over the exhaustive run-scoped
+`list`, recall is strictly per-run and bounded by the finite run set.
 
 (The evaluator `needs-confirmation` → suspended transition is already correct in the existing code at lines 245-257, which persists the clarify marker and surfaces it; add `bundle.runState = 'suspended';` there to match the run-state contract.)
 
