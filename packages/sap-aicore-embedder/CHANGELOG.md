@@ -1,5 +1,9 @@
 # @mcp-abap-adt/sap-aicore-embedder
 
+## 19.1.2
+
+Release 19.1.2.
+
 ## 19.1.1
 
 Release 19.1.1.

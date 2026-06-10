@@ -146,19 +146,28 @@ const plugin = new ControllerPipelinePlugin();
 const cfg = plugin.parseConfig({ subagents: { evaluator, planner, executor } });
 const { agent, close } = await plugin.build(cfg, serverCtx);
 
-// (b) Compose the coordinator directly onto your own SmartAgentBuilder. The
-//     controller's building blocks are re-exported from the same subpath.
-import {
-  ControllerCoordinatorHandler,
-  makeSubagentClient,
-} from '@mcp-abap-adt/llm-agent-server-libs/controller';
-const handler = new ControllerCoordinatorHandler({
-  evaluator: makeSubagentClient(evaluatorLlm),   // ISubagentClient over any ILlm
-  planner:   makeSubagentClient(plannerLlm),
-  executor:  makeSubagentClient(executorLlm),
-  backend, knowledgeRagFor, embedder, callMcp, selectTools, config,
+// (b) Compose the coordinator onto your own SmartAgentBuilder via the
+//     ControllerFactory — an IPipelineFactory (kind 'controller'), the
+//     code-level counterpart to the Stepper *Factory classes. It resolves the
+//     three role LLMs via makeRoleLlm, wraps them as subagent clients, validates
+//     the embedder requirement, and returns { handler }.
+import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
+const { handler } = await new ControllerFactory().build(config, {
+  // role ∈ 'evaluator' | 'planner' | 'executor' (typed as string by the base
+  // deps; resolve it explicitly so it stays strict-safe).
+  makeRoleLlm: (role) => {
+    switch (role) {
+      case 'planner':  return makeLlm(config.subagents.planner);
+      case 'executor': return makeLlm(config.subagents.executor);
+      default:         return makeLlm(config.subagents.evaluator);
+    }
+  },
+  callMcp, backend, knowledgeRagFor, embedder, selectTools,
+  // model ids for usage attribution are derived from the resolved LLMs.
 });
 const handle = await builder.withStepperCoordinator(handler).build();
+// (The lower-level `ControllerCoordinatorHandler` is also re-exported from the
+//  same subpath if you prefer to construct it directly with `config` inline.)
 ```
 
 See `docs/ARCHITECTURE.md` for the layered design and `docs/QUICK_START.md` for

@@ -14,7 +14,7 @@ import {
  * Preset: `{ planner: 'llm', executor: 'recursive' }`.
  */
 export class DeepStepperFactory
-  implements IPipelineFactory<StepperFactoryConfig>
+  implements IPipelineFactory<StepperFactoryConfig, StepperFactoryDeps>
 {
   readonly kind = 'deep-stepper' as const;
 
