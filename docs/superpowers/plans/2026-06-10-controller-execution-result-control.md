@@ -230,6 +230,42 @@ In `packages/llm-agent-libs/src/rag/knowledge-rag.ts`, inside `matches()` (after
   if (f.status !== undefined && m.status !== f.status) return false;
 ```
 
+- [ ] **Step 3b: Apply the filter BEFORE the top-K cap in `query()`**
+
+The current `query()` (`knowledge-rag.ts:69-81`) caps with `semanticQuery(…, k)`
+THEN filters — so in a multi-run session foreign-run hits can fill the top-K before
+the `runId` filter runs (spec: the `runId` filter must be applied PRE-cap). Replace
+the `query()` body with a fetch-then-filter-then-cap that over-fetches when a
+filter is present (`InMemoryKnowledgeBackend.semanticQuery(sid, text, undefined)`
+returns the full candidate pool; native backends apply the filter in the query):
+
+```ts
+  async query(
+    text: string,
+    opts?: { k?: number; filter?: KnowledgeFilter },
+  ): Promise<readonly KnowledgeEntry[]> {
+    const filter = opts?.filter;
+    const k = opts?.k;
+    // Pre-cap filtering: with a filter, fetch the FULL candidate pool, filter by
+    // metadata, THEN take the top-K — so a runId/seq filter is never starved by
+    // foreign-run artifacts crowding the cap.
+    const candidates = await this.backend.semanticQuery(
+      this.sessionId,
+      text,
+      filter ? undefined : k,
+    );
+    const filtered = filter
+      ? candidates.filter((e) => matches(e.metadata, filter))
+      : candidates;
+    return k !== undefined ? filtered.slice(0, k) : filtered;
+  }
+```
+
+Add a test in `knowledge-rag-filter.test.ts` proving a runId filter survives the
+cap: write `k+2` foreign-run `step-result`s then 1 target-run entry; `query(text,
+{ k: 3, filter: { runId: 'R-target' } })` must return the target entry (it would be
+crowded out by a post-cap filter).
+
 - [ ] **Step 4: Build the lower packages, then run the test**
 
 Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts`
@@ -1519,12 +1555,37 @@ Replace the `res.kind === 'content'` branch in `runStep` (currently `controller-
         });
         bundle.budgets.stepsUsed++;
         const mapped = mapOutcome(outcome.status); // 'advanced' | 'failed' | 'partial'
-        bundle.plannerPrivate += `\n[step ${step.name} ${outcome.status}] ${outcome.approved || outcome.note}`;
-        if (outcome.status === 'partial') {
-          bundle.plannerPrivate += `\n[remainder] ${outcome.remainder}`;
-        }
+        // Payload-free control cache (spec): {seq,status,note,remainder}, NOT the
+        // approved content — the content lives in results-RAG (recalled per step,
+        // read by the finalizer). Normal commit AND reconciliation use the SAME
+        // helper so they produce identical control state (#3/plan-6).
+        recordStepControl(bundle, {
+          seq: bundle.inFlightStep?.seq ?? seq,
+          name: step.name,
+          status: outcome.status,
+          note: outcome.note,
+          remainder: outcome.remainder,
+        });
         return settle(mapped);
       }
+```
+
+Add the shared `recordStepControl` helper near `mapOutcome`:
+
+```ts
+/** Append ONE payload-free control record to plannerPrivate (the cache holds
+ *  {seq,status,note,remainder}, never the approved content). Used by both normal
+ *  settle and crash/external reconciliation so plannerPrivate is identical
+ *  whichever path committed the step. */
+function recordStepControl(
+  bundle: SessionBundle,
+  rec: { seq: number; name: string; status: Outcome['status']; note?: string; remainder?: string },
+): void {
+  bundle.plannerPrivate +=
+    `\n[seq ${rec.seq} ${rec.name} ${rec.status}]` +
+    (rec.note ? ` ${rec.note}` : '') +
+    (rec.remainder ? ` remainder: ${rec.remainder}` : '');
+}
 ```
 
 `abortRun` is a small closure inside `runStep` that delegates to the handler's
@@ -1541,7 +1602,7 @@ loop. Define it near the top of `runStep` (after `settle`):
     };
 ```
 
-Widen `runStep`'s return union to `'advanced' | 'failed' | 'suspended' | 'aborted'`, add `now: () => string` and `terminalTtlMs: number` to its parameters (pass them from `execute`), and in `execute` treat the new sentinel as terminal:
+Set `runStep`'s return union to the FULL set `'advanced' | 'failed' | 'partial' | 'suspended' | 'aborted'` (it returns `settle(...)` — which yields `advanced`/`failed`/`partial` — plus the `'suspended'`/`'aborted'` sentinels). Use this exact union everywhere `runStep`'s type appears (signature, `settle`, `abortRun`). Add `now: () => string` and `terminalTtlMs: number` to its parameters (pass them from `execute`), and in `execute` treat the terminal/suspend sentinels as run-ending:
 
 ```ts
       if (completed === 'suspended' || completed === 'aborted') return true;
@@ -1719,20 +1780,16 @@ or `done`). Add this as the FIRST statement inside the `while` loop body, BEFORE
           const mapped = mapOutcome(resolved.status);
           bundle.lastOutcome = mapped;
           planner.commit?.(bundle, mapped);
+          // Same payload-free control record as the normal path (#3/plan-6), so
+          // the planner sees identical state whichever path committed; carries the
+          // durable note/remainder for replan after a crash (#4/plan-5, #5/plan-4).
+          recordStepControl(bundle, { seq: inf.seq, name: inf.step.name, status: resolved.status, note: resolved.note, remainder: resolved.remainder });
           if (resolved.status === 'failed') {
             inf.phase = 'awaiting-replan';
-            // Carry the durable failure note so the planner knows WHY to replan
-            // after a crash (#4/plan-5).
-            if (resolved.note) bundle.plannerPrivate += `\n[step ${inf.step.name} failed] ${resolved.note}`;
           } else {
             bundle.nextSeq = inf.seq + 1;
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
-            // Carry the durable remainder to the replan (crash between artifact
-            // write and plannerPrivate persist — #5/plan-4).
-            if (resolved.status === 'partial' && resolved.remainder) {
-              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`;
-            }
           }
           await persistBundle(deps.backend, sessionId, bundle);
           continue; // re-enter the loop with reconciled state → planner.next
@@ -1810,7 +1867,7 @@ At the internal-tool branch (currently `toolCalls++; if (toolCalls > maxToolCall
         // Controller-level failure (NOT a reviewer status): record the reason
         // durably and replan at the same seq.
         bundle.budgets.stepsUsed++;
-        bundle.plannerPrivate += `\n[step ${step.name} control-failed] maxToolCalls`;
+        bundle.plannerPrivate += `\n[seq ${inFlight?.seq ?? bundle.nextSeq ?? 0} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
         if (inFlight) {
           inFlight.phase = 'awaiting-replan';
           inFlight.controlFailure = { reason: 'maxToolCalls', seq: inFlight.seq };
@@ -2077,16 +2134,14 @@ Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) wi
           const mapped = mapOutcome(resolved.status);
           bundle.lastOutcome = mapped;
           planner.commit?.(bundle, mapped);
+          // Same payload-free control record as the normal path (#3/plan-6).
+          recordStepControl(bundle, { seq: seq!, name: bundle.inFlightStep?.step.name ?? 'step', status: resolved.status, note: resolved.note, remainder: resolved.remainder });
           if (resolved.status === 'failed') {
             if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
-            if (resolved.note) bundle.plannerPrivate += `\n[step failed] ${resolved.note}`; // #4/plan-5
           } else {
             bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
-            if (resolved.status === 'partial' && resolved.remainder) {
-              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`; // #5/plan-4
-            }
           }
           await persistBundle(deps.backend, sessionId, bundle);
           // fall through to the loop
@@ -2134,11 +2189,12 @@ In `runStep`, when an external tool is hit, persist `inFlightStep.toolCallCount+
         // tool cannot exceed the cap. Exhausted → control-failed replan (same seq).
         if (inFlight && inFlight.toolCallCount + 1 > maxToolCalls) {
           bundle.budgets.stepsUsed++;
-          bundle.plannerPrivate += `\n[step ${step.name} control-failed] maxToolCalls`;
+          bundle.plannerPrivate += `\n[seq ${inFlight?.seq ?? bundle.nextSeq ?? 0} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
           inFlight.phase = 'awaiting-replan';
           inFlight.controlFailure = { reason: 'maxToolCalls', seq: inFlight.seq };
           return settle('failed');
         }
+        await syncTranscript(); // durable executor turns before we suspend (#2/plan-6)
         const extId = externalToolCallId(name, args);
         if (inFlight) { inFlight.toolCallCount += 1; }
         bundle.pending = { kind: 'external-tool', extId, toolName: name, args, position: step.name };
@@ -2173,12 +2229,14 @@ authoritative dynamic log appended after a fixed static prefix:
     };
 ```
 
-2. After EACH internal-tool round-trip (right after pushing the `assistant`
-   tool_call turn and the `role:'tool'` result into `messages`, before the loop
-   re-sends to the executor), call `await syncTranscript();` so the durable
-   transcript always reflects the full conversation. The external-tool suspend
-   path persists the marker separately (the resume injection appends the external
-   assistant/tool pair to the transcript), so the external pair is covered too.
+2. Call `await syncTranscript();` after EVERY mutation of the dynamic `messages`
+   in the inner loop — not only the internal-tool round-trip but ALSO the
+   retry-message pushes (executor error, empty tool call, unavailable tool) — and
+   AGAIN immediately BEFORE the external-tool suspend persist (#2/plan-6). Any turn
+   the executor saw must be durable before the process can suspend or crash, or a
+   resume would rebuild with a shorter conversation than the executor actually had.
+   The external suspend path then persists the marker on top of an already-synced
+   transcript; the resume injection appends the external assistant/tool pair.
 
 The `externalContinuation` transient flag is already declared in Task 12 (Step 3A);
 this task only SETS it when injecting the tool result. The Task 12 top-of-loop
@@ -2584,15 +2642,28 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
 ```ts
     // Per-reference evidence: one recall query per requires[] reference so the
     // reviewer knows WHICH dependency was present. Falls back to the whole-step
-    // recall when the step declares no requires.
+    // recall when the step declares no requires. EVERY recall is run-scoped by
+    // runId (#1/plan-6) so a multi-run session never surfaces a foreign run's
+    // artifacts (the query() pre-cap filter from Task 3b makes runId authoritative).
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const evidence = await Promise.all(
       refs.map(async (ref) => {
-        const hits = await resolveNeed(rag, ref, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES });
+        const hits = await resolveNeed(rag, ref, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES, runId: bundle.runId });
         return { ref, hit: hits.length > 0 };
       }),
     );
 ```
+
+**Run-scope the whole-step recall + the artifact writes (#1/plan-6).** Also add
+`runId: bundle.runId` to:
+- the whole-step episodic recall filter in `runStep` (the existing
+  `resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`
+  call) → `{ artifactType: RECALL_ARTIFACT_TYPES, runId: bundle.runId }`;
+- every `mcp-result` write (the internal-tool round-trip write and the external
+  resume write) → add `runId: bundle.runId` to the artifact metadata, so internal
+  tool results are recalled within the run too.
+The `step-result` write already carries `runId` (Task 11). With all artifacts
+tagged and every recall filtered by `runId`, recall is strictly run-scoped.
 
 (The evaluator `needs-confirmation` → suspended transition is already correct in the existing code at lines 245-257, which persists the clarify marker and surfaces it; add `bundle.runState = 'suspended';` there to match the run-state contract.)
 
