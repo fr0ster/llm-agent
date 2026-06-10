@@ -345,6 +345,9 @@ and in `budgets`:
     maxRetries: number;
     maxRewinds: number;
     maxToolCalls?: number;
+    /** Durable fresh-attempt cap per step: bounds how many times a non-advancing
+     *  step is re-executed/replanned at the same seq before the run aborts. */
+    maxStepAttempts?: number;
     /** Durable crash-replay caps (one per LLM-invoking phase). Defaults applied
      *  in the handler when absent. */
     maxStepResumes?: number;
@@ -1071,6 +1074,8 @@ export interface ApprovedResult {
 export interface FinalizeOpts {
   hint?: string;
   logUsage?: (role: string, u?: LlmUsage) => void;
+  /** Narrator for reduction events (spec: "log every reduction"). */
+  log?: (msg: string) => void;
 }
 
 export interface FinalizerPolicy {
@@ -1113,6 +1118,59 @@ export function orderAndTruncate(
     );
 }
 
+/** Compose the finalizer body, reducing to fit `budget` via map-reduce (spec:
+ *  "summarize largest/oldest into compact extracts, then compose; never silently
+ *  drop; log every reduction"). Deterministic + GUARANTEED to fit: repeatedly
+ *  halve the cap of the LARGEST result (logging each reduction) until the joined
+ *  body is within budget; a result reduced to the floor keeps a head+marker so it
+ *  is never silently dropped. Pure aside from the `log` side effect. */
+export function reduceToBudget(
+  results: readonly ApprovedResult[],
+  perResultCap: number,
+  budget: number,
+  log?: (msg: string) => void,
+): string {
+  const FLOOR = 80;
+  const ordered = results.slice().sort((a, b) => a.seq - b.seq);
+  // Mutable per-result caps, start at perResultCap.
+  const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
+  const render = () =>
+    ordered.map((r) => {
+      const cap = caps.get(r.seq)!;
+      const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
+      return `[#${r.seq}] ${c}`;
+    });
+  let body = render().join('\n\n');
+  // Reduce the largest result's cap each round until the body fits or every cap
+  // is at the floor (then the budget is structurally impossible — accept floor).
+  while (body.length > budget) {
+    // Pick the seq whose rendered chunk is currently largest and still reducible.
+    let target: number | undefined;
+    let largest = -1;
+    for (const r of ordered) {
+      const cap = caps.get(r.seq)!;
+      const len = Math.min(r.content.length, cap);
+      if (cap > FLOOR && len > largest) {
+        largest = len;
+        target = r.seq;
+      }
+    }
+    if (target === undefined) {
+      // Every result is already at the floor and the body is still over budget
+      // (many small results). We never silently drop (spec), so we keep them all
+      // at the floor and log that the budget could not be met — the caller/LLM
+      // sees an explicit, non-silent over-budget body.
+      log?.(`finalizer overflow: ${ordered.length} results at floor still exceed budget ${budget} (kept, not dropped)`);
+      break;
+    }
+    const next = Math.max(FLOOR, Math.floor(caps.get(target)! / 2));
+    caps.set(target, next);
+    log?.(`finalizer overflow: reduced result #${target} cap → ${next} chars`);
+    body = render().join('\n\n');
+  }
+  return body;
+}
+
 export class LlmFinalizer implements IFinalizer {
   constructor(
     private readonly client: ISubagentClient,
@@ -1125,20 +1183,12 @@ export class LlmFinalizer implements IFinalizer {
     approvedResults: readonly ApprovedResult[],
     opts: FinalizeOpts,
   ): Promise<string> {
-    const capped = orderAndTruncate(approvedResults, this.policy.perResultCap);
-    // Overflow: if the total exceeds the budget, drop the per-result cap further
-    // (map-reduce-lite) so the answer composes; never silently drop a whole
-    // result. Logged via DEBUG_CONTROLLER in the handler when this happens.
-    let body = capped.map((r) => `[#${r.seq}] ${r.content}`).join('\n\n');
-    if (body.length > this.policy.budget) {
-      const tighter = Math.max(
-        50,
-        Math.floor(this.policy.perResultCap * (this.policy.budget / body.length)),
-      );
-      body = orderAndTruncate(approvedResults, tighter)
-        .map((r) => `[#${r.seq}] ${r.content}`)
-        .join('\n\n');
-    }
+    const body = reduceToBudget(
+      approvedResults,
+      this.policy.perResultCap,
+      this.policy.budget,
+      opts.log,
+    );
     const res = await this.client.send([
       { role: 'system', content: appendHint(FINALIZE_SYSTEM, opts.hint) },
       { role: 'user', content: `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}` },
@@ -1568,6 +1618,29 @@ it('maxToolCalls is bounded by the durable toolCallCount, and abort is a control
   const bundle = await hydrateBundle(h.backend, 'sess-1');
   assert.equal(bundle.budgets.stepsUsed, 1);
 });
+
+it('maxStepResumes: a crash-replay with no committed artifact charges resumeCount and aborts at the cap', async () => {
+  const backend = new InMemoryKnowledgeBackend();
+  // Seed an executing inFlightStep at resumeCount === cap, no committed artifact.
+  await persistBundle(backend, 'sess-1', {
+    goal: 'g', plannerPrivate: '', budgets: { stepsUsed: 0, rewindsUsed: 0 },
+    runId: 'R1', runState: 'active', runPhase: 'executing', originalRequest: 'x', nextSeq: 0,
+    inFlightStep: { seq: 0, step: { name: 's1', instructions: 'i' }, attempt: 0, resumeCount: 1, phase: 'executing', transcript: [], toolCallCount: 0 },
+    plan: [{ name: 's1', instructions: 'i' }], planCursor: 0,
+  } as never);
+  const h = harness({
+    evaluator: [], executor: [{ kind: 'content', content: 'x' }],
+    planner: [], config: { ...baseConfig(), planner: 'adaptive', budgets: { ...baseConfig().budgets, maxStepResumes: 1 } },
+  });
+  h.deps.backend = backend;
+  // Adaptive planner re-emits the step at the cursor on resume.
+  h.deps.planner = { async send() { return { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'i' } }) }; } };
+  const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
+  await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+  const bundle = await hydrateBundle(backend, 'sess-1');
+  assert.equal(bundle.runState, 'terminal', 'aborted at maxStepResumes');
+  assert.ok(captured.find((c) => c.ok && /maxStepResumes|Error:/.test(c.value.content)));
+});
 ```
 
 - [ ] **Step 2: Run, verify it fails / regresses**
@@ -1580,20 +1653,65 @@ Expected: the existing `internal tool-call budget` test currently passes against
 In `execute`, before calling `runStep` for a `next.step` (around line 344), set/refresh the in-flight step (fresh attempt) and persist:
 
 ```ts
-      // Fresh dispatch of this step: open an inFlightStep at nextSeq with a new
-      // attempt. (Replan reuse of the same seq is handled in the failed-branch.)
+      // Dispatch the planner's step. Three cases, distinguished by the durable
+      // inFlightStep — this is also the executing-phase resume reconciliation
+      // (spec): adopt-if-committed, else charge the crash-replay or open a fresh
+      // attempt.
       const seq = bundle.nextSeq ?? 0;
-      bundle.inFlightStep = {
-        seq,
-        step: next.step,
-        attempt: (bundle.inFlightStep?.seq === seq ? bundle.inFlightStep.attempt + 1 : 0),
-        resumeCount: 0,
-        phase: 'executing',
-        transcript: [],
-        toolCallCount: 0,
-      };
-      bundle.runPhase = 'executing';
-      await persistBundle(deps.backend, sessionId, bundle);
+      const prev = bundle.inFlightStep;
+      if (prev && prev.seq === seq && prev.phase === 'executing') {
+        // Re-entered an UNCOMMITTED executing step (crash-replay or a benign
+        // re-loop). Reconcile by THIS attempt's resolved artifact first.
+        const committed = await rag.list({ runId: bundle.runId, seq, attempt: prev.attempt, artifactType: 'step-result' });
+        const resolved = resolveByPrecedence(
+          committed.map((e) => ({ status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: e.metadata.remainder ?? '', note: e.metadata.note ?? '' })),
+        );
+        if (resolved) {
+          // Already committed → adopt, do NOT re-run.
+          if (resolved.status === 'failed') {
+            prev.phase = 'awaiting-replan';
+            bundle.lastOutcome = 'failed';
+          } else {
+            bundle.nextSeq = seq + 1;
+            bundle.inFlightStep = undefined;
+            bundle.runPhase = 'planning';
+            bundle.lastOutcome = mapOutcome(resolved.status);
+          }
+          await persistBundle(deps.backend, sessionId, bundle);
+          continue; // back to planner.next with reconciled state
+        }
+        // No artifact for this attempt → genuine crash-replay: charge resumeCount.
+        prev.resumeCount += 1;
+        if (prev.resumeCount > (cfg.maxStepResumes ?? 3)) {
+          await this.abortTerminal(ctx, sessionId, bundle, `step "${prev.step.name}" exceeded maxStepResumes`, now, terminalTtlMs, usageNow());
+          return true;
+        }
+        bundle.runPhase = 'executing';
+        await persistBundle(deps.backend, sessionId, bundle);
+        // Fall through to runStep with the SAME inFlightStep (attempt unchanged,
+        // transcript reused as the rebuild source).
+      } else {
+        // Fresh attempt: first dispatch, OR a revised step after awaiting-replan
+        // (same seq → attempt+1), OR a new seq (attempt 0).
+        const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
+        // Durable fresh-attempt cap: a non-advancing step (repeated failed/
+        // control-failed replans at the same seq) cannot replan forever.
+        if (attempt > (cfg.maxStepAttempts ?? 5)) {
+          await this.abortTerminal(ctx, sessionId, bundle, `step "${next.step.name}" exceeded maxStepAttempts`, now, terminalTtlMs, usageNow());
+          return true;
+        }
+        bundle.inFlightStep = {
+          seq,
+          step: next.step,
+          attempt,
+          resumeCount: 0,
+          phase: 'executing',
+          transcript: [],
+          toolCallCount: 0,
+        };
+        bundle.runPhase = 'executing';
+        await persistBundle(deps.backend, sessionId, bundle);
+      }
 ```
 
 In `runStep`, replace the local `let toolCalls = 0;` and its increments with the durable counter:
@@ -2051,20 +2169,41 @@ and store-first terminal write.
     const cfg = deps.config.budgets;
     const maxFinalizeRetries = cfg.maxFinalizeRetries ?? 2;
 
-    // Crash-replay charge: if a prior finalize call was in flight, this re-entry
-    // is a replay — charge finalizeAttempt before re-invoking (bounded).
-    if (bundle.finalizeCallInFlight) {
-      bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
-    }
-    bundle.runPhase = 'finalizing';
-    bundle.finalizeCallInFlight = true;
-    await persistBundle(deps.backend, sessionId, bundle);
-
     // The finalizer reads the run's approved results + the DURABLE originalRequest
     // (the verbatim request that started the run), never the live resume prompt.
     const request = bundle.originalRequest ?? prompt;
     const approved =
       deps.finalizer && bundle.runId ? await collectApproved(rag, bundle.runId) : [];
+
+    // Shared exhaustion handler (pre-call AND in-catch): apply onFinalizeExhausted.
+    // Returns the best-effort answer string, or null when policy is 'error' (the
+    // run was aborted terminally — the caller returns true).
+    const onExhausted = async (reason: string): Promise<string | null> => {
+      if ((deps.config.onFinalizeExhausted ?? 'error') === 'best-effort') {
+        return (
+          approved.map((a) => `[#${a.seq}] ${a.content}`).join('\n\n') +
+          '\n\n[incomplete: the final answer could not be composed]'
+        );
+      }
+      await this.abortTerminal(ctx, sessionId, bundle, reason, now, terminalTtlMs, usageNow());
+      return null;
+    };
+
+    // Crash-replay charge: if a prior finalize call was in flight, this re-entry
+    // is a replay — charge finalizeAttempt and CHECK the cap BEFORE re-invoking,
+    // so an already-exhausted run does not get one more finalizer call.
+    if (bundle.finalizeCallInFlight) {
+      bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
+      if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
+        const best = await onExhausted('finalizer retry budget exhausted on recovery');
+        if (best === null) return true;
+        await this.commitTerminalSuccess(ctx, sessionId, bundle, best, now, terminalTtlMs, usageNow());
+        return true;
+      }
+    }
+    bundle.runPhase = 'finalizing';
+    bundle.finalizeCallInFlight = true;
+    await persistBundle(deps.backend, sessionId, bundle);
 
     let answer: string | undefined;
     if (deps.finalizer && bundle.runId) {
@@ -2072,28 +2211,28 @@ and store-first terminal write.
       // durable finalizeAttempt (which already counts crash-replays).
       while (answer === undefined) {
         try {
-          answer = await deps.finalizer.finalize(bundle.goal, request, approved, {
+          const composed = await deps.finalizer.finalize(bundle.goal, request, approved, {
             hint: deps.config.subagents.finalizer?.hint,
             logUsage,
+            log: (m) => dlog(m),
           });
+          // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid
+          // answer → throw so it retries within maxFinalizeRetries (never written
+          // as a terminal success).
+          if (composed.trim().length === 0) {
+            throw new Error('finalizer returned an empty answer');
+          }
+          answer = composed;
         } catch (e) {
           bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
           await persistBundle(deps.backend, sessionId, bundle);
           if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
-            // Exhausted → onFinalizeExhausted policy.
-            if ((deps.config.onFinalizeExhausted ?? 'error') === 'best-effort') {
-              answer =
-                approved.map((a) => `[#${a.seq}] ${a.content}`).join('\n\n') +
-                '\n\n[incomplete: the final answer could not be composed]';
-              break;
-            }
-            await this.abortTerminal(
-              ctx, sessionId, bundle,
-              `finalizer failed after ${maxFinalizeRetries} retries: ${String(e)}`,
-              now, terminalTtlMs, usageNow(),
-            );
-            return true;
+            const best = await onExhausted(`finalizer failed after ${maxFinalizeRetries} retries: ${String(e)}`);
+            if (best === null) return true; // 'error' policy aborted terminally
+            answer = best; // 'best-effort'
+            break;
           }
+          // else: loop and retry the finalizer.
         }
       }
     } else {
@@ -2102,18 +2241,31 @@ and store-first terminal write.
       answer = legacyAnswer ?? '';
     }
 
-    // Store-first terminal SUCCESS, then flip the bundle.
+    await this.commitTerminalSuccess(ctx, sessionId, bundle, answer ?? '', now, terminalTtlMs, usageNow());
+    return true;
+  }
+
+  /** Store-first terminal SUCCESS: write the terminal store FIRST, then flip the
+   *  bundle to terminal and surface the answer (mirror of abortTerminal). */
+  private async commitTerminalSuccess(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    answer: string,
+    now: () => string,
+    terminalTtlMs: number,
+    usage?: TerminalUsage,
+  ): Promise<void> {
     await writeTerminal(
-      deps.backend, sessionId, bundle.runId ?? sessionId,
-      { kind: 'success', answer: answer ?? '' }, terminalTtlMs, now(),
+      this.deps.backend, sessionId, bundle.runId ?? sessionId,
+      { kind: 'success', answer }, terminalTtlMs, now(),
     );
     bundle.pending = undefined;
     bundle.finalizeCallInFlight = false;
     bundle.runState = 'terminal';
     bundle.inFlightStep = undefined;
-    await persistBundle(deps.backend, sessionId, bundle);
-    this.surfaceFinal(ctx, answer ?? '', usageNow());
-    return true;
+    await persistBundle(this.deps.backend, sessionId, bundle);
+    this.surfaceFinal(ctx, answer, usage);
   }
 ```
 
