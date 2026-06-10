@@ -433,25 +433,30 @@ Transitions:
          reply-verbatim → `goal`), clears `pending`, flips `runState → active`, AND
          advances `runPhase → planning` — all together, so recovery never sees a
          goal without its phase/state, nor `suspended` with `pending:none` (#1/22).
-       - **`external-tool`** → the awaited thing is the TOOL RESULT keyed by
-         `extId`, NOT the incoming message (#2/22). A plain re-request must never be
-         mis-recorded as a tool result. So: **look up the result by `extId`** (from
-         the external result/callback store).
+       - **`external-tool`** → **first check the resolved artifact at `(runId, seq)`
+         (#2/24):** the artifact-store write and the bundle/marker clear are separate
+         ops, so a crash between them can leave a durable artifact with a stale
+         marker. If an artifact already exists at `(runId, seq)` → the continuation
+         already committed → **adopt it (executing reconciliation) and clear the
+         marker**, do NOT repeat the tool call. Otherwise the awaited thing is the
+         TOOL RESULT keyed by `extId`, NOT the incoming message (#2/22) — a plain
+         re-request must never be mis-recorded as a result. **Look it up by `extId`**
+         (external result/callback store):
          - If NOT yet available → the call is still outstanding: **re-issue the SAME
            tool call (same `extId`, idempotent) and keep the run `suspended`** — do
            not consume, do not advance.
-         - If available → **durability ordering matters (#1/23):** do NOT clear the
-           marker before the continuation is durable. ONE atomic bundle write
-           **persists the result INTO the durable suspended-step state** (appends it
-           to the persisted executor transcript, marking this `extId` resolved) and
-           flips `runState → active`, **while KEEPING `runPhase:'executing'` and the
-           step marker** (now `extId`-resolved). The marker/step state is cleared
-           only when the continuation's executor → reviewer → single
-           write-after-review **commits the artifact at `(runId, seq)`** (the normal
-           commit point). So a crash anywhere between fetching the result and the
-           commit re-enters `executing` with the result already durably injected
-           (no lost `extId`, no re-fetch, no re-issue needed) → idempotent
-           continuation; only an uncommitted, result-less re-entry re-issues.
+         - If available → ONE atomic bundle write **injects the result into the
+           durable `inFlightStep` execution state** (appends it to the step's
+           persisted executor transcript), **clears `pending`, and flips
+           `runState → active`** with `runPhase` staying `executing` (#1/24). The
+           continuation is now a PLAIN `executing` step — NOT a `pending` one — so it
+           is reconciled by the resolved artifact at `(runId, seq)` like any other
+           step. Durability holds (#1/23): the result lives in the durable
+           `inFlightStep` transcript, so a crash before the artifact commit re-enters
+           `executing`, rebuilds from that transcript (result already injected — no
+           re-fetch, no re-issue), and is bounded by `resumeCount`. This removes the
+           unsupported `active + pending(resolved)` state — a resolved external
+           result becomes ordinary in-flight execution.
        Only after `pending` is consumed (or absent, run already `active`) does
        routing fall through to `runPhase`. Without the pending-first rule a
        `clarify`-suspended run (still `runPhase:'evaluating'`) would wrongly
@@ -550,22 +555,37 @@ role. (Open: a stricter controller-side match threshold.)
 ## External-tool resume (persist the suspended step)
 
 The current `PendingMarker` (tool name/args + step name) loses the execution
-context. The suspended state MUST persist: the **full `Step`** (name,
-instructions, `requires`, model hint), the executor's **message transcript** up
-to suspension, and the `external-tool` marker `{toolName, args, extId, position}`.
-On resume: the awaited thing is the **tool result keyed by `extId`**, not the
-resuming message (#2/22). **Look it up by `extId`** in the external
-result/callback store: if NOT yet available, the call is still outstanding →
-**re-issue the SAME tool call (same `extId`, idempotent) and stay `suspended`**
-(never treat the incoming message as a result). If available → **persist the
-result INTO the durable suspended-step state (transcript append, `extId` marked
-resolved) atomically with `runState → active`, while keeping `runPhase:'executing'`
-and the step marker** — do NOT clear the marker yet (#1/23). Then rebuild the
-executor context from the transcript and **re-run executor → reviewer** (normal
-path) — no bypass to `plannerPrivate`. The marker clears only at the post-review
-artifact commit at `(runId, seq)`, so a crash mid-continuation re-enters with the
-result already durably injected (no lost `extId`). An external soft failure thus
-becomes `status:'failed'` → replan.
+context. The suspended state MUST persist on the durable `inFlightStep`: the
+**full `Step`** (name, instructions, `requires`, model hint), the executor's
+**message transcript** up to suspension, and the `external-tool` marker
+`{toolName, args, extId, position}`.
+
+On resume — **artifact-first, then result-by-`extId`:**
+1. If a resolved artifact already exists at `(runId, seq)` → the continuation
+   committed before the crash → **adopt it, clear the marker** (#2/24); no tool
+   re-call.
+2. Else look up the **tool result keyed by `extId`** (not the resuming message,
+   #2/22). If NOT yet available → the call is outstanding → **re-issue the SAME
+   call (same `extId`, idempotent), stay `suspended`**.
+3. Else (result available) → ONE atomic write **injects it into the durable
+   `inFlightStep` transcript, clears `pending`, flips `runState → active`** with
+   `runPhase` staying `executing` (#1/24). The continuation is now a PLAIN
+   `executing` step (no `pending`), reconciled by `(runId, seq)` like any step.
+   Rebuild the executor context from the transcript and **re-run executor →
+   reviewer** (normal path) — no bypass to `plannerPrivate`. Durability holds
+   (#1/23): the injected result is in the durable transcript, so a mid-continuation
+   crash re-enters `executing` and rebuilds it without re-fetch, bounded by
+   `resumeCount`.
+
+**A continuation that makes the NEXT external call (#3/24):** the executor is free
+to make several external round-trips (bounded by `maxToolCalls`). Each new call
+**REPLACES the (now consumed) marker with a FRESH `external-tool` marker** (new
+`extId`, new tool/args) and re-suspends — atomically persisting the
+**appended transcript** (carrying all prior injected results) on the same
+`inFlightStep`/`seq`. So there is never a stale resolved marker; at most one
+*unresolved* marker is outstanding at a time, and the transcript accumulates across
+round-trips until the step commits its artifact. An external soft failure becomes
+`status:'failed'` → replan.
 
 ## Idempotency & durability
 
@@ -674,11 +694,15 @@ mark the step advanced OR failed.
   of re-entering its phase. A non-empty clarify answer is consumed by ONE atomic
   write that also flips `runState suspended → active` (never `suspended` with
   `pending:none`; empty answer → stay suspended, re-ask, #2/23). `external-tool`
-  consumes the tool result looked up by `extId` (re-issue the same call + stay
-  suspended if not yet available), NOT the incoming message; the result is
-  persisted into the durable step state and the marker is cleared only at the
-  artifact commit, so a mid-continuation crash keeps the injected result
-  (#1/22, #2/22, #1/23).
+  resume is **artifact-first** (adopt + clear marker if `(runId,seq)` already
+  committed, #2/24), else consumes the tool result looked up by `extId` (re-issue
+  the same call + stay suspended if not yet available), NOT the incoming message.
+  A found result is **injected into the durable `inFlightStep` transcript and
+  `pending` is CLEARED** (the continuation becomes a plain `executing` step,
+  reconciled by `(runId,seq)`; no `active + pending(resolved)` state — #1/24); a
+  mid-continuation crash rebuilds from that durable transcript without re-fetch
+  (#1/23). The NEXT external call **replaces the consumed marker with a fresh
+  unresolved one** on the same `seq`, transcript accumulating (#3/24).
   Crash-recovery routed by
   `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
