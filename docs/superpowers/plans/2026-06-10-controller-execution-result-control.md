@@ -288,27 +288,41 @@ there is no index (then there is no similarity to rank by, so it is not a
 downgrade):
 
 ```ts
-  // The injected semantic index gains the SAME optional filter (vector adapters
-  // apply it as a metadata filter in their query, ranking within the filtered set):
-  //   semantic?: { upsert(...); query(sid, text, k?, filter?): Promise<...> }
+  // The injected semantic index:
+  //   semantic?: { upsert(sid,e); query(sid,text,k?,filter?); deleteSession(sid) }
+  // The in-process index is EMPTY after a restart, but the JSONL log is durable —
+  // so LAZILY REHYDRATE the index from the durable scan on first use per session
+  // (#1/plan-13), else a resumed session's semantic recall returns [].
+  private readonly rehydrated = new Set<string>();
+  private async ensureIndexed(sid: string): Promise<void> {
+    if (!this.semantic || this.rehydrated.has(sid)) return;
+    for (const e of await this.scan(sid)) await this.semantic.upsert(sid, e);
+    this.rehydrated.add(sid);
+  }
   async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
     if (this.semantic) {
-      // Native: the index applies the filter PRE-cap and ranks by similarity.
-      return this.semantic.query(sid, text, k, filter);
+      await this.ensureIndexed(sid); // rehydrate from JSONL after a restart
+      return this.semantic.query(sid, text, k, filter); // filter PRE-cap, similarity-ranked
     }
-    // No index → recency-only backend (no similarity exists). Apply the filter to
-    // the exhaustive scan (guaranteed run-scoping), most-recent K.
+    // No index → recency-only. Apply the filter to the exhaustive scan, most-recent K.
     let all = await this.scan(sid);
     if (filter) all = all.filter((e) => matchesFilter(e.metadata, filter));
     return k ? all.slice(-k) : all;
   }
+  async deleteSession(sid: string): Promise<void> {
+    await rm(dirname(this.file(sid)), { recursive: true, force: true }); // existing JSONL removal
+    this.semantic?.deleteSession(sid); // also drop the indexed vectors (#2/plan-13)
+    this.rehydrated.delete(sid);
+  }
 ```
 
-> The injected `semantic.query` signature gains `filter?: KnowledgeFilter`; vector
-> adapters (qdrant/hana/pg) apply it as a native metadata filter so similarity
-> ranking happens WITHIN the run — this is the path that preserves vector ranking.
-> `matchesFilter` is the shared predicate: export `matches` from `knowledge-rag.ts`
-> and import it here (one predicate, no duplication).
+> The injected `semantic` interface gains `filter?: KnowledgeFilter` on `query` AND
+> a `deleteSession(sid)` method; vector adapters (qdrant/hana/pg) apply the filter
+> as a native metadata filter (similarity ranking WITHIN the run) and drop the
+> session's vectors on delete. `matchesFilter` is the shared predicate: export
+> `matches` from `knowledge-rag.ts` and import it here (one predicate, no
+> duplication). `InMemoryKnowledgeBackend.deleteSession` likewise calls
+> `this.semantic?.deleteSession(sid)` after clearing its own map.
 >
 > IMPORTANT — the controller's run-scoped RECALL (Task 16 `runScopedRecall`) is
 > EMBEDDING-based: it calls `rag.query` → `semanticQuery` with the `runId` filter
@@ -380,9 +394,14 @@ export function makeKnowledgeSemanticIndex(embedder: IEmbedder) {
         .map((x) => x.e);
       return k ? ranked.slice(0, k) : ranked;
     },
+    // Session reuse must NOT return a deleted session's vectors (#2/plan-13).
+    deleteSession(sid: string): void { bySession.delete(sid); },
   };
 }
 ```
+
+The injected `semantic` index interface therefore is
+`{ upsert(sid,e); query(sid,text,k?,filter?); deleteSession(sid) }`.
 
 Wire it in `smart-server.buildKnowledgeBackend`, attaching the index to BOTH
 backends when an embedder is resolved (so in-memory deployments WITH an embedder
@@ -393,31 +412,31 @@ production `logDir` controller with no embedder:
   private buildKnowledgeBackend(): void {
     if (this._stepperKnowledgeBackend) return;
     const logDir = this.cfg.logDir;
+    // Attach the index whenever an embedder is resolved — for ANY pipeline. Do NOT
+    // throw here (#3/plan-13): buildKnowledgeBackend runs unconditionally at startup
+    // and a flat/stepper deployment without an embedder is perfectly valid; only the
+    // CONTROLLER mandates embedding recall, and that requirement is enforced at the
+    // ControllerFactory boundary (Task 17), not globally.
     const semantic = this._resolvedEmbedder
       ? makeKnowledgeSemanticIndex(this._resolvedEmbedder)
       : undefined;
-    if (logDir) {
-      // Production durable backend: recall ranks by embedding similarity, so an
-      // index is REQUIRED — recency would not satisfy "top-K by meaning".
-      if (!semantic) {
-        throw new Error(
-          "pipeline 'controller' results-RAG recall requires an embedder; " +
-            'configure one (or omit logDir to use the in-memory backend in tests)',
-        );
-      }
-      this._stepperKnowledgeBackend = new JsonlKnowledgeBackend(logDir, semantic);
-    } else {
-      // In-memory: use the index when an embedder is available (real ranking),
-      // else filter + insertion order (pure unit tests without an embedder).
-      this._stepperKnowledgeBackend = new InMemoryKnowledgeBackend(semantic);
-    }
+    this._stepperKnowledgeBackend = logDir
+      ? new JsonlKnowledgeBackend(logDir, semantic)
+      : new InMemoryKnowledgeBackend(semantic);
   }
 ```
 
 `InMemoryKnowledgeBackend` gains an optional `semantic` constructor param; its
 `semanticQuery` delegates to `this.semantic.query(sid, text, k, filter)` when
-present, else the existing filter+insertion path. The fail-loud mirrors the
-distance-strategy embedder check in `ControllerFactory`.
+present, else the existing filter+insertion path.
+
+**The embedder requirement lives at the ControllerFactory boundary (#3, #4/plan-13)**
+— NOT in `buildKnowledgeBackend`. The controller's results-RAG recall ranks by
+embedding in EVERY persistence mode (JSONL or in-memory), so `ControllerFactory.build`
+throws when `deps.embedder` is absent, regardless of `logDir` (extending the existing
+distance-strategy check to be unconditional — see Task 17). Tests inject a stub
+embedder. This way a controller never silently degrades to insertion-order recall,
+and flat/stepper deployments without an embedder are unaffected.
 
 - [ ] **Step 4: Build the lower packages, then run the tests (incl. embedding ranking + pre-cap filtering)**
 
@@ -453,6 +472,35 @@ describe('makeKnowledgeSemanticIndex', () => {
     const hits = await idx.query('s', 'alpha', 1, { runId: 'TARGET' });
     assert.equal(hits.length, 1);
     assert.equal(hits[0].metadata.runId, 'TARGET', 'filter applied before the k=1 cap');
+  });
+
+  it('deleteSession drops the indexed vectors (no stale hits on session-id reuse)', async () => {
+    const idx = makeKnowledgeSemanticIndex(stub);
+    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
+    idx.deleteSession('s');
+    assert.equal((await idx.query('s', 'alpha', 5)).length, 0, 'deleted session returns nothing');
+  });
+});
+
+describe('JsonlKnowledgeBackend rehydrates the index after restart', () => {
+  it('a fresh backend over the same logDir returns persisted entries via semantic query', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { JsonlKnowledgeBackend } = await import('../jsonl-knowledge-backend.js');
+    const dir = await mkdtemp(join(tmpdir(), 'ctrl-rehydrate-'));
+    try {
+      // Leg 1: write through a backend with an index.
+      const b1 = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      await b1.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
+      // Leg 2 (restart): a NEW backend + NEW empty index over the same logDir.
+      const b2 = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const hits = await b2.semanticQuery('s', 'alpha', 5, { runId: 'R' });
+      assert.equal(hits.length, 1, 'index lazily rehydrated from the durable JSONL');
+      assert.equal(hits[0].content, 'alpha');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 ```
@@ -3093,8 +3141,26 @@ describe('ControllerFactory reviewer/finalizer', () => {
       backend: {} as never,
       knowledgeRagFor: () => ({}) as never,
       selectTools: async () => [],
+      embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never, // required for recall
     });
     assert.ok(handler, 'handler built with reviewer/finalizer wired');
+  });
+
+  it('throws when no embedder is provided (results-RAG recall is embedding-based, any persistence mode)', async () => {
+    const cfg = {
+      subagents: { evaluator: { provider: 'x', model: 'm' }, planner: { provider: 'x', model: 'm' }, executor: { provider: 'x', model: 'm' } },
+      targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
+      sessionMemory: { collection: 'c' },
+      budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
+    } as never;
+    await assert.rejects(
+      new ControllerFactory().build(cfg, {
+        makeRoleLlm: async () => fakeLlm('m'),
+        callMcp: async () => '', backend: {} as never, knowledgeRagFor: () => ({}) as never, selectTools: async () => [],
+        // no embedder
+      }),
+      /embedder/,
+    );
   });
 });
 ```
@@ -3106,7 +3172,24 @@ Expected: FAIL — `makeRoleLlm('reviewer')`/`'finalizer'` not resolved; deps no
 
 - [ ] **Step 3: Implement the wiring**
 
-In `controller-factory.ts`, resolve reviewer/finalizer LLMs (defaulting to the planner config when the subagent is absent) and construct the default impls:
+In `controller-factory.ts`, FIRST make the embedder check UNCONDITIONAL
+(#3/#4/plan-13) — the controller's results-RAG recall ranks by embedding in every
+persistence mode, so an embedder is always required, not only for distance
+target-state. Replace the existing distance-only check:
+
+```ts
+    // results-RAG recall is embedding-based → an embedder is ALWAYS required
+    // (this also backs the server's knowledge semantic index). Fail loud here, at
+    // the controller boundary, NOT globally in buildKnowledgeBackend.
+    if (!deps.embedder) {
+      throw new Error(
+        "pipeline 'controller' requires an embedder: results-RAG recall ranks by " +
+          'embedding similarity (and distance target-state, if used). Provide deps.embedder.',
+      );
+    }
+```
+
+Then resolve reviewer/finalizer LLMs (defaulting to the planner config when the subagent is absent) and construct the default impls:
 
 ```ts
 import { LlmReviewer } from '../smart-agent/controller/reviewer.js';
