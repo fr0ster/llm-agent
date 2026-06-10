@@ -1579,8 +1579,9 @@ git commit -m "feat(controller): IFinalizer + LlmFinalizer with order/truncate/o
 **Spec:** "Planner transitions (#2 — partial is a first-class outcome)" — `commit()`/`lastOutcome` extended to `advanced|failed|partial`; `partial` advances the cursor for the accepted part AND forces a replan of the remainder.
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts:159-228`
-- Test: extend `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts:159-228` (partial transition + the `ENGLISH_INSTRUCTIONS_RULE` invariant in all planner/replan prompts)
+- Modify: `docs/ARCHITECTURE.md` (the MCP English-catalog precondition subsection, Step 3b)
+- Test: extend `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts` (partial + the prompt-invariant contract test)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1694,9 +1695,14 @@ answer honors the user's language.
 > tool catalog (names + descriptions) is indexed in English**, matching the
 > canonical language of the planner-emitted instructions. This is an external MCP-
 > server contract — the controller performs NO runtime translation of tool
-> descriptions. Record this in `docs/` (the controller/pipeline docs) as a
-> deployment precondition; a server whose MCP exposes non-English descriptions must
-> normalize them at catalog-build time, outside this design.
+> descriptions.
+>
+> Record it concretely (#5/plan-13): append a "Controller — MCP catalog language
+> precondition" subsection to **`docs/ARCHITECTURE.md`** stating that the MCP tool
+> catalog must be indexed in English to match the canonical tool-selection
+> language, and that a server whose MCP exposes non-English descriptions must
+> normalize them at catalog-build time, outside this design. This file is part of
+> THIS task's edits and `git add` (added to the Files list + commit below).
 
 - [ ] **Step 4: Run, verify it passes**
 
@@ -1706,8 +1712,8 @@ Expected: PASS (existing planner tests + 2 new).
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts
-git commit -m "feat(controller): planner partial transition (advance accepted + replan remainder)"
+git add packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts docs/ARCHITECTURE.md
+git commit -m "feat(controller): planner partial transition + English-instruction invariant + MCP-catalog precondition doc"
 ```
 
 ---
