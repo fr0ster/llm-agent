@@ -245,12 +245,28 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
   `evalResumeCount`, cap `maxEvalResumes`. The evaluator (request → goal) is a
   distinct LLM call that runs ONCE at the start of a run, and its `goal` is its
   *output* (no artifact to resolve against — same shape as planning). So: **persist
-  `evalCallInFlight = true` BEFORE invoking the evaluator**; on its response, ONE
-  atomic bundle write **persists the `goal`, clears `evalCallInFlight`, advances
-  `runPhase → planning`** (and resets `evalResumeCount`, moot thereafter). Recovery
-  in `runPhase:'evaluating'`: if `evalCallInFlight` → charge `evalResumeCount` (cap
-  `maxEvalResumes`) and re-evaluate; else → re-evaluate without charging. This
-  closes the evaluator crash-loop the invariant previously left uncovered (#1/19).
+  `evalCallInFlight = true` BEFORE invoking the evaluator**. The evaluator returns
+  ONE of two kinds, each with its OWN atomic transition (#1/20):
+  - **goal established** → ONE atomic bundle write **persists the `goal`, clears
+    `evalCallInFlight`, advances `runPhase → planning`** (and resets
+    `evalResumeCount`, moot thereafter);
+  - **needs-confirmation** (the evaluator wants the consumer to confirm a proposed
+    target before committing a goal) → ONE atomic bundle write **persists
+    `pending = {kind:'clarify', position:'goal', question, proposedTarget}`, clears
+    `evalCallInFlight`, resets `evalResumeCount`, and sets run-state → `suspended`**
+    — it does NOT write `goal` and does NOT advance to `planning`. The proposed
+    target rides on the marker so a later confirmation commits THAT (not a bare
+    "yes"). On confirm-resume, the controller writes `goal` (from `proposedTarget`)
+    and advances to `planning`; on reject/new input it re-evaluates or resets.
+    Recovery while `suspended` with a `clarify` marker takes the normal
+    suspended-resume path (resume on the consumer's reply) — NOT an evaluator
+    re-call, so `evalResumeCount` is not charged.
+
+  Recovery in `runPhase:'evaluating'` while still `active` (no clarify marker yet):
+  if `evalCallInFlight` → charge `evalResumeCount` (cap `maxEvalResumes`) and
+  re-evaluate; else → re-evaluate without charging. This closes the evaluator
+  crash-loop the invariant previously left uncovered (#1/19) AND defines the
+  consumer-confirm flow for recovery (#1/20).
 - **planning** → detector **`plannerCallInFlight`** (#1/18), counter
   `plannerResumeCount`, cap `maxPlannerResumes`. The plan/decision is the planner's
   *output*, so — unlike executing — there is no `(runId, seq)` artifact to resolve
@@ -510,9 +526,15 @@ mark the step advanced OR failed.
 - **Finalizer error:** retry within `maxFinalizeRetries`, counted by a **durable
   `finalizeAttempt`** charged on crash-replay only when the durable
   `finalizeCallInFlight` marker proves a call was in flight (persist
-  `finalizeCallInFlight=true` before the call; atomically clear it with the
-  `terminalOutcome` write) — so crash-replays in `runPhase:'finalizing'` cannot
-  bypass the budget, yet a crash BEFORE the call started is not miscounted. On exhaustion the behavior is
+  `finalizeCallInFlight=true` before the call). Completion is NOT a single
+  transaction — `terminalOutcome` (TTL store) and the bundle's
+  `finalizeCallInFlight`/`runState` are separate writes — so the order is
+  **terminal store FIRST, then the bundle** clears `finalizeCallInFlight` + sets
+  `runState → terminal`, and every `finalizing` recovery **reads the terminal store
+  FIRST → adopt-without-re-call** if present (#2/19, #2/20). So crash-replays in
+  `runPhase:'finalizing'` cannot bypass the budget, a crash BEFORE the call started
+  is not miscounted, and a crash between the two writes never re-invokes the
+  finalizer to replace an emitted answer. On exhaustion the behavior is
   a **single explicit config enum** `onFinalizeExhausted: 'error' | 'best-effort'`
   — **default `'error'`** (terminal control error, deterministic).
   `'best-effort'` composes from the already-approved results with an explicit
@@ -563,9 +585,11 @@ mark the step advanced OR failed.
   (finalizer input; normalized hash = identity fingerprint) + atomic run-scoped
   RESET (incl. markers→false, `evalResumeCount→0`, `plannerResumeCount→0`, `finalizeAttempt→0`);
   `attempt` increments on FRESH executions only (not external-tool continuations);
-  `plannerResumeCount`/`finalizeAttempt` are charged on crash-replay ONLY when the
-  matching in-flight marker proves a call was running, and `plannerResumeCount`
-  resets after every persisted planner decision. The reviewer adds no durable phase
+  `evalResumeCount`/`plannerResumeCount`/`finalizeAttempt` are charged on
+  crash-replay ONLY when the matching in-flight marker
+  (`evalCallInFlight`/`plannerCallInFlight`/`finalizeCallInFlight`) proves a call
+  was running, and `evalResumeCount`/`plannerResumeCount` reset after every
+  persisted goal/planner decision. The reviewer adds no durable phase
   — a mid-review crash re-executes the step (no artifact written yet), charged to
   `resumeCount`. A SEPARATE per-session keyed store
   `{runId → {terminalOutcome (success|error), expiresAt}}` holds terminal outcomes
