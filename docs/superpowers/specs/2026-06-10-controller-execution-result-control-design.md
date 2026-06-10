@@ -2,201 +2,212 @@
 
 **Status:** active design (controller pipeline). READ + **idempotent** WRITE;
 exactly-once non-idempotent side effects out of scope. NOT yet an implementation
-plan — the contracts below (roles, run lifecycle, finalization, RAG metadata)
-need review first.
+plan — review the contracts below first.
 
 **Builds on:** merged controller work (`bde840e6`, `cc5ccc43`) and
 `2026-06-09-controller-planner-gnosticization-design.md`.
 
 ## Core idea: separate DOING from JUDGING
 
-An LLM does not reliably grade its own work. So the step outcome is NOT the
-executor's self-report — a **separate reviewer role** judges the executor's
-result. Doing and judging are different roles, different calls, different
-contexts.
+An LLM does not reliably grade its own work, so the step outcome is produced by a
+**separate reviewer role**, never the executor's self-report. Per step:
 
-Per step:
-
-1. **Executor** — given the step (intent + `requires` manifest), the recalled
-   inputs, and the relevant tools, does the work. Returns the **full result**
-   (+ an optional short self-claim). Writes the full result → results-RAG. The
-   executor does NOT decide success.
-2. **Reviewer** — a separate role, given the step intent + the `requires` it
-   should have used + the executor's result (and, when assurance matters, a
-   verification read of actual state) → produces the **authoritative outcome**:
-   `{ status: 'ok'|'exists'|'failed'|'partial', accepted: <what was achieved>,
+1. **Executor** — given the step (intent + `requires`), recalled inputs, and the
+   relevant tools, does the work and returns its **full result** (and an optional
+   short self-claim). It does NOT decide success and does NOT write to RAG yet.
+2. **Reviewer** — a separate role, given the step intent + `requires` + the
+   per-reference recall evidence + the executor's result → produces the
+   **authoritative outcome**:
+   `{ status: 'ok'|'exists'|'failed'|'partial', approved: <content to keep>,
    remainder: <what is still missing>, note }`.
-3. **Controller** — maps the reviewer's `status` to advance/replan, writes the
-   outcome to `plannerPrivate`, tags the RAG artifact, persists.
+   `approved` is the executor's content for `ok`/`exists`, or the validated
+   ACCEPTED extract for `partial`.
+3. **Controller** — writes the step artifact ONCE (post-review, see below),
+   updates `plannerPrivate`, maps `status` to the planner transition.
 
-The reviewer is the control point that closes soft-failure ("executor narrated
-'saved inactive' but the intent was create+activate" → reviewer returns
-`partial`/`failed`), completeness, and missing-input detection. It is a capable
-model; it is +1 call/step (cost knob: scope it to side-effecting/complex steps,
-or run it always for full control — configurable).
+**Reviewer is ALWAYS-ON** (every step is reviewed; the executor never sets
+status). What is configurable is the reviewer's MODEL (a cheaper-but-capable
+model for simple steps), NOT whether review happens. By default the reviewer is
+**tool-less** (judges from intent + evidence + result → no side-effect risk);
+optional verification-by-read requires the consumer to designate a **read-only**
+tool subset for the reviewer (the controller cannot classify tools agnostically).
 
 ## Roles
 
 evaluator (request → goal) → planner (steps) → executor (does) → **reviewer
 (judges)** → [loop] → finalizer (composes the answer after `done`).
 
-## Run scope & lifecycle (durable runId)
+## Interfaces (project principle: program to interfaces, swap implementations)
 
-`traceId` changes per leg; the session holds many requests. A controller **run**
-(one user request, across suspend/resume legs) is scoped by a durable `runId`.
+Every capability here is an **interface with a default implementation**;
+deployments/tests swap implementations without touching the controller. Existing
+seams stay (`ILlm`, `IEmbedder`, `IRag`/`IKnowledgeRagHandle`, `ISubagentClient`,
+`IControllerPlanner`). This design adds/extends:
 
-State machine on `SessionBundle`:
+- **`IReviewer`** — `review(step, evidence, executorResult, opts) → Outcome`.
+  The controller depends ONLY on this; `status` always comes through it.
+  Default impl: an LLM reviewer (capable model). Alternative impls: a
+  tool-verifying reviewer (read-only state check), a deterministic/heuristic
+  judge (trusted fast path), a voting/composite reviewer. Swapping the impl
+  changes *how* a step is judged, not the control flow.
+- **`IFinalizer`** — `finalize(goal, request, approvedResults) → answer`. Default:
+  LLM. Swappable (e.g. a template/format-driven finalizer).
+- **`IControllerPlanner`** (exists) — gains the `partial` transition; incremental
+  and adaptive are two implementations; consumers may supply their own.
+- **`IKnowledgeRagHandle`** (exists) — extended metadata/filter (`runId/seq/
+  status`); in-memory/qdrant/hana/pg are implementations of the SAME contract,
+  with a fetch-then-filter fallback where native filtering is missing.
+- **Typed, provider-neutral contracts:** `Outcome {status, approved, remainder,
+  note}`, `Step {…, requires}` — no SAP/object specifics.
+- **Run scope** — the `runId` minter is an injectable (deterministic test
+  override), consistent with the existing id-minters.
 
-- **idle/terminal** — no active run (initial, or after a run completed/aborted).
-- **active** — a run in progress (`runId` set, plan/cursor live).
-- **suspended** — awaiting an external tool result or a clarify (`pending` set).
+The default build wires the LLM/standard implementations; the controller is
+coded against the interfaces only — so reviewer, finalizer, planner and backbone
+are all DI seams, swappable per deployment or per test.
+
+## Outcome persistence (#1 — append-only RAG, write-after-review)
+
+`IKnowledgeRagHandle` is append-only (`write()`, no id/update). So there is **no
+`pending` artifact and no update**. Instead: the executor's result is held in the
+controller in-memory; after the reviewer judges, the controller **writes the
+artifact ONCE** with the final `status` and the reviewer-`approved` content:
+
+```
+writeArtifact(results-RAG, {
+  kind: 'step-result', runId, seq, status,        // final, from the reviewer
+  content: approved,                              // reviewer-approved (full | accepted extract)
+})
+```
+
+`plannerPrivate += { seq, status, note, remainder }` (payload-free). Nothing is
+written before review; no record is mutated. (If a raw-vs-approved audit trail is
+later wanted, that is an additional immutable record — out of scope now.)
+
+## Planner transitions (#2 — partial is a first-class outcome)
+
+`commit()`/`lastOutcome` are extended from `advanced|failed` to
+`advanced|failed|partial`:
+
+- **advanced** (`ok`/`exists`): commit advances the cursor; no replan.
+- **failed**: cursor stays; replan re-attempts.
+- **partial**: commit **advances the cursor** (the accepted part is committed and
+  will not be re-run) AND sets `lastOutcome='partial'`, which **forces a replan**
+  whose job is to plan ONLY the `remainder` (recorded in `plannerPrivate`). The
+  accepted step is NOT repeated; the replan INSERTS steps for the missing part.
+
+So "got 8 of 10, replan got the last 2": the partial step is committed (the 8 are
+done + in RAG as `approved`), and a replanned step produces the remaining 2.
+
+## Finalizer (#2/#3 — unified, reviewer-approved content only)
+
+Today only adaptive has a finalizer call; incremental returns a `done.result`
+built from `plannerPrivate`. Once `plannerPrivate` is concise, incremental has no
+data. Fix:
+
+- **One finalizer stage runs after the planner returns `done`, for BOTH
+  planners.** `done` only signals completion (carries no answer). The finalizer
+  composes from the **run-scoped result set** in results-RAG.
+- The finalizer reads only **reviewer-approved content** (`status ∈ {ok, exists,
+  partial}` with the stored `approved` field) — never raw executor output. A
+  `partial` artifact contributes its accepted extract only, so unfinished/wrong
+  claims from a partial executor pass do not leak into the answer.
+
+### Finalizer read policy (budget / ordering / truncation / overflow)
+
+Token **budget** `B` (config); results ordered by `seq` (then request-relevance
+if available); per-result cap `C` (truncate-with-marker beyond `C`). **Overflow**
+(`Σ>B`): **map-reduce** — summarize largest/oldest into compact extracts, then
+compose; never silently drop; log every reduction.
+
+## Run scope & lifecycle (durable runId) (#4)
+
+`traceId` changes per leg; the session holds many requests. A **run** (one user
+request across suspend/resume legs) is scoped by a durable `runId`. Bundle state:
+
+- **idle/terminal** — no active run; **active** — run in progress; **suspended** —
+  awaiting external tool / clarify (`pending` set).
 
 Transitions:
 
-- **New request while idle/terminal:** atomically **RESET all run-scoped fields**
-  (`goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`, `lastOutcome`,
-  `pending`) and **mint a fresh `runId`** → active. (Fixes stale goal/plan/cursor
-  carrying over.)
-- **Resume while suspended:** keep `runId` and all run-scoped state.
-- **Run reaches `done`** (finalizer composed) **or aborts:** → terminal; the next
-  request triggers the reset above.
+- **New request while idle/terminal:** ONE atomic bundle write **resets all
+  run-scoped fields** (`goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
+  `lastOutcome`, `pending`) and **mints a fresh `runId`** → active. Fixes stale
+  goal/plan/cursor carrying over.
+- **Resume while suspended:** keep `runId` + all run-scoped state.
+- **`done` (finalizer composed) or abort:** → terminal; next request resets.
 
-Run-scoped fields and their reset are defined as ONE atomic bundle write, so a
-crash cannot leave a half-reset bundle.
+## Data backbone & RAG contract changes (#5 prev)
 
-## Data backbone
+- **results-RAG** — per-session store; each artifact tagged `{runId, seq,
+  status}`. `KnowledgeEntryMetadata` += `runId/seq/status` (or a generic
+  `tags` map); `KnowledgeFilter` += equality on `runId`/`status` + order by
+  `seq`; backends filter natively or fall back to fetch-then-filter (documented).
+- **tool-RAG** — `selectTools` top-K per step (executor only).
+- **plannerPrivate** — concise control log `{seq, status, note, remainder}`.
 
-- **results-RAG** — per-session knowledge store. Every executor result is written
-  with metadata `{ runId, seq, status, kind }` (`seq` monotonic per run; `status`
-  from the reviewer; `kind` = step-result / mcp-result).
-- **tool-RAG** — vectorized MCP catalog; `selectTools` top-K per step.
-- **plannerPrivate** — concise control log: per-step `{seq, status, note}` only,
-  payload-free.
+**Access modes:** per-step recall (executor) = semantic top-K scoped to `runId`;
+full set (finalizer) = run's approved results ordered by `seq` under the budget.
 
-### RAG contract changes (#5)
+## Dependency manifest & miss detection (not self-eval)
 
-The current `KnowledgeEntryMetadata` / `KnowledgeFilter` carry no run/seq/status.
-This design REQUIRES:
+Planner emits per dependent step `requires: ["<plain reference>", …]`. Presence
+is decided by a role OTHER than the doer: the **recall step records per-reference
+evidence** (did it surface a matching artifact?), and the **reviewer** judges
+intent + evidence + result; a missing input → `failed`. Honestly not fully
+deterministic (semantic recall + LLM judgement), but free of self-evaluation
+bias. (Open: stricter controller-side evidence.)
 
-- `KnowledgeEntryMetadata` += `runId: string`, `seq: number`, `status: string`
-  (or a generic `tags: Record<string,string|number>` to avoid churn).
-- `KnowledgeFilter` += equality filter on `runId`/`status` and ordering by `seq`.
-- Backend support: in-memory (trivial), qdrant/hana/pg (payload/where filter +
-  order). Backends that cannot filter must fall back to fetch-then-filter
-  (documented), so the contract holds everywhere.
+## Config & roles contract (#5)
 
-## Access modes
+`ControllerConfig.subagents` gains **`reviewer`** and **`finalizer`** alongside
+`evaluator/planner/executor` — each a standalone LLM config (+ optional `hint`):
 
-- **Per-step recall (executor):** semantic top-K over results-RAG, keyed by the
-  step prompt; scoped to the current `runId`. Plus `selectTools`. Both surfaced;
-  the LLM decides data-vs-tool.
-- **Full set (finalizer):** the run's results (`runId`, ordered by `seq`),
-  `status ∈ {ok, exists, partial}` — see partial handling and budget below.
+- **Defaults / migration (no breaking change):** an existing 3-role config still
+  works — if `reviewer` is absent it **defaults to the planner's model** (capable);
+  if `finalizer` is absent it defaults to the planner too. New deployments may set
+  them explicitly (e.g. a cheaper reviewer for simple pipelines).
+- **Factory/deps:** `ControllerFactoryDeps`/`ControllerHandlerDeps` gain reviewer
+  + finalizer subagent clients; `models` gains `reviewer`/`finalizer` for usage
+  attribution (`/v1/usage` byComponent gains `reviewer`/`finalizer`).
+- **Reviewer tools:** none by default; a read-only subset only if the consumer
+  designates one (see Core idea).
 
-(No exact-by-handle mode — provider-binding, rejected.)
+## External-tool resume (persist the suspended step)
 
-## Dependency manifest & miss detection (#6 — not self-eval)
+The current `PendingMarker` (tool name/args + step name) loses the execution
+context. The suspended state MUST persist: the **full `Step`** (name,
+instructions, `requires`, model hint), the executor's **message transcript** up
+to suspension, and `{toolName, args, extId, position}`. On resume: rebuild the
+executor context from the transcript, inject the external result, **re-run
+executor → reviewer** (normal path) — no bypass to `plannerPrivate`. An external
+soft failure thus becomes `status:'failed'` → replan.
 
-The planner emits per dependent step `requires: ["<plain reference>", …]`.
-Whether a required input is actually present is decided NOT by the executor
-self-attesting, but by:
+## Idempotency & durability
 
-- **Controller-side evidence (primary):** for each `requires` reference, the
-  recall step records whether it surfaced any artifact; the controller passes the
-  reviewer the manifest + which references had evidence.
-- **Reviewer judgement (secondary):** the reviewer, seeing intent + manifest +
-  retrieved evidence + result, decides if the step actually had/used its inputs;
-  a missing input → `failed` (note: "missing input: <ref>").
-
-This is honestly **not fully deterministic** (semantic recall + LLM judgement),
-but the decision is made by a role OTHER than the doer, with explicit evidence —
-removing the self-evaluation bias. (Open question: a stricter controller-side
-presence check.)
-
-## Result handling
-
-- **Executor → results-RAG:** full content, tagged `{runId, seq, status:pending}`
-  (status filled by the reviewer).
-- **Reviewer → plannerPrivate:** `{seq, status, note, remainder}` (payload-free);
-  updates the artifact's `status` and stores `accepted`/`remainder` summaries.
-- **Outcome mapping:** `ok`/`exists` → advance; `failed` → replan; **`partial`**
-  → advance the ACCEPTED part, then replan for the `remainder` (see #3).
-
-## Partial results (#3 — don't drop the accepted part)
-
-`partial` must not be excluded from synthesis. The reviewer splits a partial
-result into **accepted** (what was achieved — kept, contributes to the answer)
-and **remainder** (what is still missing — drives a replan). The accepted portion
-stays in results-RAG with `status:partial` and IS included by the finalizer; the
-remainder is recorded in `plannerPrivate` so the planner plans only the missing
-part. So "got 8 of 10, replan got 2" → finalizer sees both the 8 and the 2.
-
-## Finalizer (#2 — unified, both planners)
-
-Today only the adaptive planner has a finalizer call; the incremental planner
-returns a `done.result` it built from `plannerPrivate`. Once `plannerPrivate`
-holds only concise outcomes, incremental has no data to answer with. Fix:
-
-- **A single finalizer stage runs after the planner returns `done`, for BOTH
-  incremental and adaptive.** The planner's `done` no longer carries the answer;
-  it only signals completion. The finalizer composes the answer from the
-  **run-scoped full result set** in results-RAG.
-- This unifies the two planners on one finalization path and one data source.
-
-### Finalizer read policy (budget / ordering / truncation / overflow) (#6 prev)
-
-- Token **budget** `B` (config); results ordered by `seq` (then request-relevance
-  if available); per-result cap `C` (truncate-with-marker beyond `C`).
-- **Overflow** (`Σ>B`): **map-reduce** — summarize largest/oldest results into
-  compact extracts, then compose. Never silently drop; every reduction is logged.
-
-## External-tool resume (#1 — persist the suspended step)
-
-Re-entering the executor on an external-tool result needs the suspended execution
-context, which the current `PendingMarker` (tool name/args + step name) does not
-carry. The suspended state MUST persist:
-
-- the **full `Step`** (name, instructions, `requires`, any model hint),
-- the **message transcript** accumulated in the executor's tool loop up to
-  suspension,
-- the external `{toolName, args, extId, position}`.
-
-On resume: rebuild the executor context from the persisted transcript, inject the
-external result, **re-run the executor → reviewer** (the normal per-step path).
-The external result thus gets the same review discipline; an external soft
-failure becomes `status:'failed'` → replan (no bypass to `plannerPrivate`).
-
-## Idempotency
-
-Controller does not dedupe or track existence. Re-issued create → the tool
-reports "already exists" → reviewer marks `exists` → advance. Update/delete/
-activate idempotency is the tool's contract (see Durability).
-
-## Durability & replay
-
-Tool side-effect, `writeArtifact`, and `persistBundle` are separate ops →
-**at-least-once**. READ replays are harmless. Side-effecting WRITE ops must be
-**tool-idempotent** (create covered by "exists"; update/delete/activate are the
-tool's contract). **Exactly-once for non-idempotent side effects is out of
-scope** (separate WRITE-durability spec: side-effect journal / pre-commit
-barrier). The replay window is a documented limitation here.
+- Controller does not dedupe/track existence; re-issued create → tool reports
+  "already exists" → reviewer marks `exists` → advance. Update/delete/activate
+  idempotency is the tool's contract.
+- **At-least-once** (tool effect, write, persist are separate ops). READ replays
+  harmless; side-effecting WRITE must be tool-idempotent. **Exactly-once for
+  non-idempotent side effects is out of scope** (separate WRITE-durability spec);
+  the replay window is a documented limitation.
 
 ## What changes vs the current code
 
-- New **reviewer** subagent role + per-step executor→reviewer flow; `runStep`
-  outcome comes from the reviewer, not `res.kind`/self-report.
-- `SessionBundle`: durable `runId`; explicit run state + atomic run-scoped RESET
-  on a fresh request; persist full suspended-step state (Step + transcript) in
-  the external-tool `PendingMarker`.
-- `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId`/`seq`/`status` (or
-  generic tags) + filter/order; backend filter or fetch-then-filter fallback.
-- `writeArtifact`: tag `{runId, seq, status}`; reviewer updates `status` +
-  accepted/remainder.
-- `plannerPrivate += {seq, status, note}` (payload-free), not `res.content`.
-- Single finalizer stage after `done` for BOTH planners, reading the run-scoped
-  full set under the budget policy; `done` no longer carries the answer.
-- Planner emits `requires` manifests; recall records per-reference evidence for
-  the reviewer.
+- New **reviewer** + **finalizer** roles (config + factory deps + usage); reviewer
+  always-on, tool-less by default.
+- `runStep`: executor result held in memory → reviewer → **single** `writeArtifact`
+  (post-review, final status, approved content); outcome from the reviewer.
+- Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
+  (advance accepted + replan remainder); `lastOutcome` type extended.
+- `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
+- Single finalizer after `done` for BOTH planners, reading run-scoped approved
+  results under the budget; `done` carries no answer.
+- `SessionBundle`: durable `runId` + run-state + atomic run-scoped RESET; persist
+  full suspended-step state in the external-tool `PendingMarker`.
+- `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
+  backend filter or fetch-then-filter.
 
 ## Empirical basis
 
@@ -209,17 +220,16 @@ barrier). The replay window is a documented limitation here.
 
 ## Open questions
 
-- Reviewer model/cost: always-on vs scoped to side-effecting/complex steps; can a
-  cheaper model judge reliably; does the reviewer ever verify via a tool read.
-- Stricter controller-side input-presence evidence (beyond semantic recall hit).
-- Envelope/transcript size: persisting the executor transcript for resume can be
-  large — bound/summarize it.
-- Finalizer relevance ranking within budget; distinguishing report-relevant from
-  scaffolding results.
+- Reviewer model tier vs cost (always-on = +1 call/step); can a cheaper model
+  judge reliably; when does the reviewer verify via a read-only tool.
+- Stricter controller-side input-presence evidence (beyond a recall hit).
+- Persisted executor transcript size for resume — bound/summarize.
+- Finalizer relevance ranking within budget; approved-extract sizing for partials.
 - `plannerPrivate` growth on long runs.
+- Whether `finalizer` should be its own role or always reuse the planner.
 
 ## Out of scope
 
 - Exactly-once / non-idempotent WRITE durability (separate spec).
-- Target-model-aware step detail + per-step model routing (V3) — related,
-  separate.
+- Raw-vs-approved audit trail (extra immutable record).
+- Target-model-aware step detail + per-step model routing (V3) — related, separate.
