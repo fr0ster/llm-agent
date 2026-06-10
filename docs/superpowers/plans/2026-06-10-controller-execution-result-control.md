@@ -230,14 +230,18 @@ In `packages/llm-agent-libs/src/rag/knowledge-rag.ts`, inside `matches()` (after
   if (f.status !== undefined && m.status !== f.status) return false;
 ```
 
-- [ ] **Step 3b: Apply the filter BEFORE the top-K cap in `query()`**
+- [ ] **Step 3b: Apply the filter BEFORE the top-K cap in `query()` — via the guaranteed exhaustive scan**
 
 The current `query()` (`knowledge-rag.ts:69-81`) caps with `semanticQuery(…, k)`
 THEN filters — so in a multi-run session foreign-run hits can fill the top-K before
-the `runId` filter runs (spec: the `runId` filter must be applied PRE-cap). Replace
-the `query()` body with a fetch-then-filter-then-cap that over-fetches when a
-filter is present (`InMemoryKnowledgeBackend.semanticQuery(sid, text, undefined)`
-returns the full candidate pool; native backends apply the filter in the query):
+the `runId` filter runs (spec: the `runId` filter must be applied PRE-cap). We
+canNOT rely on `semanticQuery(…, undefined)` returning the full pool — a production
+backend (e.g. Jsonl → semantic adapter) may apply its OWN default cap (#1/plan-7).
+So when a filter is present, use the **exhaustive durable `scan()`** (guaranteed
+complete — the same source `list()` uses) → filter → most-recent top-K. This is the
+spec's "exact-list(runId)-then-rank-locally" fallback (recency is the local rank;
+native semantic backends MAY override with in-query filtering + relevance ranking).
+Replace the `query()` body:
 
 ```ts
   async query(
@@ -246,30 +250,35 @@ returns the full candidate pool; native backends apply the filter in the query):
   ): Promise<readonly KnowledgeEntry[]> {
     const filter = opts?.filter;
     const k = opts?.k;
-    // Pre-cap filtering: with a filter, fetch the FULL candidate pool, filter by
-    // metadata, THEN take the top-K — so a runId/seq filter is never starved by
-    // foreign-run artifacts crowding the cap.
-    const candidates = await this.backend.semanticQuery(
-      this.sessionId,
-      text,
-      filter ? undefined : k,
-    );
-    const filtered = filter
-      ? candidates.filter((e) => matches(e.metadata, filter))
-      : candidates;
-    return k !== undefined ? filtered.slice(0, k) : filtered;
+    if (filter) {
+      // GUARANTEED pre-cap run-scoping: exhaustive durable scan (NEVER the semantic
+      // cap, which a production backend may bound), filter, then most-recent K.
+      // Correctness (never miss this run's artifacts) over semantic ranking — run
+      // artifact counts are bounded.
+      const durable = await this.backend.scan(this.sessionId);
+      const source = durable.length >= this.mirror.length ? durable : this.mirror;
+      const matched = source
+        .filter((e) => matches(e.metadata, filter))
+        .slice()
+        .sort((a, b) => b.metadata.createdAt.localeCompare(a.metadata.createdAt));
+      return k !== undefined ? matched.slice(0, k) : matched;
+    }
+    // No filter → unchanged semantic path.
+    return this.backend.semanticQuery(this.sessionId, text, k);
   }
 ```
 
-Add a test in `knowledge-rag-filter.test.ts` proving a runId filter survives the
-cap: write `k+2` foreign-run `step-result`s then 1 target-run entry; `query(text,
-{ k: 3, filter: { runId: 'R-target' } })` must return the target entry (it would be
-crowded out by a post-cap filter).
+Add a test in `knowledge-rag-filter.test.ts` proving the runId filter survives the
+cap INDEPENDENTLY of the backend's semantic cap: use a stub backend whose
+`semanticQuery` always returns `[]` while `scan` returns all entries; write `k+2`
+foreign-run `step-result`s + 1 target-run entry; `query(text, { k: 3, filter: {
+runId: 'R-target' } })` must STILL return the target entry (proving it came from the
+scan path, not the capped semantic path).
 
 - [ ] **Step 4: Build the lower packages, then run the test**
 
 Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts`
-Expected: build OK, test PASS (1 test). If build fails because `status` union is duplicated, ensure the metadata and filter unions are written identically.
+Expected: build OK, tests PASS. If build fails because the `status` union is duplicated, ensure the metadata and filter unions are written identically.
 
 - [ ] **Step 5: Commit**
 
@@ -1089,15 +1098,22 @@ describe('reduceToBudget', () => {
     const body = reduceToBudget(many, 1000, budget);
     assert.ok(body.length <= budget, `body ${body.length} <= budget ${budget}`);
   });
-  it('logs each reduction and never silently drops (explicit marker on hard-cut)', () => {
+  it('keeps a compact extract of EVERY result for a feasible budget (none dropped) and logs reductions', () => {
     const logs: string[] = [];
     const body = reduceToBudget(
-      [{ seq: 0, content: 'A'.repeat(5000) }, { seq: 1, content: 'B'.repeat(5000) }],
-      1000, 200, (m) => logs.push(m),
+      [{ seq: 0, content: 'A'.repeat(5000) }, { seq: 1, content: 'B'.repeat(5000) }, { seq: 2, content: 'C'.repeat(5000) }],
+      1000, 900, (m) => logs.push(m),
     );
-    assert.ok(body.length <= 200);
-    assert.ok(logs.length > 0, 'reductions were logged');
-    assert.ok(/overflow/.test(logs.join(' ')));
+    assert.ok(body.length <= 900);
+    // Every result is still represented by its [#seq] header (not dropped).
+    assert.ok(body.includes('[#0]') && body.includes('[#1]') && body.includes('[#2]'),
+      'all three results kept a compact extract');
+    assert.ok(logs.length > 0 && /overflow/.test(logs.join(' ')), 'reductions logged');
+  });
+
+  it('never returns more than budget even when budget is below a single marker', () => {
+    const body = reduceToBudget([{ seq: 0, content: 'X'.repeat(1000) }], 1000, 5);
+    assert.ok(body.length <= 5, `tiny-budget body ${body.length} <= 5`);
   });
 });
 
@@ -1179,16 +1195,21 @@ export function orderAndTruncate(
     );
 }
 
-/** Compose the finalizer body, reducing to fit `budget`. Two passes (spec
- *  "summarize largest/oldest into compact extracts; never silently drop; log
- *  every reduction"):
+/** Compose the finalizer body, reducing to fit `budget` as a map-reduce that keeps
+ *  a compact representation of EVERY result (spec: "summarize largest/oldest into
+ *  compact extracts; never silently drop; log every reduction"):
  *  1. Reduce the LARGEST result's cap (halving, logged) until the body fits or
  *     every result is at the per-result floor.
- *  2. HARD bound: if still over budget (many small results), hard-cut the joined
- *     body to exactly `budget` and append an explicit, non-silent marker naming
- *     how many chars were dropped. This GUARANTEES `result.length <= budget`.
- *  This is a deterministic reduction; a future variant may run an LLM summarizer
- *  per the spec's map-reduce — out of scope here. Pure aside from `log`. */
+ *  2. If still over budget (many results), HARD-distribute the budget evenly: each
+ *     result keeps a compact head extract sized to its fair per-result share (with
+ *     a `…[truncated]` marker) — so NO result is dropped, every `[#seq]` is still
+ *     present. The share is sized to account for prefix+marker+separator overhead
+ *     so the joined body is <= budget by construction.
+ *  3. Absolute guarantee: a final `slice(0, budget)` covers pathologically tiny
+ *     budgets (smaller than N compact placeholders) — never returns > budget
+ *     (closes the marker-longer-than-budget bug, #3/plan-7).
+ *  Deterministic; an LLM-summarizer map-reduce is a future variant. Pure aside
+ *  from `log`. */
 export function reduceToBudget(
   results: readonly ApprovedResult[],
   perResultCap: number,
@@ -1196,16 +1217,16 @@ export function reduceToBudget(
   log?: (msg: string) => void,
 ): string {
   const FLOOR = 80;
+  const SEP = '\n\n';
   const ordered = results.slice().sort((a, b) => a.seq - b.seq);
+  if (ordered.length === 0) return '';
   const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
-  const render = () =>
-    ordered
-      .map((r) => {
-        const cap = caps.get(r.seq)!;
-        const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
-        return `[#${r.seq}] ${c}`;
-      })
-      .join('\n\n');
+  const chunk = (r: ApprovedResult) => {
+    const cap = caps.get(r.seq)!;
+    const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
+    return `[#${r.seq}] ${c}`;
+  };
+  const render = () => ordered.map(chunk).join(SEP);
   let body = render();
   // Pass 1: halve the largest reducible result until fit or all at floor.
   while (body.length > budget) {
@@ -1225,14 +1246,19 @@ export function reduceToBudget(
     log?.(`finalizer overflow: reduced result #${target} cap → ${next} chars`);
     body = render();
   }
-  // Pass 2: hard guarantee. If still over budget, cut the joined body and mark it
-  // explicitly (never a silent drop).
+  // Pass 2: even per-result share so EVERY result keeps a compact extract.
   if (body.length > budget) {
-    const marker = `\n\n[finalizer overflow: body hard-cut to ${budget} chars]`;
-    const keep = Math.max(0, budget - marker.length);
-    const dropped = body.length - keep;
-    log?.(`finalizer overflow: hard-cut body, ${dropped} chars dropped (explicit marker)`);
-    body = body.slice(0, keep) + marker;
+    const n = ordered.length;
+    const overheadPerResult = `[#${ordered[ordered.length - 1].seq}] `.length + TRUNC_MARKER.length + SEP.length;
+    const share = Math.max(0, Math.floor(budget / n) - overheadPerResult);
+    for (const r of ordered) caps.set(r.seq, share);
+    log?.(`finalizer overflow: even per-result share ${share} chars across ${n} results (none dropped)`);
+    body = render();
+  }
+  // Pass 3: absolute guarantee for a budget too small even for N placeholders.
+  if (body.length > budget) {
+    log?.(`finalizer overflow: budget ${budget} below N compact placeholders — hard slice`);
+    body = body.slice(0, budget);
   }
   return body;
 }
@@ -1271,7 +1297,7 @@ export class LlmFinalizer implements IFinalizer {
 - [ ] **Step 4: Run, verify it passes**
 
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/finalizer.test.ts`
-Expected: PASS (4 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
