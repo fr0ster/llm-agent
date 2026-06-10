@@ -153,8 +153,15 @@ const { agent, close } = await plugin.build(cfg, serverCtx);
 //     the embedder requirement, and returns { handler }.
 import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
 const { handler } = await new ControllerFactory().build(config, {
-  // role ∈ 'evaluator' | 'planner' | 'executor'
-  makeRoleLlm: (role) => makeLlm(config.subagents[role]),
+  // role ∈ 'evaluator' | 'planner' | 'executor' (typed as string by the base
+  // deps; resolve it explicitly so it stays strict-safe).
+  makeRoleLlm: (role) => {
+    switch (role) {
+      case 'planner':  return makeLlm(config.subagents.planner);
+      case 'executor': return makeLlm(config.subagents.executor);
+      default:         return makeLlm(config.subagents.evaluator);
+    }
+  },
   callMcp, backend, knowledgeRagFor, embedder, selectTools,
   // model ids for usage attribution are derived from the resolved LLMs.
 });

@@ -13,7 +13,9 @@ import {
  * cyclic-ReAct executor runs each step.
  * Preset: `{ planner: 'llm', executor: 'cyclic-react' }`.
  */
-export class PlannedFactory implements IPipelineFactory<StepperFactoryConfig> {
+export class PlannedFactory
+  implements IPipelineFactory<StepperFactoryConfig, StepperFactoryDeps>
+{
   readonly kind = 'planned' as const;
 
   build(

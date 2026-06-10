@@ -57,7 +57,9 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
  * const handle = await builder.withStepperCoordinator(handler).build();
  * ```
  */
-export class ControllerFactory implements IPipelineFactory<ControllerConfig> {
+export class ControllerFactory
+  implements IPipelineFactory<ControllerConfig, ControllerFactoryDeps>
+{
   readonly kind = 'controller' as const;
 
   async build(

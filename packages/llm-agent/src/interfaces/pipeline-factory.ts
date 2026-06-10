@@ -26,11 +26,16 @@ export interface PipelineFactoryDepsBase {
   ) => Promise<string>;
 }
 
-/** A factory builds one pipeline variant's coordinator from a typed config. */
-export interface IPipelineFactory<TConfig = unknown> {
+/**
+ * A factory builds one pipeline variant's coordinator from a typed config.
+ * `TDeps` lets a factory declare the concrete (super-base) deps shape it needs,
+ * so callers pass exactly what `build` consumes instead of the bare base (which
+ * would leave factory-specific deps `undefined`). Defaults to the base.
+ */
+export interface IPipelineFactory<
+  TConfig = unknown,
+  TDeps extends PipelineFactoryDepsBase = PipelineFactoryDepsBase,
+> {
   readonly kind: PipelineFactoryKind;
-  build(
-    config: TConfig,
-    deps: PipelineFactoryDepsBase,
-  ): Promise<BuiltCoordinator>;
+  build(config: TConfig, deps: TDeps): Promise<BuiltCoordinator>;
 }

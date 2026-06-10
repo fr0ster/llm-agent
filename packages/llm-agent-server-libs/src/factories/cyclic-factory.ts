@@ -77,7 +77,9 @@ export async function buildStepperCoordinator(
  * Cyclic Stepper variant: no planner, a single cyclic-ReAct executor loop.
  * Preset: `{ planner: 'none', executor: 'cyclic-react' }`.
  */
-export class CyclicFactory implements IPipelineFactory<StepperFactoryConfig> {
+export class CyclicFactory
+  implements IPipelineFactory<StepperFactoryConfig, StepperFactoryDeps>
+{
   readonly kind = 'cyclic' as const;
 
   build(

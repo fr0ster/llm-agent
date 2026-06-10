@@ -25,6 +25,10 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   deps). Exported from `@mcp-abap-adt/llm-agent-server-libs/controller` and the
   factories barrel; the `controller` plugin now assembles through it, so the YAML
   and code paths share one route. See `docs/PIPELINES.md` → "Embedding in code".
+  `IPipelineFactory` gained a second generic — `IPipelineFactory<TConfig, TDeps
+  extends PipelineFactoryDepsBase = PipelineFactoryDepsBase>` — so each factory
+  declares the concrete deps `build` consumes (the Stepper/controller factories
+  now type their richer deps instead of relying on method bivariance).
 
 ## [19.1.1] — 2026-06-10
 
