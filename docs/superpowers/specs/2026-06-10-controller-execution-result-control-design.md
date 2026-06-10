@@ -126,13 +126,21 @@ recall.
     **replan** (not re-execution of the failed step). The retry reuses the same
     `seq`, so failed + retry artifacts share `(runId, seq)` and dedup-by-precedence
     keeps the eventual success.
-- **Resume reconciliation, NOT latest-wins (#2).** On resume of an active run,
-  route by `inFlightStep.phase` FIRST: `awaiting-replan` → go to **replan** (the
-  step already failed; do not re-execute it). For `executing`: latest-write-wins
-  is wrong (a first attempt could write `ok` then crash, a replay finish `failed`,
-  hiding the success), so the controller **does an exact `get(runId, seq)` for an
-  approved artifact** (`status ∈ {ok, exists, partial}`); if one exists, **adopt
-  it and commit — do NOT re-run**. Only if none exists is the step re-executed. As a backstop for any remaining
+- **Resume reconciliation, by RESOLVED ARTIFACT, not by phase alone (#1).** The
+  artifact write and the `phase` persist are separate, so a crash AFTER
+  `writeArtifact(failed)` but BEFORE persisting `phase:'awaiting-replan'` leaves
+  `phase:'executing'` with a durable FAILED artifact. So resume does NOT trust
+  `phase` alone — it does an exact `get(runId, seq)` and routes by the **resolved
+  artifact status**, reconciled by precedence (`ok/exists > partial > failed`):
+  - an **approved** result (`ok`/`exists`/`partial`) → **adopt + commit**, do not
+    re-run (closes the "wrote ok then crashed, replay would fail" case);
+  - a **resolved `failed`** artifact (no approved one) → move to
+    **`awaiting-replan` → replan**, do NOT re-execute the failed step (closes the
+    write-failed-before-phase window);
+  - **no artifact** at `(runId, seq)` → the step truly did not complete →
+    re-execute.
+  `phase:'awaiting-replan'` (when it was persisted) is consistent with this and
+  still routes to replan. As a backstop for any remaining
   duplicates, read-side dedup resolves a `(runId, seq)` by **outcome precedence**
   `ok/exists > partial > failed` (tie-break latest), never bare chronology.
   Committed seqs (`< nextSeq`) are authoritative and never re-run.
@@ -192,13 +200,19 @@ request across suspend/resume legs) is scoped by a durable `runId`. Bundle state
 - **idle/terminal** — no active run; **active** — run in progress; **suspended** —
   awaiting external tool / clarify (`pending` set).
 
+A durable **`runPhase ∈ {planning, executing, finalizing}`** refines `active` so
+recovery is unambiguous even when there is no `inFlightStep` (#2): `planning` (no
+in-flight step yet), `executing` (a step is in flight — `inFlightStep` set),
+`finalizing` (planner returned `done`, `inFlightStep` cleared, finalizer running).
+`runPhase` is persisted on every transition.
+
 Transitions:
 
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
   run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
-  `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none),
-  `originalRequest` (→ the new request; fingerprint re-derived)** — and **mints a
-  fresh `runId`** → active.
+  `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none), `runPhase`
+  (→ planning), `originalRequest` (→ the new request; fingerprint re-derived)** —
+  and **mints a fresh `runId`** → active.
   The reset list is exhaustive precisely so a fresh run cannot inherit the prior
   run's replay state (`nextSeq`/`inFlightStep`) or recovery identity.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
@@ -215,12 +229,16 @@ Transitions:
     content}`, transport metadata dropped). The incoming request is normalized +
     hashed and compared. (The fingerprint is for identity only; the request itself
     is kept for the finalizer.)
-  - Match (token or fingerprint) → **resume from `inFlightStep`** (adopt-or-re-run
-    per the reconciliation above). No match → the crashed run is **abandoned**
+  - Match (token or fingerprint) → **resume by `runPhase`**: `planning` →
+    re-invoke the planner (no in-flight step yet); `executing` → the
+    `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
+    artifact); `finalizing` → **re-run the finalizer** (idempotent — it composes
+    from the durable run-scoped approved results and has no side effects, so a
+    crashed finalize replays safely). No match → the crashed run is **abandoned**
     (logged) → reset → fresh run.
-  So an active-without-pending bundle is never ambiguous: recovered via a stable
-  identity, or explicitly abandoned — never silently continued under the wrong
-  prompt.
+  So an active run — with OR without an `inFlightStep` (e.g. mid-finalize) — is
+  never ambiguous: `runPhase` says what to resume; otherwise it is explicitly
+  abandoned, never silently continued under the wrong prompt.
 
 ## Data backbone & RAG contract changes (#5 prev)
 
@@ -246,8 +264,10 @@ Transitions:
     similarity → top-K.
   Within the run's candidate set, duplicates of a `(runId, seq)` are bounded by
   `maxStepAttempts`, so a single **bounded over-fetch** `k' = k ×
-  (maxStepAttempts + 1)` → dedup-by-precedence → take `k` distinct `(runId, seq)`.
-  No cursor/pagination needed. (Optional future: backend `DISTINCT (runId, seq)`.)
+  (maxStepAttempts + 1)` → dedup-by-precedence → take **`min(k, available
+  unique)`** distinct `(runId, seq)` (a run may legitimately have fewer than `k`
+  logical steps). No cursor/pagination needed. (Optional future: backend
+  `DISTINCT (runId, seq)`.)
 - **Exact list/get (NOT semantic) (#3):** an exhaustive metadata query —
   `list(runId)` / `get(runId, seq)` — returning ALL matching artifacts with no
   relevance ranking or top-K. Used by the **finalizer full set**, **resume-adopt**
@@ -359,10 +379,12 @@ mark the step advanced OR failed.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (also the resume token) + run-state +
-  `nextSeq` + `inFlightStep` + durable `originalRequest` (finalizer input; its
+  `runPhase {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
+  {seq,step,attempt,phase}` + durable `originalRequest` (finalizer input; its
   normalized hash is the identity fingerprint) + atomic run-scoped RESET +
-  crash-recovery classification (token/fingerprint, not raw equality); persist
-  full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
+  crash-recovery routed by `runPhase` (token/fingerprint identity, not raw
+  equality); resume reconciliation by RESOLVED artifact status; persist full
+  suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
