@@ -105,19 +105,23 @@ recall.
   in-flight step is `inFlightStep = { seq, step, attempt, phase }` where
   `phase ∈ {executing, awaiting-replan}`. A replayed (uncommitted) step reuses the
   SAME `seq` (writes land at the same `(runId, seq)`).
-- **`attempt` counts FRESH executions, NOT continuations (#1/13).** `attempt` is
-  incremented+persisted at exactly ONE place: the **start of a FRESH execution —
-  a first dispatch of the step or a replan's revised step (a NEW transcript)**.
-  It is **NOT** incremented when an existing transcript is resumed — neither an
-  **external-tool continuation** (a legitimate step may make several external
-  round-trips) nor a crash-replay that continues a persisted transcript. So a
-  multi-round-trip step does not burn `maxStepAttempts`; round-trips within one
-  transcript are bounded separately by the step's `maxToolCalls`. Because the
-  fresh-attempt increment is persisted BEFORE the LLM call, the durable count
-  survives crashes. The cap **`maxStepAttempts`** aborts a step that keeps
-  starting fresh attempts (crash-loop/retry liveness) AND bounds the duplicate
-  count per `(runId, seq)` — closing unique-K (`maxRetries`/crashes are not the
-  same as continuations).
+- **Three distinct durable counters (#1/14).** A resume is one of three kinds,
+  distinguished by durable state, each with its own bound:
+  - **Fresh execution** (first dispatch / replan's revised step = a NEW
+    transcript) → increments **`attempt`** (persisted BEFORE the LLM call); cap
+    `maxStepAttempts`. This is what bounds the duplicate count per `(runId, seq)`
+    (closing unique-K) and retry/replan liveness.
+  - **External-tool continuation** (`pending` is an external-tool marker — a
+    legitimate step making several external round-trips) → increments NEITHER
+    `attempt` NOR the crash counter; bounded by the step's `maxToolCalls`.
+  - **Crash-replay** (`phase:'executing'`, NO external `pending`, transcript
+    exists) → increments a separate durable **`resumeCount`** (persisted on
+    re-entry, BEFORE re-executing); cap `maxStepResumes` → abort. This is what
+    bounds a process that **keeps crashing before the artifact write on one
+    attempt** (the gap `attempt` alone left open). `resumeCount` resets to 0 on
+    commit / on a fresh attempt.
+  `pending` cleanly separates the continuation case from the crash-replay case, so
+  legitimate external round-trips are never charged the crash budget.
 - **`inFlightStep` lifecycle by outcome (#3), one atomic write each:**
   - **advanced (`ok`/`exists`) / partial:** commit at `seq` → `nextSeq` advances,
     `inFlightStep` clears. (A `partial` remainder is planned at the NEXT `seq`; the
@@ -232,14 +236,20 @@ Transitions:
   field would be wiped by the next run's reset, breaking the TTL promise). Replay
   returns whichever kind was stored (success → answer, error → error), never an
   undefined `finalAnswer`. The store is GC'd by TTL.
-- **Repeat request after terminal — replay needs an EXPLICIT key, not a
-  fingerprint (#2):** terminal replay is gated on an **explicit idempotency key /
-  resume `runId`** the client passes back; a match → **replay `terminalOutcome`**
-  (no new run). A **fingerprint match alone does NOT replay** — it cannot tell a
-  lost-response retry from an intentional re-run of the same prompt, so without
-  the explicit key a repeat starts a **fresh run**. A `newRun` flag forces a fresh
-  run even with the key; terminal outcomes are kept under a **retention TTL** so
-  replay is bounded, not indefinite.
+- **Classification ORDER — terminal store FIRST (#2/14):** because the terminal
+  store survives later runs, an incoming request carrying an **explicit
+  idempotency key / `runId`** is looked up **in the terminal store BEFORE any
+  current-bundle classification**. If a non-expired `terminalOutcome` is found →
+  **replay it** (success → answer, error → error) and STOP — this is independent
+  of, and does not disturb, whatever run the bundle is currently in (a different
+  active run keeps going). Only if there is no explicit key, or no live terminal
+  entry for it, does classification fall through to the current bundle
+  (active-resume / suspended / fresh).
+- **Replay needs an EXPLICIT key, not a fingerprint (#2):** a **fingerprint match
+  alone does NOT replay** — it cannot tell a lost-response retry from an
+  intentional re-run of the same prompt, so without the explicit key a repeat
+  starts a **fresh run**. A `newRun` flag forces a fresh run even with the key;
+  the store is kept under a **retention TTL** so replay is bounded, not indefinite.
 - **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
   the bundle `active` but not `suspended`. Classification does NOT use raw request
   equality (unreliable for `Message[]`, whitespace, transport re-delivery).
@@ -393,21 +403,26 @@ mark the step advanced OR failed.
 - New `IReviewer` + `IFinalizer` interfaces; handler depends on them; the factory
   builds the default LLM impls from the `reviewer`/`finalizer` config. Reviewer
   always-on, tool-less by default; usage attributed to `reviewer`/`finalizer`.
-- `runStep`: durable `nextSeq` + `inFlightStep {seq, step, attempt, phase}`;
-  `attempt` incremented at ONE point (pre-execute dispatch); `failed` first
-  persists `phase:'awaiting-replan'`, then (on planner response) sets the revised
-  step at the same `seq` with `phase:'executing'`; `advanced`/`partial` commit +
-  advance `nextSeq`. On resume: `awaiting-replan` → replan; `executing` → exact
-  `get(runId, seq)` → adopt-or-re-run. Executor result held in memory → reviewer →
+- `runStep`: durable `nextSeq` + `inFlightStep {seq, step, attempt, resumeCount,
+  phase}`; `attempt` increments ONLY on a FRESH execution (first dispatch /
+  replan), NOT on external continuation or crash-replay; a crash-replay (executing,
+  no external `pending`) increments the separate `resumeCount` (cap
+  `maxStepResumes`); external continuations are bounded by `maxToolCalls`. `failed`
+  first persists `phase:'awaiting-replan'`, then (on planner response) sets the
+  revised step at the same `seq` with `phase:'executing'`; `advanced`/`partial`
+  commit + advance `nextSeq`. On resume: `awaiting-replan` → replan; `executing` →
+  exact `get(runId, seq)` → adopt-or-re-run. Executor result held in memory → reviewer →
   **single** `writeArtifact` post-review; reads dedup `(runId, seq)` by outcome
   precedence; semantic recall filters `runId` before the bounded over-fetch
   `k×(maxStepAttempts+1)`.
 - Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
-- New budgets `maxStepAttempts` (durable per-step attempt cap — bounds dups +
-  crash-loop liveness), `maxReviewRetries`, `maxFinalizeRetries`; judge-failure
-  escalation (abort-with-control-error, not silent advance/fail);
+- New budgets `maxStepAttempts` (durable fresh-attempt cap — bounds dups +
+  retry/replan liveness), `maxStepResumes` (durable crash-replay cap — bounds a
+  crash-loop on one attempt), `maxToolCalls` (external round-trips per
+  transcript), `maxReviewRetries`, `maxFinalizeRetries`; judge-failure escalation
+  (abort-with-control-error, not silent advance/fail);
   `onFinalizeExhausted: error|best-effort` (default `error`).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
