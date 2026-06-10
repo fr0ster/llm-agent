@@ -260,10 +260,12 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
     rule:** the incoming reply is the answer; if it is an **affirmation**
     (`isAffirmation` — "yes"/"так"/…) AND a `proposedTarget` exists → `goal =
     proposedTarget`; **otherwise the reply itself becomes the `goal` verbatim**
-    (treated as a refinement). EITHER way the `goal` is now set, `pending` is
-    cleared, and the run advances to `planning` — it does **NOT** re-invoke the
-    evaluator and does **NOT** reset the run (a bare re-evaluation would loop the
-    clarify forever, since the goal would still be empty). Recovery while
+    (treated as a refinement). EITHER way, ONE atomic bundle write sets the `goal`,
+    clears `pending`, flips `runState → active`, and advances `runPhase → planning`
+    (#1/22 — never suspended-with-pending:none, never a goal without its phase) — it
+    does **NOT** re-invoke the evaluator and does **NOT** reset the run (a bare
+    re-evaluation would loop the clarify forever, since the goal would still be
+    empty). Recovery while
     `suspended` with a `clarify` marker takes the normal suspended-resume path
     (resume on the consumer's reply) — NOT an evaluator re-call, so `evalResumeCount`
     is not charged.
@@ -375,10 +377,11 @@ Transitions:
        STOP — independent of the current bundle; a different active run keeps
        going;
      - else the key **equals the current bundle's `runId` AND `runState ∈
-       {active, suspended}`** → **resume** the current run (by `runPhase`). The
-       run-state guard matters (#1/16): if the current run is already TERMINAL
-       (its store entry expired/GC'd), the key must NOT resume by a stale
-       `runPhase`;
+       {active, suspended}`** → **resume** the current run via the **three-stage
+       recovery algorithm** (terminal-store → consume `pending` → route by
+       `runPhase`, defined below — #3/22). The run-state guard matters (#1/16): if
+       the current run is already TERMINAL (its store entry expired/GC'd), the key
+       must NOT resume by a stale `runPhase`;
      - else → **not-found / expired** error. It does NOT fall through to
        fingerprint or to resuming a non-active run — a stale/expired key must
        never accidentally hijack a different (or terminated) run.
@@ -417,16 +420,29 @@ Transitions:
        phase. (Generalizes the finalizing-only check of #2/19 to all phases, closing
        the "crash after terminal write, before bundle flip → recovery re-runs an
        active phase" window.)
-    2. **Consume `pending` BEFORE `runPhase` (#2/21).** If `pending` is set, the
-       incoming message is the awaited reply, NOT a trigger to re-enter the phase.
-       Dispatch by `pending.kind`: `external` → record the tool result, clear
-       `pending`, continue the loop; `clarify` → apply the deterministic
-       clarify-resume rule defined in the evaluating phase (affirmation →
-       `proposedTarget`, else reply-verbatim → `goal`; then → `planning`), clear
-       `pending`. Only after `pending` is consumed (or absent) does
-       routing fall through to `runPhase`. Without this, a `clarify`-suspended run
-       (still `runPhase:'evaluating'`) would wrongly re-invoke the evaluator instead
-       of consuming the user's answer.
+    2. **Consume `pending` BEFORE `runPhase` (#2/21), with an atomic
+       suspended→active flip (#1/22).** If `pending` is set, the run is `suspended`
+       and the resume must NOT leave it `suspended` with `pending:none` (an invalid,
+       ambiguously-recoverable state) — clearing `pending` and setting
+       `runState → active` are ONE atomic bundle write. Dispatch by `pending.kind`:
+       - **`clarify`** → the incoming message IS the user's answer. ONE atomic write
+         applies the deterministic clarify-resume rule from the evaluating phase
+         (affirmation → `goal=proposedTarget`, else reply-verbatim → `goal`),
+         clears `pending`, sets `runState → active`, AND advances
+         `runPhase → planning` — all together, so recovery never sees a goal without
+         the matching phase/state.
+       - **`external`** → the awaited thing is the TOOL RESULT keyed by `extId`, NOT
+         the incoming message (#2/22). A plain re-request must never be mis-recorded
+         as a tool result. So: **look up the result by `extId`** (from the external
+         result/callback store). If found → ONE atomic write records it, clears
+         `pending`, sets `runState → active`; then re-run executor → reviewer
+         (normal path). If NOT yet available → the tool call is still outstanding:
+         **re-issue the SAME tool call (same `extId`, idempotent) and keep the run
+         `suspended`** — do not consume anything, do not advance.
+       Only after `pending` is consumed (or absent, run already `active`) does
+       routing fall through to `runPhase`. Without the pending-first rule a
+       `clarify`-suspended run (still `runPhase:'evaluating'`) would wrongly
+       re-invoke the evaluator instead of consuming the user's answer.
     3. **Route by `runPhase`** (no terminal entry, no `pending`):
        `evaluating` → re-invoke the evaluator (no goal yet), charging
        `evalResumeCount` (cap `maxEvalResumes`) only if `evalCallInFlight` proves a
@@ -523,10 +539,16 @@ role. (Open: a stricter controller-side match threshold.)
 The current `PendingMarker` (tool name/args + step name) loses the execution
 context. The suspended state MUST persist: the **full `Step`** (name,
 instructions, `requires`, model hint), the executor's **message transcript** up
-to suspension, and `{toolName, args, extId, position}`. On resume: rebuild the
-executor context from the transcript, inject the external result, **re-run
-executor → reviewer** (normal path) — no bypass to `plannerPrivate`. An external
-soft failure thus becomes `status:'failed'` → replan.
+to suspension, and `{toolName, args, extId, position}`. On resume: the awaited
+thing is the **tool result keyed by `extId`**, not the resuming message (#2/22).
+**Look it up by `extId`** in the external result/callback store: if NOT yet
+available, the call is still outstanding → **re-issue the SAME tool call (same
+`extId`, idempotent) and stay `suspended`** (never treat the incoming message as a
+result). If available → atomically record it + clear `pending` + `runState →
+active`, rebuild the executor context from the transcript, inject the external
+result, and **re-run executor → reviewer** (normal path) — no bypass to
+`plannerPrivate`. An external soft failure thus becomes `status:'failed'` →
+replan.
 
 ## Idempotency & durability
 
@@ -632,7 +654,11 @@ mark the step advanced OR failed.
   terminal store FIRST → adopt-without-re-call (#2/19, #1/21). Active-run resume
   is a fixed order: **terminal-store → consume `pending` → route by `runPhase`**
   (#2/21), so a `clarify`/`external`-suspended run consumes the reply instead of
-  re-entering its phase. Crash-recovery routed by
+  re-entering its phase. Consuming `pending` is ONE atomic write that also flips
+  `runState suspended → active` (never `suspended` with `pending:none`); `external`
+  consumes the tool result looked up by `extId` (re-issue the same call + stay
+  suspended if not yet available), NOT the incoming message (#1/22, #2/22).
+  Crash-recovery routed by
   `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
   artifact status; persist full suspended-step state in the external-tool
