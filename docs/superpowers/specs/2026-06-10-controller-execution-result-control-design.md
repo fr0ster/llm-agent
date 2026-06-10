@@ -148,7 +148,7 @@ recall.
   top-K and crowd out other steps. Since duplicates are bounded by
   `maxStepAttempts` (above), semantic recall does a **single bounded over-fetch**
   (`k' = k × (maxStepAttempts + 1)`) → dedup `(runId, seq)` by the precedence
-  above → take K distinct steps. This is the ONE normative behavior (no
+  above → take `min(k, available unique)` distinct steps. This is the ONE normative behavior (no
   pagination/refill). (See the retrieval-primitives definition under the data
   backbone.)
 
@@ -216,7 +216,15 @@ Transitions:
   The reset list is exhaustive precisely so a fresh run cannot inherit the prior
   run's replay state (`nextSeq`/`inFlightStep`) or recovery identity.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
-- **`done` (finalizer composed) or abort:** → terminal; next request resets.
+- **`done` (finalizer composed):** persist the terminal outcome durably —
+  `{ runId, originalRequest fingerprint, finalAnswer }` — then → terminal. (Abort
+  → terminal with an error outcome, no `finalAnswer`.)
+- **Repeat request after terminal (#1 — idempotent response replay):** if the new
+  request's identity (resume token `runId` or fingerprint) **matches the terminal
+  run**, **return the stored `finalAnswer`** — do NOT start a new run (the HTTP
+  response may simply have been lost; re-running would repeat the pipeline and its
+  side effects). Only a request that does NOT match the terminal run resets →
+  fresh run.
 - **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
   the bundle `active` but not `suspended`. Classification does NOT use raw request
   equality (unreliable for `Message[]`, whitespace, transport re-delivery).
@@ -229,13 +237,17 @@ Transitions:
     content}`, transport metadata dropped). The incoming request is normalized +
     hashed and compared. (The fingerprint is for identity only; the request itself
     is kept for the finalizer.)
-  - Match (token or fingerprint) → **resume by `runPhase`**: `planning` →
+  - Match (token or fingerprint) → if the run is already **terminal**, replay the
+    stored `finalAnswer` (above); otherwise **resume by `runPhase`**: `planning` →
     re-invoke the planner (no in-flight step yet); `executing` → the
     `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
-    artifact); `finalizing` → **re-run the finalizer** (idempotent — it composes
-    from the durable run-scoped approved results and has no side effects, so a
-    crashed finalize replays safely). No match → the crashed run is **abandoned**
-    (logged) → reset → fresh run.
+    artifact); `finalizing` → **re-run the finalizer**, bounded by a **durable
+    `finalizeAttempt`** persisted+incremented BEFORE the call (same pattern as
+    `inFlightStep.attempt`) so a crash-loop in `finalizing` cannot bypass
+    `maxFinalizeRetries` (exceeded → `onFinalizeExhausted`). The finalizer is
+    otherwise idempotent (composes from durable approved results, no side
+    effects), so replay within budget is safe. No match → the crashed run is
+    **abandoned** (logged) → reset → fresh run.
   So an active run — with OR without an `inFlightStep` (e.g. mid-finalize) — is
   never ambiguous: `runPhase` says what to resume; otherwise it is explicitly
   abandoned, never silently continued under the wrong prompt.
@@ -345,9 +357,11 @@ mark the step advanced OR failed.
   guess. Escalate: **abort the run with a control error** ("step <seq> outcome
   unverifiable") rather than advancing or failing the step. (A future option: a
   fallback `IReviewer` — e.g. a conservative deterministic judge.)
-- **Finalizer error:** retry within `maxFinalizeRetries`; on exhaustion the
-  behavior is a **single explicit config enum** `onFinalizeExhausted: 'error' |
-  'best-effort'` — **default `'error'`** (terminal control error, deterministic).
+- **Finalizer error:** retry within `maxFinalizeRetries`, counted by a **durable
+  `finalizeAttempt`** persisted+incremented BEFORE each call (so crash-replays in
+  `runPhase:'finalizing'` cannot bypass the budget). On exhaustion the behavior is
+  a **single explicit config enum** `onFinalizeExhausted: 'error' | 'best-effort'`
+  — **default `'error'`** (terminal control error, deterministic).
   `'best-effort'` composes from the already-approved results with an explicit
   "incomplete" marker. Either way: never a confabulated completion, and the
   terminal state is well-defined per the chosen value.
@@ -378,13 +392,14 @@ mark the step advanced OR failed.
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
-- `SessionBundle`: durable `runId` (also the resume token) + run-state +
-  `runPhase {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
-  {seq,step,attempt,phase}` + durable `originalRequest` (finalizer input; its
-  normalized hash is the identity fingerprint) + atomic run-scoped RESET +
-  crash-recovery routed by `runPhase` (token/fingerprint identity, not raw
-  equality); resume reconciliation by RESOLVED artifact status; persist full
-  suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
+- `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
+  {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
+  {seq,step,attempt,phase}` + `finalizeAttempt` + durable `originalRequest`
+  (finalizer input; normalized hash = identity fingerprint) + terminal
+  `{runId, finalAnswer}` for idempotent response replay + atomic run-scoped RESET
+  + crash-recovery routed by `runPhase` (token/fingerprint identity, not raw
+  equality) with terminal-replay; resume reconciliation by RESOLVED artifact
+  status; persist full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
