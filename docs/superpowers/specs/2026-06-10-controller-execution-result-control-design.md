@@ -102,8 +102,8 @@ recall.
 
 - **Stable `seq` + durable attempt bound (#1).** `planCursor` exists only for
   adaptive. Instead, a durable monotonic **`nextSeq`** lives in the bundle, and the
-  in-flight step is `inFlightStep = { seq, step, attempt, phase }` where
-  `phase ∈ {executing, awaiting-replan}`. A replayed (uncommitted) step reuses the
+  in-flight step is `inFlightStep = { seq, step, attempt, resumeCount, phase }`
+  where `phase ∈ {executing, awaiting-replan}`. A replayed (uncommitted) step reuses the
   SAME `seq` (writes land at the same `(runId, seq)`).
 - **Three distinct durable counters (#1/14).** A resume is one of three kinds,
   distinguished by durable state, each with its own bound:
@@ -236,20 +236,27 @@ Transitions:
   field would be wiped by the next run's reset, breaking the TTL promise). Replay
   returns whichever kind was stored (success → answer, error → error), never an
   undefined `finalAnswer`. The store is GC'd by TTL.
-- **Classification ORDER — terminal store FIRST (#2/14):** because the terminal
-  store survives later runs, an incoming request carrying an **explicit
-  idempotency key / `runId`** is looked up **in the terminal store BEFORE any
-  current-bundle classification**. If a non-expired `terminalOutcome` is found →
-  **replay it** (success → answer, error → error) and STOP — this is independent
-  of, and does not disturb, whatever run the bundle is currently in (a different
-  active run keeps going). Only if there is no explicit key, or no live terminal
-  entry for it, does classification fall through to the current bundle
-  (active-resume / suspended / fresh).
-- **Replay needs an EXPLICIT key, not a fingerprint (#2):** a **fingerprint match
-  alone does NOT replay** — it cannot tell a lost-response retry from an
-  intentional re-run of the same prompt, so without the explicit key a repeat
-  starts a **fresh run**. A `newRun` flag forces a fresh run even with the key;
-  the store is kept under a **retention TTL** so replay is bounded, not indefinite.
+- **Request classification — strict ordered algorithm (#1/#2/15).** Evaluate in
+  THIS order; the first matching branch wins:
+  1. **`newRun` flag set** → fresh run (reset + new `runId`). Checked FIRST, so
+     `newRun` overrides any replay (#2/15).
+  2. **Explicit idempotency key / `runId` present** → **STRICT** routing, NO
+     fingerprint fallback (#1/15):
+     - the key is in the (run-surviving) **terminal store**, non-expired →
+       **replay** its `terminalOutcome` (success → answer, error → error) and
+       STOP — independent of the current bundle; a different active run keeps
+       going;
+     - else the key **equals the current bundle's `runId`** → **resume** the
+       current run (by `runPhase`);
+     - else → **not-found / expired** error. It does NOT fall through to
+       fingerprint or to resuming the current run — a stale/expired key must never
+       accidentally hijack a different active run.
+  3. **No explicit key** → fingerprint is used ONLY to recover an in-flight
+     ACTIVE run (`active`/`suspended`) of the same request; a fingerprint match on
+     a TERMINAL run does NOT replay (can't tell a lost-response retry from an
+     intentional re-run) → **fresh run**. No fingerprint, no live key → fresh run.
+- The terminal store is kept under a **retention TTL** so replay is bounded, not
+  indefinite.
 - **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
   the bundle `active` but not `suspended`. Classification does NOT use raw request
   equality (unreliable for `Message[]`, whitespace, transport re-delivery).
@@ -429,7 +436,7 @@ mark the step advanced OR failed.
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
   {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
-  {seq,step,attempt,phase}` + `finalizeAttempt` + durable `originalRequest`
+  {seq,step,attempt,resumeCount,phase}` + `finalizeAttempt` + durable `originalRequest`
   (finalizer input; normalized hash = identity fingerprint) + atomic run-scoped
   RESET (incl. `finalizeAttempt→0`); `attempt` increments on FRESH executions
   only (not external-tool continuations). A SEPARATE per-session keyed store
