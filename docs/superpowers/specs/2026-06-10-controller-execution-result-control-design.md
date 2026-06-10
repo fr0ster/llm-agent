@@ -130,9 +130,12 @@ recall.
     advance; the controller FIRST persists `inFlightStep.phase = 'awaiting-replan'`
     (durable) — it does NOT yet have a revised step. THEN it calls the planner; on
     the planner's response it atomically sets
-    `inFlightStep = { seq (same), revisedStep, attempt (unchanged here), phase:
-    'executing' }`. The single pre-execute increment then bumps `attempt` when the
-    revised step runs. A crash while `phase:'awaiting-replan'` resumes into
+    `inFlightStep = { seq (same), revisedStep, attempt (unchanged here),
+    resumeCount: 0, phase: 'executing' }` — `resumeCount` is **reset to 0** (#3/16:
+    a revised step is a fresh attempt and must not inherit the prior attempt's
+    crash budget). The single fresh-execution increment then bumps `attempt` when
+    the revised step runs (which also re-zeroes `resumeCount` per the rule that
+    every fresh attempt resets it). A crash while `phase:'awaiting-replan'` resumes into
     **replan** (not re-execution of the failed step). The retry reuses the same
     `seq`, so failed + retry artifacts share `(runId, seq)` and dedup-by-precedence
     keeps the eventual success.
@@ -216,6 +219,18 @@ in-flight step yet), `executing` (a step is in flight — `inFlightStep` set),
 `finalizing` (planner returned `done`, `inFlightStep` cleared, finalizer running).
 `runPhase` is persisted on every transition.
 
+**General invariant — every LLM-invoking phase has a durable pre-call counter +
+cap (#2/16),** so NO phase can crash-loop unbounded:
+- **planning** → `plannerAttempt`, cap `maxPlannerResumes`;
+- **executing** → `attempt` (fresh) + `resumeCount` (crash-replay), caps
+  `maxStepAttempts` / `maxStepResumes`;
+- **finalizing** → `finalizeAttempt`, cap `maxFinalizeRetries`.
+
+Each counter is persisted+incremented BEFORE its LLM call and survives crashes;
+exceeding the cap aborts the run with a control error. (Earlier rounds added the
+executing/finalizing counters; `plannerAttempt` closes the planning-phase
+crash-loop that was still open.)
+
 Transitions:
 
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
@@ -246,11 +261,14 @@ Transitions:
        **replay** its `terminalOutcome` (success → answer, error → error) and
        STOP — independent of the current bundle; a different active run keeps
        going;
-     - else the key **equals the current bundle's `runId`** → **resume** the
-       current run (by `runPhase`);
+     - else the key **equals the current bundle's `runId` AND `runState ∈
+       {active, suspended}`** → **resume** the current run (by `runPhase`). The
+       run-state guard matters (#1/16): if the current run is already TERMINAL
+       (its store entry expired/GC'd), the key must NOT resume by a stale
+       `runPhase`;
      - else → **not-found / expired** error. It does NOT fall through to
-       fingerprint or to resuming the current run — a stale/expired key must never
-       accidentally hijack a different active run.
+       fingerprint or to resuming a non-active run — a stale/expired key must
+       never accidentally hijack a different (or terminated) run.
   3. **No explicit key** → fingerprint is used ONLY to recover an in-flight
      ACTIVE run (`active`/`suspended`) of the same request; a fingerprint match on
      a TERMINAL run does NOT replay (can't tell a lost-response retry from an
@@ -278,7 +296,8 @@ Transitions:
     `planning` →
     re-invoke the planner (no in-flight step yet); `executing` → the
     `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
-    artifact); `finalizing` → **re-run the finalizer**, bounded by a **durable
+    artifact), bounded by `plannerAttempt`/`maxPlannerResumes` for the planning
+    leg; `finalizing` → **re-run the finalizer**, bounded by a **durable
     `finalizeAttempt`** persisted+incremented BEFORE the call (same pattern as
     `inFlightStep.attempt`) so a crash-loop in `finalizing` cannot bypass
     `maxFinalizeRetries` (exceeded → `onFinalizeExhausted`). The finalizer is
@@ -425,11 +444,12 @@ mark the step advanced OR failed.
 - Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
-- New budgets `maxStepAttempts` (durable fresh-attempt cap — bounds dups +
-  retry/replan liveness), `maxStepResumes` (durable crash-replay cap — bounds a
-  crash-loop on one attempt), `maxToolCalls` (external round-trips per
-  transcript), `maxReviewRetries`, `maxFinalizeRetries`; judge-failure escalation
-  (abort-with-control-error, not silent advance/fail);
+- New budgets — one durable pre-call counter+cap per LLM-invoking phase:
+  `maxPlannerResumes` (planning, via `plannerAttempt`), `maxStepAttempts`
+  (fresh-attempt; bounds dups + retry/replan liveness) + `maxStepResumes`
+  (crash-replay), `maxToolCalls` (external round-trips per transcript),
+  `maxFinalizeRetries` (via `finalizeAttempt`), `maxReviewRetries`; judge-failure
+  escalation (abort-with-control-error, not silent advance/fail);
   `onFinalizeExhausted: error|best-effort` (default `error`).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
