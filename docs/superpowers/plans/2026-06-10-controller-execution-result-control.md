@@ -230,50 +230,84 @@ In `packages/llm-agent-libs/src/rag/knowledge-rag.ts`, inside `matches()` (after
   if (f.status !== undefined && m.status !== f.status) return false;
 ```
 
-- [ ] **Step 3b: Apply the filter BEFORE the top-K cap in `query()` — via the guaranteed exhaustive scan**
+- [ ] **Step 3b: Push the filter INTO `semanticQuery` so it is applied PRE-cap (ranking preserved)**
 
 The current `query()` (`knowledge-rag.ts:69-81`) caps with `semanticQuery(…, k)`
-THEN filters — so in a multi-run session foreign-run hits can fill the top-K before
-the `runId` filter runs (spec: the `runId` filter must be applied PRE-cap). We
-canNOT rely on `semanticQuery(…, undefined)` returning the full pool — a production
-backend (e.g. Jsonl → semantic adapter) may apply its OWN default cap (#1/plan-7).
-So when a filter is present, use the **exhaustive durable `scan()`** (guaranteed
-complete — the same source `list()` uses) → filter → most-recent top-K. This is the
-spec's "exact-list(runId)-then-rank-locally" fallback (recency is the local rank;
-native semantic backends MAY override with in-query filtering + relevance ranking).
-Replace the `query()` body:
+THEN filters — so in a multi-run session foreign-run hits fill the top-K before the
+`runId` filter runs (spec: the filter must be applied PRE-cap). The fix preserves
+the backend's RANKING (semantic where available) by pushing the filter INTO
+`semanticQuery` (the spec's "native" option), with each backend applying it to its
+candidate set BEFORE the cap — NOT replacing ranking with recency.
+
+Extend the `KnowledgeBackend` interface (knowledge-rag.ts) `semanticQuery` with an
+optional filter; document the pre-cap contract:
 
 ```ts
-  async query(
+  /** Semantic top-K. When `filter` is given it MUST be applied to the candidate
+   *  set BEFORE the K cap (so a runId filter is never starved by other runs'
+   *  artifacts crowding the cap), preserving the backend's native ranking. */
+  semanticQuery(
+    sid: string,
     text: string,
-    opts?: { k?: number; filter?: KnowledgeFilter },
-  ): Promise<readonly KnowledgeEntry[]> {
-    const filter = opts?.filter;
-    const k = opts?.k;
-    if (filter) {
-      // GUARANTEED pre-cap run-scoping: exhaustive durable scan (NEVER the semantic
-      // cap, which a production backend may bound), filter, then most-recent K.
-      // Correctness (never miss this run's artifacts) over semantic ranking — run
-      // artifact counts are bounded.
-      const durable = await this.backend.scan(this.sessionId);
-      const source = durable.length >= this.mirror.length ? durable : this.mirror;
-      const matched = source
-        .filter((e) => matches(e.metadata, filter))
-        .slice()
-        .sort((a, b) => b.metadata.createdAt.localeCompare(a.metadata.createdAt));
-      return k !== undefined ? matched.slice(0, k) : matched;
-    }
-    // No filter → unchanged semantic path.
-    return this.backend.semanticQuery(this.sessionId, text, k);
+    k?: number,
+    filter?: KnowledgeFilter,
+  ): Promise<readonly KnowledgeEntry[]>;
+```
+
+`InMemoryKnowledgeBackend.semanticQuery` — filter first, then cap (its order is
+insertion = its "semantic" proxy; ranking unchanged):
+
+```ts
+  async semanticQuery(sid: string, _text: string, k?: number, filter?: KnowledgeFilter) {
+    let a = this.of(sid);
+    if (filter) a = a.filter((e) => matches(e.metadata, filter));
+    return k ? a.slice(0, k) : a.slice();
   }
 ```
 
-Add a test in `knowledge-rag-filter.test.ts` proving the runId filter survives the
-cap INDEPENDENTLY of the backend's semantic cap: use a stub backend whose
-`semanticQuery` always returns `[]` while `scan` returns all entries; write `k+2`
-foreign-run `step-result`s + 1 target-run entry; `query(text, { k: 3, filter: {
-runId: 'R-target' } })` must STILL return the target entry (proving it came from the
-scan path, not the capped semantic path).
+(`matches` is exported / module-visible in `knowledge-rag.ts`.)
+
+`JsonlKnowledgeBackend.semanticQuery` (server-libs) — add the param; when a filter
+is present, prefer a native filter on the injected semantic index if it supports
+one, else use the **exhaustive `scan()`** (guaranteed complete) filtered, ranked by
+the index where possible (recency fallback otherwise — the spec's
+list-then-rank-locally):
+
+```ts
+  async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
+    if (filter) {
+      // GUARANTEED run-scoping (the semantic index may cap below the run's size):
+      // exhaustive scan → filter → most-recent K. (A future vector adapter with a
+      // metadata filter can rank semantically within the run.)
+      const all = (await this.scan(sid)).filter((e) => matchesFilter(e.metadata, filter));
+      const ranked = all.slice().sort((a, b) => b.metadata.createdAt.localeCompare(a.metadata.createdAt));
+      return k ? ranked.slice(0, k) : ranked;
+    }
+    if (this.semantic) return this.semantic.query(sid, text, k);
+    const all = await this.scan(sid);
+    return k ? all.slice(-k) : all;
+  }
+```
+
+> `matchesFilter` is a small local copy in the Jsonl backend (or import the shared
+> `matches` from `@mcp-abap-adt/llm-agent-libs` if it is exported). If `matches` is
+> not exported, export it from `knowledge-rag.ts` and import it here — one shared
+> predicate, no duplication.
+
+`KnowledgeRag.query` passes the filter through (the backend applied it pre-cap; a
+defensive post-filter is harmless):
+
+```ts
+  async query(text, opts) {
+    const hits = await this.backend.semanticQuery(this.sessionId, text, opts?.k, opts?.filter);
+    return opts?.filter ? hits.filter((e) => matches(e.metadata, opts.filter!)) : hits;
+  }
+```
+
+Add a test proving the runId filter survives the cap INDEPENDENTLY of any inner
+semantic cap: write `k+2` foreign-run `step-result`s + 1 target-run entry, then
+`query(text, { k: 3, filter: { runId: 'R-target' } })` must return the target entry
+(a post-cap filter would crowd it out).
 
 - [ ] **Step 4: Build the lower packages, then run the test**
 
@@ -1205,9 +1239,10 @@ export function orderAndTruncate(
  *     a `…[truncated]` marker) — so NO result is dropped, every `[#seq]` is still
  *     present. The share is sized to account for prefix+marker+separator overhead
  *     so the joined body is <= budget by construction.
- *  3. Absolute guarantee: a final `slice(0, budget)` covers pathologically tiny
- *     budgets (smaller than N compact placeholders) — never returns > budget
- *     (closes the marker-longer-than-budget bug, #3/plan-7).
+ *  3. If the budget cannot hold N compact extracts, emit a single compact MANIFEST
+ *     that NAMES every seq (e.g. "[results omitted — too small for budget: #0 #1
+ *     #2]") so no result is silently dropped (#3/plan-8); a final hard slice
+ *     guarantees <= budget for a truly pathological budget.
  *  Deterministic; an LLM-summarizer map-reduce is a future variant. Pure aside
  *  from `log`. */
 export function reduceToBudget(
@@ -1255,10 +1290,13 @@ export function reduceToBudget(
     log?.(`finalizer overflow: even per-result share ${share} chars across ${n} results (none dropped)`);
     body = render();
   }
-  // Pass 3: absolute guarantee for a budget too small even for N placeholders.
+  // Pass 3: budget too small for N compact extracts → compact MANIFEST naming
+  // every seq (no result silently dropped). A final slice guards a pathological
+  // budget smaller than even the manifest.
   if (body.length > budget) {
-    log?.(`finalizer overflow: budget ${budget} below N compact placeholders — hard slice`);
-    body = body.slice(0, budget);
+    const manifest = `[results omitted — budget too small to inline: ${ordered.map((r) => `#${r.seq}`).join(' ')}]`;
+    log?.(`finalizer overflow: emitting compact manifest of ${ordered.length} seqs (budget ${budget})`);
+    body = manifest.length <= budget ? manifest : manifest.slice(0, budget);
   }
   return body;
 }
@@ -2680,16 +2718,55 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
     );
 ```
 
-**Run-scope the whole-step recall + the artifact writes (#1/plan-6).** Also add
-`runId: bundle.runId` to:
-- the whole-step episodic recall filter in `runStep` (the existing
-  `resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`
-  call) → `{ artifactType: RECALL_ARTIFACT_TYPES, runId: bundle.runId }`;
-- every `mcp-result` write (the internal-tool round-trip write and the external
-  resume write) → add `runId: bundle.runId` to the artifact metadata, so internal
-  tool results are recalled within the run too.
-The `step-result` write already carries `runId` (Task 11). With all artifacts
-tagged and every recall filtered by `runId`, recall is strictly run-scoped.
+**Whole-step recall = over-fetch → dedup-by-precedence → cap (#2/plan-8).** Per the
+spec, duplicates of a `(runId, seq)` (a step's retries) are bounded by
+`maxStepAttempts`, so the whole-step content recall must over-fetch `k' = k ×
+(maxStepAttempts + 1)`, dedup `(runId, seq)` by outcome precedence, then take the
+top `k` distinct steps — otherwise one step's retries can fill the whole top-K and
+crowd out other steps. Add a helper and use it for the whole-step recall (the
+per-reference evidence above only needs hit/no-hit, so it keeps the simple
+`resolveNeed`):
+
+```ts
+/** Run-scoped semantic recall with the spec's over-fetch → dedup → cap. Pulls
+ *  k' = k × (maxStepAttempts + 1) ranked candidates filtered to `runId`, dedups
+ *  each (runId, seq) to its precedence-winning artifact, returns the top-k distinct
+ *  steps' content. */
+async function runScopedRecall(
+  rag: IKnowledgeRagHandle,
+  text: string,
+  k: number,
+  runId: string | undefined,
+  maxStepAttempts: number,
+  artifactType: readonly string[],
+): Promise<readonly KnowledgeEntry[]> {
+  const kPrime = k * (maxStepAttempts + 1);
+  const hits = await rag.query(text, { k: kPrime, filter: { runId, artifactType } });
+  // Dedup by (runId, seq): keep the precedence-winning entry per seq.
+  const bySeq = new Map<number, KnowledgeEntry>();
+  for (const e of hits) {
+    const seq = e.metadata.seq ?? -1;
+    const prev = bySeq.get(seq);
+    if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) bySeq.set(seq, e);
+  }
+  return [...bySeq.values()].slice(0, k);
+}
+/** Outcome-precedence rank used for dedup (ok/exists > partial > failed > none). */
+function rankStatus(s?: string): number {
+  return s === 'ok' || s === 'exists' ? 3 : s === 'partial' ? 2 : s === 'failed' ? 1 : 0;
+}
+```
+
+Replace the existing whole-step episodic recall call in `runStep`
+(`resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`)
+with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, cfg.maxStepAttempts ?? 5, RECALL_ARTIFACT_TYPES)`.
+Add `KnowledgeEntry` to the existing `@mcp-abap-adt/llm-agent` type import in the handler.
+
+**Run-scope the artifact writes (#1/plan-6).** Add `runId: bundle.runId` to every
+`mcp-result` write (the internal-tool round-trip write and the external resume
+write) so internal tool results are recalled within the run too. The `step-result`
+write already carries `runId` (Task 11). With all artifacts tagged and every recall
+run-scoped, recall is strictly per-run.
 
 (The evaluator `needs-confirmation` → suspended transition is already correct in the existing code at lines 245-257, which persists the clarify marker and surfaces it; add `bundle.runState = 'suspended';` there to match the run-state contract.)
 
