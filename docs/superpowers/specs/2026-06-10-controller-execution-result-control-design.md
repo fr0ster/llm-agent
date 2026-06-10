@@ -84,6 +84,16 @@ writeArtifact(results-RAG, {
 written before review; no record is mutated. (If a raw-vs-approved audit trail is
 later wanted, that is an additional immutable record — out of scope now.)
 
+**Crash/replay dedup (#1).** The artifact write and the cursor/bundle persist are
+separate, so a crash between them replays the step and appends a SECOND artifact
+for the same logical step. With an append-only store we cannot overwrite, so:
+`seq` is the **stable step index** (the plan-cursor position), NOT a write
+counter — a replayed step writes at the SAME `(runId, seq)`. Every read that
+assembles results — finalizer full-set AND executor recall — **dedups by
+`(runId, seq)`, keeping the latest write** (append/ingest order or a write
+timestamp tie-breaker). So duplicates are tolerated in storage and collapsed at
+read; the finalizer never sees two copies of one step.
+
 ## Planner transitions (#2 — partial is a first-class outcome)
 
 `commit()`/`lastOutcome` are extended from `advanced|failed` to
@@ -132,10 +142,20 @@ Transitions:
 
 - **New request while idle/terminal:** ONE atomic bundle write **resets all
   run-scoped fields** (`goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
-  `lastOutcome`, `pending`) and **mints a fresh `runId`** → active. Fixes stale
-  goal/plan/cursor carrying over.
+  `lastOutcome`, `pending`, `originalRequest`) and **mints a fresh `runId`** →
+  active. Fixes stale goal/plan/cursor carrying over.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
 - **`done` (finalizer composed) or abort:** → terminal; next request resets.
+- **Crash recovery — active with NO `pending` (#5):** a process crash mid-step
+  leaves the bundle `active` but not `suspended`. The bundle persists the
+  `originalRequest`; the next HTTP request is classified against it:
+  - request **equals** `originalRequest` (a client retry of the same run) →
+    **resume from the cursor** (re-run the in-flight step; at-least-once + the
+    `(runId,seq)` dedup make replay safe for reads / idempotent writes);
+  - request **differs** → the crashed run is **abandoned** (logged) → reset →
+    fresh run for the new request.
+  So an active-without-pending bundle is never ambiguous: it is recovered or
+  explicitly abandoned, never silently continued under the wrong prompt.
 
 ## Data backbone & RAG contract changes (#5 prev)
 
@@ -152,11 +172,16 @@ full set (finalizer) = run's approved results ordered by `seq` under the budget.
 ## Dependency manifest & miss detection (not self-eval)
 
 Planner emits per dependent step `requires: ["<plain reference>", …]`. Presence
-is decided by a role OTHER than the doer: the **recall step records per-reference
-evidence** (did it surface a matching artifact?), and the **reviewer** judges
-intent + evidence + result; a missing input → `failed`. Honestly not fully
-deterministic (semantic recall + LLM judgement), but free of self-evaluation
-bias. (Open: stricter controller-side evidence.)
+is decided by a role OTHER than the doer. A single semantic query on the whole
+step prompt cannot say WHICH reference matched, so evidence is gathered **one
+recall query per `requires[]` reference** (#3): each reference → its own
+top-K query → an evidence map `{ ref → hit?/topArtifact }`. (The general
+step-prompt recall still runs for loose context; the per-reference queries are
+extra embedding lookups — cheap.) The **reviewer** then judges intent + the
+evidence map + result; a reference with no evidence (or an unused input) →
+`failed` (note: "missing input: <ref>"). Honestly not fully deterministic
+(semantic match + LLM judgement), but per-reference and decided by a non-doer
+role. (Open: a stricter controller-side match threshold.)
 
 ## Config & roles contract (#5)
 
@@ -167,9 +192,15 @@ bias. (Open: stricter controller-side evidence.)
   works — if `reviewer` is absent it **defaults to the planner's model** (capable);
   if `finalizer` is absent it defaults to the planner too. New deployments may set
   them explicitly (e.g. a cheaper reviewer for simple pipelines).
-- **Factory/deps:** `ControllerFactoryDeps`/`ControllerHandlerDeps` gain reviewer
-  + finalizer subagent clients; `models` gains `reviewer`/`finalizer` for usage
-  attribution (`/v1/usage` byComponent gains `reviewer`/`finalizer`).
+- **Factory/deps (#4 — interfaces, not clients):** the handler depends on
+  `IReviewer` and `IFinalizer` (the interfaces) — NOT on subagent clients. The
+  **factory** reads the `reviewer`/`finalizer` LLM config and builds the DEFAULT
+  LLM-backed implementations (`new LlmReviewer(makeSubagentClient(reviewerLlm))`,
+  etc.), injecting them as `IReviewer`/`IFinalizer`. The `ISubagentClient` is thus
+  an implementation detail INSIDE the default impl, never in the handler deps. A
+  consumer swaps the interface (own reviewer/finalizer) without the factory.
+  `models` gains `reviewer`/`finalizer` for usage attribution (`/v1/usage`
+  byComponent gains `reviewer`/`finalizer`).
 - **Reviewer tools:** none by default; a read-only subset only if the consumer
   designates one (see Core idea).
 
@@ -193,19 +224,47 @@ soft failure thus becomes `status:'failed'` → replan.
   non-idempotent side effects is out of scope** (separate WRITE-durability spec);
   the replay window is a documented limitation.
 
+## Reviewer / finalizer failure semantics (#2)
+
+A reviewer or finalizer that times out / provider-errors / returns a malformed
+or empty-but-`ok` outcome is a **judge failure, not a step failure** — the
+executor's actual outcome is then UNKNOWN, so the controller must not silently
+mark the step advanced OR failed.
+
+- **Separate retry budgets:** `maxReviewRetries`, `maxFinalizeRetries` (distinct
+  from the executor's `maxRetries`).
+- **Reviewer transient error / malformed / `status:ok` with empty `approved`:**
+  re-ask the reviewer (within `maxReviewRetries`). Empty-approved-with-ok is
+  treated as malformed (contradictory), not as success.
+- **Reviewer budget exhausted:** the step outcome is **unverifiable** → do NOT
+  guess. Escalate: **abort the run with a control error** ("step <seq> outcome
+  unverifiable") rather than advancing or failing the step. (A future option: a
+  fallback `IReviewer` — e.g. a conservative deterministic judge.)
+- **Finalizer error:** retry within `maxFinalizeRetries`; exhausted → return a
+  control error, or a best-effort answer assembled from the already-approved
+  results — never a confabulated completion.
+- These are LLM/role faults; they go through the same usage metering but are
+  attributed to `reviewer`/`finalizer`, not the executor.
+
 ## What changes vs the current code
 
-- New **reviewer** + **finalizer** roles (config + factory deps + usage); reviewer
-  always-on, tool-less by default.
+- New `IReviewer` + `IFinalizer` interfaces; handler depends on them; the factory
+  builds the default LLM impls from the `reviewer`/`finalizer` config. Reviewer
+  always-on, tool-less by default; usage attributed to `reviewer`/`finalizer`.
 - `runStep`: executor result held in memory → reviewer → **single** `writeArtifact`
-  (post-review, final status, approved content); outcome from the reviewer.
+  at stable `(runId, seq=stepIndex)` (post-review, final status, approved
+  content); outcome from the reviewer; read-side dedup by `(runId, seq)`.
+- Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
+- New budgets `maxReviewRetries`, `maxFinalizeRetries`; judge-failure escalation
+  (abort-with-control-error, not silent advance/fail).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
-  results under the budget; `done` carries no answer.
-- `SessionBundle`: durable `runId` + run-state + atomic run-scoped RESET; persist
-  full suspended-step state in the external-tool `PendingMarker`.
+  results (deduped) under the budget; `done` carries no answer.
+- `SessionBundle`: durable `runId` + run-state + `originalRequest` + atomic
+  run-scoped RESET + crash-recovery classification; persist full suspended-step
+  state in the external-tool `PendingMarker`.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
 
