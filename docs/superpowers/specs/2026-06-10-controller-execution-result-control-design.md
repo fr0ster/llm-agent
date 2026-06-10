@@ -211,20 +211,25 @@ Transitions:
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
   run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
   `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none), `runPhase`
-  (→ planning), `originalRequest` (→ the new request; fingerprint re-derived)** —
-  and **mints a fresh `runId`** → active.
-  The reset list is exhaustive precisely so a fresh run cannot inherit the prior
-  run's replay state (`nextSeq`/`inFlightStep`) or recovery identity.
+  (→ planning), `finalizeAttempt` (→ 0), `terminalOutcome` (→ none),
+  `originalRequest` (→ the new request; fingerprint re-derived)** — and **mints a
+  fresh `runId`** → active.
+  The reset is exhaustive (#3) precisely so a fresh run cannot inherit the prior
+  run's replay state (`nextSeq`/`inFlightStep`), an exhausted `finalizeAttempt`,
+  or a stale `terminalOutcome`.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
-- **`done` (finalizer composed):** persist the terminal outcome durably —
-  `{ runId, originalRequest fingerprint, finalAnswer }` — then → terminal. (Abort
-  → terminal with an error outcome, no `finalAnswer`.)
-- **Repeat request after terminal (#1 — idempotent response replay):** if the new
-  request's identity (resume token `runId` or fingerprint) **matches the terminal
-  run**, **return the stored `finalAnswer`** — do NOT start a new run (the HTTP
-  response may simply have been lost; re-running would repeat the pipeline and its
-  side effects). Only a request that does NOT match the terminal run resets →
-  fresh run.
+- **`done` / abort:** persist a durable **discriminated `terminalOutcome`**
+  (#1) — `{ kind:'success', answer } | { kind:'error', error }` — keyed by
+  `runId`, then → terminal. Replay returns whichever kind was stored (success →
+  the answer, error → the error), never an undefined `finalAnswer`.
+- **Repeat request after terminal — replay needs an EXPLICIT key, not a
+  fingerprint (#2):** terminal replay is gated on an **explicit idempotency key /
+  resume `runId`** the client passes back; a match → **replay `terminalOutcome`**
+  (no new run). A **fingerprint match alone does NOT replay** — it cannot tell a
+  lost-response retry from an intentional re-run of the same prompt, so without
+  the explicit key a repeat starts a **fresh run**. A `newRun` flag forces a fresh
+  run even with the key; terminal outcomes are kept under a **retention TTL** so
+  replay is bounded, not indefinite.
 - **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
   the bundle `active` but not `suspended`. Classification does NOT use raw request
   equality (unreliable for `Message[]`, whitespace, transport re-delivery).
@@ -237,8 +242,13 @@ Transitions:
     content}`, transport metadata dropped). The incoming request is normalized +
     hashed and compared. (The fingerprint is for identity only; the request itself
     is kept for the finalizer.)
-  - Match (token or fingerprint) → if the run is already **terminal**, replay the
-    stored `finalAnswer` (above); otherwise **resume by `runPhase`**: `planning` →
+  - **Terminal run:** replay only on an **explicit token** (`runId`) → return the
+    stored `terminalOutcome`; a fingerprint-only match does NOT replay (per #2) —
+    it starts a fresh run. (Active-run resume below may use token OR fingerprint,
+    since resuming an in-flight run is safe/idempotent; only terminal *replay* is
+    gated on the explicit key.)
+  - **Active run, match (token or fingerprint)** → **resume by `runPhase`**:
+    `planning` →
     re-invoke the planner (no in-flight step yet); `executing` → the
     `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
     artifact); `finalizing` → **re-run the finalizer**, bounded by a **durable
@@ -395,11 +405,13 @@ mark the step advanced OR failed.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
   {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
   {seq,step,attempt,phase}` + `finalizeAttempt` + durable `originalRequest`
-  (finalizer input; normalized hash = identity fingerprint) + terminal
-  `{runId, finalAnswer}` for idempotent response replay + atomic run-scoped RESET
-  + crash-recovery routed by `runPhase` (token/fingerprint identity, not raw
-  equality) with terminal-replay; resume reconciliation by RESOLVED artifact
-  status; persist full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
+  (finalizer input; normalized hash = identity fingerprint) + discriminated
+  `terminalOutcome {kind:'success',answer}|{kind:'error',error}` (TTL-retained)
+  replayed ONLY via an explicit token/idempotency key (`newRun` overrides) +
+  atomic run-scoped RESET (incl. `finalizeAttempt→0`, `terminalOutcome→none`) +
+  crash-recovery routed by `runPhase` (token/fingerprint for active resume, token
+  only for terminal replay); resume reconciliation by RESOLVED artifact status;
+  persist full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
   rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
