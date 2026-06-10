@@ -256,11 +256,17 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
     `evalCallInFlight`, resets `evalResumeCount`, and sets run-state → `suspended`**
     — it does NOT write `goal` and does NOT advance to `planning`. The proposed
     target rides on the marker so a later confirmation commits THAT (not a bare
-    "yes"). On confirm-resume, the controller writes `goal` (from `proposedTarget`)
-    and advances to `planning`; on reject/new input it re-evaluates or resets.
-    Recovery while `suspended` with a `clarify` marker takes the normal
-    suspended-resume path (resume on the consumer's reply) — NOT an evaluator
-    re-call, so `evalResumeCount` is not charged.
+    "yes"). **Clarify-resume semantics are deterministic (#3/21), exactly one
+    rule:** the incoming reply is the answer; if it is an **affirmation**
+    (`isAffirmation` — "yes"/"так"/…) AND a `proposedTarget` exists → `goal =
+    proposedTarget`; **otherwise the reply itself becomes the `goal` verbatim**
+    (treated as a refinement). EITHER way the `goal` is now set, `pending` is
+    cleared, and the run advances to `planning` — it does **NOT** re-invoke the
+    evaluator and does **NOT** reset the run (a bare re-evaluation would loop the
+    clarify forever, since the goal would still be empty). Recovery while
+    `suspended` with a `clarify` marker takes the normal suspended-resume path
+    (resume on the consumer's reply) — NOT an evaluator re-call, so `evalResumeCount`
+    is not charged.
 
   Recovery in `runPhase:'evaluating'` while still `active` (no clarify marker yet):
   if `evalCallInFlight` → charge `evalResumeCount` (cap `maxEvalResumes`) and
@@ -349,7 +355,11 @@ Transitions:
 - **`done` / abort:** write a durable **discriminated `terminalOutcome`**
   (#1) — `{ kind:'success', answer } | { kind:'error', error }` — into a
   **SEPARATE keyed store `{ runId → { terminalOutcome, expiresAt } }`** (#2/13),
-  NOT a single bundle field, then → terminal. Keying by `runId` with `expiresAt`
+  NOT a single bundle field, then → terminal. `abort` (budget exhaustion,
+  judge-failure escalation, `onFinalizeExhausted:'error'`) can fire from **any**
+  phase — `evaluating`/`planning`/`executing`/`finalizing` — and always uses this
+  same **store-first, bundle-second** ordering, so the general terminal-first
+  recovery check (below) covers aborts from every phase (#1/21). Keying by `runId` with `expiresAt`
   lets the outcome **survive subsequent runs until its TTL** (a single bundle
   field would be wiped by the next run's reset, breaking the TTL promise). Replay
   returns whichever kind was stored (success → answer, error → error), never an
@@ -395,28 +405,49 @@ Transitions:
     it starts a fresh run. (Active-run resume below may use token OR fingerprint,
     since resuming an in-flight run is safe/idempotent; only terminal *replay* is
     gated on the explicit key.)
-  - **Active run, match (token or fingerprint)** → **resume by `runPhase`**:
-    `evaluating` → re-invoke the evaluator (no goal yet), charging `evalResumeCount`
-    (cap `maxEvalResumes`) only if `evalCallInFlight` proves a call was running;
-    `planning` →
-    re-invoke the planner (no in-flight step yet), charging `plannerResumeCount`
-    (cap `maxPlannerResumes`) only if `plannerCallInFlight` proves a call was
-    running; `executing` → the
-    `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
-    artifact, with a mid-review crash re-executing since no artifact was written),
-    crash-replay bounded by `resumeCount`/`maxStepResumes`; `finalizing` →
-    **first check the terminal store for the current `runId`**: if an outcome is
-    already there, adopt it + set the bundle terminal WITHOUT a new finalizer call
-    (#2/19 — prevents a fingerprint-resume from replacing an emitted answer);
-    otherwise **re-run the finalizer**, bounded by the **durable `finalizeAttempt`**
-    charged on replay only when `finalizeCallInFlight` is set, so a crash-loop in
-    `finalizing` cannot bypass `maxFinalizeRetries` (exceeded → `onFinalizeExhausted`). The finalizer is
-    otherwise idempotent (composes from durable approved results, no side
-    effects), so replay within budget is safe. No match → the crashed run is
-    **abandoned** (logged) → reset → fresh run.
+  - **Active run, match (token or fingerprint)** → resume in a **fixed three-stage
+    order** (#1/21, #2/21), never `runPhase` first:
+    1. **Terminal-store check FIRST, for ANY phase (#1/21).** `done` AND every
+       `abort` (budget exhaustion, judge-failure escalation, `onFinalizeExhausted`)
+       write the `terminalOutcome` to the TTL store BEFORE flipping the bundle to
+       `terminal` — and that two-write gap exists in `evaluating`/`planning`/
+       `executing` aborts too, not only `finalizing`. So the FIRST thing any resume
+       does is **read the terminal store for the current `runId`; if an outcome is
+       present, adopt it + set the bundle terminal and STOP** — do NOT resume the
+       phase. (Generalizes the finalizing-only check of #2/19 to all phases, closing
+       the "crash after terminal write, before bundle flip → recovery re-runs an
+       active phase" window.)
+    2. **Consume `pending` BEFORE `runPhase` (#2/21).** If `pending` is set, the
+       incoming message is the awaited reply, NOT a trigger to re-enter the phase.
+       Dispatch by `pending.kind`: `external` → record the tool result, clear
+       `pending`, continue the loop; `clarify` → apply the deterministic
+       clarify-resume rule defined in the evaluating phase (affirmation →
+       `proposedTarget`, else reply-verbatim → `goal`; then → `planning`), clear
+       `pending`. Only after `pending` is consumed (or absent) does
+       routing fall through to `runPhase`. Without this, a `clarify`-suspended run
+       (still `runPhase:'evaluating'`) would wrongly re-invoke the evaluator instead
+       of consuming the user's answer.
+    3. **Route by `runPhase`** (no terminal entry, no `pending`):
+       `evaluating` → re-invoke the evaluator (no goal yet), charging
+       `evalResumeCount` (cap `maxEvalResumes`) only if `evalCallInFlight` proves a
+       call was running; `planning` →
+       re-invoke the planner (no in-flight step yet), charging `plannerResumeCount`
+       (cap `maxPlannerResumes`) only if `plannerCallInFlight` proves a call was
+       running; `executing` → the
+       `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
+       artifact, with a mid-review crash re-executing since no artifact was written),
+       crash-replay bounded by `resumeCount`/`maxStepResumes`; `finalizing` →
+       **re-run the finalizer** (the stage-1 terminal check already handled the
+       already-emitted case), bounded by the **durable `finalizeAttempt`**
+       charged on replay only when `finalizeCallInFlight` is set, so a crash-loop in
+       `finalizing` cannot bypass `maxFinalizeRetries` (exceeded → `onFinalizeExhausted`). The finalizer is
+       otherwise idempotent (composes from durable approved results, no side
+       effects), so replay within budget is safe.
+    No match → the crashed run is **abandoned** (logged) → reset → fresh run.
   So an active run — with OR without an `inFlightStep` (e.g. mid-finalize) — is
-  never ambiguous: `runPhase` says what to resume; otherwise it is explicitly
-  abandoned, never silently continued under the wrong prompt.
+  never ambiguous: terminal-first, then pending, then `runPhase` says what to
+  resume; otherwise it is explicitly abandoned, never silently continued under the
+  wrong prompt.
 
 ## Data backbone & RAG contract changes (#5 prev)
 
@@ -595,9 +626,13 @@ mark the step advanced OR failed.
   `{runId → {terminalOutcome (success|error), expiresAt}}` holds terminal outcomes
   (TTL-GC'd), replayed ONLY via an explicit token/idempotency key (`newRun`
   overrides). Because `terminalOutcome` (TTL store) and the bundle's
-  `finalizeCallInFlight`/`runState` are separate writes, finalize is made
-  idempotent by writing the terminal store FIRST and, on any `finalizing` recovery,
-  reading it FIRST → adopt-without-re-call (#2/19). Crash-recovery routed by
+  `runState`/markers are separate writes, every terminal transition (`done` and
+  ALL aborts, from any phase) writes the terminal store FIRST, then flips the
+  bundle — and **every** active-run recovery, regardless of `runPhase`, reads the
+  terminal store FIRST → adopt-without-re-call (#2/19, #1/21). Active-run resume
+  is a fixed order: **terminal-store → consume `pending` → route by `runPhase`**
+  (#2/21), so a `clarify`/`external`-suspended run consumes the reply instead of
+  re-entering its phase. Crash-recovery routed by
   `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
   artifact status; persist full suspended-step state in the external-tool
