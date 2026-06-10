@@ -75,14 +75,21 @@ artifact ONCE** with the final `status` and the reviewer-`approved` content:
 
 ```
 writeArtifact(results-RAG, {
-  kind: 'step-result', runId, seq, status,        // final, from the reviewer
+  kind: 'step-result', runId, seq,
+  // FULL Outcome is durable, not just status+approved (#1):
+  status, note, remainder,                        // control fields, from the reviewer
   content: approved,                              // reviewer-approved (full | accepted extract)
 })
 ```
 
-`plannerPrivate += { seq, status, note, remainder }` (payload-free). Nothing is
-written before review; no record is mutated. (If a raw-vs-approved audit trail is
-later wanted, that is an additional immutable record — out of scope now.)
+The artifact persists the **complete `Outcome`** (`status`, `note`, `remainder`)
+plus the approved content — NOT just `status`/`approved`. So `remainder` (needed
+to replan a `partial`) and `note` survive a crash between the write and the bundle
+persist. `plannerPrivate` is then a **convenience cache** of these control fields,
+**rebuildable from the run's artifacts** on resume (exact list by `runId`, latest
+per `seq`) — losing the bundle does not lose the control state. Nothing is written
+before review; no record is mutated. (A raw-vs-approved audit trail, if ever
+wanted, is an additional immutable record — out of scope now.)
 
 **Replay identity & reconciliation.** The artifact write and the cursor/bundle
 persist are separate, so a crash between them replays a step. Append-only means
@@ -108,10 +115,10 @@ recall.
   `ok/exists > partial > failed` (tie-break latest), never bare chronology.
   Committed seqs (`< nextSeq`) are authoritative and never re-run.
 - **Dedup before the cap (#3).** Duplicates of one `(runId, seq)` must not fill
-  the top-K and crowd out other steps. Recall **over-fetches** (k × a dup factor,
-  or a backend `DISTINCT (runId, seq)` where supported), **dedups to unique
-  `(runId, seq)` by the precedence above, THEN applies the top-K / budget cap** —
-  so K reflects K distinct steps, not K copies of one.
+  the top-K and crowd out other steps. Semantic recall **paginates/refills** —
+  fetch → dedup `(runId, seq)` by the precedence above → refill until K unique or
+  the source is exhausted — so K reflects K distinct steps, not K copies of one.
+  (See the retrieval-primitives definition under the data backbone.)
 
 ## Planner transitions (#2 — partial is a first-class outcome)
 
@@ -159,10 +166,12 @@ request across suspend/resume legs) is scoped by a durable `runId`. Bundle state
 
 Transitions:
 
-- **New request while idle/terminal:** ONE atomic bundle write **resets all
-  run-scoped fields** (`goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
-  `lastOutcome`, `pending`, `originalRequest`) and **mints a fresh `runId`** →
-  active. Fixes stale goal/plan/cursor carrying over.
+- **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
+  run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
+  `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none),
+  `originalRequestFingerprint` (→ new)** — and **mints a fresh `runId`** → active.
+  The reset list is exhaustive precisely so a fresh run cannot inherit the prior
+  run's replay state (`nextSeq`/`inFlightStep`) or recovery identity.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
 - **`done` (finalizer composed) or abort:** → terminal; next request resets.
 - **Crash recovery — active with NO `pending`:** a process crash mid-step leaves
@@ -185,14 +194,25 @@ Transitions:
 ## Data backbone & RAG contract changes (#5 prev)
 
 - **results-RAG** — per-session store; each artifact tagged `{runId, seq,
-  status}`. `KnowledgeEntryMetadata` += `runId/seq/status` (or a generic
-  `tags` map); `KnowledgeFilter` += equality on `runId`/`status` + order by
-  `seq`; backends filter natively or fall back to fetch-then-filter (documented).
+  status}` and carrying the full `Outcome`. `KnowledgeEntryMetadata` +=
+  `runId/seq/status` (or a generic `tags` map); `KnowledgeFilter` += equality on
+  **`runId`, `seq`, `status`** (#3 — `seq` is required, not just runId/status) +
+  order by `seq`. Backends filter natively or fall back to fetch-then-filter.
 - **tool-RAG** — `selectTools` top-K per step (executor only).
-- **plannerPrivate** — concise control log `{seq, status, note, remainder}`.
+- **plannerPrivate** — convenience cache of control fields, rebuildable from
+  artifacts.
 
-**Access modes:** per-step recall (executor) = semantic top-K scoped to `runId`;
-full set (finalizer) = run's approved results ordered by `seq` under the budget.
+**Two retrieval primitives (distinct):**
+- **Semantic recall (executor):** top-K by meaning, scoped to `runId`. To
+  guarantee K UNIQUE steps despite crash-replay duplicates (#2), it **paginates /
+  refills** — fetch, dedup `(runId, seq)` by outcome precedence, refill until K
+  unique or the source is exhausted (backend `DISTINCT (runId, seq)` is an
+  optimization where available) — NOT a single fixed over-fetch.
+- **Exact list/get (NOT semantic) (#3):** an exhaustive metadata query —
+  `list(runId)` / `get(runId, seq)` — returning ALL matching artifacts with no
+  relevance ranking or top-K. Used by the **finalizer full set**, **resume-adopt**
+  (`get(runId, seq)`), and **dedup**. A confirmed artifact can never be missed by
+  a semantic cutoff because this path does not rank/cut.
 
 ## Dependency manifest & miss detection (not self-eval)
 
