@@ -317,6 +317,11 @@ export interface SessionBundle {
   evalResumeCount?: number;
   plannerResumeCount?: number;
   finalizeAttempt?: number;
+  /** Legacy (no-finalizer) answer: the adaptive/incremental planner's composed
+   *  `done.result`, persisted DURABLY in the same write that enters `finalizing`,
+   *  so a crash before the terminal write can recover it on resume (rather than
+   *  emitting an empty success). Cleared by the run reset. */
+  legacyFinalAnswer?: string;
 }
 ```
 
@@ -404,6 +409,7 @@ export function resetRun(bundle: SessionBundle, originalRequest: string): void {
   bundle.evalResumeCount = 0;
   bundle.plannerResumeCount = 0;
   bundle.finalizeAttempt = 0;
+  bundle.legacyFinalAnswer = undefined;
 }
 ```
 
@@ -1026,7 +1032,7 @@ git commit -m "feat(controller): IReviewer + LlmReviewer returning ReviewResult 
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { ISubagentClient } from '../subagent-client.js';
-import { LlmFinalizer, orderAndTruncate } from '../finalizer.js';
+import { LlmFinalizer, orderAndTruncate, reduceToBudget } from '../finalizer.js';
 
 describe('orderAndTruncate', () => {
   it('orders by seq and caps each result to C chars with a marker', () => {
@@ -1037,6 +1043,25 @@ describe('orderAndTruncate', () => {
     assert.equal(out[0].seq, 0);
     assert.equal(out[0].content, 'AAA…[truncated]');
     assert.equal(out[1].seq, 1);
+  });
+});
+
+describe('reduceToBudget', () => {
+  it('always returns a body within budget (hard guarantee), even with many small results', () => {
+    const many = Array.from({ length: 200 }, (_, i) => ({ seq: i, content: 'x'.repeat(100) }));
+    const budget = 500;
+    const body = reduceToBudget(many, 1000, budget);
+    assert.ok(body.length <= budget, `body ${body.length} <= budget ${budget}`);
+  });
+  it('logs each reduction and never silently drops (explicit marker on hard-cut)', () => {
+    const logs: string[] = [];
+    const body = reduceToBudget(
+      [{ seq: 0, content: 'A'.repeat(5000) }, { seq: 1, content: 'B'.repeat(5000) }],
+      1000, 200, (m) => logs.push(m),
+    );
+    assert.ok(body.length <= 200);
+    assert.ok(logs.length > 0, 'reductions were logged');
+    assert.ok(/overflow/.test(logs.join(' ')));
   });
 });
 
@@ -1118,12 +1143,16 @@ export function orderAndTruncate(
     );
 }
 
-/** Compose the finalizer body, reducing to fit `budget` via map-reduce (spec:
- *  "summarize largest/oldest into compact extracts, then compose; never silently
- *  drop; log every reduction"). Deterministic + GUARANTEED to fit: repeatedly
- *  halve the cap of the LARGEST result (logging each reduction) until the joined
- *  body is within budget; a result reduced to the floor keeps a head+marker so it
- *  is never silently dropped. Pure aside from the `log` side effect. */
+/** Compose the finalizer body, reducing to fit `budget`. Two passes (spec
+ *  "summarize largest/oldest into compact extracts; never silently drop; log
+ *  every reduction"):
+ *  1. Reduce the LARGEST result's cap (halving, logged) until the body fits or
+ *     every result is at the per-result floor.
+ *  2. HARD bound: if still over budget (many small results), hard-cut the joined
+ *     body to exactly `budget` and append an explicit, non-silent marker naming
+ *     how many chars were dropped. This GUARANTEES `result.length <= budget`.
+ *  This is a deterministic reduction; a future variant may run an LLM summarizer
+ *  per the spec's map-reduce — out of scope here. Pure aside from `log`. */
 export function reduceToBudget(
   results: readonly ApprovedResult[],
   perResultCap: number,
@@ -1132,19 +1161,18 @@ export function reduceToBudget(
 ): string {
   const FLOOR = 80;
   const ordered = results.slice().sort((a, b) => a.seq - b.seq);
-  // Mutable per-result caps, start at perResultCap.
   const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
   const render = () =>
-    ordered.map((r) => {
-      const cap = caps.get(r.seq)!;
-      const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
-      return `[#${r.seq}] ${c}`;
-    });
-  let body = render().join('\n\n');
-  // Reduce the largest result's cap each round until the body fits or every cap
-  // is at the floor (then the budget is structurally impossible — accept floor).
+    ordered
+      .map((r) => {
+        const cap = caps.get(r.seq)!;
+        const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
+        return `[#${r.seq}] ${c}`;
+      })
+      .join('\n\n');
+  let body = render();
+  // Pass 1: halve the largest reducible result until fit or all at floor.
   while (body.length > budget) {
-    // Pick the seq whose rendered chunk is currently largest and still reducible.
     let target: number | undefined;
     let largest = -1;
     for (const r of ordered) {
@@ -1155,18 +1183,20 @@ export function reduceToBudget(
         target = r.seq;
       }
     }
-    if (target === undefined) {
-      // Every result is already at the floor and the body is still over budget
-      // (many small results). We never silently drop (spec), so we keep them all
-      // at the floor and log that the budget could not be met — the caller/LLM
-      // sees an explicit, non-silent over-budget body.
-      log?.(`finalizer overflow: ${ordered.length} results at floor still exceed budget ${budget} (kept, not dropped)`);
-      break;
-    }
+    if (target === undefined) break; // all at floor
     const next = Math.max(FLOOR, Math.floor(caps.get(target)! / 2));
     caps.set(target, next);
     log?.(`finalizer overflow: reduced result #${target} cap → ${next} chars`);
-    body = render().join('\n\n');
+    body = render();
+  }
+  // Pass 2: hard guarantee. If still over budget, cut the joined body and mark it
+  // explicitly (never a silent drop).
+  if (body.length > budget) {
+    const marker = `\n\n[finalizer overflow: body hard-cut to ${budget} chars]`;
+    const keep = Math.max(0, budget - marker.length);
+    const dropped = body.length - keep;
+    log?.(`finalizer overflow: hard-cut body, ${dropped} chars dropped (explicit marker)`);
+    body = body.slice(0, keep) + marker;
   }
   return body;
 }
@@ -1205,7 +1235,7 @@ export class LlmFinalizer implements IFinalizer {
 - [ ] **Step 4: Run, verify it passes**
 
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/finalizer.test.ts`
-Expected: PASS (2 tests).
+Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1680,14 +1710,25 @@ In `execute`, before calling `runStep` for a `next.step` (around line 344), set/
           await persistBundle(deps.backend, sessionId, bundle);
           continue; // back to planner.next with reconciled state
         }
-        // No artifact for this attempt → genuine crash-replay: charge resumeCount.
-        prev.resumeCount += 1;
-        if (prev.resumeCount > (cfg.maxStepResumes ?? 3)) {
-          await this.abortTerminal(ctx, sessionId, bundle, `step "${prev.step.name}" exceeded maxStepResumes`, now, terminalTtlMs, usageNow());
-          return true;
+        // No artifact for this attempt. Distinguish a live external CONTINUATION
+        // (just injected a tool result this invocation — bounded by toolCallCount,
+        // NOT a crash) from a genuine crash-replay.
+        if (externalContinuation) {
+          // Legitimate continuation: charge NEITHER attempt NOR resumeCount. Re-run
+          // the in-flight step from the (now result-bearing) transcript.
+          externalContinuation = false; // consume the transient flag
+          bundle.runPhase = 'executing';
+          await persistBundle(deps.backend, sessionId, bundle);
+        } else {
+          // Genuine crash-replay: charge resumeCount, abort at the cap.
+          prev.resumeCount += 1;
+          if (prev.resumeCount > (cfg.maxStepResumes ?? 3)) {
+            await this.abortTerminal(ctx, sessionId, bundle, `step "${prev.step.name}" exceeded maxStepResumes`, now, terminalTtlMs, usageNow());
+            return true;
+          }
+          bundle.runPhase = 'executing';
+          await persistBundle(deps.backend, sessionId, bundle);
         }
-        bundle.runPhase = 'executing';
-        await persistBundle(deps.backend, sessionId, bundle);
         // Fall through to runStep with the SAME inFlightStep (attempt unchanged,
         // transcript reused as the rebuild source).
       } else {
@@ -1695,8 +1736,11 @@ In `execute`, before calling `runStep` for a `next.step` (around line 344), set/
         // (same seq → attempt+1), OR a new seq (attempt 0).
         const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
         // Durable fresh-attempt cap: a non-advancing step (repeated failed/
-        // control-failed replans at the same seq) cannot replan forever.
-        if (attempt > (cfg.maxStepAttempts ?? 5)) {
+        // control-failed replans at the same seq) cannot replan forever. `attempt`
+        // is the 0-based identity index of the execution about to run, so the
+        // count of executions is `attempt + 1`; abort when that would exceed the
+        // cap, i.e. attempt >= maxStepAttempts (cap N → executions 0..N-1 = N runs).
+        if (attempt >= (cfg.maxStepAttempts ?? 5)) {
           await this.abortTerminal(ctx, sessionId, bundle, `step "${next.step.name}" exceeded maxStepAttempts`, now, terminalTtlMs, usageNow());
           return true;
         }
@@ -2019,6 +2063,11 @@ Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) wi
           );
           bundle.pending = undefined;
           bundle.runState = 'active';
+          // This is a legitimate external CONTINUATION (bounded by toolCallCount),
+          // NOT a crash-replay: the dispatch site must NOT charge resumeCount when
+          // it re-runs the in-flight step this same invocation. The transient flag
+          // is consumed once at the dispatch site (see Task 12).
+          externalContinuation = true;
         } else {
           // Legacy adaptive path: feed via plannerPrivate + replan.
           bundle.plannerPrivate += `\n[external tool ${toolName} result] ${result}`;
@@ -2053,6 +2102,11 @@ If `runStep` rebuilds `messages` from `inFlightStep.transcript` on resume (when 
       messages.push(...inFlight.transcript);
     }
 ```
+
+Declare the transient continuation flag near the existing `let resumedExternal = false;`
+at the top of `execute`: `let externalContinuation = false;` (per-invocation, never
+persisted — it distinguishes a live external continuation from a crash-replay at the
+dispatch site).
 
 Add `import { resolveByPrecedence } from './outcome.js';` (Outcome already imported).
 
@@ -2201,6 +2255,12 @@ and store-first terminal write.
         return true;
       }
     }
+    // For the legacy (no-finalizer) path, persist the planner's composed answer
+    // DURABLY in the SAME write that enters `finalizing`, so a crash before the
+    // terminal write can recover it (#2/plan-3) rather than emitting empty.
+    if (!deps.finalizer && legacyAnswer !== undefined) {
+      bundle.legacyFinalAnswer = legacyAnswer;
+    }
     bundle.runPhase = 'finalizing';
     bundle.finalizeCallInFlight = true;
     await persistBundle(deps.backend, sessionId, bundle);
@@ -2237,8 +2297,9 @@ and store-first terminal write.
       }
     } else {
       // Legacy (no finalizer injected): the adaptive planner already composed the
-      // answer in done.result, passed through as legacyAnswer.
-      answer = legacyAnswer ?? '';
+      // answer in done.result. Prefer the live param, else the durable copy
+      // persisted on the finalizing-entry write (recovers across a crash).
+      answer = legacyAnswer ?? bundle.legacyFinalAnswer ?? '';
     }
 
     await this.commitTerminalSuccess(ctx, sessionId, bundle, answer ?? '', now, terminalTtlMs, usageNow());
