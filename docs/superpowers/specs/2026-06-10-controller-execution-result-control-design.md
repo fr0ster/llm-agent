@@ -257,7 +257,9 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
     — it does NOT write `goal` and does NOT advance to `planning`. The proposed
     target rides on the marker so a later confirmation commits THAT (not a bare
     "yes"). **Clarify-resume semantics are deterministic (#3/21), exactly one
-    rule:** the incoming reply is the answer; if it is an **affirmation**
+    rule** (after an empty/whitespace answer is rejected — stay `suspended`,
+    re-surface the question, #2/23)**:** the incoming reply is the answer; if it is
+    an **affirmation**
     (`isAffirmation` — "yes"/"так"/…) AND a `proposedTarget` exists → `goal =
     proposedTarget`; **otherwise the reply itself becomes the `goal` verbatim**
     (treated as a refinement). EITHER way, ONE atomic bundle write sets the `goal`,
@@ -420,25 +422,36 @@ Transitions:
        phase. (Generalizes the finalizing-only check of #2/19 to all phases, closing
        the "crash after terminal write, before bundle flip → recovery re-runs an
        active phase" window.)
-    2. **Consume `pending` BEFORE `runPhase` (#2/21), with an atomic
-       suspended→active flip (#1/22).** If `pending` is set, the run is `suspended`
-       and the resume must NOT leave it `suspended` with `pending:none` (an invalid,
-       ambiguously-recoverable state) — clearing `pending` and setting
-       `runState → active` are ONE atomic bundle write. Dispatch by `pending.kind`:
-       - **`clarify`** → the incoming message IS the user's answer. ONE atomic write
-         applies the deterministic clarify-resume rule from the evaluating phase
-         (affirmation → `goal=proposedTarget`, else reply-verbatim → `goal`),
-         clears `pending`, sets `runState → active`, AND advances
-         `runPhase → planning` — all together, so recovery never sees a goal without
-         the matching phase/state.
-       - **`external`** → the awaited thing is the TOOL RESULT keyed by `extId`, NOT
-         the incoming message (#2/22). A plain re-request must never be mis-recorded
-         as a tool result. So: **look up the result by `extId`** (from the external
-         result/callback store). If found → ONE atomic write records it, clears
-         `pending`, sets `runState → active`; then re-run executor → reviewer
-         (normal path). If NOT yet available → the tool call is still outstanding:
-         **re-issue the SAME tool call (same `extId`, idempotent) and keep the run
-         `suspended`** — do not consume anything, do not advance.
+    2. **Consume `pending` BEFORE `runPhase` (#2/21).** If `pending` is set, the
+       run is `suspended`. Dispatch by `pending.kind`:
+       - **`clarify`** → the incoming message IS the user's answer. **Validate it
+         first (#2/23):** an empty / whitespace-only answer is NOT an established
+         goal — stay `suspended`, keep the `clarify` marker, and re-surface the
+         clarification question (no goal write, no phase change). For a non-empty
+         answer, ONE atomic bundle write applies the deterministic clarify-resume
+         rule from the evaluating phase (affirmation → `goal=proposedTarget`, else
+         reply-verbatim → `goal`), clears `pending`, flips `runState → active`, AND
+         advances `runPhase → planning` — all together, so recovery never sees a
+         goal without its phase/state, nor `suspended` with `pending:none` (#1/22).
+       - **`external-tool`** → the awaited thing is the TOOL RESULT keyed by
+         `extId`, NOT the incoming message (#2/22). A plain re-request must never be
+         mis-recorded as a tool result. So: **look up the result by `extId`** (from
+         the external result/callback store).
+         - If NOT yet available → the call is still outstanding: **re-issue the SAME
+           tool call (same `extId`, idempotent) and keep the run `suspended`** — do
+           not consume, do not advance.
+         - If available → **durability ordering matters (#1/23):** do NOT clear the
+           marker before the continuation is durable. ONE atomic bundle write
+           **persists the result INTO the durable suspended-step state** (appends it
+           to the persisted executor transcript, marking this `extId` resolved) and
+           flips `runState → active`, **while KEEPING `runPhase:'executing'` and the
+           step marker** (now `extId`-resolved). The marker/step state is cleared
+           only when the continuation's executor → reviewer → single
+           write-after-review **commits the artifact at `(runId, seq)`** (the normal
+           commit point). So a crash anywhere between fetching the result and the
+           commit re-enters `executing` with the result already durably injected
+           (no lost `extId`, no re-fetch, no re-issue needed) → idempotent
+           continuation; only an uncommitted, result-less re-entry re-issues.
        Only after `pending` is consumed (or absent, run already `active`) does
        routing fall through to `runPhase`. Without the pending-first rule a
        `clarify`-suspended run (still `runPhase:'evaluating'`) would wrongly
@@ -539,16 +552,20 @@ role. (Open: a stricter controller-side match threshold.)
 The current `PendingMarker` (tool name/args + step name) loses the execution
 context. The suspended state MUST persist: the **full `Step`** (name,
 instructions, `requires`, model hint), the executor's **message transcript** up
-to suspension, and `{toolName, args, extId, position}`. On resume: the awaited
-thing is the **tool result keyed by `extId`**, not the resuming message (#2/22).
-**Look it up by `extId`** in the external result/callback store: if NOT yet
-available, the call is still outstanding → **re-issue the SAME tool call (same
-`extId`, idempotent) and stay `suspended`** (never treat the incoming message as a
-result). If available → atomically record it + clear `pending` + `runState →
-active`, rebuild the executor context from the transcript, inject the external
-result, and **re-run executor → reviewer** (normal path) — no bypass to
-`plannerPrivate`. An external soft failure thus becomes `status:'failed'` →
-replan.
+to suspension, and the `external-tool` marker `{toolName, args, extId, position}`.
+On resume: the awaited thing is the **tool result keyed by `extId`**, not the
+resuming message (#2/22). **Look it up by `extId`** in the external
+result/callback store: if NOT yet available, the call is still outstanding →
+**re-issue the SAME tool call (same `extId`, idempotent) and stay `suspended`**
+(never treat the incoming message as a result). If available → **persist the
+result INTO the durable suspended-step state (transcript append, `extId` marked
+resolved) atomically with `runState → active`, while keeping `runPhase:'executing'`
+and the step marker** — do NOT clear the marker yet (#1/23). Then rebuild the
+executor context from the transcript and **re-run executor → reviewer** (normal
+path) — no bypass to `plannerPrivate`. The marker clears only at the post-review
+artifact commit at `(runId, seq)`, so a crash mid-continuation re-enters with the
+result already durably injected (no lost `extId`). An external soft failure thus
+becomes `status:'failed'` → replan.
 
 ## Idempotency & durability
 
@@ -653,11 +670,15 @@ mark the step advanced OR failed.
   bundle — and **every** active-run recovery, regardless of `runPhase`, reads the
   terminal store FIRST → adopt-without-re-call (#2/19, #1/21). Active-run resume
   is a fixed order: **terminal-store → consume `pending` → route by `runPhase`**
-  (#2/21), so a `clarify`/`external`-suspended run consumes the reply instead of
-  re-entering its phase. Consuming `pending` is ONE atomic write that also flips
-  `runState suspended → active` (never `suspended` with `pending:none`); `external`
+  (#2/21), so a `clarify`/`external-tool`-suspended run consumes the reply instead
+  of re-entering its phase. A non-empty clarify answer is consumed by ONE atomic
+  write that also flips `runState suspended → active` (never `suspended` with
+  `pending:none`; empty answer → stay suspended, re-ask, #2/23). `external-tool`
   consumes the tool result looked up by `extId` (re-issue the same call + stay
-  suspended if not yet available), NOT the incoming message (#1/22, #2/22).
+  suspended if not yet available), NOT the incoming message; the result is
+  persisted into the durable step state and the marker is cleared only at the
+  artifact commit, so a mid-continuation crash keeps the injected result
+  (#1/22, #2/22, #1/23).
   Crash-recovery routed by
   `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
