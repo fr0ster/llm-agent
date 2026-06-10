@@ -321,6 +321,45 @@ semantic cap: write `k+2` foreign-run `step-result`s + 1 target-run entry, then
 `query(text, { k: 3, filter: { runId: 'R-target' } })` must return the target entry
 (a post-cap filter would crowd it out).
 
+- [ ] **Step 3c: Wire an embedding-backed semantic index into the controller's knowledge backend (server)**
+
+The controller's results-RAG recall is EMBEDDING-based (Task 16 `runScopedRecall`
+→ `rag.query`), so the knowledge backend MUST be embedding-backed. Today
+`smart-server.ts` builds `new JsonlKnowledgeBackend(logDir)` with NO semantic index
+(`buildKnowledgeBackend`, ~line 1901) → `semanticQuery` falls back to recency, which
+does NOT satisfy "top-K by meaning". Build the semantic index from the resolved
+embedder and pass it in:
+
+```ts
+  private buildKnowledgeBackend(): void {
+    if (this._stepperKnowledgeBackend) return;
+    const logDir = this.cfg.logDir;
+    if (logDir) {
+      // Production: the controller's results-RAG recall ranks by embedding
+      // similarity, so the durable backend MUST carry a semantic index built from
+      // the resolved embedder — recency would NOT satisfy "top-K by meaning".
+      if (!this._resolvedEmbedder) {
+        throw new Error(
+          "pipeline 'controller' results-RAG recall requires an embedder; " +
+            'configure one (or omit logDir to use the in-memory backend in tests)',
+        );
+      }
+      const semantic = makeKnowledgeSemanticIndex(this._resolvedEmbedder); // {upsert, query(text,k,filter)}
+      this._stepperKnowledgeBackend = new JsonlKnowledgeBackend(logDir, semantic);
+    } else {
+      // In-memory (tests / no-persistence): filter + insertion order. Ranking
+      // quality is not under test here; run-scoping correctness is.
+      this._stepperKnowledgeBackend = new InMemoryKnowledgeBackend();
+    }
+  }
+```
+
+If `makeKnowledgeSemanticIndex` (an embedder-backed `{upsert, query(text,k,filter)}`
+over the existing knowledge RAG store) does not yet exist, build it from the same
+vector-store plumbing the tools RAG uses; the index applies the metadata `filter`
+in its query so run-scoping is native. The fail-loud mirrors the existing
+distance-strategy embedder check in `ControllerFactory`.
+
 - [ ] **Step 4: Build the lower packages, then run the test**
 
 Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts`
@@ -1226,7 +1265,9 @@ export interface IFinalizer {
 const FINALIZE_SYSTEM =
   'All planned steps are complete. Using the fetched results below, write the ' +
   'final answer to the user request. Plain text, no JSON. Do not invent facts ' +
-  'beyond the provided results.';
+  'beyond the provided results. Answer in the LANGUAGE of the user\'s request ' +
+  '(the internal step instructions may be in English for tool selection; the ' +
+  'user-facing answer must match the user\'s language).';
 
 const TRUNC_MARKER = '…[truncated]';
 
@@ -1453,6 +1494,28 @@ In `AdaptivePlanner.next`, change the replan trigger (`if (lastOutcome === 'fail
 ```
 
 (The remainder of that branch is unchanged: it slices `plan` at the cursor, calls the replan, clears `bundle.lastOutcome`, and emits the step at the cursor. Because `commit('partial')` already advanced the cursor, the replan plans the remainder AFTER the accepted part.)
+
+- [ ] **Step 3b: Canonical-language step instructions (stable tool selection, #2/plan-11)**
+
+Tool selection (`selectTools`) is a semantic search over the MCP catalog; to keep
+it STABLE regardless of the user's language, the search query and the tool
+descriptions must be in ONE canonical language. The catalog is indexed in the
+canonical language (English) — a toolsRag-build assumption documented here — and the
+planner must emit step `instructions` in that SAME canonical language. Add one
+clause to `PLANNER_SYSTEM` and `CREATE_PLAN_SYSTEM` (and the replan prompts):
+
+```
+Write each step's `instructions` in ENGLISH (the canonical tool-selection
+language), regardless of the language of the user's request — the executor selects
+tools by semantic match against an English-indexed catalog, so non-English
+instructions degrade tool selection. (The final answer is composed separately in
+the user's language.)
+```
+
+The finalizer composes the user-facing answer in the user's language — add to
+`FINALIZE_SYSTEM` (Task 8): "Answer in the language of the user's request." So
+internal step instructions stay canonical (stable tool-RAG) while the visible
+answer honors the user's language.
 
 - [ ] **Step 4: Run, verify it passes**
 
@@ -2739,15 +2802,16 @@ In the `bundle.pending?.kind === 'clarify'` branch, guard the goal-position case
 In `runStep`, build the per-`requires` evidence map (replace the single whole-step `evidence` from Task 11):
 
 ```ts
-    // Per-reference evidence: one recall query per requires[] reference so the
-    // reviewer knows WHICH dependency was present. Falls back to the whole-step
-    // recall when the step declares no requires. EVERY recall is run-scoped by
-    // runId (#1/plan-6) so a multi-run session never surfaces a foreign run's
-    // artifacts (the query() pre-cap filter from Task 3b makes runId authoritative).
+    // Per-reference evidence: one recall per requires[] reference so the reviewer
+    // knows WHICH dependency was present. Uses the SAME embedding-based, runId-
+    // pre-filtered, over-fetched, deduped primitive as the whole-step recall
+    // (#3/plan-11) — not a separate query path. Falls back to the whole-step text
+    // when the step declares no requires.
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
+    const maxAttempts = cfg.maxStepAttempts ?? 5;
     const evidence = await Promise.all(
       refs.map(async (ref) => {
-        const hits = await resolveNeed(rag, ref, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES, runId: bundle.runId });
+        const hits = await runScopedRecall(rag, ref, RECALL_K, bundle.runId, maxAttempts, RECALL_ARTIFACT_TYPES);
         return { ref, hit: hits.length > 0 };
       }),
     );
@@ -2763,71 +2827,69 @@ per-reference evidence above only needs hit/no-hit, so it keeps the simple
 `resolveNeed`):
 
 ```ts
-/** Run-scoped recall: rank the run's artifacts by MEANING locally and return the
- *  top-k. Uses the EXHAUSTIVE `list({runId})` (guaranteed complete — never the
- *  backend's semantic cap, which the production JSONL backend lacks), ranks by a
- *  deterministic LOCAL lexical-similarity score to `text` (NOT recency — closes
- *  the "no top-K by meaning on the default runtime backend" gap, #1/plan-10), then
- *  dedups and caps. The spec's "exact list(runId) → rank locally by similarity →
- *  top-K" fallback, applied uniformly. (A native vector backend can later supply
- *  its own ranking via the semanticQuery filter; this local path is the guaranteed
- *  floor.)
- *  Dedup: step-results (have `seq`) collapse to the precedence-winner per seq (a
- *  step's retries); mcp-results (distinct tool fetches) dedup by `identityKey` so
- *  duplicate fetches collapse but distinct ones survive — both bounded because the
- *  source is the FINITE run set, not an unbounded stream (#2/plan-10). */
+/** The ONE run-scoped results-RAG recall primitive (#3/plan-11) — used by BOTH the
+ *  whole-step recall AND the per-`requires` evidence. EMBEDDING-based similarity
+ *  via the backend's semantic query (NO homemade lexical scoring — #1/plan-11):
+ *  the backend embeds the query + ranks by vector similarity, with the `runId`
+ *  filter applied PRE-cap (the semanticQuery filter from Task 3b). Over-fetch
+ *  `k' = k × (maxStepAttempts + 1)` so a step's retry duplicates don't starve other
+ *  steps, then dedup and cap.
+ *  Dedup: step-results (have `seq`) → precedence-winner per seq (a step's retries);
+ *  mcp-results → by `identityKey` (duplicate fetches collapse, distinct survive).
+ *  Embedding rank order is preserved through the dedup; cap to k.
+ *  NB: results-RAG MUST be embedding-backed (a semantic index) — the controller's
+ *  knowledge backend is wired with one (Task 2 / server wiring). Language handling
+ *  is the configured embedder's contract; this primitive does no normalization. */
 async function runScopedRecall(
   rag: IKnowledgeRagHandle,
   text: string,
   k: number,
   runId: string | undefined,
+  maxStepAttempts: number,
   artifactType: readonly string[],
 ): Promise<readonly KnowledgeEntry[]> {
-  const all = await rag.list({ runId, artifactType });
-  // Collapse duplicates first: step-results by seq-precedence; mcp-results by identityKey.
+  const kPrime = k * (maxStepAttempts + 1);
+  const hits = await rag.query(text, { k: kPrime, filter: { runId, artifactType } });
   const bestStep = new Map<number, KnowledgeEntry>();
   const bestMcp = new Map<string, KnowledgeEntry>();
-  const passthrough: KnowledgeEntry[] = [];
-  for (const e of all) {
+  for (const e of hits) {
     if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
       const prev = bestStep.get(e.metadata.seq);
       if (!prev || rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)) bestStep.set(e.metadata.seq, e);
     } else if (e.metadata.identityKey) {
-      bestMcp.set(e.metadata.identityKey, e); // latest distinct fetch wins
-    } else {
-      passthrough.push(e);
+      bestMcp.set(e.metadata.identityKey, e);
     }
   }
-  const candidates = [...bestStep.values(), ...bestMcp.values(), ...passthrough];
-  // Rank by local lexical similarity to the query text, then cap.
-  const q = tokenize(text);
-  return candidates
-    .map((e) => ({ e, score: lexicalScore(q, tokenize(e.content)) }))
-    .sort((a, b) => b.score - a.score)
-    .slice(0, k)
-    .map((x) => x.e);
+  // Walk hits in embedding-rank order; emit each (runId,seq) / identityKey once.
+  const out: KnowledgeEntry[] = [];
+  const seenSeq = new Set<number>();
+  const seenMcp = new Set<string>();
+  for (const e of hits) {
+    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
+      if (seenSeq.has(e.metadata.seq)) continue;
+      seenSeq.add(e.metadata.seq);
+      out.push(bestStep.get(e.metadata.seq)!);
+    } else if (e.metadata.identityKey) {
+      if (seenMcp.has(e.metadata.identityKey)) continue;
+      seenMcp.add(e.metadata.identityKey);
+      out.push(bestMcp.get(e.metadata.identityKey)!);
+    } else {
+      out.push(e);
+    }
+    if (out.length >= k) break;
+  }
+  return out.slice(0, k);
 }
 /** Outcome-precedence rank for step-result dedup (ok/exists > partial > failed). */
 function rankStatus(s?: string): number {
   return s === 'ok' || s === 'exists' ? 3 : s === 'partial' ? 2 : s === 'failed' ? 1 : 0;
 }
-/** Lowercase word tokens. */
-function tokenize(s: string): Set<string> {
-  return new Set((s.toLowerCase().match(/[a-z0-9_]+/g) ?? []));
-}
-/** Local similarity: overlap of query tokens present in the candidate, normalized
- *  by query size (deterministic, no embedder). Bigger = more relevant. */
-function lexicalScore(q: Set<string>, c: Set<string>): number {
-  if (q.size === 0) return 0;
-  let hit = 0;
-  for (const t of q) if (c.has(t)) hit++;
-  return hit / q.size;
-}
 ```
 
 Replace the existing whole-step episodic recall call in `runStep`
 (`resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`)
-with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, RECALL_ARTIFACT_TYPES)`.
+with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, cfg.maxStepAttempts ?? 5, RECALL_ARTIFACT_TYPES)`
+— the SAME primitive the evidence uses.
 Add `KnowledgeEntry` to the existing `@mcp-abap-adt/llm-agent` type import in the handler.
 
 **Tag the artifact writes (#1/plan-6, #2/plan-10).** Tag every `mcp-result` write
