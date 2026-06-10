@@ -86,8 +86,11 @@ The artifact persists the **complete `Outcome`** (`status`, `note`, `remainder`)
 plus the approved content — NOT just `status`/`approved`. So `remainder` (needed
 to replan a `partial`) and `note` survive a crash between the write and the bundle
 persist. `plannerPrivate` is then a **convenience cache** of these control fields,
-**rebuildable from the run's artifacts** on resume (exact list by `runId`, latest
-per `seq`) — losing the bundle does not lose the control state. Nothing is written
+**rebuildable from the run's artifacts** on resume (exact list by `runId`,
+resolving each `seq` by the **SAME outcome-precedence rule** as dedup/finalizer —
+`ok/exists > partial > failed`, tie-break latest — NOT bare "latest", so the
+planner, reconciliation and finalizer always agree). Losing the bundle does not
+lose the control state. Nothing is written
 before review; no record is mutated. (A raw-vs-approved audit trail, if ever
 wanted, is an additional immutable record — out of scope now.)
 
@@ -143,7 +146,11 @@ data. Fix:
 
 - **One finalizer stage runs after the planner returns `done`, for BOTH
   planners.** `done` only signals completion (carries no answer). The finalizer
-  composes from the **run-scoped result set** in results-RAG.
+  composes from the **run-scoped result set** in results-RAG, against the bundle's
+  **durable `originalRequest`** — NOT the current leg's prompt, which after an
+  external-tool resume is the tool result, not the user's ask (#2). The bundle
+  persists `originalRequest`; its normalized hash is the identity fingerprint used
+  for crash recovery.
 - The finalizer reads only **reviewer-approved content** (`status ∈ {ok, exists,
   partial}` with the stored `approved` field) — never raw executor output. A
   `partial` artifact contributes its accepted extract only, so unfinished/wrong
@@ -169,7 +176,8 @@ Transitions:
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
   run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
   `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none),
-  `originalRequestFingerprint` (→ new)** — and **mints a fresh `runId`** → active.
+  `originalRequest` (→ the new request; fingerprint re-derived)** — and **mints a
+  fresh `runId`** → active.
   The reset list is exhaustive precisely so a fresh run cannot inherit the prior
   run's replay state (`nextSeq`/`inFlightStep`) or recovery identity.
 - **Resume while suspended:** keep `runId` + all run-scoped state.
@@ -180,10 +188,12 @@ Transitions:
   Instead:
   - **Explicit resume token (primary):** the bundle exposes `runId` as a resume
     token; a client that passes it back resumes that run unambiguously.
-  - **Canonical fingerprint (fallback):** the bundle persists
-    `originalRequestFingerprint` — a hash of the *normalized* request (messages
-    reduced to `{role, trimmed content}`, transport metadata dropped). The
-    incoming request is normalized + hashed and compared.
+  - **Canonical fingerprint (fallback):** the bundle persists the durable
+    `originalRequest` (also the finalizer's input); its identity fingerprint is a
+    hash of the *normalized* request (messages reduced to `{role, trimmed
+    content}`, transport metadata dropped). The incoming request is normalized +
+    hashed and compared. (The fingerprint is for identity only; the request itself
+    is kept for the finalizer.)
   - Match (token or fingerprint) → **resume from `inFlightStep`** (adopt-or-re-run
     per the reconciliation above). No match → the crashed run is **abandoned**
     (logged) → reset → fresh run.
@@ -203,11 +213,15 @@ Transitions:
   artifacts.
 
 **Two retrieval primitives (distinct):**
-- **Semantic recall (executor):** top-K by meaning, scoped to `runId`. To
-  guarantee K UNIQUE steps despite crash-replay duplicates (#2), it **paginates /
-  refills** — fetch, dedup `(runId, seq)` by outcome precedence, refill until K
-  unique or the source is exhausted (backend `DISTINCT (runId, seq)` is an
-  optimization where available) — NOT a single fixed over-fetch.
+- **Semantic recall (executor):** top-K by meaning, scoped to `runId`.
+  Duplicates of a `(runId, seq)` are **bounded** — a step is dispatched at most
+  `D` times (`maxRetries` + the bounded crash-replay count), so ≤ `D` artifacts
+  exist per `seq`. Therefore a single **bounded over-fetch** with the existing
+  `query(text, k')` where `k' = k × (D+1)` yields ≥ `k` distinct `(runId, seq)`
+  after dedup-by-precedence (worst case: every one of `k` unique steps carries
+  `D` dups). No cursor/pagination is required — `D` is a known budget, not
+  unbounded. (Optional future: a `query(text, k, offset)` cursor + backend
+  `DISTINCT (runId, seq)` as a cleaner optimization.)
 - **Exact list/get (NOT semantic) (#3):** an exhaustive metadata query —
   `list(runId)` / `get(runId, seq)` — returning ALL matching artifacts with no
   relevance ranking or top-K. Used by the **finalizer full set**, **resume-adopt**
@@ -315,9 +329,11 @@ mark the step advanced OR failed.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (also the resume token) + run-state +
-  `nextSeq` + `inFlightStep` + `originalRequestFingerprint` + atomic run-scoped
-  RESET + crash-recovery classification (token/fingerprint, not raw equality);
-  persist full suspended-step state in the external-tool `PendingMarker`.
+  `nextSeq` + `inFlightStep` + durable `originalRequest` (finalizer input; its
+  normalized hash is the identity fingerprint) + atomic run-scoped RESET +
+  crash-recovery classification (token/fingerprint, not raw equality); persist
+  full suspended-step state in the external-tool `PendingMarker`. `plannerPrivate`
+  rebuild + dedup + finalizer all resolve a `seq` by the same outcome-precedence.
 - `KnowledgeEntryMetadata` + `KnowledgeFilter`: `runId/seq/status` (+ filter/order);
   backend filter or fetch-then-filter.
 
