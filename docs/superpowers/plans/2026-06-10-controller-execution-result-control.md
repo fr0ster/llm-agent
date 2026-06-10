@@ -30,6 +30,8 @@
 - `packages/llm-agent/src/interfaces/knowledge-rag.ts` — `KnowledgeEntryMetadata` += `runId/seq/attempt/status`; `KnowledgeFilter` += equality on the same; `KnowledgeBackend.semanticQuery` += optional pre-cap `filter`.
 - `packages/llm-agent-libs/src/rag/knowledge-rag.ts` — `matches()` honours the new filter fields (and is exported); `KnowledgeRag.query` + `InMemoryKnowledgeBackend.semanticQuery` apply the filter pre-cap.
 - `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` — the production backend: `semanticQuery` filter param + injected semantic-index filter passthrough (the runtime recall path).
+- `packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts` (new) — embedder-backed semantic index (filter pre-cap + cosine rank) so results-RAG recall ranks by meaning on the production backend.
+- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `buildKnowledgeBackend` attaches the index from the resolved embedder; fail-loud when a `logDir` controller has no embedder.
 - `controller/types.ts` — extend `SessionBundle` (runId/runState/runPhase/nextSeq/inFlightStep/markers/counters), `ControllerConfig.subagents` (+reviewer/finalizer), `ControllerConfig.budgets` (+resume/eval/finalize caps), `PlannerNextInput.lastOutcome`/`IControllerPlanner.commit` (+`partial`).
 - `controller/session-bundle.ts` — `emptyBundle()` carries the new run-scoped fields; add `resetRun()`.
 - `controller/controller-coordinator-handler.ts` — write-after-review, durable counters, three-stage recovery, attempt-keyed external resume, unified finalizer, evaluator confirmation transition.
@@ -152,7 +154,9 @@ git commit -m "feat(controller): Outcome type + precedence resolver (ok/exists>p
 - Modify: `packages/llm-agent/src/interfaces/knowledge-rag.ts:3-30` (metadata/filter + the `KnowledgeBackend.semanticQuery` filter param)
 - Modify: `packages/llm-agent-libs/src/rag/knowledge-rag.ts` (the `matches()` function — export it; `KnowledgeRag.query`; `InMemoryKnowledgeBackend.semanticQuery`; the `KnowledgeBackend` interface)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` (the production backend — `semanticQuery` filter param + injected semantic-index filter passthrough)
-- Test: `packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts` (new)
+- Create: `packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts` (embedder-backed `{upsert, query}` semantic index — filter pre-cap + cosine rank)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`buildKnowledgeBackend` wires the index from the resolved embedder; fail-loud for a production controller with no embedder)
+- Test: `packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts` (new) + `packages/llm-agent-server-libs/src/smart-agent/__tests__/embedder-knowledge-index.test.ts` (new — embedding ranking + pre-cap filtering)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -256,11 +260,19 @@ optional filter; document the pre-cap contract:
   ): Promise<readonly KnowledgeEntry[]>;
 ```
 
-`InMemoryKnowledgeBackend.semanticQuery` — filter first, then cap (its order is
-insertion = its "semantic" proxy; ranking unchanged):
+`InMemoryKnowledgeBackend` — add an OPTIONAL `semantic` index constructor param
+(Step 3c attaches a real embedder-backed index when an embedder is configured).
+`semanticQuery` delegates to it when present (real ranking), else filters then caps
+in insertion order (pure unit tests without an embedder):
 
 ```ts
-  async semanticQuery(sid: string, _text: string, k?: number, filter?: KnowledgeFilter) {
+  constructor(private readonly semantic?: {
+    upsert(sid: string, e: KnowledgeEntry): Promise<void>;
+    query(sid: string, text: string, k?: number, filter?: KnowledgeFilter): Promise<readonly KnowledgeEntry[]>;
+  }) {}
+  async put(sid: string, entry: KnowledgeEntry) { this.of(sid).push(entry); await this.semantic?.upsert(sid, entry); }
+  async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
+    if (this.semantic) return this.semantic.query(sid, text, k, filter);
     let a = this.of(sid);
     if (filter) a = a.filter((e) => matches(e.metadata, filter));
     return k ? a.slice(0, k) : a.slice();
@@ -298,13 +310,12 @@ downgrade):
 > `matchesFilter` is the shared predicate: export `matches` from `knowledge-rag.ts`
 > and import it here (one predicate, no duplication).
 >
-> IMPORTANT — the controller's run-scoped RECALL does NOT depend on this semantic
-> path: it uses the exhaustive `list({runId})` + a LOCAL lexical-similarity ranker
-> (Task 16 `runScopedRecall`), so "top-K by meaning" holds even on the default
-> production JSONL backend, which is built WITHOUT a semantic index
-> (`smart-server.ts` → `new JsonlKnowledgeBackend(logDir)`). The `semanticQuery`
-> filter remains useful for any non-recall semantic caller and for a future native
-> vector recall path.
+> IMPORTANT — the controller's run-scoped RECALL (Task 16 `runScopedRecall`) is
+> EMBEDDING-based: it calls `rag.query` → `semanticQuery` with the `runId` filter
+> applied pre-cap, so ranking is by vector similarity. This REQUIRES the knowledge
+> backend to be embedding-backed (a semantic index); Step 3c wires one from the
+> resolved embedder and fails loud if a production (`logDir`) controller has no
+> embedder — recall must not silently degrade to recency.
 
 `KnowledgeRag.query` passes the filter through (the backend applied it pre-cap; a
 defensive post-filter is harmless):
@@ -330,46 +341,127 @@ The controller's results-RAG recall is EMBEDDING-based (Task 16 `runScopedRecall
 does NOT satisfy "top-K by meaning". Build the semantic index from the resolved
 embedder and pass it in:
 
+Create the concrete embedder-backed index (#3/plan-12) — a per-session in-process
+vector store implementing the injected `semantic` shape `{upsert, query}`. It
+embeds content on upsert, and on query embeds the text, applies the metadata
+`filter` PRE-cap, ranks by cosine, returns top-k:
+
+Create `packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts`:
+
+```ts
+import type { IEmbedder, KnowledgeEntry, KnowledgeFilter } from '@mcp-abap-adt/llm-agent';
+import { matches } from '@mcp-abap-adt/llm-agent-libs'; // export `matches` from knowledge-rag.ts
+
+interface Indexed { entry: KnowledgeEntry; vector: number[] }
+
+function cosine(a: number[], b: number[]): number {
+  let dot = 0, na = 0, nb = 0;
+  for (let i = 0; i < a.length; i++) { dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i]; }
+  return na && nb ? dot / (Math.sqrt(na) * Math.sqrt(nb)) : 0;
+}
+
+/** Embedder-backed semantic index for the knowledge backend: filter PRE-cap, then
+ *  cosine-rank, then top-K. The runId filter is applied to the candidate set
+ *  BEFORE the cap, so a run's hits are never starved by other runs (#1/plan-10). */
+export function makeKnowledgeSemanticIndex(embedder: IEmbedder) {
+  const bySession = new Map<string, Indexed[]>();
+  return {
+    async upsert(sid: string, e: KnowledgeEntry): Promise<void> {
+      const { vector } = await embedder.embed(e.content);
+      (bySession.get(sid) ?? bySession.set(sid, []).get(sid)!).push({ entry: e, vector });
+    },
+    async query(sid: string, text: string, k?: number, filter?: KnowledgeFilter): Promise<readonly KnowledgeEntry[]> {
+      const all = bySession.get(sid) ?? [];
+      const scoped = filter ? all.filter((x) => matches(x.entry.metadata, filter)) : all; // PRE-cap
+      const { vector: q } = await embedder.embed(text);
+      const ranked = scoped
+        .map((x) => ({ e: x.entry, s: cosine(q, x.vector) }))
+        .sort((a, b) => b.s - a.s)
+        .map((x) => x.e);
+      return k ? ranked.slice(0, k) : ranked;
+    },
+  };
+}
+```
+
+Wire it in `smart-server.buildKnowledgeBackend`, attaching the index to BOTH
+backends when an embedder is resolved (so in-memory deployments WITH an embedder
+also rank by similarity, #4/plan-12 — not insertion order); fail loud only for a
+production `logDir` controller with no embedder:
+
 ```ts
   private buildKnowledgeBackend(): void {
     if (this._stepperKnowledgeBackend) return;
     const logDir = this.cfg.logDir;
+    const semantic = this._resolvedEmbedder
+      ? makeKnowledgeSemanticIndex(this._resolvedEmbedder)
+      : undefined;
     if (logDir) {
-      // Production: the controller's results-RAG recall ranks by embedding
-      // similarity, so the durable backend MUST carry a semantic index built from
-      // the resolved embedder — recency would NOT satisfy "top-K by meaning".
-      if (!this._resolvedEmbedder) {
+      // Production durable backend: recall ranks by embedding similarity, so an
+      // index is REQUIRED — recency would not satisfy "top-K by meaning".
+      if (!semantic) {
         throw new Error(
           "pipeline 'controller' results-RAG recall requires an embedder; " +
             'configure one (or omit logDir to use the in-memory backend in tests)',
         );
       }
-      const semantic = makeKnowledgeSemanticIndex(this._resolvedEmbedder); // {upsert, query(text,k,filter)}
       this._stepperKnowledgeBackend = new JsonlKnowledgeBackend(logDir, semantic);
     } else {
-      // In-memory (tests / no-persistence): filter + insertion order. Ranking
-      // quality is not under test here; run-scoping correctness is.
-      this._stepperKnowledgeBackend = new InMemoryKnowledgeBackend();
+      // In-memory: use the index when an embedder is available (real ranking),
+      // else filter + insertion order (pure unit tests without an embedder).
+      this._stepperKnowledgeBackend = new InMemoryKnowledgeBackend(semantic);
     }
   }
 ```
 
-If `makeKnowledgeSemanticIndex` (an embedder-backed `{upsert, query(text,k,filter)}`
-over the existing knowledge RAG store) does not yet exist, build it from the same
-vector-store plumbing the tools RAG uses; the index applies the metadata `filter`
-in its query so run-scoping is native. The fail-loud mirrors the existing
+`InMemoryKnowledgeBackend` gains an optional `semantic` constructor param; its
+`semanticQuery` delegates to `this.semantic.query(sid, text, k, filter)` when
+present, else the existing filter+insertion path. The fail-loud mirrors the
 distance-strategy embedder check in `ControllerFactory`.
 
-- [ ] **Step 4: Build the lower packages, then run the test**
+- [ ] **Step 4: Build the lower packages, then run the tests (incl. embedding ranking + pre-cap filtering)**
 
-Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts`
-Expected: build OK, tests PASS. If build fails because the `status` union is duplicated, ensure the metadata and filter unions are written identically. The build also compiles `jsonl-knowledge-backend.ts` against the widened `KnowledgeBackend.semanticQuery` signature — confirm it implements the new param.
+Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/embedder-knowledge-index.test.ts`
+Expected: build OK, tests PASS. The build also compiles `jsonl-knowledge-backend.ts` against the widened `KnowledgeBackend.semanticQuery` signature.
+
+Add the **integration test** `packages/llm-agent-server-libs/src/smart-agent/__tests__/embedder-knowledge-index.test.ts` proving (a) embedding RANKING and (b) PRE-cap runId filtering, with a deterministic stub embedder:
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import { makeKnowledgeSemanticIndex } from '../embedder-knowledge-index.js';
+
+// Stub embedder: maps known words to orthogonal unit vectors; unknown → zero.
+const VOCAB: Record<string, number[]> = { alpha: [1, 0, 0], beta: [0, 1, 0], gamma: [0, 0, 1] };
+const stub = { embed: async (t: string) => ({ vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] }) } as never;
+const meta = (over: object) => ({ traceId: 't', turnId: 't', stepperId: 'controller', task: 'x', artifactType: 'step-result', createdAt: '2026-06-10T00:00:00.000Z', ...over });
+
+describe('makeKnowledgeSemanticIndex', () => {
+  it('ranks by cosine similarity, not insertion order', async () => {
+    const idx = makeKnowledgeSemanticIndex(stub);
+    await idx.upsert('s', { content: 'gamma', metadata: meta({ runId: 'R' }) });
+    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
+    const hits = await idx.query('s', 'alpha', 1);
+    assert.equal(hits[0].content, 'alpha', 'most similar wins regardless of insertion order');
+  });
+  it('applies the runId filter PRE-cap (foreign-run hits never crowd the cap)', async () => {
+    const idx = makeKnowledgeSemanticIndex(stub);
+    // Two highly-similar foreign-run entries + one target-run entry.
+    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'OTHER' }) });
+    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'OTHER' }) });
+    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'TARGET' }) });
+    const hits = await idx.query('s', 'alpha', 1, { runId: 'TARGET' });
+    assert.equal(hits.length, 1);
+    assert.equal(hits[0].metadata.runId, 'TARGET', 'filter applied before the k=1 cap');
+  });
+});
+```
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent/src/interfaces/knowledge-rag.ts packages/llm-agent-libs/src/rag/knowledge-rag.ts packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts
-git commit -m "feat(rag): KnowledgeEntryMetadata/Filter + semanticQuery filter param (runId/seq/attempt/status)"
+git add packages/llm-agent/src/interfaces/knowledge-rag.ts packages/llm-agent-libs/src/rag/knowledge-rag.ts packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/embedder-knowledge-index.test.ts
+git commit -m "feat(rag): metadata/filter + semanticQuery filter param + embedder-backed knowledge index"
 ```
 
 ---
@@ -1198,11 +1290,18 @@ describe('reduceToBudget', () => {
     assert.ok(logs.length > 0 && /overflow/.test(logs.join(' ')), 'reductions logged');
   });
 
-  it('clamps a sub-floor budget up and still emits an explicit count (no silent slice)', () => {
+  it('never exceeds the configured budget (no clamp-up) and still counts omissions', () => {
     const many = Array.from({ length: 50 }, (_, i) => ({ seq: i, content: 'X'.repeat(1000) }));
-    const body = reduceToBudget(many, 1000, 5); // 5 is below MIN_BODY_BUDGET
-    assert.ok(body.length <= MIN_BODY_BUDGET, `body ${body.length} <= floor ${MIN_BODY_BUDGET}`);
-    assert.ok(/more of 50/.test(body), 'explicit omitted count survives the clamp (not a bare slice)');
+    const body = reduceToBudget(many, 1000, MIN_BODY_BUDGET); // smallest valid budget
+    assert.ok(body.length <= MIN_BODY_BUDGET, `body ${body.length} <= configured ${MIN_BODY_BUDGET}`);
+    assert.ok(/more of 50/.test(body), 'explicit omitted count present');
+  });
+});
+
+describe('LlmFinalizer budget validation', () => {
+  it('throws when constructed with a budget below MIN_BODY_BUDGET', () => {
+    const client = { async send() { return { kind: 'content', content: 'x' } as const; } };
+    assert.throws(() => new LlmFinalizer(client, { budget: 5, perResultCap: 100 }), /MIN_BODY_BUDGET/);
   });
 });
 
@@ -1300,23 +1399,21 @@ export function orderAndTruncate(
  *     many seq ids as fit plus an EXPLICIT "(+M more of N)" count — so omission is
  *     never silent even when naming all ids is physically impossible in the budget
  *     (#3/plan-9). Guaranteed <= the EFFECTIVE budget by construction.
- *  The budget is clamped UP to a small floor (`MIN_BODY_BUDGET`) so the count
- *  manifest always fits — a sub-floor budget is degenerate; the manifest's "(+M
- *  more of N)" suffix is short and bounded, so the clamped floor always holds the
- *  count (no silent slice, #3/plan-10). Deterministic; an LLM-summarizer
- *  map-reduce is a future variant. Pure aside from `log`. */
+ *  PRECONDITION: `budget >= MIN_BODY_BUDGET` (validated in the LlmFinalizer
+ *  constructor, #5/plan-12) so the count manifest always fits — reduceToBudget
+ *  therefore NEVER exceeds the configured budget (no clamp-up that would silently
+ *  return more than asked). The final guard slice is an absolute backstop only.
+ *  Deterministic; an LLM-summarizer map-reduce is a future variant. Pure aside
+ *  from `log`. */
 export const MIN_BODY_BUDGET = 64;
 export function reduceToBudget(
   results: readonly ApprovedResult[],
   perResultCap: number,
-  rawBudget: number,
+  budget: number,
   log?: (msg: string) => void,
 ): string {
   const FLOOR = 80;
   const SEP = '\n\n';
-  // Clamp up so the count manifest always fits (a tiny budget is a config error).
-  const budget = Math.max(rawBudget, MIN_BODY_BUDGET);
-  if (budget !== rawBudget) log?.(`finalizer: budget ${rawBudget} clamped up to MIN_BODY_BUDGET ${MIN_BODY_BUDGET}`);
   const ordered = results.slice().sort((a, b) => a.seq - b.seq);
   if (ordered.length === 0) return '';
   const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
@@ -1381,7 +1478,14 @@ export class LlmFinalizer implements IFinalizer {
   constructor(
     private readonly client: ISubagentClient,
     private readonly policy: FinalizerPolicy,
-  ) {}
+  ) {
+    // Validate the budget at construction (#5/plan-12) so reduceToBudget can assume
+    // budget >= MIN_BODY_BUDGET and NEVER clamp up past the configured value. A
+    // sub-floor budget is a config error, caught early — not silently exceeded.
+    if (policy.budget < MIN_BODY_BUDGET) {
+      throw new Error(`finalizer budget ${policy.budget} < MIN_BODY_BUDGET ${MIN_BODY_BUDGET}`);
+    }
+  }
 
   async finalize(
     goal: string,
@@ -1411,7 +1515,7 @@ export class LlmFinalizer implements IFinalizer {
 - [ ] **Step 4: Run, verify it passes**
 
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/finalizer.test.ts`
-Expected: PASS (5 tests).
+Expected: PASS (6 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1495,27 +1599,56 @@ In `AdaptivePlanner.next`, change the replan trigger (`if (lastOutcome === 'fail
 
 (The remainder of that branch is unchanged: it slices `plan` at the cursor, calls the replan, clears `bundle.lastOutcome`, and emits the step at the cursor. Because `commit('partial')` already advanced the cursor, the replan plans the remainder AFTER the accepted part.)
 
-- [ ] **Step 3b: Canonical-language step instructions (stable tool selection, #2/plan-11)**
+- [ ] **Step 3b: Canonical-language step instructions — a HARD prompt invariant (#1/plan-12)**
 
-Tool selection (`selectTools`) is a semantic search over the MCP catalog; to keep
-it STABLE regardless of the user's language, the search query and the tool
-descriptions must be in ONE canonical language. The catalog is indexed in the
-canonical language (English) — a toolsRag-build assumption documented here — and the
-planner must emit step `instructions` in that SAME canonical language. Add one
-clause to `PLANNER_SYSTEM` and `CREATE_PLAN_SYSTEM` (and the replan prompts):
+Tool selection (`selectTools`) is a semantic search over the MCP catalog; for
+stable selection regardless of the user's language the search query (the step
+`instructions`) and the catalog must be in ONE canonical language (English). The
+planner-emitted `instructions` are an LLM contract boundary, so this is encoded as
+a HARD INVARIANT in EVERY planner/replan prompt — `PLANNER_SYSTEM`,
+`CREATE_PLAN_SYSTEM`, `REPLAN_SYSTEM`, `EXTERNAL_RESULT_REPLAN_SYSTEM` — not a
+recommendation. Add the IDENTICAL clause (a shared `const ENGLISH_INSTRUCTIONS_RULE`
+string concatenated into each prompt, so there is ONE source and the test can
+assert it verbatim):
 
+```ts
+export const ENGLISH_INSTRUCTIONS_RULE =
+  ' Step `instructions` MUST be written in English — always, regardless of the ' +
+  "language of the user's request. This is a hard contract: the executor selects " +
+  'tools by semantic match against an English-indexed catalog, so non-English ' +
+  'instructions break tool selection. (The user-facing answer is composed ' +
+  'separately in the user\'s language.)';
 ```
-Write each step's `instructions` in ENGLISH (the canonical tool-selection
-language), regardless of the language of the user's request — the executor selects
-tools by semantic match against an English-indexed catalog, so non-English
-instructions degrade tool selection. (The final answer is composed separately in
-the user's language.)
+
+Append `ENGLISH_INSTRUCTIONS_RULE` to each of the four prompt constants.
+
+**Contract test** (`planner.test.ts`): export the four prompt constants and assert
+each one includes `ENGLISH_INSTRUCTIONS_RULE` (so a future edit can't silently drop
+the invariant from any prompt):
+
+```ts
+import { CREATE_PLAN_SYSTEM, ENGLISH_INSTRUCTIONS_RULE, EXTERNAL_RESULT_REPLAN_SYSTEM, PLANNER_SYSTEM, REPLAN_SYSTEM } from '../planner.js';
+it('every planner/replan prompt carries the English-instructions invariant', () => {
+  for (const p of [PLANNER_SYSTEM, CREATE_PLAN_SYSTEM, REPLAN_SYSTEM, EXTERNAL_RESULT_REPLAN_SYSTEM]) {
+    assert.ok(p.includes(ENGLISH_INSTRUCTIONS_RULE), 'prompt is missing the English-instructions invariant');
+  }
+});
 ```
 
-The finalizer composes the user-facing answer in the user's language — add to
-`FINALIZE_SYSTEM` (Task 8): "Answer in the language of the user's request." So
-internal step instructions stay canonical (stable tool-RAG) while the visible
+The finalizer composes the user-facing answer in the user's language —
+`FINALIZE_SYSTEM` (Task 8) carries "Answer in the LANGUAGE of the user's request".
+So internal instructions are canonical English (stable tool-RAG) while the visible
 answer honors the user's language.
+
+> **PRECONDITION — MCP catalog language (#2/plan-12).** Tool names and descriptions
+> are NOT generated by the planner, so no prompt can guarantee their language. The
+> contract is therefore an explicit precondition, NOT a runtime step: **the MCP
+> tool catalog (names + descriptions) is indexed in English**, matching the
+> canonical language of the planner-emitted instructions. This is an external MCP-
+> server contract — the controller performs NO runtime translation of tool
+> descriptions. Record this in `docs/` (the controller/pipeline docs) as a
+> deployment precondition; a server whose MCP exposes non-English descriptions must
+> normalize them at catalog-build time, outside this design.
 
 - [ ] **Step 4: Run, verify it passes**
 
