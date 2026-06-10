@@ -202,6 +202,12 @@ In `packages/llm-agent/src/interfaces/knowledge-rag.ts`, extend `KnowledgeEntryM
   seq?: number;
   attempt?: number;
   status?: 'ok' | 'exists' | 'failed' | 'partial';
+  /** The reviewer's full control fields, persisted on the artifact so the
+   *  COMPLETE Outcome (not just status+approved) survives a crash — `remainder`
+   *  drives a partial replan, `note` is the audit reason. No filter equality is
+   *  defined on these (they are read back, never queried by value). */
+  note?: string;
+  remainder?: string;
 ```
 
 And extend `KnowledgeFilter` (after `toolName`):
@@ -345,7 +351,20 @@ and in `budgets`:
     maxPlannerResumes?: number;
     maxEvalResumes?: number;
     maxFinalizeRetries?: number;
+    /** In-process re-ask budget for judge (reviewer) provider/malformed failures
+     *  within one live review (NOT a crash bound). */
+    maxReviewRetries?: number;
   };
+```
+
+Also add, directly on `ControllerConfig` (sibling of `budgets`), the finalizer-exhaustion policy:
+
+```ts
+  /** Behaviour when the finalizer's retry budget is exhausted (spec
+   *  "Finalizer failure semantics"). 'error' → terminal control error
+   *  (deterministic, default); 'best-effort' → compose from the already-approved
+   *  results with an explicit incomplete marker. */
+  onFinalizeExhausted?: 'error' | 'best-effort';
 ```
 
 - [ ] **Step 3: Extend `PlannerNextInput.lastOutcome` and `IControllerPlanner.commit`**
@@ -810,30 +829,46 @@ describe('LlmReviewer', () => {
     const r = new LlmReviewer(
       client(JSON.stringify({ status: 'ok', approved: 'RESULT', remainder: '', note: 'good' })),
     );
-    const out = await r.review(
+    const res = await r.review(
       { name: 's1', instructions: 'do' },
       [{ ref: 'x', hit: true }],
       'RESULT',
       {},
     );
-    assert.equal(out.status, 'ok');
-    assert.equal(out.approved, 'RESULT');
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'ok');
+    assert.equal(res.kind === 'outcome' && res.outcome.approved, 'RESULT');
   });
 
-  it('treats status:ok with empty approved as malformed → failed verdict', async () => {
+  it('a well-formed FAILED verdict is a real step outcome (NOT a judge failure)', async () => {
+    const r = new LlmReviewer(
+      client(JSON.stringify({ status: 'failed', approved: '', remainder: 'all', note: 'not done' })),
+    );
+    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'failed');
+  });
+
+  it('status:ok with empty approved is a JUDGE FAILURE (contradictory → re-ask, not a step failure)', async () => {
     const r = new LlmReviewer(
       client(JSON.stringify({ status: 'ok', approved: '', remainder: '', note: '' })),
     );
-    const out = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
-    assert.equal(out.status, 'failed');
+    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    assert.equal(res.kind, 'judge-failure');
   });
 
-  it('a provider error surfaces as a judge failure (status failed, note set)', async () => {
+  it('an unparsable reply is a JUDGE FAILURE', async () => {
+    const r = new LlmReviewer(client('not json at all'));
+    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    assert.equal(res.kind, 'judge-failure');
+  });
+
+  it('a provider error is a JUDGE FAILURE (NOT a step status:failed)', async () => {
     const errClient: ISubagentClient = { async send() { return { kind: 'error', error: 'boom' }; } };
     const r = new LlmReviewer(errClient);
-    const out = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
-    assert.equal(out.status, 'failed');
-    assert.match(out.note, /boom|review/i);
+    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    assert.equal(res.kind, 'judge-failure');
+    assert.match(res.kind === 'judge-failure' ? res.reason : '', /boom|review/i);
   });
 });
 ```
@@ -866,15 +901,26 @@ export interface ReviewOpts {
   logUsage?: (role: string, u?: LlmUsage) => void;
 }
 
+/** The reviewer's return: EITHER an authoritative step Outcome (incl. a genuine
+ *  `failed` verdict → step replan), OR a judge-failure — the reviewer could not
+ *  produce a verdict (provider error / malformed / contradictory ok-with-empty).
+ *  The controller MUST treat these differently: a judge-failure is re-asked
+ *  within maxReviewRetries and, on exhaustion, ABORTS the run (the step outcome
+ *  is unverifiable) — it is NEVER mapped to a step `failed`/replan (spec
+ *  "Reviewer/finalizer failure semantics"). */
+export type ReviewResult =
+  | { kind: 'outcome'; outcome: Outcome }
+  | { kind: 'judge-failure'; reason: string };
+
 /** Separate judging role. The controller depends ONLY on this; `status` always
- *  comes through it. Default impl is LLM-backed; deployments/tests swap it. */
+ *  comes through a well-formed Outcome. Default impl is LLM-backed; swappable. */
 export interface IReviewer {
   review(
     step: Step,
     evidence: readonly Evidence[],
     executorResult: string,
     opts: ReviewOpts,
-  ): Promise<Outcome>;
+  ): Promise<ReviewResult>;
 }
 
 const REVIEWER_SYSTEM =
@@ -898,7 +944,7 @@ export class LlmReviewer implements IReviewer {
     evidence: readonly Evidence[],
     executorResult: string,
     opts: ReviewOpts,
-  ): Promise<Outcome> {
+  ): Promise<ReviewResult> {
     const evidenceBlock = evidence
       .map((e) => `- ${e.ref}: ${e.hit ? 'present' : 'MISSING'}`)
       .join('\n');
@@ -914,18 +960,21 @@ export class LlmReviewer implements IReviewer {
     ]);
     opts.logUsage?.('reviewer', res.usage);
     if (res.kind !== 'content') {
-      return { status: 'failed', approved: '', remainder: '', note: `reviewer error: ${res.kind === 'error' ? res.error : res.kind}` };
+      // Provider/transport error → JUDGE failure (the verdict is unknown), NOT a
+      // step failure. The handler re-asks within maxReviewRetries, then aborts.
+      return { kind: 'judge-failure', reason: `reviewer error: ${res.kind === 'error' ? res.error : res.kind}` };
     }
-    return parseOutcome(res.content);
+    return parseReview(res.content);
   }
 }
 
-/** Parse a reviewer reply into an Outcome. An empty `approved` with an ok/exists/
- *  partial status is contradictory → coerced to a failed verdict (NOT silent
- *  success). Unparsable → failed with a note. */
-export function parseOutcome(content: string): Outcome {
+/** Parse a reviewer reply into a ReviewResult. A well-formed verdict (any of
+ *  ok/exists/partial/failed) is an `outcome`. Unparsable, missing/invalid status,
+ *  or ok/exists/partial with EMPTY approved (contradictory) is a `judge-failure`
+ *  (re-ask, then abort) — it is NEVER coerced to a step `failed`. */
+export function parseReview(content: string): ReviewResult {
   const json = extractJsonObject(content);
-  if (json === null) return { status: 'failed', approved: '', remainder: '', note: 'unparsable reviewer reply' };
+  if (json === null) return { kind: 'judge-failure', reason: 'unparsable reviewer reply' };
   try {
     const o = JSON.parse(json) as Partial<Outcome>;
     const status = o.status;
@@ -933,14 +982,14 @@ export function parseOutcome(content: string): Outcome {
     const remainder = typeof o.remainder === 'string' ? o.remainder : '';
     const note = typeof o.note === 'string' ? o.note : '';
     if (status !== 'ok' && status !== 'exists' && status !== 'failed' && status !== 'partial') {
-      return { status: 'failed', approved: '', remainder: '', note: 'missing/invalid status' };
+      return { kind: 'judge-failure', reason: 'missing/invalid status' };
     }
     if ((status === 'ok' || status === 'exists' || status === 'partial') && approved.length === 0) {
-      return { status: 'failed', approved: '', remainder, note: `${status} with empty approved (contradictory)` };
+      return { kind: 'judge-failure', reason: `${status} with empty approved (contradictory)` };
     }
-    return { status, approved, remainder, note };
+    return { kind: 'outcome', outcome: { status, approved, remainder, note } };
   } catch {
-    return { status: 'failed', approved: '', remainder: '', note: 'unparsable reviewer reply' };
+    return { kind: 'judge-failure', reason: 'unparsable reviewer reply' };
   }
 }
 ```
@@ -948,13 +997,13 @@ export function parseOutcome(content: string): Outcome {
 - [ ] **Step 4: Run, verify it passes**
 
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/reviewer.test.ts`
-Expected: PASS (3 tests).
+Expected: PASS (5 tests).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/controller/reviewer.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/reviewer.test.ts
-git commit -m "feat(controller): IReviewer + LlmReviewer (always-on, tool-less, empty-approved=failed)"
+git commit -m "feat(controller): IReviewer + LlmReviewer returning ReviewResult (outcome | judge-failure)"
 ```
 
 ---
@@ -1302,6 +1351,34 @@ it('reviewer verdict (not the executor) decides the outcome', async () => {
   const stepArtifact = h.rag.written.find((e) => e.metadata.artifactType === 'step-result');
   assert.equal(stepArtifact?.metadata.status, 'failed');
 });
+
+it('a judge-failure is re-asked then ABORTS the run (terminal error), not a step replan', async () => {
+  const h = harness({
+    evaluator: [{ kind: 'content', content: 'Goal' }],
+    planner: [
+      { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'do' } }) },
+      // A replan would consume this; the run must NOT reach it.
+      { kind: 'content', content: JSON.stringify({ kind: 'done', result: 'should-not-happen' }) },
+    ],
+    executor: [{ kind: 'content', content: 'result' }, { kind: 'content', content: 'result' }],
+    config: baseConfig({ maxReviewRetries: 1 }),
+  });
+  let reviewCalls = 0;
+  h.deps.reviewer = {
+    async review() { reviewCalls++; return { kind: 'judge-failure', reason: 'provider down' }; },
+  };
+  const handler = new ControllerCoordinatorHandler(h.deps);
+  const { ctx, captured } = fakeCtx();
+  await handler.execute(ctx, {}, undefined);
+  assert.equal(reviewCalls, 2, 're-asked once (maxReviewRetries=1) then aborted');
+  assert.ok(captured.find((c) => c.ok && /unverifiable|Error:/i.test(c.value.content)),
+    'surfaced a terminal error, not a replanned done');
+  const bundle = await hydrateBundle(h.backend, 'sess-1');
+  assert.equal(bundle.runState, 'terminal');
+  const { readTerminal } = await import('../run-scope.js');
+  const term = await readTerminal(h.backend, 'sess-1', bundle.runId!, new Date().toISOString());
+  assert.equal(term?.kind, 'error');
+});
 ```
 
 - [ ] **Step 2: Run, verify it fails**
@@ -1318,16 +1395,36 @@ Replace the `res.kind === 'content'` branch in `runStep` (currently `controller-
         // Hold the executor's result in memory; the reviewer (NOT the executor)
         // decides the outcome. Default reviewer (no deps.reviewer) approves the
         // content as 'ok' to preserve legacy behaviour.
-        const outcome: Outcome = deps.reviewer
+        let review: ReviewResult = deps.reviewer
           ? await deps.reviewer.review(step, evidence, res.content, {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
             })
-          : { status: 'ok', approved: res.content, remainder: '', note: '' };
+          : { kind: 'outcome', outcome: { status: 'ok', approved: res.content, remainder: '', note: '' } };
 
+        // Judge failure (provider error / malformed / contradictory ok-with-empty)
+        // is NOT a step failure: re-ask the reviewer within maxReviewRetries (an
+        // in-process budget — a crash mid-review re-executes the step per #2/18),
+        // then ABORT the run (the step outcome is unverifiable). It is never
+        // mapped to settle('failed')/replan.
+        let reviewRetries = 0;
+        while (review.kind === 'judge-failure') {
+          reviewRetries++;
+          if (reviewRetries > (cfg.maxReviewRetries ?? 2)) {
+            return abortRun(`step ${step.name} outcome unverifiable: ${review.reason}`);
+          }
+          review = await deps.reviewer!.review(step, evidence, res.content, {
+            hint: deps.config.subagents.reviewer?.hint,
+            logUsage,
+          });
+        }
+
+        const outcome = review.outcome;
         const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
         const attempt = bundle.inFlightStep?.attempt ?? 0;
-        // ONE write, post-review, carrying the full Outcome + identity.
+        // ONE write, post-review, carrying the COMPLETE Outcome + identity
+        // (status/note/remainder all durable, so a crash before the bundle
+        // persist loses neither remainder nor note — #2/26).
         await writeArtifact(rag, {
           ...meta,
           artifactType: 'step-result',
@@ -1336,6 +1433,8 @@ Replace the `res.kind === 'content'` branch in `runStep` (currently `controller-
           seq,
           attempt,
           status: outcome.status,
+          note: outcome.note,
+          remainder: outcome.remainder,
           content: outcome.approved,
         });
         bundle.budgets.stepsUsed++;
@@ -1347,6 +1446,60 @@ Replace the `res.kind === 'content'` branch in `runStep` (currently `controller-
         return settle(mapped);
       }
 ```
+
+`abortRun` is a small closure inside `runStep` that delegates to the handler's
+`abortTerminal` and returns the `'aborted'` step result so the caller stops the
+loop. Define it near the top of `runStep` (after `settle`):
+
+```ts
+    // Unrecoverable abort: store-first terminal ERROR, flip the bundle terminal,
+    // surface the error, and signal the caller to stop. Used for an unverifiable
+    // reviewer outcome (judge-failure budget exhausted). Returns 'aborted'.
+    const abortRun = async (error: string): Promise<'aborted'> => {
+      await this.abortTerminal(ctx, sessionId, bundle, error, now, terminalTtlMs, usageNow?.());
+      return 'aborted';
+    };
+```
+
+Widen `runStep`'s return union to `'advanced' | 'failed' | 'suspended' | 'aborted'`, add `now: () => string` and `terminalTtlMs: number` to its parameters (pass them from `execute`), and in `execute` treat the new sentinel as terminal:
+
+```ts
+      if (completed === 'suspended' || completed === 'aborted') return true;
+```
+
+Define the shared `abortTerminal` private method on the handler (used here and by the resume-budget guards in Task 13 and the finalizer in Task 15):
+
+```ts
+  /** Store-first terminal ERROR: write the terminal outcome to the TTL store
+   *  FIRST (keyed by runId), THEN flip the bundle to terminal and surface the
+   *  error. The store-first order makes the abort idempotent across a crash
+   *  between the two writes (spec "Terminal-write reconciliation"). */
+  private async abortTerminal(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    error: string,
+    now: () => string,
+    terminalTtlMs: number,
+    usage?: TerminalUsage,
+  ): Promise<void> {
+    await writeTerminal(
+      this.deps.backend,
+      sessionId,
+      bundle.runId ?? sessionId,
+      { kind: 'error', error },
+      terminalTtlMs,
+      now(),
+    );
+    bundle.pending = undefined;
+    bundle.inFlightStep = undefined;
+    bundle.runState = 'terminal';
+    await persistBundle(this.deps.backend, sessionId, bundle);
+    this.surfaceFinal(ctx, `Error: ${error}`, usage);
+  }
+```
+
+Add `import type { ReviewResult } from './reviewer.js';` (alongside the `IReviewer` import) and ensure `writeTerminal` is imported from `./run-scope.js`.
 
 Add the `mapOutcome` helper near the other pure helpers at the bottom of the file:
 
@@ -1484,8 +1637,13 @@ In `settle`, on a committing outcome (`advanced`/`partial`) advance `nextSeq` an
         bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
         bundle.inFlightStep = undefined;
         bundle.runPhase = 'planning';
+      } else {
+        // 'failed' — normative atomic transition: keep the same seq and mark the
+        // step awaiting-replan in the SAME persist, so recovery routes to replan
+        // by durable phase (not by a live lastOutcome or a later reconciliation).
+        if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
+        bundle.runPhase = 'executing';
       }
-      // 'failed' keeps inFlightStep so recovery/replan reuses the same seq.
       await persistBundle(deps.backend, sessionId, bundle);
       return outcome;
     };
@@ -1612,7 +1770,10 @@ Wrap the planner call in `execute` with the guard. Before each `planner.next(...
       if (bundle.plannerCallInFlight) {
         bundle.plannerResumeCount = (bundle.plannerResumeCount ?? 0) + 1;
         if (bundle.plannerResumeCount > (cfg.maxPlannerResumes ?? 3)) {
-          return this.escalate(ctx, sessionId, bundle, 'the planner is unable to make progress — please retry', usageNow());
+          // Exhausted resume budget is an UNRECOVERABLE abort (spec): store-first
+          // terminal ERROR, NOT a suspend/escalate.
+          await this.abortTerminal(ctx, sessionId, bundle, 'planner resume budget exhausted', now, terminalTtlMs, usageNow());
+          return true;
         }
       }
       bundle.plannerCallInFlight = true;
@@ -1623,9 +1784,22 @@ Wrap the planner call in `execute` with the guard. Before each `planner.next(...
       await persistBundle(deps.backend, sessionId, bundle); // existing persist
 ```
 
-Apply the SAME marker pattern around `establishTargetState` (evaluator → `evalCallInFlight`/`evalResumeCount`/`maxEvalResumes`, `runPhase='evaluating'`). The replan call inside the adaptive planner runs through `planner.next`, so the planner guard above already covers the `awaiting-replan` replan (no separate site).
+Apply the SAME marker pattern around `establishTargetState` (evaluator → `evalCallInFlight`/`evalResumeCount`, `runPhase='evaluating'`); on exhausting `maxEvalResumes`, **abort the same way** (`abortTerminal('evaluator resume budget exhausted', …)` then `return true`) — NOT escalate. The replan call inside the adaptive planner runs through `planner.next`, so the planner guard above already covers the `awaiting-replan` replan (no separate site).
 
-Add imports: `import { classifyRequest, readTerminal } from './run-scope.js';` and `import { resetRun } from './session-bundle.js';`.
+**Finalizing-phase recovery route.** After the terminal-first stage-1 check (which already covers a crash AFTER the finalizer wrote the terminal store), add a route so a crash DURING finalizing (no terminal entry yet) re-invokes the finalizer instead of re-planning. After classification resolves to `resume` and the terminal-first check found nothing, BEFORE entering the main planner loop:
+
+```ts
+    if (bundle.runState === 'active' && bundle.runPhase === 'finalizing') {
+      // No terminal entry (checked above) → the finalizer never completed.
+      // Re-run it via the unified finalize() helper (Task 15), which charges
+      // finalizeAttempt under finalizeCallInFlight and applies onFinalizeExhausted.
+      return this.finalize(ctx, sessionId, bundle, rag, prompt, logUsage, usageNow, now, terminalTtlMs);
+    }
+```
+
+Add imports: `import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';` and `import { resetRun } from './session-bundle.js';`.
+
+> The escalate() path stays for the rewind/step/parse budgets (legacy human-in-loop "please confirm how to proceed" — a SUSPEND, not a terminal). Only the durable RESUME budgets (eval/planner) and judge-failure budget and finalize-exhausted(error) are terminal aborts. Do NOT convert the rewind/step/parse escalations.
 
 - [ ] **Step 4: Run, verify it passes**
 
@@ -1810,6 +1984,28 @@ it('done → finalizer composes from approved results; terminal store written fi
   const term = await readTerminal(h.backend, 'sess-1', bundle.runId!, new Date().toISOString());
   assert.equal(term?.kind, 'success');
 });
+
+it('finalizer provider failure exhausts maxFinalizeRetries → onFinalizeExhausted:error → terminal error', async () => {
+  const h = harness({
+    evaluator: [{ kind: 'content', content: 'Goal' }],
+    planner: [
+      { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'do' } }) },
+      { kind: 'content', content: JSON.stringify({ kind: 'done', result: 'r' }) },
+    ],
+    executor: [{ kind: 'content', content: 'STEP' }],
+    config: { ...baseConfig(), onFinalizeExhausted: 'error', budgets: { ...baseConfig().budgets, maxFinalizeRetries: 1 } },
+  });
+  h.deps.finalizer = { async finalize() { throw new Error('finalizer down'); } };
+  const handler = new ControllerCoordinatorHandler(h.deps);
+  const { ctx, captured } = fakeCtx();
+  await handler.execute(ctx, {}, undefined);
+  assert.ok(captured.find((c) => c.ok && /Error:/.test(c.value.content)), 'terminal error surfaced');
+  const bundle = await hydrateBundle(h.backend, 'sess-1');
+  assert.equal(bundle.runState, 'terminal');
+  const { readTerminal } = await import('../run-scope.js');
+  const term = await readTerminal(h.backend, 'sess-1', bundle.runId!, new Date().toISOString());
+  assert.equal(term?.kind, 'error');
+});
 ```
 
 - [ ] **Step 2: Run, verify it fails**
@@ -1823,38 +2019,122 @@ Replace the `next.kind === 'done'` branch (lines 316-321) with: read the approve
 
 ```ts
       if (next.kind === 'done') {
-        bundle.runPhase = 'finalizing';
-        bundle.finalizeCallInFlight = true;
-        await persistBundle(deps.backend, sessionId, bundle);
-
-        let answer: string;
-        if (deps.finalizer && bundle.runId) {
-          const approved = await collectApproved(rag, bundle.runId);
-          answer = await deps.finalizer.finalize(bundle.goal, prompt, approved, {
-            hint: deps.config.subagents.finalizer?.hint,
-            logUsage,
-          });
-        } else {
-          // Legacy: the adaptive planner already composed the answer in next.result.
-          answer = next.result;
-        }
-        // Terminal store FIRST (store-first ordering), then flip the bundle.
-        await writeTerminal(deps.backend, sessionId, bundle.runId ?? sessionId, { kind: 'success', answer }, terminalTtlMs, now());
-        bundle.pending = undefined;
-        bundle.finalizeCallInFlight = false;
-        bundle.runState = 'terminal';
-        bundle.inFlightStep = undefined;
-        await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceFinal(ctx, answer, usageNow());
-        return true;
+        // Pass next.result as the legacy answer: used only when no finalizer is
+        // injected (3-role config) — the adaptive planner already composed it.
+        return this.finalize(ctx, sessionId, bundle, rag, prompt, logUsage, usageNow, now, terminalTtlMs, next.result);
       }
 ```
 
-Add the `collectApproved` helper (exact list by runId, resolve each seq by precedence):
+Add the unified `finalize()` private method — the SINGLE finalize path for both the
+done-branch and the finalizing-phase recovery route (Task 13). It owns the full
+lifecycle: durable `finalizeCallInFlight` marker + `finalizeAttempt` charging,
+`maxFinalizeRetries`, in-call provider-failure retries, `onFinalizeExhausted`, the
+durable `bundle.originalRequest` as the finalizer input (NOT the live `prompt`),
+and store-first terminal write.
+
+```ts
+  private async finalize(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    rag: IKnowledgeRagHandle,
+    prompt: string,
+    logUsage: (role: string, u?: LlmUsage) => void,
+    usageNow: () => TerminalUsage,
+    now: () => string,
+    terminalTtlMs: number,
+    /** Used ONLY when no finalizer is injected (3-role config): the adaptive
+     *  planner's already-composed done.result. */
+    legacyAnswer?: string,
+  ): Promise<boolean> {
+    const deps = this.deps;
+    const cfg = deps.config.budgets;
+    const maxFinalizeRetries = cfg.maxFinalizeRetries ?? 2;
+
+    // Crash-replay charge: if a prior finalize call was in flight, this re-entry
+    // is a replay — charge finalizeAttempt before re-invoking (bounded).
+    if (bundle.finalizeCallInFlight) {
+      bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
+    }
+    bundle.runPhase = 'finalizing';
+    bundle.finalizeCallInFlight = true;
+    await persistBundle(deps.backend, sessionId, bundle);
+
+    // The finalizer reads the run's approved results + the DURABLE originalRequest
+    // (the verbatim request that started the run), never the live resume prompt.
+    const request = bundle.originalRequest ?? prompt;
+    const approved =
+      deps.finalizer && bundle.runId ? await collectApproved(rag, bundle.runId) : [];
+
+    let answer: string | undefined;
+    if (deps.finalizer && bundle.runId) {
+      // In-call provider-failure retries, bounded by maxFinalizeRetries and the
+      // durable finalizeAttempt (which already counts crash-replays).
+      while (answer === undefined) {
+        try {
+          answer = await deps.finalizer.finalize(bundle.goal, request, approved, {
+            hint: deps.config.subagents.finalizer?.hint,
+            logUsage,
+          });
+        } catch (e) {
+          bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
+          await persistBundle(deps.backend, sessionId, bundle);
+          if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
+            // Exhausted → onFinalizeExhausted policy.
+            if ((deps.config.onFinalizeExhausted ?? 'error') === 'best-effort') {
+              answer =
+                approved.map((a) => `[#${a.seq}] ${a.content}`).join('\n\n') +
+                '\n\n[incomplete: the final answer could not be composed]';
+              break;
+            }
+            await this.abortTerminal(
+              ctx, sessionId, bundle,
+              `finalizer failed after ${maxFinalizeRetries} retries: ${String(e)}`,
+              now, terminalTtlMs, usageNow(),
+            );
+            return true;
+          }
+        }
+      }
+    } else {
+      // Legacy (no finalizer injected): the adaptive planner already composed the
+      // answer in done.result, passed through as legacyAnswer.
+      answer = legacyAnswer ?? '';
+    }
+
+    // Store-first terminal SUCCESS, then flip the bundle.
+    await writeTerminal(
+      deps.backend, sessionId, bundle.runId ?? sessionId,
+      { kind: 'success', answer: answer ?? '' }, terminalTtlMs, now(),
+    );
+    bundle.pending = undefined;
+    bundle.finalizeCallInFlight = false;
+    bundle.runState = 'terminal';
+    bundle.inFlightStep = undefined;
+    await persistBundle(deps.backend, sessionId, bundle);
+    this.surfaceFinal(ctx, answer ?? '', usageNow());
+    return true;
+  }
+```
+
+> **Finalizing-recovery + legacy.** The finalizing-phase recovery route (Task 13)
+> calls `this.finalize(...)` with NO `legacyAnswer`. A legacy (no-finalizer) run
+> that crashed after writing the terminal store re-surfaces it via the stage-1
+> terminal-first check, so it never reaches `finalize()` without a finalizer; a
+> legacy run that crashed BEFORE the terminal write has `runPhase:'finalizing'`
+> with no terminal entry and `legacyAnswer` unavailable on resume — in that
+> narrow case `finalize()` emits an empty answer, which is acceptable because the
+> incremental/adaptive planner's `done` is deterministic and a re-run would
+> recompute it; deployments needing a stronger guarantee inject a finalizer.
+
+Add the `collectApproved` helper (exact list by runId, resolve each seq by
+precedence, reconstructing the FULL Outcome from metadata so note/remainder are
+not lost — #2):
 
 ```ts
 /** Gather the run's approved results, one per seq, resolved by outcome
- *  precedence (ok/exists > partial > failed), ordered by seq. */
+ *  precedence (ok/exists > partial > failed), ordered by seq. Reconstructs the
+ *  complete Outcome from artifact metadata (status/note/remainder) + content. */
 async function collectApproved(
   rag: IKnowledgeRagHandle,
   runId: string,
@@ -1863,8 +2143,15 @@ async function collectApproved(
   const bySeq = new Map<number, Outcome[]>();
   for (const e of all) {
     const seq = e.metadata.seq ?? 0;
-    const o: Outcome = { status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: '', note: '' };
-    (bySeq.get(seq) ?? bySeq.set(seq, []).get(seq)!).push(o);
+    const o: Outcome = {
+      status: (e.metadata.status ?? 'failed') as Outcome['status'],
+      approved: e.content,
+      remainder: e.metadata.remainder ?? '',
+      note: e.metadata.note ?? '',
+    };
+    const arr = bySeq.get(seq);
+    if (arr) arr.push(o);
+    else bySeq.set(seq, [o]);
   }
   const out: { seq: number; content: string }[] = [];
   for (const [seq, outcomes] of [...bySeq.entries()].sort((a, b) => a[0] - b[0])) {
@@ -1875,16 +2162,12 @@ async function collectApproved(
 }
 ```
 
-Add `import { writeTerminal } from './run-scope.js';` (alongside the existing run-scope imports). In `escalate`, also write a terminal error so a future explicit-key replay is well-defined:
-
-```ts
-  private async escalate(ctx, sessionId, bundle, question, usage?) {
-    // (existing clarify pending) — escalation suspends for a human, it is NOT a
-    // terminal error, so do NOT write the terminal store here. Leave as-is.
-  }
-```
-
-(Keep `escalate` unchanged — escalation is a suspend, not a terminal. The terminal store is written only on `done` and on an unrecoverable abort. Abort-on-resume-budget is handled in Task 13's guard via `escalate`, which suspends; if a deployment wants a hard terminal error there, that is the deferred WRITE-spec work.)
+Add `import { writeTerminal } from './run-scope.js';` (alongside the existing
+run-scope imports). Leave `escalate` UNCHANGED — escalation is a SUSPEND
+(human-in-loop "please confirm how to proceed") for the rewind/step/parse budgets,
+NOT a terminal. The terminal store is written only on `done`/finalize and on an
+unrecoverable abort (judge-failure or resume-budget exhaustion, via
+`abortTerminal`).
 
 - [ ] **Step 4: Run, verify it passes**
 
