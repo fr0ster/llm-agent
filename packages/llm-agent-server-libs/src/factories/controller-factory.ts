@@ -51,7 +51,9 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
  * ```ts
  * import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
  * const { handler } = await new ControllerFactory().build(config, {
- *   makeRoleLlm: (role) => makeLlm(config.subagents[role]),
+ *   // role is typed as string by the base deps — resolve it explicitly.
+ *   makeRoleLlm: (role) =>
+ *     makeLlm(config.subagents[role as 'evaluator' | 'planner' | 'executor']),
  *   callMcp, backend, knowledgeRagFor, embedder, selectTools,
  * });
  * const handle = await builder.withStepperCoordinator(handler).build();
