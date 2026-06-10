@@ -1683,6 +1683,11 @@ Expected: the existing `internal tool-call budget` test currently passes against
 
 - [ ] **Step 3: Executing recovery (planner-independent) + fresh-attempt open**
 
+Add the imports this task needs (Task 12 owns them so it compiles standalone;
+later tasks reuse them): `import { resolveByPrecedence } from './outcome.js';`
+(`Outcome` is already imported in Task 10; `mapOutcome` is the local helper added
+in Task 11).
+
 First declare the transient continuation flag near the existing
 `let resumedExternal = false;` at the top of `execute` (Task 12 owns it so this
 task compiles standalone; Task 14 only SETS it):
@@ -1707,15 +1712,22 @@ or `done`). Add this as the FIRST statement inside the `while` loop body, BEFORE
           committed.map((e) => ({ status: (e.metadata.status ?? 'failed') as Outcome['status'], approved: e.content, remainder: e.metadata.remainder ?? '', note: e.metadata.note ?? '' })),
         );
         if (resolved) {
-          // Already committed → adopt, do NOT re-run.
+          // Already committed → adopt, do NOT re-run. Apply the SAME commit side
+          // effects as settle() — including planner.commit() so the adaptive
+          // planCursor advances in lockstep with nextSeq (#1/plan-5); otherwise the
+          // planner could re-emit an already-committed step.
+          const mapped = mapOutcome(resolved.status);
+          bundle.lastOutcome = mapped;
+          planner.commit?.(bundle, mapped);
           if (resolved.status === 'failed') {
             inf.phase = 'awaiting-replan';
-            bundle.lastOutcome = 'failed';
+            // Carry the durable failure note so the planner knows WHY to replan
+            // after a crash (#4/plan-5).
+            if (resolved.note) bundle.plannerPrivate += `\n[step ${inf.step.name} failed] ${resolved.note}`;
           } else {
             bundle.nextSeq = inf.seq + 1;
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
-            bundle.lastOutcome = mapOutcome(resolved.status);
             // Carry the durable remainder to the replan (crash between artifact
             // write and plannerPrivate persist — #5/plan-4).
             if (resolved.status === 'partial' && resolved.remainder) {
@@ -2032,6 +2044,15 @@ it('external resume: an already-committed artifact at (runId,seq,attempt) is ado
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts`
 Expected: FAIL — current resume branch unconditionally records the external result and continues planning.
 
+- [ ] **Step 3a: Hoist planner construction above the resume preamble**
+
+The external artifact-first adopt (below) calls `planner.commit(...)`, so `planner`
+must already exist when the resume preamble runs. Move the existing
+`const planner = makePlanner(deps.config.planner ?? 'incremental', deps.planner, deps.config.subagents.planner?.hint);`
+(currently constructed just before the main loop) to BEFORE the
+`bundle.pending?.kind === 'external-tool'` resume branch near the top of `execute`.
+It is stateless construction, safe to hoist; the main loop uses the same instance.
+
 - [ ] **Step 3: Implement artifact-first external resume**
 
 Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) with the three-stage logic (artifact-first → result-by-extId → inject-and-clear). Because the executor result still flows through `runStep`'s reviewer + write, "inject" means: append the result to `inFlightStep.transcript`, clear pending, set `runState='active'`, keep `runPhase='executing'`; the loop then re-runs the in-flight step (rebuilding from the transcript). When `inFlightStep` is absent (legacy adaptive external-result-replan path), preserve the existing behaviour (record to plannerPrivate + `resumedExternal=true`).
@@ -2050,19 +2071,21 @@ Replace the `bundle.pending?.kind === 'external-tool'` branch (lines 192-218) wi
         if (resolved) {
           bundle.pending = undefined;
           bundle.runState = 'active';
+          // Apply the SAME commit side effects as settle(), incl. planner.commit()
+          // so the adaptive planCursor advances with nextSeq (#1/plan-5). `planner`
+          // must be constructed BEFORE this preamble (hoist — see Step 3a below).
+          const mapped = mapOutcome(resolved.status);
+          bundle.lastOutcome = mapped;
+          planner.commit?.(bundle, mapped);
           if (resolved.status === 'failed') {
             if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
-            bundle.lastOutcome = 'failed';
+            if (resolved.note) bundle.plannerPrivate += `\n[step failed] ${resolved.note}`; // #4/plan-5
           } else {
             bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
             bundle.inFlightStep = undefined;
             bundle.runPhase = 'planning';
-            bundle.lastOutcome = mapOutcome(resolved.status);
-            // Ensure the durable remainder reaches the replan even if the crash
-            // landed between the artifact write and the plannerPrivate persist
-            // (#5/plan-4): reconstruct it from the adopted Outcome.
             if (resolved.status === 'partial' && resolved.remainder) {
-              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`;
+              bundle.plannerPrivate += `\n[remainder] ${resolved.remainder}`; // #5/plan-4
             }
           }
           await persistBundle(deps.backend, sessionId, bundle);
@@ -2126,13 +2149,36 @@ In `runStep`, when an external tool is hit, persist `inFlightStep.toolCallCount+
       }
 ```
 
-If `runStep` rebuilds `messages` from `inFlightStep.transcript` on resume (when present), seed `messages` from it; otherwise keep the fresh build. Add at the start of `runStep`, after building the initial `messages`:
+**Durable transcript = the FULL executor exchange (#3/plan-5).** The transcript
+must carry EVERY executor/tool turn (prior executor messages + internal tool
+results), not just the post-resume external pair — otherwise a process crash
+mid-internal-rounds rebuilds with incomplete context. Implement it as the
+authoritative dynamic log appended after a fixed static prefix:
+
+1. Build the static prefix (system + user + optional recall block) and record its
+   length, then seed the dynamic turns from the durable transcript:
 
 ```ts
+    // `messages` = static prefix (system/user/recall) + durable dynamic turns.
+    const staticLen = messages.length; // after pushing system/user/recall
     if (inFlight && inFlight.transcript.length > 0) {
       messages.push(...inFlight.transcript);
     }
+    // Persist the dynamic tail into the durable transcript after each exchange.
+    const syncTranscript = async () => {
+      if (inFlight) {
+        inFlight.transcript = messages.slice(staticLen);
+        await persistBundle(deps.backend, sessionId, bundle);
+      }
+    };
 ```
+
+2. After EACH internal-tool round-trip (right after pushing the `assistant`
+   tool_call turn and the `role:'tool'` result into `messages`, before the loop
+   re-sends to the executor), call `await syncTranscript();` so the durable
+   transcript always reflects the full conversation. The external-tool suspend
+   path persists the marker separately (the resume injection appends the external
+   assistant/tool pair to the transcript), so the external pair is covered too.
 
 The `externalContinuation` transient flag is already declared in Task 12 (Step 3A);
 this task only SETS it when injecting the tool result. The Task 12 top-of-loop
