@@ -13,16 +13,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
-- **`ControllerFactory` — code-level controller composition (no YAML).** A
-  builder-factory for the `controller` pipeline, the counterpart to the Stepper
-  `*Factory` classes: `new ControllerFactory().build(config, deps)` returns
+- **`ControllerFactory` — code-level controller composition (no YAML).** An
+  `IPipelineFactory` (`kind: 'controller'`, added to `PipelineFactoryKind`) for
+  the `controller` pipeline — the counterpart to the Stepper `*Factory` classes.
+  `new ControllerFactory().build(config, deps)` resolves the three role LLMs via
+  `deps.makeRoleLlm`, wraps them as subagent clients, validates the embedder
+  requirement (distance target-state without an embedder fails loud at build,
+  not on the first request), derives per-model usage ids, and returns
   `{ handler }` ready to attach via `builder.withStepperCoordinator(handler)`.
-  Its `ControllerFactoryDeps` is `ControllerHandlerDeps` minus `config` (passed
-  as the `build` argument). Exported from
-  `@mcp-abap-adt/llm-agent-server-libs/controller` and the factories barrel. The
-  `controller` plugin now assembles through the same factory, so the YAML and
-  code paths share one construction route. See `docs/PIPELINES.md` → "Embedding
-  in code".
+  `ControllerFactoryDeps` extends `PipelineFactoryDepsBase` (like the Stepper
+  deps). Exported from `@mcp-abap-adt/llm-agent-server-libs/controller` and the
+  factories barrel; the `controller` plugin now assembles through it, so the YAML
+  and code paths share one route. See `docs/PIPELINES.md` → "Embedding in code".
 
 ## [19.1.1] — 2026-06-10
 

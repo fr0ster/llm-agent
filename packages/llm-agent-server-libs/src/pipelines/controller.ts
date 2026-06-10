@@ -7,7 +7,6 @@ import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
-import { makeSubagentClient } from '../smart-agent/controller/subagent-client.js';
 import type { ControllerConfig } from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
@@ -91,23 +90,6 @@ export class ControllerPipelinePlugin
     cfg: ControllerConfig,
     ctx: IControllerServerPipelineContext,
   ): Promise<IPipelineInstance> {
-    // Embedder is only needed for distance-based target-state strategies.
-    // consumer-confirm needs none, so an embedder-less deployment can use it.
-    const needsEmbedder =
-      cfg.targetState.strategy === 'semantic-distance' ||
-      cfg.targetState.strategy === 'auto';
-    if (needsEmbedder && !ctx.embedder) {
-      throw new Error(
-        `pipeline 'controller' targetState.strategy '${cfg.targetState.strategy}' requires an embedder (semantic distance); configure rag.embedder or use strategy: consumer-confirm`,
-      );
-    }
-
-    const [evaluatorLlm, plannerLlm, executorLlm] = await Promise.all([
-      ctx.makeLlm(cfg.subagents.evaluator),
-      ctx.makeLlm(cfg.subagents.planner),
-      ctx.makeLlm(cfg.subagents.executor),
-    ]);
-
     const mcpClients = ctx.mcpClients ?? [];
     const mcpBridge = buildMcpBridge(mcpClients);
 
@@ -120,23 +102,20 @@ export class ControllerPipelinePlugin
     const selectTools = (query: string, k?: number, options?: CallOptions) =>
       toolsRag ? toolsRag.query(query, k, options) : Promise.resolve([]);
 
-    // NOTE: external-tool routing is decided PER-REQUEST inside the handler from
-    // `ctx.externalTools` (the client-supplied tools for that request). We do NOT
-    // wire `isExternalTool` here — the build-time server ctx never carries them.
+    // The factory resolves the three role LLMs via makeRoleLlm, wraps them as
+    // subagent clients, validates the embedder requirement, and builds the
+    // handler. external-tool routing is decided PER-REQUEST inside the handler
+    // from `ctx.externalTools`, so we do NOT wire `isExternalTool` here.
     const deps: ControllerFactoryDeps = {
-      evaluator: makeSubagentClient(evaluatorLlm),
-      planner: makeSubagentClient(plannerLlm),
-      executor: makeSubagentClient(executorLlm),
+      makeRoleLlm: (role) =>
+        ctx.makeLlm(
+          cfg.subagents[role as 'evaluator' | 'planner' | 'executor'],
+        ),
+      callMcp: (name, args) => mcpBridge(name, args),
       backend: ctx.stepperKnowledgeBackend,
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
-      callMcp: (name, args) => mcpBridge(name, args),
       selectTools,
-      models: {
-        evaluator: evaluatorLlm.model ?? 'unknown',
-        planner: plannerLlm.model ?? 'unknown',
-        executor: executorLlm.model ?? 'unknown',
-      },
     };
 
     const { handler } = await new ControllerFactory().build(cfg, deps);

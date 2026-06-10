@@ -6,7 +6,8 @@ export type PipelineFactoryKind =
   | 'dag'
   | 'cyclic'
   | 'planned'
-  | 'deep-stepper';
+  | 'deep-stepper'
+  | 'controller';
 
 /** The built, ready-to-register `coordinator` stage handler for one pipeline. */
 export interface BuiltCoordinator {

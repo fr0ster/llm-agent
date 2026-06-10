@@ -147,19 +147,16 @@ const cfg = plugin.parseConfig({ subagents: { evaluator, planner, executor } });
 const { agent, close } = await plugin.build(cfg, serverCtx);
 
 // (b) Compose the coordinator onto your own SmartAgentBuilder via the
-//     ControllerFactory — the code-level counterpart to the Stepper *Factory
-//     classes. The factory takes the config + runtime deps (the deps type omits
-//     `config`) and returns { handler }.
-import {
-  ControllerFactory,
-  makeSubagentClient,
-} from '@mcp-abap-adt/llm-agent-server-libs/controller';
+//     ControllerFactory — an IPipelineFactory (kind 'controller'), the
+//     code-level counterpart to the Stepper *Factory classes. It resolves the
+//     three role LLMs via makeRoleLlm, wraps them as subagent clients, validates
+//     the embedder requirement, and returns { handler }.
+import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
 const { handler } = await new ControllerFactory().build(config, {
-  evaluator: makeSubagentClient(evaluatorLlm),   // ISubagentClient over any ILlm
-  planner:   makeSubagentClient(plannerLlm),
-  executor:  makeSubagentClient(executorLlm),
-  backend, knowledgeRagFor, embedder, callMcp, selectTools,
-  models: { evaluator, planner, executor },      // model ids, for usage attribution
+  // role ∈ 'evaluator' | 'planner' | 'executor'
+  makeRoleLlm: (role) => makeLlm(config.subagents[role]),
+  callMcp, backend, knowledgeRagFor, embedder, selectTools,
+  // model ids for usage attribution are derived from the resolved LLMs.
 });
 const handle = await builder.withStepperCoordinator(handler).build();
 // (The lower-level `ControllerCoordinatorHandler` is also re-exported from the
