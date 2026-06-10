@@ -169,14 +169,22 @@ recall.
     accepted part is NOT re-run.)
   - **failed (#1 — close the post-failed crash window):** `nextSeq` does NOT
     advance; the controller FIRST persists `inFlightStep.phase = 'awaiting-replan'`
-    (durable) — it does NOT yet have a revised step. THEN it calls the planner; on
-    the planner's response it atomically sets
+    (durable) — it does NOT yet have a revised step. THEN it calls the planner
+    **under the SAME planner crash-guard as initial planning (#1/28):** persist
+    `plannerCallInFlight = true` BEFORE this replan call; the atomic revised-step
+    write below clears it and resets `plannerResumeCount`. A crash during the replan
+    re-enters `awaiting-replan`, charges `plannerResumeCount` (cap
+    `maxPlannerResumes`) only if `plannerCallInFlight` was set, and re-asks — so a
+    failed-step replan can no longer loop the planner unbounded (the guard covers
+    BOTH `runPhase:'planning'` and `awaiting-replan` replan calls). On the planner's
+    response it atomically sets
     `inFlightStep = { seq (same), revisedStep, attempt (unchanged here),
     resumeCount: 0, phase: 'executing', transcript: empty, toolCallCount: 0,
-    controlFailure: cleared }` — `resumeCount`, `transcript`, `toolCallCount`, and
-    `controlFailure` are **all reset** (#3/16, #2/25, #1/27: a revised step is a fresh
-    attempt — new transcript, own round-trip budget — and must not inherit the prior
-    attempt's crash/tool budget or stale control-failure reason). The single fresh-execution increment then bumps `attempt` when
+    controlFailure: cleared }` (the same write also clears `plannerCallInFlight` +
+    resets `plannerResumeCount`, #1/28) — `resumeCount`, `transcript`, `toolCallCount`,
+    and `controlFailure` are **all reset** (#3/16, #2/25, #1/27: a revised step is a
+    fresh attempt — new transcript, own round-trip budget — and must not inherit the
+    prior attempt's crash/tool budget or stale control-failure reason). The single fresh-execution increment then bumps `attempt` when
     the revised step runs (which also re-zeroes `resumeCount` per the rule that
     every fresh attempt resets it). A crash while `phase:'awaiting-replan'` resumes into
     **replan** (not re-execution of the failed step). The retry reuses the same
@@ -322,12 +330,18 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
   planner calls (each ending with the atomic decision-write that resets the
   counter) are never capped — an incremental run that invokes the planner once per
   step is safe (#1/17). Forward planner progress is bounded by plan/step liveness
-  (`maxStepAttempts`, `done`), not by this counter.
+  (`maxStepAttempts`, `done`), not by this counter. **This SAME planner guard also
+  covers the `awaiting-replan` replan call (#1/28)** — that call (made while
+  `runPhase:'executing'`, `inFlightStep.phase:'awaiting-replan'`) sets
+  `plannerCallInFlight` before and clears it + resets `plannerResumeCount` in the
+  atomic revised-step write, so a crash during a failed-step replan cannot loop the
+  planner unbounded either.
 - **executing** → the in-flight detector is the **resolved artifact at
-  `(runId, seq)`** (no separate marker needed): `attempt` (fresh-execution count,
-  bounds dups + retry/replan liveness) + `resumeCount` (crash-replay of one
-  attempt — charged on re-entry when `phase:'executing'`, no external `pending`,
-  and NO resolved artifact at `seq`), caps `maxStepAttempts` / `maxStepResumes`.
+  `(runId, seq, attempt)`** (no separate marker needed, #2/28): `attempt`
+  (fresh-execution count, bounds dups + retry/replan liveness) + `resumeCount`
+  (crash-replay of one attempt — charged on re-entry when `phase:'executing'`, no
+  external `pending`, and NO resolved artifact for THIS `(runId, seq, attempt)`),
+  caps `maxStepAttempts` / `maxStepResumes`.
   **The reviewer is NOT a separately durable phase (#2/18).** Executor-run →
   review → single write-after-review is ONE crash-replay unit: the executor result
   is in-memory only, and write-after-review guarantees the `(runId, seq)` artifact
@@ -721,7 +735,8 @@ mark the step advanced OR failed.
   builds the default LLM impls from the `reviewer`/`finalizer` config. Reviewer
   always-on, tool-less by default; usage attributed to `reviewer`/`finalizer`.
 - `runStep`: durable `nextSeq` + `inFlightStep {seq, step, attempt, resumeCount,
-  phase}`; `attempt` increments ONLY on a FRESH execution (first dispatch /
+  phase, transcript, toolCallCount, controlFailure?}` (#3/28); `attempt` increments
+  ONLY on a FRESH execution (first dispatch /
   replan), NOT on external continuation or crash-replay; a crash-replay (executing,
   no external `pending`) increments the separate `resumeCount` (cap
   `maxStepResumes`); external continuations are bounded by `maxToolCalls`. `failed`
@@ -752,7 +767,7 @@ mark the step advanced OR failed.
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
   {evaluating|planning|executing|finalizing}` + `nextSeq` + `inFlightStep
-  {seq,step,attempt,resumeCount,phase,transcript,toolCallCount}` (#2/25 — the
+  {seq,step,attempt,resumeCount,phase,transcript,toolCallCount,controlFailure?}` (#2/25, #1/27 — the
   durable executor transcript + round-trip count live ON the step; the
   `external-tool` `PendingMarker` carries only call coordinates) + in-flight markers
   `evalCallInFlight`/`plannerCallInFlight`/`finalizeCallInFlight` +
