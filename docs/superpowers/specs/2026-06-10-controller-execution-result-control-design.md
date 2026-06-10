@@ -100,8 +100,11 @@ review → write is a single atomic-from-recovery unit: a crash anywhere in it
 leaves NO artifact at `(runId, seq)`, so reconciliation re-executes the step
 (charged to `resumeCount`, cap `maxStepResumes`). The reviewer therefore needs no
 separate durable phase or `reviewResumeCount` — a mid-review crash IS a step
-crash-replay, and re-running is safe because nothing was persisted. (`maxReviewRetries`
-bounds *provider* errors within one live review, a different failure mode.)
+crash-replay. Re-running is clean at the *control-state* level (nothing was
+committed); duplicate *tool side effects* from the repeated executor run are
+governed by the at-least-once + tool-idempotency contract (#3/19), the same as any
+crash-replay — not by artifact-absence. (`maxReviewRetries` bounds *provider*
+errors within one live review, a different failure mode.)
 
 **Replay identity & reconciliation.** The artifact write and the cursor/bundle
 persist are separate, so a crash between them replays a step. Append-only means
@@ -222,11 +225,13 @@ request across suspend/resume legs) is scoped by a durable `runId`. Bundle state
 - **idle/terminal** — no active run; **active** — run in progress; **suspended** —
   awaiting external tool / clarify (`pending` set).
 
-A durable **`runPhase ∈ {planning, executing, finalizing}`** refines `active` so
-recovery is unambiguous even when there is no `inFlightStep` (#2): `planning` (no
-in-flight step yet), `executing` (a step is in flight — `inFlightStep` set),
-`finalizing` (planner returned `done`, `inFlightStep` cleared, finalizer running).
-`runPhase` is persisted on every transition.
+A durable **`runPhase ∈ {evaluating, planning, executing, finalizing}`** refines
+`active` so recovery is unambiguous even when there is no `inFlightStep` (#2):
+`evaluating` (the evaluator is deriving the goal — no plan yet), `planning` (goal
+fixed, no in-flight step yet), `executing` (a step is in flight — `inFlightStep`
+set), `finalizing` (planner returned `done`, `inFlightStep` cleared, finalizer
+running). `runPhase` is persisted on every transition; a fresh run starts in
+`evaluating`.
 
 **General invariant — every LLM-invoking phase bounds its *crash-replay* with a
 durable resume counter + cap (#2/16, #1/17),** so NO phase can crash-loop
@@ -236,6 +241,16 @@ actually in flight — so each phase has a **durable in-flight detector** that
 distinguishes "crashed before the call started" (re-enter, do NOT charge) from
 "crashed during the call" (charge the resume counter):
 
+- **evaluating** → detector **`evalCallInFlight`** (#1/19), counter
+  `evalResumeCount`, cap `maxEvalResumes`. The evaluator (request → goal) is a
+  distinct LLM call that runs ONCE at the start of a run, and its `goal` is its
+  *output* (no artifact to resolve against — same shape as planning). So: **persist
+  `evalCallInFlight = true` BEFORE invoking the evaluator**; on its response, ONE
+  atomic bundle write **persists the `goal`, clears `evalCallInFlight`, advances
+  `runPhase → planning`** (and resets `evalResumeCount`, moot thereafter). Recovery
+  in `runPhase:'evaluating'`: if `evalCallInFlight` → charge `evalResumeCount` (cap
+  `maxEvalResumes`) and re-evaluate; else → re-evaluate without charging. This
+  closes the evaluator crash-loop the invariant previously left uncovered (#1/19).
 - **planning** → detector **`plannerCallInFlight`** (#1/18), counter
   `plannerResumeCount`, cap `maxPlannerResumes`. The plan/decision is the planner's
   *output*, so — unlike executing — there is no `(runId, seq)` artifact to resolve
@@ -260,20 +275,40 @@ distinguishes "crashed before the call started" (re-enter, do NOT charge) from
   is in-memory only, and write-after-review guarantees the `(runId, seq)` artifact
   exists *only after* the reviewer approved. So a crash anytime between the
   executor producing its result and the post-review write leaves NO artifact at
-  `seq` → reconciliation re-executes the step, charged to `resumeCount`. This is
-  safe precisely because nothing was persisted: there is no half-written or
-  unreviewed artifact to reconcile, the re-run is a fresh transcript at the same
-  `seq`, and dedup-by-precedence absorbs any eventual multiples. No
-  `reviewResumeCount` is needed — the reviewer crash IS the executor crash, by
-  construction. (`maxReviewRetries` is a separate, in-process budget for
+  `seq` → reconciliation re-executes the step, charged to `resumeCount`. At the
+  *control-state* level this is clean — no half-written or unreviewed artifact to
+  reconcile, the re-run is a fresh transcript at the same `seq`, dedup-by-precedence
+  absorbs eventual multiples — and no `reviewResumeCount` is needed: the reviewer
+  crash IS the executor crash, by construction. **But re-execution can repeat the
+  executor's external tool calls (#3/19): the re-run's safety against duplicate
+  *side effects* rests on the same at-least-once + tool-idempotency contract as
+  every other crash-replay here, NOT on artifact-absence** (artifact-absence only
+  proves no control-state was committed, not that the world was untouched). For a
+  non-idempotent WRITE this is exactly the at-least-once exposure called out under
+  Idempotency & durability — out of scope for this design, deferred to the WRITE
+  exactly-once spec. (`maxReviewRetries` is a separate, in-process budget for
   *provider* errors / malformed verdicts within one live review, not a crash
   bound.)
 - **finalizing** → detector **`finalizeCallInFlight`** (same pattern as planning —
   the finalizer's answer is its output, no artifact to resolve), counter
   `finalizeAttempt`, cap `maxFinalizeRetries`: persist `finalizeCallInFlight=true`
-  before the call; on the answer, atomically persist `terminalOutcome`, clear the
-  marker, (counter is moot at terminal). Recovery in `runPhase:'finalizing'`
-  charges `finalizeAttempt` only when `finalizeCallInFlight` is set.
+  before the call. **Terminal-write reconciliation (#2/19).** The `terminalOutcome`
+  lives in the SEPARATE TTL store while `finalizeCallInFlight`/`runState` live in
+  the bundle, so the two writes are NOT one transaction — a crash between them can
+  leave `terminalOutcome` already written but the bundle still `finalizing`. To
+  make finalize **idempotent across that gap**, the completion order is fixed and
+  recovery checks the terminal store FIRST:
+  1. finalizer returns → **write `terminalOutcome` to the TTL store keyed by the
+     current `runId`** (durable first);
+  2. then the bundle write **clears `finalizeCallInFlight` and sets
+     `runState → terminal`**.
+  On recovery in `runPhase:'finalizing'` (whether reached by token OR fingerprint),
+  the controller **first reads the terminal store for the current `runId`**: if an
+  entry exists, finalize already produced an answer → **adopt it, set the bundle
+  terminal, and do NOT re-invoke the finalizer** (so a fingerprint-resume can never
+  replace an already-emitted answer). Only if there is NO terminal entry does it
+  (re-)invoke the finalizer, charging `finalizeAttempt` when `finalizeCallInFlight`
+  is set. (`finalizeAttempt` is moot once terminal.)
 
 (Earlier rounds added the executing/finalizing counters; `plannerResumeCount` +
 the explicit in-flight markers close the planning-phase crash-loop and the
@@ -284,7 +319,8 @@ Transitions:
 - **New request while idle/terminal:** ONE atomic bundle write **resets EVERY
   run-scoped field** — `goal`, `plan`, `planCursor`, `plannerPrivate`, `budgets`,
   `lastOutcome`, `pending`, **`nextSeq` (→ 0), `inFlightStep` (→ none), `runPhase`
-  (→ planning), `plannerCallInFlight` (→ false), `plannerResumeCount` (→ 0),
+  (→ evaluating), `evalCallInFlight` (→ false), `evalResumeCount` (→ 0),
+  `plannerCallInFlight` (→ false), `plannerResumeCount` (→ 0),
   `finalizeCallInFlight` (→ false), `finalizeAttempt` (→ 0),
   `originalRequest` (→ the new request; fingerprint re-derived)** — and **mints a
   fresh `runId`** → active. The prior
@@ -344,6 +380,8 @@ Transitions:
     since resuming an in-flight run is safe/idempotent; only terminal *replay* is
     gated on the explicit key.)
   - **Active run, match (token or fingerprint)** → **resume by `runPhase`**:
+    `evaluating` → re-invoke the evaluator (no goal yet), charging `evalResumeCount`
+    (cap `maxEvalResumes`) only if `evalCallInFlight` proves a call was running;
     `planning` →
     re-invoke the planner (no in-flight step yet), charging `plannerResumeCount`
     (cap `maxPlannerResumes`) only if `plannerCallInFlight` proves a call was
@@ -351,8 +389,11 @@ Transitions:
     `inFlightStep` reconciliation above (adopt / replan / re-execute by resolved
     artifact, with a mid-review crash re-executing since no artifact was written),
     crash-replay bounded by `resumeCount`/`maxStepResumes`; `finalizing` →
-    **re-run the finalizer**, bounded by the **durable `finalizeAttempt`** charged
-    on replay only when `finalizeCallInFlight` is set, so a crash-loop in
+    **first check the terminal store for the current `runId`**: if an outcome is
+    already there, adopt it + set the bundle terminal WITHOUT a new finalizer call
+    (#2/19 — prevents a fingerprint-resume from replacing an emitted answer);
+    otherwise **re-run the finalizer**, bounded by the **durable `finalizeAttempt`**
+    charged on replay only when `finalizeCallInFlight` is set, so a crash-loop in
     `finalizing` cannot bypass `maxFinalizeRetries` (exceeded → `onFinalizeExhausted`). The finalizer is
     otherwise idempotent (composes from durable approved results, no side
     effects), so replay within budget is safe. No match → the crashed run is
@@ -502,6 +543,7 @@ mark the step advanced OR failed.
   (advance accepted + replan remainder); `lastOutcome` type extended.
 - New budgets — one durable crash-replay counter+cap per LLM-invoking phase
   (bounds REPLAY of an unfinished call, never normal forward progress):
+  `maxEvalResumes` (evaluating, via `evalResumeCount`),
   `maxPlannerResumes` (planning, via `plannerResumeCount` — reset to 0 after every
   persisted planner decision, so the incremental planner's per-step calls are NOT
   capped by it), `maxStepAttempts` (fresh-attempt; bounds dups + retry/replan
@@ -513,12 +555,13 @@ mark the step advanced OR failed.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
 - `SessionBundle`: durable `runId` (resume token) + run-state + `runPhase
-  {planning|executing|finalizing}` + `nextSeq` + `inFlightStep
+  {evaluating|planning|executing|finalizing}` + `nextSeq` + `inFlightStep
   {seq,step,attempt,resumeCount,phase}` + in-flight markers
-  `plannerCallInFlight`/`finalizeCallInFlight` + `plannerResumeCount` +
+  `evalCallInFlight`/`plannerCallInFlight`/`finalizeCallInFlight` +
+  `evalResumeCount`/`plannerResumeCount` +
   `finalizeAttempt` + durable `originalRequest`
   (finalizer input; normalized hash = identity fingerprint) + atomic run-scoped
-  RESET (incl. markers→false, `plannerResumeCount→0`, `finalizeAttempt→0`);
+  RESET (incl. markers→false, `evalResumeCount→0`, `plannerResumeCount→0`, `finalizeAttempt→0`);
   `attempt` increments on FRESH executions only (not external-tool continuations);
   `plannerResumeCount`/`finalizeAttempt` are charged on crash-replay ONLY when the
   matching in-flight marker proves a call was running, and `plannerResumeCount`
@@ -527,7 +570,11 @@ mark the step advanced OR failed.
   `resumeCount`. A SEPARATE per-session keyed store
   `{runId → {terminalOutcome (success|error), expiresAt}}` holds terminal outcomes
   (TTL-GC'd), replayed ONLY via an explicit token/idempotency key (`newRun`
-  overrides). Crash-recovery routed by `runPhase` (token/fingerprint for active
+  overrides). Because `terminalOutcome` (TTL store) and the bundle's
+  `finalizeCallInFlight`/`runState` are separate writes, finalize is made
+  idempotent by writing the terminal store FIRST and, on any `finalizing` recovery,
+  reading it FIRST → adopt-without-re-call (#2/19). Crash-recovery routed by
+  `runPhase` (token/fingerprint for active
   resume, token only for terminal replay); resume reconciliation by RESOLVED
   artifact status; persist full suspended-step state in the external-tool
   `PendingMarker`. `plannerPrivate`
