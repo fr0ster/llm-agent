@@ -100,13 +100,28 @@ we cannot overwrite — so we need a planner-agnostic stable id, a reconciliatio
 rule that does not lose a confirmed success, and dedup that does not starve
 recall.
 
-- **Stable `seq` for BOTH planners (#1).** `planCursor` exists only for adaptive.
-  Instead, a durable monotonic **`nextSeq`** lives in the bundle; when a step is
-  dispatched the controller persists **`inFlightStep = { seq: nextSeq, step }`**
-  BEFORE executing, and only on commit does `nextSeq` advance (and `inFlightStep`
-  clear). A replayed (uncommitted) step reuses the SAME `inFlightStep.seq` →
-  writes at the SAME `(runId, seq)`. Works for incremental and adaptive alike
-  (no dependence on a plan/cursor).
+- **Stable `seq` + durable attempt bound (#1).** `planCursor` exists only for
+  adaptive. Instead, a durable monotonic **`nextSeq`** lives in the bundle; when a
+  step is dispatched the controller persists **`inFlightStep = { seq: nextSeq,
+  step, attempt }`** and **increments+persists `attempt` BEFORE executing**. A
+  replayed (uncommitted) step reuses the SAME `seq` (so writes land at the same
+  `(runId, seq)`), and because `attempt` is bumped-and-persisted **before** each
+  execution, the durable `attempt` count survives crashes — it is NOT reset by
+  re-entry. A hard cap **`maxStepAttempts`** aborts a step that keeps
+  crash-looping (liveness), and — crucially — it makes the duplicate count per
+  `(runId, seq)` genuinely **bounded by `maxStepAttempts`** (closing the
+  unique-K guarantee, which `maxRetries` alone did not, since crashes are not
+  retries). Works for incremental and adaptive alike (no plan/cursor dependence).
+- **`inFlightStep` lifecycle by outcome (#3).** ONE atomic bundle write per
+  transition:
+  - **advanced (`ok`/`exists`) / partial:** the accepted result is committed at
+    `seq` → `nextSeq` advances, `inFlightStep` clears. (A `partial` remainder is
+    planned at the NEXT `seq`; the accepted part is NOT re-run.)
+  - **failed:** `nextSeq` does NOT advance; the replan's revised step atomically
+    **replaces** `inFlightStep = { seq (same), revisedStep, attempt: prev+1 }`
+    before re-execute. The retry reuses the same `seq`, so the failed artifact and
+    the retry artifact share `(runId, seq)` and dedup-by-precedence keeps the
+    eventual success.
 - **Resume reconciliation, NOT latest-wins (#2).** Latest-write-wins is wrong: a
   first attempt could write an approved `ok` then crash, and a replay attempt
   finish `failed`, hiding the real success. So: on resume of an active run,
@@ -117,11 +132,13 @@ recall.
   duplicates, read-side dedup resolves a `(runId, seq)` by **outcome precedence**
   `ok/exists > partial > failed` (tie-break latest), never bare chronology.
   Committed seqs (`< nextSeq`) are authoritative and never re-run.
-- **Dedup before the cap (#3).** Duplicates of one `(runId, seq)` must not fill
-  the top-K and crowd out other steps. Semantic recall **paginates/refills** —
-  fetch → dedup `(runId, seq)` by the precedence above → refill until K unique or
-  the source is exhausted — so K reflects K distinct steps, not K copies of one.
-  (See the retrieval-primitives definition under the data backbone.)
+- **Dedup before the cap.** Duplicates of one `(runId, seq)` must not fill the
+  top-K and crowd out other steps. Since duplicates are bounded by
+  `maxStepAttempts` (above), semantic recall does a **single bounded over-fetch**
+  (`k' = k × (maxStepAttempts + 1)`) → dedup `(runId, seq)` by the precedence
+  above → take K distinct steps. This is the ONE normative behavior (no
+  pagination/refill). (See the retrieval-primitives definition under the data
+  backbone.)
 
 ## Planner transitions (#2 — partial is a first-class outcome)
 
@@ -214,14 +231,14 @@ Transitions:
 
 **Two retrieval primitives (distinct):**
 - **Semantic recall (executor):** top-K by meaning, scoped to `runId`.
-  Duplicates of a `(runId, seq)` are **bounded** — a step is dispatched at most
-  `D` times (`maxRetries` + the bounded crash-replay count), so ≤ `D` artifacts
+  Duplicates of a `(runId, seq)` are **bounded by `maxStepAttempts`** (the durable
+  per-step attempt cap — see Replay identity), so ≤ `maxStepAttempts` artifacts
   exist per `seq`. Therefore a single **bounded over-fetch** with the existing
-  `query(text, k')` where `k' = k × (D+1)` yields ≥ `k` distinct `(runId, seq)`
-  after dedup-by-precedence (worst case: every one of `k` unique steps carries
-  `D` dups). No cursor/pagination is required — `D` is a known budget, not
-  unbounded. (Optional future: a `query(text, k, offset)` cursor + backend
-  `DISTINCT (runId, seq)` as a cleaner optimization.)
+  `query(text, k')`, `k' = k × (maxStepAttempts + 1)`, yields ≥ `k` distinct
+  `(runId, seq)` after dedup-by-precedence (worst case: every one of `k` unique
+  steps carries the max dups). No cursor/pagination required — the bound is a
+  durable budget, not an assumption. (Optional future: a `query(text, k, offset)`
+  cursor + backend `DISTINCT (runId, seq)` as a cleaner optimization.)
 - **Exact list/get (NOT semantic) (#3):** an exhaustive metadata query —
   `list(runId)` / `get(runId, seq)` — returning ALL matching artifacts with no
   relevance ranking or top-K. Used by the **finalizer full set**, **resume-adopt**
@@ -313,18 +330,20 @@ mark the step advanced OR failed.
 - New `IReviewer` + `IFinalizer` interfaces; handler depends on them; the factory
   builds the default LLM impls from the `reviewer`/`finalizer` config. Reviewer
   always-on, tool-less by default; usage attributed to `reviewer`/`finalizer`.
-- `runStep`: durable `nextSeq` + `inFlightStep {seq, step}` persisted BEFORE
-  execute (advance `nextSeq` only on commit) → planner-agnostic stable `seq`;
-  on resume, ADOPT an existing approved artifact at `(runId, seq)` instead of
-  re-running; executor result held in memory → reviewer → **single**
-  `writeArtifact` post-review; reads dedup `(runId, seq)` by outcome precedence
-  (over-fetch before the cap).
+- `runStep`: durable `nextSeq` + `inFlightStep {seq, step, attempt}` persisted
+  BEFORE execute (`attempt` bumped pre-execute → durable bound; advance `nextSeq`
+  only on commit; `failed` keeps `seq` and replaces `inFlightStep` with the
+  revised step + `attempt+1`) → planner-agnostic stable `seq`; on resume, ADOPT an
+  existing approved artifact at `(runId, seq)` instead of re-running; executor
+  result held in memory → reviewer → **single** `writeArtifact` post-review; reads
+  dedup `(runId, seq)` by outcome precedence (bounded over-fetch `k×(maxStepAttempts+1)`).
 - Per-`requires` recall queries → evidence map for the reviewer.
 - Planner outcome `advanced|failed|partial`; `commit()`/`next()` handle `partial`
   (advance accepted + replan remainder); `lastOutcome` type extended.
-- New budgets `maxReviewRetries`, `maxFinalizeRetries`; judge-failure escalation
-  (abort-with-control-error, not silent advance/fail); `onFinalizeExhausted:
-  error|best-effort` (default `error`).
+- New budgets `maxStepAttempts` (durable per-step attempt cap — bounds dups +
+  crash-loop liveness), `maxReviewRetries`, `maxFinalizeRetries`; judge-failure
+  escalation (abort-with-control-error, not silent advance/fail);
+  `onFinalizeExhausted: error|best-effort` (default `error`).
 - `plannerPrivate += {seq, status, note, remainder}` (payload-free), not content.
 - Single finalizer after `done` for BOTH planners, reading run-scoped approved
   results (deduped) under the budget; `done` carries no answer.
