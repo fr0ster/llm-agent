@@ -4,18 +4,22 @@ import type {
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
 import {
-  ControllerCoordinatorHandler,
-  type ControllerHandlerDeps,
-} from '../smart-agent/controller/controller-coordinator-handler.js';
+  ControllerFactory,
+  type ControllerFactoryDeps,
+} from '../factories/controller-factory.js';
 import { makeSubagentClient } from '../smart-agent/controller/subagent-client.js';
 import type { ControllerConfig } from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
 // Re-export the controller building blocks so embedders (no-YAML) can compose
-// the coordinator directly onto their own SmartAgentBuilder via
-// `builder.withStepperCoordinator(new ControllerCoordinatorHandler(deps))`,
-// without going through the plugin/registry.
+// the coordinator in code — preferably via the `ControllerFactory`
+// (`const { handler } = await new ControllerFactory().build(config, deps)` then
+// `builder.withStepperCoordinator(handler)`), or directly with the handler.
+export {
+  ControllerFactory,
+  type ControllerFactoryDeps,
+} from '../factories/controller-factory.js';
 export {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
@@ -119,7 +123,7 @@ export class ControllerPipelinePlugin
     // NOTE: external-tool routing is decided PER-REQUEST inside the handler from
     // `ctx.externalTools` (the client-supplied tools for that request). We do NOT
     // wire `isExternalTool` here — the build-time server ctx never carries them.
-    const deps: ControllerHandlerDeps = {
+    const deps: ControllerFactoryDeps = {
       evaluator: makeSubagentClient(evaluatorLlm),
       planner: makeSubagentClient(plannerLlm),
       executor: makeSubagentClient(executorLlm),
@@ -128,7 +132,6 @@ export class ControllerPipelinePlugin
       embedder: ctx.embedder,
       callMcp: (name, args) => mcpBridge(name, args),
       selectTools,
-      config: cfg,
       models: {
         evaluator: evaluatorLlm.model ?? 'unknown',
         planner: plannerLlm.model ?? 'unknown',
@@ -136,7 +139,7 @@ export class ControllerPipelinePlugin
       },
     };
 
-    const handler = new ControllerCoordinatorHandler(deps);
+    const { handler } = await new ControllerFactory().build(cfg, deps);
     const builder = await ctx.createAgentBuilder();
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };

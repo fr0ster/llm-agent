@@ -9,6 +9,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [19.1.2] — 2026-06-10
+
+### Added
+
+- **`ControllerFactory` — code-level controller composition (no YAML).** A
+  builder-factory for the `controller` pipeline, the counterpart to the Stepper
+  `*Factory` classes: `new ControllerFactory().build(config, deps)` returns
+  `{ handler }` ready to attach via `builder.withStepperCoordinator(handler)`.
+  Its `ControllerFactoryDeps` is `ControllerHandlerDeps` minus `config` (passed
+  as the `build` argument). Exported from
+  `@mcp-abap-adt/llm-agent-server-libs/controller` and the factories barrel. The
+  `controller` plugin now assembles through the same factory, so the YAML and
+  code paths share one construction route. See `docs/PIPELINES.md` → "Embedding
+  in code".
+
 ## [19.1.1] — 2026-06-10
 
 ### Changed

@@ -1,3 +1,5 @@
+export type { ControllerFactoryDeps } from './controller-factory.js';
+export { ControllerFactory } from './controller-factory.js';
 export type {
   StepperFactoryConfig,
   StepperFactoryDeps,
