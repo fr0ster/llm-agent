@@ -174,13 +174,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   ): Promise<boolean> {
     const deps = this.deps;
     // Seams resolved once per execute(); consumed by Task 11+ (reviewer/finalizer/run-scope).
-    const _now = deps.now ?? (() => new Date().toISOString());
-    // @ts-expect-error -- noUnusedLocals: consumed in Task 11+
-    const _mintRunId =
+    const now = deps.now ?? (() => new Date().toISOString());
+    const mintRunId =
       deps.runIdMinter ??
-      (() => `run-${_now()}-${Math.round(Math.random() * 1e9)}`);
-    // @ts-expect-error -- noUnusedLocals: consumed in Task 11+
-    const _terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+      (() => `run-${now()}-${Math.round(Math.random() * 1e9)}`);
+    const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
+    // Touch the run-scope seams until Task 11+ consumes them (removed there).
+    void mintRunId;
+    void terminalTtlMs;
     const sessionId = ctx.sessionId;
     const prompt = extractPrompt(ctx.textOrMessages);
     const rag = await deps.knowledgeRagFor(sessionId);
