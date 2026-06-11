@@ -3204,16 +3204,30 @@ reference is English (the planner invariant extends to `requires`), so a normal
 (non-multilingual) embedder suffices:
 
 ```ts
-const MAX_EXTRACT_WINDOWS = 32;
-/** Return the ≈`maxChars` window of `content` most similar to `ref` by EMBEDDING
- *  (#1/plan-21) — NOT ASCII lexical overlap (which fails for synonyms). The window
- *  size is ≈ maxChars with 50% OVERLAP and the RETURNED window IS the ranked one
- *  (#2/plan-22): ranking larger-than-maxChars chunks and returning only their head
- *  would drop a relevant fragment sitting late in a big chunk. Each candidate
- *  window already fits the budget; markers are reserved within it so the result is
- *  STRICTLY ≤ maxChars (#2/plan-20). A tiny maxChars (< 3) returns a bare slice
- *  (#2/plan-21). The `requires` ref is English (planner invariant), so a normal
- *  embedder suffices — no multilingual requirement. Async (it embeds). */
+const MAX_EXTRACT_WINDOWS = 16;
+/** Index of the best ≈`winSize` window of `text` by cosine to `q`. CONTIGUOUS
+ *  coverage: with `maxWindows` windows the stride spans the WHOLE `text`
+ *  (stride = ceil(len/maxWindows)), so there is NO unscanned gap (#2/plan-23). */
+async function bestWindowStart(text: string, q: number[], embedder: IEmbedder, winSize: number, maxWindows: number): Promise<number> {
+  const stride = Math.max(1, Math.ceil(text.length / maxWindows));
+  let bestStart = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  let n = 0;
+  for (let s = 0; s < text.length && n < maxWindows; s += stride, n++) {
+    const { vector } = await embedder.embed(text.slice(s, s + winSize));
+    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
+    if (score > bestScore) { bestScore = score; bestStart = s; }
+  }
+  return bestStart;
+}
+/** Return the ≈`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
+ *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). TWO-PHASE so
+ *  coverage is FULL even for content > MAX_EXTRACT_WINDOWS × maxChars (#2/plan-23):
+ *  phase 1 splits the whole content into MAX_EXTRACT_WINDOWS contiguous segments and
+ *  picks the best; phase 2 re-windows that segment at maxChars granularity. Result
+ *  is STRICTLY ≤ maxChars including markers (#2/plan-20); a tiny maxChars (< 3)
+ *  returns a bare slice (#2/plan-21). The `requires` ref is English (planner
+ *  invariant), so a normal (non-multilingual) embedder suffices. Async. */
 export async function relevantExtract(
   content: string,
   ref: string,
@@ -3222,25 +3236,21 @@ export async function relevantExtract(
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
-  // Stride spans the WHOLE content within MAX_EXTRACT_WINDOWS embeds while staying
-  // ≤ maxChars (so maxChars-wide windows overlap → no coverage gap) for content up
-  // to MAX_EXTRACT_WINDOWS × maxChars; only far larger artifacts thin out (#2/plan-22).
-  const stride = Math.max(Math.floor(maxChars / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
-  const starts: number[] = [];
-  for (let s = 0; s < content.length && starts.length < MAX_EXTRACT_WINDOWS; s += stride) starts.push(s);
   const { vector: q } = await embedder.embed(ref);
-  let bestStart = 0;
-  let bestScore = Number.NEGATIVE_INFINITY;
-  for (const s of starts) {
-    const { vector } = await embedder.embed(content.slice(s, s + maxChars)); // window == maxChars
-    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
-    if (score > bestScore) { bestScore = score; bestStart = s; }
+  // Phase 1 (coarse, FULL coverage): segments of ceil(len/MAX) span the whole content.
+  const segSize = Math.max(maxChars, Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
+  const segStart = await bestWindowStart(content, q, embedder, segSize, MAX_EXTRACT_WINDOWS);
+  // Phase 2 (fine, within the chosen segment) when the segment is larger than maxChars.
+  let bestStart = segStart;
+  if (segSize > maxChars) {
+    const seg = content.slice(segStart, segStart + segSize);
+    bestStart = segStart + (await bestWindowStart(seg, q, embedder, maxChars, MAX_EXTRACT_WINDOWS));
   }
   const head = bestStart > 0 ? '…' : '';
   const bodyLen = Math.max(0, maxChars - head.length - 1); // reserve room for a tail '…'
   const slice = content.slice(bestStart, bestStart + bodyLen);
   const tail = bestStart + bodyLen < content.length ? '…' : '';
-  return head + slice + tail; // ≤ head + bodyLen + 1 ≤ maxChars; IS the ranked window
+  return head + slice + tail; // ≤ head + bodyLen + 1 ≤ maxChars
 }
 ```
 
@@ -3394,16 +3404,18 @@ describe('runScopedRecall', () => {
 });
 
 describe('relevantExtract', () => {
-  // Stub embedder: a window containing MARK embeds close to the ref; else
-  // orthogonal — so the EMBEDDING (not lexical overlap) picks the relevant window.
-  const embedder = { embed: async (t: string) => ({ vector: /MARK/.test(t) ? [1, 0] : [0, 1] }) } as never;
-  it('returns the most-similar WINDOW (embedding), even when the fragment sits LATE, bounded', async () => {
+  // Stub embedder: BOTH the ref ("...reference") and any window containing MARK map
+  // to the SAME vector [1,0]; everything else is orthogonal [0,1]. So cosine(ref,
+  // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
+  // overlap) picks the MARK window (#1/plan-23).
+  const embedder = { embed: async (t: string) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }) } as never;
+  it('two-phase coverage surfaces a LATE fragment in a large artifact, bounded', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
-    // MARK sits near the END of the content, well past the first maxChars — only an
-    // overlapping-window ranker (not head-of-a-big-chunk) surfaces it.
-    const content = `${'x'.repeat(4000)} MARK relevant fragment`;
+    // Artifact far larger than maxChars; the relevant fragment sits near the END
+    // (past MAX_EXTRACT_WINDOWS × maxChars would be a gap for a single-pass scan).
+    const content = `${'x'.repeat(8000)} MARK relevant fragment`;
     const out = await relevantExtract(content, 'the target reference', 200, embedder);
-    assert.ok(out.includes('MARK'), 'embedding surfaced the late fragment via overlapping windows');
+    assert.ok(out.includes('MARK'), 'two-phase coarse→fine surfaced the late fragment (no coverage gap)');
     assert.ok(out.length <= 200, 'STRICTLY bounded to maxChars including ellipses (#2/plan-20)');
   });
   it('returns a bare slice (no double markers) for a tiny maxChars (#2/plan-21)', async () => {
