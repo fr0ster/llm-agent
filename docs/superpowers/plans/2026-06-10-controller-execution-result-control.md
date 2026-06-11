@@ -3200,7 +3200,7 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
 ```
 
 Add the relevance-extract helper (near `runScopedRecall`), `const
-RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder } from
+RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder, IEmbedderBatch } from
 '@mcp-abap-adt/llm-agent';`, and `import { cosine } from
 '../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
 the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; export
@@ -3210,18 +3210,28 @@ reference is English (the planner invariant extends to `requires`), so a normal
 
 ```ts
 const MAX_EXTRACT_WINDOWS = 64;
-/** Return the ≈`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
+/** Embed many texts in ONE batch when the embedder supports it (#2/plan-26), else
+ *  fall back to SEQUENTIAL embeds (never an unbounded parallel burst — respect
+ *  provider rate limits). Returns vectors aligned to `texts`. */
+async function embedAll(embedder: IEmbedder, texts: string[]): Promise<number[][]> {
+  const b = embedder as Partial<IEmbedderBatch>;
+  if (typeof b.embedBatch === 'function') return (await b.embedBatch(texts)).map((r) => r.vector);
+  const out: number[][] = [];
+  for (const t of texts) out.push((await embedder.embed(t)).vector);
+  return out;
+}
+/** Return the ≤`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
  *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). DIRECT single-pass
- *  ranking of fixed `maxChars` windows (#1/plan-25): every candidate IS a maxChars
- *  window scored on its own, so there is NO hierarchical greedy step that could
- *  discard the right branch by diluting a small fragment inside a big coarse window.
- *  Stride is 50% overlap, WIDENED only if needed to span the whole content within
- *  MAX_EXTRACT_WINDOWS embeds. Coverage contract is POINT coverage (#2/plan-25):
- *  every position lies in some window for content ≤ MAX_EXTRACT_WINDOWS×maxChars
- *  (the common case — ≈12.8k chars at maxChars=200); for larger content the windows
- *  no longer overlap and a fragment straddling two windows may be split (best-effort
- *  locator, not fragment-whole). Result is STRICTLY ≤ maxChars incl. markers
- *  (#2/plan-20); a tiny maxChars (< 3) returns a bare slice (#2/plan-21). The
+ *  ranking (#1/plan-25): every candidate is scored on its own — no hierarchical
+ *  greedy step that could dilute a small fragment. The SCORED window IS the RETURNED
+ *  body (#1/plan-26): candidates are `body = maxChars - 2` chars (head+tail '…'
+ *  reserved up front), so the highest-scoring fragment is never truncated by the
+ *  markers. Stride is 50% overlap, widened to span the whole content within
+ *  MAX_EXTRACT_WINDOWS windows. POINT coverage (#2/plan-25): every position is in
+ *  some window for content ≤ MAX_EXTRACT_WINDOWS×maxChars (~12.8k at maxChars=200);
+ *  larger content thins to non-overlapping windows (best-effort). At most
+ *  MAX_EXTRACT_WINDOWS+1 embeds, in ONE batch when supported (#2/plan-26). Result
+ *  STRICTLY ≤ maxChars; tiny maxChars (< 3) → bare slice (#2/plan-21). The
  *  `requires` ref is English (planner invariant) → a normal embedder suffices. */
 export async function relevantExtract(
   content: string,
@@ -3231,20 +3241,23 @@ export async function relevantExtract(
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
-  const { vector: q } = await embedder.embed(ref);
-  const stride = Math.max(Math.floor(maxChars / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
+  const body = maxChars - 2; // reserve 2 chars for a possible head + tail '…'
+  const stride = Math.max(Math.floor(body / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
+  const starts: number[] = [];
+  for (let s = 0; s < content.length; s += stride) starts.push(s);
+  // ONE batch: the ref + every candidate window (each `body` chars = the EXACT text
+  // that will be returned, so the ranked fragment is never cut by the markers).
+  const vecs = await embedAll(embedder, [ref, ...starts.map((s) => content.slice(s, s + body))]);
+  const q = vecs[0];
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
-  for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await embedder.embed(content.slice(s, s + maxChars)); // every candidate is a maxChars window
-    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
-    if (score > bestScore) { bestScore = score; bestStart = s; }
+  for (let i = 0; i < starts.length; i++) {
+    const score = cosine(q, vecs[i + 1]); // cosine imported from ../embedder-knowledge-index.js
+    if (score > bestScore) { bestScore = score; bestStart = starts[i]; }
   }
   const head = bestStart > 0 ? '…' : '';
-  const bodyLen = Math.max(0, maxChars - head.length - 1); // reserve room for a tail '…'
-  const slice = content.slice(bestStart, bestStart + bodyLen);
-  const tail = bestStart + bodyLen < content.length ? '…' : '';
-  return head + slice + tail; // ≤ head + bodyLen + 1 ≤ maxChars
+  const tail = bestStart + body < content.length ? '…' : '';
+  return head + content.slice(bestStart, bestStart + body) + tail; // ≤ 1 + body + 1 = maxChars
 }
 ```
 
@@ -3401,8 +3414,25 @@ describe('relevantExtract', () => {
   // Stub embedder: BOTH the ref ("...reference") and any window containing MARK map
   // to the SAME vector [1,0]; everything else is orthogonal [0,1]. So cosine(ref,
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
-  // overlap) picks the MARK window (#1/plan-23).
-  const embedder = { embed: async (t: string) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }) } as never;
+  // overlap) picks the MARK window (#1/plan-23). Counts embed calls (#2/plan-26).
+  let calls = 0;
+  const embedder = { embed: async (t: string) => { calls++; return { vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }; } } as never;
+  it('uses a SINGLE batch when the embedder supports embedBatch (#2/plan-26)', async () => {
+    const { relevantExtract } = await import('../controller-coordinator-handler.js');
+    let batchCalls = 0;
+    const batchEmbedder = { embed: async () => ({ vector: [0, 1] }), embedBatch: async (ts: string[]) => { batchCalls++; return ts.map((t) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] })); } } as never;
+    const out = await relevantExtract(`${'x'.repeat(2000)} MARK frag`, 'the reference', 200, batchEmbedder);
+    assert.equal(batchCalls, 1, 'exactly one batch call (ref + windows together)');
+    assert.ok(out.includes('MARK'));
+  });
+  it('the RETURNED body equals the SCORED window — a fragment at the window end is not cut (#1/plan-26), bounded embeds (#2/plan-26)', async () => {
+    const { relevantExtract } = await import('../controller-coordinator-handler.js');
+    calls = 0;
+    const out = await relevantExtract(`${'y'.repeat(3000)} ...MARK`, 'the reference', 100, embedder);
+    assert.ok(out.includes('MARK'), 'tail-of-window fragment survives (scored == returned body)');
+    assert.ok(out.length <= 100, 'STRICTLY ≤ maxChars');
+    assert.ok(calls <= 64 + 1, 'bounded to MAX_EXTRACT_WINDOWS + 1 embeds');
+  });
   it('direct scan surfaces a LATE fragment within the point-coverage range (#1/#2/plan-25)', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
     // 10,000 ≤ MAX_EXTRACT_WINDOWS × maxChars (64 × 200 = 12,800) → windows overlap,
