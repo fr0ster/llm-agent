@@ -3075,7 +3075,54 @@ export interface Step {
 }
 ```
 
-The planner already emits `name`/`instructions`; `parsePlan`/`parseNextStep` carry `type` through. Extend both to carry `requires` when present (in `planner.ts` `parsePlan`, add `...(Array.isArray(s.requires) ? { requires: s.requires } : {})`; in `controller-coordinator-handler.ts` `parseNextStep`, the `next` branch returns `obj.step` as-is, so `requires` already passes through — no change).
+The planner emits `name`/`instructions`; `parsePlan`/`parseNextStep` carry `type`
+through. `requires` must be **validated**, NOT carried blind (#1/plan-30): the
+values are fed verbatim into the semantic query + embedder, so a non-string /
+empty / oversized array would corrupt recall. Add a shared validator and use it in
+BOTH parsers; a malformed `requires` is a parse failure → the existing parse-retry
+re-asks the planner.
+
+Add to `types.ts` (or a small shared util imported by both parsers):
+
+```ts
+export const MAX_REQUIRES = 8; // contract cap on a step's dependency references
+/** Validate a step's optional `requires`: undefined (ok) OR a non-empty array
+ *  (≤ MAX_REQUIRES) of non-empty strings. Returns the cleaned array, or `false`
+ *  for a malformed value (→ the caller treats it as a parse failure). */
+export function validateRequires(v: unknown): string[] | undefined | false {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v) || v.length === 0 || v.length > MAX_REQUIRES) return false;
+  const out: string[] = [];
+  for (const r of v) {
+    if (typeof r !== 'string' || r.trim().length === 0) return false;
+    out.push(r.trim());
+  }
+  return out;
+}
+```
+
+In `planner.ts` `parsePlan`, for each step:
+
+```ts
+    const req = validateRequires((raw as { requires?: unknown }).requires);
+    if (req === false) return null; // malformed requires → format failure (handler retries)
+    steps.push({ name: s.name, instructions: s.instructions, ...(s.type ? { type: s.type } : {}), ...(req ? { requires: req } : {}) });
+```
+
+In `controller-coordinator-handler.ts` `parseNextStep`, the `next` branch must NOT
+return `obj.step` as-is — validate `requires` there too:
+
+```ts
+    if (obj.kind === 'next' && obj.step && typeof obj.step.name === 'string' && typeof obj.step.instructions === 'string') {
+      const req = validateRequires((obj.step as { requires?: unknown }).requires);
+      if (req === false) return null; // malformed → parse-retry
+      return { kind: 'next', step: { name: obj.step.name, instructions: obj.step.instructions, ...(obj.step.type ? { type: obj.step.type } : {}), ...(req ? { requires: req } : {}) } };
+    }
+```
+
+Add a parser test: a step with `requires: [123, '']` (or `requires` of length >
+MAX_REQUIRES) makes `parsePlan`/`parseNextStep` return `null` (→ retry), while
+`requires: ['table T100']` is carried through trimmed.
 
 - [ ] **Step 2: Write the failing tests**
 
@@ -3185,30 +3232,32 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
     // evidence (or an unused input) → failed: missing input"). `hit` stays a coarse
     // any-candidate flag; the authoritative presence call is the reviewer reading
     // topArtifact.
+    // `requires` is already capped at MAX_REQUIRES by the parser (#1/plan-30); the
+    // fallback is the single whole-step text. Evidence is gathered SEQUENTIALLY
+    // (NOT Promise.all over refs — #2/plan-30): each relevantExtract is itself
+    // bounded-sequential, so a sequential outer loop keeps the TOTAL in-flight
+    // embeds at 1 (rate-limit-safe) instead of refs × (MAX+1) concurrent.
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const maxAttempts = cfg.maxStepAttempts ?? 5;
     // The combined over-fetch must cover BOTH kinds' guaranteed bounds (#2/plan-19,
-    // #1/plan-20), so neither step retries nor mcp re-fetches (toolCallCount resets
-    // per attempt → maxSteps × maxStepAttempts × maxToolCalls) can crowd the relevant
+    // #1/plan-20): step retries + mcp re-fetches (toolCallCount resets per attempt →
+    // maxSteps × maxStepAttempts × maxToolCalls) — so neither crowds the relevant
     // artifact out of the cap before dedup → the reviewer always sees the right topArtifact.
     const evBound = RECALL_K_STEP * (maxAttempts + 1) + cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
-    const evidence = await Promise.all(
-      refs.map(async (ref) => {
-        const hits = await runScopedRecall(rag, ref, 1, bundle.runId, evBound, RECALL_ARTIFACT_TYPES);
-        // Give the reviewer the RELEVANT fragment of the closest artifact, not a
-        // head truncation (#3/plan-19): for a long artifact the matching part may be
-        // far in; a head slice would hide it even when the embedding chose the right
-        // document.
-        const topArtifact = hits[0] ? await relevantExtract(hits[0].content, ref, RECALL_EVIDENCE_CHARS, deps.embedder!) : undefined;
-        return { ref, hit: hits.length > 0, topArtifact };
-      }),
-    );
+    const evidence: Evidence[] = [];
+    for (const ref of refs) {
+      const hits = await runScopedRecall(rag, ref, 1, bundle.runId, evBound, RECALL_ARTIFACT_TYPES);
+      // Give the reviewer the RELEVANT fragment of the closest artifact, not a head
+      // truncation (#3/plan-19): for a long artifact the matching part may be far in.
+      const topArtifact = hits[0] ? await relevantExtract(hits[0].content, ref, RECALL_EVIDENCE_CHARS, deps.embedder!) : undefined;
+      evidence.push({ ref, hit: hits.length > 0, topArtifact });
+    }
 ```
 
 Add the relevance-extract helper (near `runScopedRecall`), `const
 RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder } from
-'@mcp-abap-adt/llm-agent';`, and `import { cosine } from
-'../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
+'@mcp-abap-adt/llm-agent';`, `import type { Evidence } from './reviewer.js';`, and
+`import { cosine } from '../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
 the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; export
 `cosine` from that module, Task 2). The extract is EMBEDDING-based; the `requires`
 reference is English (the planner invariant extends to `requires`), so a normal
