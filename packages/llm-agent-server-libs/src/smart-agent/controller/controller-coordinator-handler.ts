@@ -66,16 +66,24 @@ export type TerminalUsage = LlmUsage & {
 export function makeLogUsage(
   requestLogger: IRequestLogger,
   requestId: string | undefined,
-  models: { evaluator: string; planner: string; executor: string },
+  models: {
+    evaluator: string;
+    planner: string;
+    executor: string;
+    reviewer?: string;
+    finalizer?: string;
+  },
 ): (role: string, u?: LlmUsage) => void {
   return (role, u) => {
     if (!u) return;
     const model =
       role === 'finalizer'
-        ? models.planner
-        : role === 'embedding'
-          ? 'embedder'
-          : ((models as Record<string, string>)[role] ?? 'unknown');
+        ? (models.finalizer ?? models.planner)
+        : role === 'reviewer'
+          ? (models.reviewer ?? models.planner)
+          : role === 'embedding'
+            ? 'embedder'
+            : ((models as Record<string, string>)[role] ?? 'unknown');
     requestLogger.logLlmCall({
       component: role as LlmComponent,
       model,
@@ -127,9 +135,15 @@ export interface ControllerHandlerDeps {
    */
   isExternalTool?: (toolName: string) => boolean;
   config: ControllerConfig;
-  /** Resolved model id per subagent role, for usage attribution (finalizer uses
-   *  the planner model). */
-  models: { evaluator: string; planner: string; executor: string };
+  /** Resolved model id per subagent role, for usage attribution. reviewer/finalizer
+   *  fall back to the planner model when their subagent config is absent. */
+  models: {
+    evaluator: string;
+    planner: string;
+    executor: string;
+    reviewer?: string;
+    finalizer?: string;
+  };
   /** Judge role. Optional; when absent the handler uses a built-in
    *  approve-content reviewer (legacy behaviour — every content result is 'ok')
    *  so pre-reviewer callers keep working. The factory injects LlmReviewer. */

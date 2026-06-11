@@ -5,7 +5,6 @@ import type {
   IKnowledgeRagHandle,
   ILlm,
 } from '@mcp-abap-adt/llm-agent';
-import { InMemoryKnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { ControllerCoordinatorHandler } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import type { ControllerConfig } from '../../smart-agent/controller/types.js';
 import {
@@ -13,10 +12,11 @@ import {
   type ControllerFactoryDeps,
 } from '../controller-factory.js';
 
-const llm = {
-  model: 'm-x',
-  chat: async () => ({ ok: true, value: { content: '' } }),
-} as unknown as ILlm;
+const llm = (model: string): ILlm =>
+  ({
+    model,
+    chat: async () => ({ ok: true, value: { content: '' } }),
+  }) as unknown as ILlm;
 const embedder = {
   embed: async () => ({ vector: [1, 0, 0] }),
 } as unknown as IEmbedder;
@@ -26,31 +26,56 @@ const rag: IKnowledgeRagHandle = {
   write: async () => {},
   fingerprint: () => 'stub',
 };
+// 3-role config (no reviewer/finalizer subagent → both default to the planner LLM).
 const config: ControllerConfig = {
-  subagents: {} as never,
-  targetState: { strategy: 'semantic-distance', distanceThreshold: 0.9 },
+  subagents: {
+    evaluator: { provider: 'x', model: 'm-eval' },
+    planner: { provider: 'x', model: 'm-plan' },
+    executor: { provider: 'x', model: 'm-exec' },
+  } as never,
+  targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
   sessionMemory: { collection: 'c' },
   budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
 };
-const baseDeps = (): Omit<ControllerFactoryDeps, 'embedder'> => ({
-  makeRoleLlm: async () => llm,
+const baseDeps = (): Omit<ControllerFactoryDeps, 'embedder' | 'backend'> => ({
+  makeRoleLlm: async (role) => llm(`m-${role}`),
   callMcp: async () => 'out',
-  backend: new InMemoryKnowledgeBackend(),
   knowledgeRagFor: () => rag,
   selectTools: async () => [],
 });
 
-test('ControllerFactory.build returns a ControllerCoordinatorHandler', async () => {
+test('builds a handler with reviewer+finalizer (semantic-capable backend + embedder)', async () => {
   const factory = new ControllerFactory();
   assert.equal(factory.kind, 'controller');
-  const { handler } = await factory.build(config, { ...baseDeps(), embedder });
+  const { handler } = await factory.build(config, {
+    ...baseDeps(),
+    backend: { semanticRecallCapable: true } as never,
+    embedder,
+  });
   assert.ok(handler instanceof ControllerCoordinatorHandler);
   assert.equal(typeof (handler as { execute?: unknown }).execute, 'function');
 });
 
-test('ControllerFactory.build throws for a distance strategy with no embedder', async () => {
+test('throws when no embedder is provided (recall is embedding-based, any persistence mode)', async () => {
   await assert.rejects(
-    () => new ControllerFactory().build(config, baseDeps()),
-    /requires an .*embedder/,
+    () =>
+      new ControllerFactory().build(config, {
+        ...baseDeps(),
+        backend: { semanticRecallCapable: true } as never,
+        // no embedder
+      } as ControllerFactoryDeps),
+    /embedder/,
+  );
+});
+
+test('throws when an embedder is present but the backend is NOT semantic-recall-capable', async () => {
+  await assert.rejects(
+    () =>
+      new ControllerFactory().build(config, {
+        ...baseDeps(),
+        backend: { semanticRecallCapable: false } as never,
+        embedder,
+      }),
+    /semantic-recall-capable/,
   );
 });
