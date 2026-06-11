@@ -22,10 +22,12 @@ import {
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
+import type { Outcome } from './outcome.js';
 import { makePlanner } from './planner.js';
 import { appendHint } from './prompts.js';
-import type { IReviewer } from './reviewer.js';
+import type { IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
+import { writeTerminal } from './run-scope.js';
 import { hydrateBundle, persistBundle } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
@@ -179,9 +181,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       deps.runIdMinter ??
       (() => `run-${now()}-${Math.round(Math.random() * 1e9)}`);
     const terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
-    // Touch the run-scope seams until Task 11+ consumes them (removed there).
-    void mintRunId;
-    void terminalTtlMs;
     const sessionId = ctx.sessionId;
     const prompt = extractPrompt(ctx.textOrMessages);
     const rag = await deps.knowledgeRagFor(sessionId);
@@ -283,6 +282,15 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.goal = outcome.goal;
     }
 
+    // Ensure the run has a durable id before any step runs (terminal records and
+    // results-RAG artifacts are keyed by it). Tasks 12-13 build the full run-state
+    // lifecycle on top; this guard only mints when absent (resetRun clears it, so a
+    // fresh run re-mints). mintRunId is the injected seam.
+    if (!bundle.runId) {
+      bundle.runId = mintRunId();
+      await persistBundle(deps.backend, sessionId, bundle);
+    }
+
     // -- Main loop ----------------------------------------------------------
     // The planner plans by INTENT — it is NOT shown a tool catalog. A prompt-level
     // catalog (selected once from goal+prompt) was too coarse: it mis-surfaced
@@ -374,11 +382,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         meta,
         next.step,
         isExternalTool,
+        now,
+        terminalTtlMs,
         logUsage,
         usageNow,
         (o) => planner.commit?.(bundle, o),
       );
-      if (completed === 'suspended') return true;
+      if (completed === 'suspended' || completed === 'aborted') return true;
       // runStep.settle() already persisted the outcome ATOMICALLY (bundle.lastOutcome
       // + cursor advance via onCommit + step result, in one persistBundle). The next
       // planner.next reads the fresh bundle.lastOutcome; a resume continues from the
@@ -399,8 +409,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
   /** Returns 'advanced' (step succeeded — continue loop), 'failed' (retries/
    *  tool-call budget exhausted; the failure note is in plannerPrivate so the
-   *  planner can replan), or 'suspended' (external round-trip surfaced — caller
-   *  must return true). */
+   *  planner can replan), 'partial' (reviewer approved part, remainder replans),
+   *  'suspended' (external round-trip surfaced — caller must return true), or
+   *  'aborted' (judge-failure exhausted — run terminated). */
   private async runStep(
     ctx: PipelineContext,
     sessionId: string,
@@ -409,10 +420,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     meta: KnowledgeEntryMetadata,
     step: Step,
     isExternalTool: (name: string) => boolean,
+    now: () => string,
+    terminalTtlMs: number,
     logUsage?: (role: string, u?: LlmUsage) => void,
     usageNow?: () => TerminalUsage,
-    onCommit?: (outcome: 'advanced' | 'failed') => void,
-  ): Promise<'advanced' | 'failed' | 'suspended'> {
+    onCommit?: (outcome: 'advanced' | 'failed' | 'partial') => void,
+  ): Promise<'advanced' | 'failed' | 'partial' | 'suspended' | 'aborted'> {
     const deps = this.deps;
     const cfg = deps.config.budgets;
     const maxToolCalls = cfg.maxToolCalls ?? 10;
@@ -422,12 +435,26 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // planner cursor (onCommit) in the SAME persistBundle that records the step
     // result — never in a separate write, so a crash cannot replay a completed step.
     const settle = async (
-      outcome: 'advanced' | 'failed',
-    ): Promise<'advanced' | 'failed'> => {
+      outcome: 'advanced' | 'failed' | 'partial',
+    ): Promise<'advanced' | 'failed' | 'partial'> => {
       bundle.lastOutcome = outcome;
       onCommit?.(outcome);
       await persistBundle(deps.backend, sessionId, bundle);
       return outcome;
+    };
+    // Unrecoverable abort: store-first terminal ERROR, flip the bundle terminal,
+    // surface the error, signal the caller to stop. Returns 'aborted'.
+    const abortRun = async (error: string): Promise<'aborted'> => {
+      await this.abortTerminal(
+        ctx,
+        sessionId,
+        bundle,
+        error,
+        now,
+        terminalTtlMs,
+        usageNow?.(),
+      );
+      return 'aborted';
     };
     const messages: Message[] = [
       {
@@ -456,6 +483,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       messages.push({ role: 'user', content: recallBlock });
     }
 
+    // Evidence for the reviewer: whether the step's recall surfaced anything. The
+    // per-reference manifest (step.requires) is Task 16; for now one whole-step entry.
+    const evidence = [{ ref: recallText, hit: recalled.length > 0 }];
+
     // Tools offered to the executor = the INTERNAL (MCP) tools semantically
     // relevant to THIS step (top-K from toolsRag) PLUS the per-request external
     // (consumer-supplied) tools. The executor decides which to call; internal
@@ -481,15 +512,66 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       logUsage?.('executor', res.usage);
 
       if (res.kind === 'content') {
+        // Hold the executor's result; the reviewer (NOT the executor) decides the
+        // outcome. Default reviewer (no deps.reviewer) approves as 'ok' (legacy).
+        let review: ReviewResult = deps.reviewer
+          ? await deps.reviewer.review(step, evidence, res.content, {
+              hint: deps.config.subagents.reviewer?.hint,
+              logUsage,
+            })
+          : {
+              kind: 'outcome',
+              outcome: {
+                status: 'ok',
+                approved: res.content,
+                remainder: '',
+                note: '',
+              },
+            };
+
+        // Judge failure (provider error / malformed / contradictory ok-with-empty)
+        // is NOT a step failure: re-ask within maxReviewRetries, then ABORT (the
+        // outcome is unverifiable). Never mapped to settle('failed')/replan.
+        let reviewRetries = 0;
+        while (review.kind === 'judge-failure') {
+          reviewRetries++;
+          if (reviewRetries > (cfg.maxReviewRetries ?? 2)) {
+            return abortRun(
+              `step ${step.name} outcome unverifiable: ${review.reason}`,
+            );
+          }
+          review = await deps.reviewer!.review(step, evidence, res.content, {
+            hint: deps.config.subagents.reviewer?.hint,
+            logUsage,
+          });
+        }
+
+        const outcome = review.outcome;
+        const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
+        const attempt = bundle.inFlightStep?.attempt ?? 0;
+        // ONE post-review write carrying the COMPLETE Outcome + identity.
         await writeArtifact(rag, {
           ...meta,
           artifactType: 'step-result',
           task: step.name,
-          content: res.content,
+          runId: bundle.runId,
+          seq,
+          attempt,
+          status: outcome.status,
+          note: outcome.note,
+          remainder: outcome.remainder,
+          content: outcome.approved,
         });
         bundle.budgets.stepsUsed++;
-        bundle.plannerPrivate += `\n[step ${step.name}] ${res.content}`;
-        return settle('advanced');
+        const mapped = mapOutcome(outcome.status);
+        recordStepControl(bundle, {
+          seq: bundle.inFlightStep?.seq ?? seq,
+          name: step.name,
+          status: outcome.status,
+          note: outcome.note,
+          remainder: outcome.remainder,
+        });
+        return settle(mapped);
       }
 
       if (res.kind === 'error') {
@@ -619,6 +701,33 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     await persistBundle(this.deps.backend, sessionId, bundle);
     this.surfaceClarify(ctx, question, usage);
     return true;
+  }
+
+  /** Store-first terminal ERROR: write the terminal outcome to the TTL store
+   *  FIRST (keyed by runId), THEN flip the bundle terminal and surface the error.
+   *  Store-first makes the abort idempotent across a crash between the two writes. */
+  private async abortTerminal(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    error: string,
+    now: () => string,
+    terminalTtlMs: number,
+    usage?: TerminalUsage,
+  ): Promise<void> {
+    await writeTerminal(
+      this.deps.backend,
+      sessionId,
+      bundle.runId ?? sessionId,
+      { kind: 'error', error },
+      terminalTtlMs,
+      now(),
+    );
+    bundle.pending = undefined;
+    bundle.inFlightStep = undefined;
+    bundle.runState = 'terminal';
+    await persistBundle(this.deps.backend, sessionId, bundle);
+    this.surfaceFinal(ctx, `Error: ${error}`, usage);
   }
 
   private surfaceClarify(
@@ -856,4 +965,34 @@ function synthMeta(
     artifactType: 'step-result',
     createdAt: new Date().toISOString(),
   };
+}
+
+/** Map a reviewer status to the planner transition. ok/exists advance; partial
+ *  advances the accepted part AND forces a remainder replan; failed replans. */
+function mapOutcome(
+  status: Outcome['status'],
+): 'advanced' | 'failed' | 'partial' {
+  if (status === 'ok' || status === 'exists') return 'advanced';
+  if (status === 'partial') return 'partial';
+  return 'failed';
+}
+
+/** Append ONE payload-free control record to plannerPrivate (the cache holds
+ *  {seq,status,note,remainder}, never the approved content). Used by both normal
+ *  settle and crash/external reconciliation so plannerPrivate is identical
+ *  whichever path committed the step. */
+function recordStepControl(
+  bundle: SessionBundle,
+  rec: {
+    seq: number;
+    name: string;
+    status: Outcome['status'];
+    note?: string;
+    remainder?: string;
+  },
+): void {
+  bundle.plannerPrivate +=
+    `\n[seq ${rec.seq} ${rec.name} ${rec.status}]` +
+    (rec.note ? ` ${rec.note}` : '') +
+    (rec.remainder ? ` remainder: ${rec.remainder}` : '');
 }

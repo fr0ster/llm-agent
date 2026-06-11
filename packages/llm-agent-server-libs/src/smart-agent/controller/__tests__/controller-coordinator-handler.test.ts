@@ -1305,6 +1305,106 @@ describe('ControllerCoordinatorHandler', () => {
     );
   });
 
+  it('reviewer verdict (not the executor) decides the outcome', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'final' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'I think it worked' }],
+    });
+    // COORDINATOR OVERRIDE: IReviewer.review MUST return a ReviewResult, not a bare
+    // Outcome. The plan text shows a bare object; use the discriminated form:
+    h.deps.reviewer = {
+      async review() {
+        return {
+          kind: 'outcome',
+          outcome: {
+            status: 'failed',
+            approved: '',
+            remainder: 'all',
+            note: 'not done',
+          },
+        };
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    const stepArtifact = h.rag.written.find(
+      (e) => e.metadata.artifactType === 'step-result',
+    );
+    assert.equal(stepArtifact?.metadata.status, 'failed');
+  });
+
+  it('a judge-failure is re-asked then ABORTS the run (terminal error), not a step replan', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'done',
+            result: 'should-not-happen',
+          }),
+        },
+      ],
+      executor: [
+        { kind: 'content', content: 'result' },
+        { kind: 'content', content: 'result' },
+      ],
+      config: baseConfig({ maxReviewRetries: 1 }),
+    });
+    let reviewCalls = 0;
+    h.deps.reviewer = {
+      async review() {
+        reviewCalls++;
+        return { kind: 'judge-failure', reason: 'provider down' };
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.equal(
+      reviewCalls,
+      2,
+      're-asked once (maxReviewRetries=1) then aborted',
+    );
+    assert.ok(
+      captured.find(
+        (c) => c.ok && /unverifiable|Error:/i.test(c.value.content),
+      ),
+      'surfaced a terminal error, not a replanned done',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'error');
+  });
+
   it('adaptive resume after a FAILED step REPLANS (durable lastOutcome) — not repeat', async () => {
     const h = harness({
       evaluator: [], // goal already in the seeded bundle → establishTargetState skipped
