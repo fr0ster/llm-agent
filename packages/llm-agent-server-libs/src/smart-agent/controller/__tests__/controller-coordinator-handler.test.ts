@@ -800,6 +800,10 @@ describe('ControllerCoordinatorHandler', () => {
     const handler2 = new ControllerCoordinatorHandler(h2.deps);
     const { ctx, captured } = fakeCtx({
       textOrMessages: 'read structure of table T100',
+      // Clarify-resume: the answer's fingerprint differs from the original
+      // request, so the consumer echoes the runId token to resume the suspended
+      // run (strict classification — token path, not fingerprint).
+      options: { runId: bundle.runId } as never,
     });
     const r2 = await handler2.execute(ctx, {}, undefined);
 
@@ -845,6 +849,9 @@ describe('ControllerCoordinatorHandler', () => {
     );
 
     // Leg 2: the human confirms with a bare "yes" → goal = the PROPOSED target.
+    // The bare "yes" does not fingerprint-match the original request, so the
+    // consumer echoes the runId token to resume the suspended run.
+    const b1 = await hydrateBundle(backend, 'sess-1');
     const h2 = harness({
       evaluator: [],
       planner: [
@@ -858,7 +865,8 @@ describe('ControllerCoordinatorHandler', () => {
     });
     h2.deps.backend = backend;
     await new ControllerCoordinatorHandler(h2.deps).execute(
-      fakeCtx({ textOrMessages: 'yes' }).ctx,
+      fakeCtx({ textOrMessages: 'yes', options: { runId: b1.runId } as never })
+        .ctx,
       {},
       undefined,
     );
@@ -1102,7 +1110,11 @@ describe('ControllerCoordinatorHandler', () => {
         { name: 's2', instructions: 'fetch B' },
       ],
       planCursor: 1, // s1 already completed + persisted
-    });
+      // Run-state so strict classification treats this turn as a resume of the
+      // in-flight run (same default prompt 'do the thing'), not a fresh reset.
+      runState: 'active',
+      originalRequest: 'do the thing',
+    } as never);
     const seen: string[] = [];
     const h = harness({
       evaluator: [], // goal already set → evaluator not called
@@ -1531,7 +1543,11 @@ describe('ControllerCoordinatorHandler', () => {
       plan: [{ name: 's1', instructions: 'orig' }],
       planCursor: 0,
       lastOutcome: 'failed',
-    });
+      // Run-state so strict classification resumes this run (same default prompt).
+      runState: 'active',
+      originalRequest: 'do the thing',
+      nextSeq: 0,
+    } as never);
     const { ctx, captured } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(
       ctx,
@@ -1549,5 +1565,91 @@ describe('ControllerCoordinatorHandler', () => {
           c.value.content === 'FINAL ANSWER',
       ),
     );
+  });
+
+  it('three-stage recovery: terminal store wins over phase (no re-finalize)', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    // Seed an ACTIVE bundle stuck in finalizing AND a terminal outcome for its runId.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'finalizing',
+      originalRequest: 'do the thing',
+      nextSeq: 1,
+    } as never);
+    const { writeTerminal } = await import('../run-scope.js');
+    await writeTerminal(
+      backend,
+      'sess-1',
+      'R1',
+      { kind: 'success', answer: 'ALREADY' },
+      60000,
+      '2026-06-10T00:00:00.000Z',
+    );
+    const h = harness({ evaluator: [], planner: [], executor: [] });
+    h.deps.backend = backend;
+    h.deps.now = () => '2026-06-10T00:00:01.000Z';
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'do the thing' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'ALREADY',
+      ),
+      'adopted terminal outcome without re-finalizing',
+    );
+  });
+
+  it('planner replan crash-guard: a crash mid-replan charges plannerResumeCount, capped', async () => {
+    // Seed awaiting-replan with plannerCallInFlight already true (a crash during a
+    // prior replan) → recovery charges plannerResumeCount; with cap 0 it aborts.
+    const backend = new InMemoryKnowledgeBackend();
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 0,
+        phase: 'awaiting-replan',
+        transcript: [],
+        toolCallCount: 0,
+      },
+      plannerCallInFlight: true,
+      plannerResumeCount: 0,
+    } as never);
+    const h = harness({
+      evaluator: [],
+      planner: [{ kind: 'content', content: JSON.stringify({ plan: [] }) }],
+      executor: [],
+      config: {
+        ...baseConfig(),
+        planner: 'adaptive',
+        budgets: { ...baseConfig().budgets, maxPlannerResumes: 0 },
+      },
+    });
+    h.deps.backend = backend;
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) => c.ok && /unable|abort|planner/i.test(c.value.content),
+      ),
+      'replan crash-loop aborted via maxPlannerResumes',
+    );
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
   });
 });

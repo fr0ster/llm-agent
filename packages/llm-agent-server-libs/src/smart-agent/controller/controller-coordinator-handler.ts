@@ -28,8 +28,8 @@ import { makePlanner } from './planner.js';
 import { appendHint } from './prompts.js';
 import type { IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
-import { writeTerminal } from './run-scope.js';
-import { hydrateBundle, persistBundle } from './session-bundle.js';
+import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
+import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
 import type {
@@ -219,6 +219,75 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // re-run of an in-flight executing step is charged as a crash-replay (correct).
     let externalContinuation = false;
 
+    // -- Classification + three-stage recovery ------------------------------
+    // Strict ordered classification (newRun > explicit-key strict > fingerprint of
+    // an in-flight active run). STAGE 1 of recovery is the terminal-store check for
+    // the resolved runId, run for ANY phase BEFORE consuming pending or routing by
+    // runPhase — so a crash between the store-first terminal write and the bundle
+    // flip can never re-run an already-finished run. A 'fresh' classification wipes
+    // all run-scoped state and mints a new runId; a 'resume' keeps everything and
+    // falls through to the pending/phase routing below.
+    const explicitKey = (ctx.options as { runId?: string } | undefined)?.runId;
+    const newRun =
+      (ctx.options as { newRun?: boolean } | undefined)?.newRun ?? false;
+    const keyForTerminal = explicitKey ?? bundle.runId;
+    const terminalExists = keyForTerminal
+      ? (await readTerminal(deps.backend, sessionId, keyForTerminal, now())) !==
+        undefined
+      : false;
+    const cls = classifyRequest({
+      bundle,
+      incomingRequest: prompt,
+      explicitKey,
+      newRun,
+      terminalExists,
+    });
+
+    if (cls.kind === 'replay') {
+      const out = await readTerminal(deps.backend, sessionId, cls.runId, now());
+      if (out) {
+        if (out.kind === 'success')
+          this.surfaceFinal(ctx, out.answer, usageNow());
+        else this.surfaceFinal(ctx, `Error: ${out.error}`, usageNow());
+        return true;
+      }
+      // Expired between classify and read → fall through to a fresh run.
+      resetRun(bundle, prompt);
+      bundle.runId = mintRunId();
+      await persistBundle(deps.backend, sessionId, bundle);
+    } else if (cls.kind === 'not-found') {
+      return this.escalate(
+        ctx,
+        sessionId,
+        bundle,
+        'this run is no longer resumable — start a new request',
+        usageNow(),
+      );
+    } else if (cls.kind === 'fresh') {
+      resetRun(bundle, prompt);
+      bundle.runId = mintRunId();
+      await persistBundle(deps.backend, sessionId, bundle);
+    } else if (cls.kind === 'resume' && bundle.runId) {
+      // STAGE 1 (terminal-first, any phase): a stored terminal outcome wins over the
+      // persisted runPhase — adopt it and STOP, never re-run the phase.
+      const term = await readTerminal(
+        deps.backend,
+        sessionId,
+        bundle.runId,
+        now(),
+      );
+      if (term) {
+        bundle.runState = 'terminal';
+        await persistBundle(deps.backend, sessionId, bundle);
+        if (term.kind === 'success')
+          this.surfaceFinal(ctx, term.answer, usageNow());
+        else this.surfaceFinal(ctx, `Error: ${term.error}`, usageNow());
+        return true;
+      }
+      // No terminal → STAGE 2 (consume pending) / STAGE 3 (route by phase) are the
+      // existing pending-resume block + the main loop's block (A) below.
+    }
+
     // -- Resume from a persisted pending marker -----------------------------
     if (bundle.pending?.kind === 'external-tool') {
       const { extId, toolName } = bundle.pending;
@@ -265,6 +334,29 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     // -- Establish the goal (evaluator) -------------------------------------
     if (!bundle.goal) {
+      // Evaluator crash-guard: a prior crash mid-call left evalCallInFlight set →
+      // charge evalResumeCount; exhausting maxEvalResumes is a TERMINAL abort
+      // (store-first), NOT an escalate — a durable resume budget, like the planner.
+      if (bundle.evalCallInFlight) {
+        bundle.evalResumeCount = (bundle.evalResumeCount ?? 0) + 1;
+        if (
+          bundle.evalResumeCount > (deps.config.budgets.maxEvalResumes ?? 3)
+        ) {
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
+            'evaluator resume budget exhausted',
+            now,
+            terminalTtlMs,
+            usageNow(),
+          );
+          return true;
+        }
+      }
+      bundle.evalCallInFlight = true;
+      bundle.runPhase = 'evaluating';
+      await persistBundle(deps.backend, sessionId, bundle);
       const outcome = await establishTargetState(
         { evaluator: deps.evaluator, embedder: deps.embedder },
         prompt,
@@ -272,6 +364,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         ctx.options,
         deps.config.subagents.evaluator?.hint,
       );
+      // The call completed (a malformed/needs-confirmation result is still a
+      // completed call) → clear the in-flight marker + reset the resume counter.
+      bundle.evalCallInFlight = false;
+      bundle.evalResumeCount = 0;
       logUsage('evaluator', outcome.usage);
       if (outcome.kind === 'needs-confirmation') {
         // Persist the proposed target with the pending marker so a confirmation
@@ -289,14 +385,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.goal = outcome.goal;
     }
 
-    // Ensure the run has a durable id before any step runs (terminal records and
-    // results-RAG artifacts are keyed by it). Tasks 12-13 build the full run-state
-    // lifecycle on top; this guard only mints when absent (resetRun clears it, so a
-    // fresh run re-mints). mintRunId is the injected seam.
-    if (!bundle.runId) {
-      bundle.runId = mintRunId();
-      await persistBundle(deps.backend, sessionId, bundle);
-    }
+    // (runId is guaranteed by the classification preamble: a fresh/expired-replay
+    // run mints one, a resume already has one — so no separate mint guard here.)
 
     // -- Main loop ----------------------------------------------------------
     // The planner plans by INTENT — it is NOT shown a tool catalog. A prompt-level
@@ -401,6 +491,28 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         continue;
       }
 
+      // Planner crash-guard: a prior crash mid-call left plannerCallInFlight set →
+      // charge plannerResumeCount; exhausting maxPlannerResumes is a TERMINAL abort
+      // (store-first). The adaptive replan runs through planner.next too, so this one
+      // guard covers the awaiting-replan replan with no separate site.
+      if (bundle.plannerCallInFlight) {
+        bundle.plannerResumeCount = (bundle.plannerResumeCount ?? 0) + 1;
+        if (bundle.plannerResumeCount > (cfg.maxPlannerResumes ?? 3)) {
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
+            'planner resume budget exhausted',
+            now,
+            terminalTtlMs,
+            usageNow(),
+          );
+          return true;
+        }
+      }
+      bundle.plannerCallInFlight = true;
+      bundle.runPhase = bundle.runPhase ?? 'planning';
+      await persistBundle(deps.backend, sessionId, bundle);
       const next = await planner.next({
         bundle,
         prompt,
@@ -409,6 +521,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         retrying: planParseRetries > 0,
         logUsage,
       });
+      // The call completed → clear the in-flight marker + reset the resume counter
+      // (a malformed reply is still a completed call; parse-retry is handled below).
+      bundle.plannerCallInFlight = false;
+      bundle.plannerResumeCount = 0;
       // NB: do NOT reset resumedExternal here — if this replan reply was malformed
       // (next === null), the parse-retry below must keep replanning. It is reset
       // only after a VALID decision (beside planParseRetries = 0;).
