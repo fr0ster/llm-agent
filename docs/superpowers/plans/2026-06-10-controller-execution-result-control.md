@@ -1922,7 +1922,7 @@ answer honors the user's language.
 - [ ] **Step 4: Run, verify it passes**
 
 Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts`
-Expected: PASS (existing planner tests + 2 new).
+Expected: PASS — all existing planner tests plus the ones added in this task (partial transition, the two prompt-contract checks, and the `parsePlan` `requires`-validation cases).
 
 - [ ] **Step 5: Commit**
 
@@ -3114,7 +3114,7 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 **Spec:** "evaluating phase" (needs-confirmation → suspended), "Clarify-resume semantics are deterministic" (empty answer rejected), "Dependency manifest & miss detection" (per-`requires` evidence map).
 
 **Files:**
-- Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`/`relevantExtract`), `reviewer.ts` already consumes `Evidence`.
+- Modify: `controller-coordinator-handler.ts` (evidence map + empty-clarify + `parseNextStep` `requires` validation + `export runScopedRecall`/`relevantExtract`). (`Step.requires` + `validateRequires` are already done in Task 3; `reviewer.ts` already consumes `Evidence`.)
 - Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` bounded-sequential / scored==returned / point-coverage).
 
 > NOTE (#1/plan-29): `relevantExtract` uses bounded SEQUENTIAL embedding (≤ MAX+1
@@ -3571,7 +3571,7 @@ Expected: PASS — empty-clarify + evidence + run-scoped-recall + relevantExtrac
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts
+git add packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts
 git commit -m "feat(controller): evaluator suspended transition, empty-clarify rejection, per-requires evidence map + run-scoped recall/extract"
 ```
 
