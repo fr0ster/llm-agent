@@ -212,6 +212,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // with it rather than blindly re-running the suspended step. Set in the
     // external-tool resume branch below.
     let resumedExternal = false;
+    // Marks a LIVE external-tool continuation (the result is injected into the
+    // in-flight step's transcript and the step re-runs, bounded by toolCallCount —
+    // NOT charged to resumeCount). Block (A) consumes it; Task 14 SETS it from the
+    // artifact-first external-resume path. Until then it stays false and every
+    // re-run of an in-flight executing step is charged as a crash-replay (correct).
     let externalContinuation = false;
 
     // -- Resume from a persisted pending marker -----------------------------
@@ -461,7 +466,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         `delegate step "${next.step.name}"${next.step.type ? ` (${next.step.type})` : ''}: ${next.step.instructions}`,
       );
       const seq = bundle.nextSeq ?? 0;
-      const prev = bundle.inFlightStep; // only ever phase 'awaiting-replan' here
+      // Usually phase 'awaiting-replan' (a revised step after a failed attempt);
+      // on an external resume it may still be 'executing' (block (A) was skipped
+      // while resumedExternal). Same-seq → attempt+1 either way.
+      const prev = bundle.inFlightStep;
       const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
       if (attempt >= (cfg.maxStepAttempts ?? 5)) {
         await this.abortTerminal(
