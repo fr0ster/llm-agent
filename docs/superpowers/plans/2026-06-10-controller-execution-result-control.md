@@ -3052,8 +3052,13 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 
 **Files:**
 - Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`/`relevantExtract`), `reviewer.ts` already consumes `Evidence`.
-- Modify: `packages/llm-agent/src/resilience/circuit-breaker-embedder.ts` (REPLACE the class with `makeCircuitBreakerEmbedder` factory — #1/plan-27, plan-28), its barrel/index exports, and all call sites (breaking change).
-- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` batch/bounds) and a circuit-breaker FACTORY capability test (`makeCircuitBreakerEmbedder(nonBatchInner)` → `isBatchEmbedder` false; `(batchInner)` → true).
+- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` bounded-sequential / scored==returned / point-coverage).
+
+> NOTE (#1/plan-29): `relevantExtract` uses bounded SEQUENTIAL embedding (≤ MAX+1
+> embeds) — it does NOT touch `CircuitBreakerEmbedder` or any public embedder API.
+> Batch embedding is a deferred latency optimization, gated on a future
+> capability-preserving embedder API; it is OUT OF SCOPE here to avoid a breaking
+> change to the resilience surface.
 
 - [ ] **Step 1: Add `requires` to `Step`**
 
@@ -3201,7 +3206,7 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
 ```
 
 Add the relevance-extract helper (near `runScopedRecall`), `const
-RECALL_EVIDENCE_CHARS = 800;`, `import { type IEmbedder, isBatchEmbedder } from
+RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder } from
 '@mcp-abap-adt/llm-agent';`, and `import { cosine } from
 '../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
 the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; export
@@ -3209,62 +3214,8 @@ the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; expor
 reference is English (the planner invariant extends to `requires`), so a normal
 (non-multilingual) embedder suffices:
 
-**Prerequisite — make `CircuitBreakerEmbedder` capability-preserving (#1/plan-27).**
-`embedAll` decides batch via `isBatchEmbedder` (structural `'embedBatch' in e`). The
-established `wrapEmbedder` pattern preserves that structurally (a non-batch inner
-yields a decorator WITHOUT `embedBatch`). But `CircuitBreakerEmbedder` is a single
-class that ALWAYS defines `embedBatch` and throws (`'Inner embedder does not support
-batch embedding'`, registering a circuit-breaker FAILURE) when the inner is
-non-batch — so over a non-batch embedder it reports `isBatchEmbedder === true` and
-`embedAll` would call it and crash. Refactor `packages/llm-agent/src/resilience/
-circuit-breaker-embedder.ts` to a capability-preserving FACTORY (mirroring
-`wrapEmbedder`): expose `embedBatch` ONLY when the inner is batch-capable.
-
-```ts
-export function makeCircuitBreakerEmbedder(inner: IEmbedder, breaker: CircuitBreaker): IEmbedder {
-  const embed = async (text: string, options?: CallOptions): Promise<IEmbedResult> => {
-    if (!breaker.isCallPermitted) throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
-    try { const r = await inner.embed(text, options); breaker.recordSuccess(); return r; }
-    catch (e) { breaker.recordFailure(); throw e; }
-  };
-  if (!isBatchEmbedder(inner)) return { embed }; // NO embedBatch → isBatchEmbedder === false
-  const innerBatch = inner;
-  const embedBatch = async (texts: string[], options?: CallOptions): Promise<IEmbedResult[]> => {
-    if (!breaker.isCallPermitted) throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
-    try { const r = await innerBatch.embedBatch(texts, options); breaker.recordSuccess(); return r; }
-    catch (e) { breaker.recordFailure(); throw e; }
-  };
-  return { embed, embedBatch };
-}
-```
-**REMOVE the `CircuitBreakerEmbedder` class entirely — do NOT keep a shim (#1/plan-28).**
-A class can never structurally hide its prototype `embedBatch`, so a retained
-`new CircuitBreakerEmbedder(...)` would again report `isBatchEmbedder === true` over a
-non-batch inner — re-opening the bug. So: delete the class, export ONLY
-`makeCircuitBreakerEmbedder`, update BOTH public exports (the package barrel and the
-resilience module index) and ALL call sites (`new CircuitBreakerEmbedder(inner,
-breaker)` → `makeCircuitBreakerEmbedder(inner, breaker)`). This is a **breaking
-change** to the resilience surface — note it in the package CHANGELOG/migration.
-
-Test the FACTORY OUTPUT directly (not an abstract wrapper): build a non-batch inner
-(`{ embed }` only) and assert `isBatchEmbedder(makeCircuitBreakerEmbedder(inner,
-breaker)) === false`; build a batch inner (`{ embed, embedBatch }`) and assert it is
-`true`. Then assert `embedAll(makeCircuitBreakerEmbedder(nonBatchInner, breaker), …)`
-takes the sequential path and does NOT throw or record a circuit-breaker failure.
-
 ```ts
 const MAX_EXTRACT_WINDOWS = 64;
-/** Embed many texts in ONE batch when the embedder is STRUCTURALLY batch-capable
- *  (#2/plan-26) — `isBatchEmbedder`, the same predicate wrapEmbedder/the CB factory
- *  honour, so a non-batch inner never lands here (#1/plan-27). Else SEQUENTIAL
- *  (never an unbounded parallel burst — respect provider rate limits). Vectors
- *  align to `texts`. */
-async function embedAll(embedder: IEmbedder, texts: string[]): Promise<number[][]> {
-  if (isBatchEmbedder(embedder)) return (await embedder.embedBatch(texts)).map((r) => r.vector);
-  const out: number[][] = [];
-  for (const t of texts) out.push((await embedder.embed(t)).vector);
-  return out;
-}
 /** Return the ≤`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
  *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). DIRECT single-pass
  *  ranking (#1/plan-25): every candidate is scored on its own — no hierarchical
@@ -3274,10 +3225,14 @@ async function embedAll(embedder: IEmbedder, texts: string[]): Promise<number[][
  *  markers. Stride is 50% overlap, widened to span the whole content within
  *  MAX_EXTRACT_WINDOWS windows. POINT coverage (#2/plan-25): every position is in
  *  some window for content ≤ MAX_EXTRACT_WINDOWS×maxChars (~12.8k at maxChars=200);
- *  larger content thins to non-overlapping windows (best-effort). At most
- *  MAX_EXTRACT_WINDOWS+1 embeds, in ONE batch when supported (#2/plan-26). Result
- *  STRICTLY ≤ maxChars; tiny maxChars (< 3) → bare slice (#2/plan-21). The
- *  `requires` ref is English (planner invariant) → a normal embedder suffices. */
+ *  larger content thins to non-overlapping windows (best-effort). Embeds are
+ *  SEQUENTIAL and BOUNDED to ≤ MAX_EXTRACT_WINDOWS + 1 (#2/plan-26) — a guaranteed
+ *  bound that needs NO batch-capability detection, so it touches NO public embedder
+ *  API (#1/plan-29: batch is a deferred latency optimization, gated on a future
+ *  capability-preserving embedder API — NOT a breaking change to the resilience
+ *  surface here). Result STRICTLY ≤ maxChars; tiny maxChars (< 3) → bare slice
+ *  (#2/plan-21). The `requires` ref is English (planner invariant) → a normal
+ *  embedder suffices. */
 export async function relevantExtract(
   content: string,
   ref: string,
@@ -3288,17 +3243,13 @@ export async function relevantExtract(
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
   const body = maxChars - 2; // reserve 2 chars for a possible head + tail '…'
   const stride = Math.max(Math.floor(body / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
-  const starts: number[] = [];
-  for (let s = 0; s < content.length; s += stride) starts.push(s);
-  // ONE batch: the ref + every candidate window (each `body` chars = the EXACT text
-  // that will be returned, so the ranked fragment is never cut by the markers).
-  const vecs = await embedAll(embedder, [ref, ...starts.map((s) => content.slice(s, s + body))]);
-  const q = vecs[0];
+  const { vector: q } = await embedder.embed(ref);
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
-  for (let i = 0; i < starts.length; i++) {
-    const score = cosine(q, vecs[i + 1]); // cosine imported from ../embedder-knowledge-index.js
-    if (score > bestScore) { bestScore = score; bestStart = starts[i]; }
+  for (let s = 0; s < content.length; s += stride) {
+    const { vector } = await embedder.embed(content.slice(s, s + body)); // candidate == returned body
+    const score = cosine(q, vector); // cosine imported from ../embedder-knowledge-index.js
+    if (score > bestScore) { bestScore = score; bestStart = s; }
   }
   const head = bestStart > 0 ? '…' : '';
   const tail = bestStart + body < content.length ? '…' : '';
@@ -3462,15 +3413,7 @@ describe('relevantExtract', () => {
   // overlap) picks the MARK window (#1/plan-23). Counts embed calls (#2/plan-26).
   let calls = 0;
   const embedder = { embed: async (t: string) => { calls++; return { vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }; } } as never;
-  it('uses a SINGLE batch when the embedder supports embedBatch (#2/plan-26)', async () => {
-    const { relevantExtract } = await import('../controller-coordinator-handler.js');
-    let batchCalls = 0;
-    const batchEmbedder = { embed: async () => ({ vector: [0, 1] }), embedBatch: async (ts: string[]) => { batchCalls++; return ts.map((t) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] })); } } as never;
-    const out = await relevantExtract(`${'x'.repeat(2000)} MARK frag`, 'the reference', 200, batchEmbedder);
-    assert.equal(batchCalls, 1, 'exactly one batch call (ref + windows together)');
-    assert.ok(out.includes('MARK'));
-  });
-  it('the RETURNED body equals the SCORED window — a fragment at the window end is not cut (#1/plan-26), bounded embeds (#2/plan-26)', async () => {
+  it('the RETURNED body equals the SCORED window — a fragment at the window end is not cut (#1/plan-26), bounded SEQUENTIAL embeds (#2/plan-26, #1/plan-29)', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
     calls = 0;
     const out = await relevantExtract(`${'y'.repeat(3000)} ...MARK`, 'the reference', 100, embedder);
@@ -3550,16 +3493,15 @@ duplicate fetches. The `step-result` write carries `runId/seq/attempt/status`
 
 - [ ] **Step 5: Run, verify it passes**
 
-This task edits the lower `@mcp-abap-adt/llm-agent` package (circuit-breaker-embedder),
-so **`npm run build` first** (tsx resolves the workspace import to `dist/`).
-Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts`
-Expected: build OK; PASS — empty-clarify + evidence + run-scoped-recall + relevantExtract (batch + scored==returned + point-coverage) + the existing clarify tests. Also run the circuit-breaker capability-preservation test.
+This task edits only `llm-agent-server-libs/src` (tsx loads it directly — no rebuild).
+Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts`
+Expected: PASS — empty-clarify + evidence + run-scoped-recall + relevantExtract (bounded-sequential + scored==returned + point-coverage) + the existing clarify tests.
 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts
-git commit -m "feat(controller): evaluator suspended transition, empty-clarify rejection, per-requires evidence map"
+git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts
+git commit -m "feat(controller): evaluator suspended transition, empty-clarify rejection, per-requires evidence map + run-scoped recall/extract"
 ```
 
 ---
