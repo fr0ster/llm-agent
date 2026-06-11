@@ -295,37 +295,52 @@ downgrade):
 ```ts
   // The injected semantic index:
   //   semantic?: { upsert(sid,e); query(sid,text,k?,filter?); deleteSession(sid) }
-  // The in-process index is EMPTY after a restart, but the JSONL log is durable —
-  // so LAZILY REHYDRATE from the durable scan on first use per session (#1/plan-13).
-  // SINGLE-FLIGHT (#3/plan-14): concurrent first ops share ONE rehydrate promise so
-  // the scan-and-index runs exactly once (never double-indexes). Rehydration runs
-  // BEFORE put()'s append+upsert (#1/plan-14), so the entry being written is NOT
-  // also picked up by the scan → no duplicate of the just-written record.
-  private readonly indexing = new Map<string, Promise<void>>();
-  private ensureIndexed(sid: string): Promise<void> {
-    if (!this.semantic) return Promise.resolve();
-    let p = this.indexing.get(sid);
-    if (!p) {
-      const sem = this.semantic;
-      p = (async () => {
-        for (const e of await this.scan(sid)) await sem.upsert(sid, e);
-      })();
-      this.indexing.set(sid, p); // cached forever for this sid (single-flight + once)
-    }
-    return p;
+  // The in-process index is EMPTY after a restart, but the JSONL log is durable, so
+  // it is REBUILT from the durable scan on first use per session. The lifecycle is
+  // robust to failures and races (plan-15):
+  //  * REBUILD (not incremental): build(sid) first deleteSession() then re-upserts
+  //    EVERY scanned entry — so it is IDEMPOTENT (a partial prior index, a retry,
+  //    or a put-upsert that half-failed all converge to the durable truth, #2).
+  //  * PER-SESSION SERIALIZATION (#3): every index-touching op (build / put-upsert /
+  //    delete) runs through run(sid, ...), a per-sid promise chain — a delete can
+  //    NOT interleave with an in-flight rebuild, and an op queued after a delete
+  //    sees the cleared state.
+  //  * RETRY ON FAILURE (#1): `built` records ONLY successful builds; a failed
+  //    build leaves built=false (and the chain swallows the error) so the next op
+  //    retries rather than caching a rejection forever.
+  private readonly built = new Set<string>();
+  private readonly chain = new Map<string, Promise<unknown>>();
+  private run<T>(sid: string, fn: () => Promise<T>): Promise<T> {
+    const prev = this.chain.get(sid) ?? Promise.resolve();
+    const next = prev.then(fn, fn);                 // run regardless of prior outcome
+    this.chain.set(sid, next.then(() => {}, () => {})); // keep chain alive, swallow result/err
+    return next;
+  }
+  private async build(sid: string): Promise<void> {
+    if (!this.semantic || this.built.has(sid)) return;
+    this.semantic.deleteSession(sid);                 // clear any partial state → idempotent
+    for (const e of await this.scan(sid)) await this.semantic.upsert(sid, e);
+    this.built.add(sid);                              // mark built ONLY on success (#1)
   }
   async put(sid: string, entry: KnowledgeEntry): Promise<void> {
-    // Rehydrate FIRST (indexes only pre-existing JSONL), THEN append + upsert the
-    // new entry exactly once — so a later first query's scan can't re-add it.
-    await this.ensureIndexed(sid);
     const f = this.file(sid);
     await mkdir(dirname(f), { recursive: true });
-    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8');
-    await this.semantic?.upsert(sid, entry);
+    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8'); // durable write (always)
+    if (this.semantic) {
+      await this.run(sid, async () => {
+        await this.build(sid);                        // rebuild-from-durable if not built
+        try {
+          await this.semantic!.upsert(sid, entry);    // index the new entry once
+        } catch (e) {
+          this.built.delete(sid);                     // dirty → next build re-syncs from JSONL (#2)
+          throw e;
+        }
+      });
+    }
   }
   async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
     if (this.semantic) {
-      await this.ensureIndexed(sid); // shares the single-flight rehydrate promise
+      await this.run(sid, () => this.build(sid));     // serialized rebuild (single-flight via chain)
       return this.semantic.query(sid, text, k, filter); // filter PRE-cap, similarity-ranked
     }
     let all = await this.scan(sid);
@@ -333,9 +348,11 @@ downgrade):
     return k ? all.slice(-k) : all;
   }
   async deleteSession(sid: string): Promise<void> {
-    await rm(dirname(this.file(sid)), { recursive: true, force: true });
-    this.semantic?.deleteSession(sid); // drop indexed vectors (#2/plan-13)
-    this.indexing.delete(sid);         // re-rehydrate on next use of a reused sid
+    await this.run(sid, async () => {                 // serialized with build/put (#3)
+      await rm(dirname(this.file(sid)), { recursive: true, force: true });
+      this.semantic?.deleteSession(sid);
+      this.built.delete(sid);                         // reused sid rebuilds from the (now empty) JSONL
+    });
   }
   /** The controller asserts this before wiring recall (#2/plan-14). */
   get semanticRecallCapable(): boolean { return this.semantic !== undefined; }
@@ -2965,8 +2982,8 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 **Spec:** "evaluating phase" (needs-confirmation → suspended), "Clarify-resume semantics are deterministic" (empty answer rejected), "Dependency manifest & miss detection" (per-`requires` evidence map).
 
 **Files:**
-- Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify), `reviewer.ts` already consumes `Evidence`.
-- Test: extend handler + reviewer tests.
+- Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`), `reviewer.ts` already consumes `Evidence`.
+- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch unit tests).
 
 - [ ] **Step 1: Add `requires` to `Step`**
 
@@ -3093,7 +3110,7 @@ per-reference evidence above only needs hit/no-hit, so it keeps the simple
  *  NB: results-RAG MUST be embedding-backed (a semantic index) — the controller's
  *  knowledge backend is wired with one (Task 2 / server wiring). Language handling
  *  is the configured embedder's contract; this primitive does no normalization. */
-async function runScopedRecall(
+export async function runScopedRecall(
   rag: IKnowledgeRagHandle,
   text: string,
   k: number,
@@ -3137,6 +3154,55 @@ async function runScopedRecall(
 function rankStatus(s?: string): number {
   return s === 'ok' || s === 'exists' ? 3 : s === 'partial' ? 2 : s === 'failed' ? 1 : 0;
 }
+```
+
+**Direct `runScopedRecall` unit tests (#4/plan-15)** — `export` it (above) and add
+`controller/__tests__/run-scoped-recall.test.ts` exercising the dedup/order/
+over-fetch logic with a scripted rag stub (not the handler's stub ragQuery):
+
+```ts
+import assert from 'node:assert/strict';
+import { describe, it } from 'node:test';
+import type { IKnowledgeRagHandle, KnowledgeEntry, KnowledgeFilter } from '@mcp-abap-adt/llm-agent';
+import { runScopedRecall } from '../controller-coordinator-handler.js';
+
+const E = (over: object, content = 'c'): KnowledgeEntry => ({
+  content,
+  metadata: { traceId: 't', turnId: 't', stepperId: 'controller', task: 'x', artifactType: 'step-result', createdAt: '2026-06-10T00:00:00.000Z', ...over },
+});
+// Rag stub: returns a scripted list in order; records the k it was asked for.
+function ragOf(list: KnowledgeEntry[]): { rag: IKnowledgeRagHandle; lastK: () => number | undefined } {
+  let lastK: number | undefined;
+  const rag = {
+    async query(_t: string, opts?: { k?: number; filter?: KnowledgeFilter }) { lastK = opts?.k; return list; },
+    async list() { return []; }, async write() {}, fingerprint() { return 's'; },
+  } as IKnowledgeRagHandle;
+  return { rag, lastK: () => lastK };
+}
+
+describe('runScopedRecall', () => {
+  it('dedups a step seq to the precedence winner (ok beats failed)', async () => {
+    const { rag } = ragOf([E({ runId: 'R', seq: 0, attempt: 0, status: 'failed' }, 'fail'), E({ runId: 'R', seq: 0, attempt: 1, status: 'ok' }, 'okk')]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['step-result']);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].content, 'okk', 'precedence winner kept');
+  });
+  it('preserves the embedding rank order across distinct seqs', async () => {
+    const { rag } = ragOf([E({ runId: 'R', seq: 2, attempt: 0, status: 'ok' }, 'B'), E({ runId: 'R', seq: 1, attempt: 0, status: 'ok' }, 'A')]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['step-result']);
+    assert.deepEqual(out.map((e) => e.content), ['B', 'A'], 'query order preserved, not seq-sorted');
+  });
+  it('dedups mcp-results by identityKey; keeps distinct fetches', async () => {
+    const { rag } = ragOf([E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'r1'), E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'r1b'), E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K2' }, 'r2')]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['mcp-result']);
+    assert.equal(out.length, 2, 'K1 collapsed, K2 distinct');
+  });
+  it('over-fetches k prime = k * (maxStepAttempts + 1)', async () => {
+    const { rag, lastK } = ragOf([]);
+    await runScopedRecall(rag, 'q', 3, 'R', 4, ['step-result']);
+    assert.equal(lastK(), 3 * (4 + 1), 'k prime requested for the bounded over-fetch');
+  });
+});
 ```
 
 Replace the existing whole-step episodic recall call in `runStep`
