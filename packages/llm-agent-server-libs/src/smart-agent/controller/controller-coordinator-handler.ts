@@ -19,10 +19,13 @@ import {
   type PipelineContext,
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
+import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
 import { makePlanner } from './planner.js';
 import { appendHint } from './prompts.js';
+import type { IReviewer } from './reviewer.js';
+import type { RunIdMinter } from './run-scope.js';
 import { hydrateBundle, persistBundle } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
@@ -122,6 +125,19 @@ export interface ControllerHandlerDeps {
   /** Resolved model id per subagent role, for usage attribution (finalizer uses
    *  the planner model). */
   models: { evaluator: string; planner: string; executor: string };
+  /** Judge role. Optional; when absent the handler uses a built-in
+   *  approve-content reviewer (legacy behaviour — every content result is 'ok')
+   *  so pre-reviewer callers keep working. The factory injects LlmReviewer. */
+  reviewer?: IReviewer;
+  /** Finalizer role. Optional; when absent the adaptive planner's own finalize is
+   *  used and the incremental planner's `done.result` is the answer (legacy). */
+  finalizer?: IFinalizer;
+  /** Injectable runId minter (tests pass a deterministic counter). */
+  runIdMinter?: RunIdMinter;
+  /** Clock seam (ISO now). Defaults to () => new Date().toISOString(). */
+  now?: () => string;
+  /** Terminal-store TTL in ms (default 24h). */
+  terminalTtlMs?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -157,6 +173,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     _span: unknown,
   ): Promise<boolean> {
     const deps = this.deps;
+    // Seams resolved once per execute(); consumed by Task 11+ (reviewer/finalizer/run-scope).
+    const _now = deps.now ?? (() => new Date().toISOString());
+    // @ts-expect-error -- noUnusedLocals: consumed in Task 11+
+    const _mintRunId =
+      deps.runIdMinter ??
+      (() => `run-${_now()}-${Math.round(Math.random() * 1e9)}`);
+    // @ts-expect-error -- noUnusedLocals: consumed in Task 11+
+    const _terminalTtlMs = deps.terminalTtlMs ?? 24 * 60 * 60 * 1000;
     const sessionId = ctx.sessionId;
     const prompt = extractPrompt(ctx.textOrMessages);
     const rag = await deps.knowledgeRagFor(sessionId);
