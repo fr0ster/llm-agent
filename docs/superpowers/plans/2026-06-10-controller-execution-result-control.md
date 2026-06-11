@@ -1358,7 +1358,9 @@ export class LlmReviewer implements IReviewer {
     const evidenceBlock = evidence
       .map((e) =>
         e.topArtifact
-          ? `- ${e.ref}: closest artifact →\n${e.topArtifact.slice(0, 600)}`
+          // topArtifact is already a relevance-oriented, bounded extract (#3/plan-19)
+          // — no further head-truncation here.
+          ? `- ${e.ref}: closest artifact →\n${e.topArtifact}`
           : `- ${e.ref}: MISSING (no artifact found)`,
       )
       .join('\n');
@@ -3164,12 +3166,47 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
     // topArtifact.
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const maxAttempts = cfg.maxStepAttempts ?? 5;
+    // The combined over-fetch must cover BOTH kinds' guaranteed bounds (#2/plan-19),
+    // so neither step retries nor mcp re-fetches can crowd the relevant artifact out
+    // of the cap before dedup → the reviewer always sees the right topArtifact.
+    const evBound = RECALL_K_STEP * (maxAttempts + 1) + cfg.maxSteps * (cfg.maxToolCalls ?? 10);
     const evidence = await Promise.all(
       refs.map(async (ref) => {
-        const hits = await runScopedRecall(rag, ref, RECALL_K_STEP, bundle.runId, RECALL_K_STEP * (maxAttempts + 1), RECALL_ARTIFACT_TYPES);
-        return { ref, hit: hits.length > 0, topArtifact: hits[0]?.content };
+        const hits = await runScopedRecall(rag, ref, 1, bundle.runId, evBound, RECALL_ARTIFACT_TYPES);
+        // Give the reviewer the RELEVANT fragment of the closest artifact, not a
+        // head truncation (#3/plan-19): for a long artifact the matching part may be
+        // far in; a head slice would hide it even when the embedding chose the right
+        // document.
+        const topArtifact = hits[0] ? relevantExtract(hits[0].content, ref, RECALL_EVIDENCE_CHARS) : undefined;
+        return { ref, hit: hits.length > 0, topArtifact };
       }),
     );
+```
+
+Add the relevance-extract helper (near `runScopedRecall`) and `const
+RECALL_EVIDENCE_CHARS = 800;`:
+
+```ts
+/** Return the window of `content` (≤ maxChars) richest in `ref` tokens, so the
+ *  reviewer sees the RELEVANT fragment of a long artifact, not its head. Marks
+ *  elided head/tail with an ellipsis. Deterministic; no embedder. */
+export function relevantExtract(content: string, ref: string, maxChars: number): string {
+  if (content.length <= maxChars) return content;
+  const tokens = ref.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
+  const lc = content.toLowerCase();
+  const stride = Math.max(1, Math.floor(maxChars / 2));
+  let best = 0;
+  let bestScore = -1;
+  for (let start = 0; start < content.length; start += stride) {
+    const win = lc.slice(start, start + maxChars);
+    let score = 0;
+    for (const t of tokens) if (win.includes(t)) score++;
+    if (score > bestScore) { bestScore = score; best = start; }
+  }
+  const head = best > 0 ? '…' : '';
+  const tail = best + maxChars < content.length ? '…' : '';
+  return head + content.slice(best, best + maxChars) + tail;
+}
 ```
 
 **Whole-step recall = over-fetch → dedup-by-precedence → cap (#2/plan-8).** Per the
@@ -3201,11 +3238,11 @@ export async function runScopedRecall(
   k: number,
   runId: string | undefined,
   /** The bounded over-fetch count — passed EXPLICITLY by the caller so the
-   *  duplication bound is justified PER KIND (#3/plan-18): step-results dedup by
-   *  seq, bounded by `k × (maxStepAttempts + 1)` (retries per seq); mcp-results
-   *  dedup by identityKey, where exact re-fetches are already SUPPRESSED by the
-   *  18.1 `hasArtifact` dedup, so a small factor (`k × RECALL_MCP_OVERFETCH`)
-   *  suffices and the per-identity dedup is just a backstop. */
+   *  duplication bound is justified PER KIND (#3/plan-18, #1/plan-19): step-results
+   *  dedup by seq, bounded by `k × (maxStepAttempts + 1)` (retries per seq);
+   *  mcp-results dedup by identityKey and the controller does NOT suppress
+   *  re-fetches, so the caller passes the GUARANTEED run bound
+   *  `maxSteps × maxToolCalls` (every distinct identityKey is seen before the cap). */
   kPrime: number,
   artifactType: readonly string[],
 ): Promise<readonly KnowledgeEntry[]> {
@@ -3302,6 +3339,30 @@ describe('runScopedRecall', () => {
     assert.equal(askedK, 4);
     assert.deepEqual(out.map((e) => e.content), ['o0', 'o1'], 'both distinct seqs kept (retry-dup did not starve)');
   });
+  it('MCP identityKey dups do not starve a distinct fetch when the backend HONORS the cap', async () => {
+    // Many copies of K1 rank above the single K2; with the guaranteed run-bound
+    // over-fetch, K2 still survives after identityKey dedup.
+    const list = [
+      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a'),
+      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a2'),
+      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a3'),
+      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K2' }, 'b'),
+    ];
+    const rag = { async query(_t: string, opts?: { k?: number }) { return list.slice(0, opts?.k ?? list.length); }, async list() { return []; }, async write() {}, fingerprint() { return 's'; } } as IKnowledgeRagHandle;
+    const out = await runScopedRecall(rag, 'q', 2, 'R', /* run bound */ 4, ['mcp-result']);
+    const ids = new Set(out.map((e) => e.metadata.identityKey));
+    assert.ok(ids.has('K1') && ids.has('K2'), 'both distinct identityKeys present (no MCP starvation)');
+  });
+});
+
+describe('relevantExtract', () => {
+  it('returns the fragment richest in ref tokens, not the head', async () => {
+    const { relevantExtract } = await import('../controller-coordinator-handler.js');
+    const content = `${'x'.repeat(2000)} the TARGET_TOKEN lives here ${'y'.repeat(2000)}`;
+    const out = relevantExtract(content, 'TARGET_TOKEN', 200);
+    assert.ok(out.includes('target_token'.toUpperCase()) || out.toLowerCase().includes('target_token'), 'relevant window kept');
+    assert.ok(out.length <= 200 + 2, 'bounded to maxChars (+ ellipses)');
+  });
 });
 ```
 
@@ -3315,12 +3376,17 @@ kind a fair share:
 
 ```ts
     const maxAttempts = cfg.maxStepAttempts ?? 5;
-    // Per-kind recall with JUSTIFIED over-fetch (#3/plan-18): step-result retries
-    // are bounded by maxStepAttempts; mcp-result exact re-fetches are suppressed by
-    // 18.1 hasArtifact dedup, so a small factor suffices, with identityKey dedup as
-    // a backstop.
+    const maxTool = cfg.maxToolCalls ?? 10;
+    // Per-kind recall with GUARANTEED over-fetch bounds (#1/plan-19): step-result
+    // retries are bounded by maxStepAttempts (k×(maxStepAttempts+1)). For
+    // mcp-results the controller does NOT dedup re-fetches (hasArtifact suppression
+    // exists only in the cyclic stepper, NOT here), so an identityKey can repeat up
+    // to the run's TOTAL tool budget; over-fetch the whole run bound
+    // `maxSteps × maxToolCalls` so EVERY distinct identityKey is seen BEFORE the cap
+    // (then dedup + cap to k). This is derived from the budget contract, not a guess.
+    const mcpBound = cfg.maxSteps * maxTool;
     const recalledSteps = await runScopedRecall(rag, recallText, RECALL_K_STEP, bundle.runId, RECALL_K_STEP * (maxAttempts + 1), ['step-result']);
-    const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, RECALL_K_MCP * RECALL_MCP_OVERFETCH, ['mcp-result']);
+    const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, mcpBound, ['mcp-result']);
     // SEPARATE character budgets per kind (#2/plan-18): build each block under its
     // OWN char cap, so a single huge step-result cannot consume the whole budget and
     // starve the MCP context (and vice-versa). Concatenate the two bounded blocks.
@@ -3331,7 +3397,6 @@ kind a fair share:
 ```
 
 Constants: `const RECALL_K_STEP = 4;`, `const RECALL_K_MCP = 4;`,
-`const RECALL_MCP_OVERFETCH = 2;` (identity re-fetch is rare → a small margin),
 `const RECALL_MAX_CHARS_STEP = 2000;`, `const RECALL_MAX_CHARS_MCP = 2000;` (the old
 single `RECALL_MAX_CHARS` is split into the two). Change `buildRecallBlock` to take
 the char budget as a parameter: `buildRecallBlock(hits, maxChars)` (replace the
