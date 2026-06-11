@@ -1336,6 +1336,10 @@ const REVIEWER_SYSTEM =
   'accepted content in "approved" and what remains in "remainder"), "failed" when ' +
   'the result does not satisfy the step. "approved" MUST be non-empty for ok/' +
   'exists/partial. Judge ONLY from the evidence + result; do NOT invent facts. ' +
+  'The evidence lists, per required reference, the CLOSEST stored artifact (or ' +
+  'MISSING). Decide for YOURSELF whether that artifact actually satisfies the ' +
+  'reference — a closest-match artifact may be irrelevant; treat an unsatisfied or ' +
+  'missing required reference as "failed" (note: "missing input: <ref>"). ' +
   'Output JSON only.';
 
 export class LlmReviewer implements IReviewer {
@@ -1347,8 +1351,16 @@ export class LlmReviewer implements IReviewer {
     executorResult: string,
     opts: ReviewOpts,
   ): Promise<ReviewResult> {
+    // Show the reviewer the closest artifact's CONTENT per reference (not a
+    // count-based present/MISSING, which a low-relevance nearest hit would
+    // falsify, #1/plan-18) so IT judges whether the dependency is satisfied. No
+    // candidate at all → explicitly MISSING.
     const evidenceBlock = evidence
-      .map((e) => `- ${e.ref}: ${e.hit ? 'present' : 'MISSING'}`)
+      .map((e) =>
+        e.topArtifact
+          ? `- ${e.ref}: closest artifact →\n${e.topArtifact.slice(0, 600)}`
+          : `- ${e.ref}: MISSING (no artifact found)`,
+      )
       .join('\n');
     const res = await this.client.send([
       { role: 'system', content: appendHint(REVIEWER_SYSTEM, opts.hint) },
@@ -3076,7 +3088,36 @@ it('per-requires evidence is passed to the reviewer', async () => {
   });
   h.deps.reviewer = { async review(_s, evidence) { seenEvidence = evidence; return { status: 'ok', approved: 'r', remainder: '', note: '' }; } };
   await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
-  assert.deepEqual(seenEvidence, [{ ref: 'table T100', hit: true }, { ref: 'domain ZD', hit: false }]);
+  // Evidence carries the closest artifact's CONTENT (topArtifact) for the reviewer
+  // to judge — not just a count-based hit (#1/plan-18).
+  assert.deepEqual(seenEvidence, [
+    { ref: 'table T100', hit: true, topArtifact: 'T100 def' },
+    { ref: 'domain ZD', hit: false, topArtifact: undefined },
+  ]);
+});
+
+it('a giant step-result does NOT starve mcp-result context (separate char budgets, #2/plan-18)', async () => {
+  const seenMessages: Message[][] = [];
+  const h = harness({
+    evaluator: [{ kind: 'content', content: 'Goal' }],
+    planner: [
+      { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'analyze' } }) },
+      { kind: 'content', content: JSON.stringify({ kind: 'done', result: 'd' }) },
+    ],
+    executor: [],
+    // step-result query → one HUGE step artifact; mcp-result query → a distinct mcp artifact.
+    ragQuery: async (_text, opts) => {
+      const kind = (opts?.filter?.artifactType as string[])?.[0];
+      const md = (t: string) => ({ traceId: 't', turnId: 't', stepperId: 'controller', task: 'x', artifactType: t, runId: undefined, createdAt: '2026-06-10T00:00:00.000Z' });
+      if (kind === 'step-result') return [{ content: 'S'.repeat(50000), metadata: { ...md('step-result'), seq: 0, attempt: 0, status: 'ok' } }];
+      if (kind === 'mcp-result') return [{ content: 'MCP-CONTEXT-XYZ', metadata: { ...md('mcp-result'), identityKey: 'K1' } }];
+      return [];
+    },
+  });
+  h.deps.executor = { async send(messages: Message[]) { seenMessages.push(messages); return { kind: 'content', content: 'r' }; } };
+  await new ControllerCoordinatorHandler(h.deps).execute(fakeCtx().ctx, {}, undefined);
+  const joined = seenMessages[0].map((m) => (typeof m.content === 'string' ? m.content : '')).join('\n');
+  assert.ok(joined.includes('MCP-CONTEXT-XYZ'), 'mcp context survived despite a 50k-char step-result (separate char budgets)');
 });
 ```
 
@@ -3112,17 +3153,21 @@ In the `bundle.pending?.kind === 'clarify'` branch, guard the goal-position case
 In `runStep`, build the per-`requires` evidence map (replace the single whole-step `evidence` from Task 11):
 
 ```ts
-    // Per-reference evidence: one recall per requires[] reference so the reviewer
-    // knows WHICH dependency was present. Uses the SAME embedding-based, runId-
-    // pre-filtered, over-fetched, deduped primitive as the whole-step recall
-    // (#3/plan-11) — not a separate query path. Falls back to the whole-step text
-    // when the step declares no requires.
+    // Per-reference evidence: one recall per requires[] reference. A non-empty
+    // top-K does NOT prove the dependency is present (#1/plan-18): semantic recall
+    // returns the NEAREST artifact even at low relevance, so a count-based
+    // hit=true is misleading. Instead we hand the reviewer the TOP artifact's
+    // content (Evidence.topArtifact) and let IT — the judging role — decide
+    // whether the ref is actually satisfied (the spec: "a reference with no
+    // evidence (or an unused input) → failed: missing input"). `hit` stays a coarse
+    // any-candidate flag; the authoritative presence call is the reviewer reading
+    // topArtifact.
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const maxAttempts = cfg.maxStepAttempts ?? 5;
     const evidence = await Promise.all(
       refs.map(async (ref) => {
-        const hits = await runScopedRecall(rag, ref, RECALL_K, bundle.runId, maxAttempts, RECALL_ARTIFACT_TYPES);
-        return { ref, hit: hits.length > 0 };
+        const hits = await runScopedRecall(rag, ref, RECALL_K_STEP, bundle.runId, RECALL_K_STEP * (maxAttempts + 1), RECALL_ARTIFACT_TYPES);
+        return { ref, hit: hits.length > 0, topArtifact: hits[0]?.content };
       }),
     );
 ```
@@ -3155,10 +3200,15 @@ export async function runScopedRecall(
   text: string,
   k: number,
   runId: string | undefined,
-  maxStepAttempts: number,
+  /** The bounded over-fetch count — passed EXPLICITLY by the caller so the
+   *  duplication bound is justified PER KIND (#3/plan-18): step-results dedup by
+   *  seq, bounded by `k × (maxStepAttempts + 1)` (retries per seq); mcp-results
+   *  dedup by identityKey, where exact re-fetches are already SUPPRESSED by the
+   *  18.1 `hasArtifact` dedup, so a small factor (`k × RECALL_MCP_OVERFETCH`)
+   *  suffices and the per-identity dedup is just a backstop. */
+  kPrime: number,
   artifactType: readonly string[],
 ): Promise<readonly KnowledgeEntry[]> {
-  const kPrime = k * (maxStepAttempts + 1);
   const hits = await rag.query(text, { k: kPrime, filter: { runId, artifactType } });
   const bestStep = new Map<number, KnowledgeEntry>();
   const bestMcp = new Map<string, KnowledgeEntry>();
@@ -3223,24 +3273,24 @@ function ragOf(list: KnowledgeEntry[]): { rag: IKnowledgeRagHandle; lastK: () =>
 describe('runScopedRecall', () => {
   it('dedups a step seq to the precedence winner (ok beats failed)', async () => {
     const { rag } = ragOf([E({ runId: 'R', seq: 0, attempt: 0, status: 'failed' }, 'fail'), E({ runId: 'R', seq: 0, attempt: 1, status: 'ok' }, 'okk')]);
-    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['step-result']);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 25, ['step-result']);
     assert.equal(out.length, 1);
     assert.equal(out[0].content, 'okk', 'precedence winner kept');
   });
   it('preserves the embedding rank order across distinct seqs', async () => {
     const { rag } = ragOf([E({ runId: 'R', seq: 2, attempt: 0, status: 'ok' }, 'B'), E({ runId: 'R', seq: 1, attempt: 0, status: 'ok' }, 'A')]);
-    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['step-result']);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 25, ['step-result']);
     assert.deepEqual(out.map((e) => e.content), ['B', 'A'], 'query order preserved, not seq-sorted');
   });
   it('dedups mcp-results by identityKey; keeps distinct fetches', async () => {
     const { rag } = ragOf([E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'r1'), E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'r1b'), E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K2' }, 'r2')]);
-    const out = await runScopedRecall(rag, 'q', 5, 'R', 5, ['mcp-result']);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 10, ['mcp-result']);
     assert.equal(out.length, 2, 'K1 collapsed, K2 distinct');
   });
-  it('over-fetches k prime = k * (maxStepAttempts + 1)', async () => {
+  it('requests the caller-supplied k prime (explicit over-fetch)', async () => {
     const { rag, lastK } = ragOf([]);
-    await runScopedRecall(rag, 'q', 3, 'R', 4, ['step-result']);
-    assert.equal(lastK(), 3 * (4 + 1), 'k prime requested for the bounded over-fetch');
+    await runScopedRecall(rag, 'q', 3, 'R', 15, ['step-result']); // caller passes kPrime=15
+    assert.equal(lastK(), 15, 'the explicit kPrime is the requested cap');
   });
   it('over-fetch lets k distinct steps survive a retry-dup even when the backend HONORS the cap', async () => {
     // Backend respects the requested k (returns only the first k'); the over-fetch
@@ -3248,7 +3298,7 @@ describe('runScopedRecall', () => {
     const list = [E({ runId: 'R', seq: 0, attempt: 0, status: 'failed' }, 'f0'), E({ runId: 'R', seq: 0, attempt: 1, status: 'ok' }, 'o0'), E({ runId: 'R', seq: 1, attempt: 0, status: 'ok' }, 'o1')];
     let askedK: number | undefined;
     const rag = { async query(_t: string, opts?: { k?: number }) { askedK = opts?.k; return list.slice(0, opts?.k ?? list.length); }, async list() { return []; }, async write() {}, fingerprint() { return 's'; } } as IKnowledgeRagHandle;
-    const out = await runScopedRecall(rag, 'q', 2, 'R', 1, ['step-result']); // k=2, k'=2*(1+1)=4
+    const out = await runScopedRecall(rag, 'q', 2, 'R', 4, ['step-result']); // k=2, explicit kPrime=4
     assert.equal(askedK, 4);
     assert.deepEqual(out.map((e) => e.content), ['o0', 'o1'], 'both distinct seqs kept (retry-dup did not starve)');
   });
@@ -3265,21 +3315,29 @@ kind a fair share:
 
 ```ts
     const maxAttempts = cfg.maxStepAttempts ?? 5;
-    const recalledSteps = await runScopedRecall(rag, recallText, RECALL_K_STEP, bundle.runId, maxAttempts, ['step-result']);
-    const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, maxAttempts, ['mcp-result']);
-    const recalled = [...recalledSteps, ...recalledMcp];
+    // Per-kind recall with JUSTIFIED over-fetch (#3/plan-18): step-result retries
+    // are bounded by maxStepAttempts; mcp-result exact re-fetches are suppressed by
+    // 18.1 hasArtifact dedup, so a small factor suffices, with identityKey dedup as
+    // a backstop.
+    const recalledSteps = await runScopedRecall(rag, recallText, RECALL_K_STEP, bundle.runId, RECALL_K_STEP * (maxAttempts + 1), ['step-result']);
+    const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, RECALL_K_MCP * RECALL_MCP_OVERFETCH, ['mcp-result']);
+    // SEPARATE character budgets per kind (#2/plan-18): build each block under its
+    // OWN char cap, so a single huge step-result cannot consume the whole budget and
+    // starve the MCP context (and vice-versa). Concatenate the two bounded blocks.
+    const stepBlock = buildRecallBlock(recalledSteps, RECALL_MAX_CHARS_STEP);
+    const mcpBlock = buildRecallBlock(recalledMcp, RECALL_MAX_CHARS_MCP);
+    const recallBlock = [stepBlock, mcpBlock].filter(Boolean).join('\n\n');
+    if (recallBlock) messages.push({ role: 'user', content: recallBlock });
 ```
 
-Define `const RECALL_K_STEP = 4;` and `const RECALL_K_MCP = 4;` (tune as needed; the
-old `RECALL_K` is split into the two). The evidence loop keeps a single
-`runScopedRecall(..., RECALL_ARTIFACT_TYPES)` per reference (it only needs a boolean
-hit, where starvation is irrelevant). Add `KnowledgeEntry` to the existing
-`@mcp-abap-adt/llm-agent` type import in the handler.
-
-> Within each kind, the over-fetch `k × (maxStepAttempts + 1)` bounds the
-> duplicates: step-result retries collapse by seq-precedence, and re-fetched
-> `mcp-result`s collapse by `identityKey`. Because the two kinds are recalled
-> separately, `mcp-result` volume can never crowd `step-result` out of the recall.
+Constants: `const RECALL_K_STEP = 4;`, `const RECALL_K_MCP = 4;`,
+`const RECALL_MCP_OVERFETCH = 2;` (identity re-fetch is rare → a small margin),
+`const RECALL_MAX_CHARS_STEP = 2000;`, `const RECALL_MAX_CHARS_MCP = 2000;` (the old
+single `RECALL_MAX_CHARS` is split into the two). Change `buildRecallBlock` to take
+the char budget as a parameter: `buildRecallBlock(hits, maxChars)` (replace the
+module-constant use of `RECALL_MAX_CHARS` inside it with the `maxChars` arg). The
+evidence loop is unchanged (boolean + topArtifact). Add `KnowledgeEntry` to the
+existing `@mcp-abap-adt/llm-agent` type import in the handler.
 
 **Tag the artifact writes (#1/plan-6, #2/plan-10).** Tag every `mcp-result` write
 (the internal-tool round-trip write and the external resume write) with
