@@ -288,6 +288,28 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // existing pending-resume block + the main loop's block (A) below.
     }
 
+    // Finalizing-phase crash recovery: a resume in runPhase 'finalizing' with NO
+    // terminal entry (stage-1 above already checked) means the finalizer never
+    // completed → re-run it (finalize() charges finalizeAttempt under
+    // finalizeCallInFlight, checks the cap, applies onFinalizeExhausted).
+    if (
+      cls.kind === 'resume' &&
+      bundle.runState === 'active' &&
+      bundle.runPhase === 'finalizing'
+    ) {
+      return this.finalize(
+        ctx,
+        sessionId,
+        bundle,
+        rag,
+        prompt,
+        logUsage,
+        usageNow,
+        now,
+        terminalTtlMs,
+      );
+    }
+
     // -- Resume from a persisted pending marker -----------------------------
     // Planner is constructed BEFORE the resume preamble: the artifact-first
     // external-resume adopt below calls planner.commit() to keep the adaptive
@@ -643,10 +665,20 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       resumedExternal = false; // a valid decision consumed any external-resume replan
 
       if (next.kind === 'done') {
-        bundle.pending = undefined;
-        await persistBundle(deps.backend, sessionId, bundle);
-        this.surfaceFinal(ctx, next.result, usageNow());
-        return true;
+        // Pass next.result as the legacy answer: used only when no finalizer is
+        // injected (3-role config) — the adaptive planner already composed it.
+        return this.finalize(
+          ctx,
+          sessionId,
+          bundle,
+          rag,
+          prompt,
+          logUsage,
+          usageNow,
+          now,
+          terminalTtlMs,
+          next.result,
+        );
       }
 
       if (next.kind === 'rewind') {
@@ -1119,6 +1151,162 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     this.surfaceFinal(ctx, `Error: ${error}`, usage);
   }
 
+  private async finalize(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    rag: IKnowledgeRagHandle,
+    prompt: string,
+    logUsage: (role: string, u?: LlmUsage) => void,
+    usageNow: () => TerminalUsage,
+    now: () => string,
+    terminalTtlMs: number,
+    /** Used ONLY when no finalizer is injected (3-role config): the adaptive
+     *  planner's already-composed done.result. */
+    legacyAnswer?: string,
+  ): Promise<boolean> {
+    const deps = this.deps;
+    const cfg = deps.config.budgets;
+    const maxFinalizeRetries = cfg.maxFinalizeRetries ?? 2;
+
+    // The finalizer reads the run's approved results + the DURABLE originalRequest
+    // (the verbatim request that started the run), never the live resume prompt.
+    const request = bundle.originalRequest ?? prompt;
+    const approved =
+      deps.finalizer && bundle.runId
+        ? await collectApproved(rag, bundle.runId)
+        : [];
+
+    // Shared exhaustion handler (pre-call AND in-catch): apply onFinalizeExhausted.
+    const onExhausted = async (reason: string): Promise<string | null> => {
+      if ((deps.config.onFinalizeExhausted ?? 'error') === 'best-effort') {
+        return (
+          approved.map((a) => `[#${a.seq}] ${a.content}`).join('\n\n') +
+          '\n\n[incomplete: the final answer could not be composed]'
+        );
+      }
+      await this.abortTerminal(
+        ctx,
+        sessionId,
+        bundle,
+        reason,
+        now,
+        terminalTtlMs,
+        usageNow(),
+      );
+      return null;
+    };
+
+    // Crash-replay charge: a prior finalize call in flight → this re-entry is a
+    // replay; charge finalizeAttempt and CHECK the cap BEFORE re-invoking.
+    if (bundle.finalizeCallInFlight) {
+      bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
+      if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
+        const best = await onExhausted(
+          'finalizer retry budget exhausted on recovery',
+        );
+        if (best === null) return true;
+        await this.commitTerminalSuccess(
+          ctx,
+          sessionId,
+          bundle,
+          best,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
+    }
+    // Legacy (no-finalizer) path: persist the planner's composed answer DURABLY in
+    // the SAME write that enters 'finalizing', so a crash before the terminal write
+    // can recover it rather than emitting empty.
+    if (!deps.finalizer && legacyAnswer !== undefined) {
+      bundle.legacyFinalAnswer = legacyAnswer;
+    }
+    bundle.runPhase = 'finalizing';
+    bundle.finalizeCallInFlight = true;
+    await persistBundle(deps.backend, sessionId, bundle);
+
+    let answer: string | undefined;
+    if (deps.finalizer && bundle.runId) {
+      while (answer === undefined) {
+        try {
+          const composed = await deps.finalizer.finalize(
+            bundle.goal,
+            request,
+            approved,
+            {
+              hint: deps.config.subagents.finalizer?.hint,
+              logUsage,
+              log: (m) => dlog(m),
+            },
+          );
+          // Empty-but-ok finalizer output is a JUDGE failure (spec), not a valid
+          // answer → throw so it retries within maxFinalizeRetries.
+          if (composed.trim().length === 0) {
+            throw new Error('finalizer returned an empty answer');
+          }
+          answer = composed;
+        } catch (e) {
+          bundle.finalizeAttempt = (bundle.finalizeAttempt ?? 0) + 1;
+          await persistBundle(deps.backend, sessionId, bundle);
+          if ((bundle.finalizeAttempt ?? 0) > maxFinalizeRetries) {
+            const best = await onExhausted(
+              `finalizer failed after ${maxFinalizeRetries} retries: ${String(e)}`,
+            );
+            if (best === null) return true; // 'error' policy aborted terminally
+            answer = best; // 'best-effort'
+            break;
+          }
+          // else: loop and retry the finalizer.
+        }
+      }
+    } else {
+      // Legacy: the adaptive planner already composed the answer in done.result.
+      // Prefer the live param, else the durable copy persisted on finalizing-entry.
+      answer = legacyAnswer ?? bundle.legacyFinalAnswer ?? '';
+    }
+
+    await this.commitTerminalSuccess(
+      ctx,
+      sessionId,
+      bundle,
+      answer ?? '',
+      now,
+      terminalTtlMs,
+      usageNow(),
+    );
+    return true;
+  }
+
+  /** Store-first terminal SUCCESS: write the terminal store FIRST, then flip the
+   *  bundle to terminal and surface the answer (mirror of abortTerminal). */
+  private async commitTerminalSuccess(
+    ctx: PipelineContext,
+    sessionId: string,
+    bundle: SessionBundle,
+    answer: string,
+    now: () => string,
+    terminalTtlMs: number,
+    usage?: TerminalUsage,
+  ): Promise<void> {
+    await writeTerminal(
+      this.deps.backend,
+      sessionId,
+      bundle.runId ?? sessionId,
+      { kind: 'success', answer },
+      terminalTtlMs,
+      now(),
+    );
+    bundle.pending = undefined;
+    bundle.finalizeCallInFlight = false;
+    bundle.runState = 'terminal';
+    bundle.inFlightStep = undefined;
+    await persistBundle(this.deps.backend, sessionId, bundle);
+    this.surfaceFinal(ctx, answer, usage);
+  }
+
   private surfaceClarify(
     ctx: PipelineContext,
     question: string,
@@ -1384,4 +1572,36 @@ function recordStepControl(
     `\n[seq ${rec.seq} ${rec.name} ${rec.status}]` +
     (rec.note ? ` ${rec.note}` : '') +
     (rec.remainder ? ` remainder: ${rec.remainder}` : '');
+}
+
+/** Gather the run's approved results, one per seq, resolved by outcome precedence
+ *  (ok/exists > partial > failed), ordered by seq. Reconstructs the complete
+ *  Outcome from artifact metadata (status/note/remainder) + content. */
+async function collectApproved(
+  rag: IKnowledgeRagHandle,
+  runId: string,
+): Promise<{ seq: number; content: string }[]> {
+  const all = await rag.list({ runId, artifactType: 'step-result' });
+  const bySeq = new Map<number, Outcome[]>();
+  for (const e of all) {
+    const seq = e.metadata.seq ?? 0;
+    const o: Outcome = {
+      status: (e.metadata.status ?? 'failed') as Outcome['status'],
+      approved: e.content,
+      remainder: e.metadata.remainder ?? '',
+      note: e.metadata.note ?? '',
+    };
+    const arr = bySeq.get(seq);
+    if (arr) arr.push(o);
+    else bySeq.set(seq, [o]);
+  }
+  const out: { seq: number; content: string }[] = [];
+  for (const [seq, outcomes] of [...bySeq.entries()].sort(
+    (a, b) => a[0] - b[0],
+  )) {
+    const resolved = resolveByPrecedence(outcomes);
+    if (resolved && resolved.status !== 'failed')
+      out.push({ seq, content: resolved.approved });
+  }
+  return out;
 }

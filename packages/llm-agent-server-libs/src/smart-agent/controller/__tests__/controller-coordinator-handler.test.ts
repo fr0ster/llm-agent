@@ -1753,4 +1753,101 @@ describe('ControllerCoordinatorHandler', () => {
     const bundle = await hydrateBundle(backend, 'sess-1');
     assert.equal(bundle.runState, 'terminal');
   });
+
+  it('done → finalizer composes from approved results; terminal store written first', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'done',
+            result: 'IGNORED-when-finalizer-present',
+          }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'STEP RESULT' }],
+    });
+    h.deps.finalizer = {
+      async finalize(_g, _r, approved) {
+        return `COMPOSED(${approved.map((a) => a.content).join(',')})`;
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          /COMPOSED\(/.test(c.value.content),
+      ),
+      'finalizer composed the answer from approved results',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'success');
+  });
+
+  it('finalizer provider failure exhausts maxFinalizeRetries → onFinalizeExhausted:error → terminal error', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'r' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'STEP' }],
+      config: {
+        ...baseConfig(),
+        onFinalizeExhausted: 'error',
+        budgets: { ...baseConfig().budgets, maxFinalizeRetries: 1 },
+      },
+    });
+    h.deps.finalizer = {
+      async finalize() {
+        throw new Error('finalizer down');
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find((c) => c.ok && /Error:/.test(c.value.content)),
+      'terminal error surfaced',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'error');
+  });
 });
