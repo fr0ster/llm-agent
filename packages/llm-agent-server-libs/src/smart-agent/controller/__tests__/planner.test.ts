@@ -1,8 +1,21 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { AdaptivePlanner, IncrementalPlanner } from '../planner.js';
+import {
+  AdaptivePlanner,
+  CREATE_PLAN_SYSTEM,
+  ENGLISH_INSTRUCTIONS_RULE,
+  EXTERNAL_RESULT_REPLAN_SYSTEM,
+  IncrementalPlanner,
+  PLANNER_SYSTEM,
+  REPLAN_SYSTEM,
+} from '../planner.js';
 import type { ISubagentClient } from '../subagent-client.js';
-import type { SessionBundle, SubagentResult } from '../types.js';
+import {
+  MAX_REQUIRE_CHARS,
+  MAX_REQUIRES,
+  type SessionBundle,
+  type SubagentResult,
+} from '../types.js';
 
 const planner = (queue: SubagentResult[]): ISubagentClient => ({
   async send() {
@@ -402,5 +415,106 @@ describe('AdaptivePlanner', () => {
     });
     assert.equal(second?.kind, 'done');
     assert.equal(second?.kind === 'done' && second.result, 'FINAL');
+  });
+});
+
+describe('planner prompt contract', () => {
+  it('every planner/replan prompt carries the English-instructions invariant', () => {
+    for (const p of [
+      PLANNER_SYSTEM,
+      CREATE_PLAN_SYSTEM,
+      REPLAN_SYSTEM,
+      EXTERNAL_RESULT_REPLAN_SYSTEM,
+    ]) {
+      assert.ok(
+        p.includes(ENGLISH_INSTRUCTIONS_RULE),
+        'prompt missing the English-instructions invariant',
+      );
+    }
+  });
+  it('the prompt cap is built from the validation constants (no drift)', () => {
+    assert.ok(
+      ENGLISH_INSTRUCTIONS_RULE.includes(String(MAX_REQUIRES)) &&
+        ENGLISH_INSTRUCTIONS_RULE.includes(String(MAX_REQUIRE_CHARS)),
+    );
+  });
+});
+
+describe('AdaptivePlanner partial transition', () => {
+  it('commit(partial) advances the cursor (accepted part not re-run)', () => {
+    const p = new AdaptivePlanner(planner([]));
+    const b: SessionBundle = {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      plan: [
+        { name: 's1', instructions: 'i' },
+        { name: 's2', instructions: 'j' },
+      ],
+      planCursor: 0,
+    };
+    p.commit(b, 'partial');
+    assert.equal(b.planCursor, 1);
+  });
+  it('next() replans when lastOutcome is partial', async () => {
+    let sawReplan = false;
+    const client: ISubagentClient = {
+      async send(messages) {
+        if (
+          typeof messages[0]?.content === 'string' &&
+          /REVISED/.test(messages[0].content)
+        )
+          sawReplan = true;
+        return { kind: 'content', content: JSON.stringify({ plan: [] }) };
+      },
+    };
+    const p = new AdaptivePlanner(client);
+    const b: SessionBundle = {
+      goal: 'g',
+      plannerPrivate: '\n[step s1 partial] only half',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      plan: [{ name: 's1', instructions: 'i' }],
+      planCursor: 1,
+      lastOutcome: 'partial',
+    };
+    await p.next({ bundle: b, prompt: 'p', lastOutcome: 'partial', retrying: false });
+    assert.ok(sawReplan, 'partial triggered a REVISED replan');
+  });
+});
+
+describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
+  const createPlanWith = (step: object): ISubagentClient =>
+    planner([{ kind: 'content', content: JSON.stringify({ plan: [step] }) }]);
+  const freshBundle = (): SessionBundle => ({
+    goal: 'g',
+    plannerPrivate: '',
+    budgets: { stepsUsed: 0, rewindsUsed: 0 },
+  });
+
+  it('rejects a malformed requires (parse failure → null)', async () => {
+    const p = new AdaptivePlanner(
+      createPlanWith({ name: 's1', instructions: 'do', requires: [123] }),
+    );
+    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    assert.equal(r, null);
+  });
+  it('rejects an oversized requires entry', async () => {
+    const p = new AdaptivePlanner(
+      createPlanWith({
+        name: 's1',
+        instructions: 'do',
+        requires: ['x'.repeat(MAX_REQUIRE_CHARS + 1)],
+      }),
+    );
+    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    assert.equal(r, null);
+  });
+  it('carries a valid requires through trimmed', async () => {
+    const p = new AdaptivePlanner(
+      createPlanWith({ name: 's1', instructions: 'do', requires: ['  table T100  '] }),
+    );
+    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    assert.equal(r?.kind, 'next');
+    assert.deepEqual(r?.kind === 'next' && r.step.requires, ['table T100']);
   });
 });
