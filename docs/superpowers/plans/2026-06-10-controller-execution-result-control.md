@@ -1809,8 +1809,12 @@ export const ENGLISH_INSTRUCTIONS_RULE =
   "always, regardless of the language of the user's request. This is a hard " +
   'contract: the executor selects tools by semantic match against an ' +
   'English-translated catalog, and the reviewer matches `requires` against stored ' +
-  'artifacts — so non-English instructions/requires break both. (The user-facing ' +
-  "answer is composed separately in the user's language.)";
+  'artifacts — so non-English instructions/requires break both. ' +
+  // The cap below MUST equal MAX_REQUIRES (#3/plan-31) so a valid-by-intent plan is
+  // never rejected by the parser for exceeding the (undocumented-to-the-model) limit.
+  'List at MOST 8 `requires`, each a SHORT reference (a few words, ≤ 200 chars) — ' +
+  'not pasted content. (The user-facing answer is composed separately in the ' +
+  "user's language.)";
 ```
 
 Append `ENGLISH_INSTRUCTIONS_RULE` to each of the four prompt constants.
@@ -3085,17 +3089,28 @@ re-asks the planner.
 Add to `types.ts` (or a small shared util imported by both parsers):
 
 ```ts
-export const MAX_REQUIRES = 8; // contract cap on a step's dependency references
-/** Validate a step's optional `requires`: undefined (ok) OR a non-empty array
- *  (≤ MAX_REQUIRES) of non-empty strings. Returns the cleaned array, or `false`
- *  for a malformed value (→ the caller treats it as a parse failure). */
+export const MAX_REQUIRES = 8;        // contract cap on a step's dependency references
+export const MAX_REQUIRE_CHARS = 200; // a reference is a SHORT phrase, not a payload
+/** Validate a step's optional `requires`. Returns:
+ *  - `undefined` — absent OR an EMPTY array (a step with no deps; #2/plan-31:
+ *    normalize `[]` → undefined rather than waste a parse-retry, since downstream
+ *    treats absent/empty identically — falls back to whole-step recall);
+ *  - the cleaned (trimmed) array when valid;
+ *  - `false` (→ parse failure / retry) when malformed: a non-array, > MAX_REQUIRES
+ *    entries, a non-string entry, or an entry that is empty / > MAX_REQUIRE_CHARS
+ *    AFTER trim (#1/plan-31 — a huge reference must not reach the semantic query /
+ *    embedder). */
 export function validateRequires(v: unknown): string[] | undefined | false {
   if (v === undefined) return undefined;
-  if (!Array.isArray(v) || v.length === 0 || v.length > MAX_REQUIRES) return false;
+  if (!Array.isArray(v)) return false;
+  if (v.length === 0) return undefined;        // no deps → undefined, not malformed (#2/plan-31)
+  if (v.length > MAX_REQUIRES) return false;
   const out: string[] = [];
   for (const r of v) {
-    if (typeof r !== 'string' || r.trim().length === 0) return false;
-    out.push(r.trim());
+    if (typeof r !== 'string') return false;
+    const t = r.trim();
+    if (t.length === 0 || t.length > MAX_REQUIRE_CHARS) return false; // size bound (#1/plan-31)
+    out.push(t);
   }
   return out;
 }
@@ -3120,9 +3135,12 @@ return `obj.step` as-is — validate `requires` there too:
     }
 ```
 
-Add a parser test: a step with `requires: [123, '']` (or `requires` of length >
-MAX_REQUIRES) makes `parsePlan`/`parseNextStep` return `null` (→ retry), while
-`requires: ['table T100']` is carried through trimmed.
+Add parser/`validateRequires` tests (boundary, #1/#2/plan-31): malformed →
+`parsePlan`/`parseNextStep` return `null` (→ retry) for `requires: [123, '']`,
+length > `MAX_REQUIRES`, or an entry of length > `MAX_REQUIRE_CHARS` (e.g.
+`'x'.repeat(MAX_REQUIRE_CHARS + 1)`); `requires: []` normalizes to NO `requires`
+(undefined — NOT a retry); `requires: ['  table T100  ']` is carried through
+trimmed to `'table T100'`.
 
 - [ ] **Step 2: Write the failing tests**
 
