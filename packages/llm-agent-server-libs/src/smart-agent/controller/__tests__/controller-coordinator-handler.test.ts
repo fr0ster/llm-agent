@@ -1405,6 +1405,98 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(term?.kind, 'error');
   });
 
+  it('maxToolCalls is bounded by the durable toolCallCount, and abort is a controlFailure replan', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'after-budget' }),
+        },
+      ],
+      executor: Array.from({ length: 20 }, () => toolCall('LoopTool', {})),
+      selectTools: [{ name: 'LoopTool', description: '', inputSchema: {} }],
+      isExternalTool: () => false,
+      config: baseConfig({ maxToolCalls: 2 }),
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(h.mcpCalls.length <= 2, 'callMcp bounded by maxToolCalls');
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1);
+  });
+
+  it('maxStepResumes: a crash-replay with no committed artifact charges resumeCount and aborts at the cap', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    // Seed an executing inFlightStep at resumeCount === cap, no committed artifact.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 1,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 0,
+      },
+      plan: [{ name: 's1', instructions: 'i' }],
+      planCursor: 0,
+    } as never);
+    let plannerCalls = 0;
+    const h = harness({
+      evaluator: [],
+      executor: [{ kind: 'content', content: 'x' }],
+      planner: [],
+      config: {
+        ...baseConfig(),
+        planner: 'adaptive',
+        budgets: { ...baseConfig().budgets, maxStepResumes: 1 },
+      },
+    });
+    h.deps.backend = backend;
+    // The executing-recovery is planner-INDEPENDENT: the in-flight step is
+    // reconciled/aborted DIRECTLY, the planner must NOT be consulted for it.
+    h.deps.planner = {
+      async send() {
+        plannerCalls++;
+        return {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'should-not-run' }),
+        };
+      },
+    };
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal', 'aborted at maxStepResumes');
+    assert.equal(
+      plannerCalls,
+      0,
+      'planner was NOT consulted for the in-flight executing step',
+    );
+    assert.ok(
+      captured.find(
+        (c) => c.ok && /maxStepResumes|Error:/.test(c.value.content),
+      ),
+    );
+  });
+
   it('adaptive resume after a FAILED step REPLANS (durable lastOutcome) — not repeat', async () => {
     const h = harness({
       evaluator: [], // goal already in the seeded bundle → establishTargetState skipped

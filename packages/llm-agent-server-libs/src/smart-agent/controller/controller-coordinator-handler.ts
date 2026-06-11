@@ -23,6 +23,7 @@ import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import { resolveNeed } from './need-resolver.js';
 import type { Outcome } from './outcome.js';
+import { resolveByPrecedence } from './outcome.js';
 import { makePlanner } from './planner.js';
 import { appendHint } from './prompts.js';
 import type { IReviewer, ReviewResult } from './reviewer.js';
@@ -211,6 +212,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // with it rather than blindly re-running the suspended step. Set in the
     // external-tool resume branch below.
     let resumedExternal = false;
+    let externalContinuation = false;
 
     // -- Resume from a persisted pending marker -----------------------------
     if (bundle.pending?.kind === 'external-tool') {
@@ -312,6 +314,88 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // once the failure has been consumed into a new plan (so a crash after the
     // replan, or a finalizer retry after an empty replan, does NOT replan again).
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
+      const inf = bundle.inFlightStep;
+      if (inf && inf.phase === 'executing' && !resumedExternal) {
+        // Reconcile by THIS attempt's resolved artifact first.
+        const committed = await rag.list({
+          runId: bundle.runId,
+          seq: inf.seq,
+          attempt: inf.attempt,
+          artifactType: 'step-result',
+        });
+        const resolved = resolveByPrecedence(
+          committed.map((e) => ({
+            status: (e.metadata.status ?? 'failed') as Outcome['status'],
+            approved: e.content,
+            remainder: e.metadata.remainder ?? '',
+            note: e.metadata.note ?? '',
+          })),
+        );
+        if (resolved) {
+          // Already committed → adopt, do NOT re-run. Same commit side effects as
+          // settle(), including planner.commit() so the adaptive planCursor advances
+          // in lockstep with nextSeq.
+          const mapped = mapOutcome(resolved.status);
+          bundle.lastOutcome = mapped;
+          planner.commit?.(bundle, mapped);
+          recordStepControl(bundle, {
+            seq: inf.seq,
+            name: inf.step.name,
+            status: resolved.status,
+            note: resolved.note,
+            remainder: resolved.remainder,
+          });
+          if (resolved.status === 'failed') {
+            inf.phase = 'awaiting-replan';
+          } else {
+            bundle.nextSeq = inf.seq + 1;
+            bundle.inFlightStep = undefined;
+            bundle.runPhase = 'planning';
+          }
+          await persistBundle(deps.backend, sessionId, bundle);
+          continue;
+        }
+        // No artifact for this attempt → re-run the SAME step directly. Distinguish a
+        // live external CONTINUATION (bounded by toolCallCount) from a crash-replay
+        // (charged to resumeCount).
+        if (externalContinuation) {
+          externalContinuation = false;
+        } else {
+          inf.resumeCount += 1;
+          if (inf.resumeCount > (cfg.maxStepResumes ?? 3)) {
+            await this.abortTerminal(
+              ctx,
+              sessionId,
+              bundle,
+              `step "${inf.step.name}" exceeded maxStepResumes`,
+              now,
+              terminalTtlMs,
+              usageNow(),
+            );
+            return true;
+          }
+        }
+        await persistBundle(deps.backend, sessionId, bundle);
+        // COORDINATOR OVERRIDE — use the ACTUAL runStep param order (now/terminalTtlMs
+        // BEFORE logUsage). The plan example shows them last; that is WRONG.
+        const completed = await this.runStep(
+          ctx,
+          sessionId,
+          bundle,
+          rag,
+          meta,
+          inf.step,
+          isExternalTool,
+          now,
+          terminalTtlMs,
+          logUsage,
+          usageNow,
+          (o) => planner.commit?.(bundle, o),
+        );
+        if (completed === 'suspended' || completed === 'aborted') return true;
+        continue;
+      }
+
       const next = await planner.next({
         bundle,
         prompt,
@@ -370,10 +454,38 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         continue;
       }
 
-      // next.kind === 'next' → execute the step.
+      // next.kind === 'next' → open a fresh attempt and run it. Crash-replay/
+      // continuation of an executing step is handled by block (A), so this site only
+      // opens a NEW seq (attempt 0) or a revised step after awaiting-replan (attempt+1).
       dlog(
         `delegate step "${next.step.name}"${next.step.type ? ` (${next.step.type})` : ''}: ${next.step.instructions}`,
       );
+      const seq = bundle.nextSeq ?? 0;
+      const prev = bundle.inFlightStep; // only ever phase 'awaiting-replan' here
+      const attempt = prev && prev.seq === seq ? prev.attempt + 1 : 0;
+      if (attempt >= (cfg.maxStepAttempts ?? 5)) {
+        await this.abortTerminal(
+          ctx,
+          sessionId,
+          bundle,
+          `step "${next.step.name}" exceeded maxStepAttempts`,
+          now,
+          terminalTtlMs,
+          usageNow(),
+        );
+        return true;
+      }
+      bundle.inFlightStep = {
+        seq,
+        step: next.step,
+        attempt,
+        resumeCount: 0,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 0,
+      };
+      bundle.runPhase = 'executing';
+      await persistBundle(deps.backend, sessionId, bundle);
       const completed = await this.runStep(
         ctx,
         sessionId,
@@ -429,7 +541,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     const deps = this.deps;
     const cfg = deps.config.budgets;
     const maxToolCalls = cfg.maxToolCalls ?? 10;
-    let toolCalls = 0;
+    const inFlight = bundle.inFlightStep; // set by the caller (block A or B)
     // Persist the step outcome ATOMICALLY: record lastOutcome (durable, so a
     // resume after a failed step replans instead of repeating it) AND advance the
     // planner cursor (onCommit) in the SAME persistBundle that records the step
@@ -439,6 +551,16 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     ): Promise<'advanced' | 'failed' | 'partial'> => {
       bundle.lastOutcome = outcome;
       onCommit?.(outcome);
+      if (outcome === 'advanced' || outcome === 'partial') {
+        bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
+        bundle.inFlightStep = undefined;
+        bundle.runPhase = 'planning';
+      } else {
+        // 'failed' — keep the same seq, mark awaiting-replan in the SAME persist so
+        // recovery routes by durable phase.
+        if (bundle.inFlightStep) bundle.inFlightStep.phase = 'awaiting-replan';
+        bundle.runPhase = 'executing';
+      }
       await persistBundle(deps.backend, sessionId, bundle);
       return outcome;
     };
@@ -647,12 +769,23 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         return settle('failed');
       }
 
-      // Internal MCP tool — bound the inner loop so a stuck executor cannot
-      // spin forever issuing unbounded callMcp iterations.
-      toolCalls++;
-      if (toolCalls > maxToolCalls) {
+      // Durable round-trip count: ++ and persist BEFORE surfacing so it survives a
+      // resume (never a per-resume local).
+      if (inFlight) {
+        inFlight.toolCallCount += 1;
+        await persistBundle(deps.backend, sessionId, bundle);
+      }
+      if ((inFlight?.toolCallCount ?? 0) > maxToolCalls) {
+        // Controller-level failure (NOT a reviewer status): record durably and replan.
         bundle.budgets.stepsUsed++;
-        bundle.plannerPrivate += `\n[step ${step.name} aborted] tool-call budget exhausted`;
+        bundle.plannerPrivate += `\n[seq ${inFlight?.seq ?? bundle.nextSeq ?? 0} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
+        if (inFlight) {
+          inFlight.phase = 'awaiting-replan';
+          inFlight.controlFailure = {
+            reason: 'maxToolCalls',
+            seq: inFlight.seq,
+          };
+        }
         return settle('failed');
       }
 
