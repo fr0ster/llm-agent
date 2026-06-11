@@ -17,11 +17,15 @@ export interface KnowledgeBackend {
   /** Durably store the full entry (content + metadata) AND index its
    *  content for semantic query. Keyed by sessionId for isolation. */
   put(sessionId: string, entry: KnowledgeEntry): Promise<void>;
-  /** Semantic similarity search within a session, relevance-capped by k. */
+  /** Semantic similarity search within a session, relevance-capped by k. When
+   *  `filter` is given it MUST be applied to the candidate set BEFORE the K cap
+   *  (so a runId filter is never starved by other runs' artifacts crowding the
+   *  cap), preserving the backend's native ranking. */
   semanticQuery(
     sessionId: string,
     text: string,
     k?: number,
+    filter?: KnowledgeFilter,
   ): Promise<readonly KnowledgeEntry[]>;
   /** Exhaustive durable scan of ALL entries for a session (no relevance
    *  cap). Used by list() and by rehydrate. */
@@ -30,6 +34,9 @@ export interface KnowledgeBackend {
    *  rehydrate stale knowledge. Backs DELETE /v1/sessions/:id — without it a
    *  long-lived in-memory backend would retain entries after a session delete. */
   deleteSession(sessionId: string): Promise<void>;
+  /** True iff the backend supports embedding-based semantic recall (an index is
+   *  attached). The controller asserts this before wiring run-scoped recall. */
+  readonly semanticRecallCapable?: boolean;
 }
 
 /**
@@ -70,10 +77,13 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
     text: string,
     opts?: { k?: number; filter?: KnowledgeFilter },
   ): Promise<readonly KnowledgeEntry[]> {
+    // Pass the filter INTO semanticQuery so the backend applies it PRE-cap
+    // (preserving its native ranking); a defensive post-filter is harmless.
     const hits = await this.backend.semanticQuery(
       this.sessionId,
       text,
       opts?.k,
+      opts?.filter,
     );
     const filter = opts?.filter;
     if (!filter) return hits;
@@ -152,7 +162,7 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
   }
 }
 
-function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
+export function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
   if (f.traceId && m.traceId !== f.traceId) return false;
   if (f.turnId && m.turnId !== f.turnId) return false;
   if (f.stepperId && m.stepperId !== f.stepperId) return false;
@@ -165,6 +175,10 @@ function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
       : [f.artifactType];
     if (!set.includes(m.artifactType)) return false;
   }
+  if (f.runId !== undefined && m.runId !== f.runId) return false;
+  if (f.seq !== undefined && m.seq !== f.seq) return false;
+  if (f.attempt !== undefined && m.attempt !== f.attempt) return false;
+  if (f.status !== undefined && m.status !== f.status) return false;
   return true;
 }
 
@@ -174,6 +188,20 @@ function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
  *  in the server package, see Task 13 note.) */
 export class InMemoryKnowledgeBackend implements KnowledgeBackend {
   private readonly bySession = new Map<string, KnowledgeEntry[]>();
+  /** Optional embedder-backed index; when present, semanticQuery delegates to it
+   *  (real ranking) — else filter + insertion order (pure unit tests). */
+  constructor(
+    private readonly semantic?: {
+      upsert(sid: string, e: KnowledgeEntry): Promise<void>;
+      query(
+        sid: string,
+        text: string,
+        k?: number,
+        filter?: KnowledgeFilter,
+      ): Promise<readonly KnowledgeEntry[]>;
+      deleteSession(sid: string): void;
+    },
+  ) {}
   private of(sid: string): KnowledgeEntry[] {
     let a = this.bySession.get(sid);
     if (!a) {
@@ -184,9 +212,17 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
   }
   async put(sid: string, entry: KnowledgeEntry) {
     this.of(sid).push(entry);
+    await this.semantic?.upsert(sid, entry);
   }
-  async semanticQuery(sid: string, _text: string, k?: number) {
-    const a = this.of(sid);
+  async semanticQuery(
+    sid: string,
+    text: string,
+    k?: number,
+    filter?: KnowledgeFilter,
+  ) {
+    if (this.semantic) return this.semantic.query(sid, text, k, filter);
+    let a = this.of(sid);
+    if (filter) a = a.filter((e) => matches(e.metadata, filter));
     return k ? a.slice(0, k) : a.slice();
   }
   async scan(sid: string) {
@@ -194,6 +230,10 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
   }
   async deleteSession(sid: string) {
     this.bySession.delete(sid);
+    this.semantic?.deleteSession(sid);
+  }
+  get semanticRecallCapable(): boolean {
+    return this.semantic !== undefined;
   }
 }
 
