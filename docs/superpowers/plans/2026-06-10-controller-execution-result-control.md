@@ -340,12 +340,18 @@ downgrade):
     // rebuild scan), THEN append, THEN upsert the new entry exactly once.
     await this.run(sid, async () => {
       await this.build(sid);
-      await this.append(sid, entry);
+      await this.append(sid, entry);                  // DURABLE COMMIT — this is the put's success point
       try {
-        await this.semantic!.upsert(sid, entry);
+        await this.semantic!.upsert(sid, entry);      // index the durable entry once
       } catch (e) {
-        this.built.delete(sid);                       // dirty → next build re-syncs from JSONL (#2/plan-15)
-        throw e;
+        // The durable append already succeeded, so the put SUCCEEDS — the index is
+        // a rebuildable cache, not the source of truth. Do NOT rethrow (#1/plan-17):
+        // rethrowing would make the client retry put() and append the SAME artifact
+        // a SECOND time (no stable id / idempotent durable upsert). Instead mark the
+        // session dirty so the NEXT build re-syncs the index from the durable JSONL
+        // (idempotent rebuild), and log.
+        this.built.delete(sid);
+        if (process.env.DEBUG_CONTROLLER) console.error(`[jsonl-index] upsert failed (will rebuild lazily): ${String(e)}`);
       }
     });
   }
@@ -571,6 +577,25 @@ describe('JsonlKnowledgeBackend rehydrates the index after restart', () => {
       await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }); // upserts once
       const hits = await b.semanticQuery('s', 'alpha', 10, { runId: 'R' }); // first query → rehydrate
       assert.equal(hits.length, 1, 'entry indexed exactly once (no put + rehydrate duplicate)');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('upsert failure does NOT fail the put and does NOT duplicate the JSONL entry (#1/plan-17)', async () => {
+    const { mkdtemp, rm } = await import('node:fs/promises');
+    const { tmpdir } = await import('node:os');
+    const { join } = await import('node:path');
+    const { JsonlKnowledgeBackend } = await import('../jsonl-knowledge-backend.js');
+    const dir = await mkdtemp(join(tmpdir(), 'ctrl-upsertfail-'));
+    try {
+      // An index whose upsert always fails — durability must still succeed.
+      const failing = { async upsert() { throw new Error('index down'); }, async query() { return []; }, deleteSession() {} };
+      const b = new JsonlKnowledgeBackend(dir, failing as never);
+      await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }); // must NOT throw
+      // The durable append happened exactly once (no client retry → no double write).
+      const entries = await b.scan('s');
+      assert.equal(entries.length, 1, 'durable JSONL has the entry exactly once');
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
@@ -3217,14 +3242,44 @@ describe('runScopedRecall', () => {
     await runScopedRecall(rag, 'q', 3, 'R', 4, ['step-result']);
     assert.equal(lastK(), 3 * (4 + 1), 'k prime requested for the bounded over-fetch');
   });
+  it('over-fetch lets k distinct steps survive a retry-dup even when the backend HONORS the cap', async () => {
+    // Backend respects the requested k (returns only the first k'); the over-fetch
+    // ensures a seq-0 retry pair does not starve seq-1 out of the result.
+    const list = [E({ runId: 'R', seq: 0, attempt: 0, status: 'failed' }, 'f0'), E({ runId: 'R', seq: 0, attempt: 1, status: 'ok' }, 'o0'), E({ runId: 'R', seq: 1, attempt: 0, status: 'ok' }, 'o1')];
+    let askedK: number | undefined;
+    const rag = { async query(_t: string, opts?: { k?: number }) { askedK = opts?.k; return list.slice(0, opts?.k ?? list.length); }, async list() { return []; }, async write() {}, fingerprint() { return 's'; } } as IKnowledgeRagHandle;
+    const out = await runScopedRecall(rag, 'q', 2, 'R', 1, ['step-result']); // k=2, k'=2*(1+1)=4
+    assert.equal(askedK, 4);
+    assert.deepEqual(out.map((e) => e.content), ['o0', 'o1'], 'both distinct seqs kept (retry-dup did not starve)');
+  });
 });
 ```
 
 Replace the existing whole-step episodic recall call in `runStep`
 (`resolveNeed(rag, recallText, RECALL_K, { artifactType: RECALL_ARTIFACT_TYPES })`)
-with `runScopedRecall(rag, recallText, RECALL_K, bundle.runId, cfg.maxStepAttempts ?? 5, RECALL_ARTIFACT_TYPES)`
-— the SAME primitive the evidence uses.
-Add `KnowledgeEntry` to the existing `@mcp-abap-adt/llm-agent` type import in the handler.
+with TWO separate run-scoped recalls — one per artifact KIND — each with its OWN k
+budget, then concatenate (#2/plan-17). A single combined recall lets one step's
+many distinct `mcp-result` artifacts (up to `maxToolCalls` per attempt) fill the
+top-k BEFORE dedup and starve other logical steps; separate budgets guarantee each
+kind a fair share:
+
+```ts
+    const maxAttempts = cfg.maxStepAttempts ?? 5;
+    const recalledSteps = await runScopedRecall(rag, recallText, RECALL_K_STEP, bundle.runId, maxAttempts, ['step-result']);
+    const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, maxAttempts, ['mcp-result']);
+    const recalled = [...recalledSteps, ...recalledMcp];
+```
+
+Define `const RECALL_K_STEP = 4;` and `const RECALL_K_MCP = 4;` (tune as needed; the
+old `RECALL_K` is split into the two). The evidence loop keeps a single
+`runScopedRecall(..., RECALL_ARTIFACT_TYPES)` per reference (it only needs a boolean
+hit, where starvation is irrelevant). Add `KnowledgeEntry` to the existing
+`@mcp-abap-adt/llm-agent` type import in the handler.
+
+> Within each kind, the over-fetch `k × (maxStepAttempts + 1)` bounds the
+> duplicates: step-result retries collapse by seq-precedence, and re-fetched
+> `mcp-result`s collapse by `identityKey`. Because the two kinds are recalled
+> separately, `mcp-result` volume can never crowd `step-result` out of the recall.
 
 **Tag the artifact writes (#1/plan-6, #2/plan-10).** Tag every `mcp-result` write
 (the internal-tool round-trip write and the external resume write) with
