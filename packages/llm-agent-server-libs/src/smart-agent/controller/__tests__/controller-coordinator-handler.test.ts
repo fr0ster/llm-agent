@@ -2046,6 +2046,12 @@ describe('ControllerCoordinatorHandler', () => {
       joined.includes('MCP-CONTEXT-XYZ'),
       'mcp context survived despite a 50k-char step-result (separate char budgets)',
     );
+    // And prove the step block was actually budget-capped (RECALL_MAX_CHARS_STEP=2000),
+    // not injected whole — else removing the step budget would go unnoticed.
+    assert.ok(
+      !joined.includes('S'.repeat(2001)),
+      'the 50k step-result was truncated to its own char budget',
+    );
   });
 });
 

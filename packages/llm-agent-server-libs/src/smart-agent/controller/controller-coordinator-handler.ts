@@ -919,7 +919,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // role) decide whether the ref is actually satisfied. `hit` is a coarse
     // any-candidate flag. Gathered SEQUENTIALLY (NOT Promise.all): each
     // relevantExtract is itself bounded-sequential, so the outer sequential loop
-    // keeps the TOTAL in-flight embeds at 1 (rate-limit-safe).
+    // keeps at most ONE embed request in flight at a time (rate-limit-safe).
     const refs =
       step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const evBound =
