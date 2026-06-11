@@ -511,7 +511,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
       }
       bundle.plannerCallInFlight = true;
-      bundle.runPhase = bundle.runPhase ?? 'planning';
+      // Reaching the planner guard means we are about to plan (block (A) handles
+      // any in-flight executing step earlier and continues), so the phase is
+      // 'planning' regardless of the prior 'evaluating'/'executing' value.
+      bundle.runPhase = 'planning';
       await persistBundle(deps.backend, sessionId, bundle);
       const next = await planner.next({
         bundle,
