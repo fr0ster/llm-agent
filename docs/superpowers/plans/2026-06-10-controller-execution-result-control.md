@@ -3205,29 +3205,35 @@ reference is English (the planner invariant extends to `requires`), so a normal
 
 ```ts
 const MAX_EXTRACT_WINDOWS = 16;
-/** Index of the best ≈`winSize` window of `text` by cosine to `q`. CONTIGUOUS
- *  coverage: with `maxWindows` windows the stride spans the WHOLE `text`
- *  (stride = ceil(len/maxWindows)), so there is NO unscanned gap (#2/plan-23). */
-async function bestWindowStart(text: string, q: number[], embedder: IEmbedder, winSize: number, maxWindows: number): Promise<number> {
-  const stride = Math.max(1, Math.ceil(text.length / maxWindows));
+/** Absolute start (in the ORIGINAL content, via `offset`) of the best ≈maxChars
+ *  fragment of `text` by cosine to `q`. RECURSIVE hierarchical refinement with
+ *  guaranteed FULL coverage at every level (#1/plan-24): each level scans windows
+ *  of `winSize = max(maxChars, ceil(len/MAX))` at 50% overlap (stride = winSize/2),
+ *  so EVERY position — and every ≤winSize fragment WHOLE — is in some window (no
+ *  gap, no boundary split). It then descends into the best window (which shrinks by
+ *  ~MAX each level) until winSize == maxChars. Depth = ceil(log_MAX(len/maxChars)),
+ *  so ≤ ~2·MAX·depth embeds — bounded even for very large artifacts. */
+async function locateBest(text: string, q: number[], embedder: IEmbedder, maxChars: number, offset: number): Promise<number> {
+  if (text.length <= maxChars) return offset;
+  const winSize = Math.max(maxChars, Math.ceil(text.length / MAX_EXTRACT_WINDOWS));
+  const stride = Math.max(1, Math.floor(winSize / 2)); // 50% overlap → any ≤winSize fragment whole in a window
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
-  let n = 0;
-  for (let s = 0; s < text.length && n < maxWindows; s += stride, n++) {
+  for (let s = 0; s < text.length; s += stride) {
     const { vector } = await embedder.embed(text.slice(s, s + winSize));
     const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
     if (score > bestScore) { bestScore = score; bestStart = s; }
   }
-  return bestStart;
+  if (winSize <= maxChars) return offset + bestStart; // finest level reached
+  return locateBest(text.slice(bestStart, bestStart + winSize), q, embedder, maxChars, offset + bestStart);
 }
 /** Return the ≈`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
- *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). TWO-PHASE so
- *  coverage is FULL even for content > MAX_EXTRACT_WINDOWS × maxChars (#2/plan-23):
- *  phase 1 splits the whole content into MAX_EXTRACT_WINDOWS contiguous segments and
- *  picks the best; phase 2 re-windows that segment at maxChars granularity. Result
- *  is STRICTLY ≤ maxChars including markers (#2/plan-20); a tiny maxChars (< 3)
- *  returns a bare slice (#2/plan-21). The `requires` ref is English (planner
- *  invariant), so a normal (non-multilingual) embedder suffices. Async. */
+ *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). Uses the
+ *  full-coverage recursive `locateBest` so even content ≫ MAX × maxChars has no
+ *  unscanned gap (#1/plan-24). Result is STRICTLY ≤ maxChars including markers
+ *  (#2/plan-20); a tiny maxChars (< 3) returns a bare slice (#2/plan-21). The
+ *  `requires` ref is English (planner invariant), so a normal (non-multilingual)
+ *  embedder suffices. Async. */
 export async function relevantExtract(
   content: string,
   ref: string,
@@ -3237,15 +3243,7 @@ export async function relevantExtract(
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
   const { vector: q } = await embedder.embed(ref);
-  // Phase 1 (coarse, FULL coverage): segments of ceil(len/MAX) span the whole content.
-  const segSize = Math.max(maxChars, Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
-  const segStart = await bestWindowStart(content, q, embedder, segSize, MAX_EXTRACT_WINDOWS);
-  // Phase 2 (fine, within the chosen segment) when the segment is larger than maxChars.
-  let bestStart = segStart;
-  if (segSize > maxChars) {
-    const seg = content.slice(segStart, segStart + segSize);
-    bestStart = segStart + (await bestWindowStart(seg, q, embedder, maxChars, MAX_EXTRACT_WINDOWS));
-  }
+  const bestStart = await locateBest(content, q, embedder, maxChars, 0);
   const head = bestStart > 0 ? '…' : '';
   const bodyLen = Math.max(0, maxChars - head.length - 1); // reserve room for a tail '…'
   const slice = content.slice(bestStart, bestStart + bodyLen);
@@ -3409,13 +3407,14 @@ describe('relevantExtract', () => {
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
   // overlap) picks the MARK window (#1/plan-23).
   const embedder = { embed: async (t: string) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }) } as never;
-  it('two-phase coverage surfaces a LATE fragment in a large artifact, bounded', async () => {
+  it('recursive coverage surfaces a LATE fragment even past MAX^2 * maxChars (#1/#2/plan-24)', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
-    // Artifact far larger than maxChars; the relevant fragment sits near the END
-    // (past MAX_EXTRACT_WINDOWS × maxChars would be a gap for a single-pass scan).
-    const content = `${'x'.repeat(8000)} MARK relevant fragment`;
+    // 60,000 > MAX_EXTRACT_WINDOWS^2 * maxChars (16*16*200 = 51,200): a fixed
+    // TWO-phase scan would leave a second-phase gap here; the recursive
+    // refinement still surfaces the late MARK fragment.
+    const content = `${'x'.repeat(60000)} MARK relevant fragment`;
     const out = await relevantExtract(content, 'the target reference', 200, embedder);
-    assert.ok(out.includes('MARK'), 'two-phase coarse→fine surfaced the late fragment (no coverage gap)');
+    assert.ok(out.includes('MARK'), 'recursive refinement surfaced the late fragment (full coverage, no gap)');
     assert.ok(out.length <= 200, 'STRICTLY bounded to maxChars including ellipses (#2/plan-20)');
   });
   it('returns a bare slice (no double markers) for a tiny maxChars (#2/plan-21)', async () => {
