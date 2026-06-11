@@ -3166,10 +3166,11 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
     // topArtifact.
     const refs = step.requires && step.requires.length > 0 ? step.requires : [recallText];
     const maxAttempts = cfg.maxStepAttempts ?? 5;
-    // The combined over-fetch must cover BOTH kinds' guaranteed bounds (#2/plan-19),
-    // so neither step retries nor mcp re-fetches can crowd the relevant artifact out
-    // of the cap before dedup → the reviewer always sees the right topArtifact.
-    const evBound = RECALL_K_STEP * (maxAttempts + 1) + cfg.maxSteps * (cfg.maxToolCalls ?? 10);
+    // The combined over-fetch must cover BOTH kinds' guaranteed bounds (#2/plan-19,
+    // #1/plan-20), so neither step retries nor mcp re-fetches (toolCallCount resets
+    // per attempt → maxSteps × maxStepAttempts × maxToolCalls) can crowd the relevant
+    // artifact out of the cap before dedup → the reviewer always sees the right topArtifact.
+    const evBound = RECALL_K_STEP * (maxAttempts + 1) + cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
     const evidence = await Promise.all(
       refs.map(async (ref) => {
         const hits = await runScopedRecall(rag, ref, 1, bundle.runId, evBound, RECALL_ARTIFACT_TYPES);
@@ -3187,9 +3188,11 @@ Add the relevance-extract helper (near `runScopedRecall`) and `const
 RECALL_EVIDENCE_CHARS = 800;`:
 
 ```ts
-/** Return the window of `content` (≤ maxChars) richest in `ref` tokens, so the
- *  reviewer sees the RELEVANT fragment of a long artifact, not its head. Marks
- *  elided head/tail with an ellipsis. Deterministic; no embedder. */
+/** Return the window of `content` richest in `ref` tokens, STRICTLY ≤ maxChars
+ *  INCLUDING the ellipsis markers (#2/plan-20) — the content slice is shrunk to
+ *  reserve room for any head/tail '…', so the reviewer sees the RELEVANT fragment
+ *  of a long artifact, not its head, without overshooting the budget.
+ *  Deterministic; no embedder. */
 export function relevantExtract(content: string, ref: string, maxChars: number): string {
   if (content.length <= maxChars) return content;
   const tokens = ref.toLowerCase().match(/[a-z0-9_]+/g) ?? [];
@@ -3204,8 +3207,11 @@ export function relevantExtract(content: string, ref: string, maxChars: number):
     if (score > bestScore) { bestScore = score; best = start; }
   }
   const head = best > 0 ? '…' : '';
-  const tail = best + maxChars < content.length ? '…' : '';
-  return head + content.slice(best, best + maxChars) + tail;
+  // Reserve room for head + a possible tail ellipsis so the TOTAL is ≤ maxChars.
+  const bodyLen = Math.max(0, maxChars - head.length - 1);
+  const slice = content.slice(best, best + bodyLen);
+  const tail = best + bodyLen < content.length ? '…' : '';
+  return head + slice + tail; // length ≤ head + bodyLen + 1 ≤ maxChars
 }
 ```
 
@@ -3339,19 +3345,21 @@ describe('runScopedRecall', () => {
     assert.equal(askedK, 4);
     assert.deepEqual(out.map((e) => e.content), ['o0', 'o1'], 'both distinct seqs kept (retry-dup did not starve)');
   });
-  it('MCP identityKey dups do not starve a distinct fetch when the backend HONORS the cap', async () => {
-    // Many copies of K1 rank above the single K2; with the guaranteed run-bound
-    // over-fetch, K2 still survives after identityKey dedup.
+  it('run-wide MCP bound (maxSteps*maxStepAttempts*maxToolCalls) keeps a distinct identity after ALL prior-attempt dups (#3/plan-20)', async () => {
+    const maxSteps = 2, maxStepAttempts = 2, maxToolCalls = 2;
+    const runBound = maxSteps * maxStepAttempts * maxToolCalls; // 8
+    // K1 repeats once per (step × attempt × toolcall) — runBound-1 copies — and the
+    // single distinct K2 sits LAST, at index runBound-1. The OLD bound
+    // (maxSteps*maxToolCalls = 4) would cap before K2 and starve it; the run-wide
+    // bound includes it.
     const list = [
-      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a'),
-      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a2'),
-      E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, 'a3'),
+      ...Array.from({ length: runBound - 1 }, (_, i) => E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K1' }, `a${i}`)),
       E({ runId: 'R', artifactType: 'mcp-result', identityKey: 'K2' }, 'b'),
     ];
     const rag = { async query(_t: string, opts?: { k?: number }) { return list.slice(0, opts?.k ?? list.length); }, async list() { return []; }, async write() {}, fingerprint() { return 's'; } } as IKnowledgeRagHandle;
-    const out = await runScopedRecall(rag, 'q', 2, 'R', /* run bound */ 4, ['mcp-result']);
+    const out = await runScopedRecall(rag, 'q', 2, 'R', runBound, ['mcp-result']);
     const ids = new Set(out.map((e) => e.metadata.identityKey));
-    assert.ok(ids.has('K1') && ids.has('K2'), 'both distinct identityKeys present (no MCP starvation)');
+    assert.ok(ids.has('K1') && ids.has('K2'), 'distinct K2 survives despite runBound-1 K1 dups (run-wide bound)');
   });
 });
 
@@ -3360,8 +3368,8 @@ describe('relevantExtract', () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
     const content = `${'x'.repeat(2000)} the TARGET_TOKEN lives here ${'y'.repeat(2000)}`;
     const out = relevantExtract(content, 'TARGET_TOKEN', 200);
-    assert.ok(out.includes('target_token'.toUpperCase()) || out.toLowerCase().includes('target_token'), 'relevant window kept');
-    assert.ok(out.length <= 200 + 2, 'bounded to maxChars (+ ellipses)');
+    assert.ok(out.toLowerCase().includes('target_token'), 'relevant window kept');
+    assert.ok(out.length <= 200, 'STRICTLY bounded to maxChars including ellipses (#2/plan-20)');
   });
 });
 ```
@@ -3377,14 +3385,16 @@ kind a fair share:
 ```ts
     const maxAttempts = cfg.maxStepAttempts ?? 5;
     const maxTool = cfg.maxToolCalls ?? 10;
-    // Per-kind recall with GUARANTEED over-fetch bounds (#1/plan-19): step-result
-    // retries are bounded by maxStepAttempts (k×(maxStepAttempts+1)). For
-    // mcp-results the controller does NOT dedup re-fetches (hasArtifact suppression
-    // exists only in the cyclic stepper, NOT here), so an identityKey can repeat up
-    // to the run's TOTAL tool budget; over-fetch the whole run bound
-    // `maxSteps × maxToolCalls` so EVERY distinct identityKey is seen BEFORE the cap
-    // (then dedup + cap to k). This is derived from the budget contract, not a guess.
-    const mcpBound = cfg.maxSteps * maxTool;
+    // Per-kind recall with GUARANTEED over-fetch bounds (#1/plan-19, #1/plan-20):
+    // step-result retries are bounded by maxStepAttempts (k×(maxStepAttempts+1)).
+    // For mcp-results the controller does NOT dedup re-fetches (hasArtifact
+    // suppression exists only in the cyclic stepper, NOT here), AND toolCallCount
+    // RESETS per fresh attempt — so one logical step can emit up to
+    // maxStepAttempts × maxToolCalls mcp-results, and the whole run up to
+    // `maxSteps × maxStepAttempts × maxToolCalls`. Over-fetch that full run bound so
+    // EVERY distinct identityKey is seen BEFORE the cap (then dedup + cap to k).
+    // Derived from the budget contract, not a guess.
+    const mcpBound = cfg.maxSteps * maxAttempts * maxTool;
     const recalledSteps = await runScopedRecall(rag, recallText, RECALL_K_STEP, bundle.runId, RECALL_K_STEP * (maxAttempts + 1), ['step-result']);
     const recalledMcp = await runScopedRecall(rag, recallText, RECALL_K_MCP, bundle.runId, mcpBound, ['mcp-result']);
     // SEPARATE character budgets per kind (#2/plan-18): build each block under its
