@@ -3052,8 +3052,8 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 
 **Files:**
 - Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`/`relevantExtract`), `reviewer.ts` already consumes `Evidence`.
-- Modify: `packages/llm-agent/src/resilience/circuit-breaker-embedder.ts` (capability-preserving factory — #1/plan-27) + its call sites.
-- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` batch/bounds) and a circuit-breaker capability-preservation test (batch-looking wrapper over a non-batch embedder → `isBatchEmbedder` false).
+- Modify: `packages/llm-agent/src/resilience/circuit-breaker-embedder.ts` (REPLACE the class with `makeCircuitBreakerEmbedder` factory — #1/plan-27, plan-28), its barrel/index exports, and all call sites (breaking change).
+- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` batch/bounds) and a circuit-breaker FACTORY capability test (`makeCircuitBreakerEmbedder(nonBatchInner)` → `isBatchEmbedder` false; `(batchInner)` → true).
 
 - [ ] **Step 1: Add `requires` to `Step`**
 
@@ -3237,10 +3237,20 @@ export function makeCircuitBreakerEmbedder(inner: IEmbedder, breaker: CircuitBre
   return { embed, embedBatch };
 }
 ```
-Keep the class as a thin deprecated shim delegating to the factory, or update its
-call sites to `makeCircuitBreakerEmbedder`. Add a test: a batch-LOOKING wrapper over
-a NON-batch embedder is recognised as non-batch (`isBatchEmbedder` false) → `embedAll`
-uses the sequential path and does NOT throw / register a CB failure.
+**REMOVE the `CircuitBreakerEmbedder` class entirely — do NOT keep a shim (#1/plan-28).**
+A class can never structurally hide its prototype `embedBatch`, so a retained
+`new CircuitBreakerEmbedder(...)` would again report `isBatchEmbedder === true` over a
+non-batch inner — re-opening the bug. So: delete the class, export ONLY
+`makeCircuitBreakerEmbedder`, update BOTH public exports (the package barrel and the
+resilience module index) and ALL call sites (`new CircuitBreakerEmbedder(inner,
+breaker)` → `makeCircuitBreakerEmbedder(inner, breaker)`). This is a **breaking
+change** to the resilience surface — note it in the package CHANGELOG/migration.
+
+Test the FACTORY OUTPUT directly (not an abstract wrapper): build a non-batch inner
+(`{ embed }` only) and assert `isBatchEmbedder(makeCircuitBreakerEmbedder(inner,
+breaker)) === false`; build a batch inner (`{ embed, embedBatch }`) and assert it is
+`true`. Then assert `embedAll(makeCircuitBreakerEmbedder(nonBatchInner, breaker), …)`
+takes the sequential path and does NOT throw or record a circuit-breaker failure.
 
 ```ts
 const MAX_EXTRACT_WINDOWS = 64;
