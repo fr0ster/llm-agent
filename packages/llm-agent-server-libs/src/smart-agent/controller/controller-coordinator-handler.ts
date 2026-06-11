@@ -5,6 +5,7 @@ import {
   type IKnowledgeRagHandle,
   type IRequestLogger,
   type IStageHandler,
+  type KnowledgeEntry,
   type KnowledgeEntryMetadata,
   type LlmComponent,
   type LlmTool,
@@ -19,24 +20,25 @@ import {
   type PipelineContext,
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { cosine } from '../embedder-knowledge-index.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
-import { resolveNeed } from './need-resolver.js';
 import type { Outcome } from './outcome.js';
 import { resolveByPrecedence } from './outcome.js';
 import { makePlanner } from './planner.js';
 import { appendHint } from './prompts.js';
-import type { IReviewer, ReviewResult } from './reviewer.js';
+import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
 import { classifyRequest, readTerminal, writeTerminal } from './run-scope.js';
 import { hydrateBundle, persistBundle, resetRun } from './session-bundle.js';
 import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
-import type {
-  ControllerConfig,
-  NextStep,
-  SessionBundle,
-  Step,
+import {
+  type ControllerConfig,
+  type NextStep,
+  type SessionBundle,
+  type Step,
+  validateRequires,
 } from './types.js';
 
 // ---------------------------------------------------------------------------
@@ -394,6 +396,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           artifactType: 'mcp-result',
           toolName,
           task: bundle.pending.position,
+          runId: bundle.runId,
+          seq: bundle.inFlightStep?.seq,
+          attempt: bundle.inFlightStep?.attempt,
+          // Stable fetch identity (tool+args) so run-scoped recall dedups
+          // duplicate fetches of the same object across attempts.
+          identityKey: extId,
           content: result,
         });
         if (bundle.inFlightStep) {
@@ -440,11 +448,20 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // treated as a refinement and becomes the goal verbatim.
       if (bundle.pending.position === 'goal') {
         const answer = prompt.trim();
+        if (answer.length === 0) {
+          // Empty/whitespace is not an established goal — stay suspended, re-ask
+          // (deterministic clarify-resume: never commit an empty goal).
+          this.surfaceClarify(ctx, bundle.pending.question, usageNow());
+          return true;
+        }
         const proposed = bundle.pending.proposedTarget;
         bundle.goal = proposed && isAffirmation(answer) ? proposed : answer;
+        bundle.runState = 'active';
+        bundle.runPhase = 'planning';
       }
       bundle.plannerPrivate += `\n[clarify answer] ${prompt}`;
       bundle.pending = undefined;
+      await persistBundle(deps.backend, sessionId, bundle);
     }
 
     // -- Establish the goal (evaluator) -------------------------------------
@@ -493,6 +510,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           position: 'goal',
           proposedTarget: outcome.proposedTarget,
         };
+        bundle.runState = 'suspended';
         await persistBundle(deps.backend, sessionId, bundle);
         this.surfaceClarify(ctx, outcome.question, usageNow());
         return true;
@@ -844,10 +862,35 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // the bundle backend, so restrict to artifact types (excludes the
     // 'controller-bundle' infrastructure record). Bounded by k and length.
     const recallText = step.instructions || step.name;
-    const recalled = await resolveNeed(rag, recallText, RECALL_K, {
-      artifactType: RECALL_ARTIFACT_TYPES,
-    });
-    const recallBlock = buildRecallBlock(recalled);
+    const maxAttempts = cfg.maxStepAttempts ?? 5;
+    const maxTool = cfg.maxToolCalls ?? 10;
+    // Per-kind run-scoped recall with GUARANTEED over-fetch bounds: step-result
+    // retries are bounded by maxStepAttempts (k×(maxStepAttempts+1)); mcp-results
+    // are NOT deduped on re-fetch here and toolCallCount RESETS per attempt, so one
+    // run can emit up to maxSteps × maxStepAttempts × maxToolCalls of them — over-
+    // fetch that full run bound so every distinct identityKey is seen before the cap.
+    const mcpBound = cfg.maxSteps * maxAttempts * maxTool;
+    const recalledSteps = await runScopedRecall(
+      rag,
+      recallText,
+      RECALL_K_STEP,
+      bundle.runId,
+      RECALL_K_STEP * (maxAttempts + 1),
+      ['step-result'],
+    );
+    const recalledMcp = await runScopedRecall(
+      rag,
+      recallText,
+      RECALL_K_MCP,
+      bundle.runId,
+      mcpBound,
+      ['mcp-result'],
+    );
+    // SEPARATE character budgets per kind: a single huge step-result cannot consume
+    // the whole budget and starve the MCP context (and vice-versa).
+    const stepBlock = buildRecallBlock(recalledSteps, RECALL_MAX_CHARS_STEP);
+    const mcpBlock = buildRecallBlock(recalledMcp, RECALL_MAX_CHARS_MCP);
+    const recallBlock = [stepBlock, mcpBlock].filter(Boolean).join('\n\n');
     if (recallBlock) {
       messages.push({ role: 'user', content: recallBlock });
     }
@@ -869,9 +912,40 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
     };
 
-    // Evidence for the reviewer: whether the step's recall surfaced anything. The
-    // per-reference manifest (step.requires) is Task 16; for now one whole-step entry.
-    const evidence = [{ ref: recallText, hit: recalled.length > 0 }];
+    // Per-reference evidence: one recall per requires[] reference. A non-empty
+    // top-K does NOT prove the dependency is present — semantic recall returns the
+    // NEAREST artifact even at low relevance — so we hand the reviewer the TOP
+    // artifact's relevant fragment (Evidence.topArtifact) and let IT (the judging
+    // role) decide whether the ref is actually satisfied. `hit` is a coarse
+    // any-candidate flag. Gathered SEQUENTIALLY (NOT Promise.all): each
+    // relevantExtract is itself bounded-sequential, so the outer sequential loop
+    // keeps the TOTAL in-flight embeds at 1 (rate-limit-safe).
+    const refs =
+      step.requires && step.requires.length > 0 ? step.requires : [recallText];
+    const evBound =
+      RECALL_K_STEP * (maxAttempts + 1) +
+      cfg.maxSteps * maxAttempts * (cfg.maxToolCalls ?? 10);
+    const evidence: Evidence[] = [];
+    for (const ref of refs) {
+      const hits = await runScopedRecall(
+        rag,
+        ref,
+        1,
+        bundle.runId,
+        evBound,
+        RECALL_ARTIFACT_TYPES,
+      );
+      const topArtifact = hits[0]
+        ? await relevantExtract(
+            hits[0].content,
+            ref,
+            RECALL_EVIDENCE_CHARS,
+            // biome-ignore lint/style/noNonNullAssertion: distance strategies require an embedder; the factory enforces it (Task 17).
+            deps.embedder!,
+          )
+        : undefined;
+      evidence.push({ ref, hit: hits.length > 0, topArtifact });
+    }
 
     // Tools offered to the executor = the INTERNAL (MCP) tools semantically
     // relevant to THIS step (top-K from toolsRag) PLUS the per-request external
@@ -1082,6 +1156,11 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         artifactType: 'mcp-result',
         toolName: name,
         task: step.name,
+        runId: bundle.runId,
+        seq: inFlight?.seq,
+        attempt: inFlight?.attempt,
+        // Stable fetch identity (tool+args) for run-scoped recall dedup.
+        identityKey: externalToolCallId(name, args),
         content: result,
       });
       // Feed the result back as a coherent assistant→tool turn (OpenAI protocol)
@@ -1404,21 +1483,27 @@ const EXECUTOR_SYSTEM =
 const TOOL_SELECT_K = 20;
 
 /** Top-k recalled artifacts injected into the executor context per step. */
-const RECALL_K = 5;
 /** Artifact types eligible for recall (excludes the 'controller-bundle' record
  *  that shares the same backend). */
 const RECALL_ARTIFACT_TYPES = ['step-result', 'mcp-result'] as const;
-/** Hard cap on the total injected recall length (chars). */
-const RECALL_MAX_CHARS = 4000;
+/** Per-kind recall counts (distinct artifacts kept after dedup + cap). */
+const RECALL_K_STEP = 4;
+const RECALL_K_MCP = 4;
+/** SEPARATE char budgets per kind, so a huge step-result cannot starve MCP context. */
+const RECALL_MAX_CHARS_STEP = 2000;
+const RECALL_MAX_CHARS_MCP = 2000;
+/** Char budget for a single per-`requires` evidence extract handed to the reviewer. */
+const RECALL_EVIDENCE_CHARS = 800;
 
 // ---------------------------------------------------------------------------
 // Pure helpers
 // ---------------------------------------------------------------------------
 
-/** Build a bounded "Relevant prior context" block from recalled artifacts, or
- *  undefined when there is nothing to inject. */
+/** Build a bounded "Relevant prior context" block from recalled artifacts under
+ *  the given char budget, or undefined when there is nothing to inject. */
 function buildRecallBlock(
   hits: readonly { content: string }[],
+  maxChars: number,
 ): string | undefined {
   if (hits.length === 0) return undefined;
   const parts: string[] = [];
@@ -1426,8 +1511,8 @@ function buildRecallBlock(
   for (const h of hits) {
     const c = h.content ?? '';
     if (c.length === 0) continue;
-    if (used + c.length > RECALL_MAX_CHARS) {
-      parts.push(c.slice(0, RECALL_MAX_CHARS - used));
+    if (used + c.length > maxChars) {
+      parts.push(c.slice(0, maxChars - used));
       break;
     }
     parts.push(c);
@@ -1461,8 +1546,29 @@ export function parseNextStep(content: string): NextStep | null {
       return { kind: 'done', result: obj.result };
     if (obj.kind === 'rewind' && typeof obj.reason === 'string')
       return { kind: 'rewind', reason: obj.reason };
-    if (obj.kind === 'next' && obj.step && typeof obj.step.name === 'string')
-      return { kind: 'next', step: obj.step };
+    if (
+      obj.kind === 'next' &&
+      obj.step &&
+      typeof obj.step.name === 'string' &&
+      typeof obj.step.instructions === 'string'
+    ) {
+      // Validate requires[] so a non-string / empty / oversized reference never
+      // reaches the semantic query / embedder; a malformed value is a parse
+      // failure that drives the existing parse-retry.
+      const req = validateRequires(
+        (obj.step as { requires?: unknown }).requires,
+      );
+      if (req === false) return null;
+      return {
+        kind: 'next',
+        step: {
+          name: obj.step.name,
+          instructions: obj.step.instructions,
+          ...(obj.step.type ? { type: obj.step.type } : {}),
+          ...(req ? { requires: req } : {}),
+        },
+      };
+    }
   } catch {
     // fall through
   }
@@ -1605,4 +1711,113 @@ async function collectApproved(
       out.push({ seq, content: resolved.approved });
   }
   return out;
+}
+
+/** The ONE run-scoped results-RAG recall primitive — used by BOTH the whole-step
+ *  recall AND the per-`requires` evidence. EMBEDDING-based similarity via the
+ *  backend's semantic query (NO homemade lexical scoring): the backend embeds the
+ *  query + ranks by vector similarity, with the `runId` filter applied PRE-cap.
+ *  Over-fetch `kPrime` (caller-supplied so the duplication bound is justified PER
+ *  KIND), then dedup and cap to `k`. Dedup: step-results (have `seq`) →
+ *  precedence-winner per seq; mcp-results → by `identityKey`. Embedding rank order
+ *  is preserved through the dedup. */
+export async function runScopedRecall(
+  rag: IKnowledgeRagHandle,
+  text: string,
+  k: number,
+  runId: string | undefined,
+  kPrime: number,
+  artifactType: readonly string[],
+): Promise<readonly KnowledgeEntry[]> {
+  const hits = await rag.query(text, {
+    k: kPrime,
+    filter: { runId, artifactType },
+  });
+  const bestStep = new Map<number, KnowledgeEntry>();
+  const bestMcp = new Map<string, KnowledgeEntry>();
+  for (const e of hits) {
+    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
+      const prev = bestStep.get(e.metadata.seq);
+      if (
+        !prev ||
+        rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)
+      )
+        bestStep.set(e.metadata.seq, e);
+    } else if (e.metadata.identityKey) {
+      bestMcp.set(e.metadata.identityKey, e);
+    }
+  }
+  // Walk hits in embedding-rank order; emit each (runId,seq) / identityKey once.
+  const out: KnowledgeEntry[] = [];
+  const seenSeq = new Set<number>();
+  const seenMcp = new Set<string>();
+  for (const e of hits) {
+    if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
+      if (seenSeq.has(e.metadata.seq)) continue;
+      seenSeq.add(e.metadata.seq);
+      // biome-ignore lint/style/noNonNullAssertion: bestStep has this seq (set above).
+      out.push(bestStep.get(e.metadata.seq)!);
+    } else if (e.metadata.identityKey) {
+      if (seenMcp.has(e.metadata.identityKey)) continue;
+      seenMcp.add(e.metadata.identityKey);
+      // biome-ignore lint/style/noNonNullAssertion: bestMcp has this key (set above).
+      out.push(bestMcp.get(e.metadata.identityKey)!);
+    } else {
+      out.push(e);
+    }
+    if (out.length >= k) break;
+  }
+  return out.slice(0, k);
+}
+
+/** Outcome-precedence rank for step-result dedup (ok/exists > partial > failed). */
+function rankStatus(s?: string): number {
+  return s === 'ok' || s === 'exists'
+    ? 3
+    : s === 'partial'
+      ? 2
+      : s === 'failed'
+        ? 1
+        : 0;
+}
+
+const MAX_EXTRACT_WINDOWS = 64;
+/** Return the ≤`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
+ *  (NOT ASCII lexical overlap). DIRECT single-pass ranking: every candidate is
+ *  scored on its own. The SCORED window IS the RETURNED body: candidates are
+ *  `body = maxChars - 2` chars (head+tail '…' reserved up front), so the
+ *  highest-scoring fragment is never truncated by the markers. Stride is 50%
+ *  overlap, widened to span the whole content within MAX_EXTRACT_WINDOWS windows
+ *  (point coverage for content ≤ MAX_EXTRACT_WINDOWS×maxChars; larger thins to
+ *  non-overlapping, best-effort). Embeds are SEQUENTIAL and BOUNDED to ≤
+ *  MAX_EXTRACT_WINDOWS + 1 — touches NO public embedder API (batch is a deferred
+ *  optimization). Result STRICTLY ≤ maxChars; tiny maxChars (< 3) → bare slice.
+ *  The `requires` ref is English (planner invariant) → a normal embedder suffices. */
+export async function relevantExtract(
+  content: string,
+  ref: string,
+  maxChars: number,
+  embedder: IEmbedder,
+): Promise<string> {
+  if (content.length <= maxChars) return content;
+  if (maxChars < 3) return content.slice(0, Math.max(0, maxChars));
+  const body = maxChars - 2;
+  const stride = Math.max(
+    Math.floor(body / 2),
+    Math.ceil(content.length / MAX_EXTRACT_WINDOWS),
+  );
+  const { vector: q } = await embedder.embed(ref);
+  let bestStart = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let s = 0; s < content.length; s += stride) {
+    const { vector } = await embedder.embed(content.slice(s, s + body));
+    const score = cosine(q, vector);
+    if (score > bestScore) {
+      bestScore = score;
+      bestStart = s;
+    }
+  }
+  const head = bestStart > 0 ? '…' : '';
+  const tail = bestStart + body < content.length ? '…' : '';
+  return head + content.slice(bestStart, bestStart + body) + tail;
 }

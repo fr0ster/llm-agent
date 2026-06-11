@@ -17,6 +17,7 @@ import {
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
+  parseNextStep,
 } from '../controller-coordinator-handler.js';
 import { hydrateBundle, persistBundle } from '../session-bundle.js';
 import type { ISubagentClient } from '../subagent-client.js';
@@ -586,11 +587,18 @@ describe('ControllerCoordinatorHandler', () => {
       },
     };
     const ragQuery: IKnowledgeRagHandle['query'] = async (_text, opts) => {
-      // Recall must restrict to artifact types (excludes 'controller-bundle').
-      assert.deepEqual(opts?.filter?.artifactType, [
-        'step-result',
-        'mcp-result',
-      ]);
+      // Recall must restrict to recall artifact types (excludes 'controller-bundle').
+      // The recall now issues SEPARATE per-kind queries (step-result, mcp-result);
+      // every query's filter must be a subset of the recall artifact types.
+      const types = (opts?.filter?.artifactType ?? []) as string[];
+      assert.ok(
+        types.length > 0 &&
+          types.every((t) => ['step-result', 'mcp-result'].includes(t)),
+        'recall restricts to recall artifact types',
+      );
+      // Surface the mcp-result artifact on the mcp-result recall (and the combined
+      // evidence query); the step-result query returns nothing here.
+      if (!types.includes('mcp-result')) return [];
       return [
         {
           content: 'INCLUDE zinc.',
@@ -1872,5 +1880,213 @@ describe('ControllerCoordinatorHandler', () => {
       new Date().toISOString(),
     );
     assert.equal(term?.kind, 'error');
+  });
+
+  it('empty clarify answer is rejected: stays suspended, re-asks', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    await persistBundle(backend, 'sess-1', {
+      goal: '',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'evaluating',
+      originalRequest: 'orig',
+      pending: {
+        kind: 'clarify',
+        question: 'which table?',
+        position: 'goal',
+        proposedTarget: 'T100',
+      },
+    } as never);
+    const h = harness({ evaluator: [], planner: [], executor: [] });
+    h.deps.backend = backend;
+    // Whitespace-only answer + the runId token (the answer's fingerprint differs).
+    const { ctx, captured } = fakeCtx({
+      textOrMessages: '   ',
+      options: { runId: 'R1' } as never,
+    });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.goal, '', 'empty answer did NOT become the goal');
+    assert.equal(b.pending?.kind, 'clarify', 'still suspended on clarify');
+    assert.ok(
+      captured.find((c) => c.ok && /which table/i.test(c.value.content)),
+      're-surfaced the question',
+    );
+  });
+
+  it('per-requires evidence is passed to the reviewer', async () => {
+    let seenEvidence: unknown;
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: {
+              name: 's1',
+              instructions: 'do',
+              requires: ['table T100', 'domain ZD'],
+            },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'd' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'r' }],
+      ragQuery: async (text) =>
+        /T100/.test(text)
+          ? [
+              {
+                content: 'T100 def',
+                metadata: {
+                  traceId: 't',
+                  turnId: 't',
+                  stepperId: 'controller',
+                  task: 'x',
+                  artifactType: 'mcp-result',
+                  createdAt: '2026-06-10T00:00:00.000Z',
+                },
+              },
+            ]
+          : [],
+    });
+    h.deps.reviewer = {
+      async review(_s, evidence) {
+        seenEvidence = evidence;
+        return {
+          kind: 'outcome',
+          outcome: { status: 'ok', approved: 'r', remainder: '', note: '' },
+        };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    // Evidence carries the closest artifact's CONTENT (topArtifact) for the reviewer
+    // to judge — not just a count-based hit.
+    assert.deepEqual(seenEvidence, [
+      { ref: 'table T100', hit: true, topArtifact: 'T100 def' },
+      { ref: 'domain ZD', hit: false, topArtifact: undefined },
+    ]);
+  });
+
+  it('a giant step-result does NOT starve mcp-result context (separate char budgets)', async () => {
+    const seenMessages: Message[][] = [];
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'analyze' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'd' }),
+        },
+      ],
+      executor: [],
+      // step-result query → one HUGE step artifact; mcp-result query → a distinct artifact.
+      ragQuery: async (_text, opts) => {
+        const kind = (opts?.filter?.artifactType as string[])?.[0];
+        const md = (t: string) => ({
+          traceId: 't',
+          turnId: 't',
+          stepperId: 'controller',
+          task: 'x',
+          artifactType: t,
+          createdAt: '2026-06-10T00:00:00.000Z',
+        });
+        if (kind === 'step-result')
+          return [
+            {
+              content: 'S'.repeat(50000),
+              metadata: {
+                ...md('step-result'),
+                seq: 0,
+                attempt: 0,
+                status: 'ok',
+              },
+            },
+          ];
+        if (kind === 'mcp-result')
+          return [
+            {
+              content: 'MCP-CONTEXT-XYZ',
+              metadata: { ...md('mcp-result'), identityKey: 'K1' },
+            },
+          ];
+        return [];
+      },
+    });
+    h.deps.executor = {
+      async send(messages: Message[]) {
+        seenMessages.push(messages);
+        return { kind: 'content', content: 'r' };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const joined = seenMessages[0]
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .join('\n');
+    assert.ok(
+      joined.includes('MCP-CONTEXT-XYZ'),
+      'mcp context survived despite a 50k-char step-result (separate char budgets)',
+    );
+  });
+});
+
+describe('parseNextStep requires validation', () => {
+  it('rejects a malformed requires (non-string / oversized) → null (parse-retry)', () => {
+    assert.equal(
+      parseNextStep(
+        JSON.stringify({
+          kind: 'next',
+          step: { name: 's', instructions: 'i', requires: [123, ''] },
+        }),
+      ),
+      null,
+    );
+    assert.equal(
+      parseNextStep(
+        JSON.stringify({
+          kind: 'next',
+          step: { name: 's', instructions: 'i', requires: ['x'.repeat(500)] },
+        }),
+      ),
+      null,
+    );
+  });
+  it('an empty requires becomes a step with no requires', () => {
+    const r = parseNextStep(
+      JSON.stringify({
+        kind: 'next',
+        step: { name: 's', instructions: 'i', requires: [] },
+      }),
+    );
+    assert.equal(r?.kind, 'next');
+    assert.equal(r?.kind === 'next' ? r.step.requires : 'x', undefined);
+  });
+  it('trims valid requires entries', () => {
+    const r = parseNextStep(
+      JSON.stringify({
+        kind: 'next',
+        step: { name: 's', instructions: 'i', requires: ['  table T100  '] },
+      }),
+    );
+    assert.deepEqual(r?.kind === 'next' ? r.step.requires : [], ['table T100']);
   });
 });
