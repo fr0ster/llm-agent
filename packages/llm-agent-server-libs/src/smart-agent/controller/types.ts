@@ -1,4 +1,4 @@
-import type { LlmUsage, StreamToolCall } from '@mcp-abap-adt/llm-agent';
+import type { LlmUsage, Message, StreamToolCall } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerLlmConfig } from '../smart-server.js';
 
 export type SubagentResult =
@@ -10,6 +10,34 @@ export interface Step {
   name: string;
   instructions: string;
   type?: string;
+  /** Plain-language references this step depends on (English — planner invariant).
+   *  Decided by the reviewer, not the doer; drives the per-reference evidence map. */
+  requires?: string[];
+}
+
+/** Contract cap on a step's dependency references. */
+export const MAX_REQUIRES = 8;
+/** A reference is a SHORT phrase, not a payload. */
+export const MAX_REQUIRE_CHARS = 200;
+/** Validate a step's optional `requires`. `undefined` for absent OR `[]` (a step
+ *  with no deps — normalize to undefined; downstream falls back to whole-step
+ *  recall); the trimmed array when valid; `false` (→ parse failure / retry) when
+ *  malformed: a non-array, > MAX_REQUIRES entries, a non-string entry, or an entry
+ *  empty / > MAX_REQUIRE_CHARS after trim (a huge reference must not reach the
+ *  semantic query / embedder). */
+export function validateRequires(v: unknown): string[] | undefined | false {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) return false;
+  if (v.length === 0) return undefined;
+  if (v.length > MAX_REQUIRES) return false;
+  const out: string[] = [];
+  for (const r of v) {
+    if (typeof r !== 'string') return false;
+    const t = r.trim();
+    if (t.length === 0 || t.length > MAX_REQUIRE_CHARS) return false;
+    out.push(t);
+  }
+  return out;
 }
 
 export type NextStep =
@@ -34,6 +62,36 @@ export type PendingMarker =
       proposedTarget?: string;
     };
 
+export type RunState = 'idle' | 'active' | 'suspended' | 'terminal';
+export type RunPhase = 'evaluating' | 'planning' | 'executing' | 'finalizing';
+
+/** Controller-level (non-reviewer) failure that drives a replan with no reviewable
+ *  artifact (e.g. the maxToolCalls budget). Persisted atomically with
+ *  inFlightStep.phase='awaiting-replan' so a crash before the replan keeps the
+ *  reason; fed to the planner, then cleared when the revised step is set. */
+export interface ControlFailure {
+  reason: 'maxToolCalls';
+  seq: number;
+}
+
+export interface InFlightStep {
+  seq: number;
+  step: Step;
+  /** Fresh-execution counter (first dispatch / revised replan step). Part of the
+   *  artifact identity (runId, seq, attempt). */
+  attempt: number;
+  /** Crash-replay counter of ONE attempt; reset on commit / fresh attempt. */
+  resumeCount: number;
+  phase: 'executing' | 'awaiting-replan';
+  /** Durable executor message log for this seq — the suspend/resume + crash-replay
+   *  rebuild source; external tool results are appended here. */
+  transcript: Message[];
+  /** Durable external round-trip count; ++ persisted BEFORE each surfaced call. */
+  toolCallCount: number;
+  /** Why a controller-level replan (no reviewable artifact) — fed to the planner. */
+  controlFailure?: ControlFailure;
+}
+
 export interface SessionBundle {
   goal: string;
   plannerPrivate: string;
@@ -41,10 +99,31 @@ export interface SessionBundle {
   plan?: Step[];
   planCursor?: number;
   pending?: PendingMarker;
-  /** Outcome of the last executed step, persisted so a resume after a FAILED step
-   *  makes the adaptive planner replan (rather than repeat the step). Set by
-   *  runStep.settle() together with the step result + cursor advance. */
-  lastOutcome?: 'advanced' | 'failed';
+  /** Last reviewed step outcome that drives the planner transition. */
+  lastOutcome?: 'advanced' | 'failed' | 'partial';
+
+  // -- Run scope (execution-result-control design) -----------------------
+  runId?: string;
+  runState?: RunState;
+  runPhase?: RunPhase;
+  /** The verbatim request that started this run (finalizer input + identity
+   *  fingerprint source). */
+  originalRequest?: string;
+  nextSeq?: number;
+  inFlightStep?: InFlightStep;
+  // In-flight markers: persisted true BEFORE the role's LLM call; cleared in the
+  // atomic decision/answer write. Recovery charges the matching resume counter
+  // ONLY when the marker proves a call was running.
+  evalCallInFlight?: boolean;
+  plannerCallInFlight?: boolean;
+  finalizeCallInFlight?: boolean;
+  evalResumeCount?: number;
+  plannerResumeCount?: number;
+  finalizeAttempt?: number;
+  /** Legacy (no-finalizer) answer: the planner's composed done.result, persisted
+   *  durably in the same write that enters `finalizing`, so a crash before the
+   *  terminal write recovers it (rather than emitting empty). Cleared by reset. */
+  legacyFinalAnswer?: string;
 }
 
 /** A controller subagent role: a standalone LLM config plus an OPTIONAL
@@ -65,6 +144,9 @@ export interface ControllerConfig {
     evaluator: ControllerSubagentConfig;
     planner: ControllerSubagentConfig;
     executor: ControllerSubagentConfig;
+    /** Optional; default to the planner's config when absent (no breaking change). */
+    reviewer?: ControllerSubagentConfig;
+    finalizer?: ControllerSubagentConfig;
   };
   targetState: {
     strategy: 'consumer-confirm' | 'semantic-distance' | 'auto';
@@ -77,7 +159,20 @@ export interface ControllerConfig {
     maxRetries: number;
     maxRewinds: number;
     maxToolCalls?: number;
+    /** Durable fresh-attempt cap per step (bounds the non-advancing replan loop). */
+    maxStepAttempts?: number;
+    /** Durable crash-replay caps (one per LLM-invoking phase). */
+    maxStepResumes?: number;
+    maxPlannerResumes?: number;
+    maxEvalResumes?: number;
+    maxFinalizeRetries?: number;
+    /** In-process re-ask budget for judge (reviewer) provider/malformed failures. */
+    maxReviewRetries?: number;
   };
+  /** Behaviour when the finalizer's retry budget is exhausted: 'error' → terminal
+   *  control error (default); 'best-effort' → compose from approved results with an
+   *  explicit incomplete marker. */
+  onFinalizeExhausted?: 'error' | 'best-effort';
 }
 
 export type PlannerKind = 'incremental' | 'adaptive';
@@ -89,7 +184,7 @@ export interface PlannerNextInput {
    *  call / after a rewind / on resume). The adaptive planner replans on 'failed';
    *  the incremental planner ignores it. Cursor advance on 'advanced' happens in
    *  commit(), not here. */
-  lastOutcome?: 'advanced' | 'failed';
+  lastOutcome?: 'advanced' | 'failed' | 'partial';
   /** True when re-asking after an unparsable reply (stern format reminder). */
   retrying: boolean;
   /** True on the first call of a turn that just resumed an EXTERNAL-tool result
@@ -106,5 +201,5 @@ export interface IControllerPlanner {
   /** Optional: record a just-finished step's outcome so the planner's durable
    *  bookkeeping (e.g. the adaptive cursor) is updated and can be persisted in the
    *  SAME write that follows. Incremental does not implement it (no-op). */
-  commit?(bundle: SessionBundle, outcome: 'advanced' | 'failed'): void;
+  commit?(bundle: SessionBundle, outcome: 'advanced' | 'failed' | 'partial'): void;
 }

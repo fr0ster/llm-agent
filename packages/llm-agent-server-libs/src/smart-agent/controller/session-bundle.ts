@@ -1,5 +1,5 @@
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
-import type { SessionBundle } from './types.js';
+import type { RunPhase, SessionBundle } from './types.js';
 
 const BUNDLE_ARTIFACT_TYPE = 'controller-bundle';
 
@@ -61,4 +61,30 @@ export async function hydrateBundle(
     }
   }
   return emptyBundle();
+}
+
+/** Atomic fresh-run reset: clears EVERY run-scoped field and starts in
+ *  `evaluating`. The caller mints + assigns a fresh `runId` and the new
+ *  `originalRequest`. The terminal store (a separate keyed TTL store) is NOT
+ *  touched here so a prior run's outcome stays replayable by its `runId`. */
+export function resetRun(bundle: SessionBundle, originalRequest: string): void {
+  bundle.goal = '';
+  bundle.plannerPrivate = '';
+  bundle.budgets = { stepsUsed: 0, rewindsUsed: 0 };
+  bundle.plan = undefined;
+  bundle.planCursor = undefined;
+  bundle.pending = undefined;
+  bundle.lastOutcome = undefined;
+  bundle.runState = 'active';
+  bundle.runPhase = 'evaluating' as RunPhase;
+  bundle.originalRequest = originalRequest;
+  bundle.nextSeq = 0;
+  bundle.inFlightStep = undefined;
+  bundle.evalCallInFlight = false;
+  bundle.plannerCallInFlight = false;
+  bundle.finalizeCallInFlight = false;
+  bundle.evalResumeCount = 0;
+  bundle.plannerResumeCount = 0;
+  bundle.finalizeAttempt = 0;
+  bundle.legacyFinalAnswer = undefined;
 }

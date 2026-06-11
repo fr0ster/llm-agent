@@ -1,11 +1,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import type {
-  ControllerConfig,
-  NextStep,
-  PendingMarker,
-  SessionBundle,
-  SubagentResult,
+import {
+  type ControllerConfig,
+  MAX_REQUIRE_CHARS,
+  MAX_REQUIRES,
+  type NextStep,
+  type PendingMarker,
+  type SessionBundle,
+  type SubagentResult,
+  validateRequires,
 } from '../types.js';
 
 describe('controller types', () => {
@@ -57,5 +60,28 @@ describe('controller types', () => {
     assert.equal(cfg.planner, 'adaptive');
     assert.equal(bundle.plan?.[0].name, 's1');
     assert.equal(bundle.planCursor, 0);
+  });
+});
+
+describe('validateRequires', () => {
+  it('undefined / [] → undefined (no deps)', () => {
+    assert.equal(validateRequires(undefined), undefined);
+    assert.equal(validateRequires([]), undefined);
+  });
+  it('trims valid string entries', () => {
+    assert.deepEqual(validateRequires(['  table T100  ', 'domain ZD']), [
+      'table T100',
+      'domain ZD',
+    ]);
+  });
+  it('malformed → false (non-string, empty, oversized entry, too many)', () => {
+    assert.equal(validateRequires([123]), false);
+    assert.equal(validateRequires(['']), false);
+    assert.equal(validateRequires(['x'.repeat(MAX_REQUIRE_CHARS + 1)]), false);
+    assert.equal(
+      validateRequires(Array.from({ length: MAX_REQUIRES + 1 }, () => 'r')),
+      false,
+    );
+    assert.equal(validateRequires('not-an-array'), false);
   });
 });
