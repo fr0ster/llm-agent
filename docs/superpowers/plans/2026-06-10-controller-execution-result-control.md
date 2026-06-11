@@ -3051,8 +3051,9 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 **Spec:** "evaluating phase" (needs-confirmation → suspended), "Clarify-resume semantics are deterministic" (empty answer rejected), "Dependency manifest & miss detection" (per-`requires` evidence map).
 
 **Files:**
-- Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`), `reviewer.ts` already consumes `Evidence`.
-- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch unit tests).
+- Modify: `controller/types.ts` (`Step` += optional `requires`), `controller-coordinator-handler.ts` (evidence map + empty-clarify + `export runScopedRecall`/`relevantExtract`), `reviewer.ts` already consumes `Evidence`.
+- Modify: `packages/llm-agent/src/resilience/circuit-breaker-embedder.ts` (capability-preserving factory — #1/plan-27) + its call sites.
+- Test: extend handler + reviewer tests; add `controller/__tests__/run-scoped-recall.test.ts` (direct dedup/order/over-fetch + `relevantExtract` batch/bounds) and a circuit-breaker capability-preservation test (batch-looking wrapper over a non-batch embedder → `isBatchEmbedder` false).
 
 - [ ] **Step 1: Add `requires` to `Step`**
 
@@ -3200,7 +3201,7 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
 ```
 
 Add the relevance-extract helper (near `runScopedRecall`), `const
-RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder, IEmbedderBatch } from
+RECALL_EVIDENCE_CHARS = 800;`, `import { type IEmbedder, isBatchEmbedder } from
 '@mcp-abap-adt/llm-agent';`, and `import { cosine } from
 '../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
 the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; export
@@ -3208,14 +3209,48 @@ the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; expor
 reference is English (the planner invariant extends to `requires`), so a normal
 (non-multilingual) embedder suffices:
 
+**Prerequisite — make `CircuitBreakerEmbedder` capability-preserving (#1/plan-27).**
+`embedAll` decides batch via `isBatchEmbedder` (structural `'embedBatch' in e`). The
+established `wrapEmbedder` pattern preserves that structurally (a non-batch inner
+yields a decorator WITHOUT `embedBatch`). But `CircuitBreakerEmbedder` is a single
+class that ALWAYS defines `embedBatch` and throws (`'Inner embedder does not support
+batch embedding'`, registering a circuit-breaker FAILURE) when the inner is
+non-batch — so over a non-batch embedder it reports `isBatchEmbedder === true` and
+`embedAll` would call it and crash. Refactor `packages/llm-agent/src/resilience/
+circuit-breaker-embedder.ts` to a capability-preserving FACTORY (mirroring
+`wrapEmbedder`): expose `embedBatch` ONLY when the inner is batch-capable.
+
+```ts
+export function makeCircuitBreakerEmbedder(inner: IEmbedder, breaker: CircuitBreaker): IEmbedder {
+  const embed = async (text: string, options?: CallOptions): Promise<IEmbedResult> => {
+    if (!breaker.isCallPermitted) throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
+    try { const r = await inner.embed(text, options); breaker.recordSuccess(); return r; }
+    catch (e) { breaker.recordFailure(); throw e; }
+  };
+  if (!isBatchEmbedder(inner)) return { embed }; // NO embedBatch → isBatchEmbedder === false
+  const innerBatch = inner;
+  const embedBatch = async (texts: string[], options?: CallOptions): Promise<IEmbedResult[]> => {
+    if (!breaker.isCallPermitted) throw new RagError('Embedder circuit breaker is open', 'CIRCUIT_OPEN');
+    try { const r = await innerBatch.embedBatch(texts, options); breaker.recordSuccess(); return r; }
+    catch (e) { breaker.recordFailure(); throw e; }
+  };
+  return { embed, embedBatch };
+}
+```
+Keep the class as a thin deprecated shim delegating to the factory, or update its
+call sites to `makeCircuitBreakerEmbedder`. Add a test: a batch-LOOKING wrapper over
+a NON-batch embedder is recognised as non-batch (`isBatchEmbedder` false) → `embedAll`
+uses the sequential path and does NOT throw / register a CB failure.
+
 ```ts
 const MAX_EXTRACT_WINDOWS = 64;
-/** Embed many texts in ONE batch when the embedder supports it (#2/plan-26), else
- *  fall back to SEQUENTIAL embeds (never an unbounded parallel burst — respect
- *  provider rate limits). Returns vectors aligned to `texts`. */
+/** Embed many texts in ONE batch when the embedder is STRUCTURALLY batch-capable
+ *  (#2/plan-26) — `isBatchEmbedder`, the same predicate wrapEmbedder/the CB factory
+ *  honour, so a non-batch inner never lands here (#1/plan-27). Else SEQUENTIAL
+ *  (never an unbounded parallel burst — respect provider rate limits). Vectors
+ *  align to `texts`. */
 async function embedAll(embedder: IEmbedder, texts: string[]): Promise<number[][]> {
-  const b = embedder as Partial<IEmbedderBatch>;
-  if (typeof b.embedBatch === 'function') return (await b.embedBatch(texts)).map((r) => r.vector);
+  if (isBatchEmbedder(embedder)) return (await embedder.embedBatch(texts)).map((r) => r.vector);
   const out: number[][] = [];
   for (const t of texts) out.push((await embedder.embed(t)).vector);
   return out;
@@ -3505,8 +3540,10 @@ duplicate fetches. The `step-result` write carries `runId/seq/attempt/status`
 
 - [ ] **Step 5: Run, verify it passes**
 
-Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts`
-Expected: PASS — empty-clarify + evidence tests + the existing clarify tests (a non-empty refinement still becomes the goal).
+This task edits the lower `@mcp-abap-adt/llm-agent` package (circuit-breaker-embedder),
+so **`npm run build` first** (tsx resolves the workspace import to `dist/`).
+Run: `npm run build && node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/run-scoped-recall.test.ts`
+Expected: build OK; PASS — empty-clarify + evidence + run-scoped-recall + relevantExtract (batch + scored==returned + point-coverage) + the existing clarify tests. Also run the circuit-breaker capability-preservation test.
 
 - [ ] **Step 6: Commit**
 
