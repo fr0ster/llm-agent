@@ -289,33 +289,126 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     }
 
     // -- Resume from a persisted pending marker -----------------------------
+    // Planner is constructed BEFORE the resume preamble: the artifact-first
+    // external-resume adopt below calls planner.commit() to keep the adaptive
+    // planCursor in lockstep with nextSeq. Stateless construction; the main loop
+    // reuses this same instance.
+    const planner = makePlanner(
+      deps.config.planner ?? 'incremental',
+      deps.planner,
+      deps.config.subagents.planner?.hint,
+    );
+
     if (bundle.pending?.kind === 'external-tool') {
       const { extId, toolName } = bundle.pending;
-      const result = ctx.externalResults?.get(extId);
-      if (result === undefined) {
-        // No result yet → re-surface the same external tool call and suspend.
-        this.surfaceToolCall(
-          ctx,
-          {
-            id: extId,
-            name: toolName,
-            arguments: (bundle.pending.args ?? {}) as Record<string, unknown>,
-          },
-          usageNow(),
+      const seq = bundle.inFlightStep?.seq;
+      const attempt = bundle.inFlightStep?.attempt;
+      // STAGE 1 — artifact-first: did THIS attempt already commit a result (e.g.
+      // a crash AFTER the step finished but BEFORE the bundle flip)? Adopt it and
+      // skip the re-call entirely.
+      if (
+        bundle.runId !== undefined &&
+        seq !== undefined &&
+        attempt !== undefined
+      ) {
+        const existing = await rag.list({
+          runId: bundle.runId,
+          seq,
+          attempt,
+          artifactType: 'step-result',
+        });
+        const resolved = resolveByPrecedence(
+          existing.map((e) => ({
+            status: (e.metadata.status ?? 'failed') as Outcome['status'],
+            approved: e.content,
+            remainder: e.metadata.remainder ?? '',
+            note: e.metadata.note ?? '',
+          })),
         );
-        return true;
+        if (resolved) {
+          bundle.pending = undefined;
+          bundle.runState = 'active';
+          // Same commit side effects as settle(), incl. planner.commit() so the
+          // adaptive planCursor advances with nextSeq.
+          const mapped = mapOutcome(resolved.status);
+          bundle.lastOutcome = mapped;
+          planner.commit?.(bundle, mapped);
+          recordStepControl(bundle, {
+            seq,
+            name: bundle.inFlightStep?.step.name ?? 'step',
+            status: resolved.status,
+            note: resolved.note,
+            remainder: resolved.remainder,
+          });
+          if (resolved.status === 'failed') {
+            if (bundle.inFlightStep)
+              bundle.inFlightStep.phase = 'awaiting-replan';
+          } else {
+            bundle.nextSeq = (bundle.nextSeq ?? 0) + 1;
+            bundle.inFlightStep = undefined;
+            bundle.runPhase = 'planning';
+          }
+          await persistBundle(deps.backend, sessionId, bundle);
+        }
       }
-      // Tool result arrived — record it and let the loop continue planning.
-      await writeArtifact(rag, {
-        ...meta,
-        artifactType: 'mcp-result',
-        toolName,
-        task: bundle.pending.position,
-        content: result,
-      });
-      bundle.plannerPrivate += `\n[external tool ${toolName} result] ${result}`;
-      bundle.pending = undefined;
-      resumedExternal = true;
+      // STAGE 2 — no adopted artifact: route by the external result.
+      if (bundle.pending?.kind === 'external-tool') {
+        const result = ctx.externalResults?.get(extId);
+        if (result === undefined) {
+          // No result yet → re-surface the same external tool call and suspend.
+          this.surfaceToolCall(
+            ctx,
+            {
+              id: extId,
+              name: toolName,
+              arguments: (bundle.pending.args ?? {}) as Record<string, unknown>,
+            },
+            usageNow(),
+          );
+          return true;
+        }
+        await writeArtifact(rag, {
+          ...meta,
+          artifactType: 'mcp-result',
+          toolName,
+          task: bundle.pending.position,
+          content: result,
+        });
+        if (bundle.inFlightStep) {
+          // External CONTINUATION: inject the tool result into the durable
+          // transcript so the loop RE-RUNS the in-flight step (the executor
+          // continues from its own tool call). Bounded by toolCallCount, NOT a
+          // crash-replay — externalContinuation tells block (A) not to charge
+          // resumeCount when it re-runs the step this invocation.
+          bundle.inFlightStep.transcript.push(
+            {
+              role: 'assistant',
+              content: null,
+              tool_calls: [
+                {
+                  id: extId,
+                  type: 'function',
+                  function: {
+                    name: toolName,
+                    arguments: JSON.stringify(bundle.pending.args ?? {}),
+                  },
+                },
+              ],
+            },
+            { role: 'tool', tool_call_id: extId, content: result },
+          );
+          bundle.pending = undefined;
+          bundle.runState = 'active';
+          externalContinuation = true;
+        } else {
+          // Legacy path (no inFlightStep — e.g. a seeded adaptive bundle): feed the
+          // result via plannerPrivate and let the planner replan.
+          bundle.plannerPrivate += `\n[external tool ${toolName} result] ${result}`;
+          bundle.pending = undefined;
+          resumedExternal = true;
+        }
+        await persistBundle(deps.backend, sessionId, bundle);
+      }
     } else if (bundle.pending?.kind === 'clarify') {
       // The incoming prompt is the human's answer to the clarify question.
       // For a goal-confirmation clarify (position 'goal'), commit the goal so we
@@ -398,11 +491,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // it to plan fetch steps ("the executor picks the exact one").
     const cfg = deps.config.budgets;
     let planParseRetries = 0;
-    const planner = makePlanner(
-      deps.config.planner ?? 'incremental',
-      deps.planner,
-      deps.config.subagents.planner?.hint,
-    );
     // bundle.lastOutcome is the SINGLE source of truth for the last step's
     // outcome — durable, so a resume after a FAILED step replans instead of
     // repeating it. runStep.settle() sets it; the adaptive replan branch clears it
@@ -732,6 +820,23 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       messages.push({ role: 'user', content: recallBlock });
     }
 
+    // Durable transcript = static prefix (system/user/recall) + the dynamic
+    // executor/tool turns. On a resume/continuation the dynamic tail is rebuilt
+    // from inFlightStep.transcript so the executor sees the FULL exchange it had
+    // (prior tool rounds + the injected external result), not just a fragment.
+    const staticLen = messages.length;
+    if (inFlight && inFlight.transcript.length > 0) {
+      messages.push(...inFlight.transcript);
+    }
+    // Persist the dynamic tail after every executor/tool exchange so a suspend or
+    // crash never rebuilds with a shorter conversation than the executor saw.
+    const syncTranscript = async (): Promise<void> => {
+      if (inFlight) {
+        inFlight.transcript = messages.slice(staticLen);
+        await persistBundle(deps.backend, sessionId, bundle);
+      }
+    };
+
     // Evidence for the reviewer: whether the step's recall surfaced anything. The
     // per-reference manifest (step.requires) is Task 16; for now one whole-step entry.
     const evidence = [{ ref: recallText, hit: recalled.length > 0 }];
@@ -830,6 +935,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             role: 'user',
             content: `The previous attempt failed: ${res.error}. Retry the step.`,
           });
+          await syncTranscript();
           continue;
         }
         // Retries exhausted — feed the error back as the step result so the
@@ -850,6 +956,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             content:
               'The previous attempt produced an empty tool call. Retry the step.',
           });
+          await syncTranscript();
           continue;
         }
         bundle.budgets.stepsUsed++;
@@ -861,7 +968,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       const args = call.arguments;
 
       if (isExternalTool(name)) {
+        // External round-trips share the SAME durable toolCallCount/maxToolCalls
+        // bound as internal calls; check BEFORE surfacing so an external tool
+        // cannot exceed the cap. Exhausted → control-failed replan at the same seq.
+        if (inFlight && inFlight.toolCallCount + 1 > maxToolCalls) {
+          bundle.budgets.stepsUsed++;
+          bundle.plannerPrivate += `\n[seq ${inFlight.seq} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
+          inFlight.phase = 'awaiting-replan';
+          inFlight.controlFailure = {
+            reason: 'maxToolCalls',
+            seq: inFlight.seq,
+          };
+          return settle('failed');
+        }
+        // Sync the executor turns SO FAR into the durable transcript before we
+        // suspend (the resume injection appends the external assistant/tool pair).
+        await syncTranscript();
         const extId = externalToolCallId(name, args);
+        if (inFlight) inFlight.toolCallCount += 1;
+        // The new marker REPLACES any prior pending (a fresh extId).
         bundle.pending = {
           kind: 'external-tool',
           extId,
@@ -869,6 +994,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           args,
           position: step.name,
         };
+        bundle.runState = 'suspended';
         await persistBundle(deps.backend, sessionId, bundle);
         this.surfaceToolCall(
           ctx,
@@ -889,6 +1015,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             role: 'user',
             content: `Tool "${name}" is not available for this step. Use only the tools provided to you.`,
           });
+          await syncTranscript();
           continue;
         }
         bundle.budgets.stepsUsed++;
@@ -945,6 +1072,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         tool_call_id: call.id,
         content: result,
       });
+      // The executor saw these turns → make them durable before the next round.
+      await syncTranscript();
     }
   }
 

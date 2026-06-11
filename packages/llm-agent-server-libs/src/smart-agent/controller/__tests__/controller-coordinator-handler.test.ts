@@ -1142,7 +1142,7 @@ describe('ControllerCoordinatorHandler', () => {
     assert.ok(!seen.some((c) => c.includes('fetch A')), 's1 was NOT repeated');
   });
 
-  it('adaptive + external tool: suspend keeps cursor; resume replans with the result visible to the planner', async () => {
+  it('adaptive + external tool: resume injects the result into the step transcript; the executor continues', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
@@ -1171,24 +1171,29 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(b.planCursor, 0, 'cursor unmoved on suspend');
     assert.ok(cap1.find((c) => c.ok && c.value.finishReason === 'tool_calls'));
 
-    // Leg 2 — resume with the result. Capture the planner replan prompt to PROVE
-    // it sees the result (via plannerPrivate). Replan returns empty → finalize.
-    const seenPlanner: string[] = [];
-    let pCall = 0;
+    // Leg 2 — resume with the result. The unified design injects the tool result
+    // into the in-flight step's transcript and RE-RUNS the step (the executor
+    // continues from its own tool call); the PLANNER is not consulted for the
+    // continuation. The executor must therefore see TOOL RESULT in its messages;
+    // once the step commits, the (1-step) plan is exhausted → finalize.
+    const execSawResult: boolean[] = [];
     const h2 = harness({
       evaluator: [],
-      planner: [],
+      planner: [{ kind: 'content', content: 'FINAL' }], // finalize after the step
       executor: [],
       config: cfg,
     });
     h2.deps.backend = backend;
-    h2.deps.planner = {
+    h2.deps.executor = {
       async send(messages: Message[]) {
-        const u = messages.find((m) => m.role === 'user');
-        if (typeof u?.content === 'string') seenPlanner.push(u.content);
-        return pCall++ === 0
-          ? { kind: 'content', content: JSON.stringify({ plan: [] }) } // nothing left
-          : { kind: 'content', content: 'FINAL' }; // finalize
+        execSawResult.push(
+          messages.some(
+            (m) =>
+              typeof m.content === 'string' &&
+              m.content.includes('TOOL RESULT'),
+          ),
+        );
+        return { kind: 'content', content: 'continued with the result' };
       },
     };
     const { ctx: c2, captured: cap2 } = fakeCtx({
@@ -1204,8 +1209,8 @@ describe('ControllerCoordinatorHandler', () => {
     b = await hydrateBundle(backend, 'sess-1');
     assert.equal(b.pending, undefined);
     assert.ok(
-      seenPlanner.some((c) => c.includes('TOOL RESULT')),
-      'the planner replan saw the external tool result (via plannerPrivate)',
+      execSawResult.some(Boolean),
+      'the executor continued the step with the external tool result in its transcript',
     );
     assert.ok(
       cap2.find(
@@ -1217,36 +1222,132 @@ describe('ControllerCoordinatorHandler', () => {
     );
   });
 
-  it('adaptive external resume: malformed replan retries (resumedExternal survives) then replans', async () => {
+  it('external resume: an already-committed artifact at (runId,seq,attempt) is adopted (no re-call)', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
-    // Leg 1 — suspend on an external tool.
-    const h1 = harness({
-      evaluator: [{ kind: 'content', content: 'Goal' }],
+    // Bundle suspended on ExtTool at seq 0 attempt 0, AND a committed ok artifact
+    // already exists for that identity (a crash after the step finished, before the
+    // bundle flip). Resume must ADOPT it, not re-run the step or re-call the tool.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 0,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 1,
+      },
+      pending: {
+        kind: 'external-tool',
+        extId,
+        toolName: 'ExtTool',
+        args: { q: 'x' },
+        position: 's1',
+      },
+    } as never);
+    // A rag whose list() actually filters the written entries (the default stub
+    // returns [], which would make the artifact-first adopt vacuously fall through).
+    const written: KnowledgeEntry[] = [];
+    const rag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.seq === undefined || e.metadata.seq === filter.seq) &&
+            (filter.attempt === undefined ||
+              e.metadata.attempt === filter.attempt) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    await rag.write({
+      content: 'DONE',
+      metadata: {
+        traceId: 't',
+        turnId: 't',
+        stepperId: 'controller',
+        task: 's1',
+        artifactType: 'step-result',
+        createdAt: '2026-06-10T00:00:00.000Z',
+        runId: 'R1',
+        seq: 0,
+        attempt: 0,
+        status: 'ok',
+      },
+    });
+    const h = harness({
+      evaluator: [],
       planner: [
         {
           kind: 'content',
-          content: JSON.stringify({
-            plan: [{ name: 's1', instructions: 'do' }],
-          }),
+          content: JSON.stringify({ kind: 'done', result: 'fin' }),
         },
       ],
-      executor: [toolCall('ExtTool', { q: 'x' })],
-      config: cfg,
+      executor: [],
     });
-    h1.deps.backend = backend;
-    await new ControllerCoordinatorHandler(h1.deps).execute(
-      fakeCtx({
-        externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
-      }).ctx,
-      {},
-      undefined,
-    );
+    h.deps.backend = backend;
+    h.deps.knowledgeRagFor = () => rag;
+    // Prompt fingerprint matches the seeded originalRequest so the turn classifies
+    // as a resume (not a fresh reset).
+    const { ctx } = fakeCtx({
+      textOrMessages: 'x',
+      externalResults: new Map([[extId, 'LATE RESULT']]),
+    });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.pending, undefined, 'pending cleared (adopted, not re-run)');
+    assert.equal(b.nextSeq, 1, 'advanced past the adopted seq');
     assert.equal(
-      (await hydrateBundle(backend, 'sess-1')).pending?.kind,
-      'external-tool',
+      (h.deps.executor as { calls: number }).calls,
+      0,
+      'executor was NOT re-run — the committed artifact was adopted',
     );
+  });
+
+  it('legacy external resume (no inFlightStep): feeds plannerPrivate + replan, parse-retry preserves resumedExternal', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const extId = externalToolCallId('ExtTool', { q: 'x' });
+    // Seed a SUSPENDED adaptive bundle WITHOUT an inFlightStep — the retained
+    // legacy external-resume branch: the result is fed via plannerPrivate and the
+    // planner replans (the unified continue-the-step path requires an inFlightStep).
+    await persistBundle(backend, 'sess-1', {
+      goal: 'Goal',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'planning',
+      originalRequest: 'do the thing',
+      nextSeq: 0,
+      plan: [{ name: 's1', instructions: 'do' }],
+      planCursor: 0,
+      pending: {
+        kind: 'external-tool',
+        extId,
+        toolName: 'ExtTool',
+        args: { q: 'x' },
+        position: 's1',
+      },
+    } as never);
 
     // Leg 2 — first replan reply malformed → parse-retry (resumedExternal must
     // survive) → second replan valid {plan:[]} → finalize. Capture replan prompts
