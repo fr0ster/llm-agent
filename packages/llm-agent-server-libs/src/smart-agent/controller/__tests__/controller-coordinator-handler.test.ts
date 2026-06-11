@@ -1775,6 +1775,29 @@ describe('ControllerCoordinatorHandler', () => {
       ],
       executor: [{ kind: 'content', content: 'STEP RESULT' }],
     });
+    // A rag whose list() actually filters written entries, so collectApproved
+    // surfaces the step's committed result and we verify it flows to the finalizer
+    // (the default stub list() returns [] → the content path would be untested).
+    const written: KnowledgeEntry[] = [];
+    const listRag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    h.deps.knowledgeRagFor = () => listRag;
     h.deps.finalizer = {
       async finalize(_g, _r, approved) {
         return `COMPOSED(${approved.map((a) => a.content).join(',')})`;
@@ -1788,9 +1811,9 @@ describe('ControllerCoordinatorHandler', () => {
         (c) =>
           c.ok &&
           c.value.finishReason === 'stop' &&
-          /COMPOSED\(/.test(c.value.content),
+          c.value.content === 'COMPOSED(STEP RESULT)',
       ),
-      'finalizer composed the answer from approved results',
+      'finalizer composed the answer from the collected approved results',
     );
     const bundle = await hydrateBundle(h.backend, 'sess-1');
     assert.equal(bundle.runState, 'terminal');

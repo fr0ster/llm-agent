@@ -1146,6 +1146,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     );
     bundle.pending = undefined;
     bundle.inFlightStep = undefined;
+    bundle.finalizeCallInFlight = false;
     bundle.runState = 'terminal';
     await persistBundle(this.deps.backend, sessionId, bundle);
     this.surfaceFinal(ctx, `Error: ${error}`, usage);
