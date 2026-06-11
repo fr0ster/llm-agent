@@ -28,8 +28,9 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
   knowledgeRagFor: (
     sessionId: string,
   ) => IKnowledgeRagHandle | Promise<IKnowledgeRagHandle>;
-  /** Required ONLY for distance-based target-state strategies
-   *  (semantic-distance/auto); unused by consumer-confirm. */
+  /** ALWAYS required: results-RAG recall ranks by embedding similarity in every
+   *  persistence mode (and distance target-state, if used). `build()` throws when
+   *  absent — optional here only so the dep object can be assembled incrementally. */
   embedder?: IEmbedder;
   /** Semantic top-K tool selection over the vectorized MCP catalog. */
   selectTools: (
@@ -53,9 +54,14 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
  * ```ts
  * import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
  * const { handler } = await new ControllerFactory().build(config, {
- *   // role is typed as string by the base deps — resolve it explicitly.
+ *   // role is typed as string by the base deps — resolve it explicitly. reviewer/
+ *   // finalizer are only requested when their subagent block is present; map them
+ *   // to config.subagents.reviewer ?? planner (likewise finalizer) for a 5-role config.
  *   makeRoleLlm: (role) =>
- *     makeLlm(config.subagents[role as 'evaluator' | 'planner' | 'executor']),
+ *     makeLlm(
+ *       config.subagents[role as keyof typeof config.subagents] ??
+ *         config.subagents.planner,
+ *     ),
  *   callMcp, backend, knowledgeRagFor, embedder, selectTools,
  * });
  * const handle = await builder.withStepperCoordinator(handler).build();
