@@ -3,6 +3,7 @@ import {
   InMemoryKnowledgeBackend,
   SmartAgentBuilder,
 } from '@mcp-abap-adt/llm-agent-libs';
+import { makeKnowledgeSemanticIndex } from '../../smart-agent/embedder-knowledge-index.js';
 import type {
   IControllerServerPipelineContext,
   IServerPipelineContext,
@@ -50,11 +51,15 @@ const stubEmbedder: IEmbedder = {
 
 /** Controller-flavored ctx: extends fakeServerCtx with the fields the
  *  ControllerCoordinatorHandler needs (backend, embedder). External tools are
- *  routed per-request via PipelineContext.externalTools, not this ctx. */
+ *  routed per-request via PipelineContext.externalTools, not this ctx. The backend
+ *  carries an embedder-backed semantic index so it is semanticRecallCapable (the
+ *  controller factory requires it — production wires this via buildKnowledgeBackend). */
 export function fakeControllerServerCtx(): IControllerServerPipelineContext {
   return {
     ...fakeServerCtx(),
-    stepperKnowledgeBackend: new InMemoryKnowledgeBackend(),
+    stepperKnowledgeBackend: new InMemoryKnowledgeBackend(
+      makeKnowledgeSemanticIndex(stubEmbedder),
+    ),
     embedder: stubEmbedder,
   };
 }
