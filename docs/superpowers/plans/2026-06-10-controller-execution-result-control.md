@@ -310,45 +310,60 @@ downgrade):
   //    retries rather than caching a rejection forever.
   private readonly built = new Set<string>();
   private readonly chain = new Map<string, Promise<unknown>>();
+  // EVERY index-touching op for a sid runs through run(): build, the whole put
+  // (build+append+upsert), the whole query (build+semantic.query), and delete are
+  // serialized, so none interleaves (#1/#2/#3/plan-16). The chain entry is dropped
+  // once it drains (no queued ops) so the Map cannot grow unbounded (#4/plan-16).
   private run<T>(sid: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.chain.get(sid) ?? Promise.resolve();
-    const next = prev.then(fn, fn);                 // run regardless of prior outcome
-    this.chain.set(sid, next.then(() => {}, () => {})); // keep chain alive, swallow result/err
+    const next = prev.then(fn, fn);                   // run regardless of prior outcome
+    const tail = next.then(() => {}, () => {});       // keep chain alive, swallow result/err
+    this.chain.set(sid, tail);
+    void tail.then(() => { if (this.chain.get(sid) === tail) this.chain.delete(sid); });
     return next;
   }
   private async build(sid: string): Promise<void> {
     if (!this.semantic || this.built.has(sid)) return;
-    this.semantic.deleteSession(sid);                 // clear any partial state → idempotent
+    this.semantic.deleteSession(sid);                 // clear any partial state → idempotent (#2)
     for (const e of await this.scan(sid)) await this.semantic.upsert(sid, e);
-    this.built.add(sid);                              // mark built ONLY on success (#1)
+    this.built.add(sid);                              // mark built ONLY on success (#1/plan-15)
   }
-  async put(sid: string, entry: KnowledgeEntry): Promise<void> {
+  private async append(sid: string, entry: KnowledgeEntry): Promise<void> {
     const f = this.file(sid);
     await mkdir(dirname(f), { recursive: true });
-    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8'); // durable write (always)
-    if (this.semantic) {
-      await this.run(sid, async () => {
-        await this.build(sid);                        // rebuild-from-durable if not built
-        try {
-          await this.semantic!.upsert(sid, entry);    // index the new entry once
-        } catch (e) {
-          this.built.delete(sid);                     // dirty → next build re-syncs from JSONL (#2)
-          throw e;
-        }
-      });
-    }
+    await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8');
+  }
+  async put(sid: string, entry: KnowledgeEntry): Promise<void> {
+    if (!this.semantic) { await this.append(sid, entry); return; }
+    // The ENTIRE put is serialized (#1/#2/plan-16): build FIRST (indexes the durable
+    // JSONL as it is BEFORE this append → the new entry is never double-counted by a
+    // rebuild scan), THEN append, THEN upsert the new entry exactly once.
+    await this.run(sid, async () => {
+      await this.build(sid);
+      await this.append(sid, entry);
+      try {
+        await this.semantic!.upsert(sid, entry);
+      } catch (e) {
+        this.built.delete(sid);                       // dirty → next build re-syncs from JSONL (#2/plan-15)
+        throw e;
+      }
+    });
   }
   async semanticQuery(sid: string, text: string, k?: number, filter?: KnowledgeFilter) {
-    if (this.semantic) {
-      await this.run(sid, () => this.build(sid));     // serialized rebuild (single-flight via chain)
-      return this.semantic.query(sid, text, k, filter); // filter PRE-cap, similarity-ranked
+    if (!this.semantic) {
+      let all = await this.scan(sid);
+      if (filter) all = all.filter((e) => matchesFilter(e.metadata, filter));
+      return k ? all.slice(-k) : all;
     }
-    let all = await this.scan(sid);
-    if (filter) all = all.filter((e) => matchesFilter(e.metadata, filter));
-    return k ? all.slice(-k) : all;
+    // build + query in ONE run() so the query reads a CONSISTENT snapshot — a
+    // concurrent put/delete cannot mutate the index between build and query (#3/plan-16).
+    return this.run(sid, async () => {
+      await this.build(sid);
+      return this.semantic!.query(sid, text, k, filter); // filter PRE-cap, similarity-ranked
+    });
   }
   async deleteSession(sid: string): Promise<void> {
-    await this.run(sid, async () => {                 // serialized with build/put (#3)
+    await this.run(sid, async () => {                 // serialized with build/put/query (#3)
       await rm(dirname(this.file(sid)), { recursive: true, force: true });
       this.semantic?.deleteSession(sid);
       this.built.delete(sid);                         // reused sid rebuilds from the (now empty) JSONL
