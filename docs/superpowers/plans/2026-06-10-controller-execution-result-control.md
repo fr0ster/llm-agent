@@ -31,7 +31,7 @@
 - `packages/llm-agent-libs/src/rag/knowledge-rag.ts` — `matches()` honours the new filter fields (and is exported); `KnowledgeRag.query` + `InMemoryKnowledgeBackend.semanticQuery` apply the filter pre-cap.
 - `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` — the production backend: `semanticQuery` filter param + injected semantic-index filter passthrough (the runtime recall path).
 - `packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts` (new) — embedder-backed semantic index (filter pre-cap + cosine rank) so results-RAG recall ranks by meaning on the production backend.
-- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `buildKnowledgeBackend` attaches the index from the resolved embedder; fail-loud when a `logDir` controller has no embedder.
+- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — `buildKnowledgeBackend` attaches the index from the resolved embedder for ANY pipeline (never throws); the controller's embedder requirement is enforced in ControllerFactory.
 - `controller/types.ts` — extend `SessionBundle` (runId/runState/runPhase/nextSeq/inFlightStep/markers/counters), `ControllerConfig.subagents` (+reviewer/finalizer), `ControllerConfig.budgets` (+resume/eval/finalize caps), `PlannerNextInput.lastOutcome`/`IControllerPlanner.commit` (+`partial`).
 - `controller/session-bundle.ts` — `emptyBundle()` carries the new run-scoped fields; add `resetRun()`.
 - `controller/controller-coordinator-handler.ts` — write-after-review, durable counters, three-stage recovery, attempt-keyed external resume, unified finalizer, evaluator confirmation transition.
@@ -155,7 +155,7 @@ git commit -m "feat(controller): Outcome type + precedence resolver (ok/exists>p
 - Modify: `packages/llm-agent-libs/src/rag/knowledge-rag.ts` (the `matches()` function — export it; `KnowledgeRag.query`; `InMemoryKnowledgeBackend.semanticQuery`; the `KnowledgeBackend` interface)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/jsonl-knowledge-backend.ts` (the production backend — `semanticQuery` filter param + injected semantic-index filter passthrough)
 - Create: `packages/llm-agent-server-libs/src/smart-agent/embedder-knowledge-index.ts` (embedder-backed `{upsert, query}` semantic index — filter pre-cap + cosine rank)
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`buildKnowledgeBackend` wires the index from the resolved embedder; fail-loud for a production controller with no embedder)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`buildKnowledgeBackend` wires the index from the resolved embedder for any pipeline — never throws; the controller embedder requirement lives in ControllerFactory)
 - Test: `packages/llm-agent-libs/src/rag/__tests__/knowledge-rag-filter.test.ts` (new) + `packages/llm-agent-server-libs/src/smart-agent/__tests__/embedder-knowledge-index.test.ts` (new — embedding ranking + pre-cap filtering)
 
 - [ ] **Step 1: Write the failing test**
@@ -391,8 +391,11 @@ downgrade):
 > EMBEDDING-based: it calls `rag.query` → `semanticQuery` with the `runId` filter
 > applied pre-cap, so ranking is by vector similarity. This REQUIRES the knowledge
 > backend to be embedding-backed (a semantic index); Step 3c wires one from the
-> resolved embedder and fails loud if a production (`logDir`) controller has no
-> embedder — recall must not silently degrade to recency.
+> resolved embedder whenever an embedder is present (ANY pipeline). The embedder
+> requirement for the controller is NOT enforced here — `buildKnowledgeBackend`
+> never throws (it runs for flat/stepper too); it is enforced at the
+> **ControllerFactory boundary** for every persistence mode (Task 17), so recall
+> never silently degrades to recency.
 
 `KnowledgeRag.query` passes the filter through (the backend applied it pre-cap; a
 defensive post-filter is harmless):
@@ -469,8 +472,10 @@ The injected `semantic` index interface therefore is
 
 Wire it in `smart-server.buildKnowledgeBackend`, attaching the index to BOTH
 backends when an embedder is resolved (so in-memory deployments WITH an embedder
-also rank by similarity, #4/plan-12 — not insertion order); fail loud only for a
-production `logDir` controller with no embedder:
+also rank by similarity, #4/plan-12 — not insertion order). `buildKnowledgeBackend`
+does NOT throw (#3/plan-13, plan-25) — it runs unconditionally at startup for ANY
+pipeline (flat/stepper without an embedder is valid); the controller's embedder
+requirement is enforced at the ControllerFactory boundary (Task 17), not here:
 
 ```ts
   private buildKnowledgeBackend(): void {
@@ -3204,36 +3209,20 @@ reference is English (the planner invariant extends to `requires`), so a normal
 (non-multilingual) embedder suffices:
 
 ```ts
-const MAX_EXTRACT_WINDOWS = 16;
-/** Absolute start (in the ORIGINAL content, via `offset`) of the best ≈maxChars
- *  fragment of `text` by cosine to `q`. RECURSIVE hierarchical refinement with
- *  guaranteed FULL coverage at every level (#1/plan-24): each level scans windows
- *  of `winSize = max(maxChars, ceil(len/MAX))` at 50% overlap (stride = winSize/2),
- *  so EVERY position — and every ≤winSize fragment WHOLE — is in some window (no
- *  gap, no boundary split). It then descends into the best window (which shrinks by
- *  ~MAX each level) until winSize == maxChars. Depth = ceil(log_MAX(len/maxChars)),
- *  so ≤ ~2·MAX·depth embeds — bounded even for very large artifacts. */
-async function locateBest(text: string, q: number[], embedder: IEmbedder, maxChars: number, offset: number): Promise<number> {
-  if (text.length <= maxChars) return offset;
-  const winSize = Math.max(maxChars, Math.ceil(text.length / MAX_EXTRACT_WINDOWS));
-  const stride = Math.max(1, Math.floor(winSize / 2)); // 50% overlap → any ≤winSize fragment whole in a window
-  let bestStart = 0;
-  let bestScore = Number.NEGATIVE_INFINITY;
-  for (let s = 0; s < text.length; s += stride) {
-    const { vector } = await embedder.embed(text.slice(s, s + winSize));
-    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
-    if (score > bestScore) { bestScore = score; bestStart = s; }
-  }
-  if (winSize <= maxChars) return offset + bestStart; // finest level reached
-  return locateBest(text.slice(bestStart, bestStart + winSize), q, embedder, maxChars, offset + bestStart);
-}
+const MAX_EXTRACT_WINDOWS = 64;
 /** Return the ≈`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
- *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). Uses the
- *  full-coverage recursive `locateBest` so even content ≫ MAX × maxChars has no
- *  unscanned gap (#1/plan-24). Result is STRICTLY ≤ maxChars including markers
+ *  (#1/plan-21) — NOT ASCII lexical overlap (fails for synonyms). DIRECT single-pass
+ *  ranking of fixed `maxChars` windows (#1/plan-25): every candidate IS a maxChars
+ *  window scored on its own, so there is NO hierarchical greedy step that could
+ *  discard the right branch by diluting a small fragment inside a big coarse window.
+ *  Stride is 50% overlap, WIDENED only if needed to span the whole content within
+ *  MAX_EXTRACT_WINDOWS embeds. Coverage contract is POINT coverage (#2/plan-25):
+ *  every position lies in some window for content ≤ MAX_EXTRACT_WINDOWS×maxChars
+ *  (the common case — ≈12.8k chars at maxChars=200); for larger content the windows
+ *  no longer overlap and a fragment straddling two windows may be split (best-effort
+ *  locator, not fragment-whole). Result is STRICTLY ≤ maxChars incl. markers
  *  (#2/plan-20); a tiny maxChars (< 3) returns a bare slice (#2/plan-21). The
- *  `requires` ref is English (planner invariant), so a normal (non-multilingual)
- *  embedder suffices. Async. */
+ *  `requires` ref is English (planner invariant) → a normal embedder suffices. */
 export async function relevantExtract(
   content: string,
   ref: string,
@@ -3243,7 +3232,14 @@ export async function relevantExtract(
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
   const { vector: q } = await embedder.embed(ref);
-  const bestStart = await locateBest(content, q, embedder, maxChars, 0);
+  const stride = Math.max(Math.floor(maxChars / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
+  let bestStart = 0;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  for (let s = 0; s < content.length; s += stride) {
+    const { vector } = await embedder.embed(content.slice(s, s + maxChars)); // every candidate is a maxChars window
+    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
+    if (score > bestScore) { bestScore = score; bestStart = s; }
+  }
   const head = bestStart > 0 ? '…' : '';
   const bodyLen = Math.max(0, maxChars - head.length - 1); // reserve room for a tail '…'
   const slice = content.slice(bestStart, bestStart + bodyLen);
@@ -3407,14 +3403,14 @@ describe('relevantExtract', () => {
   // MARK-window) = 1 and cosine(ref, plain-window) = 0 — the EMBEDDING (not lexical
   // overlap) picks the MARK window (#1/plan-23).
   const embedder = { embed: async (t: string) => ({ vector: /MARK|reference/.test(t) ? [1, 0] : [0, 1] }) } as never;
-  it('recursive coverage surfaces a LATE fragment even past MAX^2 * maxChars (#1/#2/plan-24)', async () => {
+  it('direct scan surfaces a LATE fragment within the point-coverage range (#1/#2/plan-25)', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
-    // 60,000 > MAX_EXTRACT_WINDOWS^2 * maxChars (16*16*200 = 51,200): a fixed
-    // TWO-phase scan would leave a second-phase gap here; the recursive
-    // refinement still surfaces the late MARK fragment.
-    const content = `${'x'.repeat(60000)} MARK relevant fragment`;
+    // 10,000 ≤ MAX_EXTRACT_WINDOWS × maxChars (64 × 200 = 12,800) → windows overlap,
+    // full point coverage; the LATE MARK fragment is ranked directly (no greedy
+    // hierarchy that could dilute it away).
+    const content = `${'x'.repeat(10000)} MARK relevant fragment`;
     const out = await relevantExtract(content, 'the target reference', 200, embedder);
-    assert.ok(out.includes('MARK'), 'recursive refinement surfaced the late fragment (full coverage, no gap)');
+    assert.ok(out.includes('MARK'), 'direct maxChars-window ranking surfaced the late fragment');
     assert.ok(out.length <= 200, 'STRICTLY bounded to maxChars including ellipses (#2/plan-20)');
   });
   it('returns a bare slice (no double markers) for a tiny maxChars (#2/plan-21)', async () => {
