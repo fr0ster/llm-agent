@@ -649,9 +649,9 @@ git commit -m "feat(rag): metadata/filter + semanticQuery filter param + embedde
 `runId`, `runState ∈ {idle,active,suspended,terminal}`, `runPhase ∈ {evaluating,planning,executing,finalizing}`, `nextSeq`, `inFlightStep`, the in-flight markers (`evalCallInFlight`/`plannerCallInFlight`/`finalizeCallInFlight`), the resume counters (`evalResumeCount`/`plannerResumeCount`/`finalizeAttempt`), and `originalRequest`.
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts` (durable run-scope fields + the `requires` contract: `Step.requires`, `MAX_REQUIRES`, `MAX_REQUIRE_CHARS`, `validateRequires`)
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/session-bundle.ts`
-- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts` (extend existing)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts` (extend) + `__tests__/types.test.ts` (validateRequires boundaries)
 
 - [ ] **Step 1: Add the types to `types.ts`**
 
@@ -842,16 +842,54 @@ it('resetRun clears every run-scoped field and starts in evaluating', () => {
 });
 ```
 
+- [ ] **Step 5b: Add the `requires` contract to `types.ts` (early, so both parsers share it)**
+
+`requires` is consumed by `parsePlan` (Task 9, planner.ts) AND `parseNextStep`
+(Task 16, handler) — and the constants are advertised in the Task 9 planner prompt —
+so the contract MUST live in an early shared module, NOT be defined in Task 16
+(#1/#2/plan-32: avoids the ordering bug where Task 9 would reference a Task-16
+symbol). Add to `types.ts`:
+
+```ts
+export const MAX_REQUIRES = 8;        // contract cap on a step's dependency references
+export const MAX_REQUIRE_CHARS = 200; // a reference is a SHORT phrase, not a payload
+/** Validate a step's optional `requires`. `undefined` for absent OR `[]` (a step
+ *  with no deps — normalize to undefined; downstream falls back to whole-step
+ *  recall); the trimmed array when valid; `false` (→ parse failure/retry) when
+ *  malformed: a non-array, > MAX_REQUIRES entries, a non-string entry, or an entry
+ *  empty / > MAX_REQUIRE_CHARS after trim. */
+export function validateRequires(v: unknown): string[] | undefined | false {
+  if (v === undefined) return undefined;
+  if (!Array.isArray(v)) return false;
+  if (v.length === 0) return undefined;
+  if (v.length > MAX_REQUIRES) return false;
+  const out: string[] = [];
+  for (const r of v) {
+    if (typeof r !== 'string') return false;
+    const t = r.trim();
+    if (t.length === 0 || t.length > MAX_REQUIRE_CHARS) return false;
+    out.push(t);
+  }
+  return out;
+}
+```
+
+`Step` gains `requires?: string[]` (the same field Task 16 documents). Add a
+**`types.test.ts`** test for `validateRequires` boundaries: `undefined`/`[]` →
+`undefined`; `['  table T100  ']` → `['table T100']`; `[123]`, `['']`,
+`['x'.repeat(MAX_REQUIRE_CHARS + 1)]`, and an array of length `MAX_REQUIRES + 1` →
+`false`.
+
 - [ ] **Step 6: Build (types live in llm-agent-server-libs only — no lower-package change) and run**
 
-Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts`
+Run: `node --import tsx/esm --test --test-reporter=spec packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/types.test.ts`
 Expected: PASS. The pre-existing controller handler still compiles because every new field is optional and `lastOutcome` only widened its union.
 
 - [ ] **Step 7: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/session-bundle.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts
-git commit -m "feat(controller): durable run-scope fields on SessionBundle + resetRun()"
+git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts packages/llm-agent-server-libs/src/smart-agent/controller/session-bundle.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/session-bundle.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/types.test.ts
+git commit -m "feat(controller): durable run-scope fields + requires contract (MAX_REQUIRES/validateRequires) + resetRun()"
 ```
 
 ---
@@ -1804,33 +1842,54 @@ string concatenated into each prompt, so there is ONE source and the test can
 assert it verbatim):
 
 ```ts
+// Built from the validation constants (#2/plan-32) so the prompt cap can NEVER
+// drift from what the parser enforces (no duplicated literals). MAX_REQUIRES /
+// MAX_REQUIRE_CHARS are imported from `./types.js` (Task 3, Step 5b).
 export const ENGLISH_INSTRUCTIONS_RULE =
   ' Step `instructions` AND `requires` references MUST be written in English — ' +
   "always, regardless of the language of the user's request. This is a hard " +
   'contract: the executor selects tools by semantic match against an ' +
   'English-translated catalog, and the reviewer matches `requires` against stored ' +
   'artifacts — so non-English instructions/requires break both. ' +
-  // The cap below MUST equal MAX_REQUIRES (#3/plan-31) so a valid-by-intent plan is
-  // never rejected by the parser for exceeding the (undocumented-to-the-model) limit.
-  'List at MOST 8 `requires`, each a SHORT reference (a few words, ≤ 200 chars) — ' +
-  'not pasted content. (The user-facing answer is composed separately in the ' +
-  "user's language.)";
+  `List at MOST ${MAX_REQUIRES} \`requires\`, each a SHORT reference (a few words, ` +
+  `≤ ${MAX_REQUIRE_CHARS} chars) — not pasted content. (The user-facing answer is ` +
+  "composed separately in the user's language.)";
 ```
 
-Append `ENGLISH_INSTRUCTIONS_RULE` to each of the four prompt constants.
+Append `ENGLISH_INSTRUCTIONS_RULE` to each of the four prompt constants. Import the
+contract constants at the top of `planner.ts`:
+`import { MAX_REQUIRES, MAX_REQUIRE_CHARS, validateRequires } from './types.js';`
+
+**Validate `requires` in `parsePlan` (#1/plan-30)** — the same shared validator, so
+`parsePlan` and `parseNextStep` are consistent. For each parsed step:
+
+```ts
+    const req = validateRequires((raw as { requires?: unknown }).requires);
+    if (req === false) return null; // malformed requires → format failure → handler re-asks
+    steps.push({ name: s.name, instructions: s.instructions, ...(s.type ? { type: s.type } : {}), ...(req ? { requires: req } : {}) });
+```
 
 **Contract test** (`planner.test.ts`): export the four prompt constants and assert
-each one includes `ENGLISH_INSTRUCTIONS_RULE` (so a future edit can't silently drop
-the invariant from any prompt):
+each includes `ENGLISH_INSTRUCTIONS_RULE` (a future edit can't silently drop it from
+any prompt), AND that the rule's cap matches the constants (#2/plan-32 — no drift):
 
 ```ts
 import { CREATE_PLAN_SYSTEM, ENGLISH_INSTRUCTIONS_RULE, EXTERNAL_RESULT_REPLAN_SYSTEM, PLANNER_SYSTEM, REPLAN_SYSTEM } from '../planner.js';
+import { MAX_REQUIRES, MAX_REQUIRE_CHARS } from '../types.js';
 it('every planner/replan prompt carries the English-instructions invariant', () => {
   for (const p of [PLANNER_SYSTEM, CREATE_PLAN_SYSTEM, REPLAN_SYSTEM, EXTERNAL_RESULT_REPLAN_SYSTEM]) {
-    assert.ok(p.includes(ENGLISH_INSTRUCTIONS_RULE), 'prompt is missing the English-instructions invariant');
+    assert.ok(p.includes(ENGLISH_INSTRUCTIONS_RULE), 'prompt missing the English-instructions invariant');
   }
 });
+it('the prompt cap is built from the validation constants (no drift)', () => {
+  assert.ok(ENGLISH_INSTRUCTIONS_RULE.includes(String(MAX_REQUIRES)) && ENGLISH_INSTRUCTIONS_RULE.includes(String(MAX_REQUIRE_CHARS)));
+});
 ```
+
+Also add a `parsePlan` test (via `AdaptivePlanner.next` returning `null`, since
+`parsePlan` is private): a create-plan reply whose step has `requires: [123]` (or an
+entry > `MAX_REQUIRE_CHARS`, or > `MAX_REQUIRES` entries) is rejected → re-ask;
+`requires: ['  table T100  ']` is carried trimmed; `requires: []` → no `requires`.
 
 The finalizer composes the user-facing answer in the user's language —
 `FINALIZE_SYSTEM` (Task 8) carries "Answer in the LANGUAGE of the user's request".
@@ -3064,68 +3123,14 @@ git commit -m "feat(controller): unified finalizer after done + store-first term
 > capability-preserving embedder API; it is OUT OF SCOPE here to avoid a breaking
 > change to the resilience surface.
 
-- [ ] **Step 1: Add `requires` to `Step`**
+- [ ] **Step 1: Validate `requires` in `parseNextStep`**
 
-In `types.ts`, extend `Step`:
-
-```ts
-export interface Step {
-  name: string;
-  instructions: string;
-  type?: string;
-  /** Plain-language references this step depends on (decided by the reviewer,
-   *  not the doer). Drives the per-reference evidence map. */
-  requires?: string[];
-}
-```
-
-The planner emits `name`/`instructions`; `parsePlan`/`parseNextStep` carry `type`
-through. `requires` must be **validated**, NOT carried blind (#1/plan-30): the
-values are fed verbatim into the semantic query + embedder, so a non-string /
-empty / oversized array would corrupt recall. Add a shared validator and use it in
-BOTH parsers; a malformed `requires` is a parse failure → the existing parse-retry
-re-asks the planner.
-
-Add to `types.ts` (or a small shared util imported by both parsers):
-
-```ts
-export const MAX_REQUIRES = 8;        // contract cap on a step's dependency references
-export const MAX_REQUIRE_CHARS = 200; // a reference is a SHORT phrase, not a payload
-/** Validate a step's optional `requires`. Returns:
- *  - `undefined` — absent OR an EMPTY array (a step with no deps; #2/plan-31:
- *    normalize `[]` → undefined rather than waste a parse-retry, since downstream
- *    treats absent/empty identically — falls back to whole-step recall);
- *  - the cleaned (trimmed) array when valid;
- *  - `false` (→ parse failure / retry) when malformed: a non-array, > MAX_REQUIRES
- *    entries, a non-string entry, or an entry that is empty / > MAX_REQUIRE_CHARS
- *    AFTER trim (#1/plan-31 — a huge reference must not reach the semantic query /
- *    embedder). */
-export function validateRequires(v: unknown): string[] | undefined | false {
-  if (v === undefined) return undefined;
-  if (!Array.isArray(v)) return false;
-  if (v.length === 0) return undefined;        // no deps → undefined, not malformed (#2/plan-31)
-  if (v.length > MAX_REQUIRES) return false;
-  const out: string[] = [];
-  for (const r of v) {
-    if (typeof r !== 'string') return false;
-    const t = r.trim();
-    if (t.length === 0 || t.length > MAX_REQUIRE_CHARS) return false; // size bound (#1/plan-31)
-    out.push(t);
-  }
-  return out;
-}
-```
-
-In `planner.ts` `parsePlan`, for each step:
-
-```ts
-    const req = validateRequires((raw as { requires?: unknown }).requires);
-    if (req === false) return null; // malformed requires → format failure (handler retries)
-    steps.push({ name: s.name, instructions: s.instructions, ...(s.type ? { type: s.type } : {}), ...(req ? { requires: req } : {}) });
-```
-
-In `controller-coordinator-handler.ts` `parseNextStep`, the `next` branch must NOT
-return `obj.step` as-is — validate `requires` there too:
+`Step.requires`, `MAX_REQUIRES`, `MAX_REQUIRE_CHARS`, and `validateRequires` are
+already defined in `types.ts` (Task 3, Step 5b) — both parsers share them. Here,
+fix `parseNextStep` (handler): the `next` branch must NOT return `obj.step` as-is
+(#1/plan-30) — validate `requires` so a non-string / empty / oversized reference
+never reaches the semantic query / embedder; a malformed value is a parse failure
+that drives the existing parse-retry:
 
 ```ts
     if (obj.kind === 'next' && obj.step && typeof obj.step.name === 'string' && typeof obj.step.instructions === 'string') {
@@ -3135,12 +3140,11 @@ return `obj.step` as-is — validate `requires` there too:
     }
 ```
 
-Add parser/`validateRequires` tests (boundary, #1/#2/plan-31): malformed →
-`parsePlan`/`parseNextStep` return `null` (→ retry) for `requires: [123, '']`,
-length > `MAX_REQUIRES`, or an entry of length > `MAX_REQUIRE_CHARS` (e.g.
-`'x'.repeat(MAX_REQUIRE_CHARS + 1)`); `requires: []` normalizes to NO `requires`
-(undefined — NOT a retry); `requires: ['  table T100  ']` is carried through
-trimmed to `'table T100'`.
+(`parsePlan` in `planner.ts` applies the SAME `validateRequires` — that edit is in
+Task 9.) Add a `parseNextStep` test: a `next` step with `requires: [123, '']`,
+length > `MAX_REQUIRES`, or an entry > `MAX_REQUIRE_CHARS` → `null` (retry);
+`requires: []` → a step with no `requires`; `requires: ['  table T100  ']` →
+`['table T100']` (trimmed).
 
 - [ ] **Step 2: Write the failing tests**
 
