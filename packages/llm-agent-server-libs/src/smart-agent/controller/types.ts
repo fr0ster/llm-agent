@@ -1,4 +1,8 @@
-import type { LlmUsage, Message, StreamToolCall } from '@mcp-abap-adt/llm-agent';
+import type {
+  LlmUsage,
+  Message,
+  StreamToolCall,
+} from '@mcp-abap-adt/llm-agent';
 import type { SmartServerLlmConfig } from '../smart-server.js';
 
 export type SubagentResult =
@@ -201,5 +205,8 @@ export interface IControllerPlanner {
   /** Optional: record a just-finished step's outcome so the planner's durable
    *  bookkeeping (e.g. the adaptive cursor) is updated and can be persisted in the
    *  SAME write that follows. Incremental does not implement it (no-op). */
-  commit?(bundle: SessionBundle, outcome: 'advanced' | 'failed' | 'partial'): void;
+  commit?(
+    bundle: SessionBundle,
+    outcome: 'advanced' | 'failed' | 'partial',
+  ): void;
 }

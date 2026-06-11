@@ -13,7 +13,9 @@ const VOCAB: Record<string, number[]> = {
   gamma: [0, 0, 1],
 };
 const stub = {
-  embed: async (t: string) => ({ vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] }),
+  embed: async (t: string) => ({
+    vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0],
+  }),
 } as never;
 const meta = (over: object) => ({
   traceId: 't',
@@ -31,22 +33,43 @@ describe('makeKnowledgeSemanticIndex', () => {
     await idx.upsert('s', { content: 'gamma', metadata: meta({ runId: 'R' }) });
     await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
     const hits = await idx.query('s', 'alpha', 1);
-    assert.equal(hits[0].content, 'alpha', 'most similar wins regardless of insertion order');
+    assert.equal(
+      hits[0].content,
+      'alpha',
+      'most similar wins regardless of insertion order',
+    );
   });
   it('applies the runId filter PRE-cap (foreign-run hits never crowd the cap)', async () => {
     const idx = makeKnowledgeSemanticIndex(stub);
-    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'OTHER' }) });
-    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'OTHER' }) });
-    await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'TARGET' }) });
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ runId: 'OTHER' }),
+    });
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ runId: 'OTHER' }),
+    });
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ runId: 'TARGET' }),
+    });
     const hits = await idx.query('s', 'alpha', 1, { runId: 'TARGET' });
     assert.equal(hits.length, 1);
-    assert.equal(hits[0].metadata.runId, 'TARGET', 'filter applied before the k=1 cap');
+    assert.equal(
+      hits[0].metadata.runId,
+      'TARGET',
+      'filter applied before the k=1 cap',
+    );
   });
   it('deleteSession drops the indexed vectors (no stale hits on session-id reuse)', async () => {
     const idx = makeKnowledgeSemanticIndex(stub);
     await idx.upsert('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
     idx.deleteSession('s');
-    assert.equal((await idx.query('s', 'alpha', 5)).length, 0, 'deleted session returns nothing');
+    assert.equal(
+      (await idx.query('s', 'alpha', 5)).length,
+      0,
+      'deleted session returns nothing',
+    );
   });
 });
 
@@ -62,19 +85,32 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
 
   it('rehydrates the index from the durable JSONL after a restart', async () => {
     await withDir(async (dir) => {
-      const b1 = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const b1 = new JsonlKnowledgeBackend(
+        dir,
+        makeKnowledgeSemanticIndex(stub),
+      );
       await b1.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
       // Restart: a NEW backend + NEW empty index over the same logDir.
-      const b2 = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const b2 = new JsonlKnowledgeBackend(
+        dir,
+        makeKnowledgeSemanticIndex(stub),
+      );
       const hits = await b2.semanticQuery('s', 'alpha', 5, { runId: 'R' });
-      assert.equal(hits.length, 1, 'index lazily rehydrated from the durable JSONL');
+      assert.equal(
+        hits.length,
+        1,
+        'index lazily rehydrated from the durable JSONL',
+      );
       assert.equal(hits[0].content, 'alpha');
     });
   });
 
   it('write-before-first-query does NOT duplicate the entry in the index', async () => {
     await withDir(async (dir) => {
-      const b = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const b = new JsonlKnowledgeBackend(
+        dir,
+        makeKnowledgeSemanticIndex(stub),
+      );
       await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
       const hits = await b.semanticQuery('s', 'alpha', 10, { runId: 'R' });
       assert.equal(hits.length, 1, 'entry indexed exactly once');
@@ -83,9 +119,15 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
 
   it('concurrent first queries rehydrate exactly once (single-flight)', async () => {
     await withDir(async (dir) => {
-      const seed = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const seed = new JsonlKnowledgeBackend(
+        dir,
+        makeKnowledgeSemanticIndex(stub),
+      );
       await seed.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) });
-      const b = new JsonlKnowledgeBackend(dir, makeKnowledgeSemanticIndex(stub));
+      const b = new JsonlKnowledgeBackend(
+        dir,
+        makeKnowledgeSemanticIndex(stub),
+      );
       const [a, c] = await Promise.all([
         b.semanticQuery('s', 'alpha', 10, { runId: 'R' }),
         b.semanticQuery('s', 'alpha', 10, { runId: 'R' }),
@@ -109,7 +151,11 @@ describe('JsonlKnowledgeBackend index lifecycle', () => {
       const b = new JsonlKnowledgeBackend(dir, failing as never);
       await b.put('s', { content: 'alpha', metadata: meta({ runId: 'R' }) }); // must NOT throw
       const entries = await b.scan('s');
-      assert.equal(entries.length, 1, 'durable JSONL has the entry exactly once');
+      assert.equal(
+        entries.length,
+        1,
+        'durable JSONL has the entry exactly once',
+      );
     });
   });
 });

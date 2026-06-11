@@ -3,7 +3,9 @@ import { describe, it } from 'node:test';
 import type { KnowledgeEntryMetadata } from '@mcp-abap-adt/llm-agent';
 import { InMemoryKnowledgeBackend, KnowledgeRag } from '../knowledge-rag.js';
 
-const meta = (over: Partial<KnowledgeEntryMetadata>): KnowledgeEntryMetadata => ({
+const meta = (
+  over: Partial<KnowledgeEntryMetadata>,
+): KnowledgeEntryMetadata => ({
   traceId: 't',
   turnId: 't',
   stepperId: 'controller',

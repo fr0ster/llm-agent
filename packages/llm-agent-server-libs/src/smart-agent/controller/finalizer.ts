@@ -82,10 +82,15 @@ export function reduceToBudget(
   const SEP = '\n\n';
   const ordered = results.slice().sort((a, b) => a.seq - b.seq);
   if (ordered.length === 0) return '';
-  const caps = new Map<number, number>(ordered.map((r) => [r.seq, perResultCap]));
+  const caps = new Map<number, number>(
+    ordered.map((r) => [r.seq, perResultCap]),
+  );
   const chunk = (r: ApprovedResult) => {
     const cap = caps.get(r.seq) ?? perResultCap;
-    const c = r.content.length > cap ? r.content.slice(0, cap) + TRUNC_MARKER : r.content;
+    const c =
+      r.content.length > cap
+        ? r.content.slice(0, cap) + TRUNC_MARKER
+        : r.content;
     return `[#${r.seq}] ${c}`;
   };
   const render = () => ordered.map(chunk).join(SEP);
@@ -103,7 +108,10 @@ export function reduceToBudget(
       }
     }
     if (target === undefined) break; // all at floor
-    const next = Math.max(FLOOR, Math.floor((caps.get(target) ?? perResultCap) / 2));
+    const next = Math.max(
+      FLOOR,
+      Math.floor((caps.get(target) ?? perResultCap) / 2),
+    );
     caps.set(target, next);
     log?.(`finalizer overflow: reduced result #${target} cap → ${next} chars`);
     body = render();
@@ -112,10 +120,14 @@ export function reduceToBudget(
   if (body.length > budget) {
     const n = ordered.length;
     const overheadPerResult =
-      `[#${ordered[ordered.length - 1].seq}] `.length + TRUNC_MARKER.length + SEP.length;
+      `[#${ordered[ordered.length - 1].seq}] `.length +
+      TRUNC_MARKER.length +
+      SEP.length;
     const share = Math.max(0, Math.floor(budget / n) - overheadPerResult);
     for (const r of ordered) caps.set(r.seq, share);
-    log?.(`finalizer overflow: even per-result share ${share} chars across ${n} results (none dropped)`);
+    log?.(
+      `finalizer overflow: even per-result share ${share} chars across ${n} results (none dropped)`,
+    );
     body = render();
   }
   // Pass 3: budget too small for N compact extracts → a MANIFEST naming as many
@@ -130,7 +142,9 @@ export function reduceToBudget(
       return `[results: ${ids.slice(0, count).join(' ')}${suffix}]`;
     };
     while (shown > 0 && build(shown).length > budget) shown--;
-    log?.(`finalizer overflow: manifest lists ${shown}/${n} ids, ${n - shown} explicitly counted (budget ${budget})`);
+    log?.(
+      `finalizer overflow: manifest lists ${shown}/${n} ids, ${n - shown} explicitly counted (budget ${budget})`,
+    );
     const manifest = build(shown);
     body = manifest.length <= budget ? manifest : manifest.slice(0, budget);
   }
@@ -145,7 +159,9 @@ export class LlmFinalizer implements IFinalizer {
     // Validate the budget at construction so reduceToBudget can assume
     // budget >= MIN_BODY_BUDGET and NEVER clamp up past the configured value.
     if (policy.budget < MIN_BODY_BUDGET) {
-      throw new Error(`finalizer budget ${policy.budget} < MIN_BODY_BUDGET ${MIN_BODY_BUDGET}`);
+      throw new Error(
+        `finalizer budget ${policy.budget} < MIN_BODY_BUDGET ${MIN_BODY_BUDGET}`,
+      );
     }
   }
 
@@ -163,7 +179,10 @@ export class LlmFinalizer implements IFinalizer {
     );
     const res = await this.client.send([
       { role: 'system', content: appendHint(FINALIZE_SYSTEM, opts.hint) },
-      { role: 'user', content: `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}` },
+      {
+        role: 'user',
+        content: `Goal: ${goal}\nRequest: ${request}\nResults:\n${body}`,
+      },
     ]);
     opts.logUsage?.('finalizer', res.usage);
     if (res.kind !== 'content') {

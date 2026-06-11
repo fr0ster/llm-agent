@@ -13,7 +13,12 @@ describe('LlmReviewer', () => {
   it('parses a well-formed verdict into an Outcome', async () => {
     const r = new LlmReviewer(
       client(
-        JSON.stringify({ status: 'ok', approved: 'RESULT', remainder: '', note: 'good' }),
+        JSON.stringify({
+          status: 'ok',
+          approved: 'RESULT',
+          remainder: '',
+          note: 'good',
+        }),
       ),
     );
     const res = await r.review(
@@ -30,25 +35,47 @@ describe('LlmReviewer', () => {
   it('a well-formed FAILED verdict is a real step outcome (NOT a judge failure)', async () => {
     const r = new LlmReviewer(
       client(
-        JSON.stringify({ status: 'failed', approved: '', remainder: 'all', note: 'not done' }),
+        JSON.stringify({
+          status: 'failed',
+          approved: '',
+          remainder: 'all',
+          note: 'not done',
+        }),
       ),
     );
-    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    const res = await r.review(
+      { name: 's1', instructions: 'do' },
+      [],
+      'RESULT',
+      {},
+    );
     assert.equal(res.kind, 'outcome');
     assert.equal(res.kind === 'outcome' && res.outcome.status, 'failed');
   });
 
   it('status:ok with empty approved is a JUDGE FAILURE (re-ask, not a step failure)', async () => {
     const r = new LlmReviewer(
-      client(JSON.stringify({ status: 'ok', approved: '', remainder: '', note: '' })),
+      client(
+        JSON.stringify({ status: 'ok', approved: '', remainder: '', note: '' }),
+      ),
     );
-    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    const res = await r.review(
+      { name: 's1', instructions: 'do' },
+      [],
+      'RESULT',
+      {},
+    );
     assert.equal(res.kind, 'judge-failure');
   });
 
   it('an unparsable reply is a JUDGE FAILURE', async () => {
     const r = new LlmReviewer(client('not json at all'));
-    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    const res = await r.review(
+      { name: 's1', instructions: 'do' },
+      [],
+      'RESULT',
+      {},
+    );
     assert.equal(res.kind, 'judge-failure');
   });
 
@@ -59,8 +86,16 @@ describe('LlmReviewer', () => {
       },
     };
     const r = new LlmReviewer(errClient);
-    const res = await r.review({ name: 's1', instructions: 'do' }, [], 'RESULT', {});
+    const res = await r.review(
+      { name: 's1', instructions: 'do' },
+      [],
+      'RESULT',
+      {},
+    );
     assert.equal(res.kind, 'judge-failure');
-    assert.match(res.kind === 'judge-failure' ? res.reason : '', /boom|review/i);
+    assert.match(
+      res.kind === 'judge-failure' ? res.reason : '',
+      /boom|review/i,
+    );
   });
 });

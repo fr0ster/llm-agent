@@ -104,7 +104,8 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
       });
     }
     let all = await this.scan(sid);
-    if (filter) all = all.filter((e) => matchesKnowledgeFilter(e.metadata, filter));
+    if (filter)
+      all = all.filter((e) => matchesKnowledgeFilter(e.metadata, filter));
     return k ? all.slice(-k) : all;
   }
 

@@ -477,7 +477,12 @@ describe('AdaptivePlanner partial transition', () => {
       planCursor: 1,
       lastOutcome: 'partial',
     };
-    await p.next({ bundle: b, prompt: 'p', lastOutcome: 'partial', retrying: false });
+    await p.next({
+      bundle: b,
+      prompt: 'p',
+      lastOutcome: 'partial',
+      retrying: false,
+    });
     assert.ok(sawReplan, 'partial triggered a REVISED replan');
   });
 });
@@ -495,7 +500,11 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
     const p = new AdaptivePlanner(
       createPlanWith({ name: 's1', instructions: 'do', requires: [123] }),
     );
-    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    const r = await p.next({
+      bundle: freshBundle(),
+      prompt: 'p',
+      retrying: false,
+    });
     assert.equal(r, null);
   });
   it('rejects an oversized requires entry', async () => {
@@ -506,14 +515,26 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
         requires: ['x'.repeat(MAX_REQUIRE_CHARS + 1)],
       }),
     );
-    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    const r = await p.next({
+      bundle: freshBundle(),
+      prompt: 'p',
+      retrying: false,
+    });
     assert.equal(r, null);
   });
   it('carries a valid requires through trimmed', async () => {
     const p = new AdaptivePlanner(
-      createPlanWith({ name: 's1', instructions: 'do', requires: ['  table T100  '] }),
+      createPlanWith({
+        name: 's1',
+        instructions: 'do',
+        requires: ['  table T100  '],
+      }),
     );
-    const r = await p.next({ bundle: freshBundle(), prompt: 'p', retrying: false });
+    const r = await p.next({
+      bundle: freshBundle(),
+      prompt: 'p',
+      retrying: false,
+    });
     assert.equal(r?.kind, 'next');
     assert.deepEqual(r?.kind === 'next' && r.step.requires, ['table T100']);
   });

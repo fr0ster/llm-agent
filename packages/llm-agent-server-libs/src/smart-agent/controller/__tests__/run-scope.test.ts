@@ -12,10 +12,16 @@ import type { SessionBundle } from '../types.js';
 
 describe('fingerprintRequest', () => {
   it('is stable across whitespace/transport noise', () => {
-    assert.equal(fingerprintRequest('  read T100  '), fingerprintRequest('read T100'));
+    assert.equal(
+      fingerprintRequest('  read T100  '),
+      fingerprintRequest('read T100'),
+    );
   });
   it('differs for different content', () => {
-    assert.notEqual(fingerprintRequest('read T100'), fingerprintRequest('read T200'));
+    assert.notEqual(
+      fingerprintRequest('read T100'),
+      fingerprintRequest('read T200'),
+    );
   });
 });
 
@@ -23,14 +29,38 @@ describe('terminal store', () => {
   it('writes and reads a discriminated terminal outcome by runId', async () => {
     const be = new InMemoryKnowledgeBackend();
     const out: TerminalOutcome = { kind: 'success', answer: 'ANSWER' };
-    await writeTerminal(be, 'sess', 'R1', out, 1000, '2026-06-10T00:00:00.000Z');
-    const got = await readTerminal(be, 'sess', 'R1', '2026-06-10T00:00:00.500Z');
+    await writeTerminal(
+      be,
+      'sess',
+      'R1',
+      out,
+      1000,
+      '2026-06-10T00:00:00.000Z',
+    );
+    const got = await readTerminal(
+      be,
+      'sess',
+      'R1',
+      '2026-06-10T00:00:00.500Z',
+    );
     assert.deepEqual(got, out);
   });
   it('returns undefined once expired (TTL elapsed)', async () => {
     const be = new InMemoryKnowledgeBackend();
-    await writeTerminal(be, 'sess', 'R1', { kind: 'error', error: 'boom' }, 1000, '2026-06-10T00:00:00.000Z');
-    const got = await readTerminal(be, 'sess', 'R1', '2026-06-10T00:00:02.000Z');
+    await writeTerminal(
+      be,
+      'sess',
+      'R1',
+      { kind: 'error', error: 'boom' },
+      1000,
+      '2026-06-10T00:00:00.000Z',
+    );
+    const got = await readTerminal(
+      be,
+      'sess',
+      'R1',
+      '2026-06-10T00:00:02.000Z',
+    );
     assert.equal(got, undefined);
   });
 });

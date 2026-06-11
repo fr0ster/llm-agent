@@ -209,7 +209,11 @@ export class AdaptivePlanner implements IControllerPlanner {
     //    now holds the failure/external result), so the revised plan incorporates
     //    it — no reliance on the executor seeing it. Use the matching prompt: an
     //    external result is NOT a failure, so it gets its own framing.
-    if (lastOutcome === 'failed' || lastOutcome === 'partial' || resumedExternal) {
+    if (
+      lastOutcome === 'failed' ||
+      lastOutcome === 'partial' ||
+      resumedExternal
+    ) {
       const system = resumedExternal
         ? EXTERNAL_RESULT_REPLAN_SYSTEM
         : REPLAN_SYSTEM;
@@ -246,7 +250,10 @@ export class AdaptivePlanner implements IControllerPlanner {
   /** Commit the just-finished step's outcome so the advance is persisted with it.
    *  On success the cursor moves to the next step; a failure leaves the cursor so
    *  the next next() can replan from it. (No LLM call — pure bookkeeping.) */
-  commit(bundle: SessionBundle, outcome: 'advanced' | 'failed' | 'partial'): void {
+  commit(
+    bundle: SessionBundle,
+    outcome: 'advanced' | 'failed' | 'partial',
+  ): void {
     // 'advanced' and 'partial' both advance the cursor: the accepted part of a
     // partial is committed and must not be re-run (the remainder is replanned at
     // the next cursor). 'failed' leaves the cursor for next()'s replan.

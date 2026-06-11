@@ -100,7 +100,8 @@ export async function gcTerminal(
     if (e.metadata.artifactType !== TERMINAL_ARTIFACT_TYPE) continue;
     try {
       const parsed = JSON.parse(e.content) as TerminalEntry;
-      if (new Date(parsed.expiresAt).getTime() <= now) expired.push(parsed.runId);
+      if (new Date(parsed.expiresAt).getTime() <= now)
+        expired.push(parsed.runId);
     } catch {
       // ignore
     }
@@ -132,14 +133,16 @@ export interface ClassifyInput {
 
 /** Strict ordered request classification. First matching branch wins. */
 export function classifyRequest(input: ClassifyInput): Classification {
-  const { bundle, incomingRequest, explicitKey, newRun, terminalExists } = input;
+  const { bundle, incomingRequest, explicitKey, newRun, terminalExists } =
+    input;
   // 1. newRun overrides any replay.
   if (newRun) return { kind: 'fresh' };
 
   // 2. Explicit key → STRICT routing, no fingerprint fallback.
   if (explicitKey) {
     if (terminalExists) return { kind: 'replay', runId: explicitKey };
-    const live = bundle.runState === 'active' || bundle.runState === 'suspended';
+    const live =
+      bundle.runState === 'active' || bundle.runState === 'suspended';
     if (explicitKey === bundle.runId && live) return { kind: 'resume' };
     return { kind: 'not-found' };
   }

@@ -162,7 +162,10 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
   }
 }
 
-export function matches(m: KnowledgeEntryMetadata, f: KnowledgeFilter): boolean {
+export function matches(
+  m: KnowledgeEntryMetadata,
+  f: KnowledgeFilter,
+): boolean {
   if (f.traceId && m.traceId !== f.traceId) return false;
   if (f.turnId && m.turnId !== f.turnId) return false;
   if (f.stepperId && m.stepperId !== f.stepperId) return false;

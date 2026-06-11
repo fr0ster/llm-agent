@@ -25,11 +25,17 @@ describe('orderAndTruncate', () => {
 
 describe('reduceToBudget', () => {
   it('within budget AND explicitly counts what it cannot inline (no silent drop)', () => {
-    const many = Array.from({ length: 200 }, (_, i) => ({ seq: i, content: 'x'.repeat(100) }));
+    const many = Array.from({ length: 200 }, (_, i) => ({
+      seq: i,
+      content: 'x'.repeat(100),
+    }));
     const budget = 500;
     const body = reduceToBudget(many, 1000, budget);
     assert.ok(body.length <= budget, `body ${body.length} <= budget ${budget}`);
-    assert.ok(/more of 200/.test(body), 'manifest explicitly counts omitted ids');
+    assert.ok(
+      /more of 200/.test(body),
+      'manifest explicitly counts omitted ids',
+    );
   });
   it('keeps a compact extract of EVERY result for a feasible budget (none dropped)', () => {
     const logs: string[] = [];
@@ -48,12 +54,21 @@ describe('reduceToBudget', () => {
       body.includes('[#0]') && body.includes('[#1]') && body.includes('[#2]'),
       'all three results kept a compact extract',
     );
-    assert.ok(logs.length > 0 && /overflow/.test(logs.join(' ')), 'reductions logged');
+    assert.ok(
+      logs.length > 0 && /overflow/.test(logs.join(' ')),
+      'reductions logged',
+    );
   });
   it('never exceeds the configured budget (no clamp-up) and still counts omissions', () => {
-    const many = Array.from({ length: 50 }, (_, i) => ({ seq: i, content: 'X'.repeat(1000) }));
+    const many = Array.from({ length: 50 }, (_, i) => ({
+      seq: i,
+      content: 'X'.repeat(1000),
+    }));
     const body = reduceToBudget(many, 1000, MIN_BODY_BUDGET);
-    assert.ok(body.length <= MIN_BODY_BUDGET, `body ${body.length} <= configured ${MIN_BODY_BUDGET}`);
+    assert.ok(
+      body.length <= MIN_BODY_BUDGET,
+      `body ${body.length} <= configured ${MIN_BODY_BUDGET}`,
+    );
     assert.ok(/more of 50/.test(body), 'explicit omitted count present');
   });
 });
@@ -83,6 +98,9 @@ describe('LlmFinalizer', () => {
         return { kind: 'content', content: 'x' };
       },
     };
-    assert.throws(() => new LlmFinalizer(client, { budget: 5, perResultCap: 100 }), /MIN_BODY_BUDGET/);
+    assert.throws(
+      () => new LlmFinalizer(client, { budget: 5, perResultCap: 100 }),
+      /MIN_BODY_BUDGET/,
+    );
   });
 });
