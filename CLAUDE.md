@@ -66,19 +66,22 @@ still install only what they need.)
 - All artifacts (code, comments, docs, commit messages) must be written in **English**.
 - Communicate with the user in the **language they used** in their message.
 
-### Multilingual / RAG language constraint (standing — do not drop)
+### MCP tool-RAG language constraint (standing — do not drop)
 
-- **The results-RAG embedder MUST support multilingual content.** Results-RAG recall,
-  per-`requires` evidence, and relevant-fragment extraction rank by **embedding**
-  similarity (never a homemade ASCII/lexical scorer). The user's request, the
-  planner's `requires` references, and stored artifacts may be in any language, so
-  the configured embedder model must embed across languages. Deployment precondition.
-- **MCP tool catalog descriptions are translated to English at catalog-build time.**
-  Tool selection is a semantic search and must be English-on-English: the planner
-  emits step `instructions` in English (hard prompt invariant), and tool
-  names/descriptions are translated to English when the catalog is built (NOT a
-  runtime translation by the controller). `requires` may be non-English → handled by
-  the multilingual results-RAG embedder. The finalizer answers in the user's language.
+- **MCP tool selection is English-on-English.** Tool selection is a semantic search
+  over the MCP catalog; for stable selection regardless of the user's language BOTH
+  sides are English:
+  - **MCP tool names/descriptions are translated to English at catalog-build time**
+    (build-time concern; the controller does NO runtime translation of descriptions).
+  - **The tool-search text is English at search time** — the planner emits step
+    `instructions` (and `requires`) in English (hard prompt invariant), so the query
+    fed to tool selection is already English. Any other caller of tool search must
+    translate its query text to English first.
+- **The results-RAG embedder need NOT be multilingual** — a normal embedder is fine.
+  Recall/evidence/relevant-extract rank by embedding, but the language requirement is
+  the MCP tool-RAG's, not results-RAG's. (Embedding, not a homemade ASCII/lexical
+  scorer, is still the ranking mechanism.)
+- The finalizer answers in the **user's language**.
 
 ## Conventions
 

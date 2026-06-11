@@ -1800,11 +1800,12 @@ assert it verbatim):
 
 ```ts
 export const ENGLISH_INSTRUCTIONS_RULE =
-  ' Step `instructions` MUST be written in English — always, regardless of the ' +
-  "language of the user's request. This is a hard contract: the executor selects " +
-  'tools by semantic match against an English-indexed catalog, so non-English ' +
-  'instructions break tool selection. (The user-facing answer is composed ' +
-  'separately in the user\'s language.)';
+  ' Step `instructions` AND `requires` references MUST be written in English — ' +
+  "always, regardless of the language of the user's request. This is a hard " +
+  'contract: the executor selects tools by semantic match against an ' +
+  'English-translated catalog, and the reviewer matches `requires` against stored ' +
+  'artifacts — so non-English instructions/requires break both. (The user-facing ' +
+  "answer is composed separately in the user's language.)";
 ```
 
 Append `ENGLISH_INSTRUCTIONS_RULE` to each of the four prompt constants.
@@ -1827,24 +1828,28 @@ The finalizer composes the user-facing answer in the user's language —
 So internal instructions are canonical English (stable tool-RAG) while the visible
 answer honors the user's language.
 
-> **PRECONDITIONS — language (#2/plan-12, plan-21; see CLAUDE.md "Multilingual / RAG
-> language constraint").** Tool names/descriptions are NOT planner-generated, so no
-> prompt guarantees their language. Two standing preconditions, NOT runtime steps:
-> 1. **MCP tool catalog descriptions are TRANSLATED to English at catalog-build
->    time**, matching the canonical language of the planner-emitted instructions, so
->    tool selection is English-on-English (stable across user languages). The
->    controller performs NO runtime translation; a server with non-English MCP
->    descriptions normalizes them when the catalog is built, outside this design.
-> 2. **The results-RAG embedder MUST be multilingual.** Results-RAG recall,
->    per-`requires` evidence, and `relevantExtract` rank by embedding similarity, and
->    `requires` / artifacts / the user request may be in any language — so the
->    configured embedder model must embed across languages. Deployment precondition
->    (not runtime-detectable).
+> **PRECONDITION — MCP tool-RAG is English-on-English (#2/plan-12, plan-22; see
+> CLAUDE.md "MCP tool-RAG language").** Tool selection (`selectTools`) is a semantic
+> search over the MCP catalog; for stable selection regardless of the user's
+> language BOTH sides of that search are English:
+> 1. **MCP tool names/descriptions are TRANSLATED to English at catalog-build time**
+>    (an external/build-time concern — the controller does NO runtime translation of
+>    descriptions).
+> 2. **The tool-search TEXT is English at search time**: the planner emits step
+>    `instructions` (the `selectTools` query) in English (the hard prompt invariant),
+>    so the query the catalog is searched with is already English. (If a deployment
+>    ever feeds non-English text to `selectTools`, it must translate it to English
+>    first — but the planner invariant already guarantees this for the controller.)
 >
-> Record both concretely (#5/plan-13, plan-21): append a "Controller — language
-> preconditions" subsection to **`docs/ARCHITECTURE.md`** capturing (1) English-
-> translated MCP catalog + (2) multilingual results-RAG embedder. This file is part
-> of THIS task's edits and `git add` (Files list + commit below).
+> The results-RAG embedder is NOT required to be multilingual — a normal embedder is
+> fine (the language requirement is the MCP tool-RAG's, not results-RAG's). The
+> planner's `requires` references are English too (the invariant extends to them), so
+> `relevantExtract`'s embedding works with a normal embedder.
+>
+> Record concretely (#5/plan-13, plan-22): append a "Controller — MCP tool-RAG
+> language precondition" subsection to **`docs/ARCHITECTURE.md`** capturing the
+> English-translated catalog + English tool-search text (NO multilingual-embedder
+> claim). This file is part of THIS task's edits and `git add` (Files list + commit).
 
 - [ ] **Step 4: Run, verify it passes**
 
@@ -3192,21 +3197,23 @@ In `runStep`, build the per-`requires` evidence map (replace the single whole-st
 Add the relevance-extract helper (near `runScopedRecall`), `const
 RECALL_EVIDENCE_CHARS = 800;`, `import type { IEmbedder } from
 '@mcp-abap-adt/llm-agent';`, and `import { cosine } from
-'./embedder-knowledge-index.js';` (export `cosine` from that module — Task 2). The
-extract is EMBEDDING-based and relies on the **multilingual embedder** (a documented
-deployment precondition — see CLAUDE.md "Multilingual / RAG language constraint"):
+'../embedder-knowledge-index.js';` (the handler is in `smart-agent/controller/`,
+the index in `smart-agent/`, so the path is `../` not `./` — #3/plan-22; export
+`cosine` from that module, Task 2). The extract is EMBEDDING-based; the `requires`
+reference is English (the planner invariant extends to `requires`), so a normal
+(non-multilingual) embedder suffices:
 
 ```ts
-const MAX_EXTRACT_CHUNKS = 16;
-/** Return the window of `content` most similar to `ref` by EMBEDDING (#1/plan-21) —
- *  NOT ASCII lexical overlap, which fails for a non-English `requires` reference
- *  (the English invariant covers `instructions`, NOT `requires`) and even for
- *  English synonyms. Relies on the configured embedder being MULTILINGUAL (a
- *  documented deployment precondition). Chunks the content (≤ MAX_EXTRACT_CHUNKS
- *  windows), embeds the ref + each chunk, picks the best by cosine, and returns a
- *  window STRICTLY ≤ maxChars including any ellipsis markers (#2/plan-20). For a
- *  pathologically tiny maxChars (< 3) it returns a bare slice with no markers
- *  (#2/plan-21). Async (it embeds). */
+const MAX_EXTRACT_WINDOWS = 32;
+/** Return the ≈`maxChars` window of `content` most similar to `ref` by EMBEDDING
+ *  (#1/plan-21) — NOT ASCII lexical overlap (which fails for synonyms). The window
+ *  size is ≈ maxChars with 50% OVERLAP and the RETURNED window IS the ranked one
+ *  (#2/plan-22): ranking larger-than-maxChars chunks and returning only their head
+ *  would drop a relevant fragment sitting late in a big chunk. Each candidate
+ *  window already fits the budget; markers are reserved within it so the result is
+ *  STRICTLY ≤ maxChars (#2/plan-20). A tiny maxChars (< 3) returns a bare slice
+ *  (#2/plan-21). The `requires` ref is English (planner invariant), so a normal
+ *  embedder suffices — no multilingual requirement. Async (it embeds). */
 export async function relevantExtract(
   content: string,
   ref: string,
@@ -3215,22 +3222,25 @@ export async function relevantExtract(
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars)); // no room for markers
-  const chunkSize = Math.max(maxChars, Math.ceil(content.length / MAX_EXTRACT_CHUNKS));
+  // Stride spans the WHOLE content within MAX_EXTRACT_WINDOWS embeds while staying
+  // ≤ maxChars (so maxChars-wide windows overlap → no coverage gap) for content up
+  // to MAX_EXTRACT_WINDOWS × maxChars; only far larger artifacts thin out (#2/plan-22).
+  const stride = Math.max(Math.floor(maxChars / 2), Math.ceil(content.length / MAX_EXTRACT_WINDOWS));
   const starts: number[] = [];
-  for (let s = 0; s < content.length; s += chunkSize) starts.push(s);
+  for (let s = 0; s < content.length && starts.length < MAX_EXTRACT_WINDOWS; s += stride) starts.push(s);
   const { vector: q } = await embedder.embed(ref);
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
   for (const s of starts) {
-    const { vector } = await embedder.embed(content.slice(s, s + chunkSize));
-    const score = cosine(q, vector); // imported from embedder-knowledge-index.ts
+    const { vector } = await embedder.embed(content.slice(s, s + maxChars)); // window == maxChars
+    const score = cosine(q, vector); // imported from ../embedder-knowledge-index.js
     if (score > bestScore) { bestScore = score; bestStart = s; }
   }
   const head = bestStart > 0 ? '…' : '';
   const bodyLen = Math.max(0, maxChars - head.length - 1); // reserve room for a tail '…'
   const slice = content.slice(bestStart, bestStart + bodyLen);
   const tail = bestStart + bodyLen < content.length ? '…' : '';
-  return head + slice + tail; // ≤ head + bodyLen + 1 ≤ maxChars
+  return head + slice + tail; // ≤ head + bodyLen + 1 ≤ maxChars; IS the ranked window
 }
 ```
 
@@ -3384,15 +3394,16 @@ describe('runScopedRecall', () => {
 });
 
 describe('relevantExtract', () => {
-  // A multilingual-ish stub embedder: maps content containing the marker to a
-  // vector close to the ref's, everything else orthogonal — so the EMBEDDING
-  // picks the relevant chunk regardless of language/synonyms.
-  const embedder = { embed: async (t: string) => ({ vector: /MARK|МІТКА/.test(t) ? [1, 0] : [0, 1] }) } as never;
-  it('returns the chunk most similar by EMBEDDING (works for a non-English ref), bounded', async () => {
+  // Stub embedder: a window containing MARK embeds close to the ref; else
+  // orthogonal — so the EMBEDDING (not lexical overlap) picks the relevant window.
+  const embedder = { embed: async (t: string) => ({ vector: /MARK/.test(t) ? [1, 0] : [0, 1] }) } as never;
+  it('returns the most-similar WINDOW (embedding), even when the fragment sits LATE, bounded', async () => {
     const { relevantExtract } = await import('../controller-coordinator-handler.js');
-    const content = `${'x'.repeat(2000)} ... MARK relevant fragment ... ${'y'.repeat(2000)}`;
-    const out = await relevantExtract(content, 'МІТКА', 200, embedder); // non-English ref
-    assert.ok(out.includes('MARK'), 'embedding picked the relevant chunk, not the head');
+    // MARK sits near the END of the content, well past the first maxChars — only an
+    // overlapping-window ranker (not head-of-a-big-chunk) surfaces it.
+    const content = `${'x'.repeat(4000)} MARK relevant fragment`;
+    const out = await relevantExtract(content, 'the target reference', 200, embedder);
+    assert.ok(out.includes('MARK'), 'embedding surfaced the late fragment via overlapping windows');
     assert.ok(out.length <= 200, 'STRICTLY bounded to maxChars including ellipses (#2/plan-20)');
   });
   it('returns a bare slice (no double markers) for a tiny maxChars (#2/plan-21)', async () => {
