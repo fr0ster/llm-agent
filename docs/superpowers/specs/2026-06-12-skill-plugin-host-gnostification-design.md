@@ -396,12 +396,31 @@ interface ISkillPluginHost {
    *  per-revision inside `rag(g).query`. Collections are materialised out-of-band by a
    *  SEPARATE ingest job. `options` threads metering into the probe and ingest.
    *
+   *  CATALOG-CAS RETRY: if `publishCatalog` loses the CAS (a concurrent loader committed
+   *  first), the load RETRIES the WHOLE reconciliation from a FRESH snapshot — re-read
+   *  `readCatalog()`, re-merge `acquire()` results (re-using already-built generations is
+   *  allowed; carry-forward/prior-pointer decisions are recomputed against the NEW
+   *  catalog), then `publishCatalog(newRev, …)`. Bounded by `catalogCasMaxAttempts`
+   *  (default 3) with a small bounded backoff between attempts; each failed attempt's
+   *  not-committed generations are discarded (orphan cleanup). On exhaustion → THROW.
+   *
    *  RETURN/THROW: resolves a `SkillLoadResult` when a commit happened (even with
    *  per-collection omissions under strict:false — `result.ok === false`, `result.omitted`
-   *  lists them). THROWS on a hard failure — a `strict:true` source failure, exhausted
-   *  catalog-CAS retries, or a config error — having committed NOTHING. (A recall-only
+   *  lists them). THROWS on a hard failure — a `strict:true` source failure, catalog-CAS
+   *  retries exhausted, or a config error — having committed NOTHING. (A recall-only
    *  load returns `{ committed: servedCollections, omitted: [], tombstoned: [], ok: true }`
-   *  or throws on incompatibility / missing serveCollections.) */
+   *  or throws on incompatibility / missing serveCollections.)
+   *
+   *  RELOAD (load() is re-callable) — two roles:
+   *  - An **ingest job/host** (NOT wired into a running agent's RAG sources) MAY reload and
+   *    publish a CHANGED collection set — that is how the set evolves out-of-band.
+   *  - A **serving host** (whose `groups()` set was registered into a live agent) fixes its
+   *    served set at the FIRST `load()`. A subsequent `load()` that would change the
+   *    committed SET (add/remove a collection vs the registered set) is REJECTED — it THROWS
+   *    a clear "served collection set is fixed; rebuild the host to change it" error (a
+   *    generation-only reload — SAME set, new generations — is allowed and just rotates).
+   *  So changing the served set = re-ingest via an ingest job + rebuild/restart the serving
+   *  agent; a serving host never silently re-registers sources. */
   load(options?: CallOptions): Promise<SkillLoadResult>;
   /** The collections this host serves, with descriptions — what the explicit mode's
    *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
@@ -749,10 +768,13 @@ resolved it (from the prior catalog snapshot) can finish its read.
 `load()`s build distinct generation namespaces concurrently (no write collision). The
 SOLE fence is the catalog: each commits with `publishCatalog(expectedCatalogRevision,…)`.
 If B commits first (bumping the catalog revision), A's `publishCatalog(priorRev,…)` fails
-the CAS → A activated nothing, and its built generations are discarded (step 6). No
-generation ever serves except via a won catalog commit, so a late loser cannot change
-serving data. For in-memory the catalog revision is a monotonic counter; for a vector-DB
-it is an etag/fencing token on the catalog row (or a lease around the whole load).
+the CAS → A activated nothing and discards its built generations (step 6), then RETRIES
+the whole reconciliation from B's fresh snapshot (re-read catalog, re-merge, re-decide
+carry-forward/prior-pointer against the new catalog, rebuild, re-publish). Bounded by
+`catalogCasMaxAttempts` (default 3) with a small bounded backoff; on exhaustion `load()`
+THROWS. No generation ever serves except via a won catalog commit, so a late loser cannot
+change serving data. For in-memory the catalog revision is a monotonic counter; for a
+vector-DB it is an etag/fencing token on the catalog row (or a lease around the load).
 
 **Source-failure policy (resolves `strict` vs snapshot atomicity) — applied PER GROUP.**
 A group's new generation is all-or-nothing for THAT group: its collection must contain
@@ -897,6 +919,8 @@ skills:
                                      #   → all collections the strategy produced.
   chunk: { maxChars: 1500 }
   strict: false                      # true → a source failure aborts THAT group; false → carry-forward
+  catalogCasMaxAttempts: 3           # publishCatalog CAS retries on a concurrent-loader conflict;
+                                     #   each retry re-reads the catalog + rebuilds. Exhausted → throw.
   sources:
     - id: vendor-skills                       # STABLE sourceId — reconciliation/carry-forward key
       registry: https://<host>/<skills>       # FETCHED source (marketplace/registry → memory)
@@ -1007,10 +1031,15 @@ collection). `skills` absent → no gnostification. The engine ships no default
   itself is the strategy's job — the host validates only that referenced collections
   exist, never how plugins map to them. Reading mutually-conflicting collections together
   is the operator's responsibility (the engine cannot detect semantic conflict).
-- A LOST catalog CAS (a concurrent loader committed first), an ingest error, or a
-  `strict` abort → EVERY generation this load built is `discardGeneration`d in a `finally`
-  (no orphan embeddings linger in a persistent store); the prior catalog is never
-  reverted (a stale loser activated nothing).
+- A LOST catalog CAS (a concurrent loader committed first) → `load()` RETRIES from the
+  fresh snapshot up to `catalogCasMaxAttempts` (default 3, bounded backoff); on exhaustion
+  it THROWS. An ingest error or a `strict` abort → throws too. In every case EVERY
+  generation this load built is `discardGeneration`d in a `finally` (no orphans); the prior
+  catalog is never reverted (a stale loser activated nothing).
+- A **serving host** reload whose committed set would ADD/REMOVE a collection vs the set
+  registered at its first `load()` → THROWS ("served collection set is fixed; rebuild to
+  change it"). A same-set reload (new generations only) is allowed. Changing the set =
+  re-ingest via an ingest job + restart the serving agent.
 - Source unreachable at ingest → `strict:false` **carries the failed source forward**
   from the collection's served generation (warn; its skills are NOT lost), and a
   sole-source collection is carried forward whole (not tombstoned); `strict:true` →
@@ -1084,6 +1113,11 @@ mechanism under test.
   cleanup) — a stale loser cannot change serving data.
 - Catalog commit fence: X and Y both read catalogRevision R; Y `publishCatalog(R,…)` →
   R'; X `publishCatalog(R,…)` REJECTED → recall reflects Y's catalog, never X's.
+- Catalog-CAS retry policy: a stub provider that fails the first N-1 `publishCatalog`
+  CAS attempts (bumping the revision each time) and succeeds on attempt N ≤
+  `catalogCasMaxAttempts` → `load()` re-reads the catalog and rebuilds each attempt and
+  finally commits; a provider that fails MORE than `catalogCasMaxAttempts` → `load()`
+  THROWS, and every generation it built across all attempts is discarded (no orphans).
 - Retired-generation retention (no read-under-delete): EXACT discipline — a reader pins
   generation N (captured reference / refcount lease), the catalog commit moves the
   collection to N+1, the reader's subsequent query against N still returns N's rows, and N
@@ -1180,6 +1214,11 @@ mechanism under test.
   `committed=['c1']`, `omitted=[{group:'c2',…}]`, `ok===false`; a clean load → `ok===true`,
   `omitted=[]`; a `strict:true` source failure / exhausted CAS / config error THROWS (the
   call rejects) having committed nothing.
+- Serving-host reload semantics: a SERVING host (set registered) whose second `load()`
+  commits the SAME collection set with NEW generations → succeeds and rotates; a second
+  `load()` that would ADD or REMOVE a collection → THROWS "served collection set is fixed"
+  (no silent re-registration). An ingest-only host (no registered serving set) may reload
+  with a changed set freely.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
