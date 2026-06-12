@@ -36,11 +36,14 @@ and runs them without becoming GPL.
    cross-cutting mechanism any pipeline COULD consume via `host.rag()`, but this spec
    delivers and tests ONE consumer — the `controller` planner. Wiring
    default/linear/dag/stepper is explicit future work, not in scope here.
-6. **Opt-in, explicit.** Only the plugins the consumer lists are pulled. `enabled`
-   is a **REQUIRED, non-empty** list per source — omitting it is a config error, NOT
-   "load all" (silently pulling every plugin would violate the security/licensing
-   model). Loading all of a source is possible only by the explicit sentinel
-   `enabled: "*"`. No `skills` block at all → agnostic, unchanged. No auto-discovery.
+6. **Opt-in, explicit.** Only what the consumer lists is pulled. For a **fetched
+   source** (marketplace/registry/git/FS dir — many plugins available), `enabled` is a
+   **REQUIRED, non-empty** plugin list; omitting it is a config error, NOT "load all"
+   (silently pulling every plugin would violate the security/licensing model) — "load
+   all" only via the explicit sentinel `enabled: "*"`. A **`records` source**
+   (programmatic, in-memory) is ALREADY the consumer's exact pre-filtered record set,
+   so it carries NO `enabled` (and still declares a stable `sourceId`). No `skills`
+   block at all → agnostic, unchanged. No auto-discovery.
 7. **Graceful degradation.** No skills / none matched / source unreachable → the
    pipeline runs exactly as today.
 
@@ -86,17 +89,27 @@ interface ISkillsRagHandle {
  *  is the LOGICAL id (deterministic, dedup-friendly); the generation scopes the
  *  physical key. `options` threads metering into ingest embeds. */
 interface ISkillsStore extends ISkillsRagHandle {
-  beginGeneration(): Promise<string>;                       // new generation namespace
+  /** Open a new generation namespace AND return the active revision observed now —
+   *  the FENCE token for activate(). */
+  beginGeneration(): Promise<{ generation: string; baseRevision: string }>;
   upsert(
     generation: string,
     records: readonly SkillRecord[],
     options?: CallOptions,
   ): Promise<void>;
-  /** Copy the ACTIVE generation's records for the given `sources` into `generation`
-   *  unchanged — for sources that failed to refresh under strict:false (carry-forward,
-   *  so their skills are not lost). No-op when there is no active generation. */
-  carryForward(generation: string, sources: readonly string[]): Promise<void>;
-  activate(generation: string): Promise<void>;              // atomic active-pointer flip; drop prior
+  /** Copy the ACTIVE generation's records for the given stable `sourceId`s into
+   *  `generation` unchanged — carry-forward for sources that failed to refresh under
+   *  strict:false (so their skills are not lost). Keyed by the config-stable
+   *  `sourceId` (NOT the versioned provenance), so a failed fetch with unknown
+   *  version still finds them. No-op when there is no active generation. */
+  carryForward(generation: string, sourceIds: readonly string[]): Promise<void>;
+  /** FENCED activate: flip the active pointer to `generation` ONLY IF the current
+   *  active revision still equals `expectedRevision` (the baseRevision from
+   *  beginGeneration). A concurrent load that activated in between bumps the
+   *  revision, so a stale activation is REJECTED (the late loader rebuilds from the
+   *  new base) — no late writer can roll the active pointer back to an older
+   *  snapshot. Drops the prior generation on success. */
+  activate(generation: string, expectedRevision: string): Promise<void>;
 }
 
 interface ISkillPluginHost {
@@ -132,13 +145,16 @@ everything downstream is RAG.
 
 ```
 SkillRecord {
-  id: string            // LOGICAL stable id: "<source>:<plugin>@<version>/<skill>#<chunkIx>"
+  id: string            // LOGICAL stable id: "<sourceId>/<plugin>@<version>/<skill>#<chunkIx>"
                         //   deterministic (dedup); the store's PHYSICAL key is
                         //   `${generation}:${id}` so generations never collide — see "Reconciliation"
+  sourceId: string      // STABLE config-declared source id, version-INDEPENDENT — the
+                        //   reconciliation/carryForward key (survives a registry/version change,
+                        //   and is known even when a failed fetch's version is not)
   name: string          // "<plugin>/<skill>" (+ "#<heading>" for a chunk) — human label
   retrievalText: string // the EMBEDDED surface — DISTINCT per chunk (see below)
   content: string       // the chunk body — injected verbatim into the LLM context
-  source: string        // provenance: source + plugin + version (traceability/reconcile scope)
+  provenance: string    // VERSIONED descriptive metadata: "<plugin>@<version>/<skill>#<heading>"
 }
 ```
 
@@ -209,21 +225,34 @@ the desired set via an atomic **generation snapshot**. Records are written under
 generation NEVER overwrites the active one (the active generation keeps serving until
 `activate`):
 
-1. `beginGeneration()` → a fresh generation namespace.
+1. `beginGeneration()` → a fresh namespace **and** `baseRevision` (the active revision
+   observed now — the fence token).
 2. For each ENABLED source: if it fetched/parsed OK, `upsert(generation, itsRecords)`;
-   if it FAILED, apply the failure policy (below) — `carryForward` or abort.
+   if it FAILED, apply the failure policy (below) — `carryForward(generation,
+   [its sourceId])` or abort. (carry-forward is keyed by the stable `sourceId`, so a
+   failed fetch whose version is unknown still finds the prior records.)
 3. `upsert(generation, records)` writes the full desired set into the new namespace
    (embedding each `retrievalText`).
-4. `activate(generation)` — **atomic flip** of the active-generation pointer; queries
-   now read the new namespace; the prior generation is dropped (background delete).
-   A **partially-failed build that never reaches activate** leaves the prior snapshot
-   fully intact — the store is never half-updated.
+4. `activate(generation, baseRevision)` — **FENCED atomic flip**: succeeds only if the
+   active revision is still `baseRevision`; queries then read the new namespace and the
+   prior generation is dropped (background delete). A **partially-failed build that
+   never reaches activate** leaves the prior snapshot fully intact.
+
+**Concurrent loads (out-of-band / multi-instance) — fenced activation.** Two `load()`s
+can each `beginGeneration()` (A and B) concurrently. The fence prevents a late writer
+from rolling the active pointer back: each `activate` is a compare-and-set against the
+`baseRevision` it opened with. If B activates first (bumping the active revision), A's
+later `activate(genA, baseRevisionA)` **fails the CAS** and is rejected — A discards
+genA (or retries `load()` from the new base) rather than reverting recall to the older
+snapshot. For in-memory single-process the revision is a monotonic counter; for a
+vector-DB it is an etag / fencing token on the active-pointer row (or a lease around
+the whole load). No global lock is required — only the activate CAS.
 
 **Source-failure policy (resolves `strict` vs snapshot atomicity).** A generation is
 all-or-nothing: it must contain EVERY enabled source's records before activate, or it
 is discarded. So:
 - **`strict: false` (default) — per-source carry-forward.** An unreachable/failed
-  source does NOT drop its skills: `carryForward(generation, [failedSource])` copies
+  source does NOT drop its skills: `carryForward(generation, [its sourceId])` copies
   that source's records from the active generation into the new one unchanged; only
   the reachable sources are refreshed. The new generation is complete → activate is
   safe, last-known-good is retained. (On the very first load with no active
@@ -283,21 +312,25 @@ skills:
   k: 4                               # records injected per planning call
   maxInjectChars: 4000
   chunk: { maxChars: 1500 }
-  strict: false                      # true → fail startup if a configured source is unreachable
+  strict: false                      # true → any source failure aborts load; false → carry-forward
   sources:
-    - registry: https://<host>/<skills>      # fetched over HTTP into memory
-      enabled: [sap-abap, sap-abap-cds]       # REQUIRED non-empty list; "*" = all (explicit)
+    - id: sap                                 # STABLE sourceId — reconciliation/carry-forward key
+      registry: https://<host>/<skills>       # FETCHED source (HTTP → memory)
+      enabled: [sap-abap, sap-abap-cds]       # REQUIRED non-empty for fetched sources; "*" = all
 ```
 
-`enabled` is mandatory per source (a missing/empty `enabled` is a startup config
-error, not "load all" — see principle 6).
+Every source declares a **stable `id`** (`sourceId`) — version-independent, the
+reconciliation/carry-forward key (it must NOT encode the registry version). For a
+**fetched** source `enabled` is mandatory (a missing/empty `enabled` is a startup
+config error, not "load all" — principle 6).
 
 **Programmatic (embed-as-library):**
 ```ts
 builder.withSkills({
   collection: 'skills',
   k: 4,
-  sources: [{ records: mySkillRecords }],     // in-memory; no FS, no fetch
+  // a `records` source is the consumer's pre-filtered set → a stable `id`, NO `enabled`.
+  sources: [{ id: 'my-skills', records: mySkillRecords }], // in-memory; no FS, no fetch
 });
 ```
 
@@ -305,7 +338,11 @@ builder.withSkills({
 
 ## Error handling
 
-- Missing/empty `enabled` on a source → **startup config error** (not "load all").
+- Missing/empty `enabled` on a **fetched** source → **startup config error** (not
+  "load all"); a `records` source carries no `enabled`. Missing `id` on any source →
+  config error.
+- A rejected (fenced-out) `activate` from a concurrent/stale load → that load discards
+  its generation (or retries from the new base); recall is never reverted.
 - Source unreachable at ingest → `strict:false` **carries the failed source forward**
   from the active generation (warn; its skills are NOT lost) and refreshes only the
   reachable sources; `strict:true` **aborts the whole load** (no activate, prior
@@ -339,9 +376,15 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   `activate`; namespace isolation — upserting a NEW generation does NOT change what
   recall returns until `activate` (the active generation's rows are untouched).
 - Source-failure policy: `strict:false` with one source unreachable **carries that
-  source's prior records forward** (its skills still recall after `activate`) while a
-  reachable source refreshes; `strict:true` with any source unreachable does NOT
-  activate (recall still serves the prior generation — atomicity).
+  source's prior records forward by `sourceId`** (its skills still recall after
+  `activate`, even though its version is unknown) while a reachable source refreshes;
+  `strict:true` with any source unreachable does NOT activate.
+- Fenced activation (concurrency): two loads open generations A and B against the same
+  `baseRevision`; B activates first; A's `activate(genA, baseRevisionA)` is REJECTED by
+  the CAS → recall keeps B's snapshot, never reverts to A's older one.
+- Source typing: a `records` source ingests without `enabled`; a fetched source with
+  missing/empty `enabled` is a config error; reconciliation keys on the config `id`
+  (`sourceId`), so a registry/version change does not orphan carry-forward.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; injects hit
   `content` within budget; empty/no-match → no block (output identical to agnostic).
 - HTTP fetcher: builds records purely from fetched bytes (mock transport), zero FS.
