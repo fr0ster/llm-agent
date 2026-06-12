@@ -128,6 +128,11 @@ export interface SessionBundle {
    *  durably in the same write that enters `finalizing`, so a crash before the
    *  terminal write recovers it (rather than emitting empty). Cleared by reset. */
   legacyFinalAnswer?: string;
+  /** Monotonic per-run write ordinal; incremented BEFORE each artifact write so
+   *  recall dedup can break createdAt ties by latest-write order. Reset to 0 by
+   *  resetRun(); run-scoped ordinals are always comparable (recall filters by
+   *  runId). */
+  writeOrdinal?: number;
 }
 
 /** A controller subagent role: a standalone LLM config plus an OPTIONAL

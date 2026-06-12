@@ -85,6 +85,57 @@ describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () =>
   });
 });
 
+describe('makeKnowledgeSemanticIndex — write-time options forwarding (Finding A)', () => {
+  it('upsert forwards CallOptions to the embedder for an indexed (non-infra) entry', async () => {
+    const receivedUpsertOptions: unknown[] = [];
+    const optCapture = {
+      embed: async (t: string, options?: unknown) => {
+        receivedUpsertOptions.push(options);
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(optCapture);
+    const sentinel = { requestLogger: 'WRITE-LOGGER' as unknown };
+    await idx.upsert(
+      's',
+      {
+        content: 'alpha',
+        metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+      },
+      sentinel as never,
+    );
+    assert.ok(
+      receivedUpsertOptions.some((o) => o === sentinel),
+      'options sentinel forwarded to embed on upsert',
+    );
+  });
+
+  it('upsert does NOT call embed for infra artifact types (options irrelevant)', async () => {
+    let embedCalls = 0;
+    const counting = {
+      embed: async (t: string, _options?: unknown) => {
+        embedCalls++;
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(counting);
+    const sentinel = { requestLogger: 'WRITE-LOGGER' as unknown };
+    await idx.upsert(
+      's',
+      {
+        content: 'alpha',
+        metadata: meta({ artifactType: 'controller-bundle', runId: 'R' }),
+      },
+      sentinel as never,
+    );
+    assert.equal(
+      embedCalls,
+      0,
+      'infra artifact never embedded regardless of options',
+    );
+  });
+});
+
 describe('makeKnowledgeSemanticIndex', () => {
   it('ranks by cosine similarity, not insertion order', async () => {
     const idx = makeKnowledgeSemanticIndex(stub);

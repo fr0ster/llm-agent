@@ -87,4 +87,5 @@ export function resetRun(bundle: SessionBundle, originalRequest: string): void {
   bundle.plannerResumeCount = 0;
   bundle.finalizeAttempt = 0;
   bundle.legacyFinalAnswer = undefined;
+  bundle.writeOrdinal = 0;
 }

@@ -42,10 +42,14 @@ export function makeKnowledgeSemanticIndex(
 ) {
   const bySession = new Map<string, Indexed[]>();
   return {
-    async upsert(sid: string, e: KnowledgeEntry): Promise<void> {
+    async upsert(
+      sid: string,
+      e: KnowledgeEntry,
+      options?: CallOptions,
+    ): Promise<void> {
       // Skip infrastructure artifact types — never embed, never index.
       if (skipArtifactTypes.includes(e.metadata.artifactType)) return;
-      const { vector } = await embedder.embed(e.content);
+      const { vector } = await embedder.embed(e.content, options);
       const arr = bySession.get(sid);
       if (arr) arr.push({ entry: e, vector });
       else bySession.set(sid, [{ entry: e, vector }]);

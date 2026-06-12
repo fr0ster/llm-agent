@@ -172,6 +172,43 @@ describe('runScopedRecall', () => {
     assert.equal(out[0].content, 'new-fetch', 'later createdAt wins');
   });
 
+  it('mcp dedup: same identityKey + same createdAt → higher writeOrdinal wins (not rank-position)', async () => {
+    // Both entries share the SAME createdAt (simulates same synthMeta() call).
+    // Semantic order: writeOrdinal=1 appears FIRST (higher rank), writeOrdinal=2 SECOND.
+    // The winner must be the entry with higher writeOrdinal (latest write), not the
+    // semantic-first one. This is the case createdAt-only tie-break got wrong.
+    const sameTs = '2026-06-10T00:00:00.000Z';
+    const { rag } = ragOf([
+      E(
+        {
+          runId: 'R',
+          artifactType: 'mcp-result',
+          identityKey: 'K1',
+          createdAt: sameTs,
+          writeOrdinal: 1,
+        },
+        'first-write',
+      ),
+      E(
+        {
+          runId: 'R',
+          artifactType: 'mcp-result',
+          identityKey: 'K1',
+          createdAt: sameTs,
+          writeOrdinal: 2,
+        },
+        'second-write',
+      ),
+    ]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 25, ['mcp-result']);
+    assert.equal(out.length, 1);
+    assert.equal(
+      out[0].content,
+      'second-write',
+      'higher writeOrdinal wins when createdAt collides',
+    );
+  });
+
   it('run-wide MCP bound keeps a distinct identity after ALL prior-attempt dups', async () => {
     const maxSteps = 2;
     const maxStepAttempts = 2;

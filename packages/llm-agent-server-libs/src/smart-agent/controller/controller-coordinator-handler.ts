@@ -405,19 +405,25 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           );
           return true;
         }
-        await writeArtifact(rag, {
-          ...meta,
-          artifactType: 'mcp-result',
-          toolName,
-          task: bundle.pending.position,
-          runId: bundle.runId,
-          seq: bundle.inFlightStep?.seq,
-          attempt: bundle.inFlightStep?.attempt,
-          // Stable fetch identity (tool+args) so run-scoped recall dedups
-          // duplicate fetches of the same object across attempts.
-          identityKey: extId,
-          content: result,
-        });
+        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+        await writeArtifact(
+          rag,
+          {
+            ...meta,
+            artifactType: 'mcp-result',
+            toolName,
+            task: bundle.pending.position,
+            runId: bundle.runId,
+            seq: bundle.inFlightStep?.seq,
+            attempt: bundle.inFlightStep?.attempt,
+            // Stable fetch identity (tool+args) so run-scoped recall dedups
+            // duplicate fetches of the same object across attempts.
+            identityKey: extId,
+            writeOrdinal: bundle.writeOrdinal,
+            content: result,
+          },
+          ctx.options,
+        );
         if (bundle.inFlightStep) {
           // External CONTINUATION: inject the tool result into the durable
           // transcript so the loop RE-RUNS the in-flight step (the executor
@@ -1018,18 +1024,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
         const attempt = bundle.inFlightStep?.attempt ?? 0;
         // ONE post-review write carrying the COMPLETE Outcome + identity.
-        await writeArtifact(rag, {
-          ...meta,
-          artifactType: 'step-result',
-          task: step.name,
-          runId: bundle.runId,
-          seq,
-          attempt,
-          status: outcome.status,
-          note: outcome.note,
-          remainder: outcome.remainder,
-          content: outcome.approved,
-        });
+        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+        await writeArtifact(
+          rag,
+          {
+            ...meta,
+            artifactType: 'step-result',
+            task: step.name,
+            runId: bundle.runId,
+            seq,
+            attempt,
+            status: outcome.status,
+            note: outcome.note,
+            remainder: outcome.remainder,
+            writeOrdinal: bundle.writeOrdinal,
+            content: outcome.approved,
+          },
+          ctx.options,
+        );
         bundle.budgets.stepsUsed++;
         const mapped = mapOutcome(outcome.status);
         recordStepControl(bundle, {
@@ -1159,18 +1171,24 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
       // Execute locally, memorize, re-send to the executor.
       const result = await deps.callMcp(name, args);
-      await writeArtifact(rag, {
-        ...meta,
-        artifactType: 'mcp-result',
-        toolName: name,
-        task: step.name,
-        runId: bundle.runId,
-        seq: inFlight?.seq,
-        attempt: inFlight?.attempt,
-        // Stable fetch identity (tool+args) for run-scoped recall dedup.
-        identityKey: externalToolCallId(name, args),
-        content: result,
-      });
+      bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+      await writeArtifact(
+        rag,
+        {
+          ...meta,
+          artifactType: 'mcp-result',
+          toolName: name,
+          task: step.name,
+          runId: bundle.runId,
+          seq: inFlight?.seq,
+          attempt: inFlight?.attempt,
+          // Stable fetch identity (tool+args) for run-scoped recall dedup.
+          identityKey: externalToolCallId(name, args),
+          writeOrdinal: bundle.writeOrdinal,
+          content: result,
+        },
+        ctx.options,
+      );
       // Feed the result back as a coherent assistant→tool turn (OpenAI protocol)
       // so the executor LLM continues from its own tool call rather than seeing a
       // bare user message. The assistant message carries the tool_call it made;
@@ -1793,7 +1811,8 @@ function rankStatus(s?: string): number {
  *  dedup. Latest-wins by EXECUTION IDENTITY, not by semantic-rank position:
  *  1. Higher status rank wins; on tie →
  *  2. Higher attempt wins; on further tie →
- *  3. Later createdAt wins (missing = older: compare with '' as sentinel). */
+ *  3. Higher writeOrdinal wins (tie-breaks same-timestamp artifacts from one run); on tie →
+ *  4. Later createdAt wins (missing = older: compare with '' as sentinel). */
 function isBetterStep(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
   const ra = rankStatus(a.metadata.status);
   const rb = rankStatus(b.metadata.status);
@@ -1801,12 +1820,19 @@ function isBetterStep(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
   const aa = a.metadata.attempt ?? 0;
   const ba = b.metadata.attempt ?? 0;
   if (aa !== ba) return aa > ba;
+  const ao = a.metadata.writeOrdinal ?? -1;
+  const bo = b.metadata.writeOrdinal ?? -1;
+  if (ao !== bo) return ao > bo;
   return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
 }
 
 /** True when candidate `a` is a better winner than current `b` for mcp-result
- *  dedup. Latest-fetch wins: later createdAt (missing = older). */
+ *  dedup. Latest-fetch wins by writeOrdinal first (handles same-timestamp), then
+ *  falls back to createdAt (missing = older). */
 function isBetterMcp(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
+  const ao = a.metadata.writeOrdinal ?? -1;
+  const bo = b.metadata.writeOrdinal ?? -1;
+  if (ao !== bo) return ao > bo;
   return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
 }
 

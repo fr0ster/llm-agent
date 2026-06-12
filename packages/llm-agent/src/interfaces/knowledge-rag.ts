@@ -28,6 +28,10 @@ export interface KnowledgeEntryMetadata {
   note?: string;
   remainder?: string;
   createdAt: string;
+  /** Monotonic per-run write ordinal; defines latest-write tie-break for recall
+   *  dedup when createdAt collides (all artifacts of one synthMeta() call share
+   *  the same timestamp). Higher ordinal = later write = wins the dedup. */
+  writeOrdinal?: number;
 }
 
 export interface KnowledgeEntry {
@@ -54,10 +58,13 @@ export interface IKnowledgeRagHandle {
     opts?: { k?: number; filter?: KnowledgeFilter; options?: CallOptions },
   ): Promise<readonly KnowledgeEntry[]>;
   list(filter: KnowledgeFilter): Promise<readonly KnowledgeEntry[]>;
-  write(entry: {
-    content: string;
-    metadata: KnowledgeEntryMetadata;
-  }): Promise<void>;
+  write(
+    entry: {
+      content: string;
+      metadata: KnowledgeEntryMetadata;
+    },
+    options?: CallOptions,
+  ): Promise<void>;
   fingerprint(): string;
   /**
    * 18.1 identity dedup (optional): exact-match "is this fetch already done?"

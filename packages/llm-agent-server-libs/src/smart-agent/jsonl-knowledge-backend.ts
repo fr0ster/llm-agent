@@ -12,7 +12,7 @@ import {
 
 /** Injected semantic index (embedder-backed); see makeKnowledgeSemanticIndex. */
 interface SemanticIndex {
-  upsert(sid: string, e: KnowledgeEntry): Promise<void>;
+  upsert(sid: string, e: KnowledgeEntry, options?: CallOptions): Promise<void>;
   query(
     sid: string,
     text: string,
@@ -68,7 +68,11 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
     await appendFile(f, `${JSON.stringify(entry)}\n`, 'utf8');
   }
 
-  async put(sid: string, entry: KnowledgeEntry): Promise<void> {
+  async put(
+    sid: string,
+    entry: KnowledgeEntry,
+    options?: CallOptions,
+  ): Promise<void> {
     if (!this.semantic) {
       await this.append(sid, entry);
       return;
@@ -83,7 +87,7 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
       await this.build(sid);
       await this.append(sid, entry);
       try {
-        await this.semantic?.upsert(sid, entry);
+        await this.semantic?.upsert(sid, entry, options);
       } catch (e) {
         this.built.delete(sid);
         if (process.env.DEBUG_CONTROLLER)

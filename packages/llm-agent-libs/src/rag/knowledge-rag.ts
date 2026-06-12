@@ -16,8 +16,14 @@ import type {
  */
 export interface KnowledgeBackend {
   /** Durably store the full entry (content + metadata) AND index its
-   *  content for semantic query. Keyed by sessionId for isolation. */
-  put(sessionId: string, entry: KnowledgeEntry): Promise<void>;
+   *  content for semantic query. Keyed by sessionId for isolation.
+   *  `options` is forwarded to the embedder so write-time upsert embeds are
+   *  metered via `options.requestLogger`. */
+  put(
+    sessionId: string,
+    entry: KnowledgeEntry,
+    options?: CallOptions,
+  ): Promise<void>;
   /** Semantic similarity search within a session, relevance-capped by k. When
    *  `filter` is given it MUST be applied to the candidate set BEFORE the K cap
    *  (so a runId filter is never starved by other runs' artifacts crowding the
@@ -64,15 +70,18 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
     this.mirror = [...(await this.backend.scan(this.sessionId))];
   }
 
-  async write(entry: {
-    content: string;
-    metadata: KnowledgeEntryMetadata;
-  }): Promise<void> {
+  async write(
+    entry: {
+      content: string;
+      metadata: KnowledgeEntryMetadata;
+    },
+    options?: CallOptions,
+  ): Promise<void> {
     const full: KnowledgeEntry = {
       content: entry.content,
       metadata: entry.metadata,
     };
-    await this.backend.put(this.sessionId, full);
+    await this.backend.put(this.sessionId, full, options);
     this.mirror.push(full);
   }
 
@@ -200,7 +209,11 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
    *  (real ranking) — else filter + insertion order (pure unit tests). */
   constructor(
     private readonly semantic?: {
-      upsert(sid: string, e: KnowledgeEntry): Promise<void>;
+      upsert(
+        sid: string,
+        e: KnowledgeEntry,
+        options?: CallOptions,
+      ): Promise<void>;
       query(
         sid: string,
         text: string,
@@ -219,9 +232,9 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     }
     return a;
   }
-  async put(sid: string, entry: KnowledgeEntry) {
+  async put(sid: string, entry: KnowledgeEntry, options?: CallOptions) {
     this.of(sid).push(entry);
-    await this.semantic?.upsert(sid, entry);
+    await this.semantic?.upsert(sid, entry, options);
   }
   async semanticQuery(
     sid: string,
