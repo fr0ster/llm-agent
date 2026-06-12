@@ -107,40 +107,63 @@ interface ActiveSnapshot {
   manifest: SkillsManifest;
 }
 
+/** LOW-LEVEL store read API — the pinning primitive the compat wrapper composes over.
+ *  It does NO compatibility logic and does NOT embed: it exposes the atomic active
+ *  pointer and a vector read of a SPECIFIC revision, so a caller can pin one revision
+ *  across check+read. (The raw store implements this; the serving embedder lives in the
+ *  wrapper above, not here.) */
+interface ISkillsRagBackend {
+  /** Atomic snapshot of the active pointer (null if none active yet) — manifest + its
+   *  revision in ONE read, so a check keyed off it cannot straddle a rotation. */
+  activeSnapshot(): Promise<ActiveSnapshot | null>;
+  /** Vector read pinned to an EXPLICIT revision (the one a prior `activeSnapshot`
+   *  returned) — NOT "whatever is active now". This is what makes no-TOCTOU pinning
+   *  compositional: the wrapper resolves the snapshot once, then reads THAT revision. */
+  queryRevision(
+    revision: string,
+    vector: number[],
+    k: number,
+    options?: CallOptions,
+  ): Promise<readonly SkillHit[]>;
+}
+
 /** Read side — what gnostifiable pipelines depend on. Score-bearing; no session
- *  metadata. `options` threads cancellation/telemetry/token-metering: the query
- *  embedding is logged via `options.requestLogger`, exactly like the controller's
- *  RAG (so skills recall embeds reach /v1/usage). */
+ *  metadata; the compat wrapper (makeCompatibleSkillsRag) implements it OVER an
+ *  ISkillsRagBackend + the serving embedder. `options` threads cancellation/telemetry/
+ *  token-metering: the query embedding is logged via `options.requestLogger`, exactly
+ *  like the controller's RAG (so skills recall embeds reach /v1/usage). */
 interface ISkillsRagHandle {
   /** Recall. The store can be ROTATED out-of-band (a separate ingest activates a new
-   *  generation while this server runs). `query` reads the active pointer ONCE as an
-   *  `ActiveSnapshot` and uses THAT snapshot's `revision` both for the compatibility
-   *  check AND for the actual vector read — the whole recall is pinned to one revision,
-   *  so there is no window between "check" and "query" (no separate `activeManifest()`
-   *  call on the hot path). The serving descriptor is compared to `snapshot.manifest`;
-   *  the verdict is CACHED by `snapshot.revision` (one compatibility check per rotation,
-   *  not per query). Compatible/unchanged revision → queries normally; INCOMPATIBLE
-   *  revision → serves NO hits (empty → pipeline degrades to agnostic) + a loud error/
-   *  metric. A still-running server never issues dimension-mismatched queries after a
-   *  rotation. */
+   *  generation while this server runs). The wrapper embeds `text` (serving embedder,
+   *  metered via `options`), reads the backend's `activeSnapshot()` ONCE, and uses THAT
+   *  snapshot's `revision` both for the compatibility check AND for `queryRevision` — the
+   *  whole recall is pinned to one revision, so there is no window between "check" and
+   *  "read". The serving descriptor is compared to `snapshot.manifest`; the verdict is
+   *  CACHED by `snapshot.revision` (one compatibility check per rotation, not per query).
+   *  Compatible/unchanged revision → reads normally; INCOMPATIBLE revision → serves NO
+   *  hits (empty → pipeline degrades to agnostic) + a loud error/metric. A still-running
+   *  server never issues dimension-mismatched queries after a rotation. */
   query(
     text: string,
     opts: { k: number; threshold?: number },
     options?: CallOptions,
   ): Promise<readonly SkillHit[]>;
-  /** Atomic snapshot of the active pointer (null if none active yet) — manifest + its
-   *  revision in one read. Used for the EAGER startup fail-fast; the SAME atomic read +
-   *  per-`revision` comparison runs inside `query` thereafter (the startup check is just
-   *  the first, eager instance of it). */
-  activeManifest(): Promise<ActiveSnapshot | null>;
+  /** Atomic snapshot of the active pointer (null if none active yet). Used for the EAGER
+   *  startup fail-fast; the SAME atomic read + per-`revision` comparison runs inside
+   *  `query` thereafter (the startup check is just the first, eager instance of it).
+   *  Resolving the wrapper's own serving `dimension` (if undeclared) by a probe embed
+   *  happens here too — metered via `options` — so a `load(options)` that calls this
+   *  completes the descriptor before the first real query. */
+  activeManifest(options?: CallOptions): Promise<ActiveSnapshot | null>;
 }
 
-/** Write/reconcile side — used ONLY by the host's load(). Records live under a
+/** Write/reconcile side — used ONLY by the host's load(). Extends the LOW-LEVEL backend
+ *  (so the host can read its own snapshots), NOT the compat handle. Records live under a
  *  GENERATION namespace: the PHYSICAL key is `${generation}:${record.id}`, so writing
  *  generation B never overwrites generation A's rows (snapshot isolation). `record.id`
  *  is the LOGICAL id (deterministic, dedup-friendly); the generation scopes the
  *  physical key. `options` threads metering into ingest embeds. */
-interface ISkillsStore extends ISkillsRagHandle {
+interface ISkillsStore extends ISkillsRagBackend {
   /** Open a new generation namespace AND return the active revision observed now —
    *  the FENCE token for activate(). */
   beginGeneration(): Promise<{ generation: string; baseRevision: string }>;
@@ -165,7 +188,7 @@ interface ISkillsStore extends ISkillsRagHandle {
    *  in-flight reader that already resolved it can finish its query — see
    *  "Retention of the retired generation". `manifest` records the
    *  embeddingSpaceId/dimension/schema this generation was built with and is published
-   *  atomically with the pointer flip, so `activeManifest()` always reflects the
+   *  atomically with the pointer flip, so `activeSnapshot()` always reflects the
    *  serving generation. */
   activate(
     generation: string,
@@ -188,16 +211,16 @@ interface ISkillPluginHost {
    *  half-built generation in a `finally` — no orphan embeddings leak. Idempotent;
    *  callable at startup OR out-of-band.
    *
-   *  RECALL-ONLY hosts (constructed with a read handle and NO `source` — see below)
+   *  RECALL-ONLY hosts (constructed with a `rag` handle and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
-   *  it is NOT empty — it (a) resolves the serving `dimension` if undeclared, by ONE
-   *  probe embed run through `options` (metered/cancellable — never an unmetered embed
-   *  at construction), and (b) reads `rag().activeManifest()` for an EAGER fail-fast if
-   *  the serving descriptor does not match the active generation. The same atomic check
-   *  then runs per-revision inside `rag().query` (the store can rotate out-of-band after
-   *  startup), so this eager check is an early warning, not the only guard. The store is
-   *  materialised out-of-band by a SEPARATE ingest instance/job. `options` threads
-   *  metering into both the probe and ingest. */
+   *  it is NOT empty — it calls `rag().activeManifest(options)`, which (a) resolves the
+   *  wrapper's serving `dimension` if undeclared, by ONE probe embed run through
+   *  `options` (metered/cancellable — never an unmetered embed at construction), and
+   *  (b) compares the now-complete serving descriptor to the active generation for an
+   *  EAGER fail-fast. The same atomic check then runs per-revision inside `rag().query`
+   *  (the store can rotate out-of-band after startup), so this eager check is an early
+   *  warning, not the only guard. The store is materialised out-of-band by a SEPARATE
+   *  ingest instance/job. `options` threads metering into the probe and ingest. */
   load(options?: CallOptions): Promise<void>;
   /** The score-bearing skills-RAG handle pipelines recall from. Always available —
    *  including on a recall-only host that never ingested, because it reads the
@@ -225,25 +248,35 @@ makeSkillPluginHost({
 })
 ```
 
-The `rag` handle for a recall-only host is built by an explicit COMPAT WRAPPER, so the
-serving descriptor is a first-class input (not hidden state) and the per-revision check
-lives in `query`:
+The `rag` handle for a recall-only host is built by an explicit COMPAT WRAPPER over the
+LOW-LEVEL backend, so the serving descriptor is a first-class input (not hidden state)
+and the per-revision check + pinning live in `query`:
 
 ```ts
-// backend = the raw read handle of the store written elsewhere (a bare
-//   ISkillsRagHandle that just reads/scores — no compatibility logic of its own).
-// descriptor = this deployment's serving SkillsEmbeddingDescriptor (mandatory
-//   embeddingSpaceId, dimension [declared or probed in load()], schema constant).
-const rag = makeCompatibleSkillsRag({ backend, descriptor });
+// backend  = ISkillsRagBackend — the raw store's pinning primitive: activeSnapshot()
+//            + queryRevision(revision, vector, k). NO compatibility logic, NO embedding.
+// embedder = the SERVING embedder — embeds query text AND performs the one-time
+//            dimension probe (lazily, metered). The serving side MUST embed query text,
+//            so the embedder naturally lives here, which is what lets `dimension` be
+//            resolved AFTER construction (resolving F1's ordering: descriptor need not
+//            be complete up front).
+// embeddingSpaceId + retrievalSchemaVersion: REQUIRED at construction (stable, no probe
+//            needed). `dimension`: optional — declared to skip the probe, else resolved
+//            on the first `activeManifest`/`query`.
+const rag = makeCompatibleSkillsRag({
+  backend, embedder, embeddingSpaceId, retrievalSchemaVersion, dimension /* optional */,
+});
 makeSkillPluginHost({ rag });
 ```
 
-`makeCompatibleSkillsRag` returns an `ISkillsRagHandle` whose `query` reads `backend`'s
-`ActiveSnapshot` once, compares `descriptor` to `snapshot.manifest`, caches the verdict
-by `snapshot.revision`, and serves empty on a mismatch — the descriptor reaches `query`
-by closure, resolving "where does the serving descriptor come from". The host requires
-EITHER `{ source, store }` (ingest) OR `{ rag }` (recall-only); supplying a write
-`store` to a serving process is exactly the over-privilege this split removes.
+`makeCompatibleSkillsRag` returns an `ISkillsRagHandle`: `query` embeds the text, reads
+`backend.activeSnapshot()` once, runs the per-`revision` compatibility check (caching the
+verdict by revision), and on a match issues `backend.queryRevision(snapshot.revision,
+vector, k)` — pinning is now implementable because the backend exposes a
+revision-explicit read, not a "query whatever is active" method. The descriptor reaches
+`query` by closure (resolving "where does the serving descriptor come from"). The host
+requires EITHER `{ source, store }` (ingest) OR `{ rag }` (recall-only); supplying a
+write `store` to a serving process is exactly the over-privilege this split removes.
 
 A gnostifiable pipeline depends on **`host.rag()` only** — an `ISkillsRagHandle`. It
 knows nothing about plugins, source, or backend; the host hides all of that.
@@ -458,6 +491,12 @@ skills:
   collection: skills                 # separate RAG collection
   store: { type: qdrant, url: ... }  # optional: a persistent networked store
                                      #   (omit → in-memory, self-ingest at startup)
+  embeddingSpaceId: sap-skills-emb-2026-06   # MANDATORY for a PERSISTENT store (here Qdrant):
+                                             #   stamped onto every generation at activate, so a
+                                             #   later recall-only instance can verify it. Bump
+                                             #   when the embedding space changes. (Omittable ONLY
+                                             #   for the in-memory self-ingest case — one process,
+                                             #   no cross-process reader to mismatch.)
   k: 4                               # max records injected per planning call
   threshold: 0.3                     # min cosine similarity [0..1]; below → dropped. Default 0.3
   maxInjectChars: 4000
@@ -550,11 +589,13 @@ engine ships no default `sources`.
   from the active generation (warn; its skills are NOT lost) and refreshes only the
   reachable sources; `strict:true` **aborts the whole load** (no activate, prior
   generation fully retained). Either way the store is never partially updated.
+- **Missing `embeddingSpaceId` on a PERSISTENT store** (ingest OR recall-only) → config
+  error. Never silently derive a vector-space id from a `provider:model` alias — alias
+  drift would pass undetected. Only the in-memory single-process self-ingest case may
+  omit it (the same embedder writes and reads in one run).
 - **Recall-only misconfig** → config error: `sources` given together with
-  `loadOnStartup: false`; BOTH `sources` and a persistent `store` omitted (a recall-only
-  host over an empty in-memory store would never serve anything); OR a persistent
-  recall-only config with NO explicit `embeddingSpaceId` (never silently derive a
-  vector-space id from a `provider:model` alias — alias drift would pass undetected).
+  `loadOnStartup: false`; or BOTH `sources` and a persistent `store` omitted (a
+  recall-only host over an empty in-memory store would never serve anything).
 - **Embedder/store incompatibility — startup AND runtime rotation.** At startup the
   serving descriptor (`embeddingSpaceId`/`dimension`/`retrievalSchemaVersion`)
   disagreeing with `activeManifest()` → abort (do NOT serve dimension-mismatched or
@@ -613,35 +654,34 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   duration would exceed `retiredGraceMs` is cancelled by its `CallOptions` timeout,
   reducing but not closing the window) — the hard guarantee is asserted only for the
   exact disciplines.
-- Recall-only host: constructed from a READ HANDLE ONLY (no `source`, no write `store`)
-  over a pre-populated store → `load()` opens no generation and performs no write, and
-  `rag().query` returns the store's active rows. Config validation rejects `sources` +
-  `loadOnStartup:false`, and rejects omitting both `sources` and a persistent `store`.
-- Embedder/store compatibility — startup: a recall-only `load()` over a store whose
-  `activeManifest()` reports a different `embeddingSpaceId`/`dimension`/
+- Recall-only host: constructed from a `rag` handle ONLY (no `source`, no write `store`)
+  over a pre-populated backend → `load()` opens no generation and performs no write, and
+  `rag().query` returns the backend's active rows. Config validation rejects `sources` +
+  `loadOnStartup:false`, rejects omitting both `sources` and a persistent `store`, and
+  rejects a persistent store (ingest OR recall-only) with NO explicit `embeddingSpaceId`.
+- Backend split + pinning: `makeCompatibleSkillsRag` consumes an `ISkillsRagBackend`
+  (`activeSnapshot()` + `queryRevision(revision, vector, k)`) — a backend that exposes
+  only "query active now" CANNOT be wrapped (pinning needs revision-explicit reads). The
+  wrapper reads `activeSnapshot()` once and issues `queryRevision(snapshot.revision, …)`;
+  a stub backend that flips its active pointer between the snapshot and the read still
+  gets read at the SNAPSHOT's revision (no TOCTOU).
+- Lazy dimension (no construction-time embed): a wrapper built WITHOUT a declared
+  `dimension` performs NO embed at construction; the first `activeManifest(options)` /
+  `query` runs ONE probe embed through `options` (asserted metered/cancellable) to
+  complete the descriptor, then caches it. A wrapper built WITH `dimension` never probes.
+  This is what lets the `makeCompatibleSkillsRag → makeSkillPluginHost → load()` order
+  work: only `embeddingSpaceId` + schema are needed up front.
+- Embedder/store compatibility — startup: a recall-only `load(options)` over a backend
+  whose `activeSnapshot()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
-  matching manifest → serves; null manifest → empty recall (no block). A persistent
-  recall-only config with NO explicit `embeddingSpaceId` is a config error (no silent
-  alias-derived id). A self-ingesting `activate` stamps the manifest from its own
-  descriptor (round-trips through `activeManifest()`).
+  matching → serves; null snapshot → empty recall (no block). A self-ingesting
+  `activate` stamps the manifest from its own descriptor (round-trips through
+  `activeSnapshot()`).
 - Embedder/store compatibility — RUNTIME ROTATION: a running recall-only `rag()` serves
   hits against compatible generation N; an out-of-band `activate` flips to an
   INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
   error; the per-revision verdict is cached (a second query at N+1 does not re-run the
-  check); a later compatible N+2 resumes serving. The serving descriptor is assembled
-  from the mandatory `embeddingSpaceId` + the schema constant + a `dimension` that is
-  either declared or resolved by ONE probe embed inside `load(options)` — the probe call
-  receives `options` (asserted metered/cancellable; no embed happens at construction).
-- Compat wrapper: `makeCompatibleSkillsRag({ backend, descriptor })` returns an
-  `ISkillsRagHandle` whose `query` closes over `descriptor` and runs the per-revision
-  check against `backend`'s `ActiveSnapshot`; passing a descriptor whose `embeddingSpaceId`
-  differs from the backend's active manifest makes `query` serve empty (the wrapper, not
-  the caller, owns the check).
-- Atomic snapshot (no TOCTOU): `query` reads the active pointer ONCE — a rotation that
-  lands AFTER the snapshot read does not affect the in-flight query (it serves the
-  snapshot's revision), and the compatibility verdict is keyed to the SAME revision the
-  vector read used (a stub store that flips revision between a separate `activeManifest()`
-  and the read is never exercised on the hot path).
+  check); a later compatible N+2 resumes serving.
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
   missing/empty `enabled` is a config error; reconciliation keys on the config `id`
   (`sourceId`), so a registry/version change does not orphan carry-forward.
