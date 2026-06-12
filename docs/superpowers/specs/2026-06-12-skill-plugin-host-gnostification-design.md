@@ -108,7 +108,10 @@ interface ISkillsStore extends ISkillsRagHandle {
    *  beginGeneration). A concurrent load that activated in between bumps the
    *  revision, so a stale activation is REJECTED (the late loader rebuilds from the
    *  new base) — no late writer can roll the active pointer back to an older
-   *  snapshot. Drops the prior generation on success. */
+   *  snapshot. On success the prior generation is RETIRED, not hard-deleted: it is
+   *  reclaimed after a bounded retention grace period (≫ a recall round-trip) so an
+   *  in-flight reader that already resolved it can finish its query — see
+   *  "Retention of the retired generation". */
   activate(generation: string, expectedRevision: string): Promise<void>;
   /** Delete a NON-activated generation's records. `load()` MUST call this in a
    *  `finally` for every generation that does not reach a successful activate
@@ -124,20 +127,33 @@ interface ISkillPluginHost {
    *  (strict:true) — see "Reconciliation". Then fenced `activate`. ANY exit WITHOUT a
    *  successful activate (error, strict abort, fenced-out CAS) `discardGeneration`s the
    *  half-built generation in a `finally` — no orphan embeddings leak. Idempotent;
-   *  callable at startup OR out-of-band. `options` threads metering into ingest. */
+   *  callable at startup OR out-of-band.
+   *
+   *  RECALL-ONLY hosts (constructed with NO `source` — see below) have nothing to
+   *  build: `load()` is a no-op that resolves immediately (it never touches the store,
+   *  never opens a generation). The store is materialised out-of-band by a SEPARATE
+   *  ingest instance/job; this host only serves recall. `options` threads metering
+   *  into ingest. */
   load(options?: CallOptions): Promise<void>;
-  /** The score-bearing skills-RAG handle pipelines recall from. */
+  /** The score-bearing skills-RAG handle pipelines recall from. Always available —
+   *  including on a recall-only host that never ran `load()`, because it reads the
+   *  already-active generation that an out-of-band ingest wrote. */
   rag(): ISkillsRagHandle;
 }
 ```
 
-Composed from two injected strategies at construction — `<>` is generic over both:
+Composed from injected strategies at construction — `<>` is generic over them. The
+`source` is **OPTIONAL**: omit it for a **recall-only** host that attaches to an
+already-materialised persistent store (the no-FS serving model — no source access, no
+ingest, no `enabled` list):
 
 ```ts
 makeSkillPluginHost({
-  source,  // WHERE FROM: acquisition strategy (Anthropic-marketplace adapter over an
-           //   HTTP/programmatic/FS fetcher) + the explicit enabled[] plugin list
-  store,   // HOW RAG GIVES BACK: an ISkillsStore impl (in-memory | vector-DB | FS-cache)
+  source,  // OPTIONAL. WHERE FROM: acquisition strategy (Anthropic-marketplace adapter
+           //   over an HTTP/programmatic/FS fetcher) + the explicit enabled[] list.
+           //   OMITTED → recall-only host: load() is a no-op, rag() reads the store as-is.
+  store,   // REQUIRED. HOW RAG GIVES BACK: an ISkillsStore impl (in-memory | vector-DB |
+           //   FS-cache). For recall-only it MUST be a persistent store written elsewhere.
 })
 ```
 
@@ -242,9 +258,12 @@ generation NEVER overwrites the active one (the active generation keeps serving 
 3. `upsert(generation, records)` writes the full desired set into the new namespace
    (embedding each `retrievalText`).
 4. `activate(generation, baseRevision)` — **FENCED atomic flip**: succeeds only if the
-   active revision is still `baseRevision`; queries then read the new namespace and the
-   prior generation is dropped (background delete). A **partially-failed build that
-   never reaches activate** leaves the prior snapshot fully intact.
+   active revision is still `baseRevision`; queries opened AFTER the flip read the new
+   namespace. The prior generation is **NOT hard-deleted at flip time** — it is retired
+   under a **retention grace period** (see below) so an in-flight recall that already
+   resolved the old active generation can finish its vector query without its rows
+   vanishing mid-read. A **partially-failed build that never reaches activate** leaves
+   the prior snapshot fully intact.
 
 The whole build runs inside `try { … activate } finally { if (!activated)
 discardGeneration(generation) }` — so an ingest error, a `strict` abort, OR a
@@ -273,12 +292,33 @@ is discarded. So:
 - **`strict: true` — all-or-nothing.** ANY source failure aborts the whole `load`: no
   `activate`, the prior generation is fully retained, the error surfaces.
 
+**Retention of the retired generation (no read-under-delete).** A recall is two steps:
+resolve the active generation, then run the vector query against it. If `activate`
+hard-deleted the prior generation between those two steps, an in-flight reader that
+resolved the old generation would query rows that no longer exist (empty/garbage
+recall). So the retired generation is kept for a bounded **grace period** before
+`discardGeneration` reclaims it:
+- **In-memory**: the swapped-out map is held by a short timer (a few seconds ≫ any
+  single query) — or simply by the readers that already captured the reference (GC
+  frees it once the last in-flight query returns), whichever the impl chooses.
+- **Vector-DB**: the pointer flip is cheap; a **background sweeper deletes the prior
+  generation's rows only after `retiredGraceMs`** (default e.g. 30 s, ≫ a recall
+  round-trip) — or, where the backend supports it, a **collection-alias swap** retires
+  the old collection atomically and drops it after the grace window. Readers must
+  resolve-then-query within the grace period; recall is a single fast round-trip, so
+  this holds with wide margin.
+
+A reader that captured generation N is therefore guaranteed its rows survive until it
+finishes, even though writers have moved the active pointer to N+1. The grace-period
+delete is distinct from `discardGeneration` of a NON-activated build (immediate — no
+reader ever saw it).
+
 For the **in-memory** store the namespace is a fresh map swapped on activate. For a
-**vector-DB** it is a generation label filtered on query, a cheap pointer flip on
-activate, and a background delete of the prior generation (or a collection-alias swap
-where supported). The **ephemeral in-memory-per-run** strategy has no prior
-generation to carry forward (each startup builds from scratch) but uses the same
-build→activate swap within a run for atomicity.
+**vector-DB** it is a generation label filtered on query and a cheap pointer flip on
+activate, with the grace-delayed sweep above (or a collection-alias swap where
+supported). The **ephemeral in-memory-per-run** strategy has no prior generation to
+carry forward (each startup builds from scratch) but uses the same build→activate swap
+within a run for atomicity.
 
 **4. Recall (runtime) — RAG-only, FS-free, the one new pipeline hook.** A
 `skillsRecall(query, k, threshold, options)` dependency over `ISkillsRagHandle`: the
@@ -333,6 +373,25 @@ skills:
       enabled: [sap-abap, sap-abap-cds]       # REQUIRED non-empty for fetched sources; "*" = all
 ```
 
+A **recall-only serving** instance — the canonical no-FS deployment, where a
+persistent store was materialised out-of-band by a separate ingest job — omits
+`sources` entirely and declares a persistent `store`:
+```yaml
+skills:
+  collection: skills
+  store: { type: qdrant, url: ... }  # REQUIRED here — recall reads what ingest wrote
+  loadOnStartup: false               # recall-only: no source access, no ingest, load() is a no-op
+  k: 4
+  threshold: 0.3
+  # NO `sources`, NO `enabled`, NO `strict` — there is nothing to build.
+```
+
+- **`loadOnStartup`** (default `true`) — when `false`, OR when `sources` is omitted, the
+  host is **recall-only**: it is constructed with no `source` strategy, `load()` is a
+  no-op, and `host.rag()` serves the already-active generation. A persistent `store` is
+  then REQUIRED (an in-memory store with nothing to ingest would always be empty). It is
+  a config error to give `sources` together with `loadOnStartup: false`, or to omit both
+  `sources` and a persistent `store`.
 - **`threshold`** — minimum cosine similarity in `[0, 1]`; a `SkillHit` with `score <
   threshold` is dropped (all dropped → no skills block). ONE engine-wide **default
   `0.3`** (not per-adapter), so behaviour is uniform; the recall hook applies it.
@@ -370,6 +429,9 @@ engine ships no default `sources`.
   from the active generation (warn; its skills are NOT lost) and refreshes only the
   reachable sources; `strict:true` **aborts the whole load** (no activate, prior
   generation fully retained). Either way the store is never partially updated.
+- **Recall-only misconfig** → config error: `sources` given together with
+  `loadOnStartup: false`; or BOTH `sources` and a persistent `store` omitted (a
+  recall-only host over an empty in-memory store would never serve anything).
 - Malformed manifest / `SKILL.md` → skip that item + warn; valid ones still load.
 - No embedder → skills ingestion skipped + warn (the controller already requires an
   embedder; same failure surface).
@@ -405,6 +467,14 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
 - Fenced activation (concurrency): two loads open generations A and B against the same
   `baseRevision`; B activates first; A's `activate(genA, baseRevisionA)` is REJECTED by
   the CAS → recall keeps B's snapshot, never reverts to A's older one.
+- Retired-generation retention (no read-under-delete): a reader resolves the active
+  generation N, then `activate` flips to N+1; the reader's subsequent vector query
+  against N still returns N's rows (the retired generation outlives the in-flight read);
+  N's rows are gone only after the grace period elapses.
+- Recall-only host: constructed with NO `source` over a pre-populated persistent store
+  → `load()` is a no-op (store untouched, no generation opened) and `rag().query`
+  returns the store's active rows. Config validation rejects `sources` +
+  `loadOnStartup:false`, and rejects omitting both `sources` and a persistent `store`.
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
   missing/empty `enabled` is a config error; reconciliation keys on the config `id`
   (`sourceId`), so a registry/version change does not orphan carry-forward.
