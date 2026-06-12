@@ -71,30 +71,48 @@ interface SkillHit {
   score: number; // cosine similarity — recall applies the configured threshold to it
 }
 
-/** Embedding compatibility descriptor of the ACTIVE generation. The query embedder
- *  MUST match these or similarity scores are dimension-mismatched (hard error) or
- *  meaningless (silent garbage). Written by the ingest that activated the generation;
- *  read by every recaller at startup to fail fast. */
-interface SkillsManifest {
-  embedderFingerprint: string; // provider+model+version, e.g. "openai:text-embedding-3-small@v1"
-  dimension: number;           // vector length — a mismatch is an immediate hard error
-  retrievalSchemaVersion: number; // retrievalText composition + chunking contract version
+/** Embedding compatibility descriptor — the three coordinates that must agree between
+ *  the embedder that WROTE a generation and the embedder that QUERIES it, or similarity
+ *  scores are dimension-mismatched (hard error) or meaningless (silent garbage). The
+ *  ingest stamps it onto the generation (SkillsManifest); the serving host derives its
+ *  OWN (SkillsEmbeddingDescriptor) and compares. The three fields come from THREE
+ *  different places — none is available from `IEmbedder.embed()` alone:
+ *   - embedderFingerprint: provider+model+version, from CONFIG (embed() does not expose
+ *     the model version reliably) — e.g. "openai:text-embedding-3-small@v1".
+ *   - dimension: the vector length — discoverable by ONE probe embed at host
+ *     construction (embed a fixed probe → vector.length), or declared in config.
+ *   - retrievalSchemaVersion: a HOST CODE CONSTANT (the retrievalText composition +
+ *     chunking contract version), NOT a property of the embedder. */
+interface SkillsEmbeddingDescriptor {
+  embedderFingerprint: string;
+  dimension: number;
+  retrievalSchemaVersion: number;
 }
+/** What an active generation carries, published atomically by activate(). Identical
+ *  shape to the serving descriptor; compatibility = field-by-field equality. */
+type SkillsManifest = SkillsEmbeddingDescriptor;
 
 /** Read side — what gnostifiable pipelines depend on. Score-bearing; no session
  *  metadata. `options` threads cancellation/telemetry/token-metering: the query
  *  embedding is logged via `options.requestLogger`, exactly like the controller's
  *  RAG (so skills recall embeds reach /v1/usage). */
 interface ISkillsRagHandle {
+  /** Recall. The store can be ROTATED out-of-band (a separate ingest activates a new
+   *  generation while this server runs), so `query` resolves `(activeRevision,
+   *  manifest)` ATOMICALLY with the read and verifies the serving descriptor against
+   *  THIS revision's manifest — not just the one seen at startup. The verdict is CACHED
+   *  by revision (one compatibility check per rotation, not per query). On a compatible
+   *  (or unchanged) revision it queries normally; on an INCOMPATIBLE revision it serves
+   *  NO hits (empty → pipeline degrades to agnostic) and raises a loud error/metric —
+   *  a still-running server never issues dimension-mismatched queries after a rotation. */
   query(
     text: string,
     opts: { k: number; threshold?: number },
     options?: CallOptions,
   ): Promise<readonly SkillHit[]>;
-  /** The active generation's embedding descriptor (null if no generation is active
-   *  yet). A recall-only host reads this at startup and FAILS FAST when the serving
-   *  embedder's fingerprint/dimension/schema version does not match — never serves
-   *  meaningless similarity against a store some OTHER embedder wrote. */
+  /** The active generation's manifest (null if none active yet). Used for the EAGER
+   *  startup fail-fast; the same comparison runs per-revision inside `query` thereafter
+   *  (the startup check is just the first, eager instance of it). */
   activeManifest(): Promise<SkillsManifest | null>;
 }
 
@@ -153,10 +171,12 @@ interface ISkillPluginHost {
    *
    *  RECALL-ONLY hosts (constructed with a read handle and NO `source` — see below)
    *  have nothing to build: `load()` is a no-op EXCEPT it reads `rag().activeManifest()`
-   *  and FAILS FAST if the serving embedder's fingerprint/dimension/schema does not
-   *  match — it never opens a generation, never writes. The store is materialised
-   *  out-of-band by a SEPARATE ingest instance/job. `options` threads metering into
-   *  ingest. */
+   *  for an EAGER fail-fast if the serving descriptor's fingerprint/dimension/schema
+   *  does not match the active generation — it never opens a generation, never writes.
+   *  The same check then runs per-revision inside `rag().query` (the store can rotate
+   *  out-of-band after startup), so this eager check is an early warning, not the only
+   *  guard. The store is materialised out-of-band by a SEPARATE ingest instance/job.
+   *  `options` threads metering into ingest. */
   load(options?: CallOptions): Promise<void>;
   /** The score-bearing skills-RAG handle pipelines recall from. Always available —
    *  including on a recall-only host that never ingested, because it reads the
@@ -341,10 +361,11 @@ GUARANTEES reader completion, and a best-effort one that does not:
   lease/snapshot, a background sweeper deletes generation N's rows after `retiredGraceMs`
   (default e.g. 30 s). This is **best-effort, NOT a guarantee**: a pathologically slow
   query (network retry, GC pause) exceeding the grace window can still read-under-delete.
-  The mitigation is bounding: recall is a single fast round-trip with a `CallOptions`
-  timeout `< retiredGraceMs`, so a query that would outlive the grace window is
-  cancelled rather than allowed to race the sweep. Operators needing a hard guarantee
-  use a lease/snapshot-capable backend (above).
+  The mitigation only REDUCES the window: recall is a single fast round-trip with a
+  `CallOptions` timeout `< retiredGraceMs`, so a query that would outlive the grace
+  window is cancelled — but cancellation does not prove the backend read physically
+  finished before the sweep, so a race remains possible. Operators needing a hard
+  guarantee use a lease/snapshot-capable backend (above).
 
 So a reader that pins generation N keeps its rows under the exact disciplines; under
 plain time-grace the timeout-`< retiredGraceMs` invariant makes a race practically
@@ -432,16 +453,20 @@ skills:
   REQUIRED (an in-memory store with nothing to ingest would always be empty). It is a
   config error to give `sources` together with `loadOnStartup: false`, or to omit both
   `sources` and a persistent `store`.
-- **Embedder compatibility (recall-only fail-fast).** A recall-only host reads
-  `rag().activeManifest()` at startup and aborts unless the serving embedder matches the
-  active generation's `embedderFingerprint`, `dimension`, AND `retrievalSchemaVersion`.
-  A dimension mismatch is a hard error; a fingerprint/schema mismatch yields meaningless
-  similarity — both fail fast rather than serve garbage recall. (A self-ingesting host
-  writes the manifest from its own embedder at `activate`, so it is compatible by
-  construction.)
+- **Embedder compatibility (startup AND per-revision).** The host derives its serving
+  `SkillsEmbeddingDescriptor` from THREE sources: `embedderFingerprint` from the config
+  block above (`embedder: { provider, model }` ± an explicit `@version`), `dimension`
+  from one probe embed at construction (or a declared `dimension:`), and
+  `retrievalSchemaVersion` from a host code constant. It checks this against
+  `activeManifest()` EAGERLY at startup (fail fast), and again per-revision inside
+  `query` whenever the store rotates — a dimension mismatch is a hard error, a
+  fingerprint/schema mismatch is meaningless similarity, and either makes that revision
+  serve NO recall. A self-ingesting host stamps the manifest from its own descriptor at
+  `activate`, so it is compatible by construction.
 - **`retiredGraceMs`** (vector-DB, plain time-grace only; default e.g. `30000`) — how
-  long a retired generation's rows linger before the background sweep. Recall
-  `CallOptions` timeout MUST be `< retiredGraceMs`. Ignored by lease/snapshot-capable
+  long a retired generation's rows linger before the background sweep. Setting recall's
+  `CallOptions` timeout `< retiredGraceMs` REDUCES (does not eliminate) the read-under-
+  delete window — plain time-grace is best-effort. Ignored by lease/snapshot-capable
   backends and the in-memory store (those retire exactly — see "Retention").
 - **`threshold`** — minimum cosine similarity in `[0, 1]`; a `SkillHit` with `score <
   threshold` is dropped (all dropped → no skills block). ONE engine-wide **default
@@ -483,14 +508,21 @@ engine ships no default `sources`.
 - **Recall-only misconfig** → config error: `sources` given together with
   `loadOnStartup: false`; or BOTH `sources` and a persistent `store` omitted (a
   recall-only host over an empty in-memory store would never serve anything).
-- **Embedder/store incompatibility (recall-only)** → fail fast at startup: the serving
-  embedder's fingerprint/dimension/`retrievalSchemaVersion` disagrees with
-  `activeManifest()` → abort with a clear error (do NOT serve dimension-mismatched or
-  semantically-meaningless recall). No active generation yet (manifest null) → recall is
-  empty (no block) until an ingest activates one.
-- **Retired-generation read race (vector-DB plain time-grace)** → bounded out: recall's
-  `CallOptions` timeout is `< retiredGraceMs`, so an over-long query is cancelled before
-  it can read a swept generation; lease/snapshot backends and in-memory have no race.
+- **Embedder/store incompatibility — startup AND runtime rotation.** At startup the
+  serving descriptor disagreeing with `activeManifest()` → abort (do NOT serve
+  dimension-mismatched or semantically-meaningless recall). At RUNTIME, an out-of-band
+  ingest can activate a new, incompatible generation while the server runs: `query`
+  re-checks per revision (verdict cached by revision) and, on an incompatible one,
+  serves NO recall (empty → agnostic) and raises a loud error/metric — it does NOT crash
+  the running pipeline. No active generation yet (manifest null) → recall empty (no
+  block) until an ingest activates one.
+- **Retired-generation read race (vector-DB plain time-grace) — best-effort, NOT a
+  guarantee.** Setting recall's `CallOptions` timeout `< retiredGraceMs` REDUCES the
+  window but does not close it: cancellation does not prove the backend query physically
+  finished before the sweep. A hard no-read-under-delete guarantee exists ONLY for
+  lease/snapshot (vector-DB) and refcount/captured-reference (in-memory) retention; the
+  plain time-grace path is explicitly best-effort. Operators needing the guarantee pick
+  a lease/snapshot-capable backend.
 - Malformed manifest / `SKILL.md` → skip that item + warn; valid ones still load.
 - No embedder → skills ingestion skipped + warn (the controller already requires an
   embedder; same failure surface).
@@ -529,19 +561,26 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
 - Retired-generation retention (no read-under-delete): EXACT discipline — a reader pins
   generation N (captured reference / refcount lease), `activate` flips to N+1, the
   reader's subsequent query against N still returns N's rows, and N is reclaimed only
-  after the reader releases. Plain time-grace — a query whose duration would exceed
-  `retiredGraceMs` is cancelled by its `CallOptions` timeout (timeout `< retiredGraceMs`
-  invariant) rather than racing the sweep.
+  after the reader releases. Plain time-grace is asserted as BEST-EFFORT (a query whose
+  duration would exceed `retiredGraceMs` is cancelled by its `CallOptions` timeout,
+  reducing but not closing the window) — the hard guarantee is asserted only for the
+  exact disciplines.
 - Recall-only host: constructed from a READ HANDLE ONLY (no `source`, no write `store`)
   over a pre-populated store → `load()` opens no generation and performs no write, and
   `rag().query` returns the store's active rows. Config validation rejects `sources` +
   `loadOnStartup:false`, and rejects omitting both `sources` and a persistent `store`.
-- Embedder/store compatibility: a recall-only `load()` over a store whose
+- Embedder/store compatibility — startup: a recall-only `load()` over a store whose
   `activeManifest()` reports a different `embedderFingerprint`/`dimension`/
-  `retrievalSchemaVersion` than the serving embedder ABORTS with a clear error;
+  `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
   matching manifest → serves; null manifest → empty recall (no block). A self-ingesting
-  `activate` stamps the manifest from its own embedder (round-trips through
+  `activate` stamps the manifest from its own descriptor (round-trips through
   `activeManifest()`).
+- Embedder/store compatibility — RUNTIME ROTATION: a running recall-only `rag()` serves
+  hits against compatible generation N; an out-of-band `activate` flips to an
+  INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
+  error; the per-revision verdict is cached (a second query at N+1 does not re-run the
+  check); a later compatible N+2 resumes serving. The serving descriptor is assembled
+  from config fingerprint + one probe-embed dimension + the host schema constant.
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
   missing/empty `enabled` is a config error; reconciliation keys on the config `id`
   (`sourceId`), so a registry/version change does not orphan carry-forward.
