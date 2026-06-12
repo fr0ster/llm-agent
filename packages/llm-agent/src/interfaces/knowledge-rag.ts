@@ -51,7 +51,7 @@ export interface KnowledgeFilter {
 export interface IKnowledgeRagHandle {
   query(
     text: string,
-    opts?: { k?: number; filter?: KnowledgeFilter },
+    opts?: { k?: number; filter?: KnowledgeFilter; options?: CallOptions },
   ): Promise<readonly KnowledgeEntry[]>;
   list(filter: KnowledgeFilter): Promise<readonly KnowledgeEntry[]>;
   write(entry: {

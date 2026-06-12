@@ -873,6 +873,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.runId,
       RECALL_K_STEP * (maxAttempts + 1),
       ['step-result'],
+      ctx.options,
     );
     const recalledMcp = await runScopedRecall(
       rag,
@@ -881,6 +882,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       bundle.runId,
       mcpBound,
       ['mcp-result'],
+      ctx.options,
     );
     // SEPARATE character budgets per kind: a single huge step-result cannot consume
     // the whole budget and starve the MCP context (and vice-versa).
@@ -930,6 +932,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         bundle.runId,
         evBound,
         RECALL_ARTIFACT_TYPES,
+        ctx.options,
       );
       const topArtifact = hits[0]
         ? await relevantExtract(
@@ -938,6 +941,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             RECALL_EVIDENCE_CHARS,
             // biome-ignore lint/style/noNonNullAssertion: distance strategies require an embedder; the factory enforces it (Task 17).
             deps.embedder!,
+            ctx.options,
           )
         : undefined;
       evidence.push({ ref, hit: hits.length > 0, topArtifact });
@@ -1724,7 +1728,8 @@ async function collectApproved(
  *  Over-fetch `kPrime` (caller-supplied so the duplication bound is justified PER
  *  KIND), then dedup and cap to `k`. Dedup: step-results (have `seq`) →
  *  precedence-winner per seq; mcp-results → by `identityKey`. Embedding rank order
- *  is preserved through the dedup. */
+ *  is preserved through the dedup.
+ *  `options` is forwarded into the embedder so recall-time embeds are metered. */
 export async function runScopedRecall(
   rag: IKnowledgeRagHandle,
   text: string,
@@ -1732,23 +1737,22 @@ export async function runScopedRecall(
   runId: string | undefined,
   kPrime: number,
   artifactType: readonly string[],
+  options?: CallOptions,
 ): Promise<readonly KnowledgeEntry[]> {
   const hits = await rag.query(text, {
     k: kPrime,
     filter: { runId, artifactType },
+    options,
   });
   const bestStep = new Map<number, KnowledgeEntry>();
   const bestMcp = new Map<string, KnowledgeEntry>();
   for (const e of hits) {
     if (e.metadata.seq !== undefined && e.metadata.status !== undefined) {
       const prev = bestStep.get(e.metadata.seq);
-      if (
-        !prev ||
-        rankStatus(e.metadata.status) >= rankStatus(prev.metadata.status)
-      )
-        bestStep.set(e.metadata.seq, e);
+      if (!prev || isBetterStep(e, prev)) bestStep.set(e.metadata.seq, e);
     } else if (e.metadata.identityKey) {
-      bestMcp.set(e.metadata.identityKey, e);
+      const prev = bestMcp.get(e.metadata.identityKey);
+      if (!prev || isBetterMcp(e, prev)) bestMcp.set(e.metadata.identityKey, e);
     }
   }
   // Walk hits in embedding-rank order; emit each (runId,seq) / identityKey once.
@@ -1785,6 +1789,27 @@ function rankStatus(s?: string): number {
         : 0;
 }
 
+/** True when candidate `a` is a better winner than current `b` for step-result
+ *  dedup. Latest-wins by EXECUTION IDENTITY, not by semantic-rank position:
+ *  1. Higher status rank wins; on tie →
+ *  2. Higher attempt wins; on further tie →
+ *  3. Later createdAt wins (missing = older: compare with '' as sentinel). */
+function isBetterStep(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
+  const ra = rankStatus(a.metadata.status);
+  const rb = rankStatus(b.metadata.status);
+  if (ra !== rb) return ra > rb;
+  const aa = a.metadata.attempt ?? 0;
+  const ba = b.metadata.attempt ?? 0;
+  if (aa !== ba) return aa > ba;
+  return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
+}
+
+/** True when candidate `a` is a better winner than current `b` for mcp-result
+ *  dedup. Latest-fetch wins: later createdAt (missing = older). */
+function isBetterMcp(a: KnowledgeEntry, b: KnowledgeEntry): boolean {
+  return (a.metadata.createdAt ?? '') > (b.metadata.createdAt ?? '');
+}
+
 const MAX_EXTRACT_WINDOWS = 64;
 /** Return the ≤`maxChars` fragment of `content` most similar to `ref` by EMBEDDING
  *  (NOT ASCII lexical overlap). DIRECT single-pass ranking: every candidate is
@@ -1802,6 +1827,7 @@ export async function relevantExtract(
   ref: string,
   maxChars: number,
   embedder: IEmbedder,
+  options?: CallOptions,
 ): Promise<string> {
   if (content.length <= maxChars) return content;
   if (maxChars < 3) return content.slice(0, Math.max(0, maxChars));
@@ -1810,11 +1836,14 @@ export async function relevantExtract(
     Math.floor(body / 2),
     Math.ceil(content.length / MAX_EXTRACT_WINDOWS),
   );
-  const { vector: q } = await embedder.embed(ref);
+  const { vector: q } = await embedder.embed(ref, options);
   let bestStart = 0;
   let bestScore = Number.NEGATIVE_INFINITY;
   for (let s = 0; s < content.length; s += stride) {
-    const { vector } = await embedder.embed(content.slice(s, s + body));
+    const { vector } = await embedder.embed(
+      content.slice(s, s + body),
+      options,
+    );
     const score = cosine(q, vector);
     if (score > bestScore) {
       bestScore = score;

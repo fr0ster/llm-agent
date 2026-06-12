@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   IEmbedder,
   KnowledgeEntry,
   KnowledgeFilter,
@@ -26,11 +27,24 @@ export function cosine(a: number[], b: number[]): number {
 
 /** Embedder-backed semantic index for the knowledge backend: filter PRE-cap, then
  *  cosine-rank, then top-K. The runId filter is applied to the candidate set
- *  BEFORE the cap, so a run's hits are never starved by other runs. */
-export function makeKnowledgeSemanticIndex(embedder: IEmbedder) {
+ *  BEFORE the cap, so a run's hits are never starved by other runs.
+ *
+ *  Infrastructure artifact types (e.g. `controller-bundle`, `controller-terminal`)
+ *  are skipped on upsert — they carry the full durable transcript and must NOT be
+ *  embedded: they waste tokens and, once the bundle grows beyond the embedder's
+ *  input limit, the JSONL rebuild fails permanently. */
+export function makeKnowledgeSemanticIndex(
+  embedder: IEmbedder,
+  skipArtifactTypes: readonly string[] = [
+    'controller-bundle',
+    'controller-terminal',
+  ],
+) {
   const bySession = new Map<string, Indexed[]>();
   return {
     async upsert(sid: string, e: KnowledgeEntry): Promise<void> {
+      // Skip infrastructure artifact types — never embed, never index.
+      if (skipArtifactTypes.includes(e.metadata.artifactType)) return;
       const { vector } = await embedder.embed(e.content);
       const arr = bySession.get(sid);
       if (arr) arr.push({ entry: e, vector });
@@ -41,12 +55,13 @@ export function makeKnowledgeSemanticIndex(embedder: IEmbedder) {
       text: string,
       k?: number,
       filter?: KnowledgeFilter,
+      options?: CallOptions,
     ): Promise<readonly KnowledgeEntry[]> {
       const all = bySession.get(sid) ?? [];
       const scoped = filter
         ? all.filter((x) => matchesKnowledgeFilter(x.entry.metadata, filter))
         : all; // PRE-cap
-      const { vector: q } = await embedder.embed(text);
+      const { vector: q } = await embedder.embed(text, options);
       const ranked = scoped
         .map((x) => ({ e: x.entry, s: cosine(q, x.vector) }))
         .sort((a, b) => b.s - a.s)

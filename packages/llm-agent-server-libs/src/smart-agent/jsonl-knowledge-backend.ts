@@ -1,6 +1,10 @@
 import { appendFile, mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
-import type { KnowledgeEntry, KnowledgeFilter } from '@mcp-abap-adt/llm-agent';
+import type {
+  CallOptions,
+  KnowledgeEntry,
+  KnowledgeFilter,
+} from '@mcp-abap-adt/llm-agent';
 import {
   type KnowledgeBackend,
   matchesKnowledgeFilter,
@@ -14,6 +18,7 @@ interface SemanticIndex {
     text: string,
     k?: number,
     filter?: KnowledgeFilter,
+    options?: CallOptions,
   ): Promise<readonly KnowledgeEntry[]>;
   deleteSession(sid: string): void;
 }
@@ -94,13 +99,16 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
     text: string,
     k?: number,
     filter?: KnowledgeFilter,
+    options?: CallOptions,
   ): Promise<readonly KnowledgeEntry[]> {
     if (this.semantic) {
       // build + query in ONE run() so the query reads a consistent snapshot.
+      // options is captured in closure and forwarded into the index query so the
+      // embedder receives requestLogger for token metering.
       return this.run(sid, async () => {
         await this.build(sid);
         // biome-ignore lint/style/noNonNullAssertion: guarded by the outer check
-        return this.semantic!.query(sid, text, k, filter);
+        return this.semantic!.query(sid, text, k, filter, options);
       });
     }
     let all = await this.scan(sid);

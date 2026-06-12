@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { LlmReviewer } from '../reviewer.js';
+import { LlmReviewer, parseReview } from '../reviewer.js';
 import type { ISubagentClient } from '../subagent-client.js';
 
 const client = (reply: string): ISubagentClient => ({
@@ -105,6 +105,84 @@ describe('LlmReviewer', () => {
     assert.match(
       res.kind === 'judge-failure' ? res.reason : '',
       /boom|review/i,
+    );
+  });
+});
+
+describe('parseReview — partial coercion (Finding 4)', () => {
+  it('partial with non-empty approved and EMPTY remainder → coerced to ok (keeps approved)', () => {
+    const res = parseReview(
+      JSON.stringify({
+        status: 'partial',
+        approved: 'ACCEPTED CONTENT',
+        remainder: '',
+        note: 'all done',
+      }),
+    );
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'ok');
+    assert.equal(
+      res.kind === 'outcome' && res.outcome.approved,
+      'ACCEPTED CONTENT',
+    );
+    assert.equal(res.kind === 'outcome' && res.outcome.remainder, '');
+    assert.equal(res.kind === 'outcome' && res.outcome.note, 'all done');
+  });
+
+  it('partial with non-empty approved and whitespace-only remainder → coerced to ok', () => {
+    const res = parseReview(
+      JSON.stringify({
+        status: 'partial',
+        approved: 'DONE',
+        remainder: '   ',
+        note: '',
+      }),
+    );
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'ok');
+    assert.equal(res.kind === 'outcome' && res.outcome.approved, 'DONE');
+  });
+
+  it('partial with non-empty approved AND non-empty remainder stays partial (unchanged)', () => {
+    const res = parseReview(
+      JSON.stringify({
+        status: 'partial',
+        approved: 'PART DONE',
+        remainder: 'still need this',
+        note: '',
+      }),
+    );
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'partial');
+    assert.equal(res.kind === 'outcome' && res.outcome.approved, 'PART DONE');
+    assert.equal(
+      res.kind === 'outcome' && res.outcome.remainder,
+      'still need this',
+    );
+  });
+
+  it('LlmReviewer.review: partial with empty remainder → ok (via LLM path)', async () => {
+    const r = new LlmReviewer(
+      client(
+        JSON.stringify({
+          status: 'partial',
+          approved: 'COMPLETE RESULT',
+          remainder: '',
+          note: 'everything done',
+        }),
+      ),
+    );
+    const res = await r.review(
+      { name: 's1', instructions: 'do it' },
+      [],
+      'COMPLETE RESULT',
+      {},
+    );
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'ok');
+    assert.equal(
+      res.kind === 'outcome' && res.outcome.approved,
+      'COMPLETE RESULT',
     );
   });
 });

@@ -109,6 +109,69 @@ describe('runScopedRecall', () => {
       'both distinct seqs kept (retry-dup did not starve)',
     );
   });
+  // Finding 2: latest-wins dedup
+  it('step dedup: same seq + same status → higher attempt wins (not rank-position)', async () => {
+    // Semantic order: attempt=0 appears FIRST (higher rank), attempt=1 SECOND.
+    // The winner must be attempt=1 (latest execution identity), not attempt=0.
+    const { rag } = ragOf([
+      E(
+        {
+          runId: 'R',
+          seq: 0,
+          attempt: 0,
+          status: 'ok',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        'lower-attempt',
+      ),
+      E(
+        {
+          runId: 'R',
+          seq: 0,
+          attempt: 1,
+          status: 'ok',
+          createdAt: '2026-01-02T00:00:00.000Z',
+        },
+        'higher-attempt',
+      ),
+    ]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 25, ['step-result']);
+    assert.equal(out.length, 1);
+    assert.equal(
+      out[0].content,
+      'higher-attempt',
+      'higher attempt wins on same status',
+    );
+  });
+
+  it('mcp dedup: same identityKey → later createdAt wins (not rank-position)', async () => {
+    // Semantic order: older entry FIRST, newer entry SECOND (lower rank).
+    // The winner must be the one with later createdAt.
+    const { rag } = ragOf([
+      E(
+        {
+          runId: 'R',
+          artifactType: 'mcp-result',
+          identityKey: 'K1',
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+        'old-fetch',
+      ),
+      E(
+        {
+          runId: 'R',
+          artifactType: 'mcp-result',
+          identityKey: 'K1',
+          createdAt: '2026-01-02T00:00:00.000Z',
+        },
+        'new-fetch',
+      ),
+    ]);
+    const out = await runScopedRecall(rag, 'q', 5, 'R', 25, ['mcp-result']);
+    assert.equal(out.length, 1);
+    assert.equal(out[0].content, 'new-fetch', 'later createdAt wins');
+  });
+
   it('run-wide MCP bound keeps a distinct identity after ALL prior-attempt dups', async () => {
     const maxSteps = 2;
     const maxStepAttempts = 2;

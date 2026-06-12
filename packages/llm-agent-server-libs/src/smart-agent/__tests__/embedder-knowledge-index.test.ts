@@ -27,6 +27,64 @@ const meta = (over: object) => ({
   ...over,
 });
 
+describe('makeKnowledgeSemanticIndex — infra artifact skip (Finding 1)', () => {
+  it('controller-bundle entries are NOT embedded and NOT returned by query', async () => {
+    let embedCalls = 0;
+    const counting = {
+      embed: async (t: string) => {
+        embedCalls++;
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(counting);
+    // Infrastructure artifact — must be silently skipped.
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ artifactType: 'controller-bundle', runId: 'R' }),
+    });
+    // Recallable artifact — must be indexed.
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    assert.equal(embedCalls, 1, 'bundle content was never embedded');
+    const hits = await idx.query('s', 'alpha', 10);
+    assert.equal(hits.length, 1, 'only the step-result is returned');
+    assert.equal(hits[0].metadata.artifactType, 'step-result');
+  });
+
+  it('controller-terminal entries are also skipped', async () => {
+    const idx = makeKnowledgeSemanticIndex(stub);
+    await idx.upsert('s', {
+      content: 'beta',
+      metadata: meta({ artifactType: 'controller-terminal', runId: 'R' }),
+    });
+    const hits = await idx.query('s', 'beta', 10);
+    assert.equal(hits.length, 0, 'controller-terminal never indexed');
+  });
+
+  it('query forwards CallOptions to the embedder (Finding 3)', async () => {
+    const receivedOptions: unknown[] = [];
+    const optCapture = {
+      embed: async (t: string, options?: unknown) => {
+        receivedOptions.push(options);
+        return { vector: VOCAB[t.trim().toLowerCase()] ?? [0, 0, 0] };
+      },
+    } as never;
+    const idx = makeKnowledgeSemanticIndex(optCapture);
+    await idx.upsert('s', {
+      content: 'alpha',
+      metadata: meta({ artifactType: 'step-result', runId: 'R' }),
+    });
+    const sentinel = { requestLogger: 'LOGGER' as unknown };
+    await idx.query('s', 'alpha', 10, undefined, sentinel as never);
+    assert.ok(
+      receivedOptions.some((o) => o === sentinel),
+      'options sentinel forwarded to embed on query',
+    );
+  });
+});
+
 describe('makeKnowledgeSemanticIndex', () => {
   it('ranks by cosine similarity, not insertion order', async () => {
     const idx = makeKnowledgeSemanticIndex(stub);

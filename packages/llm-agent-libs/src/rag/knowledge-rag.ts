@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   IKnowledgeRagHandle,
   IToolsRagHandle,
   KnowledgeEntry,
@@ -20,12 +21,14 @@ export interface KnowledgeBackend {
   /** Semantic similarity search within a session, relevance-capped by k. When
    *  `filter` is given it MUST be applied to the candidate set BEFORE the K cap
    *  (so a runId filter is never starved by other runs' artifacts crowding the
-   *  cap), preserving the backend's native ranking. */
+   *  cap), preserving the backend's native ranking. `options` is forwarded to
+   *  the embedder so recall-time embeds are metered via `options.requestLogger`. */
   semanticQuery(
     sessionId: string,
     text: string,
     k?: number,
     filter?: KnowledgeFilter,
+    options?: CallOptions,
   ): Promise<readonly KnowledgeEntry[]>;
   /** Exhaustive durable scan of ALL entries for a session (no relevance
    *  cap). Used by list() and by rehydrate. */
@@ -75,15 +78,17 @@ export class KnowledgeRag implements IKnowledgeRagHandle {
 
   async query(
     text: string,
-    opts?: { k?: number; filter?: KnowledgeFilter },
+    opts?: { k?: number; filter?: KnowledgeFilter; options?: CallOptions },
   ): Promise<readonly KnowledgeEntry[]> {
-    // Pass the filter INTO semanticQuery so the backend applies it PRE-cap
-    // (preserving its native ranking); a defensive post-filter is harmless.
+    // Pass the filter AND options INTO semanticQuery so the backend applies the
+    // filter PRE-cap (preserving its native ranking) and the embedder receives
+    // options (for requestLogger metering); a defensive post-filter is harmless.
     const hits = await this.backend.semanticQuery(
       this.sessionId,
       text,
       opts?.k,
       opts?.filter,
+      opts?.options,
     );
     const filter = opts?.filter;
     if (!filter) return hits;
@@ -201,6 +206,7 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
         text: string,
         k?: number,
         filter?: KnowledgeFilter,
+        options?: CallOptions,
       ): Promise<readonly KnowledgeEntry[]>;
       deleteSession(sid: string): void;
     },
@@ -222,8 +228,10 @@ export class InMemoryKnowledgeBackend implements KnowledgeBackend {
     text: string,
     k?: number,
     filter?: KnowledgeFilter,
+    options?: CallOptions,
   ) {
-    if (this.semantic) return this.semantic.query(sid, text, k, filter);
+    if (this.semantic)
+      return this.semantic.query(sid, text, k, filter, options);
     let a = this.of(sid);
     if (filter) a = a.filter((e) => matches(e.metadata, filter));
     return k ? a.slice(0, k) : a.slice();

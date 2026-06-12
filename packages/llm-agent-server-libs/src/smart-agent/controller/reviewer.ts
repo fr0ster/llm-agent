@@ -138,6 +138,14 @@ export function parseReview(content: string): ReviewResult {
         },
       };
     }
+    // A `partial` with non-empty approved but EMPTY remainder means there is no
+    // remaining work — the accepted content IS the complete result → coerce to `ok`.
+    if (status === 'partial' && remainder.trim().length === 0) {
+      return {
+        kind: 'outcome',
+        outcome: { status: 'ok', approved, remainder: '', note },
+      };
+    }
     return { kind: 'outcome', outcome: { status, approved, remainder, note } };
   } catch {
     return { kind: 'judge-failure', reason: 'unparsable reviewer reply' };
