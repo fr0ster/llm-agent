@@ -84,7 +84,7 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
 | **Group** | The **conflict-isolation unit = one collection** in the skills-RAG. The mapping of skills→group is decided ENTIRELY by the injected strategy (it may map 1:1 to a plugin, bundle, or split — the host imposes no rule). Recall via `host.rag(group)` only ever sees that group's records. |
 | **Collection** | The physical namespace in the skills-RAG that backs one group. Group ↔ collection is 1:1. The strategy stamps each record's collection. |
 | **Collection placement** | The strategy's decision of which collection a fetched skill record belongs to. A strategy output, NOT host config. |
-| **Catalog** | The authoritative set of collections + their descriptions. The strategy emits the DESIRED catalog (`SkillIngestResult.collections`); the store persists the ACTIVE catalog (`listCollections()`). `load()` reconciles store→desired (dropping collections no longer desired); recall-only reads it for `groups()`. |
+| **Catalog** | The authoritative set of collections + their descriptions. The strategy emits the DESIRED catalog (`SkillIngestResult.collections`); the store persists the ACTIVE catalog (`readCatalog()`). `load()` reconciles store→desired (dropping collections no longer desired); recall-only reads it for `groups()`. |
 | **Source / strategy** | A pluggable acquisition+materialisation strategy feeding the host — it fetches, parses, AND assigns collection placement: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-placed). Identified by a stable `sourceId`. |
 | **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into collections the strategy produced. |
 | **Skill plugin-host** (`ISkillPluginHost`) | The GENERIC component that runs the strategy's `load()` (acquire→parse→place→materialise) and exposes recall (`groups()`, `rag(group)`) over the resulting collections. Holds no source/grouping semantics. The "part 1" of the system. |
@@ -211,18 +211,32 @@ interface ActiveSnapshot {
  *  collide) AND owns the cross-collection CATALOG (which collections exist + their
  *  descriptions), persisted alongside the data so a recall-only host can read it:
  *
+ *    interface CatalogEntry {
+ *      collection: SkillGroupInfo;        // group id + description + physical collection
+ *      sources: readonly string[];        // OWNERSHIP: sourceIds that contribute records here
+ *      tombstone?: boolean;               // published-but-being-reclaimed (not served)
+ *    }
+ *    interface CatalogSnapshot {
+ *      catalogRevision: string;           // the CATALOG's own fence token (separate from
+ *                                         //   per-collection generation revisions)
+ *      entries: readonly CatalogEntry[];  // ACTIVE (non-tombstone) entries are what groups() shows
+ *    }
  *    interface ISkillsCatalog {
- *      // The persisted set of collections with descriptions (the authoritative active
- *      // catalog). Recall-only reads this for groups(); ingest reconciles against it.
- *      listCollections(options?: CallOptions): Promise<readonly SkillGroupInfo[]>;
+ *      // Atomic read of the active catalog AND its revision (the CAS fence for publish).
+ *      // Recall-only reads this for groups(); ingest reconciles + fences against it.
+ *      readCatalog(options?: CallOptions): Promise<CatalogSnapshot>;
  *    }
  *    interface ISkillsStoreProvider extends ISkillsCatalog {
  *      forGroup(group: string): ISkillsStore;       // read+write handle for one collection
- *      // Atomically publish the desired catalog (collection set + descriptions) — called
- *      // by load() AFTER per-collection activates, so listCollections reflects the new set.
- *      publishCatalog(collections: readonly SkillGroupInfo[], options?: CallOptions): Promise<void>;
- *      // Retire a collection no longer desired: deactivate (drop from the active catalog)
- *      // then drop its generations under the same retention grace as a generation swap.
+ *      // FENCED publish of the new catalog (collections + ownership + tombstones for removed
+ *      // ones). Succeeds ONLY if the active catalogRevision still == expected — a stale loader
+ *      // that another loader overtook is REJECTED (it must NOT clobber the newer set). This is
+ *      // the single COMMIT POINT of collection-set reconciliation; it does NOT physically delete.
+ *      publishCatalog(expectedCatalogRevision: string,
+ *                     entries: readonly CatalogEntry[], options?: CallOptions): Promise<void>;
+ *      // Physically reclaim a TOMBSTONED collection's generations — called AFTER a successful
+ *      // publishCatalog, under the retention grace. Idempotent + resumable (a crash before it
+ *      // finishes leaves a tombstoned-but-not-served collection a later load/GC reclaims).
  *      dropCollection(group: string, options?: CallOptions): Promise<void>;
  *    }
  *    interface ISkillsRagBackendProvider extends ISkillsCatalog {
@@ -232,7 +246,7 @@ interface ActiveSnapshot {
  *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
  *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`;
  *  a recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
- *  `provider.forGroup(group)`; `host.groups()` reads `provider.listCollections()`. */
+ *  `provider.forGroup(group)`; `host.groups()` reads `readCatalog().entries` (active only). */
 
 /** LOW-LEVEL store read API (collection-scoped) — the pinning primitive the compat
  *  wrapper composes over. It does NO compatibility logic and does NOT embed: it exposes
@@ -340,18 +354,18 @@ interface ISkillPluginHost {
    *  back if a later group fails; mixed revisions across groups are allowed. Idempotent;
    *  callable at startup OR out-of-band.
    *
-   *  Ingest first calls `source.acquire()` → `{ collections (desired catalog), records }`,
-   *  then builds each DESIRED collection independently (via `storeProvider.forGroup(g)`),
-   *  each with its own fenced activate + discard. THEN it reconciles the collection SET:
-   *  any collection in `storeProvider.listCollections()` but ABSENT from the desired
-   *  catalog is RETIRED via `dropCollection(g)` (a strategy that stops emitting a
-   *  collection must not leave its stale generation serving forever). Finally
-   *  `publishCatalog(desired)` makes `listCollections()`/`groups()` reflect the new set
-   *  atomically. See "Collection-set reconciliation".
+   *  Ingest runs EVERY source's `acquire()` → `{ collections, records }`, MERGES them into
+   *  one desired catalog (union of collections + per-collection source ownership; a failed
+   *  source's owned collections are carried forward under strict:false), builds + activates
+   *  each desired collection (via `storeProvider.forGroup(g)`), then reconciles the
+   *  collection SET against `readCatalog()`: it `publishCatalog(expectedRev, desired +
+   *  tombstones)` (a FENCED CAS commit) and only AFTER a successful publish background-
+   *  `dropCollection`s the tombstoned ones under the retention grace. See "Collection-set
+   *  reconciliation" — publish-before-drop, multi-source merge, catalog CAS.
    *
    *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
-   *  it is NOT empty — it first reads `backendProvider.listCollections()` (the catalog
+   *  it is NOT empty — it first reads `backendProvider.readCatalog()` (the catalog
    *  the ingest job persisted) to (a) resolve the served collections' descriptions for
    *  `groups()` and (b) VALIDATE that every `serveCollections` id actually exists in the
    *  catalog (config error otherwise). Then for EACH served collection it calls
@@ -364,7 +378,7 @@ interface ISkillPluginHost {
   load(options?: CallOptions): Promise<void>;
   /** The collections this host serves, with descriptions — what the explicit mode's
    *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
-   *  The host does NOT compute these; it reports `provider.listCollections()` (the
+   *  The host does NOT compute these; it reports `provider.readCatalog().entries` (active only; the
    *  strategy-emitted catalog), filtered to `serveCollections` on a recall-only host. */
   groups(): readonly SkillGroupInfo[];
   /** The score-bearing skills-RAG handle for ONE group's collection — pipelines recall
@@ -552,9 +566,22 @@ interface ISkillSource {
 }
 ```
 
-The host takes `collections` as the **desired catalog** for this load and never
-computes placement or descriptions itself. A record whose `group` is absent from
-`collections` → ingest error (strategy contract violation).
+The host takes each strategy's `collections` as ITS contribution to the desired catalog
+and never computes placement or descriptions itself. A record whose `group` is absent
+from its source's `collections` → ingest error (strategy contract violation).
+
+**Multiple sources — merge into one aggregate catalog.** `config.sources` is an array;
+several sources MAY contribute to the SAME collection (e.g. a base set + an overlay). The
+host runs every source's `acquire()` and MERGES:
+- **Desired catalog** = the UNION of all sources' `collections`, keyed by `group`. The
+  per-collection **ownership** (`CatalogEntry.sources`) = the set of sourceIds that
+  declared/placed into it. Same `group` from two sources with **different `description`s
+  → ingest error** (ambiguous catalog; the operator must reconcile the strategies).
+- **A collection's record set** = the union of every contributing source's records for
+  that `group`. No cross-source `id` collisions: `SkillRecord.id` is prefixed by
+  `<source>`, so two sources' records are always distinct keys.
+The per-collection generation for `g` is built from that merged record set, so a
+collection fed by N sources is one consistent snapshot.
 
 **1. Fetcher (acquisition) — pluggable, FS-free by contract.**
 - **HTTP→memory** (primary for self-ingesting instances): fetch the
@@ -610,23 +637,42 @@ those keep their fresh generation, the failed group keeps its prior one. (If a f
 need demands all-or-nothing across groups, add a single global manifest pointer that
 flips once after every group's generation is built — explicitly NOT in this design.)
 
-**Collection-set reconciliation (TWO levels of reconciliation).** Per-collection
-generation snapshots (below) reconcile RECORDS within a collection. A SECOND level
-reconciles the SET of collections, because the strategy's emitted catalog can SHRINK:
-if a strategy stops returning a collection (a plugin dropped, a re-grouping), that
-collection's active generation would otherwise serve stale skills forever. So `load()`:
-1. `desired = (await source.acquire()).collections` — the AUTHORITATIVE catalog.
-2. Build/activate each desired collection (per-collection snapshot, above).
-3. `existing = await storeProvider.listCollections()`; for each `g ∈ existing \ desired`
-   → `storeProvider.dropCollection(g)` (deactivate from the active catalog, then drop its
-   generations under the retention grace, so in-flight readers finish). This is the
-   deactivate/tombstone/drop lifecycle for a removed collection.
-4. `storeProvider.publishCatalog(desired)` — atomically swap the active catalog so
-   `listCollections()`/`host.groups()` reflect exactly `desired`.
-A recall-only host does NO collection-set reconciliation (it never ingests) — it only
-READS `listCollections()`. (Per-group atomicity still holds: a desired collection that
-fails to activate is NOT dropped — its prior generation stays; only collections truly
-absent from `desired` are retired.)
+**Collection-set reconciliation (TWO levels, multi-source, fenced, publish-before-drop).**
+Per-collection generation snapshots (below) reconcile RECORDS within a collection. A
+SECOND level reconciles the SET of collections, because the aggregate catalog can shrink
+(a plugin dropped, a re-grouping) — a removed collection's active generation would
+otherwise serve stale skills forever. `load()`:
+1. `prior = await storeProvider.readCatalog()` — `{ catalogRevision, entries }` (the CAS
+   fence + the per-collection source OWNERSHIP).
+2. Run EVERY source's `acquire()`. **Merge** into `desired` (union of `collections`,
+   ownership = contributing sourceIds, conflicting descriptions → error) and the merged
+   per-collection record sets.
+3. **Carry-forward for a failed source (`strict:false`):** a source that failed to fetch
+   contributes nothing to `desired` this round — but its collections must NOT vanish. From
+   `prior.entries` (ownership), re-add every collection the failed source owned to
+   `desired`, carrying its records forward (`carryForward(generation, [failedSourceId])`).
+   If the failed source was the SOLE owner of a collection, that collection is retained
+   intact, not dropped. (`strict:true`: a source failure aborts that source's collections'
+   generations — their prior generations stay — and fails `load()`.)
+4. Build + fenced-`activate` each `desired` collection's generation (per-collection
+   snapshot, below). A collection that fails to activate keeps its prior generation and is
+   NOT tombstoned.
+5. **COMMIT (publish before drop):** compute `tombstone = prior active \ desired`, then
+   `storeProvider.publishCatalog(prior.catalogRevision, desired + tombstones)` — a CAS on
+   the catalog revision. If a concurrent loader published in between, the CAS FAILS and
+   this stale load aborts WITHOUT deleting anything (it does not clobber the newer set).
+   On success the active catalog is exactly `desired`; tombstoned collections immediately
+   stop being served by `groups()`/`rag()`.
+6. **AFTER the successful publish**, background-reclaim each tombstoned collection's
+   generations via `dropCollection(g)` under the retention grace. A crash between publish
+   and reclaim is harmless: the tombstone is already not served, and the physical delete
+   is idempotent/resumable (a later load or GC finishes it). Physical deletion NEVER
+   precedes the catalog commit, so there is no window where the active catalog references
+   an already-deleted collection.
+
+A recall-only host does NO collection-set reconciliation — it only `readCatalog()`s.
+(Per-group atomicity still holds: a desired collection that fails to activate is not
+dropped; only collections truly absent from `desired` are tombstoned then reclaimed.)
 
 A naive "idempotent upsert" leaks stale records: when a skill is updated, the
 chunking changes, or a plugin is **removed** from `enabled`, the old chunk records
@@ -671,12 +717,14 @@ the whole load). No global lock is required — only the activate CAS.
 A group's generation is all-or-nothing for THAT group: its collection must contain every
 record of every source feeding the group before activate, or that group's generation is
 discarded. So, per group:
-- **`strict: false` (default) — per-source carry-forward.** An unreachable/failed
-  source does NOT drop its skills: `carryForward(generation, [its sourceId])` copies
-  that source's records from the group's active generation into the new one unchanged;
-  only the reachable sources are refreshed. The new generation is complete → activate is
-  safe, last-known-good is retained. (On the very first load with no active
-  generation, a failed source simply contributes nothing — it was never loaded.)
+- **`strict: false` (default) — per-source carry-forward, at BOTH levels.** *Within a
+  collection:* `carryForward(generation, [its sourceId])` copies the failed source's
+  records from the group's active generation into the new one unchanged; only reachable
+  sources refresh. *At the collection-set level:* if the failed source SOLELY owned a
+  collection (per `readCatalog()` ownership), that collection is re-added to `desired`
+  and carried forward intact — it is NOT tombstoned just because its only source was
+  down this round. So a transient source outage never drops its collections. (First load
+  with no prior generation/ownership → a failed source simply contributes nothing.)
 - **`strict: true` — all-or-nothing PER GROUP.** A source failure aborts THAT GROUP's
   generation: no `activate` for it, that group's prior generation fully retained, the
   error surfaces. Other groups are unaffected (independent collections). `load()` as a
@@ -741,7 +789,7 @@ source (assembler), configured (controller), planner-selected (explicit, deferre
 | `loadSkillFromDir`, `ClaudeSkillManager` (FS) | same | reused ONLY by the optional FS fetcher |
 | `ISkillSource` strategy (`acquire() → { collections, records }`) + fetchers (HTTP/prog./FS) | `llm-agent-libs/src/skills` | **new** (HTTP/programmatic) |
 | `PluginMarketplaceAdapter` (in-memory → canonical records + collection catalog + chunker) | same | **new** |
-| `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS w/ CATALOG (`listCollections`/`publishCatalog`/`dropCollection`) | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations + collection catalog; not `IKnowledgeRagHandle`) |
+| `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS w/ CATALOG (`readCatalog`+revision/`publishCatalog` CAS/`dropCollection`) | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations + collection catalog; not `IKnowledgeRagHandle`) |
 | `makeCompatibleSkillsRag` (compat wrapper → `ISkillsRagHandle`) | `llm-agent-libs` | **new** |
 | Ingest wiring + **collection-set reconciliation** (drop collections absent from the strategy's desired catalog) | SmartServer build / a CLI/admin entry | **new** (parallels MCP→toolsRag) |
 | Strategy-driven collection placement (each strategy assigns records to collections) | injected acquisition/materialisation strategy | **new** (NOT host logic) |
@@ -1020,11 +1068,25 @@ mechanism under test.
 - Strategy structured result: `source.acquire()` returns `{ collections, records }`;
   `host.groups()` descriptions come from `collections` (NOT derivable from records); a
   record whose `group` is absent from `collections` → ingest error.
-- Collection-set reconciliation: load A emits collections `{c1, c2}`; a later load B emits
-  only `{c1}` → after B, `provider.listCollections()`/`host.groups()` = `{c1}`, `c2` was
-  `dropCollection`'d (its generation retired under grace), and `host.rag('c2')` no longer
+- Multi-source merge: two sources both contributing to collection `c1` → its generation
+  holds the UNION of both sources' records, ownership `c1.sources = {s1, s2}`; the same
+  `group` declared by two sources with DIFFERENT descriptions → ingest error.
+- Sole-owner carry-forward: collection `c2` owned ONLY by source `s2`; on a load where
+  `s2` is unreachable under `strict:false`, `c2` is re-added to `desired` from catalog
+  ownership and carried forward — it is NOT tombstoned/dropped, and `host.rag('c2')`
+  still serves the prior content.
+- Collection-set reconciliation: load A emits `{c1, c2}`; later load B emits only `{c1}`
+  (and c2 has no other owner) → after B, `readCatalog()`/`host.groups()` = `{c1}`, `c2`
+  tombstoned at publish then `dropCollection`'d under grace, `host.rag('c2')` no longer
   serves. A desired collection that FAILS to activate is NOT dropped (kept from prior).
-- Recall-only catalog + validation: a recall-only host reads `listCollections()` for
+- Catalog CAS (concurrent loaders): loaders X and Y both read catalogRevision R; Y
+  `publishCatalog(R, …)` first (bumping to R'); X's `publishCatalog(R, …)` is REJECTED by
+  the CAS → X aborts WITHOUT dropping any collection (never clobbers Y's newer set).
+- Publish-before-drop: a stub provider that throws inside `dropCollection` AFTER a
+  successful `publishCatalog` → the active catalog already excludes the tombstoned
+  collection (not served), and a re-run finishes the physical reclaim (idempotent). No
+  state where the active catalog references an already-deleted collection.
+- Recall-only catalog + validation: a recall-only host reads `readCatalog()` for
   `groups()` descriptions; `serveCollections` naming a collection ABSENT from the catalog
   → config error; omitted `serveCollections` → serves all cataloged collections.
 - Adapter full IRag: `query` returns `ok(RagResult[])` on success and `err(RagError)` on a
