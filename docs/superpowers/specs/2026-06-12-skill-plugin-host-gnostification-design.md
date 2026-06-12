@@ -84,6 +84,7 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
 | **Group** | The **conflict-isolation unit = one collection** in the skills-RAG. The mapping of skills→group is decided ENTIRELY by the injected strategy (it may map 1:1 to a plugin, bundle, or split — the host imposes no rule). Recall via `host.rag(group)` only ever sees that group's records. |
 | **Collection** | The physical namespace in the skills-RAG that backs one group. Group ↔ collection is 1:1. The strategy stamps each record's collection. |
 | **Collection placement** | The strategy's decision of which collection a fetched skill record belongs to. A strategy output, NOT host config. |
+| **Catalog** | The authoritative set of collections + their descriptions. The strategy emits the DESIRED catalog (`SkillIngestResult.collections`); the store persists the ACTIVE catalog (`listCollections()`). `load()` reconciles store→desired (dropping collections no longer desired); recall-only reads it for `groups()`. |
 | **Source / strategy** | A pluggable acquisition+materialisation strategy feeding the host — it fetches, parses, AND assigns collection placement: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-placed). Identified by a stable `sourceId`. |
 | **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into collections the strategy produced. |
 | **Skill plugin-host** (`ISkillPluginHost`) | The GENERIC component that runs the strategy's `load()` (acquire→parse→place→materialise) and exposes recall (`groups()`, `rag(group)`) over the resulting collections. Holds no source/grouping semantics. The "part 1" of the system. |
@@ -207,16 +208,31 @@ interface ActiveSnapshot {
  *  interfaces below are **collection-scoped** — they operate on ONE group's collection,
  *  so no method carries a `group` parameter. A multi-group deployment is handled by a
  *  PROVIDER that vends one handle per group (so different groups' generations never
- *  collide), NOT by threading `group` through every lifecycle call:
+ *  collide) AND owns the cross-collection CATALOG (which collections exist + their
+ *  descriptions), persisted alongside the data so a recall-only host can read it:
  *
- *    interface ISkillsStoreProvider     { forGroup(group: string): ISkillsStore; }
- *    interface ISkillsRagBackendProvider { forGroup(group: string): ISkillsRagBackend; }
+ *    interface ISkillsCatalog {
+ *      // The persisted set of collections with descriptions (the authoritative active
+ *      // catalog). Recall-only reads this for groups(); ingest reconciles against it.
+ *      listCollections(options?: CallOptions): Promise<readonly SkillGroupInfo[]>;
+ *    }
+ *    interface ISkillsStoreProvider extends ISkillsCatalog {
+ *      forGroup(group: string): ISkillsStore;       // read+write handle for one collection
+ *      // Atomically publish the desired catalog (collection set + descriptions) — called
+ *      // by load() AFTER per-collection activates, so listCollections reflects the new set.
+ *      publishCatalog(collections: readonly SkillGroupInfo[], options?: CallOptions): Promise<void>;
+ *      // Retire a collection no longer desired: deactivate (drop from the active catalog)
+ *      // then drop its generations under the same retention grace as a generation swap.
+ *      dropCollection(group: string, options?: CallOptions): Promise<void>;
+ *    }
+ *    interface ISkillsRagBackendProvider extends ISkillsCatalog {
+ *      forGroup(group: string): ISkillsRagBackend;  // read-only handle for one collection
+ *    }
  *
  *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
- *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`
- *  and iterates `host.groups()` calling `provider.forGroup(g)` to build each group; a
- *  recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
- *  `provider.forGroup(group)`. */
+ *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`;
+ *  a recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
+ *  `provider.forGroup(group)`; `host.groups()` reads `provider.listCollections()`. */
 
 /** LOW-LEVEL store read API (collection-scoped) — the pinning primitive the compat
  *  wrapper composes over. It does NO compatibility logic and does NOT embed: it exposes
@@ -324,23 +340,32 @@ interface ISkillPluginHost {
    *  back if a later group fails; mixed revisions across groups are allowed. Idempotent;
    *  callable at startup OR out-of-band.
    *
-   *  Ingest iterates the ENABLED GROUPS and builds each group's collection independently
-   *  (via `storeProvider.forGroup(g)`), each with its own fenced activate + discard.
+   *  Ingest first calls `source.acquire()` → `{ collections (desired catalog), records }`,
+   *  then builds each DESIRED collection independently (via `storeProvider.forGroup(g)`),
+   *  each with its own fenced activate + discard. THEN it reconciles the collection SET:
+   *  any collection in `storeProvider.listCollections()` but ABSENT from the desired
+   *  catalog is RETIRED via `dropCollection(g)` (a strategy that stops emitting a
+   *  collection must not leave its stale generation serving forever). Finally
+   *  `publishCatalog(desired)` makes `listCollections()`/`groups()` reflect the new set
+   *  atomically. See "Collection-set reconciliation".
    *
    *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
-   *  it is NOT empty — for EACH served group it calls `rag(g).activeManifest(options)`,
-   *  which (a) resolves that wrapper's serving `dimension` if undeclared, by ONE probe
-   *  embed run through `options` (metered/cancellable — never an unmetered embed at
-   *  construction), and (b) compares the serving descriptor to that group's active
-   *  generation for an EAGER fail-fast. The same atomic check then runs per-revision
-   *  inside `rag(g).query`. Each group's collection is materialised out-of-band by a
+   *  it is NOT empty — it first reads `backendProvider.listCollections()` (the catalog
+   *  the ingest job persisted) to (a) resolve the served collections' descriptions for
+   *  `groups()` and (b) VALIDATE that every `serveCollections` id actually exists in the
+   *  catalog (config error otherwise). Then for EACH served collection it calls
+   *  `rag(g).activeManifest(options)`, which resolves that wrapper's serving `dimension`
+   *  if undeclared (ONE probe embed through `options` — metered/cancellable, never an
+   *  unmetered embed at construction) and compares the serving descriptor to that
+   *  collection's active generation for an EAGER fail-fast. The same atomic check runs
+   *  per-revision inside `rag(g).query`. Collections are materialised out-of-band by a
    *  SEPARATE ingest job. `options` threads metering into the probe and ingest. */
   load(options?: CallOptions): Promise<void>;
-  /** The GROUPS (collections) the strategy produced, with their descriptions — what the
-   *  explicit mode's planner picks from, and what the implicit wiring enumerates to
-   *  register RAG sources. The host does NOT compute these; it reports the distinct
-   *  collections the strategy placed records into. */
+  /** The collections this host serves, with descriptions — what the explicit mode's
+   *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
+   *  The host does NOT compute these; it reports `provider.listCollections()` (the
+   *  strategy-emitted catalog), filtered to `serveCollections` on a recall-only host. */
   groups(): readonly SkillGroupInfo[];
   /** The score-bearing skills-RAG handle for ONE group's collection — pipelines recall
    *  from it. `group` omitted → the sole/default group (error if several are enabled).
@@ -423,15 +448,29 @@ the LLM differs by what RAG path the pipeline already reads.
 `IRag` (it takes text, embeds in its OWN space), so a small **adapter** bridges it:
 
 ```ts
-// skillsRagSource(host.rag(group), { k, threshold }) : IRag
-//   query(embedding, k, options):
-//     hits = host.rag(group).query(embedding.text, { k, threshold }, options) // re-embed
-//       — uses IQueryEmbedding.text, NOT .toVector(): skills live in their OWN embedding
-//         space (their own embeddingSpaceId), so the assembler's query vector is wrong here.
-//     return hits.map(h => ({ text: h.record.content, score: h.score,
-//                             metadata: { id: h.record.id, group, name: h.record.name,
-//                                         provenance: h.record.provenance } }))
-//   getById / writer: not supported (read-only source).
+// skillsRagSource(host.rag(group), { k, threshold }) : IRag   // FULL IRag contract:
+//
+//   query(embedding, k, options): Promise<Result<RagResult[], RagError>>
+//     try {
+//       hits = await host.rag(group).query(embedding.text, { k, threshold }, options) // re-embed
+//         // uses IQueryEmbedding.text, NOT .toVector(): skills live in their OWN embedding space
+//         // (their embeddingSpaceId), so the assembler's query vector is wrong here.
+//       return ok(hits.map(h => ({ text: h.record.content, score: h.score,
+//                  metadata: { id: h.record.id, group, name: h.record.name,
+//                              provenance: h.record.provenance } })))
+//     } catch (e) { return err(ragError(e)) }   // incompatible/empty rotation → ok([]) (handle
+//                                               //   returns [] there); only a real fault → err.
+//
+//   healthCheck(options): Promise<Result<void, RagError>>
+//     → ok() if host.rag(group).activeManifest(options) resolves AND is compatible;
+//       err(RagError) if the backend is unreachable or the descriptor mismatches.
+//
+//   getById(id, options): Promise<Result<RagResult | null, RagError>>
+//     → BEST-EFFORT: if the backend offers a by-id read, return ok(mappedRecord)/ok(null);
+//       if it does not (the base ISkillsRagBackend has no by-id method), return ok(null).
+//       The assembler tolerates null; skills recall is by similarity, not id.
+//
+//   writer(): undefined   // read-only source — no writes.
 ```
 
 Registered as a normal source with a section header (e.g. "Relevant Skills"); skills
@@ -494,10 +533,28 @@ tools-RAG (mixing pollutes recall both ways).
                          (placement = strategy)       skills-RAG
 ```
 
-**Acquisition + placement are ONE injected strategy.** The strategy fetches, parses,
-AND assigns each record's `group`/collection (it alone knows the source's semantics).
-The host receives `SkillRecord[]` already placed and groups the ingest by the distinct
-collections present — it never decides placement.
+**Acquisition + placement are ONE injected strategy, returning a STRUCTURED result.**
+The strategy fetches, parses, AND assigns each record's collection (it alone knows the
+source's semantics). It does NOT return a bare `SkillRecord[]` — the host could derive
+collection IDs from records but NOT their `description`s (which `groups()` must expose).
+So the strategy returns an authoritative catalog alongside the records:
+
+```ts
+interface SkillIngestResult {
+  collections: readonly SkillGroupInfo[]; // AUTHORITATIVE desired catalog: every collection
+                                          //   this strategy produces, with its description.
+  records: readonly SkillRecord[];        // each record.group ∈ collections[].group (validated).
+}
+/** The injected acquisition + materialisation strategy (== a `source`). */
+interface ISkillSource {
+  /** Fetch + parse + place. `options` meters/cancels any network/embedding work. */
+  acquire(options?: CallOptions): Promise<SkillIngestResult>;
+}
+```
+
+The host takes `collections` as the **desired catalog** for this load and never
+computes placement or descriptions itself. A record whose `group` is absent from
+`collections` → ingest error (strategy contract violation).
 
 **1. Fetcher (acquisition) — pluggable, FS-free by contract.**
 - **HTTP→memory** (primary for self-ingesting instances): fetch the
@@ -552,6 +609,24 @@ enabled group activated; a per-group failure is surfaced per group (and, under
 those keep their fresh generation, the failed group keeps its prior one. (If a future
 need demands all-or-nothing across groups, add a single global manifest pointer that
 flips once after every group's generation is built — explicitly NOT in this design.)
+
+**Collection-set reconciliation (TWO levels of reconciliation).** Per-collection
+generation snapshots (below) reconcile RECORDS within a collection. A SECOND level
+reconciles the SET of collections, because the strategy's emitted catalog can SHRINK:
+if a strategy stops returning a collection (a plugin dropped, a re-grouping), that
+collection's active generation would otherwise serve stale skills forever. So `load()`:
+1. `desired = (await source.acquire()).collections` — the AUTHORITATIVE catalog.
+2. Build/activate each desired collection (per-collection snapshot, above).
+3. `existing = await storeProvider.listCollections()`; for each `g ∈ existing \ desired`
+   → `storeProvider.dropCollection(g)` (deactivate from the active catalog, then drop its
+   generations under the retention grace, so in-flight readers finish). This is the
+   deactivate/tombstone/drop lifecycle for a removed collection.
+4. `storeProvider.publishCatalog(desired)` — atomically swap the active catalog so
+   `listCollections()`/`host.groups()` reflect exactly `desired`.
+A recall-only host does NO collection-set reconciliation (it never ingests) — it only
+READS `listCollections()`. (Per-group atomicity still holds: a desired collection that
+fails to activate is NOT dropped — its prior generation stays; only collections truly
+absent from `desired` are retired.)
 
 A naive "idempotent upsert" leaks stale records: when a skill is updated, the
 chunking changes, or a plugin is **removed** from `enabled`, the old chunk records
@@ -664,11 +739,11 @@ source (assembler), configured (controller), planner-selected (explicit, deferre
 |---|---|---|
 | Frontmatter parse (pure) | `llm-agent-libs/src/skills` | **reused** (FS-free) |
 | `loadSkillFromDir`, `ClaudeSkillManager` (FS) | same | reused ONLY by the optional FS fetcher |
-| `ISkillSource` strategy + fetchers (HTTP/programmatic/FS) | `llm-agent-libs/src/skills` | **new** (HTTP/programmatic) |
-| `PluginMarketplaceAdapter` (in-memory → canonical + chunker) | same | **new** |
-| `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations; not `IKnowledgeRagHandle`) |
+| `ISkillSource` strategy (`acquire() → { collections, records }`) + fetchers (HTTP/prog./FS) | `llm-agent-libs/src/skills` | **new** (HTTP/programmatic) |
+| `PluginMarketplaceAdapter` (in-memory → canonical records + collection catalog + chunker) | same | **new** |
+| `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS w/ CATALOG (`listCollections`/`publishCatalog`/`dropCollection`) | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations + collection catalog; not `IKnowledgeRagHandle`) |
 | `makeCompatibleSkillsRag` (compat wrapper → `ISkillsRagHandle`) | `llm-agent-libs` | **new** |
-| Ingest wiring (startup AND out-of-band entrypoint) | SmartServer build / a CLI/admin entry | **new** (parallels MCP→toolsRag) |
+| Ingest wiring + **collection-set reconciliation** (drop collections absent from the strategy's desired catalog) | SmartServer build / a CLI/admin entry | **new** (parallels MCP→toolsRag) |
 | Strategy-driven collection placement (each strategy assigns records to collections) | injected acquisition/materialisation strategy | **new** (NOT host logic) |
 | **Skills adapter** — `skillsRagSource(host.rag(group))` : `IRag` (SkillHit→RagResult; re-embeds `IQueryEmbedding.text` in skills' space) | `llm-agent-libs` | **new** (the seamless bridge) |
 | **Implicit wiring — assembler** — register the adapter as an `IRag` source in the context-assembler | SmartServer build / SmartAgent retrieval composition | **new** (flat/default + linear) |
@@ -942,6 +1017,20 @@ mechanism under test.
 - Per-group provider isolation: `storeProvider.forGroup('a')` and `forGroup('b')` are
   independent collections — a `beginGeneration`/`activate` on `a` does NOT change `b`'s
   `activeSnapshot()`; `forGroup('a')` called twice addresses the SAME collection.
+- Strategy structured result: `source.acquire()` returns `{ collections, records }`;
+  `host.groups()` descriptions come from `collections` (NOT derivable from records); a
+  record whose `group` is absent from `collections` → ingest error.
+- Collection-set reconciliation: load A emits collections `{c1, c2}`; a later load B emits
+  only `{c1}` → after B, `provider.listCollections()`/`host.groups()` = `{c1}`, `c2` was
+  `dropCollection`'d (its generation retired under grace), and `host.rag('c2')` no longer
+  serves. A desired collection that FAILS to activate is NOT dropped (kept from prior).
+- Recall-only catalog + validation: a recall-only host reads `listCollections()` for
+  `groups()` descriptions; `serveCollections` naming a collection ABSENT from the catalog
+  → config error; omitted `serveCollections` → serves all cataloged collections.
+- Adapter full IRag: `query` returns `ok(RagResult[])` on success and `err(RagError)` on a
+  backend fault (incompatible/empty rotation → `ok([])`); `healthCheck()` → `ok` when the
+  group's `activeManifest` resolves+compatible, else `err`; `getById` → `ok(null)` when the
+  backend has no by-id read; `writer()` → `undefined`.
 - Embedder/store compatibility — startup: a recall-only `load(options)` over a backend
   whose `activeSnapshot()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
