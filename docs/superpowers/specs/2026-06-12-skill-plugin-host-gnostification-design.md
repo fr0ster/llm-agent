@@ -110,12 +110,20 @@ interface ISkillsStore extends ISkillsRagHandle {
    *  new base) — no late writer can roll the active pointer back to an older
    *  snapshot. Drops the prior generation on success. */
   activate(generation: string, expectedRevision: string): Promise<void>;
+  /** Delete a NON-activated generation's records. `load()` MUST call this in a
+   *  `finally` for every generation that does not reach a successful activate
+   *  (ingest error, strict abort, fenced-out activation) so orphan embeddings never
+   *  accumulate in a persistent store. Idempotent (a no-op for an already-dropped or
+   *  the now-active generation). */
+  discardGeneration(generation: string): Promise<void>;
 }
 
 interface ISkillPluginHost {
   /** Build a FRESH generation: acquire → parse → upsert the reachable sources;
    *  unreachable sources are carried forward (strict:false) or abort the whole load
-   *  (strict:true) — see "Reconciliation". Then atomic `activate`. Idempotent;
+   *  (strict:true) — see "Reconciliation". Then fenced `activate`. ANY exit WITHOUT a
+   *  successful activate (error, strict abort, fenced-out CAS) `discardGeneration`s the
+   *  half-built generation in a `finally` — no orphan embeddings leak. Idempotent;
    *  callable at startup OR out-of-band. `options` threads metering into ingest. */
   load(options?: CallOptions): Promise<void>;
   /** The score-bearing skills-RAG handle pipelines recall from. */
@@ -238,6 +246,11 @@ generation NEVER overwrites the active one (the active generation keeps serving 
    prior generation is dropped (background delete). A **partially-failed build that
    never reaches activate** leaves the prior snapshot fully intact.
 
+The whole build runs inside `try { … activate } finally { if (!activated)
+discardGeneration(generation) }` — so an ingest error, a `strict` abort, OR a
+fenced-out activation **deletes the half-built generation's embeddings**, never
+leaking orphan vectors into a persistent store.
+
 **Concurrent loads (out-of-band / multi-instance) — fenced activation.** Two `load()`s
 can each `beginGeneration()` (A and B) concurrently. The fence prevents a late writer
 from rolling the active pointer back: each `activate` is a compare-and-set against the
@@ -309,7 +322,8 @@ skills:
   collection: skills                 # separate RAG collection
   store: { type: qdrant, url: ... }  # optional: a persistent networked store
                                      #   (omit → in-memory, self-ingest at startup)
-  k: 4                               # records injected per planning call
+  k: 4                               # max records injected per planning call
+  threshold: 0.3                     # min cosine similarity [0..1]; below → dropped. Default 0.3
   maxInjectChars: 4000
   chunk: { maxChars: 1500 }
   strict: false                      # true → any source failure aborts load; false → carry-forward
@@ -319,30 +333,39 @@ skills:
       enabled: [sap-abap, sap-abap-cds]       # REQUIRED non-empty for fetched sources; "*" = all
 ```
 
-Every source declares a **stable `id`** (`sourceId`) — version-independent, the
-reconciliation/carry-forward key (it must NOT encode the registry version). For a
-**fetched** source `enabled` is mandatory (a missing/empty `enabled` is a startup
-config error, not "load all" — principle 6).
+- **`threshold`** — minimum cosine similarity in `[0, 1]`; a `SkillHit` with `score <
+  threshold` is dropped (all dropped → no skills block). ONE engine-wide **default
+  `0.3`** (not per-adapter), so behaviour is uniform; the recall hook applies it.
+- **`id` (sourceId)** — every source declares a **stable, version-independent** id
+  (it must NOT encode the registry version): the reconciliation/carry-forward key.
+  **`sourceId`s must be GLOBALLY UNIQUE** across all sources — a duplicate is a startup
+  config error (two sources sharing an id would collide on the logical `SkillRecord.id`
+  and share carry-forward). For a **fetched** source `enabled` is mandatory.
 
 **Programmatic (embed-as-library):**
 ```ts
 builder.withSkills({
   collection: 'skills',
   k: 4,
+  threshold: 0.3,
   // a `records` source is the consumer's pre-filtered set → a stable `id`, NO `enabled`.
   sources: [{ id: 'my-skills', records: mySkillRecords }], // in-memory; no FS, no fetch
 });
 ```
 
-`skills` absent → no gnostification. The engine ships no default `sources`.
+For a `records` source the host **STAMPS** the configured `id` onto every record's
+`sourceId` (so the consumer cannot create a mismatched/duplicate key); the supplied
+records need not set `sourceId` themselves. `skills` absent → no gnostification. The
+engine ships no default `sources`.
 
 ## Error handling
 
 - Missing/empty `enabled` on a **fetched** source → **startup config error** (not
-  "load all"); a `records` source carries no `enabled`. Missing `id` on any source →
-  config error.
-- A rejected (fenced-out) `activate` from a concurrent/stale load → that load discards
-  its generation (or retries from the new base); recall is never reverted.
+  "load all"); a `records` source carries no `enabled`. Missing `id` on any source, or
+  a **duplicate `sourceId`** across sources → config error.
+- A rejected (fenced-out) `activate` from a concurrent/stale load, an ingest error, or
+  a `strict` abort → the half-built generation is `discardGeneration`d in a `finally`
+  (no orphan embeddings linger in a persistent store); recall is never reverted.
 - Source unreachable at ingest → `strict:false` **carries the failed source forward**
   from the active generation (warn; its skills are NOT lost) and refreshes only the
   reachable sources; `strict:true` **aborts the whole load** (no activate, prior
@@ -385,8 +408,16 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
   missing/empty `enabled` is a config error; reconciliation keys on the config `id`
   (`sourceId`), so a registry/version change does not orphan carry-forward.
-- Recall hook: returns scored hits; below-`threshold` hits dropped; injects hit
-  `content` within budget; empty/no-match → no block (output identical to agnostic).
+- sourceId validation/stamping: two sources sharing an `id` → **config error** at
+  startup; a `records` source's records all come out with `sourceId === ` the
+  configured `id` (host-stamped), regardless of any `sourceId` the caller put on them.
+- Generation cleanup: an ingest error mid-build, a `strict:true` abort, AND a
+  fenced-out `activate` each leave NO records of the failed generation in the store —
+  `discardGeneration` ran (assert store has only the prior active generation's rows).
+- Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
+  defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
+  injects hit `content` within budget; empty/no-match → no block (output identical to
+  agnostic).
 - HTTP fetcher: builds records purely from fetched bytes (mock transport), zero FS.
 
 ## Licensing posture (settled)
