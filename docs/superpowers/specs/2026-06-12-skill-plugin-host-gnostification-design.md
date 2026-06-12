@@ -18,13 +18,17 @@ becoming GPL.
 
 **The system has TWO independent parts, agnostic to each other:**
 
-1. **The plugin skill-host (acquire → materialise).** It knows nothing about any
-   pipeline. Its ENTIRE job is to take enabled skills FROM a source (Claude-plugin
-   marketplace / git / FS dir / programmatic records) and put them INTO a skills-RAG
-   **correctly** — i.e. **grouped**, not as one undifferentiated pile. Where it puts
-   them is mostly RAG (other sinks — e.g. a Claude-Code-style FS folder — are
-   hypothetical for now). The pipeline never sees the source, the plugin format, or the
-   backend.
+1. **The plugin skill-host (acquire → materialise), driven by INJECTED strategies.** It
+   knows nothing about any pipeline AND nothing about the semantics of any particular
+   plugin source. Acquisition, parsing, AND **collection placement** (which skill lands
+   in which collection/group) are decided by the **injected acquisition/materialisation
+   strategy** for that source — NOT by universal host logic. The host cannot know whether
+   two arbitrary external plugins are compatible or should share a collection, so it does
+   NOT compute groups; it orchestrates GENERIC mechanics (per-collection generations,
+   fenced activation, retention) over whatever collections the strategy produced, and
+   exposes them as `groups()`/`rag(group)`. Where records are put is mostly RAG (other
+   sinks — e.g. a Claude-Code-style FS folder — are hypothetical for now). The pipeline
+   never sees the source, the plugin format, or the backend.
 
 2. **Consumption (how a pipeline uses the skills).** The pipeline knows nothing about
    plugins — it just reads skills from RAG like ANY other context. There are TWO modes:
@@ -55,14 +59,16 @@ becoming GPL.
    dag/stepper use the same pattern, wired as needed. A pipeline with no wiring is simply
    not gnostified yet.
 
-**Why grouping is mandatory, not cosmetic.** Real skill sets are grouped by domain
-(the reference repo `secondsky/sap-skills` ships separate plugins for ABAP, CDS, BTP,
-HANA, …). You **cannot** dump all groups into one context: different groups give
-conflicting procedural guidance. So skills are ALWAYS stored grouped (group = a
-collection in the skills-RAG); **implicit recall** avoids conflict by the operator
-enabling only compatible groups (or configuring one group for a self-assembling
-pipeline), and **explicit selection** avoids it by the planner choosing one group per
-step.
+**Why grouping is mandatory, not cosmetic — and who decides it.** Real skill sets carry
+mutually-conflicting procedural guidance, so you **cannot** dump everything into one
+context. Skills are therefore ALWAYS stored grouped (a group = a collection in the
+skills-RAG). **The grouping is decided by the injected strategy, not the host** — the
+strategy that fetches/parses a given source assigns each record a collection (it is the
+only thing that understands that source's semantics). The host just sees the resulting
+collections. **Implicit recall** avoids conflict by reading only the configured
+collections, and **explicit selection** by the planner choosing one collection per step.
+No "one plugin = one group" rule and no host-side bundling is baked into the contracts —
+a strategy MAY map 1:1, MAY bundle, MAY split; that is its decision.
 
 ## Terminology (canonical — reused verbatim in user docs)
 
@@ -75,12 +81,13 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
 | **Plugin** | The unit you ENABLE: one folder of skills (e.g. `sap-abap`, `sap-btp-best-practices`). Anthropic: a plugin you install from a marketplace. The `enabled` list names **plugins**. |
 | **Skill** | One `SKILL.md` (frontmatter + body) inside a plugin — a single procedural "how-to". A plugin contains one or more skills. |
 | **Chunk** | A retrieval-sized slice of a skill (split by H2 / size). The unit actually embedded and injected — a hit is ONE chunk, not a whole skill. |
-| **Group** | The **conflict-isolation unit = one collection** in the skills-RAG. **Default: one group per enabled plugin** (group id = plugin id); a deployment MAY declare a **named group** bundling several plugins. Recall via `host.rag(group)` only ever sees that group's records. |
-| **Collection** | The physical namespace in the skills-RAG that backs one group. Group ↔ collection is 1:1. |
-| **Source** | A pluggable acquisition strategy feeding the host: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-filtered — no `enabled`). Identified by a stable `sourceId`. |
-| **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into per-group collections. |
-| **Skill plugin-host** (`ISkillPluginHost`) | The component that does acquire → parse → grouped materialise (`load()`) and exposes recall (`groups()`, `rag(group)`). The "part 1" of the system. |
-| **Ingest** | Building/refreshing a generation: acquire enabled plugins → chunk → embed → write into the group collections → fenced `activate`. Done at startup (self-ingest) or out-of-band by a separate job. |
+| **Group** | The **conflict-isolation unit = one collection** in the skills-RAG. The mapping of skills→group is decided ENTIRELY by the injected strategy (it may map 1:1 to a plugin, bundle, or split — the host imposes no rule). Recall via `host.rag(group)` only ever sees that group's records. |
+| **Collection** | The physical namespace in the skills-RAG that backs one group. Group ↔ collection is 1:1. The strategy stamps each record's collection. |
+| **Collection placement** | The strategy's decision of which collection a fetched skill record belongs to. A strategy output, NOT host config. |
+| **Source / strategy** | A pluggable acquisition+materialisation strategy feeding the host — it fetches, parses, AND assigns collection placement: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-placed). Identified by a stable `sourceId`. |
+| **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into collections the strategy produced. |
+| **Skill plugin-host** (`ISkillPluginHost`) | The GENERIC component that runs the strategy's `load()` (acquire→parse→place→materialise) and exposes recall (`groups()`, `rag(group)`) over the resulting collections. Holds no source/grouping semantics. The "part 1" of the system. |
+| **Ingest** | Building/refreshing a collection's generation: the strategy acquires + parses + places records; the host chunks/embeds/writes them per collection → fenced `activate`. Startup (self-ingest) or out-of-band. |
 | **Generation** | An atomic SNAPSHOT of a collection's full desired record set, written under a generation namespace so a new build never overwrites the serving one until `activate`. |
 | **Revision** | The fence token / monotonic id of a collection's ACTIVE generation. `activate` is a compare-and-set on it; recall pins one revision per query. |
 | **Manifest** (`SkillsManifest`) | The embedding-compatibility descriptor stamped onto a generation at `activate`: `{ embeddingSpaceId, dimension, retrievalSchemaVersion }`. |
@@ -117,11 +124,12 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
    target). The **explicit** planner-driven per-step group selection is the only mode
    needing a genuine hook, and is deferred. Do NOT equate implicit with the assembler —
    it is "skills on the path the pipeline already reads", whatever that path is.
-8. **Skills are stored GROUPED (group = collection).** Never one undifferentiated pile:
-   conflicting domain groups must be selectable/excludable. Each enabled group
-   materialises into its own collection; `host.rag(group)` scopes recall to a group.
-   The default group is one-per-plugin; a deployment MAY declare named groups bundling
-   several plugins.
+8. **Skills are stored GROUPED (group = collection) — grouping owned by the STRATEGY.**
+   Never one undifferentiated pile: conflicting guidance must be selectable/excludable.
+   But WHICH collection a record lands in is the injected strategy's decision (it alone
+   understands the source's semantics); the host imposes NO rule (no "one plugin = one
+   group", no host-side bundling). The host materialises whatever collections the
+   strategy emits and scopes recall per collection via `host.rag(group)`.
 6. **Opt-in, explicit.** Only what the consumer lists is pulled. For a **fetched
    source** (marketplace/registry/git/FS dir — many plugins available), `enabled` is a
    **REQUIRED, non-empty** plugin list; omitting it is a config error, NOT "load all"
@@ -329,10 +337,10 @@ interface ISkillPluginHost {
    *  inside `rag(g).query`. Each group's collection is materialised out-of-band by a
    *  SEPARATE ingest job. `options` threads metering into the probe and ingest. */
   load(options?: CallOptions): Promise<void>;
-  /** Enabled GROUPS with their descriptions — what the explicit mode's planner picks
-   *  from, and what the implicit wiring enumerates to register RAG sources. A group is
-   *  one collection in the skills-RAG (default: one group per plugin; or a deployment-
-   *  declared named group bundling several plugins). */
+  /** The GROUPS (collections) the strategy produced, with their descriptions — what the
+   *  explicit mode's planner picks from, and what the implicit wiring enumerates to
+   *  register RAG sources. The host does NOT compute these; it reports the distinct
+   *  collections the strategy placed records into. */
   groups(): readonly SkillGroupInfo[];
   /** The score-bearing skills-RAG handle for ONE group's collection — pipelines recall
    *  from it. `group` omitted → the sole/default group (error if several are enabled).
@@ -344,7 +352,7 @@ interface ISkillPluginHost {
 
 /** A group is a named, conflict-isolated set of skills = one skills-RAG collection. */
 interface SkillGroupInfo {
-  group: string;        // stable group id (= plugin id by default, or a declared name)
+  group: string;        // stable group id the STRATEGY assigned (NOT a host-derived rule)
   description: string;  // for the explicit planner's group-selection prompt
   collection: string;   // physical collection name in the skills-RAG
 }
@@ -380,7 +388,7 @@ makeSkillPluginHost({
 makeSkillPluginHost({
   backendProvider,   // ISkillsRagBackendProvider — forGroup(g) → that group's read backend
   embedder, embeddingSpaceId, retrievalSchemaVersion, dimension /* optional */,
-  serveGroups,       // the group ids this instance exposes
+  serveCollections,  // the collection ids (groups) this instance exposes
 })
 // → host.rag(g) = makeCompatibleSkillsRag({ backend: backendProvider.forGroup(g), embedder, … }).
 ```
@@ -393,7 +401,7 @@ the backend exposes a revision-explicit read, not a "query whatever is active" m
 the embed (the only paid step) is skipped on a null/incompatible generation. The
 descriptor reaches `query` by closure (resolving "where does the serving descriptor come
 from"). The host requires `{ source, storeProvider, embedder, … }` (ingest) OR
-`{ backendProvider, embedder, serveGroups, … }` (recall-only); a serving process gets
+`{ backendProvider, embedder, serveCollections, … }` (recall-only); a serving process gets
 read-only handles — exactly the over-privilege the recall-only shape removes.
 
 A gnostifiable pipeline depends on **`host.rag(group)` only** — an `ISkillsRagHandle`.
@@ -455,9 +463,9 @@ SkillRecord {
   sourceId: string      // STABLE config-declared source id, version-INDEPENDENT — the
                         //   reconciliation/carryForward key (survives a registry/version change,
                         //   and is known even when a failed fetch's version is not)
-  group: string         // GROUP id = the skills-RAG collection this record lands in (one
-                        //   per plugin by default, or a declared named group). Conflict-isolation
-                        //   unit: recall via host.rag(group) only ever sees one group's records.
+  group: string         // GROUP id = the skills-RAG collection this record lands in, ASSIGNED
+                        //   BY THE STRATEGY (collection placement — host imposes no rule).
+                        //   Conflict-isolation unit: recall via host.rag(group) sees only this group.
   name: string          // "<plugin>/<skill>" (+ "#<heading>" for a chunk) — human label
   retrievalText: string // the EMBEDDED surface — DISTINCT per chunk (see below)
   content: string       // the chunk body — injected verbatim into the LLM context
@@ -479,11 +487,17 @@ tools-RAG (mixing pollutes recall both ways).
 ### Pipeline of concerns (each FS-free at the contract level)
 
 ```
-  acquire (fetcher)  →  parse (adapter)  →  ingest (upsert)  →  recall (runtime)
-  ───────────────────   ───────────────    ───────────────     ───────────────
-  HTTP→memory | prog.    in-memory bytes     SkillRecord[] →     semantic query
-  | FS (optional)        → SkillRecord[]      skills-RAG          → inject body
+  acquire (fetcher)  →  parse + PLACE (strategy)  →  ingest (upsert)  →  recall (runtime)
+  ───────────────────   ───────────────────────     ───────────────     ───────────────
+  HTTP→memory | prog.    in-memory bytes →           SkillRecord[]       semantic query
+  | FS (optional)        SkillRecord[] w/ collection  per collection →   → inject body
+                         (placement = strategy)       skills-RAG
 ```
+
+**Acquisition + placement are ONE injected strategy.** The strategy fetches, parses,
+AND assigns each record's `group`/collection (it alone knows the source's semantics).
+The host receives `SkillRecord[]` already placed and groups the ingest by the distinct
+collections present — it never decides placement.
 
 **1. Fetcher (acquisition) — pluggable, FS-free by contract.**
 - **HTTP→memory** (primary for self-ingesting instances): fetch the
@@ -494,17 +508,18 @@ tools-RAG (mixing pollutes recall both ways).
 - **FS directory**: optional convenience ONLY where a filesystem happens to exist;
   never required. (This is the only path that may reuse `loadSkillFromDir`.)
 
-**2. Adapter (parse) — pure, in-memory, FS-free.** A content-agnostic transform:
+**2. Adapter (parse + place) — pure, in-memory, FS-free.** A content-agnostic transform:
 given the in-memory marketplace manifest + `SKILL.md` strings of the **enabled**
-plugins, produce canonical `SkillRecord[]`. Reuses the **frontmatter parser** (pure
-string parsing — NOT `loadSkillFromDir`). Ignores plugin commands/agents/hooks
-(skills only). **Chunks** large bodies by top-level Markdown sections (over-long
-sections split on paragraphs, bounded to `chunk.maxChars`) so recall returns the
-relevant fragment, not a 15 KB dump. For each chunk it computes the **stable `id`**
-(`<source>:<plugin>@<version>/<skill>#<chunkIx>`, deterministic → same input yields
-the same id across generations) and the **distinct `retrievalText`** (description +
-heading + chunk content). "Anthropic/Claude-plugin marketplace" is the first adapter;
-another source format = another adapter, canonical schema unchanged.
+plugins, produce canonical `SkillRecord[]` **with each record's `group`/collection
+assigned** (placement is the strategy's call — it MAY map a plugin 1:1, bundle, or
+split). Reuses the **frontmatter parser** (pure string parsing — NOT `loadSkillFromDir`).
+Ignores plugin commands/agents/hooks (skills only). **Chunks** large bodies by top-level
+Markdown sections (over-long sections split on paragraphs, bounded to `chunk.maxChars`)
+so recall returns the relevant fragment, not a 15 KB dump. For each chunk it computes the
+**stable `id`** (`<source>:<plugin>@<version>/<skill>#<chunkIx>`, deterministic) and the
+**distinct `retrievalText`** (description + heading + chunk content). A given source
+format = one adapter/strategy; the canonical schema (incl. the `group` field) is the
+fixed contract between any strategy and the host.
 
 **3. Ingest + materialisation strategy (pluginator backend).** `SkillRecord[]` →
 embed each record's `retrievalText` → write into the store. WHERE/WHEN the skills
@@ -654,7 +669,7 @@ source (assembler), configured (controller), planner-selected (explicit, deferre
 | `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations; not `IKnowledgeRagHandle`) |
 | `makeCompatibleSkillsRag` (compat wrapper → `ISkillsRagHandle`) | `llm-agent-libs` | **new** |
 | Ingest wiring (startup AND out-of-band entrypoint) | SmartServer build / a CLI/admin entry | **new** (parallels MCP→toolsRag) |
-| Grouping (plugin→group→collection map, named groups) | host config | **new** |
+| Strategy-driven collection placement (each strategy assigns records to collections) | injected acquisition/materialisation strategy | **new** (NOT host logic) |
 | **Skills adapter** — `skillsRagSource(host.rag(group))` : `IRag` (SkillHit→RagResult; re-embeds `IQueryEmbedding.text` in skills' space) | `llm-agent-libs` | **new** (the seamless bridge) |
 | **Implicit wiring — assembler** — register the adapter as an `IRag` source in the context-assembler | SmartServer build / SmartAgent retrieval composition | **new** (flat/default + linear) |
 | **Implicit wiring — controller** — planner recalls a configured group, injects a bounded block into its own context | controller planner | **new** (measurement target, in scope) |
@@ -678,10 +693,10 @@ The **explicit** planner-driven group selection is the separate later phase.
 
 Explicit, opt-in. **Terminology (matches Anthropic's model):** a **marketplace /
 registry** is a list of repos offering skills; from it you enable **plugins** (each a
-folder of skills, e.g. `sap-abap`, `sap-btp-best-practices`); a **plugin** contains one
-or more **skills** (`SKILL.md`). The **`enabled` list names PLUGINS.** A **group** =
-the conflict-isolation/collection unit; **by default one group per enabled plugin**, or
-a deployment-declared named group bundling several plugins.
+folder of skills); a **plugin** contains one or more **skills** (`SKILL.md`). The
+**`enabled` list names PLUGINS.** A **group/collection** = the conflict-isolation unit;
+**which collection a skill lands in is decided by the injected `strategy`, not by host
+config** — there is no `plugins → group` mapping here.
 
 **YAML (server):**
 ```yaml
@@ -701,32 +716,36 @@ skills:
   maxInjectChars: 4000               # SELF-ASSEMBLING pipelines (controller) ONLY — the dedicated
                                      #   "Relevant skills" block's char budget. IGNORED by the
                                      #   assembler path (it applies its OWN shared budget).
-  controllerSkillGroup: sap-abap     # which single group the controller planner recalls (implicit)
+  controllerSkillGroup: domain-core  # which single collection the controller planner recalls
+  serveCollections: [domain-core]    # which collections assembler pipelines read (implicit). Omit
+                                     #   → all collections the strategy produced.
   chunk: { maxChars: 1500 }
-  strict: false                      # true → any source failure aborts load; false → carry-forward
+  strict: false                      # true → a source failure aborts THAT group; false → carry-forward
   sources:
-    - id: sap                                 # STABLE sourceId — reconciliation/carry-forward key
+    - id: vendor-skills                       # STABLE sourceId — reconciliation/carry-forward key
       registry: https://<host>/<skills>       # FETCHED source (marketplace/registry → memory)
-      enabled: [sap-abap, sap-abap-cds]       # PLUGINS to enable; REQUIRED non-empty for fetched
+      enabled: ["*"]                          # PLUGINS to enable; REQUIRED non-empty for fetched
                                               #   sources; "*" = every plugin the registry offers
-  # groups: OPTIONAL. Omitted → one group per enabled plugin (collection = plugin id).
-  # Declare named groups to bundle plugins into one conflict-isolation collection:
-  groups:
-    - name: abap                              # group id == collection
-      plugins: [sap-abap, sap-abap-cds]       # bundled plugins (must be enabled above)
-    # an enabled plugin not listed in any group → its own one-plugin group (default)
+      strategy: vendor-marketplace            # the injected acquisition/materialisation strategy:
+                                              #   it parses these plugins AND assigns each record's
+                                              #   collection. The collections it emits are whatever
+                                              #   THAT strategy decides — the host does not bundle.
+      strategyConfig: { ... }                 # opaque, strategy-specific (incl. any placement rules)
 ```
 
-- **`mode`** — `implicit` (default, the ONLY value this phase accepts): enabled groups
-  are attached to the RAG path each pipeline already reads (assembler adapter for
-  flat/default+linear; the planner-context recall for the controller). Operator enables
-  only **compatible** groups (no cross-group conflict in one context). `explicit`
-  (planner-driven per-step selection) is **deferred — the parser REJECTS `mode: explicit`
-  with a clear "not yet implemented" error** so a config is never accepted without a
-  working consumption path.
-- **`groups`** — optional grouping of enabled plugins into named collections. A plugin
-  enabled but unlisted forms its own default group. A group named in `groups` whose
-  `plugins` are not all `enabled` → config error.
+- **`mode`** — `implicit` (default, the ONLY value this phase accepts): the collections
+  the strategy produced are attached to the RAG path each pipeline already reads
+  (assembler adapter for flat/default+linear; planner-context recall for the controller).
+  `explicit` (planner-driven per-step selection) is **deferred — the parser REJECTS
+  `mode: explicit` with a clear "not yet implemented" error** so a config is never
+  accepted without a working consumption path.
+- **Collection placement is NOT host config.** There is no `groups:` block mapping
+  plugins to groups: which collection a record lands in is decided by the named
+  `strategy` (and its opaque `strategyConfig`). The host only knows the resulting
+  collection ids — selected for reading via `controllerSkillGroup` / `serveCollections`.
+- **`serveCollections`** — which of the strategy-produced collections this deployment
+  actually reads. The operator picks **compatible** collections; the engine cannot judge
+  semantic conflict.
 
 A **recall-only serving** instance — the canonical no-FS deployment, where a
 persistent store was materialised out-of-band by a separate ingest job — omits
@@ -736,14 +755,13 @@ skills:
   mode: implicit
   store: { type: qdrant, url: ... }  # REQUIRED here — recall reads what ingest wrote
   embedder: { provider: openai, model: text-embedding-3-small }  # MUST match ingest's
-  embeddingSpaceId: sap-skills-emb-2026-06   # MANDATORY (persistent): stable vector-space id,
-                                             #   bump when the space changes; NOT alias-derived
+  embeddingSpaceId: vendor-skills-emb-2026-06  # MANDATORY (persistent): stable vector-space id,
+                                               #   bump when the space changes; NOT alias-derived
   dimension: 1536                            # optional: declare to skip the probe embed
   loadOnStartup: false               # recall-only: no source access, no ingest, load() is a no-op
-  serveGroups: [sap-abap, sap-abap-cds]  # group ids (= collection names) this instance serves; the
-                                         #   ingest job wrote them. (Distinct from ingest's `groups`,
-                                         #   which DEFINES plugin→group bundles; recall-only only NAMES
-                                         #   existing collections to expose via host.groups()/rag(group).)
+  serveCollections: [domain-core, domain-ext]  # collection ids the ingest job wrote, exposed via
+                                               #   host.groups()/rag(group). Recall-only only NAMES
+                                               #   existing collections — it does NOT place/group.
   k: 4
   threshold: 0.3
   # NO `sources`, NO `enabled`, NO `strict` — there is nothing to build.
@@ -808,10 +826,11 @@ collection). `skills` absent → no gnostification. The engine ships no default
 - Missing/empty `enabled` on a **fetched** source → **startup config error** (not
   "load all"); a `records` source carries no `enabled`. Missing `id` on any source, or
   a **duplicate `sourceId`** across sources → config error.
-- A declared **group** whose `plugins` are not all in some source's `enabled` list →
-  config error (a group can only bundle enabled plugins). `mode: implicit` with
-  mutually-conflicting groups enabled is the operator's responsibility (the engine
-  cannot detect semantic conflict) — documented, not validated.
+- `serveCollections` / `controllerSkillGroup` naming a collection the strategy did NOT
+  produce → config error (you can only read collections that exist). Collection placement
+  itself is the strategy's job — the host validates only that referenced collections
+  exist, never how plugins map to them. Reading mutually-conflicting collections together
+  is the operator's responsibility (the engine cannot detect semantic conflict).
 - A rejected (fenced-out) `activate` from a concurrent/stale load, an ingest error, or
   a `strict` abort → the half-built generation is `discardGeneration`d in a `finally`
   (no orphan embeddings linger in a persistent store); recall is never reverted.
@@ -948,12 +967,14 @@ mechanism under test.
   injects hit `content` within budget; empty/no-match → no block (output identical to
   agnostic).
 - HTTP fetcher: builds records purely from fetched bytes (mock transport), zero FS.
-- Grouping + collection isolation: enabled plugins `sap-abap`, `sap-btp` with NO declared
-  groups → two default groups (one collection each); `host.rag('sap-abap')` returns ONLY
-  abap records, never btp (conflict isolation). A declared named group `abap`:[sap-abap,
-  sap-abap-cds] → one collection holding both plugins' records; a group naming a
-  non-enabled plugin → config error. Each group's collection has independent
-  generations (rotating one group does not touch another's active pointer).
+- Strategy-driven placement + collection isolation: a stub strategy that places fetched
+  records into collections `c1` and `c2` → `host.groups()` reports exactly `{c1, c2}`
+  (whatever the strategy emitted — the host derives nothing); `host.rag('c1')` returns
+  ONLY c1 records, never c2 (conflict isolation). A different stub strategy that places
+  everything into ONE collection → `host.groups()` reports one. The host applies NO
+  "one plugin = one group" rule. `serveCollections`/`controllerSkillGroup` naming a
+  collection the strategy did not emit → config error. Each collection has independent
+  generations (rotating one does not touch another's active pointer).
 - Per-group atomicity: in a two-group load where group A activates and group B's
   `activate` fails the CAS (or B's source is unreachable under `strict:true`), A KEEPS
   its fresh generation (NOT rolled back) and B keeps its prior one — mixed revisions
