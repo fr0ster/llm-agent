@@ -134,15 +134,15 @@ interface ISkillsRagBackend {
  *  like the controller's RAG (so skills recall embeds reach /v1/usage). */
 interface ISkillsRagHandle {
   /** Recall. The store can be ROTATED out-of-band (a separate ingest activates a new
-   *  generation while this server runs). The wrapper embeds `text` (serving embedder,
-   *  metered via `options`), reads the backend's `activeSnapshot()` ONCE, and uses THAT
-   *  snapshot's `revision` both for the compatibility check AND for `queryRevision` — the
-   *  whole recall is pinned to one revision, so there is no window between "check" and
-   *  "read". The serving descriptor is compared to `snapshot.manifest`; the verdict is
-   *  CACHED by `snapshot.revision` (one compatibility check per rotation, not per query).
-   *  Compatible/unchanged revision → reads normally; INCOMPATIBLE revision → serves NO
-   *  hits (empty → pipeline degrades to agnostic) + a loud error/metric. A still-running
-   *  server never issues dimension-mismatched queries after a rotation. */
+   *  generation while this server runs). Order matters — the embed is the only PAID
+   *  step, so it comes LAST: (1) read the backend's `activeSnapshot()` ONCE; (2) if null
+   *  (no active generation) or INCOMPATIBLE for that `revision` (verdict CACHED by
+   *  revision, one check per rotation), return EMPTY immediately + a loud error/metric —
+   *  WITHOUT embedding `text`; (3) only on a compatible revision embed `text` (serving
+   *  embedder, metered via `options`); (4) `queryRevision(snapshot.revision, vector, k)`.
+   *  The snapshot's `revision` is used for BOTH the check and the read, so recall is
+   *  pinned to one revision (no check↔read window). A still-running server never issues
+   *  dimension-mismatched queries — nor a wasted embed — after a bad/empty rotation. */
   query(
     text: string,
     opts: { k: number; threshold?: number },
@@ -234,49 +234,44 @@ backend is typed by capability — an ingest-capable host needs the write/reconc
 a recall-only host needs ONLY the read handle (**least privilege** — no write
 credentials, no reconciliation surface in a serving process):
 
-```ts
-// Ingest-capable host (startup self-ingest, or an out-of-band ingest job):
-makeSkillPluginHost({
-  source,  // acquisition strategy + the explicit enabled[] list
-  store,   // ISkillsStore (in-memory | vector-DB | FS-cache) — the WRITE/reconcile API
-})
-
-// Recall-only serving host (no-FS serving model — no source, no write API):
-makeSkillPluginHost({
-  rag,     // ISkillsRagHandle ONLY — read+score against a store written elsewhere.
-           //   No `source`, no `store`: a serving process holds no write capability.
-})
-```
-
-The `rag` handle for a recall-only host is built by an explicit COMPAT WRAPPER over the
-LOW-LEVEL backend, so the serving descriptor is a first-class input (not hidden state)
-and the per-revision check + pinning live in `query`:
+BOTH host shapes serve via the SAME compat wrapper over a backend; they differ only in
+who WRITES the backend (the host itself, or a separate ingest job):
 
 ```ts
-// backend  = ISkillsRagBackend — the raw store's pinning primitive: activeSnapshot()
-//            + queryRevision(revision, vector, k). NO compatibility logic, NO embedding.
-// embedder = the SERVING embedder — embeds query text AND performs the one-time
-//            dimension probe (lazily, metered). The serving side MUST embed query text,
-//            so the embedder naturally lives here, which is what lets `dimension` be
-//            resolved AFTER construction (resolving F1's ordering: descriptor need not
-//            be complete up front).
-// embeddingSpaceId + retrievalSchemaVersion: REQUIRED at construction (stable, no probe
-//            needed). `dimension`: optional — declared to skip the probe, else resolved
-//            on the first `activeManifest`/`query`.
+// Ingest-capable host (startup self-ingest, or an out-of-band ingest job). It both
+// writes (via `store`) AND serves, so it ALSO needs the serving embedder + descriptor
+// fields and wraps its OWN store as the read path:
+makeSkillPluginHost({
+  source,            // acquisition strategy + the explicit enabled[] list
+  store,             // ISkillsStore (in-memory | vector-DB | FS-cache) — WRITE/reconcile
+  embedder,          // SERVING embedder — text query embed + lazy dimension probe
+  embeddingSpaceId,  // mandatory for a persistent store (auto for in-memory self-ingest)
+  retrievalSchemaVersion,
+  dimension,         // optional — declared skips the probe
+})
+// → internally: rag = makeCompatibleSkillsRag({ backend: store, embedder,
+//      embeddingSpaceId, retrievalSchemaVersion, dimension }); store also gets the
+//      embedder for ingest-side upsert embedding. After self-ingest the controller has
+//      a working text-query path (store extends ISkillsRagBackend, so it IS a backend).
+
+// Recall-only serving host (no-FS serving model — no source, no write API). The CALLER
+// builds the wrapper from a bare backend (least privilege — no write store):
 const rag = makeCompatibleSkillsRag({
   backend, embedder, embeddingSpaceId, retrievalSchemaVersion, dimension /* optional */,
 });
 makeSkillPluginHost({ rag });
 ```
 
-`makeCompatibleSkillsRag` returns an `ISkillsRagHandle`: `query` embeds the text, reads
+`makeCompatibleSkillsRag` returns an `ISkillsRagHandle`: `query` reads
 `backend.activeSnapshot()` once, runs the per-`revision` compatibility check (caching the
-verdict by revision), and on a match issues `backend.queryRevision(snapshot.revision,
-vector, k)` — pinning is now implementable because the backend exposes a
-revision-explicit read, not a "query whatever is active" method. The descriptor reaches
-`query` by closure (resolving "where does the serving descriptor come from"). The host
-requires EITHER `{ source, store }` (ingest) OR `{ rag }` (recall-only); supplying a
-write `store` to a serving process is exactly the over-privilege this split removes.
+verdict by revision) BEFORE any embed, and only on a match embeds the text and issues
+`backend.queryRevision(snapshot.revision, vector, k)` — pinning is implementable because
+the backend exposes a revision-explicit read, not a "query whatever is active" method;
+the embed (the only paid step) is skipped on a null/incompatible generation. The
+descriptor reaches `query` by closure (resolving "where does the serving descriptor come
+from"). The host requires `{ source, store, embedder, … }` (ingest) OR `{ rag }`
+(recall-only); supplying a write `store` to a serving process is exactly the
+over-privilege the recall-only shape removes.
 
 A gnostifiable pipeline depends on **`host.rag()` only** — an `ISkillsRagHandle`. It
 knows nothing about plugins, source, or backend; the host hides all of that.
@@ -671,6 +666,16 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   complete the descriptor, then caches it. A wrapper built WITH `dimension` never probes.
   This is what lets the `makeCompatibleSkillsRag → makeSkillPluginHost → load()` order
   work: only `embeddingSpaceId` + schema are needed up front.
+- Query order (no wasted embed): with a stub embedder that counts calls — `query`
+  against a NULL snapshot and against an INCOMPATIBLE revision performs ZERO text-embeds
+  (only the one-time dimension probe, if undeclared, may run); a COMPATIBLE revision
+  embeds exactly once and calls `queryRevision`. Asserts the snapshot+check precede the
+  embed.
+- Ingest host serving path: a `{ source, store, embedder, embeddingSpaceId, … }` host
+  after `load()` (self-ingest) exposes a WORKING `rag().query` — the host wrapped its own
+  `store` (an `ISkillsRagBackend`) via `makeCompatibleSkillsRag`, so text query works
+  without a separately supplied read handle; the wrapped descriptor matches what
+  `activate` stamped (compatible by construction).
 - Embedder/store compatibility — startup: a recall-only `load(options)` over a backend
   whose `activeSnapshot()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
