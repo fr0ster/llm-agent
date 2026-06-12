@@ -17,6 +17,7 @@ import {
 import {
   ControllerCoordinatorHandler,
   type ControllerHandlerDeps,
+  parseNextStep,
 } from '../controller-coordinator-handler.js';
 import { hydrateBundle, persistBundle } from '../session-bundle.js';
 import type { ISubagentClient } from '../subagent-client.js';
@@ -586,11 +587,18 @@ describe('ControllerCoordinatorHandler', () => {
       },
     };
     const ragQuery: IKnowledgeRagHandle['query'] = async (_text, opts) => {
-      // Recall must restrict to artifact types (excludes 'controller-bundle').
-      assert.deepEqual(opts?.filter?.artifactType, [
-        'step-result',
-        'mcp-result',
-      ]);
+      // Recall must restrict to recall artifact types (excludes 'controller-bundle').
+      // The recall now issues SEPARATE per-kind queries (step-result, mcp-result);
+      // every query's filter must be a subset of the recall artifact types.
+      const types = (opts?.filter?.artifactType ?? []) as string[];
+      assert.ok(
+        types.length > 0 &&
+          types.every((t) => ['step-result', 'mcp-result'].includes(t)),
+        'recall restricts to recall artifact types',
+      );
+      // Surface the mcp-result artifact on the mcp-result recall (and the combined
+      // evidence query); the step-result query returns nothing here.
+      if (!types.includes('mcp-result')) return [];
       return [
         {
           content: 'INCLUDE zinc.',
@@ -800,6 +808,10 @@ describe('ControllerCoordinatorHandler', () => {
     const handler2 = new ControllerCoordinatorHandler(h2.deps);
     const { ctx, captured } = fakeCtx({
       textOrMessages: 'read structure of table T100',
+      // Clarify-resume: the answer's fingerprint differs from the original
+      // request, so the consumer echoes the runId token to resume the suspended
+      // run (strict classification — token path, not fingerprint).
+      options: { runId: bundle.runId } as never,
     });
     const r2 = await handler2.execute(ctx, {}, undefined);
 
@@ -845,6 +857,9 @@ describe('ControllerCoordinatorHandler', () => {
     );
 
     // Leg 2: the human confirms with a bare "yes" → goal = the PROPOSED target.
+    // The bare "yes" does not fingerprint-match the original request, so the
+    // consumer echoes the runId token to resume the suspended run.
+    const b1 = await hydrateBundle(backend, 'sess-1');
     const h2 = harness({
       evaluator: [],
       planner: [
@@ -858,7 +873,8 @@ describe('ControllerCoordinatorHandler', () => {
     });
     h2.deps.backend = backend;
     await new ControllerCoordinatorHandler(h2.deps).execute(
-      fakeCtx({ textOrMessages: 'yes' }).ctx,
+      fakeCtx({ textOrMessages: 'yes', options: { runId: b1.runId } as never })
+        .ctx,
       {},
       undefined,
     );
@@ -1102,7 +1118,11 @@ describe('ControllerCoordinatorHandler', () => {
         { name: 's2', instructions: 'fetch B' },
       ],
       planCursor: 1, // s1 already completed + persisted
-    });
+      // Run-state so strict classification treats this turn as a resume of the
+      // in-flight run (same default prompt 'do the thing'), not a fresh reset.
+      runState: 'active',
+      originalRequest: 'do the thing',
+    } as never);
     const seen: string[] = [];
     const h = harness({
       evaluator: [], // goal already set → evaluator not called
@@ -1130,7 +1150,7 @@ describe('ControllerCoordinatorHandler', () => {
     assert.ok(!seen.some((c) => c.includes('fetch A')), 's1 was NOT repeated');
   });
 
-  it('adaptive + external tool: suspend keeps cursor; resume replans with the result visible to the planner', async () => {
+  it('adaptive + external tool: resume injects the result into the step transcript; the executor continues', async () => {
     const backend = new InMemoryKnowledgeBackend();
     const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
@@ -1159,24 +1179,29 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(b.planCursor, 0, 'cursor unmoved on suspend');
     assert.ok(cap1.find((c) => c.ok && c.value.finishReason === 'tool_calls'));
 
-    // Leg 2 — resume with the result. Capture the planner replan prompt to PROVE
-    // it sees the result (via plannerPrivate). Replan returns empty → finalize.
-    const seenPlanner: string[] = [];
-    let pCall = 0;
+    // Leg 2 — resume with the result. The unified design injects the tool result
+    // into the in-flight step's transcript and RE-RUNS the step (the executor
+    // continues from its own tool call); the PLANNER is not consulted for the
+    // continuation. The executor must therefore see TOOL RESULT in its messages;
+    // once the step commits, the (1-step) plan is exhausted → finalize.
+    const execSawResult: boolean[] = [];
     const h2 = harness({
       evaluator: [],
-      planner: [],
+      planner: [{ kind: 'content', content: 'FINAL' }], // finalize after the step
       executor: [],
       config: cfg,
     });
     h2.deps.backend = backend;
-    h2.deps.planner = {
+    h2.deps.executor = {
       async send(messages: Message[]) {
-        const u = messages.find((m) => m.role === 'user');
-        if (typeof u?.content === 'string') seenPlanner.push(u.content);
-        return pCall++ === 0
-          ? { kind: 'content', content: JSON.stringify({ plan: [] }) } // nothing left
-          : { kind: 'content', content: 'FINAL' }; // finalize
+        execSawResult.push(
+          messages.some(
+            (m) =>
+              typeof m.content === 'string' &&
+              m.content.includes('TOOL RESULT'),
+          ),
+        );
+        return { kind: 'content', content: 'continued with the result' };
       },
     };
     const { ctx: c2, captured: cap2 } = fakeCtx({
@@ -1192,8 +1217,8 @@ describe('ControllerCoordinatorHandler', () => {
     b = await hydrateBundle(backend, 'sess-1');
     assert.equal(b.pending, undefined);
     assert.ok(
-      seenPlanner.some((c) => c.includes('TOOL RESULT')),
-      'the planner replan saw the external tool result (via plannerPrivate)',
+      execSawResult.some(Boolean),
+      'the executor continued the step with the external tool result in its transcript',
     );
     assert.ok(
       cap2.find(
@@ -1205,36 +1230,132 @@ describe('ControllerCoordinatorHandler', () => {
     );
   });
 
-  it('adaptive external resume: malformed replan retries (resumedExternal survives) then replans', async () => {
+  it('external resume: an already-committed artifact at (runId,seq,attempt) is adopted (no re-call)', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
-    // Leg 1 — suspend on an external tool.
-    const h1 = harness({
-      evaluator: [{ kind: 'content', content: 'Goal' }],
+    // Bundle suspended on ExtTool at seq 0 attempt 0, AND a committed ok artifact
+    // already exists for that identity (a crash after the step finished, before the
+    // bundle flip). Resume must ADOPT it, not re-run the step or re-call the tool.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 0,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 1,
+      },
+      pending: {
+        kind: 'external-tool',
+        extId,
+        toolName: 'ExtTool',
+        args: { q: 'x' },
+        position: 's1',
+      },
+    } as never);
+    // A rag whose list() actually filters the written entries (the default stub
+    // returns [], which would make the artifact-first adopt vacuously fall through).
+    const written: KnowledgeEntry[] = [];
+    const rag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.seq === undefined || e.metadata.seq === filter.seq) &&
+            (filter.attempt === undefined ||
+              e.metadata.attempt === filter.attempt) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    await rag.write({
+      content: 'DONE',
+      metadata: {
+        traceId: 't',
+        turnId: 't',
+        stepperId: 'controller',
+        task: 's1',
+        artifactType: 'step-result',
+        createdAt: '2026-06-10T00:00:00.000Z',
+        runId: 'R1',
+        seq: 0,
+        attempt: 0,
+        status: 'ok',
+      },
+    });
+    const h = harness({
+      evaluator: [],
       planner: [
         {
           kind: 'content',
-          content: JSON.stringify({
-            plan: [{ name: 's1', instructions: 'do' }],
-          }),
+          content: JSON.stringify({ kind: 'done', result: 'fin' }),
         },
       ],
-      executor: [toolCall('ExtTool', { q: 'x' })],
-      config: cfg,
+      executor: [],
     });
-    h1.deps.backend = backend;
-    await new ControllerCoordinatorHandler(h1.deps).execute(
-      fakeCtx({
-        externalTools: [{ name: 'ExtTool', description: '', inputSchema: {} }],
-      }).ctx,
-      {},
-      undefined,
-    );
+    h.deps.backend = backend;
+    h.deps.knowledgeRagFor = () => rag;
+    // Prompt fingerprint matches the seeded originalRequest so the turn classifies
+    // as a resume (not a fresh reset).
+    const { ctx } = fakeCtx({
+      textOrMessages: 'x',
+      externalResults: new Map([[extId, 'LATE RESULT']]),
+    });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.pending, undefined, 'pending cleared (adopted, not re-run)');
+    assert.equal(b.nextSeq, 1, 'advanced past the adopted seq');
     assert.equal(
-      (await hydrateBundle(backend, 'sess-1')).pending?.kind,
-      'external-tool',
+      (h.deps.executor as { calls: number }).calls,
+      0,
+      'executor was NOT re-run — the committed artifact was adopted',
     );
+  });
+
+  it('legacy external resume (no inFlightStep): feeds plannerPrivate + replan, parse-retry preserves resumedExternal', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const extId = externalToolCallId('ExtTool', { q: 'x' });
+    // Seed a SUSPENDED adaptive bundle WITHOUT an inFlightStep — the retained
+    // legacy external-resume branch: the result is fed via plannerPrivate and the
+    // planner replans (the unified continue-the-step path requires an inFlightStep).
+    await persistBundle(backend, 'sess-1', {
+      goal: 'Goal',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'planning',
+      originalRequest: 'do the thing',
+      nextSeq: 0,
+      plan: [{ name: 's1', instructions: 'do' }],
+      planCursor: 0,
+      pending: {
+        kind: 'external-tool',
+        extId,
+        toolName: 'ExtTool',
+        args: { q: 'x' },
+        position: 's1',
+      },
+    } as never);
 
     // Leg 2 — first replan reply malformed → parse-retry (resumedExternal must
     // survive) → second replan valid {plan:[]} → finalize. Capture replan prompts
@@ -1305,6 +1426,206 @@ describe('ControllerCoordinatorHandler', () => {
     );
   });
 
+  it('reviewer verdict (not the executor) decides the outcome', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'final' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'I think it worked' }],
+    });
+    // COORDINATOR OVERRIDE: IReviewer.review MUST return a ReviewResult, not a bare
+    // Outcome. The plan text shows a bare object; use the discriminated form:
+    h.deps.reviewer = {
+      async review() {
+        return {
+          kind: 'outcome',
+          outcome: {
+            status: 'failed',
+            approved: '',
+            remainder: 'all',
+            note: 'not done',
+          },
+        };
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    const stepArtifact = h.rag.written.find(
+      (e) => e.metadata.artifactType === 'step-result',
+    );
+    assert.equal(stepArtifact?.metadata.status, 'failed');
+  });
+
+  it('a persistent judge-failure is re-asked then DEGRADES to a failed step (replan), not a terminal abort', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'done',
+            result: 'replanned-done',
+          }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'result' }],
+      config: baseConfig({ maxReviewRetries: 1 }),
+    });
+    let reviewCalls = 0;
+    h.deps.reviewer = {
+      async review() {
+        reviewCalls++;
+        return { kind: 'judge-failure', reason: 'provider down' };
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    // initial review + 1 retry (maxReviewRetries=1), then degrade — NOT unbounded.
+    assert.equal(reviewCalls, 2, 're-asked once then degraded (bounded)');
+    // The step failed → the planner replanned → reached its done. NO terminal error.
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'replanned-done',
+      ),
+      'the run replanned to done instead of aborting',
+    );
+    assert.ok(
+      !captured.find(
+        (c) => c.ok && /unverifiable|Error:/i.test(c.value.content),
+      ),
+      'no terminal error surfaced',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(
+      term?.kind,
+      'success',
+      'terminal SUCCESS (finalized), not error',
+    );
+  });
+
+  it('maxToolCalls is bounded by the durable toolCallCount, and abort is a controlFailure replan', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'after-budget' }),
+        },
+      ],
+      executor: Array.from({ length: 20 }, () => toolCall('LoopTool', {})),
+      selectTools: [{ name: 'LoopTool', description: '', inputSchema: {} }],
+      isExternalTool: () => false,
+      config: baseConfig({ maxToolCalls: 2 }),
+    });
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(h.mcpCalls.length <= 2, 'callMcp bounded by maxToolCalls');
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.budgets.stepsUsed, 1);
+  });
+
+  it('maxStepResumes: a crash-replay with no committed artifact charges resumeCount and aborts at the cap', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    // Seed an executing inFlightStep at resumeCount === cap, no committed artifact.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 1,
+        phase: 'executing',
+        transcript: [],
+        toolCallCount: 0,
+      },
+      plan: [{ name: 's1', instructions: 'i' }],
+      planCursor: 0,
+    } as never);
+    let plannerCalls = 0;
+    const h = harness({
+      evaluator: [],
+      executor: [{ kind: 'content', content: 'x' }],
+      planner: [],
+      config: {
+        ...baseConfig(),
+        planner: 'adaptive',
+        budgets: { ...baseConfig().budgets, maxStepResumes: 1 },
+      },
+    });
+    h.deps.backend = backend;
+    // The executing-recovery is planner-INDEPENDENT: the in-flight step is
+    // reconciled/aborted DIRECTLY, the planner must NOT be consulted for it.
+    h.deps.planner = {
+      async send() {
+        plannerCalls++;
+        return {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'should-not-run' }),
+        };
+      },
+    };
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal', 'aborted at maxStepResumes');
+    assert.equal(
+      plannerCalls,
+      0,
+      'planner was NOT consulted for the in-flight executing step',
+    );
+    assert.ok(
+      captured.find(
+        (c) => c.ok && /maxStepResumes|Error:/.test(c.value.content),
+      ),
+    );
+  });
+
   it('adaptive resume after a FAILED step REPLANS (durable lastOutcome) — not repeat', async () => {
     const h = harness({
       evaluator: [], // goal already in the seeded bundle → establishTargetState skipped
@@ -1339,7 +1660,11 @@ describe('ControllerCoordinatorHandler', () => {
       plan: [{ name: 's1', instructions: 'orig' }],
       planCursor: 0,
       lastOutcome: 'failed',
-    });
+      // Run-state so strict classification resumes this run (same default prompt).
+      runState: 'active',
+      originalRequest: 'do the thing',
+      nextSeq: 0,
+    } as never);
     const { ctx, captured } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(
       ctx,
@@ -1357,5 +1682,425 @@ describe('ControllerCoordinatorHandler', () => {
           c.value.content === 'FINAL ANSWER',
       ),
     );
+  });
+
+  it('three-stage recovery: terminal store wins over phase (no re-finalize)', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    // Seed an ACTIVE bundle stuck in finalizing AND a terminal outcome for its runId.
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'finalizing',
+      originalRequest: 'do the thing',
+      nextSeq: 1,
+    } as never);
+    const { writeTerminal } = await import('../run-scope.js');
+    await writeTerminal(
+      backend,
+      'sess-1',
+      'R1',
+      { kind: 'success', answer: 'ALREADY' },
+      60000,
+      '2026-06-10T00:00:00.000Z',
+    );
+    const h = harness({ evaluator: [], planner: [], executor: [] });
+    h.deps.backend = backend;
+    h.deps.now = () => '2026-06-10T00:00:01.000Z';
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'do the thing' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'ALREADY',
+      ),
+      'adopted terminal outcome without re-finalizing',
+    );
+  });
+
+  it('planner replan crash-guard: a crash mid-replan charges plannerResumeCount, capped', async () => {
+    // Seed awaiting-replan with plannerCallInFlight already true (a crash during a
+    // prior replan) → recovery charges plannerResumeCount; with cap 0 it aborts.
+    const backend = new InMemoryKnowledgeBackend();
+    await persistBundle(backend, 'sess-1', {
+      goal: 'g',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 1, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'active',
+      runPhase: 'executing',
+      originalRequest: 'x',
+      nextSeq: 0,
+      inFlightStep: {
+        seq: 0,
+        step: { name: 's1', instructions: 'i' },
+        attempt: 0,
+        resumeCount: 0,
+        phase: 'awaiting-replan',
+        transcript: [],
+        toolCallCount: 0,
+      },
+      plannerCallInFlight: true,
+      plannerResumeCount: 0,
+    } as never);
+    const h = harness({
+      evaluator: [],
+      planner: [{ kind: 'content', content: JSON.stringify({ plan: [] }) }],
+      executor: [],
+      config: {
+        ...baseConfig(),
+        planner: 'adaptive',
+        budgets: { ...baseConfig().budgets, maxPlannerResumes: 0 },
+      },
+    });
+    h.deps.backend = backend;
+    const { ctx, captured } = fakeCtx({ textOrMessages: 'x' });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) => c.ok && /unable|abort|planner/i.test(c.value.content),
+      ),
+      'replan crash-loop aborted via maxPlannerResumes',
+    );
+    const bundle = await hydrateBundle(backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+  });
+
+  it('done → finalizer composes from approved results; terminal store written first', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'done',
+            result: 'IGNORED-when-finalizer-present',
+          }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'STEP RESULT' }],
+    });
+    // A rag whose list() actually filters written entries, so collectApproved
+    // surfaces the step's committed result and we verify it flows to the finalizer
+    // (the default stub list() returns [] → the content path would be untested).
+    const written: KnowledgeEntry[] = [];
+    const listRag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written,
+      query: async () => [],
+      async list(filter) {
+        return written.filter(
+          (e) =>
+            (filter.runId === undefined || e.metadata.runId === filter.runId) &&
+            (filter.artifactType === undefined ||
+              e.metadata.artifactType === filter.artifactType),
+        );
+      },
+      async write(e) {
+        written.push(e);
+      },
+      fingerprint() {
+        return 'stub';
+      },
+    };
+    h.deps.knowledgeRagFor = () => listRag;
+    h.deps.finalizer = {
+      async finalize(_g, _r, approved) {
+        return `COMPOSED(${approved.map((a) => a.content).join(',')})`;
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'COMPOSED(STEP RESULT)',
+      ),
+      'finalizer composed the answer from the collected approved results',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'success');
+  });
+
+  it('finalizer provider failure exhausts maxFinalizeRetries → onFinalizeExhausted:error → terminal error', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'do' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'r' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'STEP' }],
+      config: {
+        ...baseConfig(),
+        onFinalizeExhausted: 'error',
+        budgets: { ...baseConfig().budgets, maxFinalizeRetries: 1 },
+      },
+    });
+    h.deps.finalizer = {
+      async finalize() {
+        throw new Error('finalizer down');
+      },
+    };
+    const handler = new ControllerCoordinatorHandler(h.deps);
+    const { ctx, captured } = fakeCtx();
+    await handler.execute(ctx, {}, undefined);
+    assert.ok(
+      captured.find((c) => c.ok && /Error:/.test(c.value.content)),
+      'terminal error surfaced',
+    );
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    assert.equal(bundle.runState, 'terminal');
+    const { readTerminal } = await import('../run-scope.js');
+    const term = await readTerminal(
+      h.backend,
+      'sess-1',
+      bundle.runId!,
+      new Date().toISOString(),
+    );
+    assert.equal(term?.kind, 'error');
+  });
+
+  it('empty clarify answer is rejected: stays suspended, re-asks', async () => {
+    const backend = new InMemoryKnowledgeBackend();
+    await persistBundle(backend, 'sess-1', {
+      goal: '',
+      plannerPrivate: '',
+      budgets: { stepsUsed: 0, rewindsUsed: 0 },
+      runId: 'R1',
+      runState: 'suspended',
+      runPhase: 'evaluating',
+      originalRequest: 'orig',
+      pending: {
+        kind: 'clarify',
+        question: 'which table?',
+        position: 'goal',
+        proposedTarget: 'T100',
+      },
+    } as never);
+    const h = harness({ evaluator: [], planner: [], executor: [] });
+    h.deps.backend = backend;
+    // Whitespace-only answer + the runId token (the answer's fingerprint differs).
+    const { ctx, captured } = fakeCtx({
+      textOrMessages: '   ',
+      options: { runId: 'R1' } as never,
+    });
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+    const b = await hydrateBundle(backend, 'sess-1');
+    assert.equal(b.goal, '', 'empty answer did NOT become the goal');
+    assert.equal(b.pending?.kind, 'clarify', 'still suspended on clarify');
+    assert.ok(
+      captured.find((c) => c.ok && /which table/i.test(c.value.content)),
+      're-surfaced the question',
+    );
+  });
+
+  it('per-requires evidence is passed to the reviewer', async () => {
+    let seenEvidence: unknown;
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: {
+              name: 's1',
+              instructions: 'do',
+              requires: ['table T100', 'domain ZD'],
+            },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'd' }),
+        },
+      ],
+      executor: [{ kind: 'content', content: 'r' }],
+      ragQuery: async (text) =>
+        /T100/.test(text)
+          ? [
+              {
+                content: 'T100 def',
+                metadata: {
+                  traceId: 't',
+                  turnId: 't',
+                  stepperId: 'controller',
+                  task: 'x',
+                  artifactType: 'mcp-result',
+                  createdAt: '2026-06-10T00:00:00.000Z',
+                },
+              },
+            ]
+          : [],
+    });
+    h.deps.reviewer = {
+      async review(_s, evidence) {
+        seenEvidence = evidence;
+        return {
+          kind: 'outcome',
+          outcome: { status: 'ok', approved: 'r', remainder: '', note: '' },
+        };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    // Evidence carries the closest artifact's CONTENT (topArtifact) for the reviewer
+    // to judge — not just a count-based hit.
+    assert.deepEqual(seenEvidence, [
+      { ref: 'table T100', hit: true, topArtifact: 'T100 def' },
+      { ref: 'domain ZD', hit: false, topArtifact: undefined },
+    ]);
+  });
+
+  it('a giant step-result does NOT starve mcp-result context (separate char budgets)', async () => {
+    const seenMessages: Message[][] = [];
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            kind: 'next',
+            step: { name: 's1', instructions: 'analyze' },
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ kind: 'done', result: 'd' }),
+        },
+      ],
+      executor: [],
+      // step-result query → one HUGE step artifact; mcp-result query → a distinct artifact.
+      ragQuery: async (_text, opts) => {
+        const kind = (opts?.filter?.artifactType as string[])?.[0];
+        const md = (t: string) => ({
+          traceId: 't',
+          turnId: 't',
+          stepperId: 'controller',
+          task: 'x',
+          artifactType: t,
+          createdAt: '2026-06-10T00:00:00.000Z',
+        });
+        if (kind === 'step-result')
+          return [
+            {
+              content: 'S'.repeat(50000),
+              metadata: {
+                ...md('step-result'),
+                seq: 0,
+                attempt: 0,
+                status: 'ok',
+              },
+            },
+          ];
+        if (kind === 'mcp-result')
+          return [
+            {
+              content: 'MCP-CONTEXT-XYZ',
+              metadata: { ...md('mcp-result'), identityKey: 'K1' },
+            },
+          ];
+        return [];
+      },
+    });
+    h.deps.executor = {
+      async send(messages: Message[]) {
+        seenMessages.push(messages);
+        return { kind: 'content', content: 'r' };
+      },
+    };
+    await new ControllerCoordinatorHandler(h.deps).execute(
+      fakeCtx().ctx,
+      {},
+      undefined,
+    );
+    const joined = seenMessages[0]
+      .map((m) => (typeof m.content === 'string' ? m.content : ''))
+      .join('\n');
+    assert.ok(
+      joined.includes('MCP-CONTEXT-XYZ'),
+      'mcp context survived despite a 50k-char step-result (separate char budgets)',
+    );
+    // And prove the step block was actually budget-capped (RECALL_MAX_CHARS_STEP=2000),
+    // not injected whole — else removing the step budget would go unnoticed.
+    assert.ok(
+      !joined.includes('S'.repeat(2001)),
+      'the 50k step-result was truncated to its own char budget',
+    );
+  });
+});
+
+describe('parseNextStep requires validation', () => {
+  it('rejects a malformed requires (non-string / oversized) → null (parse-retry)', () => {
+    assert.equal(
+      parseNextStep(
+        JSON.stringify({
+          kind: 'next',
+          step: { name: 's', instructions: 'i', requires: [123, ''] },
+        }),
+      ),
+      null,
+    );
+    assert.equal(
+      parseNextStep(
+        JSON.stringify({
+          kind: 'next',
+          step: { name: 's', instructions: 'i', requires: ['x'.repeat(500)] },
+        }),
+      ),
+      null,
+    );
+  });
+  it('an empty requires becomes a step with no requires', () => {
+    const r = parseNextStep(
+      JSON.stringify({
+        kind: 'next',
+        step: { name: 's', instructions: 'i', requires: [] },
+      }),
+    );
+    assert.equal(r?.kind, 'next');
+    assert.equal(r?.kind === 'next' ? r.step.requires : 'x', undefined);
+  });
+  it('trims valid requires entries', () => {
+    const r = parseNextStep(
+      JSON.stringify({
+        kind: 'next',
+        step: { name: 's', instructions: 'i', requires: ['  table T100  '] },
+      }),
+    );
+    assert.deepEqual(r?.kind === 'next' ? r.step.requires : [], ['table T100']);
   });
 });

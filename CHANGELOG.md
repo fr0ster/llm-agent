@@ -9,6 +9,40 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **Controller execution-result control & data backbone.** The `controller`
+  pipeline now separates DOING (executor) from JUDGING (a new reviewer role) and
+  persists every step outcome *after review* into an append-only results-RAG.
+  - **Roles.** `IReviewer`/`LlmReviewer` (returns an `Outcome` —
+    `{status: ok|exists|failed|partial, approved, remainder, note}` — or a
+    judge-failure) and `IFinalizer`/`LlmFinalizer` (budget-bounded map-reduce). The
+    reviewer, not the executor, decides each step's status; `done` is composed by
+    the finalizer, never surfaced raw. A contradictory verdict (success/partial with
+    empty `approved`, or `partial` with no remainder) is normalised, and an
+    exhausted judge-failure degrades to a failed step → replan rather than aborting
+    the run — the controller's value is error handling that reworks the plan.
+  - **Durable run-scope & crash recovery.** `runId`/`runState`/`runPhase`/
+    `nextSeq`/`inFlightStep` (attempt / resumeCount / toolCallCount / transcript);
+    artifacts keyed by `(runId, seq, attempt)`, cross-attempt resolution by outcome
+    precedence (ok/exists > partial > failed, then latest write). Three-stage
+    recovery (terminal-store-first for any phase → consume pending → route by
+    `runPhase`); strict request classification; a keyed TTL terminal store written
+    store-first; eval/planner/finalize crash guards with resume counters.
+  - **Run-scoped recall & data backbone.** Embedding-based recall scoped by `runId`
+    (over-fetch → dedup by seq-precedence / `identityKey`, latest-write wins via a
+    monotonic `writeOrdinal` → cap; separate per-kind k + char budgets); per-
+    `requires` evidence to the reviewer. `KnowledgeEntryMetadata`/`KnowledgeFilter`
+    carry `runId/seq/attempt/status/writeOrdinal`; an embedder-backed semantic
+    knowledge index (infrastructure artifacts excluded from indexing; lazy JSONL
+    rehydration). External tool results are unified with internal tool use (injected
+    into the step transcript; the step continues).
+  - **Config & metering.** `ControllerFactory` requires an embedder + a
+    semantic-recall-capable backend (unconditional); reviewer/finalizer default to
+    the planner model. All results-RAG embedder calls — recall query, relevant-
+    extract, write-time indexing, and lazy-rebuild rehydration — carry request
+    options so their token cost is attributed to `/v1/usage`.
+
 ## [19.1.2] — 2026-06-10
 
 ### Added

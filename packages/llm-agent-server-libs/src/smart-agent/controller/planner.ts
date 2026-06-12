@@ -5,16 +5,34 @@ import {
 } from './controller-coordinator-handler.js';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
-import type {
-  IControllerPlanner,
-  NextStep,
-  PlannerKind,
-  PlannerNextInput,
-  SessionBundle,
-  Step,
+import {
+  type IControllerPlanner,
+  MAX_REQUIRE_CHARS,
+  MAX_REQUIRES,
+  type NextStep,
+  type PlannerKind,
+  type PlannerNextInput,
+  type SessionBundle,
+  type Step,
+  validateRequires,
 } from './types.js';
 
-const PLANNER_SYSTEM =
+// Built from the validation constants so the prompt cap can NEVER drift from what
+// the parser enforces (no duplicated literals). Appended to EVERY planner/replan
+// prompt as a HARD invariant so step instructions/requires are English (stable
+// tool selection against the English-translated catalog) and the requires count is
+// bounded.
+export const ENGLISH_INSTRUCTIONS_RULE =
+  ' Step `instructions` AND `requires` references MUST be written in English — ' +
+  "always, regardless of the language of the user's request. This is a hard " +
+  'contract: the executor selects tools by semantic match against an ' +
+  'English-translated catalog, and the reviewer matches `requires` against stored ' +
+  'artifacts — so non-English instructions/requires break both. ' +
+  `List at MOST ${MAX_REQUIRES} \`requires\`, each a SHORT reference (a few words, ` +
+  `≤ ${MAX_REQUIRE_CHARS} chars) — not pasted content. (The user-facing answer is ` +
+  "composed separately in the user's language.)";
+
+export const PLANNER_SYSTEM =
   'You are the planner. Given the goal and progress, return a SINGLE JSON ' +
   'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
   'next step, {"kind":"done","result":...} when the goal is met, or ' +
@@ -30,7 +48,8 @@ const PLANNER_SYSTEM =
   'Keep each step MINIMAL and do NOT broaden the scope beyond what the goal asks, ' +
   'at the granularity it asks: a LIST/SHOW/find request is satisfied by the list ' +
   'itself — do NOT plan a step that fetches the full details of every listed item ' +
-  'unless the goal explicitly asks for per-item details.';
+  'unless the goal explicitly asks for per-item details.' +
+  ENGLISH_INSTRUCTIONS_RULE;
 
 const RETRY_HINT =
   '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw ' +
@@ -62,7 +81,7 @@ export class IncrementalPlanner implements IControllerPlanner {
   }
 }
 
-const CREATE_PLAN_SYSTEM =
+export const CREATE_PLAN_SYSTEM =
   'You are the planner. Produce the COMPLETE, ordered plan that covers the ENTIRE ' +
   'goal NOW, as a SINGLE JSON object: {"plan":[{"name":...,"instructions":...}, ...]}. ' +
   'This is plan-once: there will be NO chance to add steps later (a replan happens ' +
@@ -89,9 +108,10 @@ const CREATE_PLAN_SYSTEM =
   'Do NOT add a final step ' +
   'that summarizes, formats, or answers the user — a separate finalizer composes ' +
   'the answer from the fetched results, so the last step must be the last ' +
-  'data-fetch/action the goal needs. Output JSON only.';
+  'data-fetch/action the goal needs. Output JSON only.' +
+  ENGLISH_INSTRUCTIONS_RULE;
 
-const REPLAN_SYSTEM =
+export const REPLAN_SYSTEM =
   'You are the planner. A step just FAILED. Given the goal, the progress so far ' +
   '(fetched results + the failure), produce a REVISED, MINIMAL plan for the ' +
   'REMAINING work as {"plan":[{"name":...,"instructions":...}, ...]}. Plan only ' +
@@ -99,9 +119,10 @@ const REPLAN_SYSTEM =
   'NOT name or choose a specific tool, the executor selects it. Do NOT add a ' +
   'final summarize/' +
   'answer step (a separate finalizer composes the answer). If the goal is ' +
-  'already satisfied despite the failure, return {"plan":[]}. Output JSON only.';
+  'already satisfied despite the failure, return {"plan":[]}. Output JSON only.' +
+  ENGLISH_INSTRUCTIONS_RULE;
 
-const EXTERNAL_RESULT_REPLAN_SYSTEM =
+export const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'You are the planner. A NEW external tool result just arrived (see Progress) — ' +
   'this is NOT a failure. Given the goal and the progress (including the new ' +
   'result), produce a REVISED, MINIMAL plan for the REMAINING work as ' +
@@ -110,7 +131,8 @@ const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'choose a specific tool, the executor selects it. Do NOT add a final summarize/' +
   'answer step (a ' +
   'separate finalizer composes the answer). If the goal is already satisfied by ' +
-  'the result, return {"plan":[]}. Output JSON only.';
+  'the result, return {"plan":[]}. Output JSON only.' +
+  ENGLISH_INSTRUCTIONS_RULE;
 
 const FINALIZE_SYSTEM =
   'All planned steps are complete. Using the progress below (the fetched results), ' +
@@ -133,10 +155,13 @@ function parsePlan(content: string): Step[] | null {
       if (typeof s.name !== 'string' || typeof s.instructions !== 'string') {
         return null; // malformed step → format failure (handler retries)
       }
+      const req = validateRequires((raw as { requires?: unknown }).requires);
+      if (req === false) return null; // malformed requires → format failure → retry
       steps.push({
         name: s.name,
         instructions: s.instructions,
         ...(s.type ? { type: s.type } : {}),
+        ...(req ? { requires: req } : {}),
       });
     }
     return steps;
@@ -184,7 +209,11 @@ export class AdaptivePlanner implements IControllerPlanner {
     //    now holds the failure/external result), so the revised plan incorporates
     //    it — no reliance on the executor seeing it. Use the matching prompt: an
     //    external result is NOT a failure, so it gets its own framing.
-    if (lastOutcome === 'failed' || resumedExternal) {
+    if (
+      lastOutcome === 'failed' ||
+      lastOutcome === 'partial' ||
+      resumedExternal
+    ) {
       const system = resumedExternal
         ? EXTERNAL_RESULT_REPLAN_SYSTEM
         : REPLAN_SYSTEM;
@@ -221,8 +250,14 @@ export class AdaptivePlanner implements IControllerPlanner {
   /** Commit the just-finished step's outcome so the advance is persisted with it.
    *  On success the cursor moves to the next step; a failure leaves the cursor so
    *  the next next() can replan from it. (No LLM call — pure bookkeeping.) */
-  commit(bundle: SessionBundle, outcome: 'advanced' | 'failed'): void {
-    if (outcome === 'advanced') {
+  commit(
+    bundle: SessionBundle,
+    outcome: 'advanced' | 'failed' | 'partial',
+  ): void {
+    // 'advanced' and 'partial' both advance the cursor: the accepted part of a
+    // partial is committed and must not be re-run (the remainder is replanned at
+    // the next cursor). 'failed' leaves the cursor for next()'s replan.
+    if (outcome === 'advanced' || outcome === 'partial') {
       bundle.planCursor = (bundle.planCursor ?? 0) + 1;
     }
   }

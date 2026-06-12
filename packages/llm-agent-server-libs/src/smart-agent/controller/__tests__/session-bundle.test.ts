@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
-import { hydrateBundle, persistBundle } from '../session-bundle.js';
+import { hydrateBundle, persistBundle, resetRun } from '../session-bundle.js';
 import type { SessionBundle } from '../types.js';
 
 function memBackend() {
@@ -81,5 +81,34 @@ describe('session-bundle', () => {
     });
     const got = await hydrateBundle(be, 's1');
     assert.equal(got.goal, 'real goal'); // not the code artifact
+  });
+
+  it('resetRun clears every run-scoped field and starts in evaluating', () => {
+    const b = {
+      goal: 'old',
+      plannerPrivate: 'x',
+      budgets: { stepsUsed: 5, rewindsUsed: 2 },
+      plan: [{ name: 's', instructions: 'i' }],
+      planCursor: 1,
+      pending: { kind: 'clarify', question: 'q', position: 'goal' },
+      lastOutcome: 'failed',
+      runState: 'terminal',
+      runPhase: 'finalizing',
+      nextSeq: 4,
+      inFlightStep: { seq: 3 },
+      plannerResumeCount: 9,
+      finalizeAttempt: 7,
+      legacyFinalAnswer: 'stale',
+    } as unknown as SessionBundle;
+    resetRun(b, 'new request');
+    assert.equal(b.goal, '');
+    assert.equal(b.runState, 'active');
+    assert.equal(b.runPhase, 'evaluating');
+    assert.equal(b.originalRequest, 'new request');
+    assert.equal(b.nextSeq, 0);
+    assert.equal(b.inFlightStep, undefined);
+    assert.equal(b.plannerResumeCount, 0);
+    assert.equal(b.finalizeAttempt, 0);
+    assert.equal(b.legacyFinalAnswer, undefined);
   });
 });

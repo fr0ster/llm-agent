@@ -9,6 +9,8 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
 import { ControllerCoordinatorHandler } from '../smart-agent/controller/controller-coordinator-handler.js';
+import { LlmFinalizer } from '../smart-agent/controller/finalizer.js';
+import { LlmReviewer } from '../smart-agent/controller/reviewer.js';
 import { makeSubagentClient } from '../smart-agent/controller/subagent-client.js';
 import type { ControllerConfig } from '../smart-agent/controller/types.js';
 
@@ -26,8 +28,9 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
   knowledgeRagFor: (
     sessionId: string,
   ) => IKnowledgeRagHandle | Promise<IKnowledgeRagHandle>;
-  /** Required ONLY for distance-based target-state strategies
-   *  (semantic-distance/auto); unused by consumer-confirm. */
+  /** ALWAYS required: results-RAG recall ranks by embedding similarity in every
+   *  persistence mode (and distance target-state, if used). `build()` throws when
+   *  absent — optional here only so the dep object can be assembled incrementally. */
   embedder?: IEmbedder;
   /** Semantic top-K tool selection over the vectorized MCP catalog. */
   selectTools: (
@@ -51,9 +54,14 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
  * ```ts
  * import { ControllerFactory } from '@mcp-abap-adt/llm-agent-server-libs/controller';
  * const { handler } = await new ControllerFactory().build(config, {
- *   // role is typed as string by the base deps — resolve it explicitly.
+ *   // role is typed as string by the base deps — resolve it explicitly. reviewer/
+ *   // finalizer are only requested when their subagent block is present; map them
+ *   // to config.subagents.reviewer ?? planner (likewise finalizer) for a 5-role config.
  *   makeRoleLlm: (role) =>
- *     makeLlm(config.subagents[role as 'evaluator' | 'planner' | 'executor']),
+ *     makeLlm(
+ *       config.subagents[role as keyof typeof config.subagents] ??
+ *         config.subagents.planner,
+ *     ),
  *   callMcp, backend, knowledgeRagFor, embedder, selectTools,
  * });
  * const handle = await builder.withStepperCoordinator(handler).build();
@@ -68,17 +76,24 @@ export class ControllerFactory
     config: ControllerConfig,
     deps: ControllerFactoryDeps,
   ): Promise<BuiltCoordinator> {
-    // Distance-based target-state needs an embedder; fail loud at build time
-    // rather than handing back a handler that dies on the first request.
-    const { strategy } = config.targetState;
-    if (
-      (strategy === 'semantic-distance' || strategy === 'auto') &&
-      !deps.embedder
-    ) {
+    // results-RAG recall is embedding-based in EVERY persistence mode → require an
+    // embedder AND a semantic-recall-capable backend. The embedder alone is not
+    // enough: a programmatic caller could pass an embedder PLUS a plain backend with
+    // no index, and recall would silently degrade to insertion order. Assert BOTH at
+    // the controller boundary, fail loud at build time.
+    if (!deps.embedder) {
       throw new Error(
-        `pipeline 'controller' targetState.strategy '${strategy}' requires an ` +
-          'embedder (semantic distance); provide deps.embedder or use ' +
-          'strategy: consumer-confirm',
+        "pipeline 'controller' requires an embedder: results-RAG recall ranks by " +
+          'embedding similarity (and distance target-state, if used). Provide deps.embedder.',
+      );
+    }
+    if (!deps.backend.semanticRecallCapable) {
+      throw new Error(
+        "pipeline 'controller' requires a semantic-recall-capable knowledge backend " +
+          '(one built with an embedder-backed index); the injected backend reports ' +
+          'semanticRecallCapable=false, so recall would degrade to insertion order. ' +
+          'Build the backend via buildKnowledgeBackend (with a resolved embedder) or ' +
+          'inject a semantic-capable one.',
       );
     }
 
@@ -87,6 +102,15 @@ export class ControllerFactory
       deps.makeRoleLlm('planner'),
       deps.makeRoleLlm('executor'),
     ]);
+    // reviewer/finalizer default to the planner's LLM when their subagent config is
+    // absent (3-role config); the factory only resolves a distinct role LLM when the
+    // subagent block is present, so a 3-role config needs no resolver change.
+    const reviewerLlm = config.subagents.reviewer
+      ? await deps.makeRoleLlm('reviewer')
+      : plannerLlm;
+    const finalizerLlm = config.subagents.finalizer
+      ? await deps.makeRoleLlm('finalizer')
+      : plannerLlm;
 
     const handler = new ControllerCoordinatorHandler({
       evaluator: makeSubagentClient(evaluatorLlm),
@@ -98,11 +122,18 @@ export class ControllerFactory
       callMcp: (name, args) => deps.callMcp(name, args),
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
+      reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
+      finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {
+        budget: 12000,
+        perResultCap: 4000,
+      }),
       config,
       models: {
         evaluator: evaluatorLlm.model ?? 'unknown',
         planner: plannerLlm.model ?? 'unknown',
         executor: executorLlm.model ?? 'unknown',
+        reviewer: reviewerLlm.model ?? 'unknown',
+        finalizer: finalizerLlm.model ?? 'unknown',
       },
     });
     return { handler };

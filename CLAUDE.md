@@ -66,6 +66,23 @@ still install only what they need.)
 - All artifacts (code, comments, docs, commit messages) must be written in **English**.
 - Communicate with the user in the **language they used** in their message.
 
+### MCP tool-RAG language constraint (standing — do not drop)
+
+- **MCP tool selection is English-on-English.** Tool selection is a semantic search
+  over the MCP catalog; for stable selection regardless of the user's language BOTH
+  sides are English:
+  - **MCP tool names/descriptions are translated to English at catalog-build time**
+    (build-time concern; the controller does NO runtime translation of descriptions).
+  - **The tool-search text is English at search time** — the planner emits step
+    `instructions` (and `requires`) in English (hard prompt invariant), so the query
+    fed to tool selection is already English. Any other caller of tool search must
+    translate its query text to English first.
+- **The results-RAG embedder need NOT be multilingual** — a normal embedder is fine.
+  Recall/evidence/relevant-extract rank by embedding, but the language requirement is
+  the MCP tool-RAG's, not results-RAG's. (Embedding, not a homemade ASCII/lexical
+  scorer, is still the ranking mechanism.)
+- The finalizer answers in the **user's language**.
+
 ## Conventions
 
 - **ESM only** — `"type": "module"` in package.json; use `.js` extensions in imports

@@ -166,6 +166,7 @@ export {
   InMemoryKnowledgeBackend,
   type KnowledgeBackend,
   KnowledgeRag,
+  matches as matchesKnowledgeFilter,
 } from './rag/knowledge-rag.js';
 // ---------------------------------------------------------------------------
 // Reranker

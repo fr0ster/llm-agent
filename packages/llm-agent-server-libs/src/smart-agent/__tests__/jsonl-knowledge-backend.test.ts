@@ -87,6 +87,40 @@ test('deleteSession on an unknown session is a no-op (no throw)', async () => {
   await backend.deleteSession('never-existed'); // must not throw (force: true)
 });
 
+test('lazy rehydration build() forwards request options into the rebuild upserts (metered)', async () => {
+  await rm(TEST_DIR, { recursive: true, force: true });
+
+  // 1. Persist durable entries to the JSONL log (no semantic index needed yet).
+  const seed = new JsonlKnowledgeBackend(TEST_DIR);
+  await seed.put('sessR', makeEntry('a', 'alpha'));
+  await seed.put('sessR', makeEntry('b', 'beta'));
+
+  // 2. Fresh backend with a RECORDING semantic index — its in-process index is
+  //    empty, so the first query triggers a lazy rebuild from the durable JSONL.
+  const upsertOptions: unknown[] = [];
+  const semantic = {
+    async upsert(_sid: string, _e: KnowledgeEntry, options?: unknown) {
+      upsertOptions.push(options);
+    },
+    async query() {
+      return [] as readonly KnowledgeEntry[];
+    },
+    deleteSession() {},
+  };
+  const backend = new JsonlKnowledgeBackend(TEST_DIR, semantic as never);
+  const reqOptions = { requestLogger: {} } as never; // CallOptions sentinel
+
+  await backend.semanticQuery('sessR', 'q', 5, undefined, reqOptions);
+
+  // The lazy rebuild re-indexed BOTH durable entries, and each upsert carried the
+  // triggering request's options (so the rebuild embeds reach token metering).
+  assert.equal(upsertOptions.length, 2, 'both durable entries re-indexed');
+  assert.ok(
+    upsertOptions.every((o) => o === reqOptions),
+    'rebuild upserts carry the request options (metered, not dropped)',
+  );
+});
+
 test('cleanup temp dir', async () => {
   await rm(TEST_DIR, { recursive: true, force: true });
 });

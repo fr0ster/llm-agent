@@ -380,6 +380,7 @@ import {
   resolveLlmConfigStrict,
   resolveToolSelectionStrategy,
 } from './config.js';
+import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
 import type {
   ISessionMetaStore,
@@ -1874,6 +1875,9 @@ export class SmartServer {
   }): Promise<void> {
     const { toolsRag, resolvedEmbedder, mcpClients } = input;
 
+    // Record the resolved embedder BEFORE building the knowledge backend so the
+    // backend can attach the embedder-backed semantic index (controller recall).
+    if (resolvedEmbedder) this._resolvedEmbedder = resolvedEmbedder;
     this.buildKnowledgeBackend();
 
     // MCP clients for the callMcp bridge. DI/plugin clients win; otherwise
@@ -1895,12 +1899,20 @@ export class SmartServer {
    * No MCP dependency — safe to call BEFORE the MCP client set is resolved.
    */
   private buildKnowledgeBackend(): void {
+    if (this._stepperKnowledgeBackend) return;
     const logDir = this.cfg.logDir;
-    if (!this._stepperKnowledgeBackend) {
-      this._stepperKnowledgeBackend = logDir
-        ? new JsonlKnowledgeBackend(logDir)
-        : new InMemoryKnowledgeBackend();
-    }
+    // Attach an embedder-backed semantic index whenever an embedder is resolved —
+    // for ANY pipeline. Do NOT throw here: buildKnowledgeBackend runs
+    // unconditionally at startup and a flat/stepper deployment without an embedder
+    // is valid; only the CONTROLLER mandates embedding recall, enforced at the
+    // ControllerFactory boundary, not globally. With an index, the controller's
+    // results-RAG recall ranks by meaning instead of recency.
+    const semantic = this._resolvedEmbedder
+      ? makeKnowledgeSemanticIndex(this._resolvedEmbedder)
+      : undefined;
+    this._stepperKnowledgeBackend = logDir
+      ? new JsonlKnowledgeBackend(logDir, semantic)
+      : new InMemoryKnowledgeBackend(semantic);
   }
 
   /**
