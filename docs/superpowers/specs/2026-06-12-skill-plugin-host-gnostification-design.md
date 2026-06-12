@@ -253,9 +253,10 @@ interface ActiveSnapshot {
  *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
  *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`;
  *  a recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
- *  `provider.forGroup(group)`; `host.groups()` returns a CACHED snapshot of
- *  `readCatalog().entries` (refreshed at load() and on observed rotation — readCatalog is
- *  async, groups() is sync).
+ *  `provider.forGroup(group)`; `host.groups()` returns a snapshot of `readCatalog().entries`
+ *  FIXED at load() (the serving collection SET is immutable for the agent's lifetime —
+ *  readCatalog is async, groups() is sync; generation rotation within a collection is
+ *  dynamic, a SET change needs restart).
  *  NOTE: there is NO per-collection `activate` — a generation only ever begins serving by
  *  being named in a committed catalog. `forGroup(g).activeSnapshot()` resolves g's serving
  *  `{ revision: generation, manifest }` FROM `readCatalog()` (single source of truth). */
@@ -343,6 +344,16 @@ interface ISkillsStore extends ISkillsRagBackend {
   discardGeneration(generation: string): Promise<void>;
 }
 
+/** Outcome of a `load()` that COMMITTED (possibly partially). Hard failures —
+ *  `strict:true` source failure, exhausted catalog-CAS retries, config errors — THROW
+ *  instead (nothing committed). */
+interface SkillLoadResult {
+  committed: readonly string[];                      // collections now serving (new or prior gen)
+  omitted: readonly { group: string; reason: string }[]; // failed to build, NO prior → not serving
+  tombstoned: readonly string[];                     // collections removed from the desired set
+  ok: boolean;                                       // true iff `omitted` is empty
+}
+
 interface ISkillPluginHost {
   /** SINGLE fenced commit. Ingest runs EVERY source's `acquire()` → `{ collections,
    *  records }`, MERGES into one desired catalog (union of collections + per-collection
@@ -383,18 +394,29 @@ interface ISkillPluginHost {
    *  unmetered embed at construction) and compares the serving descriptor to that
    *  collection's active generation for an EAGER fail-fast. The same atomic check runs
    *  per-revision inside `rag(g).query`. Collections are materialised out-of-band by a
-   *  SEPARATE ingest job. `options` threads metering into the probe and ingest. */
-  load(options?: CallOptions): Promise<void>;
+   *  SEPARATE ingest job. `options` threads metering into the probe and ingest.
+   *
+   *  RETURN/THROW: resolves a `SkillLoadResult` when a commit happened (even with
+   *  per-collection omissions under strict:false — `result.ok === false`, `result.omitted`
+   *  lists them). THROWS on a hard failure — a `strict:true` source failure, exhausted
+   *  catalog-CAS retries, or a config error — having committed NOTHING. (A recall-only
+   *  load returns `{ committed: servedCollections, omitted: [], tombstoned: [], ok: true }`
+   *  or throws on incompatibility / missing serveCollections.) */
+  load(options?: CallOptions): Promise<SkillLoadResult>;
   /** The collections this host serves, with descriptions — what the explicit mode's
    *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
-   *  SYNCHRONOUS: it returns a CACHED catalog snapshot, NOT a live `readCatalog()` (which is
-   *  async). The host populates the cache from `provider.readCatalog()` during `load()` and
-   *  refreshes it whenever a `rag(g).query` observes a bumped `catalogRevision` (an
-   *  out-of-band rotation). So `groups()` reflects the catalog as of the last load /
-   *  observed rotation; for a guaranteed-fresh read a caller uses the async
-   *  `provider.readCatalog()` directly. The host does NOT compute the entries; the cache
-   *  holds the strategy-emitted catalog, filtered to `serveCollections` on a recall-only
-   *  host. */
+   *  SYNCHRONOUS, returning a snapshot fixed at `load()`. **The SERVING COLLECTION SET is
+   *  IMMUTABLE for the agent's lifetime:** it is enumerated once at `load()` (from
+   *  `provider.readCatalog()`), and the implicit wiring registers one RAG source per
+   *  collection THEN. Generation ROTATION within a known collection is fully dynamic
+   *  (`rag(g).query` re-checks the catalog per query — refreshed skills are picked up with
+   *  no restart). But ADDING or REMOVING a collection out-of-band does NOT change what this
+   *  agent serves — a new collection has no registered source and a removed one's source
+   *  lingers — so a collection-SET change requires a host **rebuild/restart**. A removed
+   *  (tombstoned) collection degrades gracefully: its source's `activeSnapshot()` finds no
+   *  active catalog entry → empty recall, never an error. The host does NOT compute the
+   *  entries; the snapshot holds the strategy-emitted catalog, filtered to
+   *  `serveCollections` on a recall-only host. */
   groups(): readonly SkillGroupInfo[];
   /** The score-bearing skills-RAG handle for ONE group's collection — pipelines recall
    *  from it. `group` omitted → the sole/default group (error if several are enabled).
@@ -826,7 +848,15 @@ source (assembler), configured (controller), planner-selected (explicit, deferre
 **Only the ASSEMBLER pipelines get implicit recall for free.** The context-assembler
 consumes `IRag` sources; the adapter registers each enabled group there, so the
 **assembler-based pipelines — flat/default and linear** — are gnostified with no consumer
-code. The **controller, dag, and stepper do NOT use the assembler** (they read
+code. **The registered source set is FIXED at wiring time (= `load()`/agent build):** one
+adapter per collection in `host.groups()` then. Generation rotation WITHIN a collection is
+picked up dynamically (the adapter re-checks the catalog per query — refreshed skills need
+no restart), but the COLLECTION SET is immutable for the agent's lifetime: a collection
+added out-of-band gets no adapter (not served) and a removed one's adapter lingers but
+degrades to empty recall (its `activeSnapshot()` finds no active catalog entry). Changing
+the served collection SET therefore requires a host **rebuild/restart** — dynamic
+re-registration of assembler sources is explicitly out of scope. The **controller, dag,
+and stepper do NOT use the assembler** (they read
 `extractPrompt(ctx.textOrMessages)` / raw `ctx.inputText` and build prompts themselves),
 so each must have implicit recall plumbed into its own context assembly; this phase wires
 the **controller** only (dag/stepper deferred, same pattern). The existing
@@ -1144,8 +1174,12 @@ mechanism under test.
 - First-load build failure with NO prior: a two-collection load where `c2` fails to build
   and has NO prior generation (first load) → `c2` is OMITTED from the committed catalog
   (`host.groups()` = `{c1}`, `host.rag('c2')` serves nothing), `c1` STILL commits and
-  serves, `load()` returns a partial-failure result, and `c2`'s built-partial generation
-  (if any) is discarded. `c2` is NOT tombstoned (nothing existed to retire).
+  serves, and `c2`'s built-partial generation (if any) is discarded. `c2` is NOT
+  tombstoned (nothing existed to retire).
+- `load()` result type: a partial-failure load resolves a `SkillLoadResult` with
+  `committed=['c1']`, `omitted=[{group:'c2',…}]`, `ok===false`; a clean load → `ok===true`,
+  `omitted=[]`; a `strict:true` source failure / exhausted CAS / config error THROWS (the
+  call rejects) having committed nothing.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
@@ -1188,11 +1222,13 @@ mechanism under test.
 - `host.groups()`: lists enabled groups with descriptions + collection names;
   `host.rag(group)` for an unknown group errors; `host.rag()` with one group returns it,
   with several enabled errors (must name the group).
-- `host.groups()` is SYNC + cached: after `load()` it returns the catalog snapshot WITHOUT
-  awaiting; a stub provider that bumps `readCatalog()` out-of-band does NOT change
-  `groups()` until a `rag(g).query` observes the new `catalogRevision` (which refreshes the
-  cache) — assert sync return and post-rotation refresh, with the async
-  `provider.readCatalog()` reflecting the change immediately.
+- `host.groups()` is SYNC + fixed-at-load: after `load()` it returns the snapshot WITHOUT
+  awaiting; the SERVING COLLECTION SET is immutable — a stub provider that adds collection
+  `c3` out-of-band does NOT make `groups()` include `c3` nor does any registered adapter
+  serve it (a SET change needs restart), while generation ROTATION within an existing
+  collection IS picked up: `rag('c1').query` after an out-of-band catalog bump for `c1`
+  serves the new generation. A tombstoned-out-of-band collection's `rag(g)` returns empty
+  (its `activeSnapshot()` finds no active entry), never an error.
 
 ## Licensing posture (settled)
 
@@ -1212,6 +1248,10 @@ validation, and **implicit recall** for (a) assembler pipelines via the `IRag` a
 the toggle-based WITH/WITHOUT measurement on the controller.
 
 **Later phase / out of this spec (same host, no contract change):**
+- **Dynamic collection-SET rotation while serving** — re-registering/unregistering
+  assembler RAG sources when an out-of-band ingest adds/removes a collection. This phase
+  fixes the serving collection set at `load()` (generation rotation WITHIN a collection IS
+  dynamic; a set change needs a rebuild/restart). Live re-registration is deferred.
 - **dag / stepper implicit recall** — same self-assembling pattern as the controller
   (attach `host.rag(group)` to their own context assembly); wired when needed, not here.
 - **Explicit planner-driven group selection** — handing `host.groups()` to the planner
