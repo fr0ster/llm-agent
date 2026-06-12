@@ -48,6 +48,35 @@ collection in the skills-RAG); the **implicit** mode avoids conflict by the oper
 enabling only compatible groups, the **explicit** mode avoids it by the planner
 selecting one group per step.
 
+## Terminology (canonical — reused verbatim in user docs)
+
+These are the words this spec, the code, and the public documentation MUST use
+consistently. Where a term mirrors Anthropic's plugin model, that is called out.
+
+| Term | Definition |
+|---|---|
+| **Marketplace / registry** | A source that LISTS available plugins (a set of repos/folders offering skills). Anthropic: the marketplace you browse. In config it is a fetched `source` (`registry: <url>`). It is NOT a single skill — it is the catalogue. |
+| **Plugin** | The unit you ENABLE: one folder of skills (e.g. `sap-abap`, `sap-btp-best-practices`). Anthropic: a plugin you install from a marketplace. The `enabled` list names **plugins**. |
+| **Skill** | One `SKILL.md` (frontmatter + body) inside a plugin — a single procedural "how-to". A plugin contains one or more skills. |
+| **Chunk** | A retrieval-sized slice of a skill (split by H2 / size). The unit actually embedded and injected — a hit is ONE chunk, not a whole skill. |
+| **Group** | The **conflict-isolation unit = one collection** in the skills-RAG. **Default: one group per enabled plugin** (group id = plugin id); a deployment MAY declare a **named group** bundling several plugins. Recall via `host.rag(group)` only ever sees that group's records. |
+| **Collection** | The physical namespace in the skills-RAG that backs one group. Group ↔ collection is 1:1. |
+| **Source** | A pluggable acquisition strategy feeding the host: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-filtered — no `enabled`). Identified by a stable `sourceId`. |
+| **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into per-group collections. |
+| **Skill plugin-host** (`ISkillPluginHost`) | The component that does acquire → parse → grouped materialise (`load()`) and exposes recall (`groups()`, `rag(group)`). The "part 1" of the system. |
+| **Ingest** | Building/refreshing a generation: acquire enabled plugins → chunk → embed → write into the group collections → fenced `activate`. Done at startup (self-ingest) or out-of-band by a separate job. |
+| **Generation** | An atomic SNAPSHOT of a collection's full desired record set, written under a generation namespace so a new build never overwrites the serving one until `activate`. |
+| **Revision** | The fence token / monotonic id of a collection's ACTIVE generation. `activate` is a compare-and-set on it; recall pins one revision per query. |
+| **Manifest** (`SkillsManifest`) | The embedding-compatibility descriptor stamped onto a generation at `activate`: `{ embeddingSpaceId, dimension, retrievalSchemaVersion }`. |
+| **Serving descriptor** (`SkillsEmbeddingDescriptor`) | The same shape, derived by the serving side; recall compares it to the active manifest and refuses on mismatch. |
+| **embeddingSpaceId** | A STABLE id of the actual vector space (deployment/adapter-supplied; mandatory for any persistent store). Never alias-derived — a provider can re-train under the same `provider:model` alias. |
+| **retrievalText** | The text actually EMBEDDED for a chunk (`description + heading + content`) — distinct per chunk so sections are individually selectable. NOT the injected text. |
+| **content** | The chunk body injected verbatim into the LLM context on a hit. |
+| **Recall-only host** | A serving instance with NO source/write store: it only reads (`host.rag(group)`) collections an out-of-band ingest wrote. Least privilege. |
+| **Implicit mode** | Seamless consumption: each enabled group is registered as a source in the base SmartAgent multi-source RAG retrieval — skills injected automatically, no consumer code. |
+| **Explicit mode** | Planner-driven consumption: the planner picks a group per step (`host.groups()` → `host.rag(group)`). Opt-in, later phase. |
+| **Gnostify / gnostic / agnostic** | To "gnostify" = to give the agnostic (domain-blind) engine domain knowledge via skills. "Gnostic" skills/knowledge = domain-specific (the consumer's); "agnostic" = the engine + our shipped code, which carry no domain. |
+
 ## Core principles (locked)
 
 1. **Agnostic engine + MIT.** No domain names, no bundled domain skills, in
