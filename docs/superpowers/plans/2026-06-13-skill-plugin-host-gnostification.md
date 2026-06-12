@@ -4,7 +4,7 @@
 
 **Goal:** Build a reusable, agnostic skill plugin-host that materialises consumer-supplied domain skills into a grouped skills-RAG, attach it to the RAG path each pipeline already reads (assembler pipelines + the controller), and measure WITH-vs-WITHOUT by a config toggle.
 
-**Architecture:** Three layers. (1) Contracts in `@mcp-abap-adt/llm-agent` (pure interfaces/types). (2) Implementations in `@mcp-abap-adt/llm-agent-libs/src/skills/plugin-host/` — chunker, marketplace adapter, HTTP fetcher, in-memory store+catalog providers, compat wrapper, the host, and the `IRag` adapter. (3) Wiring + config in `@mcp-abap-adt/llm-agent-server-libs` — `skills:` config parse/validation, register the adapter as a context-assembler `IRag` source for assembler pipelines, and a controller planner recall hook; plus the toggle measurement via the plan-analysis harness.
+**Architecture:** Three layers. (1) Contracts in `@mcp-abap-adt/llm-agent` (pure interfaces/types). (2) Implementations in `@mcp-abap-adt/llm-agent-libs/src/skills/plugin-host/` — chunker, marketplace adapter, HTTP fetcher, in-memory store+catalog providers, compat wrapper, the host, and the `IRag` adapter. (3) Wiring + config in `@mcp-abap-adt/llm-agent-server-libs` — `skillPlugins:` config parse/validation (a NEW key, distinct from the existing `skills:` skill-manager key), register the adapter as a context-assembler `IRag` source for assembler pipelines, and a controller planner recall hook (threaded host→ctx→factory→handler→planner); plus the toggle measurement via the plan-analysis harness. Also a Qdrant store provider for persistent/recall-only serving.
 
 **Tech Stack:** TypeScript strict ESM (`.js` import extensions), Node ≥ 22, Biome, `node:test` + `node:assert/strict`. Tests are colocated `*.test.ts`. Per-package test: `node --import tsx/esm --test --test-reporter=spec 'src/**/*.test.ts'`. Build a lower package before running tsx tests that import it across the workspace.
 
@@ -259,7 +259,8 @@ import { chunkSkill } from './chunker.js';
 const ID = { source: 's', plugin: 'p', version: '1', skill: 'sk', group: 'g' };
 
 test('splits by H2 and produces DISTINCT retrievalText per chunk', () => {
-  const body = '# Title\nintro\n## Alpha\naaa\n## Beta\nbbb';
+  // body starts at the first H2 (no preamble) → exactly two chunks
+  const body = '## Alpha\naaa\n## Beta\nbbb';
   const recs = chunkSkill({ ...ID, description: 'D', body }, { maxChars: 1000 });
   assert.equal(recs.length, 2);
   assert.notEqual(recs[0].retrievalText, recs[1].retrievalText);
@@ -269,6 +270,15 @@ test('splits by H2 and produces DISTINCT retrievalText per chunk', () => {
   assert.equal(recs[1].id, 's:p@1/sk#1');
   assert.equal(recs[0].group, 'g');
   assert.equal(recs[0].sourceId, 's');
+});
+
+test('content BEFORE the first H2 (preamble) becomes its own leading chunk', () => {
+  // documents the impl behaviour: a non-empty preamble (after the # title) is a chunk
+  const body = '# Title\nintro text\n## Alpha\naaa';
+  const recs = chunkSkill({ ...ID, description: 'D', body }, { maxChars: 1000 });
+  assert.equal(recs.length, 2); // [preamble "intro text", "Alpha"]
+  assert.match(recs[0].content, /intro text/);
+  assert.match(recs[1].retrievalText, /Alpha/);
 });
 
 test('over-long section splits further; ids stay deterministic', () => {
@@ -554,7 +564,7 @@ test('publishCatalog CAS rejects a stale expectedRevision', async () => {
   await assert.rejects(() => p.publishCatalog(r0, []), /catalog.*revision|CAS|stale/i);
 });
 
-test('dropCollection removes a tombstoned collection\'s generations', async () => {
+test('an ACTIVE generation is retained; dropCollection only reclaims a NON-active one', async () => {
   const p = makeInMemoryStoreProvider();
   const g = await p.forGroup('g1').beginGeneration();
   await p._seed(g.generation, [rec('a', 'g1', [1, 0, 0])]);
@@ -562,8 +572,13 @@ test('dropCollection removes a tombstoned collection\'s generations', async () =
   await p.publishCatalog(r0, [
     { collection: { group: 'g1', description: 'd', collection: 'g1' }, sources: ['s'], generation: g.generation, manifest: MANIFEST },
   ]);
+  // dropCollection on an ACTIVE collection must NOT delete its served generation
   await p.dropCollection('g1');
-  // after drop, the generation's rows are gone
+  assert.equal((await p.forGroup('g1').queryRevision(g.generation, [1, 0, 0], 1)).length, 1);
+  // now retire g1 from the catalog (publish WITHOUT it) → the generation becomes non-active
+  const r1 = (await p.readCatalog()).catalogRevision;
+  await p.publishCatalog(r1, []);
+  await p.dropCollection('g1'); // reclaims the now-non-active generation
   await assert.rejects(() => p.forGroup('g1').queryRevision(g.generation, [1, 0, 0], 1), /unknown generation|not found/i);
 });
 ```
@@ -692,7 +707,17 @@ export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemo
 }
 ```
 
-> In-memory retention is "exact" by virtue of JS references: a `queryRevision` that already obtained `rows` holds the array; `dropCollection`/discard removing the map entry does not invalidate an in-flight read's captured reference. Document this in a comment.
+> **Retention (P1.3 — no read-under-delete):** the provider NEVER deletes a generation on
+> a `publishCatalog` swap, and `discardGeneration`/`dropCollection` REFUSE to delete a
+> generation the active catalog still names. A superseded/tombstoned generation therefore
+> stays in `gens` and remains readable by `queryRevision` until the **host explicitly
+> reclaims it on the NEXT `load()`** (deferred reclaim — Task A6/A7). That inter-load gap
+> is the in-memory grace window: it is ≫ any single recall round-trip, so a reader that
+> resolved generation N via `activeSnapshot()` and then calls `queryRevision(N)` still finds
+> N's rows even though the catalog has moved to N+1 (the reclaim of N happens only at the
+> following load, by which time the reader is long done). Add `assert (active gen not
+> deletable)` coverage in the test above. The JS-reference point is a SECONDARY safety net,
+> not the guarantee — the guarantee is deferred reclaim.
 
 Run the tests — Expected: PASS.
 
@@ -888,12 +913,13 @@ Write at least these named tests (full bodies — use the in-memory provider + s
 2. `multi-source merge: union records + ownership; conflicting descriptions throw` — two sources both placing into `c1` with the SAME description → merged; with DIFFERENT descriptions → `load()` rejects.
 3. `carry-forward publishes a NEW generation` — collection `c1` fed by `s1`(ok)+`s2`(throws on acquire) under strict:false → committed generation contains s1 refreshed + s2 carried; NOT the prior pointer.
 4. `first-load build failure with NO prior → omit + partial result` — `c2` build throws and no prior → result.committed=['c1'], result.omitted=[{group:'c2'}], result.ok=false; `host.rag('c2')` serves nothing; c1 commits.
-5. `collection-set reconciliation: drop removed collection` — load A `{c1,c2}`, load B `{c1}` → after B groups=`{c1}`, c2 tombstoned + dropped.
-6. `lost CAS → discard built gens + retry from fresh snapshot, then commit` — a provider whose first `publishCatalog` throws a CAS error then succeeds → `load()` rebuilds (assert `beginGeneration` called twice) and commits.
-7. `exhausted CAS → throw, no orphans` — provider always throws CAS → `load()` rejects; gens map has only pre-existing committed generations.
-8. `strict:true source failure → throw, nothing committed`.
+5. `collection-set reconciliation: removed collection tombstoned now, reclaimed next load` — load A `{c1,c2}`, load B `{c1}` → IMMEDIATELY after B, `host.groups()`=`{c1}` and `host.rag('c2')` serves nothing (c2 tombstoned out of the active catalog); c2's generation is NOT physically deleted yet (deferred). A THIRD `load()` reclaims it (assert `dropCollection('c2')` runs at the start of load C).
+6. `partial-commit orphan cleanup (P1.4)` — collection `c2` fails to build but has a PRIOR generation → the commit keeps c2's prior pointer; assert c2's freshly-BUILT (failed-mid) generation is `discardGeneration`d in the finally even though `committed===true`, and the store keeps only the generations the committed catalog names.
+7. `lost CAS → discard built gens + retry from fresh snapshot, then commit` — a provider whose first `publishCatalog` throws a `CatalogCasError` then succeeds → `load()` FULLY rebuilds (assert `beginGeneration` called afresh per attempt — no reuse) and commits.
+8. `exhausted CAS → throw, no orphans` — provider always throws `CatalogCasError` → `load()` rejects; the store has only pre-existing committed generations (every attempt's built gens discarded).
+9. `strict:true source failure → throw, nothing committed`.
 
-Use a `makeStubSource(result | () => throw)` helper and an embed fn `async (t) => ({ vector: hash3(t) })` (a deterministic 3-dim vector from the text) so the in-memory store can embed without a real embedder. Add `hash3` in the test file.
+Use a `makeStubSource(result | () => throw)` helper and an embed fn `async (t) => ({ vector: hash3(t) })` (a deterministic 3-dim vector from the text) so the in-memory store can embed without a real embedder. Add `hash3` in the test file. To exercise a mid-build failure (test 6) inject a store provider whose `forGroup('c2').upsert` throws once.
 
 Run — Expected: FAIL.
 
@@ -910,14 +936,24 @@ export interface IngestHostDeps {
   dimension?: number;
   strict?: boolean;
   catalogCasMaxAttempts?: number; // default 3
+  servingMode?: boolean; // default true; false = an ingest-only job (skips the reload set-guard)
 }
 ```
+
+Internal host state (closure vars, not deps): `_snapshot: SkillGroupInfo[]` (fixed at first
+successful load), `_registeredSet?: Set<string>`, `_pendingReclaim: { generations: {group,generation}[]; tombstonedGroups: string[] }` (init `{generations:[],tombstonedGroups:[]}`).
 
 Core `load()` algorithm (encode EXACTLY the spec's flow):
 
 ```
 async load(options):
   registeredSet = this._registeredSet   // set at first successful/attempted load (serving guard); undefined on first
+  // DEFERRED RECLAIM (P1.3): at the START of every load, reclaim the PREVIOUS load's
+  // retired generations/collections — they survived one inter-load grace window so any
+  // reader from before the prior commit is long done.
+  for g in this._pendingReclaim.generations: await storeProvider.forGroup(g.group).discardGeneration(g.generation)
+  for grp in this._pendingReclaim.tombstonedGroups: await storeProvider.dropCollection(grp)
+  this._pendingReclaim = { generations: [], tombstonedGroups: [] }
   for attempt in 1..max:
     prior = await storeProvider.readCatalog()
     results = await Promise.allSettled(sources.map(s => s.source.acquire(options)))
@@ -954,17 +990,29 @@ async load(options):
           else: omitted.push({group, reason:String(buildErr)})  // OMIT, no prior
       // tombstones for prior active collections not in desiredSet:
       for e in prior.entries: if !desiredSet.has(e.collection.group): entries.push({...e, tombstone:true})
-      await storeProvider.publishCatalog(prior.catalogRevision, entries)   // CAS commit
+      await storeProvider.publishCatalog(prior.catalogRevision, entries)   // CAS commit (the ONLY activation)
       committed = true
+      committedGenerations = new Set(entries.filter(e=>!e.tombstone).map(e=>e.generation))
       // AFTER publish: cache the fixed groups() snapshot; register set on first load
       this._snapshot = entries.filter(e=>!e.tombstone).map(e=>e.collection)
       this._registeredSet ??= new Set(this._snapshot.map(c=>c.group))
-      // background reclaim (await for determinism in tests): drop tombstoned + superseded gens
-      for e in entries.filter(e=>e.tombstone): await storeProvider.dropCollection(e.collection.group)
+      // SCHEDULE (do NOT execute now — P1.3 deferred reclaim) the superseded prior
+      // generations + tombstoned groups for reclaim at the NEXT load:
+      this._pendingReclaim = {
+        generations: prior.entries.filter(e => !committedGenerations.has(e.generation)).map(e => ({ group: e.collection.group, generation: e.generation })),
+        tombstonedGroups: entries.filter(e => e.tombstone).map(e => e.collection.group),
+      }
       return { committed: [...], omitted, tombstoned: [...], ok: omitted.length===0 }
     finally:
-      if !committed: for b in built: if !entries-names(b.generation): await storeProvider.forGroup(b.group).discardGeneration(b.generation)
-    // if we reach here via a caught CAS error inside publishCatalog: discard all built, loop to retry
+      // ORPHAN CLEANUP (P1.4) — keyed on the COMMITTED catalog, NOT on !committed.
+      // Discard EVERY generation this attempt built that the committed catalog does NOT
+      // name: covers (a) a lost CAS / error / strict abort (committed===false → none
+      // named → all built discarded) AND (b) a SUCCESSFUL partial commit where a
+      // collection fell back to a prior pointer or was omitted (its built generation is
+      // not named → discarded). `discardGeneration` is a no-op for a named (serving) gen.
+      for b in built: if !committed || !committedGenerations.has(b.generation):
+        await storeProvider.forGroup(b.group).discardGeneration(b.generation)
+    // a caught CatalogCasError loops to retry (built gens already discarded by the finally above)
   throw "catalog CAS retries exhausted"
 ```
 
@@ -1186,72 +1234,105 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
 
 ---
 
-# Phase B — wiring (config + integration)
+## Task A10: Qdrant (vector-DB) store provider — persistent store for recall-only
 
-## Task B1: `skills:` config parse + validation
-
-Parse the `skills:` YAML/programmatic block into a normalized config and validate it per the spec's error-handling rules.
+**P1.2 — the spec includes the vector-DB store IN SCOPE, and recall-only REQUIRES a persistent store** (the no-FS serving model). Without it the parser's `qdrant` acceptance is unfulfillable and production recall-only is impossible. This task implements `ISkillsStoreProvider` over Qdrant, against an INJECTED minimal client interface (so the logic is unit-tested with a mock; a live Qdrant integration smoke is part of Phase C / manual).
 
 **Files:**
-- Create: `packages/llm-agent-server-libs/src/smart-agent/skills-config.ts`
-- Test: `packages/llm-agent-server-libs/src/smart-agent/skills-config.test.ts`
+- Create: `packages/llm-agent-libs/src/skills/plugin-host/qdrant-store.ts`
+- Test: `packages/llm-agent-libs/src/skills/plugin-host/qdrant-store.test.ts` (mock client)
 
-Read `packages/llm-agent-server-libs/src/smart-agent/config.ts` first to match the existing config-parsing style.
+Design (encode the spec's persistent semantics):
+- A single Qdrant collection (named by config) holds all skill points; each point payload carries `{ generation, group, recordId, content, name, provenance, sourceId }` and the vector.
+- The **catalog** is a dedicated payload row (a reserved point id, e.g. `__catalog__`) holding `{ catalogRevision, entries }` JSON. `readCatalog` reads it; `publishCatalog` is a **fenced** update: read-modify-write guarded by an etag/version OR a Qdrant optimistic check — implement the CAS by storing `catalogRevision` in the row and rejecting an update whose `expectedCatalogRevision` ≠ the stored one (use the client's conditional update / a get-then-set under the injected client's `casSetCatalog(expected, next)`; the mock implements this directly).
+- `beginGeneration` → a fresh generation label (a UUID-like id from an injected `newId()` — NOT `Math.random`/`Date.now`; inject it so tests are deterministic).
+- `upsert(generation, records)` → upsert points tagged with that generation (embedding via the injected `embed`).
+- `queryRevision(generation, vector, k)` → Qdrant search FILTERED by `payload.generation == generation` (a retired generation's points remain until reclaimed — that is the grace).
+- `activeSnapshot(group)` → from the catalog row's entry for `group`: `{ revision: generation, manifest }` (null if absent).
+- `carryForward(generation, sourceIds)` → copy the served generation's points for those sourceIds into the new generation label.
+- `discardGeneration(generation)` / `dropCollection(group)` → delete points by `payload.generation` filter (never the active one — guarded against the catalog). Called by the host's DEFERRED reclaim (next load).
 
-- [ ] **Step 1: Write the failing tests** — assert each validation:
-  - `mode: explicit` → throws "not yet implemented".
-  - persistent store (`store.type: qdrant`) without `embeddingSpaceId` → throws.
-  - fetched source with empty/missing `enabled` → throws; `["*"]` ok.
-  - duplicate `sourceId` across sources → throws.
-  - recall-only (`loadOnStartup:false`) with `serveCollections` naming nothing buildable is deferred to host load() (not a parse error) — but `sources` + `loadOnStartup:false` together → throws; both `sources` and persistent `store` omitted → throws.
-  - a clean implicit config parses to a normalized object.
+- [ ] **Step 1: Write the failing tests** (mock client) mirroring the in-memory provider tests: build-inactive → publishCatalog CAS (stale expected rejected) → queryRevision filtered by generation → activeSnapshot from the catalog row → dropCollection deletes a non-active generation's points; carryForward copies by sourceId. Inject `embed` and `newId` for determinism.
+- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, embed, newId })` implementing `ISkillsStoreProvider`. The `client` interface is minimal: `search(filter, vector, k)`, `upsertPoints(points)`, `deleteByFilter(filter)`, `getCatalog()`, `casSetCatalog(expectedRevision, next)`. Provide a thin real adapter `makeQdrantClient({ url, apiKey, collection })` over the Qdrant REST/SDK (no unit test — exercised live in Phase C).
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant store provider (generation-filtered points + fenced catalog CAS)`).
 
-- [ ] **Step 2: Implement `parseSkillsConfig(raw): NormalizedSkillsConfig`** with the validations above. Default `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000`, `chunk.maxChars:1500`, `mode:'implicit'`.
-
-- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): skills config parse + validation`).
+> Retention on Qdrant is the same deferred-reclaim discipline as in-memory (host drops a retired generation's points on the NEXT load) PLUS, where the operator wants the spec's exact guarantee, a lease/snapshot-capable backend — out of scope here; the time-grace/deferred-reclaim path is what this provider gives.
 
 ---
 
-## Task B2: Assemble a host from config (`buildSkillHostFromConfig`)
+# Phase B — wiring (config + integration)
 
-Wire normalized config → a concrete `ISkillPluginHost`: resolve the embedder (via `resolveEmbedder`/`prefetchEmbedderFactories` from `llm-agent-rag`), build the store provider (in-memory for this phase; a vector-DB provider is a separate later task), construct sources from config, and return the host (ingest or recall-only).
+## Task B1: `skillPlugins:` config parse + validation (NEW key — avoids the existing `skills:`)
+
+**P1.1 — the spec's YAML used `skills:`, but `skills:` ALREADY exists** (`SmartServerSkillsConfig` in `smart-server.ts:174`, consumed by `resolveSkillManager(this.cfg.skills)` at ~2311 — the FS skill-MANAGER config). They are different features. To avoid a silent collision, the skill plugin-host config lives under a NEW top-level key **`skillPlugins:`**. The existing `skills:` is untouched.
 
 **Files:**
-- Create: `packages/llm-agent-server-libs/src/smart-agent/skills-host-factory.ts`
-- Test: `packages/llm-agent-server-libs/src/smart-agent/skills-host-factory.test.ts`
+- Create: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.ts` (parse + validate + the `SkillPluginsConfig` type)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — add `skillPlugins?: SkillPluginsConfig` to the `SmartServerConfig` interface (next to `skills?`), and import/re-export the type. Do NOT touch the `skills`/`resolveSkillManager` path.
+- Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.test.ts`
 
-- [ ] **Step 1: Test** — a programmatic `records`-source config (no HTTP) builds a host; `load()` then `host.rag(group).query` returns injected records. Use a stub embedder.
-- [ ] **Step 2: Implement** — map config sources to `ISkillSource` (a `records` source wraps pre-supplied records into an `acquire()` that returns them with a derived single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`). Build `makeInMemoryStoreProvider({ embed })`. Return `makeSkillPluginHost(...)`.
-- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): build skill plugin-host from config`).
+Read `config.ts` and the `SmartServerConfig`/`SmartServerSkillsConfig` block in `smart-server.ts` first.
+
+- [ ] **Step 1: Write the failing tests** — assert each validation against `parseSkillPluginsConfig(raw)`:
+  - `mode: explicit` → throws "explicit … not yet implemented".
+  - `store.type` other than `in-memory`/`qdrant` → throws; persistent `store` (`qdrant`) without `embeddingSpaceId` → throws.
+  - fetched source with empty/missing `enabled` → throws; `["*"]` ok.
+  - duplicate `sourceId` across sources → throws.
+  - `sources` + `loadOnStartup:false` together → throws; both `sources` and a persistent `store` omitted → throws (recall-only needs a persistent store).
+  - a `groups`/`plugins→group` block is NOT accepted (placement is the strategy's job) — assert an unknown `groups:` key is ignored or rejected per the spec.
+  - a clean `mode:implicit` config parses to a normalized object with defaults applied.
+
+- [ ] **Step 2: Implement `parseSkillPluginsConfig(raw): SkillPluginsConfig`** with the validations above. Defaults: `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000`, `chunk.maxChars:1500`, `mode:'implicit'`. Add `skillPlugins?: SkillPluginsConfig` to `SmartServerConfig`.
+
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): skillPlugins config parse + validation (new key, no clash with skills:)`).
+
+---
+
+## Task B2: Assemble a host from config (`buildSkillHostFromConfig`) + lifecycle
+
+Wire normalized config → a concrete `ISkillPluginHost`: resolve the embedder (via `resolveEmbedder`/`prefetchEmbedderFactories` from `llm-agent-rag`), build the store **provider by `store.type`** (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider` from Task A10), construct sources from config, and return the host (ingest or recall-only). Then own its **lifecycle**: SmartServer calls `await host.load()` ONCE at startup (the serving collection set is fixed there) and surfaces it on the pipeline context.
+
+**Files:**
+- Create: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.ts` (`buildSkillHostFromConfig(cfg): Promise<ISkillPluginHost>`)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — when `cfg.skillPlugins` is present, build the host once at startup, `await host.load()`, and expose it on the pipeline build context (the object passed to pipeline plugins — see B4 for where the controller reads it). Absent `skillPlugins` → no host, everything unchanged.
+- Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts`
+
+- [ ] **Step 1: Test** — a programmatic `records`-source `in-memory` config builds a host; after `load()`, `host.rag(group).query` returns injected records. Use a stub embedder. Also assert `store.type: qdrant` selects the Qdrant provider (inject a mock Qdrant client; assert the host is constructed over it).
+- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Select the provider by `store.type`. Recall-only (`loadOnStartup:false`) → construct the recall-only host shape (Task A7) over the persistent provider's read view + `serveCollections`. Return the host.
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): build skill plugin-host from config + startup lifecycle`).
 
 ---
 
 ## Task B3: Implicit wiring — register the adapter as a context-assembler IRag source
 
-For assembler pipelines (flat/default, linear), register `skillsRagSource(host.rag(group))` as a source in the SmartAgent's multi-source RAG retrieval, **once at build time** (fixed serving set). Toggle: only when `skills:` is configured.
+For assembler pipelines (flat/default, linear), register `skillsRagSource(host.rag(group))` as a source in the SmartAgent's multi-source RAG retrieval, **once at build time** (fixed serving set). Toggle: only when `skillPlugins:` is configured.
 
 **Files:**
 - Modify: the SmartServer/SmartAgent build composition where RAG sources are assembled (find via `grep -rn "ragResults\|sources\b\|context-assembler\|buildSystemContent" packages/llm-agent-server-libs/src packages/llm-agent-libs/src/context`). Likely `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` or a builder step.
 - Test: a focused test that, given a host with one group and a stub assembler that collects `IRag` sources, the skills adapter appears as a registered source and contributes a `RagResult` for a matching query.
 
 - [ ] **Step 1: Test** (stub the assembler's source registry; assert the adapter is added once per enabled group, with the section header e.g. "Relevant Skills").
-- [ ] **Step 2: Implement** — at build time, after `host.load()`, for each `host.groups()` register `skillsRagSource(host.rag(g.group), { group: g.group, k, threshold })` into the assembler's source set with a section header. Guard: only for assembler pipelines; skip for the controller (Task B4). Wrap registration so absent `skills:` config = no-op.
+- [ ] **Step 2: Implement** — at build time, after `host.load()`, for each `host.groups()` register `skillsRagSource(host.rag(g.group), { group: g.group, k, threshold })` into the assembler's source set with a section header. Guard: only for assembler pipelines; skip for the controller (Task B4). Wrap registration so absent `skillPlugins:` config = no-op.
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): implicit wiring — skills adapter as a context-assembler RAG source`).
 
 ---
 
-## Task B4: Controller recall hook (the measurement target)
+## Task B4: Controller recall hook (the measurement target) — full host→planner thread
 
-The controller bypasses the assembler, so its planner recalls a configured group and injects a bounded "Relevant skills" block into create-plan/replan. **This is the measurement target.**
+**P1.5 — the dependency must travel the whole chain**, not just planner+factory. The thread is: SmartServer builds the host (Task B2) → exposes a `skillsRecall` fn on the pipeline build context → `pipelines/controller.ts` reads it into `ControllerFactoryDeps` → `ControllerFactory.build` passes it into `ControllerHandlerDeps` → the handler threads it into `makePlanner`/the planner → the planner injects the block in `callPlan`. Every file on that chain is modified here.
 
-**Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts` (the `callPlan` path — inject a skills block into the system/user prompt before the planner LLM call).
-- Modify: the controller factory `packages/llm-agent-server-libs/src/factories/controller-factory.ts` (accept an optional `skillsRecall?: (goal, options) => Promise<string>` dep; build it from the host + `controllerSkillGroup` + `maxInjectChars`).
-- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.skills.test.ts`
+**Files (the whole chain):**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — build `skillsRecall(goal, options): Promise<string>` from the host (Task B2) when `cfg.skillPlugins?.controllerSkillGroup` is set: `host.rag(group).query(goal, {k, threshold}, options)` → format hits' `content` into a bounded "Relevant skills" block (≤ `maxInjectChars`); add it to the pipeline build context object.
+- Read first, then Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts` (~line 109) — read `ctx.skillsRecall` (new optional field on the pipeline context type) into the `ControllerFactoryDeps` object it builds.
+- Modify: the pipeline context type that `ctx` conforms to (find it: `grep -rn "toolsRag\b" packages/llm-agent-server-libs/src/pipelines packages/llm-agent-server-libs/src/smart-agent` — the same interface that declares `toolsRag`/`knowledgeRagFor`/`embedder`) — add `skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>`.
+- Modify: `packages/llm-agent-server-libs/src/factories/controller-factory.ts` — add `skillsRecall?` to `ControllerFactoryDeps`; pass it into the `ControllerHandlerDeps` it constructs.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts` (~line 106 `ControllerHandlerDeps`, ~line 334 where the planner is constructed/used) — add `skillsRecall?` to `ControllerHandlerDeps` and thread it into the planner.
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts` (the `callPlan` path) — accept an optional `skillsRecall` and inject its block before the planner LLM call.
+- Test: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.skills.test.ts` (planner-level) + `packages/llm-agent-server-libs/src/factories/controller-factory.skills.test.ts` (factory threads the dep into the handler).
 
-- [ ] **Step 1: Test** — with a stub `skillsRecall` returning a "Relevant skills" block, `callPlan` includes it in the prompt; with skills OFF (no dep) the prompt is byte-identical to the agnostic prompt (the measurement toggle).
-- [ ] **Step 2: Implement** — thread an optional `skillsRecall(goal, options): Promise<string>` into the planner. Before the planner LLM call, `const block = skillsRecall ? await skillsRecall(goal, options) : ''` and append it (bounded by `maxInjectChars`, empty → nothing). Build `skillsRecall` in the factory from `host.rag(controllerSkillGroup).query(goal, {k, threshold}, options)` → format hits' `content` into a bounded block. Keep `requires`/instructions English (existing invariant).
-- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): controller planner recall hook (configured group, bounded block)`).
+- [ ] **Step 1: Tests** — (a) planner: with a stub `skillsRecall` returning a block, `callPlan`'s prompt includes it; with no dep the prompt is byte-identical to agnostic (the toggle). (b) factory: a `ControllerFactoryDeps` carrying `skillsRecall` produces a handler whose planner receives it (assert via a spy that the planner's `callPlan` invokes `skillsRecall`).
+- [ ] **Step 2: Implement** the whole thread above. `skillsRecall` is OPTIONAL at every hop (absent → agnostic, byte-identical). Keep `requires`/instructions English (existing invariant). The block is bounded by `maxInjectChars`; empty hits → empty string → nothing injected.
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): thread controller recall hook host→ctx→factory→handler→planner`).
 
 ---
 
@@ -1285,7 +1366,8 @@ Restore the plan-analysis harness (currently at `/tmp/plan-analysis.ts.bak`) int
 
 ## Out of scope (this plan) — per the spec's Phasing section
 
-- Vector-DB store provider (Qdrant/HANA/pg) — same `ISkillsStoreProvider` contract, a separate impl.
+- HANA / pg vector store providers — same `ISkillsStoreProvider` contract as the Qdrant one (Task A10), separate impls. (Qdrant IS in this plan.)
+- A lease/snapshot-backed EXACT retention for vector-DB (this plan ships the deferred-reclaim time-grace discipline only).
 - dag / stepper implicit recall (same self-assembling pattern as the controller).
 - Explicit planner-driven per-step group selection.
 - Dynamic collection-SET rotation while serving (set is fixed at load; set change → restart).

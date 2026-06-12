@@ -914,9 +914,11 @@ folder of skills); a **plugin** contains one or more **skills** (`SKILL.md`). Th
 **which collection a skill lands in is decided by the injected `strategy`, not by host
 config** — there is no `plugins → group` mapping here.
 
-**YAML (server):**
+**YAML (server):** the top-level key is **`skillPlugins:`** (NOT `skills:` — that key is
+already taken by the FS skill-manager config `SmartServerSkillsConfig`/`resolveSkillManager`;
+the two are different features and must not collide). Shown here as `skillPlugins:`.
 ```yaml
-skills:
+skillPlugins:
   mode: implicit                     # implicit = ONLY accepted value this phase; `explicit`
                                      #   (planner picks group) is REJECTED until its phase ships
   store: { type: qdrant, url: ... }  # optional: a persistent networked store
@@ -969,7 +971,7 @@ A **recall-only serving** instance — the canonical no-FS deployment, where a
 persistent store was materialised out-of-band by a separate ingest job — omits
 `sources` entirely and declares a persistent `store` plus the serving `embedder`:
 ```yaml
-skills:
+skillPlugins:
   mode: implicit
   store: { type: qdrant, url: ... }  # REQUIRED here — recall reads what ingest wrote
   embedder: { provider: openai, model: text-embedding-3-small }  # MUST match ingest's
