@@ -56,10 +56,15 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
     });
     return next;
   }
-  private async build(sid: string): Promise<void> {
+  /** Lazy rehydration of the in-process index from the durable JSONL. `options`
+   *  is forwarded into every re-index `upsert` so the embedder receives the
+   *  triggering request's requestLogger — the lazy rebuild's embedding cost is
+   *  metered against the request that triggered it (not silently dropped). */
+  private async build(sid: string, options?: CallOptions): Promise<void> {
     if (!this.semantic || this.built.has(sid)) return;
     this.semantic.deleteSession(sid); // clear any partial state → idempotent
-    for (const e of await this.scan(sid)) await this.semantic.upsert(sid, e);
+    for (const e of await this.scan(sid))
+      await this.semantic.upsert(sid, e, options);
     this.built.add(sid); // mark built ONLY on success
   }
   private async append(sid: string, entry: KnowledgeEntry): Promise<void> {
@@ -84,7 +89,7 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
     // append the same artifact twice); instead mark the session dirty so the next
     // build re-syncs from the durable JSONL.
     await this.run(sid, async () => {
-      await this.build(sid);
+      await this.build(sid, options);
       await this.append(sid, entry);
       try {
         await this.semantic?.upsert(sid, entry, options);
@@ -110,7 +115,7 @@ export class JsonlKnowledgeBackend implements KnowledgeBackend {
       // options is captured in closure and forwarded into the index query so the
       // embedder receives requestLogger for token metering.
       return this.run(sid, async () => {
-        await this.build(sid);
+        await this.build(sid, options);
         // biome-ignore lint/style/noNonNullAssertion: guarded by the outer check
         return this.semantic!.query(sid, text, k, filter, options);
       });
