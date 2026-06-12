@@ -8,13 +8,17 @@ recall hook to the planner), but is a SEPARATE, cross-cutting feature — not pa
 
 ## Goal
 
-Let a deployment **gnostify** any agnostic pipeline by feeding it consumer-supplied
+Let a deployment **gnostify** the agnostic engine by feeding it consumer-supplied
 **domain skills** (procedural "how-to" knowledge) **through RAG**, keeping the engine
 code domain-agnostic. Enabled skills are materialised into a **skills-RAG
-collection**; a pipeline's planning/reasoning role **recalls the relevant skill by
-semantic match and injects its body into that LLM call's context** — gnostifying
-that call. This is the same posture as Claude Code's plugin system: a non-GPL host
-that loads user-enabled (possibly GPL) skills and runs them without becoming GPL.
+collection**; a pipeline's planning/reasoning role **recalls the relevant skill chunk
+by semantic match and injects it into that LLM call's context** — gnostifying that
+call. The skills-RAG + host are a cross-cutting **mechanism**; **this spec wires and
+tests exactly ONE consumer — the `controller` planner.** Other pipelines
+(default/linear/dag/stepper) can consume the same `host.rag()` later, but their hooks
+are explicit follow-on work, not in this scope. This is the same posture as Claude
+Code's plugin system: a non-GPL host that loads user-enabled (possibly GPL) skills
+and runs them without becoming GPL.
 
 ## Core principles (locked)
 
@@ -28,8 +32,10 @@ that loads user-enabled (possibly GPL) skills and runs them without becoming GPL
    The product contract is FS-free; an FS path is only an optional convenience.
 4. **Strategy, not a hardcoded format.** The skill SOURCE is a pluggable strategy;
    "Anthropic/Claude-plugin marketplace" is ONE implementation.
-5. **Cross-cutting.** ANY pipeline (flat/linear/dag/stepper/controller) can be
-   gnostified from the shared skills-RAG — not controller-only.
+5. **Extensible mechanism, controller-first.** The skills-RAG + host are a
+   cross-cutting mechanism any pipeline COULD consume via `host.rag()`, but this spec
+   delivers and tests ONE consumer — the `controller` planner. Wiring
+   default/linear/dag/stepper is explicit future work, not in scope here.
 6. **Opt-in, explicit.** Only the plugins the consumer lists are pulled. `enabled`
    is a **REQUIRED, non-empty** list per source — omitting it is a config error, NOT
    "load all" (silently pulling every plugin would violate the security/licensing
@@ -63,23 +69,42 @@ interface SkillHit {
 }
 
 /** Read side — what gnostifiable pipelines depend on. Score-bearing; no session
- *  metadata. */
+ *  metadata. `options` threads cancellation/telemetry/token-metering: the query
+ *  embedding is logged via `options.requestLogger`, exactly like the controller's
+ *  RAG (so skills recall embeds reach /v1/usage). */
 interface ISkillsRagHandle {
-  query(text: string, opts: { k: number; threshold?: number }): Promise<readonly SkillHit[]>;
+  query(
+    text: string,
+    opts: { k: number; threshold?: number },
+    options?: CallOptions,
+  ): Promise<readonly SkillHit[]>;
 }
 
-/** Write/reconcile side — used ONLY by the host's load() (see "Reconciliation"). */
+/** Write/reconcile side — used ONLY by the host's load(). Records live under a
+ *  GENERATION namespace: the PHYSICAL key is `${generation}:${record.id}`, so writing
+ *  generation B never overwrites generation A's rows (snapshot isolation). `record.id`
+ *  is the LOGICAL id (deterministic, dedup-friendly); the generation scopes the
+ *  physical key. `options` threads metering into ingest embeds. */
 interface ISkillsStore extends ISkillsRagHandle {
-  beginGeneration(): Promise<string>;                              // new generation id
-  upsert(generation: string, records: readonly SkillRecord[]): Promise<void>;
-  activate(generation: string): Promise<void>;                     // atomic snapshot switch
+  beginGeneration(): Promise<string>;                       // new generation namespace
+  upsert(
+    generation: string,
+    records: readonly SkillRecord[],
+    options?: CallOptions,
+  ): Promise<void>;
+  /** Copy the ACTIVE generation's records for the given `sources` into `generation`
+   *  unchanged — for sources that failed to refresh under strict:false (carry-forward,
+   *  so their skills are not lost). No-op when there is no active generation. */
+  carryForward(generation: string, sources: readonly string[]): Promise<void>;
+  activate(generation: string): Promise<void>;              // atomic active-pointer flip; drop prior
 }
 
 interface ISkillPluginHost {
-  /** Materialise the enabled skills into the backing store (acquire → parse →
-   *  upsert into a fresh generation → atomic activate) per the configured source +
-   *  store strategy. Idempotent; callable at startup OR out-of-band. */
-  load(): Promise<void>;
+  /** Build a FRESH generation: acquire → parse → upsert the reachable sources;
+   *  unreachable sources are carried forward (strict:false) or abort the whole load
+   *  (strict:true) — see "Reconciliation". Then atomic `activate`. Idempotent;
+   *  callable at startup OR out-of-band. `options` threads metering into ingest. */
+  load(options?: CallOptions): Promise<void>;
   /** The score-bearing skills-RAG handle pipelines recall from. */
   rag(): ISkillsRagHandle;
 }
@@ -97,16 +122,19 @@ makeSkillPluginHost({
 
 A gnostifiable pipeline depends on **`host.rag()` only** — an `ISkillsRagHandle`. It
 knows nothing about plugins, source, or backend; the host hides all of that.
-`skillsRecall(goal, k, threshold) = host.rag().query(goal, { k, threshold })`.
-Swapping the source or the store never touches the planner. `load()` is the only
-place acquisition/parse/ingest/reconciliation live; everything downstream is RAG.
+`skillsRecall(goal, k, threshold, ctx.options) = host.rag().query(goal, { k,
+threshold }, ctx.options)` — the request `CallOptions` flow through so the recall
+embedding is metered/cancellable. Swapping the source or the store never touches the
+planner. `load()` is the only place acquisition/parse/ingest/reconciliation live;
+everything downstream is RAG.
 
 ### Canonical skill record — the stable RAG contract
 
 ```
 SkillRecord {
-  id: string            // STABLE deterministic id: "<source>:<plugin>@<version>/<skill>#<chunkIx>"
-                        //   (drives reconciliation/dedup — see "Reconciliation")
+  id: string            // LOGICAL stable id: "<source>:<plugin>@<version>/<skill>#<chunkIx>"
+                        //   deterministic (dedup); the store's PHYSICAL key is
+                        //   `${generation}:${id}` so generations never collide — see "Reconciliation"
   name: string          // "<plugin>/<skill>" (+ "#<heading>" for a chunk) — human label
   retrievalText: string // the EMBEDDED surface — DISTINCT per chunk (see below)
   content: string       // the chunk body — injected verbatim into the LLM context
@@ -176,30 +204,44 @@ the selected pluginator strategy, not of the engine core.
 A naive "idempotent upsert" leaks stale records: when a skill is updated, the
 chunking changes, or a plugin is **removed** from `enabled`, the old chunk records
 survive and keep matching recall. `load()` therefore reconciles the store to EXACTLY
-the desired set via an atomic **generation snapshot**, keyed by the stable
-`SkillRecord.id`:
+the desired set via an atomic **generation snapshot**. Records are written under a
+**generation namespace** — physical key `${generation}:${record.id}` — so a new
+generation NEVER overwrites the active one (the active generation keeps serving until
+`activate`):
 
-1. `beginGeneration()` → a fresh generation id.
-2. `upsert(generation, records)` — write the full desired record set into the new
-   generation (embedding each `retrievalText`).
-3. `activate(generation)` — **atomic switch**: queries now read the new generation;
-   the previous generation's records are dropped. Until activate, recall keeps
-   serving the OLD generation — so a **partially-failed ingest never switches**, and
-   the store is never in a half-updated state.
+1. `beginGeneration()` → a fresh generation namespace.
+2. For each ENABLED source: if it fetched/parsed OK, `upsert(generation, itsRecords)`;
+   if it FAILED, apply the failure policy (below) — `carryForward` or abort.
+3. `upsert(generation, records)` writes the full desired set into the new namespace
+   (embedding each `retrievalText`).
+4. `activate(generation)` — **atomic flip** of the active-generation pointer; queries
+   now read the new namespace; the prior generation is dropped (background delete).
+   A **partially-failed build that never reaches activate** leaves the prior snapshot
+   fully intact — the store is never half-updated.
 
-For the **in-memory** store this is trivial (build a new map, swap the reference).
-For a **vector-DB** it is a generation/tenant label filtered on query, with a cheap
-metadata flip on activate and a background delete of the prior generation (or a
-collection-alias swap where the backend supports it). `id` stability means an
-unchanged chunk re-embeds to the same id across generations (dedup-friendly); a
-removed plugin/skill/chunk simply has no record in the new generation → gone after
-activate. The **ephemeral in-memory-per-run** strategy needs no cross-run
-reconciliation (each startup builds from scratch), but uses the same generation
-build/swap within a run for atomicity.
+**Source-failure policy (resolves `strict` vs snapshot atomicity).** A generation is
+all-or-nothing: it must contain EVERY enabled source's records before activate, or it
+is discarded. So:
+- **`strict: false` (default) — per-source carry-forward.** An unreachable/failed
+  source does NOT drop its skills: `carryForward(generation, [failedSource])` copies
+  that source's records from the active generation into the new one unchanged; only
+  the reachable sources are refreshed. The new generation is complete → activate is
+  safe, last-known-good is retained. (On the very first load with no active
+  generation, a failed source simply contributes nothing — it was never loaded.)
+- **`strict: true` — all-or-nothing.** ANY source failure aborts the whole `load`: no
+  `activate`, the prior generation is fully retained, the error surfaces.
+
+For the **in-memory** store the namespace is a fresh map swapped on activate. For a
+**vector-DB** it is a generation label filtered on query, a cheap pointer flip on
+activate, and a background delete of the prior generation (or a collection-alias swap
+where supported). The **ephemeral in-memory-per-run** strategy has no prior
+generation to carry forward (each startup builds from scratch) but uses the same
+build→activate swap within a run for atomicity.
 
 **4. Recall (runtime) — RAG-only, FS-free, the one new pipeline hook.** A
-`skillsRecall(query, k, threshold)` dependency over `ISkillsRagHandle`: the
-planning/reasoning role queries by goal/step → `SkillHit[]` (top-`k`, score ≥
+`skillsRecall(query, k, threshold, options)` dependency over `ISkillsRagHandle`: the
+planning/reasoning role queries by goal/step (passing the request `CallOptions` so
+the recall embedding is metered/cancellable) → `SkillHit[]` (top-`k`, score ≥
 `threshold`) → injects each hit's `record.content` **directly** (it is already in the
 store — there is NO re-load from FS or source) as a bounded "Relevant skills" block
 (own char budget). Empty/no match → no block → unchanged behaviour. This is
@@ -264,8 +306,10 @@ builder.withSkills({
 ## Error handling
 
 - Missing/empty `enabled` on a source → **startup config error** (not "load all").
-- Source unreachable at ingest → warn + skip (default) | fail (`strict`). A failed
-  ingest never `activate`s a generation, so recall keeps the prior consistent set.
+- Source unreachable at ingest → `strict:false` **carries the failed source forward**
+  from the active generation (warn; its skills are NOT lost) and refreshes only the
+  reachable sources; `strict:true` **aborts the whole load** (no activate, prior
+  generation fully retained). Either way the store is never partially updated.
 - Malformed manifest / `SKILL.md` → skip that item + warn; valid ones still load.
 - No embedder → skills ingestion skipped + warn (the controller already requires an
   embedder; same failure surface).
@@ -292,8 +336,12 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   stub embedder maps them to different vectors — the relevant section is selectable).
 - Reconciliation (generation snapshot): updating a skill / changing chunking /
   removing a plugin from `enabled` leaves NO stale record recall-able after
-  `activate`; a mid-ingest failure does NOT activate (recall still serves the prior
-  generation — atomicity).
+  `activate`; namespace isolation — upserting a NEW generation does NOT change what
+  recall returns until `activate` (the active generation's rows are untouched).
+- Source-failure policy: `strict:false` with one source unreachable **carries that
+  source's prior records forward** (its skills still recall after `activate`) while a
+  reachable source refreshes; `strict:true` with any source unreachable does NOT
+  activate (recall still serves the prior generation — atomicity).
 - Recall hook: returns scored hits; below-`threshold` hits dropped; injects hit
   `content` within budget; empty/no-match → no block (output identical to agnostic).
 - HTTP fetcher: builds records purely from fetched bytes (mock transport), zero FS.
