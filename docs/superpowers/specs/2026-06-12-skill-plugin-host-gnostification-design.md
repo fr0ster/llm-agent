@@ -79,8 +79,9 @@ interface SkillHit {
  *  different places — none is available from `IEmbedder.embed()` alone:
  *   - embedderFingerprint: provider+model+version, from CONFIG (embed() does not expose
  *     the model version reliably) — e.g. "openai:text-embedding-3-small@v1".
- *   - dimension: the vector length — discoverable by ONE probe embed at host
- *     construction (embed a fixed probe → vector.length), or declared in config.
+ *   - dimension: the vector length — declared in config, OR discovered by ONE probe
+ *     embed performed INSIDE `load(options)` (so it is metered/cancellable like any
+ *     embed); NEVER an unmetered embed at construction.
  *   - retrievalSchemaVersion: a HOST CODE CONSTANT (the retrievalText composition +
  *     chunking contract version), NOT a property of the embedder. */
 interface SkillsEmbeddingDescriptor {
@@ -92,28 +93,40 @@ interface SkillsEmbeddingDescriptor {
  *  shape to the serving descriptor; compatibility = field-by-field equality. */
 type SkillsManifest = SkillsEmbeddingDescriptor;
 
+/** An atomic snapshot of the active pointer: the manifest AND the revision it belongs
+ *  to, read in ONE operation so a check + query keyed off it cannot straddle a rotation
+ *  (no TOCTOU). */
+interface ActiveSnapshot {
+  revision: string;
+  manifest: SkillsManifest;
+}
+
 /** Read side — what gnostifiable pipelines depend on. Score-bearing; no session
  *  metadata. `options` threads cancellation/telemetry/token-metering: the query
  *  embedding is logged via `options.requestLogger`, exactly like the controller's
  *  RAG (so skills recall embeds reach /v1/usage). */
 interface ISkillsRagHandle {
   /** Recall. The store can be ROTATED out-of-band (a separate ingest activates a new
-   *  generation while this server runs), so `query` resolves `(activeRevision,
-   *  manifest)` ATOMICALLY with the read and verifies the serving descriptor against
-   *  THIS revision's manifest — not just the one seen at startup. The verdict is CACHED
-   *  by revision (one compatibility check per rotation, not per query). On a compatible
-   *  (or unchanged) revision it queries normally; on an INCOMPATIBLE revision it serves
-   *  NO hits (empty → pipeline degrades to agnostic) and raises a loud error/metric —
-   *  a still-running server never issues dimension-mismatched queries after a rotation. */
+   *  generation while this server runs). `query` reads the active pointer ONCE as an
+   *  `ActiveSnapshot` and uses THAT snapshot's `revision` both for the compatibility
+   *  check AND for the actual vector read — the whole recall is pinned to one revision,
+   *  so there is no window between "check" and "query" (no separate `activeManifest()`
+   *  call on the hot path). The serving descriptor is compared to `snapshot.manifest`;
+   *  the verdict is CACHED by `snapshot.revision` (one compatibility check per rotation,
+   *  not per query). Compatible/unchanged revision → queries normally; INCOMPATIBLE
+   *  revision → serves NO hits (empty → pipeline degrades to agnostic) + a loud error/
+   *  metric. A still-running server never issues dimension-mismatched queries after a
+   *  rotation. */
   query(
     text: string,
     opts: { k: number; threshold?: number },
     options?: CallOptions,
   ): Promise<readonly SkillHit[]>;
-  /** The active generation's manifest (null if none active yet). Used for the EAGER
-   *  startup fail-fast; the same comparison runs per-revision inside `query` thereafter
-   *  (the startup check is just the first, eager instance of it). */
-  activeManifest(): Promise<SkillsManifest | null>;
+  /** Atomic snapshot of the active pointer (null if none active yet) — manifest + its
+   *  revision in one read. Used for the EAGER startup fail-fast; the SAME atomic read +
+   *  per-`revision` comparison runs inside `query` thereafter (the startup check is just
+   *  the first, eager instance of it). */
+  activeManifest(): Promise<ActiveSnapshot | null>;
 }
 
 /** Write/reconcile side — used ONLY by the host's load(). Records live under a
@@ -170,13 +183,15 @@ interface ISkillPluginHost {
    *  callable at startup OR out-of-band.
    *
    *  RECALL-ONLY hosts (constructed with a read handle and NO `source` — see below)
-   *  have nothing to build: `load()` is a no-op EXCEPT it reads `rag().activeManifest()`
-   *  for an EAGER fail-fast if the serving descriptor's fingerprint/dimension/schema
-   *  does not match the active generation — it never opens a generation, never writes.
-   *  The same check then runs per-revision inside `rag().query` (the store can rotate
-   *  out-of-band after startup), so this eager check is an early warning, not the only
-   *  guard. The store is materialised out-of-band by a SEPARATE ingest instance/job.
-   *  `options` threads metering into ingest. */
+   *  have nothing to build: `load(options)` opens no generation and writes nothing, but
+   *  it is NOT empty — it (a) resolves the serving `dimension` if undeclared, by ONE
+   *  probe embed run through `options` (metered/cancellable — never an unmetered embed
+   *  at construction), and (b) reads `rag().activeManifest()` for an EAGER fail-fast if
+   *  the serving descriptor does not match the active generation. The same atomic check
+   *  then runs per-revision inside `rag().query` (the store can rotate out-of-band after
+   *  startup), so this eager check is an early warning, not the only guard. The store is
+   *  materialised out-of-band by a SEPARATE ingest instance/job. `options` threads
+   *  metering into both the probe and ingest. */
   load(options?: CallOptions): Promise<void>;
   /** The score-bearing skills-RAG handle pipelines recall from. Always available —
    *  including on a recall-only host that never ingested, because it reads the
@@ -448,21 +463,23 @@ skills:
 
 - **`loadOnStartup`** (default `true`) — when `false`, OR when `sources` is omitted, the
   host is **recall-only**: constructed from a read handle only (no `source`, no write
-  `store` — least privilege). `load()` is a no-op apart from the manifest check below;
-  `host.rag()` serves the already-active generation. A persistent `store` is then
-  REQUIRED (an in-memory store with nothing to ingest would always be empty). It is a
-  config error to give `sources` together with `loadOnStartup: false`, or to omit both
-  `sources` and a persistent `store`.
+  `store` — least privilege). `load(options)` writes nothing but resolves the serving
+  `dimension` (probe) + runs the eager manifest check below; `host.rag()` serves the
+  already-active generation. A persistent `store` is then REQUIRED (an in-memory store
+  with nothing to ingest would always be empty). It is a config error to give `sources`
+  together with `loadOnStartup: false`, or to omit both `sources` and a persistent
+  `store`.
 - **Embedder compatibility (startup AND per-revision).** The host derives its serving
   `SkillsEmbeddingDescriptor` from THREE sources: `embedderFingerprint` from the config
   block above (`embedder: { provider, model }` ± an explicit `@version`), `dimension`
-  from one probe embed at construction (or a declared `dimension:`), and
-  `retrievalSchemaVersion` from a host code constant. It checks this against
-  `activeManifest()` EAGERLY at startup (fail fast), and again per-revision inside
-  `query` whenever the store rotates — a dimension mismatch is a hard error, a
-  fingerprint/schema mismatch is meaningless similarity, and either makes that revision
-  serve NO recall. A self-ingesting host stamps the manifest from its own descriptor at
-  `activate`, so it is compatible by construction.
+  either declared as `dimension:` in config OR resolved by ONE probe embed run INSIDE
+  `load(options)` (metered/cancellable — never an unmetered embed at construction), and
+  `retrievalSchemaVersion` from a host code constant. It checks this against the active
+  `ActiveSnapshot` (`{ revision, manifest }`) EAGERLY at startup (fail fast), and again
+  per-`revision` inside `query` whenever the store rotates — a dimension mismatch is a
+  hard error, a fingerprint/schema mismatch is meaningless similarity, and either makes
+  that revision serve NO recall. A self-ingesting host stamps the manifest from its own
+  descriptor at `activate`, so it is compatible by construction.
 - **`retiredGraceMs`** (vector-DB, plain time-grace only; default e.g. `30000`) — how
   long a retired generation's rows linger before the background sweep. Setting recall's
   `CallOptions` timeout `< retiredGraceMs` REDUCES (does not eliminate) the read-under-
@@ -580,7 +597,14 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
   error; the per-revision verdict is cached (a second query at N+1 does not re-run the
   check); a later compatible N+2 resumes serving. The serving descriptor is assembled
-  from config fingerprint + one probe-embed dimension + the host schema constant.
+  from config fingerprint + the schema constant + a `dimension` that is either declared
+  or resolved by ONE probe embed inside `load(options)` — the probe call receives
+  `options` (asserted metered/cancellable; no embed happens at construction).
+- Atomic snapshot (no TOCTOU): `query` reads the active pointer ONCE — a rotation that
+  lands AFTER the snapshot read does not affect the in-flight query (it serves the
+  snapshot's revision), and the compatibility verdict is keyed to the SAME revision the
+  vector read used (a stub store that flips revision between a separate `activeManifest()`
+  and the read is never exercised on the hot path).
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
   missing/empty `enabled` is a config error; reconciliation keys on the config `id`
   (`sourceId`), so a registry/version change does not orphan carry-forward.
