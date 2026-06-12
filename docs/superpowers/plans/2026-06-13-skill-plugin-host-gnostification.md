@@ -113,8 +113,14 @@ export interface ISkillsCatalog {
 /** LOW-LEVEL collection-scoped read — the pinning primitive the compat wrapper composes over. */
 export interface ISkillsRagBackend {
   /** This collection's serving { revision: generation, manifest } resolved FROM the catalog
-   *  (null if not in the catalog). One read, no TOCTOU. */
+   *  (null if not in the catalog). When non-null, the backend PINS that generation (a
+   *  refcount LEASE) so it cannot be physically reclaimed until a matching `release` — this
+   *  is what makes resolve+query EXACT (no read-under-delete across the wrapper's await gap).
+   *  The caller (compat wrapper) MUST `release(snap.revision)` in a `finally`. */
   activeSnapshot(): Promise<ActiveSnapshot | null>;
+  /** Release a lease taken by `activeSnapshot` (refcount--; pending physical delete runs at 0).
+   *  No-op on backends that use time-grace instead of refcount (e.g. Qdrant). */
+  release?(revision: string): void;
   /** Vector read pinned to an EXPLICIT generation (no "whatever is active now"). */
   queryRevision(
     revision: string,
@@ -155,7 +161,8 @@ export interface ISkillsStore extends ISkillsRagBackend {
 export interface ISkillsStoreProvider extends ISkillsCatalog {
   forGroup(group: string): ISkillsStore;
   /** SINGLE fenced commit: atomically swaps every collection's serving pointer + bumps the
-   *  catalog revision, ONLY if the active catalogRevision still == expected. Does NOT delete. */
+   *  catalog revision, ONLY if the active catalogRevision still == expected (throws
+   *  CatalogCasError otherwise). Does NOT delete. */
   publishCatalog(
     expectedCatalogRevision: string,
     entries: readonly CatalogEntry[],
@@ -163,12 +170,19 @@ export interface ISkillsStoreProvider extends ISkillsCatalog {
   ): Promise<void>;
   /** Physically reclaim a TOMBSTONED collection's generations AFTER a successful publish. */
   dropCollection(group: string, options?: CallOptions): Promise<void>;
+  /** A READ-ONLY view of this provider (no write/reconcile API) — what a recall-only serving
+   *  process is constructed over, so it never holds write credentials. */
+  asBackendProvider(): ISkillsRagBackendProvider;
 }
 
 /** Per-group provider (read side) + the catalog. */
 export interface ISkillsRagBackendProvider extends ISkillsCatalog {
   forGroup(group: string): ISkillsRagBackend;
 }
+
+/** Thrown by publishCatalog when the fenced CAS loses (a concurrent loader committed first).
+ *  The host catches it to retry the whole reconciliation; any other error is rethrown. */
+export class CatalogCasError extends Error {}
 
 /** The injected acquisition + materialisation strategy (== a `source`). */
 export interface ISkillSource {
@@ -528,6 +542,7 @@ The hardest task. Implements `ISkillsStoreProvider` (and a read-only `ISkillsRag
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
 import { makeInMemoryStoreProvider } from './in-memory-store.js';
 
 const MANIFEST = { embeddingSpaceId: 'sp', dimension: 3, retrievalSchemaVersion: 1 };
@@ -557,11 +572,31 @@ test('build inactive → publishCatalog activates → query + activeSnapshot fro
   assert.equal(hits[0].record.id, 'a');
 });
 
-test('publishCatalog CAS rejects a stale expectedRevision', async () => {
+test('publishCatalog CAS rejects a stale expectedRevision with CatalogCasError', async () => {
   const p = makeInMemoryStoreProvider();
   const r0 = (await p.readCatalog()).catalogRevision;
   await p.publishCatalog(r0, []); // bumps to r1
-  await assert.rejects(() => p.publishCatalog(r0, []), /catalog.*revision|CAS|stale/i);
+  await assert.rejects(() => p.publishCatalog(r0, []), (e) => e instanceof CatalogCasError);
+});
+
+test('EXACT retention via lease: a generation pinned by activeSnapshot survives a concurrent reclaim until release', async () => {
+  const p = makeInMemoryStoreProvider();
+  const backend = p.forGroup('g1');
+  const g = await backend.beginGeneration();
+  await p._seed(g.generation, [rec('a', 'g1', [1, 0, 0])]);
+  await p.publishCatalog((await p.readCatalog()).catalogRevision, [
+    { collection: { group: 'g1', description: 'd', collection: 'g1' }, sources: ['s'], generation: g.generation, manifest: MANIFEST },
+  ]);
+  // a reader resolves (PINS) the generation...
+  const snap = await backend.activeSnapshot();
+  // ...then the catalog rotates it out AND a reclaim is attempted (simulating a concurrent load)
+  await p.publishCatalog((await p.readCatalog()).catalogRevision, []); // retire g1
+  await p.forGroup('g1').discardGeneration(snap!.revision); // reclaim attempt — DEFERRED (leased)
+  // the in-flight reader's query STILL succeeds (no read-under-delete):
+  assert.equal((await backend.queryRevision(snap!.revision, [1, 0, 0], 1)).length, 1);
+  // release the lease → the deferred reclaim now runs
+  backend.release!(snap!.revision);
+  await assert.rejects(() => backend.queryRevision(snap!.revision, [1, 0, 0], 1), /unknown generation/i);
 });
 
 test('an ACTIVE generation is retained; dropCollection only reclaims a NON-active one', async () => {
@@ -601,6 +636,7 @@ import type {
   ISkillsStore,
   ISkillsStoreProvider,
 } from '@mcp-abap-adt/llm-agent';
+import { CatalogCasError } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 
 interface Row { record: SkillRecord; vector: number[]; }
 type Embed = (text: string, options?: CallOptions) => Promise<number[]>;
@@ -619,6 +655,9 @@ function cosine(a: number[], b: number[]): number {
 export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemoryStoreProvider {
   // generations: generationId -> rows
   const gens = new Map<string, Row[]>();
+  // EXACT retention (P1.1): a refcount lease per generation + deferred physical delete.
+  const leases = new Map<string, number>();        // generation -> active reader count
+  const pendingDelete = new Set<string>();          // generations asked to delete while leased
   // catalog
   let catalogRevision = 'c0';
   let entries: CatalogEntry[] = [];
@@ -627,15 +666,34 @@ export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemo
 
   const liveGenerationOf = (group: string): string | undefined =>
     entries.find((e) => e.collection.group === group && !e.tombstone)?.generation;
+  const isActive = (gen: string) => entries.some((e) => e.generation === gen && !e.tombstone);
+  // delete now IF safe (not active, not leased); else mark pending.
+  function reclaim(gen: string): void {
+    if (isActive(gen)) return;                       // never delete a served generation
+    if ((leases.get(gen) ?? 0) > 0) { pendingDelete.add(gen); return; } // a reader holds it
+    gens.delete(gen);
+    pendingDelete.delete(gen);
+  }
 
   function backendFor(group: string): ISkillsRagBackend {
     return {
       async activeSnapshot(): Promise<ActiveSnapshot | null> {
         const e = entries.find((x) => x.collection.group === group && !x.tombstone);
-        return e ? { revision: e.generation, manifest: e.manifest } : null;
+        if (!e) return null;
+        leases.set(e.generation, (leases.get(e.generation) ?? 0) + 1); // PIN (lease)
+        return { revision: e.generation, manifest: e.manifest };
+      },
+      release(revision: string): void {
+        const n = (leases.get(revision) ?? 0) - 1;
+        if (n <= 0) {
+          leases.delete(revision);
+          if (pendingDelete.has(revision)) reclaim(revision); // delete now that no reader holds it
+        } else {
+          leases.set(revision, n);
+        }
       },
       async queryRevision(revision, vector, k): Promise<readonly SkillHit[]> {
-        const rows = gens.get(revision);
+        const rows = gens.get(revision); // captured synchronously; lease guaranteed it survives
         if (!rows) throw new Error(`unknown generation: ${revision}`);
         return rows
           .map((r) => ({ record: r.record, score: cosine(vector, r.vector) }))
@@ -669,9 +727,7 @@ export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemo
         gens.set(generation, [...(gens.get(generation) ?? []), ...carried]);
       },
       async discardGeneration(generation) {
-        // never delete a generation the active catalog names
-        if (entries.some((e) => e.generation === generation && !e.tombstone)) return;
-        gens.delete(generation);
+        reclaim(generation); // no-op if active; deferred if leased
       },
     };
   }
@@ -686,38 +742,40 @@ export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemo
     },
     async publishCatalog(expectedCatalogRevision, next) {
       if (expectedCatalogRevision !== catalogRevision) {
-        throw new Error(`stale catalog revision (CAS): expected ${expectedCatalogRevision}, active ${catalogRevision}`);
+        throw new CatalogCasError(`stale catalog revision: expected ${expectedCatalogRevision}, active ${catalogRevision}`);
       }
       entries = [...next];
       catalogRevision = `c${Number(catalogRevision.slice(1)) + 1}`;
     },
     async dropCollection(group) {
-      // drop generations not named by an ACTIVE (non-tombstone) entry of this group
+      // reclaim generations not named by an ACTIVE entry of this group (lease-respecting)
       const activeGen = liveGenerationOf(group);
-      for (const [gen, rows] of gens) {
-        if (gen.startsWith(`${group}#`) && gen !== activeGen) {
-          void rows;
-          gens.delete(gen);
-        }
+      for (const gen of [...gens.keys()]) {
+        if (gen.startsWith(`${group}#`) && gen !== activeGen) reclaim(gen);
       }
       // remove tombstoned entries of this group from the catalog records
       entries = entries.filter((e) => !(e.collection.group === group && e.tombstone));
+    },
+    asBackendProvider() {
+      // read-only view: only readCatalog + forGroup→backend (no write/reconcile API)
+      return { readCatalog: this.readCatalog, forGroup: (g: string) => backendFor(g) };
     },
   };
 }
 ```
 
-> **Retention (P1.3 — no read-under-delete):** the provider NEVER deletes a generation on
-> a `publishCatalog` swap, and `discardGeneration`/`dropCollection` REFUSE to delete a
-> generation the active catalog still names. A superseded/tombstoned generation therefore
-> stays in `gens` and remains readable by `queryRevision` until the **host explicitly
-> reclaims it on the NEXT `load()`** (deferred reclaim — Task A6/A7). That inter-load gap
-> is the in-memory grace window: it is ≫ any single recall round-trip, so a reader that
-> resolved generation N via `activeSnapshot()` and then calls `queryRevision(N)` still finds
-> N's rows even though the catalog has moved to N+1 (the reclaim of N happens only at the
-> following load, by which time the reader is long done). Add `assert (active gen not
-> deletable)` coverage in the test above. The JS-reference point is a SECONDARY safety net,
-> not the guarantee — the guarantee is deferred reclaim.
+> **Retention (P1.1/P1.3 — EXACT, no read-under-delete):** the guarantee is a refcount
+> **LEASE**, not luck or a time bound. `activeSnapshot()` increments the resolved
+> generation's lease; the compat wrapper `release()`s it in a `finally` after the query
+> (or immediately on the null/incompat path). `publishCatalog` never deletes; a
+> `discardGeneration`/`dropCollection` of a generation that is still LEASED is DEFERRED
+> (`pendingDelete`) and runs only when the last reader releases (lease → 0). So a reader
+> that resolved generation N is GUARANTEED N's rows survive its `queryRevision(N)` even if
+> a concurrent `load()` retired and tried to reclaim N in the await gap — physical delete
+> waits for the release. (`publishCatalog` swapping the pointer to N+1 does not delete N;
+> the host's deferred reclaim on the next load asks to delete N, but the lease holds it.)
+> This is the spec's in-memory "refcount lease" discipline — exact, no time bound.
+> `retiredGraceMs` does NOT apply to the in-memory store (it is the Qdrant time-grace knob).
 
 Run the tests — Expected: PASS.
 
@@ -750,14 +808,30 @@ const MANIFEST = { embeddingSpaceId: 'sp', dimension: 3, retrievalSchemaVersion:
 
 function stubBackend(opts: { snapshot: () => Promise<{ revision: string; manifest: typeof MANIFEST } | null>; hits?: unknown[] }) {
   let queryCalls = 0;
+  const released: string[] = [];
   return {
     backend: {
       activeSnapshot: opts.snapshot,
+      release(rev: string) { released.push(rev); },
       async queryRevision() { queryCalls++; return (opts.hits ?? []) as never; },
     },
     queryCalls: () => queryCalls,
+    released: () => released,
   };
 }
+
+test('lease: release(revision) is called in the finally on every non-null path', async () => {
+  // compatible path
+  const ok = stubBackend({ snapshot: async () => ({ revision: 'g0', manifest: MANIFEST }), hits: [] });
+  const ragOk = makeCompatibleSkillsRag({ backend: ok.backend as never, embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never, embeddingSpaceId: 'sp', retrievalSchemaVersion: 1, dimension: 3 });
+  await ragOk.query('q', { k: 1 });
+  assert.deepEqual(ok.released(), ['g0']);
+  // incompatible path (no query, still releases)
+  const bad = stubBackend({ snapshot: async () => ({ revision: 'g1', manifest: { ...MANIFEST, embeddingSpaceId: 'X' } }) });
+  const ragBad = makeCompatibleSkillsRag({ backend: bad.backend as never, embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never, embeddingSpaceId: 'sp', retrievalSchemaVersion: 1, dimension: 3 });
+  await ragBad.query('q', { k: 1 });
+  assert.deepEqual(bad.released(), ['g1']);
+});
 
 test('compatible revision: embeds once, calls queryRevision', async () => {
   let embeds = 0;
@@ -866,18 +940,29 @@ export function makeCompatibleSkillsRag(deps: CompatibleSkillsRagDeps): ISkillsR
   return {
     async activeManifest(options?: CallOptions): Promise<ActiveSnapshot | null> {
       await ensureDimension(options);
-      const snap = await deps.backend.activeSnapshot();
-      if (snap) compatible(snap); // eager check (caches verdict)
-      return snap;
+      const snap = await deps.backend.activeSnapshot(); // pins if non-null
+      try {
+        if (snap) compatible(snap); // eager check (caches verdict)
+        return snap;
+      } finally {
+        if (snap) deps.backend.release?.(snap.revision);
+      }
     },
     async query(text, opts, options?: CallOptions): Promise<readonly SkillHit[]> {
       await ensureDimension(options);
-      const snap = await deps.backend.activeSnapshot(); // ONCE
-      if (!snap || !compatible(snap)) return []; // no embed on null/incompatible
-      const { vector } = await deps.embedder.embed(text, options); // PAID step, last
-      const hits = await deps.backend.queryRevision(snap.revision, vector, opts.k, options);
-      const threshold = opts.threshold ?? 0.3;
-      return hits.filter((h) => h.score >= threshold);
+      const snap = await deps.backend.activeSnapshot(); // ONCE — pins the generation (lease)
+      if (!snap) return [];
+      try {
+        if (!compatible(snap)) return []; // no embed on incompatible
+        const { vector } = await deps.embedder.embed(text, options); // PAID step, last
+        // the lease taken by activeSnapshot guarantees snap.revision survives this read,
+        // even if a concurrent load() retired+reclaimed it between the awaits.
+        const hits = await deps.backend.queryRevision(snap.revision, vector, opts.k, options);
+        const threshold = opts.threshold ?? 0.3;
+        return hits.filter((h) => h.score >= threshold);
+      } finally {
+        deps.backend.release?.(snap.revision); // EXACT retention: release the lease
+      }
     },
   };
 }
@@ -1017,12 +1102,10 @@ async load(options):
 ```
 
 Translate the pseudocode into real TS. Notes:
-- Distinguish a CAS error (retry) from other errors (throw immediately) — match on the provider's CAS error. Define a sentinel: the in-memory provider throws `Error` whose message matches `/CAS|catalog revision/i`; detect with that regex (or, better, a `CatalogCasError` class exported from the contracts — add `export class CatalogCasError extends Error {}` to `skills-rag.ts` and have the in-memory provider throw it; detect with `instanceof`). Prefer the typed class.
+- Distinguish a CAS error (retry) from other errors (throw immediately): catch `CatalogCasError` (defined + exported in `skills-rag.ts`, Task A1; the in-memory and Qdrant providers throw it) and loop to retry; rethrow anything else.
 - `groups()` returns `this._snapshot` (fixed at load).
 - `rag(group?)` returns `makeCompatibleSkillsRag({ backend: storeProvider.forGroup(resolved), embedder, embeddingSpaceId, retrievalSchemaVersion, dimension })`. Resolve `group` default: if `_snapshot` has one entry use it, else throw "must name the group". Unknown group → throw.
 - Manifest stamped into entries = the serving descriptor `{ embeddingSpaceId, dimension (resolved), retrievalSchemaVersion }`. Resolve `dimension` once before building (probe via embedder if undeclared) so the manifest is complete.
-
-> Add `CatalogCasError` to `skills-rag.ts` (Task A1) — if you already committed A1, append it in this task and note it in the commit. Update the in-memory provider (Task A4) to `throw new CatalogCasError(...)` instead of a plain Error, and adjust A4's CAS test regex/instanceof accordingly.
 
 Run the tests — Expected: PASS.
 
@@ -1240,23 +1323,72 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/skills/plugin-host/qdrant-store.ts`
-- Test: `packages/llm-agent-libs/src/skills/plugin-host/qdrant-store.test.ts` (mock client)
+- Test: `packages/llm-agent-libs/src/skills/plugin-host/qdrant-store.test.ts` (mock client + mock catalog store)
 
-Design (encode the spec's persistent semantics):
-- A single Qdrant collection (named by config) holds all skill points; each point payload carries `{ generation, group, recordId, content, name, provenance, sourceId }` and the vector.
-- The **catalog** is a dedicated payload row (a reserved point id, e.g. `__catalog__`) holding `{ catalogRevision, entries }` JSON. `readCatalog` reads it; `publishCatalog` is a **fenced** update: read-modify-write guarded by an etag/version OR a Qdrant optimistic check — implement the CAS by storing `catalogRevision` in the row and rejecting an update whose `expectedCatalogRevision` ≠ the stored one (use the client's conditional update / a get-then-set under the injected client's `casSetCatalog(expected, next)`; the mock implements this directly).
-- `beginGeneration` → a fresh generation label (a UUID-like id from an injected `newId()` — NOT `Math.random`/`Date.now`; inject it so tests are deterministic).
-- `upsert(generation, records)` → upsert points tagged with that generation (embedding via the injected `embed`).
-- `queryRevision(generation, vector, k)` → Qdrant search FILTERED by `payload.generation == generation` (a retired generation's points remain until reclaimed — that is the grace).
-- `activeSnapshot(group)` → from the catalog row's entry for `group`: `{ revision: generation, manifest }` (null if absent).
-- `carryForward(generation, sourceIds)` → copy the served generation's points for those sourceIds into the new generation label.
-- `discardGeneration(generation)` / `dropCollection(group)` → delete points by `payload.generation` filter (never the active one — guarded against the catalog). Called by the host's DEFERRED reclaim (next load).
+**Design — corrections from review (P1.2–P1.5, P2.6):**
 
-- [ ] **Step 1: Write the failing tests** (mock client) mirroring the in-memory provider tests: build-inactive → publishCatalog CAS (stale expected rejected) → queryRevision filtered by generation → activeSnapshot from the catalog row → dropCollection deletes a non-active generation's points; carryForward copies by sourceId. Inject `embed` and `newId` for determinism.
-- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, embed, newId })` implementing `ISkillsStoreProvider`. The `client` interface is minimal: `search(filter, vector, k)`, `upsertPoints(points)`, `deleteByFilter(filter)`, `getCatalog()`, `casSetCatalog(expectedRevision, next)`. Provide a thin real adapter `makeQdrantClient({ url, apiKey, collection })` over the Qdrant REST/SDK (no unit test — exercised live in Phase C).
-- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant store provider (generation-filtered points + fenced catalog CAS)`).
+1. **Catalog lives OUTSIDE Qdrant in a CAS-capable store (P1.4).** Qdrant has no native
+   multi-writer conditional write on a payload, so a fake `get→compare→upsert` is NOT a
+   real CAS. The catalog + fence is therefore an injected **`ICatalogStore`** with a real
+   CAS primitive:
+   ```ts
+   interface ICatalogStore {
+     read(): Promise<CatalogSnapshot>;
+     // atomic compare-and-set; throws CatalogCasError if active revision != expected.
+     casPublish(expectedCatalogRevision: string, snapshot: CatalogSnapshot): Promise<void>;
+   }
+   ```
+   Named real backings: **single-writer ingest** (the normal deployment — ONE ingest job
+   writes the store) → an in-process `ICatalogStore` is sufficient; **multi-writer** →
+   inject a transactional CAS store (a Postgres row with `UPDATE … WHERE revision = $expected`,
+   or Redis `WATCH`/`MULTI`, or etcd txn). The provider does NOT invent a fence — it
+   delegates to `ICatalogStore`. This plan ships the in-process `ICatalogStore` + the
+   interface; a transactional impl is a drop-in (named, not built here).
+2. **Point IDs are valid Qdrant ids (P1.5).** Qdrant ids are UUID or uint64 ONLY, so
+   neither `__catalog__` (the catalog is no longer a Qdrant point — see (1)) nor raw
+   `record.id` work. Each skill point id = a **deterministic UUIDv5** of
+   `${generation}:${record.id}` via an injected `pointId(generation, recordId): string`
+   (uuid v5 over a fixed namespace — deterministic, no `Math.random`/`Date.now`). The
+   payload carries `{ generation, group, recordId, content, name, provenance, sourceId }`;
+   the vector is the embedding.
+3. **carryForward needs a SCROLL primitive (P1.3).** Copying a served generation's points
+   by `sourceId` requires reading them WITH vectors + payload — `search` (top-k by vector)
+   cannot enumerate. Add a paginated **`scroll(filter)`** to the client (returns
+   `{ id, vector, payload }[]` with cursor). carryForward = `scroll({ generation: live,
+   sourceId ∈ ids })` → re-id with `pointId(newGen, recordId)` + re-tag generation →
+   `upsertPoints`.
+4. **retiredGraceMs IS applied (P1.2).** A `discardGeneration`/`dropCollection` does NOT
+   delete immediately; it marks the generation `retiredAt = now` (via an injected `now()`).
+   Physical delete happens only for generations whose `retiredAt + retiredGraceMs < now()`
+   — performed lazily at the START of the next `load()`'s reclaim (the host) or by a sweep.
+   This is the spec's **best-effort time-grace**: recall must run with a `CallOptions`
+   timeout `< retiredGraceMs` (the wrapper/host enforces it). Qdrant retention is
+   best-effort, NOT exact (the in-memory lease is exact; Qdrant `release()` is a no-op).
+5. **Read-only provider for recall-only (P2.6).** Expose `makeQdrantBackendProvider({
+   client, collection, catalogStore, ... })` returning `ISkillsRagBackendProvider`
+   (readCatalog + forGroup→backend, NO write API) so a serving process gets read-only
+   Qdrant creds and no reconcile surface. `makeQdrantStoreProvider(...).asBackendProvider()`
+   returns the same read view for the self-ingest-then-serve case.
 
-> Retention on Qdrant is the same deferred-reclaim discipline as in-memory (host drops a retired generation's points on the NEXT load) PLUS, where the operator wants the spec's exact guarantee, a lease/snapshot-capable backend — out of scope here; the time-grace/deferred-reclaim path is what this provider gives.
+Client interface (minimal, mockable):
+```ts
+interface IQdrantClient {
+  search(filter: object, vector: number[], k: number): Promise<Array<{ payload: Record<string, unknown>; score: number }>>;
+  scroll(filter: object, cursor?: string): Promise<{ points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>; next?: string }>;
+  upsertPoints(points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>): Promise<void>;
+  deleteByFilter(filter: object): Promise<void>;
+}
+```
+
+- [ ] **Step 1: Write the failing tests** (mock `IQdrantClient` + mock `ICatalogStore` + injected `embed`/`pointId`/`now`):
+  - build-inactive → `casPublish` activates → `queryRevision` filtered by `payload.generation` → `activeSnapshot` from the catalog store.
+  - `casPublish` stale expected → `CatalogCasError`.
+  - `carryForward` SCROLLS the live generation by sourceId and re-upserts with new-generation point ids (assert `pointId` re-derivation).
+  - retiredGraceMs: a generation retired at T is NOT deleted before `T + retiredGraceMs`; a reclaim at `T + grace` deletes it (drive `now()`).
+  - point ids are the injected `pointId(generation, recordId)` (deterministic).
+  - `makeQdrantBackendProvider` exposes NO `forGroup().beginGeneration`/`upsert`/`publishCatalog` (read-only).
+- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })` (write) and `makeQdrantBackendProvider({ client, collection, catalogStore })` (read). Provide thin real adapters `makeQdrantClient({ url, apiKey, collection })` (over the Qdrant REST/SDK — `scroll`/`search`/`upsert`/`delete`) and `makeInProcessCatalogStore()` + a `pointId` using `uuid` v5 (add `uuid` as a dep if absent, or a small sha1→uuid helper). The real adapters get NO unit test (live smoke in Phase C).
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant store provider — external-CAS catalog, scroll carry-forward, uuid points, retiredGraceMs, read-only view`).
 
 ---
 
@@ -1298,7 +1430,7 @@ Wire normalized config → a concrete `ISkillPluginHost`: resolve the embedder (
 - Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts`
 
 - [ ] **Step 1: Test** — a programmatic `records`-source `in-memory` config builds a host; after `load()`, `host.rag(group).query` returns injected records. Use a stub embedder. Also assert `store.type: qdrant` selects the Qdrant provider (inject a mock Qdrant client; assert the host is constructed over it).
-- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Select the provider by `store.type`. Recall-only (`loadOnStartup:false`) → construct the recall-only host shape (Task A7) over the persistent provider's read view + `serveCollections`. Return the host.
+- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Select the provider by `store.type` (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider`). **Recall-only (`loadOnStartup:false`)** → build a READ-ONLY backend provider (`makeQdrantBackendProvider(...)`, or `provider.asBackendProvider()`) — NOT a write store — and construct the recall-only host shape (Task A7) over it + `serveCollections`, so the serving process holds no write credentials. Return the host.
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): build skill plugin-host from config + startup lifecycle`).
 
 ---
