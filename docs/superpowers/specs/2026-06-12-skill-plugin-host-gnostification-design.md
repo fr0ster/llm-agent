@@ -416,12 +416,14 @@ interface ISkillPluginHost {
    *  - An **ingest job/host** (NOT wired into a running agent's RAG sources) MAY reload and
    *    publish a CHANGED collection set — that is how the set evolves out-of-band.
    *  - A **serving host** (whose `groups()` set was registered into a live agent) fixes its
-   *    served set at the FIRST `load()`. On a reload it computes the resolved desired set
-   *    (after merge + carry-forward, step 3) and COMPARES it to the registered set BEFORE
-   *    building any generation or calling `publishCatalog`. On a mismatch it THROWS a clear
-   *    "served collection set is fixed; rebuild the host to change it" error HAVING BUILT
-   *    NOTHING and committed nothing — the persistent catalog is untouched. A same-set
-   *    reload (new generations only) proceeds and rotates.
+   *    served set at the FIRST `load()`. On a reload — and again on each CAS retry — it
+   *    asserts BOTH `current active catalog set == registered set` (catches an OUT-OF-BAND
+   *    catalog change; without it a commit would tombstone an externally-added collection)
+   *    AND `resolved desired set == registered set` (catches a LOCAL change), BEFORE
+   *    building any generation or calling `publishCatalog`. EITHER mismatch THROWS a clear
+   *    "served collection set changed; rebuild the host" error HAVING BUILT NOTHING and
+   *    committed nothing — the persistent catalog is untouched. A same-set reload (new
+   *    generations only) proceeds and rotates.
    *  So changing the served set = re-ingest via an ingest job + rebuild/restart the serving
    *  agent; a serving host never silently re-registers sources NOR mutates the catalog when
    *  the set would change. */
@@ -714,11 +716,18 @@ otherwise serve stale skills forever. `load()`:
    If the failed source was the SOLE owner of a collection, that collection is retained
    intact, not dropped. (`strict:true`: a source failure aborts that source's collections'
    generations — their prior generations stay — and fails `load()`.)
-   - **Serving-host set guard (BEFORE any build).** A serving host now compares the
-     resolved `desired` collection set to the set it registered at its first `load()`. On a
-     mismatch it THROWS immediately — BEFORE step 4 builds any generation and before any
-     `publishCatalog` — so the persistent catalog is never mutated and no generations are
-     created. (An ingest-only host skips this guard — a changed set is its purpose.)
+   - **Serving-host set guard (BEFORE any build, RE-CHECKED on each CAS retry).** A serving
+     host asserts BOTH equalities against its registered set:
+       (a) `current active catalog set (from this attempt's readCatalog) == registered set`
+       (b) `resolved desired set == registered set`.
+     (a) catches an OUT-OF-BAND change to the persistent catalog (e.g. another ingest added
+     `c2`) — without it, the serving host's commit would tombstone `c2` and silently roll
+     back the external change; (b) catches a LOCAL change (its own sources now resolve a
+     different set). EITHER mismatch → THROW immediately, BEFORE step 4 builds any
+     generation and before any `publishCatalog`, so the persistent catalog is never mutated
+     and no generations are created. Because a CAS retry re-reads the catalog (which may
+     have changed between attempts), BOTH checks run again on every attempt. (An ingest-only
+     host skips this guard — changing the set is its purpose.)
 4. Build each `desired` collection's NEW generation INACTIVE: `beginGeneration()` +
    `upsert` (refreshed sources) + `carryForward` (a failed source's records under
    strict:false, copied INTO this new generation). **No `activate`** — nothing serves yet.
@@ -1045,10 +1054,12 @@ collection). `skills` absent → no gnostification. The engine ships no default
   it THROWS. An ingest error or a `strict` abort → throws too. In every case EVERY
   generation this load built is `discardGeneration`d in a `finally` (no orphans); the prior
   catalog is never reverted (a stale loser activated nothing).
-- A **serving host** reload whose committed set would ADD/REMOVE a collection vs the set
-  registered at its first `load()` → THROWS ("served collection set is fixed; rebuild to
-  change it"). A same-set reload (new generations only) is allowed. Changing the set =
-  re-ingest via an ingest job + restart the serving agent.
+- A **serving host** reload where EITHER the current active catalog set OR the resolved
+  desired set differs from the set registered at its first `load()` → THROWS ("served
+  collection set changed; rebuild the host"), BEFORE any build/`publishCatalog`, catalog
+  untouched. The active-set check prevents silently rolling back an OUT-OF-BAND catalog
+  change (tombstoning an externally-added collection). A same-set reload (new generations
+  only) is allowed. Changing the set = re-ingest via an ingest job + restart the agent.
 - Source unreachable at ingest → `strict:false` **carries the failed source forward**
   from the collection's served generation (warn; its skills are NOT lost), and a
   sole-source collection is carried forward whole (not tombstoned); `strict:true` →
@@ -1225,13 +1236,15 @@ mechanism under test.
   `committed=['c1']`, `omitted=[{group:'c2',…}]`, `ok===false`; a clean load → `ok===true`,
   `omitted=[]`; a `strict:true` source failure / exhausted CAS / config error THROWS (the
   call rejects) having committed nothing.
-- Serving-host reload semantics: a SERVING host (set registered) whose second `load()`
-  commits the SAME collection set with NEW generations → succeeds and rotates; a second
-  `load()` that would ADD or REMOVE a collection → THROWS "served collection set is fixed"
-  BEFORE building any generation or calling `publishCatalog` (assert a spy on
-  `beginGeneration`/`publishCatalog` is NEVER called and `readCatalog()` is UNCHANGED — no
-  catalog mutation). An ingest-only host (no registered serving set) may reload with a
-  changed set freely.
+- Serving-host reload semantics (BOTH equalities): a SERVING host registered `{c1}`.
+  (i) Same-set reload — desired `{c1}` AND active catalog `{c1}` → succeeds, rotates `c1`.
+  (ii) LOCAL change — its sources now resolve `{c1, c2}` (desired ≠ registered) → THROWS.
+  (iii) OUT-OF-BAND change — an external ingest made the active catalog `{c1, c2}` while
+  the host's desired is still `{c1}` (active ≠ registered) → THROWS, and critically `c2` is
+  NOT tombstoned (the external change is not rolled back). In every throwing case, assert a
+  spy on `beginGeneration`/`publishCatalog` is NEVER called and the persistent catalog is
+  UNCHANGED. The check re-runs on each CAS retry. An ingest-only host (no registered set)
+  may reload with a changed set freely.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
