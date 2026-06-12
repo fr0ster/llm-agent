@@ -4,8 +4,9 @@
 **Branch:** `feat/skill-plugin-host` (off `design/controller-execution-result-control` / PR #183).
 **Relation to PR #183:** PR #183 (merged) delivered the controller but explicitly
 DEFERRED any skills channel. This is a SEPARATE, cross-cutting feature whose primary
-integration is the **base SmartAgent multi-source RAG retrieval** (not a controller hook)
-— gnostifying every pipeline seamlessly. Built on a branch off main.
+integration is the **base SmartAgent multi-source RAG retrieval (the context-assembler)**
+— gnostifying assembler-based pipelines seamlessly, with the controller gnostified via
+its own planner recall hook (it bypasses the assembler). Built on a branch off main.
 
 ## Goal
 
@@ -26,27 +27,41 @@ becoming GPL.
    backend.
 
 2. **Consumption (how a pipeline uses the skills).** The pipeline knows nothing about
-   plugins — it just reads skills from RAG like ANY other context. Two modes:
-   - **Implicit / seamless (the simple, default mode).** The enabled group(s) are
-     materialised into a collection the agent's **existing multi-source RAG retrieval
-     already reads** (or a dedicated collection it is told to read). Whatever matches
-     the current query is injected — **with ZERO consumer code**. This moves into the
-     engine what cloud-llm-hub does manually at the consumer level today. It is NOT a
-     controller-planner-specific hook: the base SmartAgent that already "pulls
-     everything from RAG" simply pulls skills too, so **any** pipeline is gnostified.
-   - **Explicit (planner-driven group selection).** A separate skills-RAG holds
-     **one collection per group**; the planner, per step, CHOOSES which group to pull
-     into context (and which skills it itself uses). This is what lets several
-     potentially-**conflicting** groups coexist while only the step-relevant one reaches
-     any single LLM call.
+   plugins — it just reads skills from RAG like ANY other context. There are THREE
+   injection paths because pipelines consume context differently (this distinction is
+   load-bearing — see "Reality check" below):
+   - **Implicit / seamless (default) — for assembler-based pipelines.** A small adapter
+     registers each enabled group's `host.rag(group)` as one more `IRag` source in the
+     base SmartAgent's existing **multi-source RAG retrieval (the context-assembler)**.
+     Those pipelines (base/default/linear/dag/stepper) then pull matching skill chunks
+     into the prompt through the SAME assembler, formatted uniformly and sharing its
+     context budget — **with ZERO consumer code**. This is the engine-side equivalent of
+     what cloud-llm-hub does manually today.
+   - **Controller recall hook (in scope — the MEASUREMENT target).** The `controller`
+     pipeline does NOT go through the context-assembler — it builds subagent prompts
+     itself from its run-scoped bundle and the raw prompt. So it gets a DEDICATED recall:
+     its planner queries `host.rag(group)` (a single **configured** group) and injects a
+     bounded "Relevant skills" block into the create-plan/replan call. Still no domain in
+     engine code; the group is config.
+   - **Explicit group selection (deferred, separate spec).** The planner, per step,
+     CHOOSES which group among several to pull (and which skills it itself uses) via
+     `host.groups()` → `host.rag(selectedGroup)`. This is the only path that exploits
+     multiple potentially-**conflicting** groups at once; a larger planner integration,
+     not built here.
+
+   **Reality check (do not over-claim):** "every pipeline gnostified for free" is true
+   ONLY for assembler-based pipelines. The controller bypasses the assembler by design,
+   so it needs its own recall hook (provided here). Pipelines that consume neither path
+   are simply not gnostified until wired.
 
 **Why grouping is mandatory, not cosmetic.** Real skill sets are grouped by domain
 (the reference repo `secondsky/sap-skills` ships separate plugins for ABAP, CDS, BTP,
 HANA, …). You **cannot** dump all groups into one context: different groups give
 conflicting procedural guidance. So skills are ALWAYS stored grouped (group = a
-collection in the skills-RAG); the **implicit** mode avoids conflict by the operator
-enabling only compatible groups, the **explicit** mode avoids it by the planner
-selecting one group per step.
+collection in the skills-RAG); the **implicit** mode and the **controller hook** avoid
+conflict by the operator enabling only compatible groups (implicit) / configuring one
+group (controller), and the **explicit** mode avoids it by the planner selecting one
+group per step.
 
 ## Terminology (canonical — reused verbatim in user docs)
 
@@ -73,8 +88,10 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
 | **retrievalText** | The text actually EMBEDDED for a chunk (`description + heading + content`) — distinct per chunk so sections are individually selectable. NOT the injected text. |
 | **content** | The chunk body injected verbatim into the LLM context on a hit. |
 | **Recall-only host** | A serving instance with NO source/write store: it only reads (`host.rag(group)`) collections an out-of-band ingest wrote. Least privilege. |
-| **Implicit mode** | Seamless consumption: each enabled group is registered as a source in the base SmartAgent multi-source RAG retrieval — skills injected automatically, no consumer code. |
-| **Explicit mode** | Planner-driven consumption: the planner picks a group per step (`host.groups()` → `host.rag(group)`). Opt-in, later phase. |
+| **Path 1 / implicit mode** | Seamless consumption for **assembler-based** pipelines: an adapter registers each enabled group's `host.rag(group)` as an `IRag` source in the base SmartAgent context-assembler — skills injected automatically, no consumer code, shared assembler budget. |
+| **Path 2 / controller hook** | The controller bypasses the assembler, so its planner explicitly recalls a configured group and injects a bounded block. In scope (the measurement target). |
+| **Path 3 / explicit mode** | Planner picks a group per step (`host.groups()` → `host.rag(group)`). Deferred, separate spec. |
+| **Path-1 adapter** | `skillsRagSource(host.rag(group)) : IRag` — bridges the text-taking `ISkillsRagHandle` to the embedding-taking `IRag` the assembler expects, mapping `SkillHit → RagResult`. Re-embeds `IQueryEmbedding.text` in the skills' own space. |
 | **Gnostify / gnostic / agnostic** | To "gnostify" = to give the agnostic (domain-blind) engine domain knowledge via skills. "Gnostic" skills/knowledge = domain-specific (the consumer's); "agnostic" = the engine + our shipped code, which carry no domain. |
 
 ## Core principles (locked)
@@ -89,12 +106,13 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
    The product contract is FS-free; an FS path is only an optional convenience.
 4. **Strategy, not a hardcoded format.** The skill SOURCE is a pluggable strategy;
    "Anthropic/Claude-plugin marketplace" is ONE implementation.
-5. **Seamless by default; explicit as an opt-in layer.** The primary integration is
-   the **base SmartAgent multi-source RAG retrieval** — `host.rag(group)` is wired as
-   just another RAG source, so EVERY pipeline is gnostified with no consumer code
-   (implicit mode). The **explicit** planner-driven per-step group selection is a
-   distinct, opt-in layer built on the same host (a larger planner integration), phased
-   AFTER the seamless core — not required for gnostification to work.
+5. **Seamless for assembler pipelines; controller via its own hook; explicit deferred.**
+   The implicit integration wires `host.rag(group)` (through an adapter) as another
+   `IRag` source in the base SmartAgent context-assembler, gnostifying assembler-based
+   pipelines with no consumer code. The **controller** (which bypasses the assembler)
+   gets a dedicated planner recall hook — in scope, because it is the measurement target.
+   The full **explicit** per-step group selection is a distinct, deferred layer on the
+   same host. Do NOT claim "every pipeline for free" — only assembler pipelines.
 8. **Skills are stored GROUPED (group = collection).** Never one undifferentiated pile:
    conflicting domain groups must be selectable/excludable. Each enabled group
    materialises into its own collection; `host.rag(group)` scopes recall to a group.
@@ -173,11 +191,26 @@ interface ActiveSnapshot {
   manifest: SkillsManifest;
 }
 
-/** LOW-LEVEL store read API — the pinning primitive the compat wrapper composes over.
- *  It does NO compatibility logic and does NOT embed: it exposes the atomic active
- *  pointer and a vector read of a SPECIFIC revision, so a caller can pin one revision
- *  across check+read. (The raw store implements this; the serving embedder lives in the
- *  wrapper above, not here.) */
+/** EACH GROUP IS ONE COLLECTION WITH ITS OWN GENERATIONS/REVISIONS. The store/backend
+ *  interfaces below are **collection-scoped** — they operate on ONE group's collection,
+ *  so no method carries a `group` parameter. A multi-group deployment is handled by a
+ *  PROVIDER that vends one handle per group (so different groups' generations never
+ *  collide), NOT by threading `group` through every lifecycle call:
+ *
+ *    interface ISkillsStoreProvider     { forGroup(group: string): ISkillsStore; }
+ *    interface ISkillsRagBackendProvider { forGroup(group: string): ISkillsRagBackend; }
+ *
+ *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
+ *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`
+ *  and iterates `host.groups()` calling `provider.forGroup(g)` to build each group; a
+ *  recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
+ *  `provider.forGroup(group)`. */
+
+/** LOW-LEVEL store read API (collection-scoped) — the pinning primitive the compat
+ *  wrapper composes over. It does NO compatibility logic and does NOT embed: it exposes
+ *  the atomic active pointer and a vector read of a SPECIFIC revision, so a caller can
+ *  pin one revision across check+read. (The raw store implements this; the serving
+ *  embedder lives in the wrapper above, not here.) */
 interface ISkillsRagBackend {
   /** Atomic snapshot of the active pointer (null if none active yet) — manifest + its
    *  revision in ONE read, so a check keyed off it cannot straddle a rotation. */
@@ -277,16 +310,18 @@ interface ISkillPluginHost {
    *  half-built generation in a `finally` — no orphan embeddings leak. Idempotent;
    *  callable at startup OR out-of-band.
    *
-   *  RECALL-ONLY hosts (constructed with a `rag` handle and NO `source` — see below)
+   *  Ingest iterates the ENABLED GROUPS and builds each group's collection independently
+   *  (via `storeProvider.forGroup(g)`), each with its own fenced activate + discard.
+   *
+   *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
-   *  it is NOT empty — it calls `rag().activeManifest(options)`, which (a) resolves the
-   *  wrapper's serving `dimension` if undeclared, by ONE probe embed run through
-   *  `options` (metered/cancellable — never an unmetered embed at construction), and
-   *  (b) compares the now-complete serving descriptor to the active generation for an
-   *  EAGER fail-fast. The same atomic check then runs per-revision inside `rag().query`
-   *  (the store can rotate out-of-band after startup), so this eager check is an early
-   *  warning, not the only guard. The store is materialised out-of-band by a SEPARATE
-   *  ingest instance/job. `options` threads metering into the probe and ingest. */
+   *  it is NOT empty — for EACH served group it calls `rag(g).activeManifest(options)`,
+   *  which (a) resolves that wrapper's serving `dimension` if undeclared, by ONE probe
+   *  embed run through `options` (metered/cancellable — never an unmetered embed at
+   *  construction), and (b) compares the serving descriptor to that group's active
+   *  generation for an EAGER fail-fast. The same atomic check then runs per-revision
+   *  inside `rag(g).query`. Each group's collection is materialised out-of-band by a
+   *  SEPARATE ingest job. `options` threads metering into the probe and ingest. */
   load(options?: CallOptions): Promise<void>;
   /** Enabled GROUPS with their descriptions — what the explicit mode's planner picks
    *  from, and what the implicit wiring enumerates to register RAG sources. A group is
@@ -319,27 +354,29 @@ who WRITES the backend (the host itself, or a separate ingest job):
 
 ```ts
 // Ingest-capable host (startup self-ingest, or an out-of-band ingest job). It both
-// writes (via `store`) AND serves, so it ALSO needs the serving embedder + descriptor
-// fields and wraps its OWN store as the read path:
+// writes AND serves, per GROUP, so it takes a STORE PROVIDER + the serving descriptor
+// fields, and wraps each group's store as that group's read path:
 makeSkillPluginHost({
-  source,            // acquisition strategy + the explicit enabled[] list
-  store,             // ISkillsStore (in-memory | vector-DB | FS-cache) — WRITE/reconcile
+  source,            // acquisition strategy + the explicit enabled[] PLUGIN list + grouping
+  storeProvider,     // ISkillsStoreProvider — forGroup(g) → that group's ISkillsStore
   embedder,          // SERVING embedder — text query embed + lazy dimension probe
   embeddingSpaceId,  // mandatory for a persistent store (auto for in-memory self-ingest)
   retrievalSchemaVersion,
   dimension,         // optional — declared skips the probe
 })
-// → internally: rag = makeCompatibleSkillsRag({ backend: store, embedder,
-//      embeddingSpaceId, retrievalSchemaVersion, dimension }); store also gets the
-//      embedder for ingest-side upsert embedding. After self-ingest the controller has
-//      a working text-query path (store extends ISkillsRagBackend, so it IS a backend).
+// → internally, per enabled group g: store_g = storeProvider.forGroup(g); ingest writes
+//   g's records into store_g; rag_g = makeCompatibleSkillsRag({ backend: store_g, embedder,
+//   embeddingSpaceId, retrievalSchemaVersion, dimension }). host.rag(g) returns rag_g.
+//   (ISkillsStore extends ISkillsRagBackend, so each group's store IS its own backend.)
 
 // Recall-only serving host (no-FS serving model — no source, no write API). The CALLER
-// builds the wrapper from a bare backend (least privilege — no write store):
-const rag = makeCompatibleSkillsRag({
-  backend, embedder, embeddingSpaceId, retrievalSchemaVersion, dimension /* optional */,
-});
-makeSkillPluginHost({ rag });
+// supplies a backend PROVIDER (least privilege — read-only handles, no write store):
+makeSkillPluginHost({
+  backendProvider,   // ISkillsRagBackendProvider — forGroup(g) → that group's read backend
+  embedder, embeddingSpaceId, retrievalSchemaVersion, dimension /* optional */,
+  serveGroups,       // the group ids this instance exposes
+})
+// → host.rag(g) = makeCompatibleSkillsRag({ backend: backendProvider.forGroup(g), embedder, … }).
 ```
 
 `makeCompatibleSkillsRag` returns an `ISkillsRagHandle`: `query` reads
@@ -349,9 +386,9 @@ verdict by revision) BEFORE any embed, and only on a match embeds the text and i
 the backend exposes a revision-explicit read, not a "query whatever is active" method;
 the embed (the only paid step) is skipped on a null/incompatible generation. The
 descriptor reaches `query` by closure (resolving "where does the serving descriptor come
-from"). The host requires `{ source, store, embedder, … }` (ingest) OR `{ rag }`
-(recall-only); supplying a write `store` to a serving process is exactly the
-over-privilege the recall-only shape removes.
+from"). The host requires `{ source, storeProvider, embedder, … }` (ingest) OR
+`{ backendProvider, embedder, serveGroups, … }` (recall-only); a serving process gets
+read-only handles — exactly the over-privilege the recall-only shape removes.
 
 A gnostifiable pipeline depends on **`host.rag(group)` only** — an `ISkillsRagHandle`.
 It knows nothing about plugins, source, or backend; the host hides all of that.
@@ -361,20 +398,42 @@ embedding is metered/cancellable. Swapping the source or the store never touches
 consumer. `load()` is the only place acquisition/parse/ingest/reconciliation live;
 everything downstream is RAG.
 
-**Consumption mode A — implicit / seamless (default).** The base SmartAgent already
-runs a **multi-source RAG retrieval** (session artifacts, MCP tools, … — see the
-session-scope RAG design). The wiring registers each enabled group's `host.rag(group)`
-as ONE MORE source in that retrieval, so the agent pulls matching skill chunks into the
-prompt exactly as it pulls any other context — **no consumer code, every pipeline
-gnostified**. This is the engine-side equivalent of cloud-llm-hub's manual consumer
-injection. Conflict is avoided by the operator enabling only compatible groups.
+**Path 1 — implicit / seamless (default; assembler pipelines only).** The base
+SmartAgent runs a multi-source RAG retrieval whose **context-assembler** consumes
+`IRag` sources: it embeds the query ONCE into an `IQueryEmbedding`, calls each source's
+`query(embedding, k, options)` → `RagResult[]`, and formats ALL sources uniformly into
+`## <header>\n- <text> [score]` under a SHARED context budget. `ISkillsRagHandle` is NOT
+an `IRag` (it takes text, not an `IQueryEmbedding`, and embeds in its OWN space), so it
+cannot be registered directly. A small **adapter** bridges it:
 
-**Consumption mode B — explicit (planner-driven, opt-in, later phase).** The planner is
-handed `host.groups()` (group ids + descriptions) and, per step, selects the relevant
-group, then recalls `host.rag(selectedGroup)` for that step's context (and for which
-skills it itself applies). This keeps several **conflicting** groups available while
-only the step-relevant one ever reaches a single LLM call. Built on the same host; it
-is a larger planner integration, phased after mode A.
+```ts
+// skillsRagSource(host.rag(group), { k, threshold }) : IRag
+//   query(embedding, k, options):
+//     hits = host.rag(group).query(embedding.text, { k, threshold }, options) // re-embed
+//       — uses IQueryEmbedding.text, NOT .toVector(): skills live in their OWN embedding
+//         space (their own embeddingSpaceId), so the assembler's query vector is wrong here.
+//     return hits.map(h => ({ text: h.record.content, score: h.score,
+//                             metadata: { id: h.record.id, group, name: h.record.name,
+//                                         provenance: h.record.provenance } }))
+//   getById / writer: not supported (read-only source).
+```
+
+The adapter is registered as a normal source with a section header (e.g. "Relevant
+Skills"); skills then share the assembler's uniform formatting and shared budget —
+**no consumer code, no skills-specific block, no separate `maxInjectChars`** (that
+single-block bound belongs to Path 2 only). Conflict avoided by enabling only
+compatible groups. NOTE the deliberate second embed: skills must be embedded by THEIR
+embedder, so the adapter re-embeds `embedding.text` rather than reusing the assembler's
+vector; the cost is metered via `options`.
+
+**Path 2 — controller recall hook (in scope; the measurement target).** The controller
+bypasses the assembler, so its planner does an explicit `host.rag(group).query(goal, {
+k, threshold }, options)` for a single **configured** group and injects a bounded
+"Relevant skills" block (its OWN `maxInjectChars` budget) into create-plan/replan.
+
+**Path 3 — explicit group selection (deferred, separate spec).** The planner is handed
+`host.groups()` and, per step, selects the group, then recalls `host.rag(selectedGroup)`
+— the only path exploiting several conflicting groups at once. Built on the same host.
 
 ### Canonical skill record — the stable RAG contract
 
@@ -542,15 +601,17 @@ supported). The **ephemeral in-memory-per-run** strategy has no prior generation
 carry forward (each startup builds from scratch) but uses the same build→activate swap
 within a run for atomicity.
 
-**4. Recall (runtime) — RAG-only, FS-free.** A `skillsRecall(group, query, k,
-threshold, options)` over `host.rag(group)`: the consumer queries by goal/step
-(passing the request `CallOptions` so the recall embedding is metered/cancellable) →
-`SkillHit[]` (top-`k`, score ≥ `threshold`) → injects each hit's `record.content`
-**directly** (it is already in the store — NO re-load from FS or source) as a bounded
-"Relevant skills" block (own char budget). Empty/no match → no block → unchanged
-behaviour. Chunk-level injection: a hit IS one section, so the relevant fragment is
-injected, not a whole skill. In **implicit** mode the "group" is fixed per registered
-source (one source = one group); in **explicit** mode the planner picks the group.
+**4. Recall (runtime) — RAG-only, FS-free.** Recall is always `host.rag(group).query(
+text, { k, threshold }, options)` → `SkillHit[]` (top-`k`, score ≥ `threshold`), each
+hit's `record.content` already in the store (NO re-load from FS or source), chunk-level
+(a hit IS one section, not a whole skill). HOW it reaches the LLM differs by path:
+- **Path 1 (implicit):** the adapter exposes those hits as `RagResult[]` to the
+  context-assembler, which formats them with all other sources and applies its SHARED
+  budget — there is NO separate "Relevant skills" block or `maxInjectChars` here.
+- **Path 2 (controller hook):** the planner injects the hits as a dedicated, bounded
+  "Relevant skills" block governed by its OWN `maxInjectChars` (the assembler is bypassed).
+Empty/no match → no block/section → unchanged behaviour. Group: fixed per registered
+source in Path 1, configured in Path 2, planner-selected in Path 3.
 
 ### Where it plugs in
 
@@ -560,21 +621,26 @@ source (one source = one group); in **explicit** mode the planner picks the grou
 | `loadSkillFromDir`, `ClaudeSkillManager` (FS) | same | reused ONLY by the optional FS fetcher |
 | `ISkillSource` strategy + fetchers (HTTP/programmatic/FS) | `llm-agent-libs/src/skills` | **new** (HTTP/programmatic) |
 | `PluginMarketplaceAdapter` (in-memory → canonical + chunker) | same | **new** |
-| `ISkillsStore` impls (in-memory; vector-DB) + `ISkillsRagHandle` | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + generations; not `IKnowledgeRagHandle`) |
+| `ISkillsStore`/`ISkillsRagBackend` impls (in-memory; vector-DB) + per-group PROVIDERS | `llm-agent-libs` (+ a vector-DB adapter) | **new** (cosine + score + per-collection generations; not `IKnowledgeRagHandle`) |
+| `makeCompatibleSkillsRag` (compat wrapper → `ISkillsRagHandle`) | `llm-agent-libs` | **new** |
 | Ingest wiring (startup AND out-of-band entrypoint) | SmartServer build / a CLI/admin entry | **new** (parallels MCP→toolsRag) |
 | Grouping (plugin→group→collection map, named groups) | host config | **new** |
-| **Implicit wiring** — register each group's `host.rag(group)` as a source in the base SmartAgent multi-source RAG retrieval | SmartServer build / SmartAgent retrieval composition | **new** (the primary integration) |
-| **Explicit hook** — planner picks `host.groups()` group per step, recalls `host.rag(group)` | controller planner | **new**, later phase |
+| **Path 1 adapter** — `skillsRagSource(host.rag(group))` : `IRag` (SkillHit→RagResult; re-embeds `IQueryEmbedding.text` in skills' space) | `llm-agent-libs` | **new** (the seamless bridge) |
+| **Path 1 wiring** — register the adapter as an `IRag` source in the context-assembler | SmartServer build / SmartAgent retrieval composition | **new** (assembler pipelines only) |
+| **Path 2 hook** — controller planner recalls a configured group, injects a bounded block (assembler bypassed) | controller planner | **new** (measurement target, in scope) |
+| **Path 3 hook** — planner picks `host.groups()` group per step | controller planner | **new**, deferred |
 | Config parse (`skills` block) + `builder.withSkills(...)` | server config + builder | **new** |
 
-**Primary integration is the base SmartAgent retrieval, not a pipeline-specific hook.**
-The agent already runs a multi-source RAG pull (session artifacts, MCP tools, …); the
-implicit wiring adds each enabled group as one more source, so every pipeline is
-gnostified with no consumer code. The existing default-pipeline `SkillSelectHandler`
-(RAG-selects a `skill:<name>` then re-loads the full body via `ISkillManager`/filesystem
-— violating no-FS and injecting a whole skill) is **superseded** by this RAG-source
-approach for skills; reworking/retiring it is follow-on cleanup, not a blocker. The
-**explicit** planner-driven group selection is the separate later phase.
+**Implicit integration targets the context-assembler — but ONLY assembler pipelines.**
+The agent's context-assembler consumes `IRag` sources; the adapter (above) registers
+each enabled group there, so assembler-based pipelines (base/default/linear/dag/stepper)
+are gnostified with no consumer code. The **controller does NOT use the assembler** (it
+reads `extractPrompt(ctx.textOrMessages)` and builds subagent prompts itself), so it is
+gnostified via its own planner recall hook (Path 2), not this wiring. The existing
+default-pipeline `SkillSelectHandler` (RAG-selects `skill:<name>` then re-loads the full
+body via `ISkillManager`/filesystem — violating no-FS, injecting a whole skill) is
+**superseded** by the RAG-source approach; reworking/retiring it is follow-on cleanup.
+The **explicit** planner-driven group selection is the separate later phase.
 
 ## Configuration
 
@@ -597,9 +663,12 @@ skills:
                                              #   when the embedding space changes. (Omittable ONLY
                                              #   for the in-memory self-ingest case — one process,
                                              #   no cross-process reader to mismatch.)
-  k: 4                               # max records injected per planning call
+  k: 4                               # max records recalled per query
   threshold: 0.3                     # min cosine similarity [0..1]; below → dropped. Default 0.3
-  maxInjectChars: 4000
+  maxInjectChars: 4000               # Path-2 (controller hook) ONLY — the dedicated "Relevant skills"
+                                     #   block's char budget. IGNORED by Path-1 implicit (the
+                                     #   context-assembler applies its OWN shared budget).
+  controllerSkillGroup: sap-abap     # Path-2: which single group the controller planner recalls
   chunk: { maxChars: 1500 }
   strict: false                      # true → any source failure aborts load; false → carry-forward
   sources:
@@ -806,11 +875,14 @@ mechanism under test.
   (only the one-time dimension probe, if undeclared, may run); a COMPATIBLE revision
   embeds exactly once and calls `queryRevision`. Asserts the snapshot+check precede the
   embed.
-- Ingest host serving path: a `{ source, store, embedder, embeddingSpaceId, … }` host
-  after `load()` (self-ingest) exposes a WORKING `rag().query` — the host wrapped its own
-  `store` (an `ISkillsRagBackend`) via `makeCompatibleSkillsRag`, so text query works
-  without a separately supplied read handle; the wrapped descriptor matches what
+- Ingest host serving path: a `{ source, storeProvider, embedder, embeddingSpaceId, … }`
+  host after `load()` (self-ingest) exposes a WORKING `rag(group).query` per enabled
+  group — the host wrapped each group's `storeProvider.forGroup(g)` (an
+  `ISkillsRagBackend`) via `makeCompatibleSkillsRag`; the wrapped descriptor matches what
   `activate` stamped (compatible by construction).
+- Per-group provider isolation: `storeProvider.forGroup('a')` and `forGroup('b')` are
+  independent collections — a `beginGeneration`/`activate` on `a` does NOT change `b`'s
+  `activeSnapshot()`; `forGroup('a')` called twice addresses the SAME collection.
 - Embedder/store compatibility — startup: a recall-only `load(options)` over a backend
   whose `activeSnapshot()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
@@ -842,13 +914,23 @@ mechanism under test.
   sap-abap-cds] → one collection holding both plugins' records; a group naming a
   non-enabled plugin → config error. Each group's collection has independent
   generations (rotating one group does not touch another's active pointer).
-- Implicit wiring (seamless): with `mode: implicit`, the SmartAgent's multi-source RAG
-  retrieval gains one source per enabled group; a base-agent run with the skills source
-  registered injects a matching skill chunk with NO pipeline-specific code, and toggling
-  the source OFF reproduces the exact agnostic output (the measurement toggle).
-- `host.groups()` (explicit prerequisite): lists enabled groups with descriptions +
-  collection names; `host.rag(group)` for an unknown group errors; `host.rag()` with one
-  group returns it, with several enabled errors (must name the group).
+- Path-1 adapter: `skillsRagSource(host.rag('g'))` implements `IRag.query(embedding, k,
+  options)` by calling `host.rag('g').query(embedding.text, …)` (asserts it uses
+  `.text`, NOT `.toVector()` — skills embed in their own space) and maps each `SkillHit`
+  → `RagResult { text: content, score, metadata: { id, group, name, provenance } }`;
+  `getById`/`writer` unsupported; metering flows via `options`.
+- Path-1 wiring (assembler, seamless): the adapter registered as a context-assembler
+  `IRag` source → an assembler-based agent run injects a matching skill chunk through
+  the SHARED-budget uniform formatting with NO pipeline-specific code; toggling the
+  source OFF reproduces the exact agnostic output (the measurement toggle). The
+  controller is NOT covered by this path (it bypasses the assembler — separate test).
+- Path-2 controller hook: a controller whose planner is given `host.rag(configuredGroup)`
+  injects a bounded "Relevant skills" block (own `maxInjectChars`) into create-plan;
+  with skills OFF the create-plan prompt is byte-identical to agnostic (measurement
+  toggle for the controller specifically).
+- `host.groups()`: lists enabled groups with descriptions + collection names;
+  `host.rag(group)` for an unknown group errors; `host.rag()` with one group returns it,
+  with several enabled errors (must name the group).
 
 ## Licensing posture (settled)
 
