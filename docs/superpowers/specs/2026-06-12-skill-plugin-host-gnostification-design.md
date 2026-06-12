@@ -397,12 +397,13 @@ interface ISkillPluginHost {
    *  SEPARATE ingest job. `options` threads metering into the probe and ingest.
    *
    *  CATALOG-CAS RETRY: if `publishCatalog` loses the CAS (a concurrent loader committed
-   *  first), the load RETRIES the WHOLE reconciliation from a FRESH snapshot — re-read
-   *  `readCatalog()`, re-merge `acquire()` results (re-using already-built generations is
-   *  allowed; carry-forward/prior-pointer decisions are recomputed against the NEW
-   *  catalog), then `publishCatalog(newRev, …)`. Bounded by `catalogCasMaxAttempts`
-   *  (default 3) with a small bounded backoff between attempts; each failed attempt's
-   *  not-committed generations are discarded (orphan cleanup). On exhaustion → THROW.
+   *  first), the load DISCARDS the failed attempt's built generations (orphan cleanup) and
+   *  RETRIES the WHOLE reconciliation FRESH from the new snapshot — re-read `readCatalog()`,
+   *  re-merge `acquire()` results, re-decide carry-forward/prior-pointer against the NEW
+   *  catalog, REBUILD generations, then `publishCatalog(newRev, …)`. There is NO reuse of
+   *  the prior attempt's generations (their carry-forward/prior-pointer basis is now stale).
+   *  Bounded by `catalogCasMaxAttempts` (default 3) with a small bounded backoff. On
+   *  exhaustion → THROW (all built generations across all attempts discarded).
    *
    *  RETURN/THROW: resolves a `SkillLoadResult` when a commit happened (even with
    *  per-collection omissions under strict:false — `result.ok === false`, `result.omitted`
@@ -415,12 +416,15 @@ interface ISkillPluginHost {
    *  - An **ingest job/host** (NOT wired into a running agent's RAG sources) MAY reload and
    *    publish a CHANGED collection set — that is how the set evolves out-of-band.
    *  - A **serving host** (whose `groups()` set was registered into a live agent) fixes its
-   *    served set at the FIRST `load()`. A subsequent `load()` that would change the
-   *    committed SET (add/remove a collection vs the registered set) is REJECTED — it THROWS
-   *    a clear "served collection set is fixed; rebuild the host to change it" error (a
-   *    generation-only reload — SAME set, new generations — is allowed and just rotates).
+   *    served set at the FIRST `load()`. On a reload it computes the resolved desired set
+   *    (after merge + carry-forward, step 3) and COMPARES it to the registered set BEFORE
+   *    building any generation or calling `publishCatalog`. On a mismatch it THROWS a clear
+   *    "served collection set is fixed; rebuild the host to change it" error HAVING BUILT
+   *    NOTHING and committed nothing — the persistent catalog is untouched. A same-set
+   *    reload (new generations only) proceeds and rotates.
    *  So changing the served set = re-ingest via an ingest job + rebuild/restart the serving
-   *  agent; a serving host never silently re-registers sources. */
+   *  agent; a serving host never silently re-registers sources NOR mutates the catalog when
+   *  the set would change. */
   load(options?: CallOptions): Promise<SkillLoadResult>;
   /** The collections this host serves, with descriptions — what the explicit mode's
    *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
@@ -710,6 +714,11 @@ otherwise serve stale skills forever. `load()`:
    If the failed source was the SOLE owner of a collection, that collection is retained
    intact, not dropped. (`strict:true`: a source failure aborts that source's collections'
    generations — their prior generations stay — and fails `load()`.)
+   - **Serving-host set guard (BEFORE any build).** A serving host now compares the
+     resolved `desired` collection set to the set it registered at its first `load()`. On a
+     mismatch it THROWS immediately — BEFORE step 4 builds any generation and before any
+     `publishCatalog` — so the persistent catalog is never mutated and no generations are
+     created. (An ingest-only host skips this guard — a changed set is its purpose.)
 4. Build each `desired` collection's NEW generation INACTIVE: `beginGeneration()` +
    `upsert` (refreshed sources) + `carryForward` (a failed source's records under
    strict:false, copied INTO this new generation). **No `activate`** — nothing serves yet.
@@ -1115,9 +1124,11 @@ mechanism under test.
   R'; X `publishCatalog(R,…)` REJECTED → recall reflects Y's catalog, never X's.
 - Catalog-CAS retry policy: a stub provider that fails the first N-1 `publishCatalog`
   CAS attempts (bumping the revision each time) and succeeds on attempt N ≤
-  `catalogCasMaxAttempts` → `load()` re-reads the catalog and rebuilds each attempt and
-  finally commits; a provider that fails MORE than `catalogCasMaxAttempts` → `load()`
-  THROWS, and every generation it built across all attempts is discarded (no orphans).
+  `catalogCasMaxAttempts` → `load()` re-reads the catalog and FULLY REBUILDS each attempt
+  (asserts `beginGeneration` is called afresh per attempt — NO reuse of a prior attempt's
+  generation) and finally commits; a provider that fails MORE than `catalogCasMaxAttempts`
+  → `load()` THROWS, and every generation built across all attempts is discarded (no
+  orphans).
 - Retired-generation retention (no read-under-delete): EXACT discipline — a reader pins
   generation N (captured reference / refcount lease), the catalog commit moves the
   collection to N+1, the reader's subsequent query against N still returns N's rows, and N
@@ -1217,8 +1228,10 @@ mechanism under test.
 - Serving-host reload semantics: a SERVING host (set registered) whose second `load()`
   commits the SAME collection set with NEW generations → succeeds and rotates; a second
   `load()` that would ADD or REMOVE a collection → THROWS "served collection set is fixed"
-  (no silent re-registration). An ingest-only host (no registered serving set) may reload
-  with a changed set freely.
+  BEFORE building any generation or calling `publishCatalog` (assert a spy on
+  `beginGeneration`/`publishCatalog` is NEVER called and `readCatalog()` is UNCHANGED — no
+  catalog mutation). An ingest-only host (no registered serving set) may reload with a
+  changed set freely.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
