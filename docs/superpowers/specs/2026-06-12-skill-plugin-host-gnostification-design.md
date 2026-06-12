@@ -344,24 +344,27 @@ interface ISkillsStore extends ISkillsRagBackend {
 interface ISkillPluginHost {
   /** SINGLE fenced commit. Ingest runs EVERY source's `acquire()` → `{ collections,
    *  records }`, MERGES into one desired catalog (union of collections + per-collection
-   *  source ownership; a failed source's owned collections carried forward under
-   *  strict:false), and BUILDS each desired collection's new generation INACTIVE
-   *  (`beginGeneration`/`upsert` — nothing serves yet). It then commits ONCE:
-   *  `publishCatalog(prior.catalogRevision, entries)` where each entry names its serving
-   *  `generation` (the new one, or the prior one for a collection that failed to build /
-   *  was carried forward) + manifest, plus tombstones for removed collections. The catalog
-   *  CAS is the ONLY thing that makes any generation serve, so a stale loader that loses
-   *  the CAS NEVER changes serving data — its built generations stay inactive.
+   *  source ownership), and BUILDS each desired collection's NEW generation INACTIVE
+   *  (`beginGeneration` + `upsert` for refreshed sources + `carryForward` for a failed
+   *  source's records under strict:false — copied INTO the new generation, so the NEW
+   *  generation is what's published; carry-forward is NOT a build failure). It then commits
+   *  ONCE: `publishCatalog(prior.catalogRevision, entries)` where each entry names its
+   *  serving `generation` — the newly-built one normally, or the PRIOR one ONLY if that
+   *  collection's whole new generation could not be built — plus manifest + tombstones for
+   *  removed collections. The catalog CAS is the ONLY thing that makes any generation
+   *  serve, so a stale loader that loses the CAS NEVER changes serving data.
    *
-   *  Orphan cleanup: `load()` wraps the whole build in `try { … publishCatalog } finally {
-   *  if (!committed) for each generation I built: discardGeneration(g) }` — a lost CAS, an
-   *  ingest error, or a strict abort deletes ALL generations this load created, so beaten
-   *  concurrent loads accumulate no orphans. Only AFTER a successful publish does it
-   *  background-reclaim tombstoned collections (`dropCollection`) and superseded prior
-   *  generations under the retention grace. See "Collection-set reconciliation".
-   *  Per-group failure semantics survive: a collection that failed to build keeps its
-   *  prior generation pointer in the committed catalog (mixed generations across
-   *  collections are fine). Idempotent; callable at startup OR out-of-band.
+   *  Orphan cleanup keyed on the COMMITTED catalog: `try { … publishCatalog } finally {
+   *  for each generation I built: if the committed catalog does NOT name it →
+   *  discardGeneration(g) }`. This deletes (a) everything on a lost CAS / error / strict
+   *  abort (nothing committed), AND (b) the built-but-unused generations of collections
+   *  that fell back to a prior pointer after a SUCCESSFUL commit — both would otherwise
+   *  orphan. Only AFTER a successful publish does it background-reclaim tombstoned
+   *  collections (`dropCollection`) and superseded prior generations under the retention
+   *  grace. See "Collection-set reconciliation". Per-collection failure semantics survive:
+   *  a collection whose new generation could not be built keeps its prior generation
+   *  pointer (mixed generations across collections are fine). Idempotent; startup OR
+   *  out-of-band.
    *
    *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
@@ -652,23 +655,34 @@ otherwise serve stale skills forever. `load()`:
    If the failed source was the SOLE owner of a collection, that collection is retained
    intact, not dropped. (`strict:true`: a source failure aborts that source's collections'
    generations — their prior generations stay — and fails `load()`.)
-4. Build each `desired` collection's new generation INACTIVE: `beginGeneration()` +
-   `upsert`/`carryForward`. **No `activate`** — nothing serves yet. Track every generation
-   built (for orphan cleanup). A collection that fails to BUILD (under strict:false) keeps
-   its prior generation pointer for the commit; it is NOT tombstoned.
+4. Build each `desired` collection's NEW generation INACTIVE: `beginGeneration()` +
+   `upsert` (refreshed sources) + `carryForward` (a failed source's records under
+   strict:false, copied INTO this new generation). **No `activate`** — nothing serves yet.
+   Track every generation built (for orphan cleanup). A carried-forward source is NOT a
+   build failure: the new generation contains refreshed + carried-forward records and IS
+   what gets published. A collection has a PRIOR-pointer fallback ONLY when its WHOLE new
+   generation could not be built at all (e.g. a store/embed error building that
+   collection) — then its entry keeps the prior `generation`, and that built-partial
+   generation (if any) is an orphan (cleaned in step 6). Such a collection is NOT
+   tombstoned.
 5. **The SINGLE fenced COMMIT.** Compose `entries`: for each desired collection, a
-   `CatalogEntry` naming its serving `generation` (the newly-built one, or the prior one
-   if it failed to build / was carried forward) + manifest + ownership; plus `tombstone`
-   for each `g ∈ prior.active \ desired`. Call
+   `CatalogEntry` naming its serving `generation` — the **newly-built** one (the normal
+   case, INCLUDING when some of its sources were carried forward) or the PRIOR one only if
+   its whole new generation could not be built — plus manifest + ownership; plus
+   `tombstone` for each `g ∈ prior.active \ desired`. Call
    `publishCatalog(prior.catalogRevision, entries)`. This is the ONLY operation that makes
    any generation serve — it atomically swaps EVERY collection's serving pointer and bumps
    the catalog revision, succeeding ONLY if `prior.catalogRevision` is still active. A
    concurrent loader that committed first makes this CAS FAIL → this load aborts having
    activated NOTHING (its built generations never served).
-6. **Orphan cleanup (finally).** The whole build runs inside `try { … publishCatalog }
-   finally { if (!committed) for each generation I built across all collections:
-   discardGeneration(g) }` — so a LOST CAS, an ingest error, OR a strict abort deletes ALL
-   this load's generations; beaten concurrent loads leave no orphans.
+6. **Orphan cleanup (finally), keyed on the COMMITTED catalog — not just `!committed`.**
+   The whole build runs inside `try { … publishCatalog } finally { for each generation I
+   built across all collections: if the committed catalog does NOT name it →
+   discardGeneration(g) }`. This covers BOTH cases uniformly: on a lost CAS / ingest error
+   / strict abort nothing was committed, so ALL built generations are discarded; on a
+   SUCCESSFUL commit, the built generations of collections that fell back to a prior
+   pointer (their new generation was NOT named) are ALSO discarded — they would otherwise
+   leak as orphans. Only generations the committed catalog actually names survive.
 7. **AFTER a successful publish**, background-reclaim (under the retention grace) the
    tombstoned collections (`dropCollection(g)`) AND each collection's now-superseded prior
    generation. Physical deletion NEVER precedes the commit, so the active catalog never
@@ -705,12 +719,16 @@ every record of every source feeding the group before it can be named in the com
 the group's catalog entry keeps the prior generation. So, per group:
 - **`strict: false` (default) — per-source carry-forward, at BOTH levels.** *Within a
   collection:* `carryForward(generation, [its sourceId])` copies the failed source's
-  records from the group's active generation into the new one unchanged; only reachable
-  sources refresh. *At the collection-set level:* if the failed source SOLELY owned a
-  collection (per `readCatalog()` ownership), that collection is re-added to `desired`
-  and carried forward intact — it is NOT tombstoned just because its only source was
-  down this round. So a transient source outage never drops its collections. (First load
-  with no prior generation/ownership → a failed source simply contributes nothing.)
+  records from the group's served generation into the NEW one unchanged; reachable
+  sources refresh; the NEW generation (refreshed + carried) is what the commit names.
+  *At the collection-set level:* if the failed source SOLELY owned a collection (per
+  `readCatalog()` ownership), that collection is re-added to `desired` and carried forward
+  — it is NOT tombstoned just because its only source was down this round. When a
+  collection has NO refreshed records this round (all its sources down), keeping its prior
+  generation pointer is equivalent to re-building a carry-only generation, so the host MAY
+  just keep the prior pointer there — that is the ONLY case prior-pointer reuse is correct.
+  So a transient source outage never drops its collections. (First load with no prior
+  generation/ownership → a failed source simply contributes nothing.)
 - **`strict: true` — all-or-nothing for the LOAD.** A source failure means the whole
   `load()` does not commit: `publishCatalog` is not called, the prior catalog is fully
   retained, all built generations are discarded (orphan cleanup), and the error surfaces.
@@ -1098,10 +1116,12 @@ mechanism under test.
 - sourceId validation/stamping: two sources sharing an `id` → **config error** at
   startup; a `records` source's records all come out with `sourceId === ` the
   configured `id` (host-stamped), regardless of any `sourceId` the caller put on them.
-- Generation cleanup: an ingest error mid-build, a `strict:true` abort, AND a lost
-  catalog CAS each leave NO records of this load's built generations in the store —
-  `discardGeneration` ran for all of them (assert the store keeps only the committed
-  catalog's generations).
+- Generation cleanup (keyed on committed catalog): (a) an ingest error mid-build, a
+  `strict:true` abort, AND a lost catalog CAS each leave NO records of this load's built
+  generations (nothing committed → all discarded); (b) on a SUCCESSFUL commit where
+  collection B fell back to its prior pointer (its whole new generation could not be
+  built), B's built-partial generation is ALSO discarded — assert the store keeps ONLY the
+  generations the committed catalog names.
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
@@ -1115,9 +1135,14 @@ mechanism under test.
   "one plugin = one group" rule. `serveCollections`/`controllerSkillGroup` naming a
   collection the strategy did not emit → config error. Each collection has independent
   generations (committing one does not touch another's served generation).
-- Mixed generations in one commit: a load where collection A built a NEW generation but
-  collection B's source was unreachable (`strict:false`) → the SINGLE `publishCatalog`
-  names A's new generation AND B's carried-forward prior generation together; both serve
+- Carry-forward publishes a NEW generation: collection B has sources `{s1, s2}`; on a load
+  where `s1` refreshed and `s2` was unreachable (`strict:false`), B's NEW generation =
+  refreshed `s1` records + carried-forward `s2` records, and `publishCatalog` names THAT
+  new generation (NOT B's prior pointer). The prior-pointer fallback is exercised
+  separately by a collection whose WHOLE generation could not be built.
+- Mixed generations in one commit: a load where collection A built a fully-new generation
+  and collection C could not build at all (prior-pointer fallback) → the SINGLE
+  `publishCatalog` names A's new generation AND C's prior generation together; both serve
   after the one commit (mixed generations across collections, atomic commit).
 - Adapter (assembler bridge): `skillsRagSource(host.rag('g'))` implements
   `IRag.query(embedding, k, options)` by calling `host.rag('g').query(embedding.text, …)`
