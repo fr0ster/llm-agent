@@ -253,7 +253,9 @@ interface ActiveSnapshot {
  *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
  *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`;
  *  a recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
- *  `provider.forGroup(group)`; `host.groups()` reads `readCatalog().entries` (active only).
+ *  `provider.forGroup(group)`; `host.groups()` returns a CACHED snapshot of
+ *  `readCatalog().entries` (refreshed at load() and on observed rotation — readCatalog is
+ *  async, groups() is sync).
  *  NOTE: there is NO per-collection `activate` — a generation only ever begins serving by
  *  being named in a committed catalog. `forGroup(g).activeSnapshot()` resolves g's serving
  *  `{ revision: generation, manifest }` FROM `readCatalog()` (single source of truth). */
@@ -349,22 +351,26 @@ interface ISkillPluginHost {
    *  source's records under strict:false — copied INTO the new generation, so the NEW
    *  generation is what's published; carry-forward is NOT a build failure). It then commits
    *  ONCE: `publishCatalog(prior.catalogRevision, entries)` where each entry names its
-   *  serving `generation` — the newly-built one normally, or the PRIOR one ONLY if that
-   *  collection's whole new generation could not be built — plus manifest + tombstones for
-   *  removed collections. The catalog CAS is the ONLY thing that makes any generation
-   *  serve, so a stale loader that loses the CAS NEVER changes serving data.
+   *  serving `generation` — the newly-built one normally; the PRIOR one if that
+   *  collection's whole new generation could not be built BUT a prior exists; and a
+   *  collection that failed to build with NO prior (first load / brand-new) is OMITTED
+   *  from `entries` (it does not serve, the failure is reported, other collections still
+   *  commit). Plus manifest + tombstones for removed collections. The catalog CAS is the
+   *  ONLY thing that makes any generation serve, so a stale loader that loses the CAS
+   *  NEVER changes serving data. `load()` returns a partial-failure result when any
+   *  collection could not be built.
    *
    *  Orphan cleanup keyed on the COMMITTED catalog: `try { … publishCatalog } finally {
    *  for each generation I built: if the committed catalog does NOT name it →
    *  discardGeneration(g) }`. This deletes (a) everything on a lost CAS / error / strict
    *  abort (nothing committed), AND (b) the built-but-unused generations of collections
-   *  that fell back to a prior pointer after a SUCCESSFUL commit — both would otherwise
-   *  orphan. Only AFTER a successful publish does it background-reclaim tombstoned
-   *  collections (`dropCollection`) and superseded prior generations under the retention
-   *  grace. See "Collection-set reconciliation". Per-collection failure semantics survive:
-   *  a collection whose new generation could not be built keeps its prior generation
-   *  pointer (mixed generations across collections are fine). Idempotent; startup OR
-   *  out-of-band.
+   *  that fell back to a prior pointer OR were omitted (no prior) after a SUCCESSFUL
+   *  commit — all would otherwise orphan. Only AFTER a successful publish does it
+   *  background-reclaim tombstoned collections (`dropCollection`) and superseded prior
+   *  generations under the retention grace. See "Collection-set reconciliation".
+   *  Per-collection failure semantics survive (a collection that could not build keeps its
+   *  prior pointer, or is omitted when none; mixed generations across collections are
+   *  fine). Idempotent; startup OR out-of-band.
    *
    *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
@@ -381,8 +387,14 @@ interface ISkillPluginHost {
   load(options?: CallOptions): Promise<void>;
   /** The collections this host serves, with descriptions — what the explicit mode's
    *  planner picks from, and what the implicit wiring enumerates to register RAG sources.
-   *  The host does NOT compute these; it reports `provider.readCatalog().entries` (active only; the
-   *  strategy-emitted catalog), filtered to `serveCollections` on a recall-only host. */
+   *  SYNCHRONOUS: it returns a CACHED catalog snapshot, NOT a live `readCatalog()` (which is
+   *  async). The host populates the cache from `provider.readCatalog()` during `load()` and
+   *  refreshes it whenever a `rag(g).query` observes a bumped `catalogRevision` (an
+   *  out-of-band rotation). So `groups()` reflects the catalog as of the last load /
+   *  observed rotation; for a guaranteed-fresh read a caller uses the async
+   *  `provider.readCatalog()` directly. The host does NOT compute the entries; the cache
+   *  holds the strategy-emitted catalog, filtered to `serveCollections` on a recall-only
+   *  host. */
   groups(): readonly SkillGroupInfo[];
   /** The score-bearing skills-RAG handle for ONE group's collection — pipelines recall
    *  from it. `group` omitted → the sole/default group (error if several are enabled).
@@ -635,8 +647,10 @@ So **mixed generations across collections are allowed and expected** (collection
 generation + collection B's carried-forward prior generation commit together), while the
 commit itself is atomic and fenced — there is no independent per-collection pointer a
 stale loader could leak. A per-collection BUILD failure (under strict:false) just means
-that collection's catalog entry keeps its prior generation pointer; under `strict:true`
-the whole `load()` aborts (nothing committed, prior catalog fully retained).
+that collection's catalog entry keeps its prior generation pointer — or, if it has NO
+prior (first load), is OMITTED from the commit and reported (the other collections still
+commit); under `strict:true` the whole `load()` aborts (nothing committed, prior catalog
+fully retained).
 
 **Collection-set reconciliation (TWO levels, multi-source, fenced, publish-before-drop).**
 Per-collection generation snapshots (below) reconcile RECORDS within a collection. A
@@ -660,17 +674,22 @@ otherwise serve stale skills forever. `load()`:
    strict:false, copied INTO this new generation). **No `activate`** — nothing serves yet.
    Track every generation built (for orphan cleanup). A carried-forward source is NOT a
    build failure: the new generation contains refreshed + carried-forward records and IS
-   what gets published. A collection has a PRIOR-pointer fallback ONLY when its WHOLE new
-   generation could not be built at all (e.g. a store/embed error building that
-   collection) — then its entry keeps the prior `generation`, and that built-partial
-   generation (if any) is an orphan (cleaned in step 6). Such a collection is NOT
-   tombstoned.
-5. **The SINGLE fenced COMMIT.** Compose `entries`: for each desired collection, a
-   `CatalogEntry` naming its serving `generation` — the **newly-built** one (the normal
-   case, INCLUDING when some of its sources were carried forward) or the PRIOR one only if
-   its whole new generation could not be built — plus manifest + ownership; plus
-   `tombstone` for each `g ∈ prior.active \ desired`. Call
-   `publishCatalog(prior.catalogRevision, entries)`. This is the ONLY operation that makes
+   what gets published. If a collection's WHOLE new generation cannot be built (e.g. a
+   store/embed error), resolve its entry by whether a PRIOR generation exists:
+   - **prior exists** → keep the prior `generation` pointer (last-known-good retained);
+     any built-partial generation is an orphan (cleaned in step 6). Not tombstoned.
+   - **NO prior** (first load, or a brand-new collection that failed on its first build)
+     → there is nothing to fall back to: the collection is **OMITTED from the committed
+     catalog** (it simply does not serve), and the failure is reported (warn + `load()`
+     returns a partial-failure result). It is NOT tombstoned (there was nothing to retire)
+     and does NOT abort the other collections.
+5. **The SINGLE fenced COMMIT.** Compose `entries`: for each desired collection that
+   resolved to a serving generation (newly-built — the normal case, INCLUDING carried-
+   forward sources — or a prior pointer when its whole new generation failed but a prior
+   exists), a `CatalogEntry` naming that `generation` + manifest + ownership. A collection
+   that failed to build with NO prior is left OUT of `entries` entirely. Add a `tombstone`
+   for each `g ∈ prior.active \ desired`. Call `publishCatalog(prior.catalogRevision,
+   entries)`. This is the ONLY operation that makes
    any generation serve — it atomically swaps EVERY collection's serving pointer and bumps
    the catalog revision, succeeding ONLY if `prior.catalogRevision` is still active. A
    concurrent loader that committed first makes this CAS FAIL → this load aborts having
@@ -1122,6 +1141,11 @@ mechanism under test.
   collection B fell back to its prior pointer (its whole new generation could not be
   built), B's built-partial generation is ALSO discarded — assert the store keeps ONLY the
   generations the committed catalog names.
+- First-load build failure with NO prior: a two-collection load where `c2` fails to build
+  and has NO prior generation (first load) → `c2` is OMITTED from the committed catalog
+  (`host.groups()` = `{c1}`, `host.rag('c2')` serves nothing), `c1` STILL commits and
+  serves, `load()` returns a partial-failure result, and `c2`'s built-partial generation
+  (if any) is discarded. `c2` is NOT tombstoned (nothing existed to retire).
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
@@ -1164,6 +1188,11 @@ mechanism under test.
 - `host.groups()`: lists enabled groups with descriptions + collection names;
   `host.rag(group)` for an unknown group errors; `host.rag()` with one group returns it,
   with several enabled errors (must name the group).
+- `host.groups()` is SYNC + cached: after `load()` it returns the catalog snapshot WITHOUT
+  awaiting; a stub provider that bumps `readCatalog()` out-of-band does NOT change
+  `groups()` until a `rag(g).query` observes the new `catalogRevision` (which refreshes the
+  cache) — assert sync return and post-rotation refresh, with the async
+  `provider.readCatalog()` reflecting the change immediately.
 
 ## Licensing posture (settled)
 
