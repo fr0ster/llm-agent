@@ -19,10 +19,12 @@ export interface ReviewOpts {
 
 /** The reviewer's return: EITHER an authoritative step Outcome (incl. a genuine
  *  `failed` verdict → step replan), OR a judge-failure — the reviewer could not
- *  produce a verdict (provider error / malformed / contradictory ok-with-empty).
- *  The controller treats these differently: a judge-failure is re-asked within
- *  maxReviewRetries and, on exhaustion, ABORTS the run — it is NEVER mapped to a
- *  step `failed`/replan. */
+ *  produce ANY usable verdict (provider/transport error, unparsable JSON, or a
+ *  missing/invalid status). The controller re-asks a judge-failure within
+ *  `maxReviewRetries` and, on exhaustion, DEGRADES it to a failed step (→ replan),
+ *  bounded by `maxStepAttempts`/`maxSteps` — it does NOT abort the run. (A
+ *  well-formed but contradictory verdict — ok/exists/partial with empty `approved` —
+ *  is coerced to a `failed` Outcome in `parseReview`, NOT a judge-failure.) */
 export type ReviewResult =
   | { kind: 'outcome'; outcome: Outcome }
   | { kind: 'judge-failure'; reason: string };
