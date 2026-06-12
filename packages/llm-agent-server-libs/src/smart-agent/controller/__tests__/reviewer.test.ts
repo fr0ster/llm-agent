@@ -53,10 +53,15 @@ describe('LlmReviewer', () => {
     assert.equal(res.kind === 'outcome' && res.outcome.status, 'failed');
   });
 
-  it('status:ok with empty approved is a JUDGE FAILURE (re-ask, not a step failure)', async () => {
+  it('status:ok with empty approved is coerced to a FAILED outcome (replan, not abort)', async () => {
     const r = new LlmReviewer(
       client(
-        JSON.stringify({ status: 'ok', approved: '', remainder: '', note: '' }),
+        JSON.stringify({
+          status: 'ok',
+          approved: '',
+          remainder: 'all',
+          note: 'nothing usable',
+        }),
       ),
     );
     const res = await r.review(
@@ -65,7 +70,11 @@ describe('LlmReviewer', () => {
       'RESULT',
       {},
     );
-    assert.equal(res.kind, 'judge-failure');
+    // A success/partial verdict with nothing accepted is self-contradictory → a
+    // real failed outcome (planner replans), NOT a judge-failure that aborts.
+    assert.equal(res.kind, 'outcome');
+    assert.equal(res.kind === 'outcome' && res.outcome.status, 'failed');
+    assert.equal(res.kind === 'outcome' && res.outcome.remainder, 'all');
   });
 
   it('an unparsable reply is a JUDGE FAILURE', async () => {

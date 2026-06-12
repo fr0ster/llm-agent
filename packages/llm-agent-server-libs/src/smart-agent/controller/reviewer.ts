@@ -96,9 +96,10 @@ export class LlmReviewer implements IReviewer {
 }
 
 /** Parse a reviewer reply into a ReviewResult. A well-formed verdict (any of
- *  ok/exists/partial/failed) is an `outcome`. Unparsable, missing/invalid status,
- *  or ok/exists/partial with EMPTY approved (contradictory) is a `judge-failure`
- *  (re-ask, then abort) — never coerced to a step `failed`. */
+ *  ok/exists/partial/failed) is an `outcome`; ok/exists/partial with EMPTY approved
+ *  is coerced to a `failed` outcome (contradictory → replan, not abort). Only a
+ *  truly unusable reply — unparsable JSON or missing/invalid status — is a
+ *  `judge-failure` (re-ask within budget, then degrade to a failed step). */
 export function parseReview(content: string): ReviewResult {
   const json = extractJsonObject(content);
   if (json === null)
@@ -121,9 +122,20 @@ export function parseReview(content: string): ReviewResult {
       (status === 'ok' || status === 'exists' || status === 'partial') &&
       approved.length === 0
     ) {
+      // A success/partial verdict that accepts NOTHING is self-contradictory: the
+      // step produced no usable output. Treat it as a real `failed` outcome (drives
+      // a planner replan, carrying the remainder/note) rather than a judge-failure
+      // that aborts the run — a misjudging reviewer must not kill the whole run.
       return {
-        kind: 'judge-failure',
-        reason: `${status} with empty approved (contradictory)`,
+        kind: 'outcome',
+        outcome: {
+          status: 'failed',
+          approved: '',
+          remainder: remainder || approved,
+          note: note
+            ? `${note} [coerced: reviewer returned ${status} with empty approved]`
+            : `reviewer returned ${status} with empty approved`,
+        },
       };
     }
     return { kind: 'outcome', outcome: { status, approved, remainder, note } };

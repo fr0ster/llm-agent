@@ -1468,7 +1468,7 @@ describe('ControllerCoordinatorHandler', () => {
     assert.equal(stepArtifact?.metadata.status, 'failed');
   });
 
-  it('a judge-failure is re-asked then ABORTS the run (terminal error), not a step replan', async () => {
+  it('a persistent judge-failure is re-asked then DEGRADES to a failed step (replan), not a terminal abort', async () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
@@ -1483,14 +1483,11 @@ describe('ControllerCoordinatorHandler', () => {
           kind: 'content',
           content: JSON.stringify({
             kind: 'done',
-            result: 'should-not-happen',
+            result: 'replanned-done',
           }),
         },
       ],
-      executor: [
-        { kind: 'content', content: 'result' },
-        { kind: 'content', content: 'result' },
-      ],
+      executor: [{ kind: 'content', content: 'result' }],
       config: baseConfig({ maxReviewRetries: 1 }),
     });
     let reviewCalls = 0;
@@ -1503,16 +1500,23 @@ describe('ControllerCoordinatorHandler', () => {
     const handler = new ControllerCoordinatorHandler(h.deps);
     const { ctx, captured } = fakeCtx();
     await handler.execute(ctx, {}, undefined);
-    assert.equal(
-      reviewCalls,
-      2,
-      're-asked once (maxReviewRetries=1) then aborted',
-    );
+    // initial review + 1 retry (maxReviewRetries=1), then degrade — NOT unbounded.
+    assert.equal(reviewCalls, 2, 're-asked once then degraded (bounded)');
+    // The step failed → the planner replanned → reached its done. NO terminal error.
     assert.ok(
       captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'replanned-done',
+      ),
+      'the run replanned to done instead of aborting',
+    );
+    assert.ok(
+      !captured.find(
         (c) => c.ok && /unverifiable|Error:/i.test(c.value.content),
       ),
-      'surfaced a terminal error, not a replanned done',
+      'no terminal error surfaced',
     );
     const bundle = await hydrateBundle(h.backend, 'sess-1');
     assert.equal(bundle.runState, 'terminal');
@@ -1523,7 +1527,11 @@ describe('ControllerCoordinatorHandler', () => {
       bundle.runId!,
       new Date().toISOString(),
     );
-    assert.equal(term?.kind, 'error');
+    assert.equal(
+      term?.kind,
+      'success',
+      'terminal SUCCESS (finalized), not error',
+    );
   });
 
   it('maxToolCalls is bounded by the durable toolCallCount, and abort is a controlFailure replan', async () => {

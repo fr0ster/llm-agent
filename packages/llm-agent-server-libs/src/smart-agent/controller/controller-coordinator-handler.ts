@@ -623,8 +623,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           meta,
           inf.step,
           isExternalTool,
-          now,
-          terminalTtlMs,
           logUsage,
           usageNow,
           (o) => planner.commit?.(bundle, o),
@@ -773,8 +771,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         meta,
         next.step,
         isExternalTool,
-        now,
-        terminalTtlMs,
         logUsage,
         usageNow,
         (o) => planner.commit?.(bundle, o),
@@ -799,10 +795,12 @@ export class ControllerCoordinatorHandler implements IStageHandler {
   // -- Step execution -----------------------------------------------------
 
   /** Returns 'advanced' (step succeeded — continue loop), 'failed' (retries/
-   *  tool-call budget exhausted; the failure note is in plannerPrivate so the
-   *  planner can replan), 'partial' (reviewer approved part, remainder replans),
-   *  'suspended' (external round-trip surfaced — caller must return true), or
-   *  'aborted' (judge-failure exhausted — run terminated). */
+   *  tool-call budget OR reviewer-unverifiable budget exhausted; the failure note
+   *  is in plannerPrivate so the planner can replan), 'partial' (reviewer approved
+   *  part, remainder replans), or 'suspended' (external round-trip surfaced — caller
+   *  must return true). ('aborted' remains in the return union for the caller's
+   *  guard but is no longer produced here — a judge-failure now degrades to 'failed'
+   *  rather than aborting the run.) */
   private async runStep(
     ctx: PipelineContext,
     sessionId: string,
@@ -811,8 +809,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     meta: KnowledgeEntryMetadata,
     step: Step,
     isExternalTool: (name: string) => boolean,
-    now: () => string,
-    terminalTtlMs: number,
     logUsage?: (role: string, u?: LlmUsage) => void,
     usageNow?: () => TerminalUsage,
     onCommit?: (outcome: 'advanced' | 'failed' | 'partial') => void,
@@ -842,20 +838,6 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       }
       await persistBundle(deps.backend, sessionId, bundle);
       return outcome;
-    };
-    // Unrecoverable abort: store-first terminal ERROR, flip the bundle terminal,
-    // surface the error, signal the caller to stop. Returns 'aborted'.
-    const abortRun = async (error: string): Promise<'aborted'> => {
-      await this.abortTerminal(
-        ctx,
-        sessionId,
-        bundle,
-        error,
-        now,
-        terminalTtlMs,
-        usageNow?.(),
-      );
-      return 'aborted';
     };
     const messages: Message[] = [
       {
@@ -1010,9 +992,17 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         while (review.kind === 'judge-failure') {
           reviewRetries++;
           if (reviewRetries > (cfg.maxReviewRetries ?? 2)) {
-            return abortRun(
-              `step ${step.name} outcome unverifiable: ${review.reason}`,
-            );
+            // The reviewer could not produce a usable verdict within the retry
+            // budget (provider error / unparsable). DEGRADE to a failed step so the
+            // planner replans, rather than aborting the whole run — the terminal
+            // backstop is maxStepAttempts/maxSteps, not a single unverifiable verdict.
+            bundle.budgets.stepsUsed++;
+            bundle.plannerPrivate += `\n[seq ${
+              bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0
+            } ${step.name} failed] reviewer unverifiable after ${
+              cfg.maxReviewRetries ?? 2
+            } retries: ${review.reason}`;
+            return settle('failed');
           }
           review = await deps.reviewer!.review(step, evidence, res.content, {
             hint: deps.config.subagents.reviewer?.hint,
