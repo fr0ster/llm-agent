@@ -88,10 +88,11 @@ consistently. Where a term mirrors Anthropic's plugin model, that is called out.
 | **Source / strategy** | A pluggable acquisition+materialisation strategy feeding the host — it fetches, parses, AND assigns collection placement: a **fetched** source (marketplace/registry/git/FS dir — needs `enabled`) or a **`records`** source (programmatic, in-memory, pre-placed). Identified by a stable `sourceId`. |
 | **Skills-RAG** | The dedicated RAG holding skill chunks, separate from the controller's run-scoped results-RAG. Organised into collections the strategy produced. |
 | **Skill plugin-host** (`ISkillPluginHost`) | The GENERIC component that runs the strategy's `load()` (acquire→parse→place→materialise) and exposes recall (`groups()`, `rag(group)`) over the resulting collections. Holds no source/grouping semantics. The "part 1" of the system. |
-| **Ingest** | Building/refreshing a collection's generation: the strategy acquires + parses + places records; the host chunks/embeds/writes them per collection → fenced `activate`. Startup (self-ingest) or out-of-band. |
-| **Generation** | An atomic SNAPSHOT of a collection's full desired record set, written under a generation namespace so a new build never overwrites the serving one until `activate`. |
-| **Revision** | The fence token / monotonic id of a collection's ACTIVE generation. `activate` is a compare-and-set on it; recall pins one revision per query. |
-| **Manifest** (`SkillsManifest`) | The embedding-compatibility descriptor stamped onto a generation at `activate`: `{ embeddingSpaceId, dimension, retrievalSchemaVersion }`. |
+| **Ingest** | Building/refreshing collections: the strategy acquires+parses+places records; the host chunks/embeds/writes each collection's new generation INACTIVE, then makes them serve with ONE fenced **catalog commit** (`publishCatalog`). Startup (self-ingest) or out-of-band. |
+| **Generation** | An immutable SNAPSHOT of a collection's full record set under a generation namespace. Built inactive; it serves only once the **catalog** names it. |
+| **Catalog commit** (`publishCatalog`) | The SINGLE fenced operation that makes generations serve: it atomically swaps every collection's serving generation pointer and bumps the catalog revision (CAS). There is no per-collection activate. |
+| **Catalog revision** | The catalog's own fence token. `publishCatalog` is a compare-and-set on it; recall pins one collection-generation per query, resolved from the committed catalog. |
+| **Manifest** (`SkillsManifest`) | The embedding-compat descriptor of a generation `{ embeddingSpaceId, dimension, retrievalSchemaVersion }`, carried in the collection's catalog entry (published atomically with the commit). |
 | **Serving descriptor** (`SkillsEmbeddingDescriptor`) | The same shape, derived by the serving side; recall compares it to the active manifest and refuses on mismatch. |
 | **embeddingSpaceId** | A STABLE id of the actual vector space (deployment/adapter-supplied; mandatory for any persistent store). Never alias-derived — a provider can re-train under the same `provider:model` alias. |
 | **retrievalText** | The text actually EMBEDDED for a chunk (`description + heading + content`) — distinct per chunk so sections are individually selectable. NOT the injected text. |
@@ -192,7 +193,7 @@ interface SkillsEmbeddingDescriptor {
   dimension: number;
   retrievalSchemaVersion: number;
 }
-/** What an active generation carries, published atomically by activate(). Identical
+/** What an active generation carries, published atomically by the catalog commit. Identical
  *  shape to the serving descriptor; compatibility = field-by-field equality. */
 type SkillsManifest = SkillsEmbeddingDescriptor;
 
@@ -214,24 +215,30 @@ interface ActiveSnapshot {
  *    interface CatalogEntry {
  *      collection: SkillGroupInfo;        // group id + description + physical collection
  *      sources: readonly string[];        // OWNERSHIP: sourceIds that contribute records here
+ *      generation: string;                // THE serving generation pointer for this collection.
+ *      manifest: SkillsManifest;          // that generation's embedding-compat descriptor.
  *      tombstone?: boolean;               // published-but-being-reclaimed (not served)
  *    }
  *    interface CatalogSnapshot {
- *      catalogRevision: string;           // the CATALOG's own fence token (separate from
- *                                         //   per-collection generation revisions)
+ *      catalogRevision: string;           // the CATALOG's own fence token — the SINGLE fence for
+ *                                         //   ALL serving pointers (there is no separate per-
+ *                                         //   collection active pointer; the catalog IS it).
  *      entries: readonly CatalogEntry[];  // ACTIVE (non-tombstone) entries are what groups() shows
  *    }
  *    interface ISkillsCatalog {
- *      // Atomic read of the active catalog AND its revision (the CAS fence for publish).
- *      // Recall-only reads this for groups(); ingest reconciles + fences against it.
+ *      // Atomic read of the active catalog AND its revision. This is the SOLE source of truth
+ *      // for what each collection serves (its `generation` + `manifest`). Recall resolves a
+ *      // collection's active generation from HERE, not from a per-collection pointer.
  *      readCatalog(options?: CallOptions): Promise<CatalogSnapshot>;
  *    }
  *    interface ISkillsStoreProvider extends ISkillsCatalog {
  *      forGroup(group: string): ISkillsStore;       // read+write handle for one collection
- *      // FENCED publish of the new catalog (collections + ownership + tombstones for removed
- *      // ones). Succeeds ONLY if the active catalogRevision still == expected — a stale loader
- *      // that another loader overtook is REJECTED (it must NOT clobber the newer set). This is
- *      // the single COMMIT POINT of collection-set reconciliation; it does NOT physically delete.
+ *      // THE SINGLE FENCED COMMIT. Builds happen INACTIVE (beginGeneration/upsert never make a
+ *      // generation serve); this call atomically flips EVERY collection's serving pointer to the
+ *      // `generation` named in `entries` AND bumps catalogRevision — but ONLY if the active
+ *      // catalogRevision still == expected. A stale loader overtaken by a newer one is REJECTED,
+ *      // so its freshly-built (but unpublished) generations NEVER serve. No partial activation
+ *      // can leak: nothing serves a new generation until it is named in a committed catalog.
  *      publishCatalog(expectedCatalogRevision: string,
  *                     entries: readonly CatalogEntry[], options?: CallOptions): Promise<void>;
  *      // Physically reclaim a TOMBSTONED collection's generations — called AFTER a successful
@@ -246,7 +253,10 @@ interface ActiveSnapshot {
  *  `forGroup(g)` always returns a handle over the SAME physical collection for `g`
  *  (idempotent). The ingest-capable host is constructed with an `ISkillsStoreProvider`;
  *  a recall-only host takes an `ISkillsRagBackendProvider`. `host.rag(group)` wraps
- *  `provider.forGroup(group)`; `host.groups()` reads `readCatalog().entries` (active only). */
+ *  `provider.forGroup(group)`; `host.groups()` reads `readCatalog().entries` (active only).
+ *  NOTE: there is NO per-collection `activate` — a generation only ever begins serving by
+ *  being named in a committed catalog. `forGroup(g).activeSnapshot()` resolves g's serving
+ *  `{ revision: generation, manifest }` FROM `readCatalog()` (single source of truth). */
 
 /** LOW-LEVEL store read API (collection-scoped) — the pinning primitive the compat
  *  wrapper composes over. It does NO compatibility logic and does NOT embed: it exposes
@@ -254,12 +264,13 @@ interface ActiveSnapshot {
  *  pin one revision across check+read. (The raw store implements this; the serving
  *  embedder lives in the wrapper above, not here.) */
 interface ISkillsRagBackend {
-  /** Atomic snapshot of the active pointer (null if none active yet) — manifest + its
-   *  revision in ONE read, so a check keyed off it cannot straddle a rotation. */
+  /** Atomic snapshot of THIS collection's serving pointer (null if not in the catalog) —
+   *  its `{ revision: generation, manifest }` resolved FROM `readCatalog()` (the single
+   *  source of truth), in ONE read so a check keyed off it cannot straddle a catalog swap. */
   activeSnapshot(): Promise<ActiveSnapshot | null>;
-  /** Vector read pinned to an EXPLICIT revision (the one a prior `activeSnapshot`
-   *  returned) — NOT "whatever is active now". This is what makes no-TOCTOU pinning
-   *  compositional: the wrapper resolves the snapshot once, then reads THAT revision. */
+  /** Vector read pinned to an EXPLICIT generation (the one a prior `activeSnapshot`
+   *  returned) — NOT "whatever the catalog names now". This is what makes no-TOCTOU pinning
+   *  compositional: the wrapper resolves the snapshot once, then reads THAT generation. */
   queryRevision(
     revision: string,
     vector: number[],
@@ -305,63 +316,52 @@ interface ISkillsRagHandle {
  *  is the LOGICAL id (deterministic, dedup-friendly); the generation scopes the
  *  physical key. `options` threads metering into ingest embeds. */
 interface ISkillsStore extends ISkillsRagBackend {
-  /** Open a new generation namespace AND return the active revision observed now —
-   *  the FENCE token for activate(). */
-  beginGeneration(): Promise<{ generation: string; baseRevision: string }>;
+  /** Open a new, INACTIVE generation namespace and return its id. It does NOT serve and
+   *  has NO per-collection fence — a generation only begins serving when the host names it
+   *  in a committed catalog (`provider.publishCatalog`). Concurrent loads open DISTINCT
+   *  namespaces, so their writes never collide; the only contention is the catalog CAS. */
+  beginGeneration(): Promise<{ generation: string }>;
   upsert(
     generation: string,
     records: readonly SkillRecord[],
     options?: CallOptions,
   ): Promise<void>;
-  /** Copy the ACTIVE generation's records for the given stable `sourceId`s into
-   *  `generation` unchanged — carry-forward for sources that failed to refresh under
-   *  strict:false (so their skills are not lost). Keyed by the config-stable
-   *  `sourceId` (NOT the versioned provenance), so a failed fetch with unknown
-   *  version still finds them. No-op when there is no active generation. */
+  /** Copy the currently-served generation's records (the one the catalog names for this
+   *  collection) for the given stable `sourceId`s into `generation` unchanged —
+   *  carry-forward for sources that failed to refresh under strict:false. Keyed by the
+   *  config-stable `sourceId`. No-op when the collection has no served generation yet. */
   carryForward(generation: string, sourceIds: readonly string[]): Promise<void>;
-  /** FENCED activate: flip the active pointer to `generation` ONLY IF the current
-   *  active revision still equals `expectedRevision` (the baseRevision from
-   *  beginGeneration). A concurrent load that activated in between bumps the
-   *  revision, so a stale activation is REJECTED (the late loader rebuilds from the
-   *  new base) — no late writer can roll the active pointer back to an older
-   *  snapshot. On success the prior generation is RETIRED, not hard-deleted: it is
-   *  reclaimed after a bounded retention grace period (≫ a recall round-trip) so an
-   *  in-flight reader that already resolved it can finish its query — see
-   *  "Retention of the retired generation". `manifest` records the
-   *  embeddingSpaceId/dimension/schema this generation was built with and is published
-   *  atomically with the pointer flip, so `activeSnapshot()` always reflects the
-   *  serving generation. */
-  activate(
-    generation: string,
-    expectedRevision: string,
-    manifest: SkillsManifest,
-  ): Promise<void>;
-  /** Delete a NON-activated generation's records. `load()` MUST call this in a
-   *  `finally` for every generation that does not reach a successful activate
-   *  (ingest error, strict abort, fenced-out activation) so orphan embeddings never
-   *  accumulate in a persistent store. Idempotent (a no-op for an already-dropped or
-   *  the now-active generation). */
+  /** Delete a generation's records — used (a) in `load()`'s `finally` for EVERY generation
+   *  this load built but did not get named in a committed catalog (ingest error, strict
+   *  abort, OR a LOST catalog CAS — see "orphan cleanup"), and (b) by `dropCollection`/
+   *  retired-generation reclaim. Idempotent (no-op for an already-dropped generation; never
+   *  deletes a generation the active catalog still names). There is NO per-collection
+   *  `activate`: building a generation never makes it serve, so a generation that never
+   *  reaches a committed catalog has zero serving effect and is simply discarded. */
   discardGeneration(generation: string): Promise<void>;
 }
 
 interface ISkillPluginHost {
-  /** Build a FRESH generation PER GROUP: acquire → parse → upsert the reachable sources;
-   *  unreachable sources are carried forward (strict:false) or abort THAT GROUP's
-   *  generation (strict:true) — see "Reconciliation". Then fenced `activate` per group.
-   *  ANY group exit WITHOUT a successful activate (error, strict abort, fenced-out CAS)
-   *  `discardGeneration`s that group's half-built generation in a `finally` — no orphan
-   *  embeddings leak. Atomicity is PER GROUP: already-activated groups are not rolled
-   *  back if a later group fails; mixed revisions across groups are allowed. Idempotent;
-   *  callable at startup OR out-of-band.
+  /** SINGLE fenced commit. Ingest runs EVERY source's `acquire()` → `{ collections,
+   *  records }`, MERGES into one desired catalog (union of collections + per-collection
+   *  source ownership; a failed source's owned collections carried forward under
+   *  strict:false), and BUILDS each desired collection's new generation INACTIVE
+   *  (`beginGeneration`/`upsert` — nothing serves yet). It then commits ONCE:
+   *  `publishCatalog(prior.catalogRevision, entries)` where each entry names its serving
+   *  `generation` (the new one, or the prior one for a collection that failed to build /
+   *  was carried forward) + manifest, plus tombstones for removed collections. The catalog
+   *  CAS is the ONLY thing that makes any generation serve, so a stale loader that loses
+   *  the CAS NEVER changes serving data — its built generations stay inactive.
    *
-   *  Ingest runs EVERY source's `acquire()` → `{ collections, records }`, MERGES them into
-   *  one desired catalog (union of collections + per-collection source ownership; a failed
-   *  source's owned collections are carried forward under strict:false), builds + activates
-   *  each desired collection (via `storeProvider.forGroup(g)`), then reconciles the
-   *  collection SET against `readCatalog()`: it `publishCatalog(expectedRev, desired +
-   *  tombstones)` (a FENCED CAS commit) and only AFTER a successful publish background-
-   *  `dropCollection`s the tombstoned ones under the retention grace. See "Collection-set
-   *  reconciliation" — publish-before-drop, multi-source merge, catalog CAS.
+   *  Orphan cleanup: `load()` wraps the whole build in `try { … publishCatalog } finally {
+   *  if (!committed) for each generation I built: discardGeneration(g) }` — a lost CAS, an
+   *  ingest error, or a strict abort deletes ALL generations this load created, so beaten
+   *  concurrent loads accumulate no orphans. Only AFTER a successful publish does it
+   *  background-reclaim tombstoned collections (`dropCollection`) and superseded prior
+   *  generations under the retention grace. See "Collection-set reconciliation".
+   *  Per-group failure semantics survive: a collection that failed to build keeps its
+   *  prior generation pointer in the committed catalog (mixed generations across
+   *  collections are fine). Idempotent; callable at startup OR out-of-band.
    *
    *  RECALL-ONLY hosts (constructed with a `backendProvider` and NO `source` — see below)
    *  have nothing to build: `load(options)` opens no generation and writes nothing, but
@@ -623,19 +623,17 @@ the selected pluginator strategy, not of the engine core.
 
 ### Reconciliation — generation snapshots (persistent stores)
 
-**Atomicity is PER GROUP, not whole-load.** Each group is an independent collection with
-its OWN generations and revisions; `beginGeneration`/`upsert`/`carryForward`/`activate`/
-`discardGeneration` all act on ONE collection (via `storeProvider.forGroup(g)`). `load()`
-reconciles each enabled group's collection **independently** — there is NO global
-all-groups-or-nothing transaction, and **mixed revisions across groups are allowed and
-expected** (group A may activate while group B's CAS fails or its source is unreachable).
-This is sound because recall is always scoped to ONE group (`host.rag(group)`), so a
-cross-group atomic pointer would buy nothing. `load()` returns success only if EVERY
-enabled group activated; a per-group failure is surfaced per group (and, under
-`strict:true`, fails `load()`), but it can NOT roll back groups that already activated —
-those keep their fresh generation, the failed group keeps its prior one. (If a future
-need demands all-or-nothing across groups, add a single global manifest pointer that
-flips once after every group's generation is built — explicitly NOT in this design.)
+**Per-collection record snapshots, ONE catalog commit.** Each collection has its OWN
+generation namespaces; `beginGeneration`/`upsert`/`carryForward`/`discardGeneration` act
+on ONE collection (via `storeProvider.forGroup(g)`). But there is NO per-collection
+activate: ALL collections begin serving together via the SINGLE fenced catalog commit
+(`publishCatalog`), which carries a possibly-DIFFERENT generation pointer per collection.
+So **mixed generations across collections are allowed and expected** (collection A's new
+generation + collection B's carried-forward prior generation commit together), while the
+commit itself is atomic and fenced — there is no independent per-collection pointer a
+stale loader could leak. A per-collection BUILD failure (under strict:false) just means
+that collection's catalog entry keeps its prior generation pointer; under `strict:true`
+the whole `load()` aborts (nothing committed, prior catalog fully retained).
 
 **Collection-set reconciliation (TWO levels, multi-source, fenced, publish-before-drop).**
 Per-collection generation snapshots (below) reconcile RECORDS within a collection. A
@@ -654,69 +652,57 @@ otherwise serve stale skills forever. `load()`:
    If the failed source was the SOLE owner of a collection, that collection is retained
    intact, not dropped. (`strict:true`: a source failure aborts that source's collections'
    generations — their prior generations stay — and fails `load()`.)
-4. Build + fenced-`activate` each `desired` collection's generation (per-collection
-   snapshot, below). A collection that fails to activate keeps its prior generation and is
-   NOT tombstoned.
-5. **COMMIT (publish before drop):** compute `tombstone = prior active \ desired`, then
-   `storeProvider.publishCatalog(prior.catalogRevision, desired + tombstones)` — a CAS on
-   the catalog revision. If a concurrent loader published in between, the CAS FAILS and
-   this stale load aborts WITHOUT deleting anything (it does not clobber the newer set).
-   On success the active catalog is exactly `desired`; tombstoned collections immediately
-   stop being served by `groups()`/`rag()`.
-6. **AFTER the successful publish**, background-reclaim each tombstoned collection's
-   generations via `dropCollection(g)` under the retention grace. A crash between publish
-   and reclaim is harmless: the tombstone is already not served, and the physical delete
-   is idempotent/resumable (a later load or GC finishes it). Physical deletion NEVER
-   precedes the catalog commit, so there is no window where the active catalog references
-   an already-deleted collection.
+4. Build each `desired` collection's new generation INACTIVE: `beginGeneration()` +
+   `upsert`/`carryForward`. **No `activate`** — nothing serves yet. Track every generation
+   built (for orphan cleanup). A collection that fails to BUILD (under strict:false) keeps
+   its prior generation pointer for the commit; it is NOT tombstoned.
+5. **The SINGLE fenced COMMIT.** Compose `entries`: for each desired collection, a
+   `CatalogEntry` naming its serving `generation` (the newly-built one, or the prior one
+   if it failed to build / was carried forward) + manifest + ownership; plus `tombstone`
+   for each `g ∈ prior.active \ desired`. Call
+   `publishCatalog(prior.catalogRevision, entries)`. This is the ONLY operation that makes
+   any generation serve — it atomically swaps EVERY collection's serving pointer and bumps
+   the catalog revision, succeeding ONLY if `prior.catalogRevision` is still active. A
+   concurrent loader that committed first makes this CAS FAIL → this load aborts having
+   activated NOTHING (its built generations never served).
+6. **Orphan cleanup (finally).** The whole build runs inside `try { … publishCatalog }
+   finally { if (!committed) for each generation I built across all collections:
+   discardGeneration(g) }` — so a LOST CAS, an ingest error, OR a strict abort deletes ALL
+   this load's generations; beaten concurrent loads leave no orphans.
+7. **AFTER a successful publish**, background-reclaim (under the retention grace) the
+   tombstoned collections (`dropCollection(g)`) AND each collection's now-superseded prior
+   generation. Physical deletion NEVER precedes the commit, so the active catalog never
+   references an already-deleted collection/generation.
 
 A recall-only host does NO collection-set reconciliation — it only `readCatalog()`s.
-(Per-group atomicity still holds: a desired collection that fails to activate is not
-dropped; only collections truly absent from `desired` are tombstoned then reclaimed.)
+Per-group failure semantics survive (a collection that failed to build keeps its prior
+generation pointer in the committed catalog; mixed generations across collections are
+fine), but there is NO independent per-collection activation that a stale loader could
+leak — the catalog commit is the sole activation.
 
-A naive "idempotent upsert" leaks stale records: when a skill is updated, the
-chunking changes, or a plugin is **removed** from `enabled`, the old chunk records
-survive and keep matching recall. `load()` therefore reconciles the store to EXACTLY
-the desired set via an atomic **generation snapshot**. Records are written under a
-**generation namespace** — physical key `${generation}:${record.id}` — so a new
-generation NEVER overwrites the active one (the active generation keeps serving until
-`activate`):
+**Within a collection — generation namespaces (no per-collection activate).** A naive
+"idempotent upsert" leaks stale records (updated skill, re-chunk, removed plugin). So a
+collection's records are written under a **generation namespace** — physical key
+`${generation}:${record.id}` — and the generation is built INACTIVE; it only begins
+serving when the catalog commit (step 5) names it. `beginGeneration()` → a fresh
+namespace; `upsert`/`carryForward` fill it; the catalog commit is the atomic flip for the
+whole set. The prior generation a commit supersedes is **NOT hard-deleted at commit time**
+— it is retired under a **retention grace period** (below) so an in-flight recall that
+resolved it (from the prior catalog snapshot) can finish its read.
 
-1. `beginGeneration()` → a fresh namespace **and** `baseRevision` (the active revision
-   observed now — the fence token).
-2. For each ENABLED source: if it fetched/parsed OK, `upsert(generation, itsRecords)`;
-   if it FAILED, apply the failure policy (below) — `carryForward(generation,
-   [its sourceId])` or abort. (carry-forward is keyed by the stable `sourceId`, so a
-   failed fetch whose version is unknown still finds the prior records.)
-3. `upsert(generation, records)` writes the full desired set into the new namespace
-   (embedding each `retrievalText`).
-4. `activate(generation, baseRevision)` — **FENCED atomic flip**: succeeds only if the
-   active revision is still `baseRevision`; queries opened AFTER the flip read the new
-   namespace. The prior generation is **NOT hard-deleted at flip time** — it is retired
-   under a **retention grace period** (see below) so an in-flight recall that already
-   resolved the old active generation can finish its vector query without its rows
-   vanishing mid-read. A **partially-failed build that never reaches activate** leaves
-   the prior snapshot fully intact.
-
-The whole build runs inside `try { … activate } finally { if (!activated)
-discardGeneration(generation) }` — so an ingest error, a `strict` abort, OR a
-fenced-out activation **deletes the half-built generation's embeddings**, never
-leaking orphan vectors into a persistent store.
-
-**Concurrent loads (out-of-band / multi-instance) — fenced activation.** Two `load()`s
-can each `beginGeneration()` (A and B) concurrently. The fence prevents a late writer
-from rolling the active pointer back: each `activate` is a compare-and-set against the
-`baseRevision` it opened with. If B activates first (bumping the active revision), A's
-later `activate(genA, baseRevisionA)` **fails the CAS** and is rejected — A discards
-genA (or retries `load()` from the new base) rather than reverting recall to the older
-snapshot. For in-memory single-process the revision is a monotonic counter; for a
-vector-DB it is an etag / fencing token on the active-pointer row (or a lease around
-the whole load). No global lock is required — only the activate CAS.
+**Concurrent loads (out-of-band / multi-instance) — ONE fence, the catalog CAS.** Two
+`load()`s build distinct generation namespaces concurrently (no write collision). The
+SOLE fence is the catalog: each commits with `publishCatalog(expectedCatalogRevision,…)`.
+If B commits first (bumping the catalog revision), A's `publishCatalog(priorRev,…)` fails
+the CAS → A activated nothing, and its built generations are discarded (step 6). No
+generation ever serves except via a won catalog commit, so a late loser cannot change
+serving data. For in-memory the catalog revision is a monotonic counter; for a vector-DB
+it is an etag/fencing token on the catalog row (or a lease around the whole load).
 
 **Source-failure policy (resolves `strict` vs snapshot atomicity) — applied PER GROUP.**
-A group's generation is all-or-nothing for THAT group: its collection must contain every
-record of every source feeding the group before activate, or that group's generation is
-discarded. So, per group:
+A group's new generation is all-or-nothing for THAT group: its collection must contain
+every record of every source feeding the group before it can be named in the commit, or
+the group's catalog entry keeps the prior generation. So, per group:
 - **`strict: false` (default) — per-source carry-forward, at BOTH levels.** *Within a
   collection:* `carryForward(generation, [its sourceId])` copies the failed source's
   records from the group's active generation into the new one unchanged; only reachable
@@ -725,18 +711,18 @@ discarded. So, per group:
   and carried forward intact — it is NOT tombstoned just because its only source was
   down this round. So a transient source outage never drops its collections. (First load
   with no prior generation/ownership → a failed source simply contributes nothing.)
-- **`strict: true` — all-or-nothing PER GROUP.** A source failure aborts THAT GROUP's
-  generation: no `activate` for it, that group's prior generation fully retained, the
-  error surfaces. Other groups are unaffected (independent collections). `load()` as a
-  whole then reports failure, but already-activated groups are NOT rolled back — see the
-  per-group atomicity note above.
+- **`strict: true` — all-or-nothing for the LOAD.** A source failure means the whole
+  `load()` does not commit: `publishCatalog` is not called, the prior catalog is fully
+  retained, all built generations are discarded (orphan cleanup), and the error surfaces.
+  (Because activation is the single catalog commit, strict:true is naturally
+  all-or-nothing — there are no partially-activated collections to undo.)
 
 **Retention of the retired generation (no read-under-delete).** A recall is two steps:
-resolve the active generation, then run the vector query against it. If `activate`
-hard-deleted the prior generation between those two steps, an in-flight reader that
-resolved the old generation would query rows that no longer exist (empty/garbage
-recall). Two retention disciplines, by backend capability — a strict one that
-GUARANTEES reader completion, and a best-effort one that does not:
+resolve the active generation (from the catalog snapshot), then run the vector query
+against it. If the catalog commit hard-deleted the superseded generation between those
+two steps, an in-flight reader that resolved the old generation would query rows that no
+longer exist (empty/garbage recall). Two retention disciplines, by backend capability —
+a strict one that GUARANTEES reader completion, and a best-effort one that does not:
 - **In-memory — exact (refcount/captured reference).** The swapped-out map is reclaimed
   only once the last reader that captured it returns: a reader holds a reference (or a
   refcount lease) for the whole query, so GC/discard cannot run mid-read. This is an
@@ -758,14 +744,14 @@ GUARANTEES reader completion, and a best-effort one that does not:
 So a reader that pins generation N keeps its rows under the exact disciplines; under
 plain time-grace the timeout-`< retiredGraceMs` invariant makes a race practically
 unreachable but not impossible. The grace/refcount reclaim is distinct from
-`discardGeneration` of a NON-activated build (immediate — no reader ever saw it).
+`discardGeneration` of a NEVER-committed build (immediate — no reader ever saw it).
 
-For the **in-memory** store the namespace is a fresh map swapped on activate. For a
-**vector-DB** it is a generation label filtered on query and a cheap pointer flip on
-activate, with the grace-delayed sweep above (or a collection-alias swap where
-supported). The **ephemeral in-memory-per-run** strategy has no prior generation to
-carry forward (each startup builds from scratch) but uses the same build→activate swap
-within a run for atomicity.
+For the **in-memory** store a generation is a map; the catalog commit swaps which map
+each collection serves. For a **vector-DB** a generation is a label filtered on query and
+the catalog commit flips the pointer, with the grace-delayed sweep above (or a
+collection-alias swap where supported). The **ephemeral in-memory-per-run** strategy has
+no prior generation to carry forward (each startup builds from scratch) but uses the same
+build→commit swap within a run for atomicity.
 
 **4. Recall (runtime) — RAG-only, FS-free.** Recall is always `host.rag(group).query(
 text, { k, threshold }, options)` → `SkillHit[]` (top-`k`, score ≥ `threshold`), each
@@ -829,7 +815,7 @@ skills:
   store: { type: qdrant, url: ... }  # optional: a persistent networked store
                                      #   (omit → in-memory, self-ingest at startup)
   embeddingSpaceId: sap-skills-emb-2026-06   # MANDATORY for a PERSISTENT store (here Qdrant):
-                                             #   stamped onto every generation at activate, so a
+                                             #   published in each collection's catalog entry, so a
                                              #   later recall-only instance can verify it. Bump
                                              #   when the embedding space changes. (Omittable ONLY
                                              #   for the in-memory self-ingest case — one process,
@@ -954,15 +940,15 @@ collection). `skills` absent → no gnostification. The engine ships no default
   itself is the strategy's job — the host validates only that referenced collections
   exist, never how plugins map to them. Reading mutually-conflicting collections together
   is the operator's responsibility (the engine cannot detect semantic conflict).
-- A rejected (fenced-out) `activate` from a concurrent/stale load, an ingest error, or
-  a `strict` abort → the half-built generation is `discardGeneration`d in a `finally`
-  (no orphan embeddings linger in a persistent store); recall is never reverted.
+- A LOST catalog CAS (a concurrent loader committed first), an ingest error, or a
+  `strict` abort → EVERY generation this load built is `discardGeneration`d in a `finally`
+  (no orphan embeddings linger in a persistent store); the prior catalog is never
+  reverted (a stale loser activated nothing).
 - Source unreachable at ingest → `strict:false` **carries the failed source forward**
-  from the group's active generation (warn; its skills are NOT lost) and refreshes only
-  the reachable sources; `strict:true` **aborts THAT GROUP's generation** (no activate,
-  the group's prior generation fully retained; other groups unaffected). A group's
-  collection is never partially updated. `load()` reports failure if any enabled group
-  failed, but already-activated groups are not rolled back (per-group atomicity).
+  from the collection's served generation (warn; its skills are NOT lost), and a
+  sole-source collection is carried forward whole (not tombstoned); `strict:true` →
+  the whole `load()` does not commit (`publishCatalog` skipped, prior catalog fully
+  retained, all built generations discarded). The store is never partially updated.
 - **`mode: explicit` in this phase → config error** ("explicit group selection is not
   yet implemented"). Planner-driven selection is deferred; accepting `explicit` would
   yield a config with no working consumption path. Parser rejects it loudly until the
@@ -977,8 +963,8 @@ collection). `skills` absent → no gnostification. The engine ships no default
 - **Embedder/store incompatibility — startup AND runtime rotation.** At startup the
   serving descriptor (`embeddingSpaceId`/`dimension`/`retrievalSchemaVersion`)
   disagreeing with `activeManifest()` → abort (do NOT serve dimension-mismatched or
-  semantically-meaningless recall). At RUNTIME, an out-of-band
-  ingest can activate a new, incompatible generation while the server runs: `query`
+  semantically-meaningless recall). At RUNTIME, an out-of-band ingest can commit a catalog
+  naming a new, incompatible generation while the server runs: `query`
   re-checks per revision (verdict cached by revision) and, on an incompatible one,
   serves NO recall (empty → agnostic) and raises a loud error/metric — it does NOT crash
   the running pipeline. No active generation yet (manifest null) → recall empty (no
@@ -1017,24 +1003,27 @@ mechanism under test.
 - Chunker + retrievalText: bounds to `maxChars`; splits by H2; over-long section
   splits further; **two chunks of one skill produce DISTINCT `retrievalText`** (so a
   stub embedder maps them to different vectors — the relevant section is selectable).
-- Reconciliation (generation snapshot): updating a skill / changing chunking /
-  removing a plugin from `enabled` leaves NO stale record recall-able after
-  `activate`; namespace isolation — upserting a NEW generation does NOT change what
-  recall returns until `activate` (the active generation's rows are untouched).
+- Reconciliation (generation snapshot): updating a skill / changing chunking / removing
+  a plugin leaves NO stale record recall-able after the catalog commit; namespace
+  isolation — building a NEW generation does NOT change what recall returns until
+  `publishCatalog` names it (the served generation's rows are untouched).
 - Source-failure policy: `strict:false` with one source unreachable **carries that
-  source's prior records forward by `sourceId`** (its skills still recall after
-  `activate`, even though its version is unknown) while a reachable source refreshes;
-  `strict:true` with any source unreachable does NOT activate.
-- Fenced activation (concurrency): two loads open generations A and B against the same
-  `baseRevision`; B activates first; A's `activate(genA, baseRevisionA)` is REJECTED by
-  the CAS → recall keeps B's snapshot, never reverts to A's older one.
+  source's prior records forward by `sourceId`** (its skills still recall after the
+  commit) while a reachable source refreshes; `strict:true` with any source unreachable
+  → NO `publishCatalog` (prior catalog fully retained), all built generations discarded.
+- Single fenced commit — no leaked activation: loader X BUILDS a new generation for
+  collection `c` then LOSES the catalog CAS to loader Y; assert `c` still serves Y's
+  generation (NOT X's), X's built generation never served, and X discarded it (orphan
+  cleanup) — a stale loser cannot change serving data.
+- Catalog commit fence: X and Y both read catalogRevision R; Y `publishCatalog(R,…)` →
+  R'; X `publishCatalog(R,…)` REJECTED → recall reflects Y's catalog, never X's.
 - Retired-generation retention (no read-under-delete): EXACT discipline — a reader pins
-  generation N (captured reference / refcount lease), `activate` flips to N+1, the
-  reader's subsequent query against N still returns N's rows, and N is reclaimed only
-  after the reader releases. Plain time-grace is asserted as BEST-EFFORT (a query whose
-  duration would exceed `retiredGraceMs` is cancelled by its `CallOptions` timeout,
-  reducing but not closing the window) — the hard guarantee is asserted only for the
-  exact disciplines.
+  generation N (captured reference / refcount lease), the catalog commit moves the
+  collection to N+1, the reader's subsequent query against N still returns N's rows, and N
+  is reclaimed only after the reader releases. Plain time-grace is asserted as BEST-EFFORT
+  (a query exceeding `retiredGraceMs` is cancelled by its `CallOptions` timeout, reducing
+  but not closing the window) — the hard guarantee is asserted only for the exact
+  disciplines.
 - Recall-only host: constructed from a `rag` handle ONLY (no `source`, no write `store`)
   over a pre-populated backend → `load()` opens no generation and performs no write, and
   `rag().query` returns the backend's active rows. Config validation rejects `sources` +
@@ -1060,11 +1049,11 @@ mechanism under test.
 - Ingest host serving path: a `{ source, storeProvider, embedder, embeddingSpaceId, … }`
   host after `load()` (self-ingest) exposes a WORKING `rag(group).query` per enabled
   group — the host wrapped each group's `storeProvider.forGroup(g)` (an
-  `ISkillsRagBackend`) via `makeCompatibleSkillsRag`; the wrapped descriptor matches what
-  `activate` stamped (compatible by construction).
+  `ISkillsRagBackend`) via `makeCompatibleSkillsRag`; the wrapped descriptor matches the
+  manifest the catalog commit published (compatible by construction).
 - Per-group provider isolation: `storeProvider.forGroup('a')` and `forGroup('b')` are
-  independent collections — a `beginGeneration`/`activate` on `a` does NOT change `b`'s
-  `activeSnapshot()`; `forGroup('a')` called twice addresses the SAME collection.
+  independent collections — building/committing a new generation for `a` does NOT change
+  `b`'s `activeSnapshot()`; `forGroup('a')` called twice addresses the SAME collection.
 - Strategy structured result: `source.acquire()` returns `{ collections, records }`;
   `host.groups()` descriptions come from `collections` (NOT derivable from records); a
   record whose `group` is absent from `collections` → ingest error.
@@ -1078,10 +1067,9 @@ mechanism under test.
 - Collection-set reconciliation: load A emits `{c1, c2}`; later load B emits only `{c1}`
   (and c2 has no other owner) → after B, `readCatalog()`/`host.groups()` = `{c1}`, `c2`
   tombstoned at publish then `dropCollection`'d under grace, `host.rag('c2')` no longer
-  serves. A desired collection that FAILS to activate is NOT dropped (kept from prior).
-- Catalog CAS (concurrent loaders): loaders X and Y both read catalogRevision R; Y
-  `publishCatalog(R, …)` first (bumping to R'); X's `publishCatalog(R, …)` is REJECTED by
-  the CAS → X aborts WITHOUT dropping any collection (never clobbers Y's newer set).
+  serves. A desired collection that FAILS to build is NOT dropped (kept from prior). (The
+  catalog-CAS rejection + no-leaked-activation cases are covered by the "Single fenced
+  commit" / "Catalog commit fence" tests above.)
 - Publish-before-drop: a stub provider that throws inside `dropCollection` AFTER a
   successful `publishCatalog` → the active catalog already excludes the tombstoned
   collection (not served), and a re-run finishes the physical reclaim (idempotent). No
@@ -1096,12 +1084,12 @@ mechanism under test.
 - Embedder/store compatibility — startup: a recall-only `load(options)` over a backend
   whose `activeSnapshot()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
-  matching → serves; null snapshot → empty recall (no block). A self-ingesting
-  `activate` stamps the manifest from its own descriptor (round-trips through
-  `activeSnapshot()`).
+  matching → serves; null snapshot → empty recall (no block). A self-ingesting catalog
+  commit publishes the manifest from its own descriptor (round-trips through
+  `activeSnapshot()`/`readCatalog()`).
 - Embedder/store compatibility — RUNTIME ROTATION: a running recall-only `rag()` serves
-  hits against compatible generation N; an out-of-band `activate` flips to an
-  INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
+  hits against compatible generation N; an out-of-band catalog commit moves the collection
+  to an INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
   error; the per-revision verdict is cached (a second query at N+1 does not re-run the
   check); a later compatible N+2 resumes serving.
 - Source typing: a `records` source ingests without `enabled`; a fetched source with
@@ -1110,9 +1098,10 @@ mechanism under test.
 - sourceId validation/stamping: two sources sharing an `id` → **config error** at
   startup; a `records` source's records all come out with `sourceId === ` the
   configured `id` (host-stamped), regardless of any `sourceId` the caller put on them.
-- Generation cleanup: an ingest error mid-build, a `strict:true` abort, AND a
-  fenced-out `activate` each leave NO records of the failed generation in the store —
-  `discardGeneration` ran (assert store has only the prior active generation's rows).
+- Generation cleanup: an ingest error mid-build, a `strict:true` abort, AND a lost
+  catalog CAS each leave NO records of this load's built generations in the store —
+  `discardGeneration` ran for all of them (assert the store keeps only the committed
+  catalog's generations).
 - Recall hook: returns scored hits; below-`threshold` hits dropped; **threshold
   defaults to `0.3` when omitted** (a hit at `0.25` is dropped under the default);
   injects hit `content` within budget; empty/no-match → no block (output identical to
@@ -1125,11 +1114,11 @@ mechanism under test.
   everything into ONE collection → `host.groups()` reports one. The host applies NO
   "one plugin = one group" rule. `serveCollections`/`controllerSkillGroup` naming a
   collection the strategy did not emit → config error. Each collection has independent
-  generations (rotating one does not touch another's active pointer).
-- Per-group atomicity: in a two-group load where group A activates and group B's
-  `activate` fails the CAS (or B's source is unreachable under `strict:true`), A KEEPS
-  its fresh generation (NOT rolled back) and B keeps its prior one — mixed revisions
-  across groups; `load()` reports failure but A's recall already serves the new content.
+  generations (committing one does not touch another's served generation).
+- Mixed generations in one commit: a load where collection A built a NEW generation but
+  collection B's source was unreachable (`strict:false`) → the SINGLE `publishCatalog`
+  names A's new generation AND B's carried-forward prior generation together; both serve
+  after the one commit (mixed generations across collections, atomic commit).
 - Adapter (assembler bridge): `skillsRagSource(host.rag('g'))` implements
   `IRag.query(embedding, k, options)` by calling `host.rag('g').query(embedding.text, …)`
   (asserts it uses `.text`, NOT `.toVector()` — skills embed in their own space) and maps
