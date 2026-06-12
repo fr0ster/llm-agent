@@ -77,15 +77,21 @@ interface SkillHit {
  *  ingest stamps it onto the generation (SkillsManifest); the serving host derives its
  *  OWN (SkillsEmbeddingDescriptor) and compares. The three fields come from THREE
  *  different places — none is available from `IEmbedder.embed()` alone:
- *   - embedderFingerprint: provider+model+version, from CONFIG (embed() does not expose
- *     the model version reliably) — e.g. "openai:text-embedding-3-small@v1".
+ *   - embeddingSpaceId: a STABLE identifier of the actual vector space. For a
+ *     persistent / out-of-band store this is MANDATORY and supplied by the DEPLOYMENT
+ *     or the provider adapter — NOT auto-built from a `provider:model@version` alias,
+ *     because a provider can silently re-train a model behind the same alias (same
+ *     string, different space → meaningless similarity, no error). The operator/adapter
+ *     MUST bump this id whenever the embedding space changes. (`provider:model@version`
+ *     is an acceptable AUTO value ONLY for self-ingest in ONE process, where the same
+ *     embedder instance writes and reads — there is no cross-process drift to miss.)
  *   - dimension: the vector length — declared in config, OR discovered by ONE probe
  *     embed performed INSIDE `load(options)` (so it is metered/cancellable like any
  *     embed); NEVER an unmetered embed at construction.
  *   - retrievalSchemaVersion: a HOST CODE CONSTANT (the retrievalText composition +
  *     chunking contract version), NOT a property of the embedder. */
 interface SkillsEmbeddingDescriptor {
-  embedderFingerprint: string;
+  embeddingSpaceId: string;
   dimension: number;
   retrievalSchemaVersion: number;
 }
@@ -157,8 +163,8 @@ interface ISkillsStore extends ISkillsRagHandle {
    *  snapshot. On success the prior generation is RETIRED, not hard-deleted: it is
    *  reclaimed after a bounded retention grace period (≫ a recall round-trip) so an
    *  in-flight reader that already resolved it can finish its query — see
-   *  "Retention of the retired generation". `manifest` records the embedder
-   *  fingerprint/dimension/schema this generation was built with and is published
+   *  "Retention of the retired generation". `manifest` records the
+   *  embeddingSpaceId/dimension/schema this generation was built with and is published
    *  atomically with the pointer flip, so `activeManifest()` always reflects the
    *  serving generation. */
   activate(
@@ -219,9 +225,25 @@ makeSkillPluginHost({
 })
 ```
 
-The host requires EITHER `{ source, store }` (ingest) OR `{ rag }` (recall-only);
-supplying a write `store` to a serving process is exactly the over-privilege this
-split removes.
+The `rag` handle for a recall-only host is built by an explicit COMPAT WRAPPER, so the
+serving descriptor is a first-class input (not hidden state) and the per-revision check
+lives in `query`:
+
+```ts
+// backend = the raw read handle of the store written elsewhere (a bare
+//   ISkillsRagHandle that just reads/scores — no compatibility logic of its own).
+// descriptor = this deployment's serving SkillsEmbeddingDescriptor (mandatory
+//   embeddingSpaceId, dimension [declared or probed in load()], schema constant).
+const rag = makeCompatibleSkillsRag({ backend, descriptor });
+makeSkillPluginHost({ rag });
+```
+
+`makeCompatibleSkillsRag` returns an `ISkillsRagHandle` whose `query` reads `backend`'s
+`ActiveSnapshot` once, compares `descriptor` to `snapshot.manifest`, caches the verdict
+by `snapshot.revision`, and serves empty on a mismatch — the descriptor reaches `query`
+by closure, resolving "where does the serving descriptor come from". The host requires
+EITHER `{ source, store }` (ingest) OR `{ rag }` (recall-only); supplying a write
+`store` to a serving process is exactly the over-privilege this split removes.
 
 A gnostifiable pipeline depends on **`host.rag()` only** — an `ISkillsRagHandle`. It
 knows nothing about plugins, source, or backend; the host hides all of that.
@@ -455,6 +477,9 @@ skills:
   collection: skills
   store: { type: qdrant, url: ... }  # REQUIRED here — recall reads what ingest wrote
   embedder: { provider: openai, model: text-embedding-3-small }  # MUST match ingest's
+  embeddingSpaceId: sap-skills-emb-2026-06   # MANDATORY (persistent): stable vector-space id,
+                                             #   bump when the space changes; NOT alias-derived
+  dimension: 1536                            # optional: declare to skip the probe embed
   loadOnStartup: false               # recall-only: no source access, no ingest, load() is a no-op
   k: 4
   threshold: 0.3
@@ -470,16 +495,19 @@ skills:
   together with `loadOnStartup: false`, or to omit both `sources` and a persistent
   `store`.
 - **Embedder compatibility (startup AND per-revision).** The host derives its serving
-  `SkillsEmbeddingDescriptor` from THREE sources: `embedderFingerprint` from the config
-  block above (`embedder: { provider, model }` ± an explicit `@version`), `dimension`
-  either declared as `dimension:` in config OR resolved by ONE probe embed run INSIDE
-  `load(options)` (metered/cancellable — never an unmetered embed at construction), and
-  `retrievalSchemaVersion` from a host code constant. It checks this against the active
-  `ActiveSnapshot` (`{ revision, manifest }`) EAGERLY at startup (fail fast), and again
-  per-`revision` inside `query` whenever the store rotates — a dimension mismatch is a
-  hard error, a fingerprint/schema mismatch is meaningless similarity, and either makes
-  that revision serve NO recall. A self-ingesting host stamps the manifest from its own
-  descriptor at `activate`, so it is compatible by construction.
+  `SkillsEmbeddingDescriptor` from THREE sources: `embeddingSpaceId` — for a persistent
+  store, a MANDATORY stable id from config (`embeddingSpaceId: ...`) or the provider
+  adapter, NOT auto-derived from a `provider:model` alias (a provider can re-train under
+  the same alias → silent space drift); `dimension` either declared as `dimension:` in
+  config OR resolved by ONE probe embed run INSIDE `load(options)` (metered/cancellable —
+  never an unmetered embed at construction); and `retrievalSchemaVersion` from a host
+  code constant. It checks this against the active `ActiveSnapshot` (`{ revision,
+  manifest }`) EAGERLY at startup (fail fast), and again per-`revision` inside `query`
+  whenever the store rotates — a dimension mismatch is a hard error, an
+  embeddingSpaceId/schema mismatch is meaningless similarity, and either makes that
+  revision serve NO recall. A self-ingesting single-process host MAY auto-use
+  `provider:model@version` as the id (the same embedder writes and reads), so it is
+  compatible by construction.
 - **`retiredGraceMs`** (vector-DB, plain time-grace only; default e.g. `30000`) — how
   long a retired generation's rows linger before the background sweep. Setting recall's
   `CallOptions` timeout `< retiredGraceMs` REDUCES (does not eliminate) the read-under-
@@ -523,11 +551,14 @@ engine ships no default `sources`.
   reachable sources; `strict:true` **aborts the whole load** (no activate, prior
   generation fully retained). Either way the store is never partially updated.
 - **Recall-only misconfig** → config error: `sources` given together with
-  `loadOnStartup: false`; or BOTH `sources` and a persistent `store` omitted (a
-  recall-only host over an empty in-memory store would never serve anything).
+  `loadOnStartup: false`; BOTH `sources` and a persistent `store` omitted (a recall-only
+  host over an empty in-memory store would never serve anything); OR a persistent
+  recall-only config with NO explicit `embeddingSpaceId` (never silently derive a
+  vector-space id from a `provider:model` alias — alias drift would pass undetected).
 - **Embedder/store incompatibility — startup AND runtime rotation.** At startup the
-  serving descriptor disagreeing with `activeManifest()` → abort (do NOT serve
-  dimension-mismatched or semantically-meaningless recall). At RUNTIME, an out-of-band
+  serving descriptor (`embeddingSpaceId`/`dimension`/`retrievalSchemaVersion`)
+  disagreeing with `activeManifest()` → abort (do NOT serve dimension-mismatched or
+  semantically-meaningless recall). At RUNTIME, an out-of-band
   ingest can activate a new, incompatible generation while the server runs: `query`
   re-checks per revision (verdict cached by revision) and, on an incompatible one,
   serves NO recall (empty → agnostic) and raises a loud error/metric — it does NOT crash
@@ -587,19 +618,25 @@ stabilise? This quantifies how much of the earlier negatives were knowledge gaps
   `rag().query` returns the store's active rows. Config validation rejects `sources` +
   `loadOnStartup:false`, and rejects omitting both `sources` and a persistent `store`.
 - Embedder/store compatibility — startup: a recall-only `load()` over a store whose
-  `activeManifest()` reports a different `embedderFingerprint`/`dimension`/
+  `activeManifest()` reports a different `embeddingSpaceId`/`dimension`/
   `retrievalSchemaVersion` than the serving descriptor ABORTS with a clear error;
-  matching manifest → serves; null manifest → empty recall (no block). A self-ingesting
-  `activate` stamps the manifest from its own descriptor (round-trips through
-  `activeManifest()`).
+  matching manifest → serves; null manifest → empty recall (no block). A persistent
+  recall-only config with NO explicit `embeddingSpaceId` is a config error (no silent
+  alias-derived id). A self-ingesting `activate` stamps the manifest from its own
+  descriptor (round-trips through `activeManifest()`).
 - Embedder/store compatibility — RUNTIME ROTATION: a running recall-only `rag()` serves
   hits against compatible generation N; an out-of-band `activate` flips to an
   INCOMPATIBLE N+1; the next `query` re-checks, returns EMPTY (no crash) and signals the
   error; the per-revision verdict is cached (a second query at N+1 does not re-run the
   check); a later compatible N+2 resumes serving. The serving descriptor is assembled
-  from config fingerprint + the schema constant + a `dimension` that is either declared
-  or resolved by ONE probe embed inside `load(options)` — the probe call receives
-  `options` (asserted metered/cancellable; no embed happens at construction).
+  from the mandatory `embeddingSpaceId` + the schema constant + a `dimension` that is
+  either declared or resolved by ONE probe embed inside `load(options)` — the probe call
+  receives `options` (asserted metered/cancellable; no embed happens at construction).
+- Compat wrapper: `makeCompatibleSkillsRag({ backend, descriptor })` returns an
+  `ISkillsRagHandle` whose `query` closes over `descriptor` and runs the per-revision
+  check against `backend`'s `ActiveSnapshot`; passing a descriptor whose `embeddingSpaceId`
+  differs from the backend's active manifest makes `query` serve empty (the wrapper, not
+  the caller, owns the check).
 - Atomic snapshot (no TOCTOU): `query` reads the active pointer ONCE — a rotation that
   lands AFTER the snapshot read does not affect the in-flight query (it serves the
   snapshot's revision), and the compatibility verdict is keyed to the SAME revision the
