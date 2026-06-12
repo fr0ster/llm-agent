@@ -99,10 +99,20 @@ export interface CatalogEntry {
   tombstone?: boolean; // published-but-being-reclaimed (not served)
 }
 
-/** Atomic catalog read: entries + the catalog's own fence token. */
+/** A retirement record — a generation no longer served, kept (durably) so a crash-safe
+ *  sweeper can reclaim its rows after the grace. */
+export interface RetiredGeneration {
+  generation: string;
+  group: string;
+  retiredAt: number; // ms epoch, stamped at the commit that retired it
+}
+
+/** Atomic catalog read: entries + the catalog's own fence token + the durable retirement
+ *  queue (so reclaim survives a crash — see the Qdrant provider). */
 export interface CatalogSnapshot {
   catalogRevision: string;
   entries: readonly CatalogEntry[]; // active (non-tombstone) entries are what groups() shows
+  retired?: readonly RetiredGeneration[]; // committed ATOMICALLY with the pointer swap
 }
 
 /** Cross-collection catalog read (shared by store & backend providers). */
@@ -160,16 +170,23 @@ export interface ISkillsStore extends ISkillsRagBackend {
 /** Per-group provider + the cross-collection catalog (write side). */
 export interface ISkillsStoreProvider extends ISkillsCatalog {
   forGroup(group: string): ISkillsStore;
-  /** SINGLE fenced commit: atomically swaps every collection's serving pointer + bumps the
-   *  catalog revision, ONLY if the active catalogRevision still == expected (throws
-   *  CatalogCasError otherwise). Does NOT delete. */
+  /** SINGLE fenced commit: ONLY if the active catalogRevision still == expected (throws
+   *  CatalogCasError otherwise). The STORE generates the next `catalogRevision` atomically
+   *  (the caller never invents it), stamps `retiredAt` on the generations dropped from the
+   *  active set, and RETURNS the committed `CatalogSnapshot` (new revision + entries +
+   *  retired). Does NOT physically delete rows. */
   publishCatalog(
     expectedCatalogRevision: string,
     entries: readonly CatalogEntry[],
     options?: CallOptions,
-  ): Promise<void>;
+  ): Promise<CatalogSnapshot>;
   /** Physically reclaim a TOMBSTONED collection's generations AFTER a successful publish. */
   dropCollection(group: string, options?: CallOptions): Promise<void>;
+  /** Optional crash-resumable sweeper (durable backends, e.g. Qdrant): reclaim past-grace
+   *  retired generations from the durable `retired[]` queue + orphan-reconcile physical
+   *  generations against the active catalog. Absent on the in-memory store (it uses the
+   *  exact lease + host _pendingReclaim instead). */
+  sweep?(now: number, options?: CallOptions): Promise<void>;
   /** A READ-ONLY view of this provider (no write/reconcile API) — what a recall-only serving
    *  process is constructed over, so it never holds write credentials. */
   asBackendProvider(): ISkillsRagBackendProvider;
@@ -740,12 +757,17 @@ export function makeInMemoryStoreProvider(opts: { embed?: Embed } = {}): IInMemo
     async readCatalog(): Promise<CatalogSnapshot> {
       return { catalogRevision, entries: entries.filter((e) => !e.tombstone) };
     },
-    async publishCatalog(expectedCatalogRevision, next) {
+    async publishCatalog(expectedCatalogRevision, next): Promise<CatalogSnapshot> {
       if (expectedCatalogRevision !== catalogRevision) {
         throw new CatalogCasError(`stale catalog revision: expected ${expectedCatalogRevision}, active ${catalogRevision}`);
       }
+      const nextGens = new Set(next.filter((e) => !e.tombstone).map((e) => e.generation));
+      const retired = entries
+        .filter((e) => !nextGens.has(e.generation))
+        .map((e) => ({ generation: e.generation, group: e.collection.group, retiredAt: 0 })); // in-memory: lease, retiredAt unused
       entries = [...next];
-      catalogRevision = `c${Number(catalogRevision.slice(1)) + 1}`;
+      catalogRevision = `c${Number(catalogRevision.slice(1)) + 1}`; // STORE generates revision
+      return { catalogRevision, entries: entries.filter((e) => !e.tombstone), retired };
     },
     async dropCollection(group) {
       // reclaim generations not named by an ACTIVE entry of this group (lease-respecting)
@@ -833,6 +855,23 @@ test('lease: release(revision) is called in the finally on every non-null path',
   assert.deepEqual(bad.released(), ['g1']);
 });
 
+test('recallTimeoutMs: a query that outlives the deadline aborts → empty (no crash)', async () => {
+  const backend = {
+    activeSnapshot: async () => ({ revision: 'g0', manifest: MANIFEST }),
+    release() {},
+    async queryRevision(_r: string, _v: number[], _k: number, options?: { signal?: AbortSignal }) {
+      // simulate a slow backend that respects the abort signal
+      return await new Promise<never[]>((resolve, reject) => {
+        const t = setTimeout(() => resolve([]), 1000);
+        options?.signal?.addEventListener('abort', () => { clearTimeout(t); reject(Object.assign(new Error('aborted'), { name: 'AbortError' })); });
+      });
+    },
+  };
+  const rag = makeCompatibleSkillsRag({ backend: backend as never, embedder: { embed: async () => ({ vector: [1, 0, 0] }) } as never, embeddingSpaceId: 'sp', retrievalSchemaVersion: 1, dimension: 3, recallTimeoutMs: 20 });
+  const hits = await rag.query('q', { k: 1 }); // resolves to [] when the 20ms deadline fires
+  assert.deepEqual(hits, []);
+});
+
 test('compatible revision: embeds once, calls queryRevision', async () => {
   let embeds = 0;
   const sb = stubBackend({ snapshot: async () => ({ revision: 'g0', manifest: MANIFEST }), hits: [{ record: { content: 'x' }, score: 0.9 }] });
@@ -902,6 +941,10 @@ export interface CompatibleSkillsRagDeps {
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number; // declared → skip probe; else resolved lazily
+  /** Best-effort time-grace bound (P1.4): cap the vector read with a deadline AbortSignal so
+   *  a query cannot outlive the backend's retention grace. Set `< retiredGraceMs` for a
+   *  time-grace (Qdrant) backend; omit for the exact-lease (in-memory) backend. */
+  recallTimeoutMs?: number;
 }
 
 export function makeCompatibleSkillsRag(deps: CompatibleSkillsRagDeps): ISkillsRagHandle {
@@ -955,11 +998,17 @@ export function makeCompatibleSkillsRag(deps: CompatibleSkillsRagDeps): ISkillsR
       try {
         if (!compatible(snap)) return []; // no embed on incompatible
         const { vector } = await deps.embedder.embed(text, options); // PAID step, last
-        // the lease taken by activeSnapshot guarantees snap.revision survives this read,
-        // even if a concurrent load() retired+reclaimed it between the awaits.
-        const hits = await deps.backend.queryRevision(snap.revision, vector, opts.k, options);
+        // Bound the vector read with a DEADLINE so it cannot outlive a time-grace backend's
+        // retention window (P1.4). For the exact-lease backend recallTimeoutMs is omitted.
+        const sigs = [options?.signal, deps.recallTimeoutMs ? AbortSignal.timeout(deps.recallTimeoutMs) : undefined].filter(Boolean) as AbortSignal[];
+        const signal = sigs.length ? AbortSignal.any(sigs) : undefined;
+        const hits = await deps.backend.queryRevision(snap.revision, vector, opts.k, { ...options, signal });
         const threshold = opts.threshold ?? 0.3;
         return hits.filter((h) => h.score >= threshold);
+      } catch (e) {
+        const n = (e as Error)?.name;
+        if (n === 'AbortError' || n === 'TimeoutError') return []; // deadline hit → empty, no crash
+        throw e;
       } finally {
         deps.backend.release?.(snap.revision); // EXACT retention: release the lease
       }
@@ -1022,8 +1071,15 @@ export interface IngestHostDeps {
   strict?: boolean;
   catalogCasMaxAttempts?: number; // default 3
   servingMode?: boolean; // default true; false = an ingest-only job (skips the reload set-guard)
+  recallTimeoutMs?: number; // threaded into makeCompatibleSkillsRag in rag() (Qdrant time-grace)
 }
 ```
+
+`rag(group?)` builds `makeCompatibleSkillsRag({ backend: storeProvider.forGroup(resolved),
+embedder, embeddingSpaceId, retrievalSchemaVersion, dimension, recallTimeoutMs })` — so the
+deadline bound (P1.4) reaches the wrapper. For the Qdrant path the host also runs the
+durable SWEEPER at the start of each `load()` (Task A10) instead of the in-memory
+`_pendingReclaim` reclaim.
 
 Internal host state (closure vars, not deps): `_snapshot: SkillGroupInfo[]` (fixed at first
 successful load), `_registeredSet?: Set<string>`, `_pendingReclaim: { generations: {group,generation}[]; tombstonedGroups: string[] }` (init `{generations:[],tombstonedGroups:[]}`).
@@ -1033,12 +1089,18 @@ Core `load()` algorithm (encode EXACTLY the spec's flow):
 ```
 async load(options):
   registeredSet = this._registeredSet   // set at first successful/attempted load (serving guard); undefined on first
-  // DEFERRED RECLAIM (P1.3): at the START of every load, reclaim the PREVIOUS load's
-  // retired generations/collections — they survived one inter-load grace window so any
-  // reader from before the prior commit is long done.
-  for g in this._pendingReclaim.generations: await storeProvider.forGroup(g.group).discardGeneration(g.generation)
-  for grp in this._pendingReclaim.tombstonedGroups: await storeProvider.dropCollection(grp)
-  this._pendingReclaim = { generations: [], tombstonedGroups: [] }
+  // RECLAIM at the START of every load. Two disciplines by backend:
+  //  - DURABLE (Qdrant): the provider exposes a crash-resumable sweeper that reads the
+  //    durable `retired[]` from the catalog store + does the orphan reconcile (Task A10).
+  //    The lease-based in-memory _pendingReclaim is NOT used for that path.
+  if (storeProvider.sweep) await storeProvider.sweep(now())
+  //  - IN-MEMORY (exact lease): reclaim the PREVIOUS load's retired generations; the lease
+  //    defers any still-in-flight reader's delete, so this is safe regardless of timing.
+  else {
+    for g in this._pendingReclaim.generations: await storeProvider.forGroup(g.group).discardGeneration(g.generation)
+    for grp in this._pendingReclaim.tombstonedGroups: await storeProvider.dropCollection(grp)
+    this._pendingReclaim = { generations: [], tombstonedGroups: [] }
+  }
   for attempt in 1..max:
     prior = await storeProvider.readCatalog()
     results = await Promise.allSettled(sources.map(s => s.source.acquire(options)))
@@ -1327,23 +1389,31 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
 
 **Design — corrections from review (P1.2–P1.5, P2.6):**
 
-1. **Catalog lives OUTSIDE Qdrant in a CAS-capable store (P1.4).** Qdrant has no native
-   multi-writer conditional write on a payload, so a fake `get→compare→upsert` is NOT a
-   real CAS. The catalog + fence is therefore an injected **`ICatalogStore`** with a real
-   CAS primitive:
+1. **Catalog lives in a DURABLE CAS-capable store, and this plan SHIPS one (P1.1/P1.4/P2.5).**
+   Qdrant has no native conditional payload write, so the catalog + fence is an injected
+   **`ICatalogStore`** that BOTH generates the revision AND persists the retirement queue
+   atomically with the pointer swap:
    ```ts
    interface ICatalogStore {
-     read(): Promise<CatalogSnapshot>;
-     // atomic compare-and-set; throws CatalogCasError if active revision != expected.
-     casPublish(expectedCatalogRevision: string, snapshot: CatalogSnapshot): Promise<void>;
+     read(): Promise<CatalogSnapshot>;                 // { catalogRevision, entries, retired }
+     // ATOMIC compare-and-set. Throws CatalogCasError if the active revision != expected.
+     // The STORE generates the next revision, STAMPS retiredAt on generations dropped from
+     // the active set, and returns the COMMITTED snapshot (P2.5 — caller passes only entries).
+     casPublish(expectedCatalogRevision: string, entries: readonly CatalogEntry[], now: number): Promise<CatalogSnapshot>;
+     // Remove fully-reclaimed generations from the durable `retired` list (after the sweeper
+     // deleted their Qdrant points). Fenced like casPublish.
+     pruneRetired(expectedCatalogRevision: string, generations: readonly string[]): Promise<CatalogSnapshot>;
    }
    ```
-   Named real backings: **single-writer ingest** (the normal deployment — ONE ingest job
-   writes the store) → an in-process `ICatalogStore` is sufficient; **multi-writer** →
-   inject a transactional CAS store (a Postgres row with `UPDATE … WHERE revision = $expected`,
-   or Redis `WATCH`/`MULTI`, or etcd txn). The provider does NOT invent a fence — it
-   delegates to `ICatalogStore`. This plan ships the in-process `ICatalogStore` + the
-   interface; a transactional impl is a drop-in (named, not built here).
+   **Two real impls shipped (not just in-process):**
+   - `makeInProcessCatalogStore()` — single-process dev / the in-memory store path.
+   - `makePgCatalogStore({ pool, table })` — **the production persistent backend.** One row
+     `(id=skills_catalog, revision text, snapshot jsonb)`; CAS = `UPDATE … SET revision=$new,
+     snapshot=$json WHERE id='skills_catalog' AND revision=$expected` → `rowCount===0` ⇒
+     `CatalogCasError`. Durable, shared across processes, survives restart. This is what
+     makes a SEPARATE recall-only process see the ingest's catalog (the no-FS deployment).
+     A persistent `store` (qdrant) REQUIRES a persistent catalog (`catalog.type: postgres`)
+     — validated in B1; `in-process` + `qdrant` is a config error (the catalog would vanish).
 2. **Point IDs are valid Qdrant ids (P1.5).** Qdrant ids are UUID or uint64 ONLY, so
    neither `__catalog__` (the catalog is no longer a Qdrant point — see (1)) nor raw
    `record.id` work. Each skill point id = a **deterministic UUIDv5** of
@@ -1357,13 +1427,23 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
    `{ id, vector, payload }[]` with cursor). carryForward = `scroll({ generation: live,
    sourceId ∈ ids })` → re-id with `pointId(newGen, recordId)` + re-tag generation →
    `upsertPoints`.
-4. **retiredGraceMs IS applied (P1.2).** A `discardGeneration`/`dropCollection` does NOT
-   delete immediately; it marks the generation `retiredAt = now` (via an injected `now()`).
-   Physical delete happens only for generations whose `retiredAt + retiredGraceMs < now()`
-   — performed lazily at the START of the next `load()`'s reclaim (the host) or by a sweep.
-   This is the spec's **best-effort time-grace**: recall must run with a `CallOptions`
-   timeout `< retiredGraceMs` (the wrapper/host enforces it). Qdrant retention is
-   best-effort, NOT exact (the in-memory lease is exact; Qdrant `release()` is a no-op).
+4. **Durable, crash-resumable retirement + sweeper (P1.2/P1.3).** Retirement is NOT host
+   closure state. `casPublish` stamps `retiredAt` on each generation dropped from the active
+   set and persists it in the catalog snapshot's `retired[]` ATOMICALLY with the pointer swap
+   — so a crash right after commit cannot lose it. A `SWEEPER` (run at the START of each
+   `load()` and/or periodically) reclaims durably:
+   - read `retired` from the catalog store; for each whose `retiredAt + retiredGraceMs < now()`
+     → `client.deleteByFilter({ generation })`, then `pruneRetired(rev, [those])`.
+   - **Orphan reconcile (crash safety):** `scroll` the DISTINCT `payload.generation` values in
+     Qdrant; any generation that is neither in the ACTIVE catalog nor in `retired` is an
+     orphan from a crashed build → delete it (with its own grace from a `firstSeen` or just
+     immediately, since it was never committed/served). This recomputes physical state vs the
+     durable catalog, so reclaim never depends on lost in-memory state.
+   `retiredGraceMs` is thus consumed by the sweeper. Recall must run with a deadline
+   `< retiredGraceMs` — enforced by the compat wrapper's `recallTimeoutMs` (set by B2/B3 wiring).
+   Qdrant retention is best-effort time-grace (the in-memory lease is exact; Qdrant
+   `release()` is a no-op). The host's in-memory `_pendingReclaim` is NOT used for the Qdrant
+   path — the durable `retired[]` + sweeper replace it.
 5. **Read-only provider for recall-only (P2.6).** Expose `makeQdrantBackendProvider({
    client, collection, catalogStore, ... })` returning `ISkillsRagBackendProvider`
    (readCatalog + forGroup→backend, NO write API) so a serving process gets read-only
@@ -1380,15 +1460,17 @@ interface IQdrantClient {
 }
 ```
 
-- [ ] **Step 1: Write the failing tests** (mock `IQdrantClient` + mock `ICatalogStore` + injected `embed`/`pointId`/`now`):
-  - build-inactive → `casPublish` activates → `queryRevision` filtered by `payload.generation` → `activeSnapshot` from the catalog store.
+- [ ] **Step 1: Write the failing tests** (mock `IQdrantClient` + the REAL `makeInProcessCatalogStore` and/or a mock `ICatalogStore` + injected `embed`/`pointId`/`now`):
+  - build-inactive → `publishCatalog` (→ `casPublish` returns the committed snapshot with the STORE-generated revision) → `queryRevision` filtered by `payload.generation` → `activeSnapshot` from the catalog store.
   - `casPublish` stale expected → `CatalogCasError`.
   - `carryForward` SCROLLS the live generation by sourceId and re-upserts with new-generation point ids (assert `pointId` re-derivation).
-  - retiredGraceMs: a generation retired at T is NOT deleted before `T + retiredGraceMs`; a reclaim at `T + grace` deletes it (drive `now()`).
-  - point ids are the injected `pointId(generation, recordId)` (deterministic).
-  - `makeQdrantBackendProvider` exposes NO `forGroup().beginGeneration`/`upsert`/`publishCatalog` (read-only).
-- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })` (write) and `makeQdrantBackendProvider({ client, collection, catalogStore })` (read). Provide thin real adapters `makeQdrantClient({ url, apiKey, collection })` (over the Qdrant REST/SDK — `scroll`/`search`/`upsert`/`delete`) and `makeInProcessCatalogStore()` + a `pointId` using `uuid` v5 (add `uuid` as a dep if absent, or a small sha1→uuid helper). The real adapters get NO unit test (live smoke in Phase C).
-- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant store provider — external-CAS catalog, scroll carry-forward, uuid points, retiredGraceMs, read-only view`).
+  - **durable retirement**: a commit that drops generation G stamps `retired=[{G, retiredAt: now}]` in the catalog snapshot; assert it is readable via `catalogStore.read()`.
+  - **sweeper + retiredGraceMs**: with `retired=[{G, retiredAt:T}]`, a sweep at `now < T+grace` does NOT `deleteByFilter`; a sweep at `now ≥ T+grace` deletes G's points AND `pruneRetired`s G.
+  - **crash-resumable orphan reconcile**: Qdrant has points for a generation X that is NEITHER active NOR in `retired` (simulating a crash before commit) → the orphan sweep `deleteByFilter({generation:X})`.
+  - point ids are the injected `pointId(generation, recordId)` (deterministic UUIDv5).
+  - `makeQdrantBackendProvider` exposes NO write API (no `forGroup().beginGeneration`/`upsert`/`publishCatalog`).
+- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })` (write — `publishCatalog` delegates to `catalogStore.casPublish` and returns its snapshot; a `sweep()` method or inline sweep at provider construction/load) and `makeQdrantBackendProvider({ client, collection, catalogStore })` (read). Ship the real adapters: `makeQdrantClient({ url, apiKey, collection })` (Qdrant REST/SDK — `scroll`/`search`/`upsert`/`delete`), `makeInProcessCatalogStore()`, and **`makePgCatalogStore({ pool, table })`** (the durable production CAS — conditional `UPDATE`; add `pg` as a dep if absent). `pointId` = `uuid` v5 over a fixed namespace (add `uuid` dep or a sha1→uuid helper). The Qdrant/pg REST adapters get NO unit test (live smoke in Phase C); `makeInProcessCatalogStore` and `makePgCatalogStore` (against a test pool or a fake) DO.
+- [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant provider + durable Postgres catalog (CAS, durable retirement, crash-resumable sweeper)`).
 
 ---
 
@@ -1408,13 +1490,15 @@ Read `config.ts` and the `SmartServerConfig`/`SmartServerSkillsConfig` block in 
 - [ ] **Step 1: Write the failing tests** — assert each validation against `parseSkillPluginsConfig(raw)`:
   - `mode: explicit` → throws "explicit … not yet implemented".
   - `store.type` other than `in-memory`/`qdrant` → throws; persistent `store` (`qdrant`) without `embeddingSpaceId` → throws.
+  - **`store.type: qdrant` with `catalog.type` absent or `in-process` → throws** ("a persistent store requires a persistent catalog (postgres); in-process catalog would vanish on restart and is invisible to a separate recall-only process"). `store: qdrant` + `catalog: { type: postgres, connectionString }` → ok.
+  - `recallTimeoutMs` (if set) must be `< retiredGraceMs` → otherwise throws (the time-grace invariant).
   - fetched source with empty/missing `enabled` → throws; `["*"]` ok.
   - duplicate `sourceId` across sources → throws.
   - `sources` + `loadOnStartup:false` together → throws; both `sources` and a persistent `store` omitted → throws (recall-only needs a persistent store).
   - a `groups`/`plugins→group` block is NOT accepted (placement is the strategy's job) — assert an unknown `groups:` key is ignored or rejected per the spec.
   - a clean `mode:implicit` config parses to a normalized object with defaults applied.
 
-- [ ] **Step 2: Implement `parseSkillPluginsConfig(raw): SkillPluginsConfig`** with the validations above. Defaults: `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000`, `chunk.maxChars:1500`, `mode:'implicit'`. Add `skillPlugins?: SkillPluginsConfig` to `SmartServerConfig`.
+- [ ] **Step 2: Implement `parseSkillPluginsConfig(raw): SkillPluginsConfig`** with the validations above. Config shape adds `catalog?: { type: 'in-process' | 'postgres'; connectionString?: string; table?: string }` and `recallTimeoutMs?`. Defaults: `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000`, `recallTimeoutMs:` defaults to `retiredGraceMs - 5000` (clamped ≥1000) for a qdrant store, unused for in-memory; `chunk.maxChars:1500`, `mode:'implicit'`, `catalog.type:'in-process'` (default; required `postgres` for qdrant). Add `skillPlugins?: SkillPluginsConfig` to `SmartServerConfig`.
 
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): skillPlugins config parse + validation (new key, no clash with skills:)`).
 
@@ -1429,8 +1513,8 @@ Wire normalized config → a concrete `ISkillPluginHost`: resolve the embedder (
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — when `cfg.skillPlugins` is present, build the host once at startup, `await host.load()`, and expose it on the pipeline build context (the object passed to pipeline plugins — see B4 for where the controller reads it). Absent `skillPlugins` → no host, everything unchanged.
 - Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts`
 
-- [ ] **Step 1: Test** — a programmatic `records`-source `in-memory` config builds a host; after `load()`, `host.rag(group).query` returns injected records. Use a stub embedder. Also assert `store.type: qdrant` selects the Qdrant provider (inject a mock Qdrant client; assert the host is constructed over it).
-- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Select the provider by `store.type` (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider`). **Recall-only (`loadOnStartup:false`)** → build a READ-ONLY backend provider (`makeQdrantBackendProvider(...)`, or `provider.asBackendProvider()`) — NOT a write store — and construct the recall-only host shape (Task A7) over it + `serveCollections`, so the serving process holds no write credentials. Return the host.
+- [ ] **Step 1: Test** — a programmatic `records`-source `in-memory` config builds a host; after `load()`, `host.rag(group).query` returns injected records. Use a stub embedder. Also assert `store.type: qdrant` + `catalog.type: postgres` selects the Qdrant provider over a `makePgCatalogStore` (inject a mock Qdrant client + a fake pg pool; assert the host is constructed over them) and threads `recallTimeoutMs`.
+- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Build the **catalog store** by `catalog.type` (`in-process` → `makeInProcessCatalogStore`; `postgres` → `makePgCatalogStore({ pool, table })`). Select the store provider by `store.type` (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })`). Thread `recallTimeoutMs` into the host deps. **Recall-only (`loadOnStartup:false`)** → build a READ-ONLY backend provider (`makeQdrantBackendProvider({ client, collection, catalogStore })`, or `provider.asBackendProvider()`) — NOT a write store — and construct the recall-only host shape (Task A7) over it + `serveCollections`, so the serving process holds no write credentials. Return the host.
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): build skill plugin-host from config + startup lifecycle`).
 
 ---
