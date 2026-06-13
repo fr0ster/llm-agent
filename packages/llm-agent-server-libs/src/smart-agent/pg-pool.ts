@@ -77,6 +77,10 @@ export function makePgPool(
   let ensured: Promise<void> | undefined;
   // The raw pool once created — captured so end() can really close it.
   let createdPool: RawPgPool | undefined;
+  // The real `pg.Pool` throws on a second `.end()`. Overlapping cleanup paths
+  // (initSkillHost on failure + the start() finally + closeFns) may all reach
+  // here, so guard so a second end() is a no-op rather than a throw.
+  let ended = false;
 
   const getPool = (): Promise<RawPgPool> => {
     if (!poolPromise) {
@@ -110,8 +114,11 @@ export function makePgPool(
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
     // Close the real pool if it was ever created (no-op otherwise) so its
-    // sockets do not outlive server shutdown.
+    // sockets do not outlive server shutdown. Idempotent: a second end() is a
+    // no-op (the raw pg.Pool throws on double-end).
     async end() {
+      if (ended) return;
+      ended = true;
       if (createdPool) await createdPool.end();
     },
   };
@@ -132,6 +139,8 @@ export function makePgReadPool(
   let poolPromise: Promise<RawPgPool> | undefined;
   // The raw pool once created — captured so end() can really close it.
   let createdPool: RawPgPool | undefined;
+  // The real `pg.Pool` throws on a second `.end()`; guard for idempotency.
+  let ended = false;
 
   const getPool = (): Promise<RawPgPool> => {
     if (!poolPromise) {
@@ -150,8 +159,11 @@ export function makePgReadPool(
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
     // Close the real pool if it was ever created (no-op otherwise) — calling
-    // end() before any query never constructs a pool.
+    // end() before any query never constructs a pool. Idempotent: a second
+    // end() is a no-op (the raw pg.Pool throws on double-end).
     async end() {
+      if (ended) return;
+      ended = true;
       if (createdPool) await createdPool.end();
     },
   };

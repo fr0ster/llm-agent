@@ -387,6 +387,15 @@ export async function initSkillHost(
     // Fail loud on a misconfigured served-group subset (a typo'd
     // serveCollections/controllerSkillGroup silently disables skills).
     validateServedGroups(host, cfg);
+    if (cfg.controllerSkillGroup !== undefined) {
+      // Controller recall is an independent channel; eager-probe its group too so an
+      // incompatible controller-only group fails at STARTUP (not at first planner recall).
+      // host.load() only eager-probes the SERVED set (serveCollections ?? all), so a
+      // controllerSkillGroup OUTSIDE serveCollections would otherwise skip startup
+      // compat-checking. activeManifest() throws SkillsIncompatibleError on a
+      // serving-descriptor mismatch — inside this try, so a throw still ends the pools.
+      await host.rag(cfg.controllerSkillGroup).activeManifest();
+    }
     return host;
   } catch (e) {
     // `allSettled` so one pool's end() error does not mask the original.

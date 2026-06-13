@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type {
-  IEmbedder,
-  ISkillPluginHost,
-  ISkillsStoreProvider,
-  SkillGroupInfo,
+import {
+  type IEmbedder,
+  type ISkillPluginHost,
+  type ISkillsStoreProvider,
+  type SkillGroupInfo,
+  SkillsIncompatibleError,
 } from '@mcp-abap-adt/llm-agent';
 import type { IPgPool } from '@mcp-abap-adt/llm-agent-libs';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
@@ -273,7 +274,16 @@ test('recall-only WITHOUT makePgReadPool throws fail-loud (even when makePgPool 
 
 // P1-B — validateServedGroups fails loud on unknown serveCollections / controllerSkillGroup.
 
-function hostWithGroups(groups: string[]): ISkillPluginHost {
+/**
+ * @param groups the available group names.
+ * @param ragImpl optional per-group rag handle factory. Defaults to a handle
+ *   whose `activeManifest()` RESOLVES (compatible) so the eager controller-group
+ *   probe in initSkillHost is a no-op for the happy paths.
+ */
+function hostWithGroups(
+  groups: string[],
+  ragImpl?: (group?: string) => { activeManifest(): Promise<unknown> },
+): ISkillPluginHost {
   const infos: SkillGroupInfo[] = groups.map((g) => ({
     group: g,
     description: g,
@@ -287,9 +297,11 @@ function hostWithGroups(groups: string[]): ISkillPluginHost {
       ok: true,
     }),
     groups: () => infos,
-    rag: () => {
-      throw new Error('not used');
-    },
+    rag:
+      ragImpl ??
+      ((_group?: string) => ({
+        activeManifest: async () => null,
+      })),
   } as unknown as ISkillPluginHost;
 }
 
@@ -444,4 +456,76 @@ test('initSkillHost: one pool end() error does not mask the original (allSettled
   );
   assert.equal(failing.ended, true, 'failing pool end() was attempted');
   assert.equal(ok.ended, true, 'the other pool still ends despite the failure');
+});
+
+// P1-A — initSkillHost eager-probes the controllerSkillGroup at STARTUP, so an
+// incompatible controller-only group (outside serveCollections) fails fast.
+
+test('initSkillHost: incompatible controllerSkillGroup activeManifest REJECTS → rejects and ends pools', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  // load() probes only the served set (serveCollections=['abap']); the controller
+  // group 'sql' is OUTSIDE it, so only the explicit eager probe catches it.
+  const host = hostWithGroups(['abap', 'sql'], (group?: string) => ({
+    activeManifest: async () => {
+      if (group === 'sql') {
+        throw new SkillsIncompatibleError('serving-descriptor mismatch');
+      }
+      return null;
+    },
+  }));
+
+  await assert.rejects(
+    () =>
+      initSkillHost(
+        async () => host,
+        cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
+        pools,
+      ),
+    SkillsIncompatibleError,
+  );
+  assert.equal(
+    pool.ended,
+    true,
+    'an incompatible controller group must end the captured pools',
+  );
+  assert.equal(pools.length, 0, 'pools array cleared after cleanup');
+});
+
+test('initSkillHost: compatible controllerSkillGroup activeManifest resolves → host returned', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  let probedGroup: string | undefined;
+  const host = hostWithGroups(['abap', 'sql'], (group?: string) => ({
+    activeManifest: async () => {
+      probedGroup = group;
+      return null;
+    },
+  }));
+
+  const out = await initSkillHost(
+    async () => host,
+    cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
+    pools,
+  );
+
+  assert.equal(out, host, 'compatible controller group → host returned');
+  assert.equal(probedGroup, 'sql', 'the controllerSkillGroup was eager-probed');
+  assert.equal(pool.ended, false, 'pools survive on the compatible path');
+});
+
+test('initSkillHost: no controllerSkillGroup → no eager probe', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  let probed = false;
+  const host = hostWithGroups(['abap'], () => ({
+    activeManifest: async () => {
+      probed = true;
+      return null;
+    },
+  }));
+
+  const out = await initSkillHost(async () => host, recallOnlyCfg(), pools);
+  assert.equal(out, host, 'host returned');
+  assert.equal(probed, false, 'no controllerSkillGroup → no eager probe');
 });

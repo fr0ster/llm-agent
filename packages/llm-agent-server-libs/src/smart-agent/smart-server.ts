@@ -1030,6 +1030,30 @@ export class SmartServer {
   }
 
   async start(): Promise<SmartServerHandle> {
+    // Startup pg-pool cleanup must span the ENTIRE start(): host.load() (via
+    // initSkillHost) creates pg pools, but fallible work AFTER it — makeRag,
+    // builder.build(), server.listen — can still throw/reject before the handle
+    // is returned and `closeFns` becomes callable. Without this guard those
+    // pools would leak open sockets and block process exit. initSkillHost keeps
+    // its own catch-cleanup (it clears the array, so this finally then no-ops —
+    // no double-end; pool end() is idempotent regardless). No-op when
+    // skillPlugins is unconfigured (_skillPgPools stays empty).
+    let started = false;
+    try {
+      // Single success path: the handle is only produced once server.listen
+      // succeeds (a listen error rejects this promise → finally cleans up).
+      const handle = await this._start();
+      started = true;
+      return handle;
+    } finally {
+      if (!started) {
+        await Promise.allSettled(this._skillPgPools.map((p) => p.end()));
+        this._skillPgPools = [];
+      }
+    }
+  }
+
+  private async _start(): Promise<SmartServerHandle> {
     const log = this.cfg.log ?? this.noop;
     const fileLogger: ILogger = {
       log: (e) => log(e as unknown as Record<string, unknown>),
