@@ -24,7 +24,7 @@
 // fake pool. The Qdrant/pg REST adapters (`makeQdrantClient` / `makeQdrantReader`)
 // talk to Qdrant over global `fetch` and are LIVE-ONLY (no unit test; Phase C smoke).
 
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   ActiveSnapshot,
   CallOptions,
@@ -567,9 +567,6 @@ export function makeQdrantStoreProvider(
   const pid = deps.pointId ?? pointId;
   const now = deps.now ?? (() => Date.now());
 
-  // per-process generation sequence (a generation id is process-local until committed)
-  let genSeq = 0;
-
   async function scrollAll(filter: object): Promise<QdrantPoint[]> {
     const out: QdrantPoint[] = [];
     let cursor: string | undefined;
@@ -589,7 +586,11 @@ export function makeQdrantStoreProvider(
       queryRevision: readBackend.queryRevision,
 
       async beginGeneration() {
-        const generation = `${group}#g${genSeq++}#${now()}`;
+        // Globally-unique id (a process-local counter + ms timestamp can collide
+        // across processes — two loaders writing the same id then the CAS-loser's
+        // discardGeneration would delete the winner's points). Keep the `group#`
+        // prefix (orphan sweep / dropCollection group logic relies on it).
+        const generation = `${group}#${randomUUID()}`;
         return { generation };
       },
 
@@ -639,6 +640,13 @@ export function makeQdrantStoreProvider(
       async discardGeneration(generation) {
         // best-effort immediate cleanup of an inactive in-build generation's points;
         // the age-protected sweep is the durable safety net for crashes.
+        // NEVER delete a served generation: if `generation` is named by an ACTIVE
+        // (non-tombstone) catalog entry, do nothing (mirror the in-memory store).
+        const snap = await catalogStore.read();
+        const isActive = snap.entries.some(
+          (e) => !e.tombstone && e.generation === generation,
+        );
+        if (isActive) return;
         await client.deleteByFilter({ generation });
       },
     };
@@ -693,18 +701,21 @@ export function makeQdrantStoreProvider(
         snap.entries.filter((e) => !e.tombstone).map((e) => e.generation),
       );
       const retired = new Set((snap.retired ?? []).map((r) => r.generation));
-      const minCreatedAt = new Map<string, number>();
+      // Track the YOUNGEST (max) createdAt per generation: a still-being-written
+      // generation has a RECENT youngest point and must be kept — using the oldest
+      // (min) point would delete a long in-progress build while it is still writing.
+      const maxCreatedAt = new Map<string, number>();
       for (const p of await scrollAll({})) {
         const gen = String(p.payload.generation ?? '');
         if (!gen || active.has(gen) || retired.has(gen)) continue;
         const created = Number(p.payload.createdAt ?? 0);
-        const prev = minCreatedAt.get(gen);
-        minCreatedAt.set(
+        const prev = maxCreatedAt.get(gen);
+        maxCreatedAt.set(
           gen,
-          prev === undefined ? created : Math.min(prev, created),
+          prev === undefined ? created : Math.max(prev, created),
         );
       }
-      for (const [gen, created] of minCreatedAt) {
+      for (const [gen, created] of maxCreatedAt) {
         if (created + orphanGraceMs <= tick) {
           await client.deleteByFilter({ generation: gen });
         }

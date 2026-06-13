@@ -54,8 +54,10 @@ interface StoredPoint {
 }
 function makeMockClient(): IQdrantClient & {
   _points: Map<string, StoredPoint>;
+  _deleteCalls: number;
 } {
   const points = new Map<string, StoredPoint>();
+  const counter = { deleteCalls: 0 };
   const matches = (
     p: StoredPoint,
     filter: Record<string, unknown>,
@@ -84,10 +86,14 @@ function makeMockClient(): IQdrantClient & {
   };
   return {
     _points: points,
+    get _deleteCalls() {
+      return counter.deleteCalls;
+    },
     async upsertPoints(pts) {
       for (const p of pts) points.set(p.id, { ...p });
     },
     async deleteByFilter(filter) {
+      counter.deleteCalls++;
       for (const [id, p] of [...points.entries()]) {
         if (matches(p, filter as Record<string, unknown>)) points.delete(id);
       }
@@ -152,6 +158,58 @@ test('point ids are deterministic UUIDv5 of generation:recordId', () => {
     a,
     /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
   );
+});
+
+test('beginGeneration() returns DISTINCT, globally-unique ids (not a process-local counter), with the group prefix', async () => {
+  const client = makeMockClient();
+  // a FIXED clock would make a counter+timestamp id collide; a UUID suffix must not
+  const p = makeProvider(client, { now: () => 42 });
+  const store = p.forGroup('g1');
+  const a = (await store.beginGeneration()).generation;
+  const b = (await store.beginGeneration()).generation;
+  assert.notEqual(a, b);
+  assert.ok(a.startsWith('g1#'), `expected group prefix, got ${a}`);
+  assert.ok(b.startsWith('g1#'), `expected group prefix, got ${b}`);
+  // suffix is a UUID, not a `g<n>#<ts>` counter shape
+  assert.match(
+    a.slice('g1#'.length),
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+  );
+});
+
+test('discardGeneration: ACTIVE generation is never deleted; NON-active generation is deleted', async () => {
+  const client = makeMockClient();
+  const p = makeProvider(client);
+  const store = p.forGroup('g1');
+
+  // generation A: published → ACTIVE in the catalog
+  const gActive = (await store.beginGeneration()).generation;
+  await store.upsert(gActive, [rec('a')]);
+  await p.publishCatalog((await p.readCatalog()).catalogRevision, [
+    {
+      collection: { group: 'g1', description: 'd', collection: 'skills' },
+      sources: ['s'],
+      generation: gActive,
+      manifest: MANIFEST,
+    },
+  ]);
+
+  // generation B: in-build, never published → NOT active
+  const gInactive = (await store.beginGeneration()).generation;
+  await store.upsert(gInactive, [rec('b')]);
+
+  // discarding the ACTIVE one must be a no-op (no deleteByFilter, points kept)
+  const before = client._deleteCalls;
+  await store.discardGeneration(gActive);
+  assert.equal(client._deleteCalls, before, 'must not call deleteByFilter');
+  assert.ok(client._points.has(pointId(gActive, 'a')));
+
+  // discarding the NON-active one deletes its points
+  await store.discardGeneration(gInactive);
+  assert.equal(client._deleteCalls, before + 1);
+  assert.ok(!client._points.has(pointId(gInactive, 'b')));
+  // and never touched the active generation
+  assert.ok(client._points.has(pointId(gActive, 'a')));
 });
 
 test('build inactive → publishCatalog (store-generated rev) → queryRevision by gen → activeSnapshot from catalog', async () => {
@@ -384,36 +442,54 @@ test('orphan reconcile age-protected: old orphan swept, young (in-build) orphan 
       },
     },
   ]);
-  // Inject a YOUNG orphan (concurrent in-build loader) — createdAt within grace.
+  // Inject an IN-BUILD orphan (concurrent loader): its FIRST point is OLD (older
+  // than grace) but it is still writing — its YOUNGEST point is RECENT. The sweep
+  // must judge by the youngest point and KEEP it (a min-based guard would wrongly
+  // delete it mid-build).
   await client.upsertPoints([
     {
-      id: pointId('orphan-young', 'y'),
+      id: pointId('orphan-inbuild', 'old'),
       vector: [0, 1, 0],
       payload: {
-        generation: 'orphan-young',
+        generation: 'orphan-inbuild',
         group: 'g1',
-        recordId: 'y',
+        recordId: 'old',
         content: 'cy',
-        name: 'y',
-        provenance: 'y',
+        name: 'old',
+        provenance: 'old',
         sourceId: 's',
-        createdAt: NOW - 1000, // younger than grace
+        createdAt: NOW - 3_600_001, // FIRST batch — older than grace
+      },
+    },
+    {
+      id: pointId('orphan-inbuild', 'new'),
+      vector: [0, 0, 1],
+      payload: {
+        generation: 'orphan-inbuild',
+        group: 'g1',
+        recordId: 'new',
+        content: 'cz',
+        name: 'new',
+        provenance: 'new',
+        sourceId: 's',
+        createdAt: NOW - 1000, // youngest batch — within grace
       },
     },
   ]);
   await p.sweep?.(NOW);
-  // old orphan swept, young orphan retained
+  // old orphan (all points older than grace) swept
   assert.equal(
     [...client._points.values()].filter(
       (pt) => pt.payload.generation === 'orphan-old',
     ).length,
     0,
   );
+  // in-build orphan kept — its youngest point is within grace (both points survive)
   assert.equal(
     [...client._points.values()].filter(
-      (pt) => pt.payload.generation === 'orphan-young',
+      (pt) => pt.payload.generation === 'orphan-inbuild',
     ).length,
-    1,
+    2,
   );
 });
 
