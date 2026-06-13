@@ -2,6 +2,7 @@ import type {
   IEmbedder,
   ILlm,
   IPipelineContext,
+  ISkillPluginHost,
   ISubAgent,
   IToolsRagHandle,
 } from '@mcp-abap-adt/llm-agent';
@@ -45,6 +46,13 @@ export interface IServerPipelineContext extends IPipelineContext {
    * embedder is configured.
    */
   embedder?: IEmbedder;
+  /**
+   * The live skill plugin-host, built once at startup from `skillPlugins:` config
+   * and `await host.load()`-ed before serving. Consumed by the implicit
+   * assembler wiring (B3) and the controller recall hook (B4). Undefined when no
+   * `skillPlugins:` config is present.
+   */
+  skillHost?: ISkillPluginHost;
 }
 
 /**

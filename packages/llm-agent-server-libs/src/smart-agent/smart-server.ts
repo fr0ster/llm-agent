@@ -25,6 +25,7 @@ import type {
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
+  ISkillPluginHost,
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
@@ -77,7 +78,11 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  makeRag,
+  prefetchEmbedderFactories,
+  resolveEmbedder,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { resolveSessionIdentity } from './session-identity-resolver.js';
@@ -395,6 +400,7 @@ import type {
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
+import { buildSkillHostFromConfig } from './skill-plugins-host-factory.js';
 
 export {
   generateConfigTemplate,
@@ -418,6 +424,10 @@ export {
   type SkillPluginsSource,
   type SkillPluginsStoreConfig,
 } from './skill-plugins-config.js';
+export {
+  type BuildSkillHostDeps,
+  buildSkillHostFromConfig,
+} from './skill-plugins-host-factory.js';
 
 // ---------------------------------------------------------------------------
 // Worker-LLM cache + RAG-registry sharing (Task A7)
@@ -930,6 +940,13 @@ export class SmartServer {
    * semantic distance). Undefined when no embedder is configured.
    */
   private _resolvedEmbedder?: IEmbedder;
+  /**
+   * The live skill plugin-host, built ONCE in `start()` from `skillPlugins:`
+   * config and `await host.load()`-ed before serving. Held so `buildServerCtx`
+   * can thread it onto every pipeline context. Undefined when `skillPlugins:` is
+   * absent (everything unchanged).
+   */
+  private _skillHost?: ISkillPluginHost;
   /** Normalized LLM map + pipeline fallback + main temperature — captured in
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
@@ -1165,6 +1182,32 @@ export class SmartServer {
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
     this._resolvedEmbedder = resolvedEmbedder;
+
+    // ---- Skill plugin-host (the `skillPlugins:` feature) ------------------
+    // Build the host ONCE from config and `load()` it before serving, so its
+    // fixed serving collection set is established at startup. Reuses the SAME
+    // embedder-resolution path as the agent RAG (prefetch + resolveEmbedder from
+    // llm-agent-rag). Absent `skillPlugins:` → no host, behaviour unchanged.
+    if (this.cfg.skillPlugins) {
+      const skillCfg = this.cfg.skillPlugins;
+      const reuseAgentEmbedder =
+        skillCfg.embedder === undefined && resolvedEmbedder !== undefined;
+      // Prefetch the named embedder factory only when we will actually build a
+      // dedicated one (the agent embedder is already prefetched + wrapped).
+      if (!reuseAgentEmbedder) {
+        await prefetchEmbedderFactories([
+          skillCfg.embedder?.provider ?? 'ollama',
+        ]);
+      }
+      const host = await buildSkillHostFromConfig(skillCfg, {
+        resolveEmbedder: (ec) =>
+          reuseAgentEmbedder
+            ? (resolvedEmbedder as IEmbedder)
+            : resolveEmbedder(ec, { extraFactories: mergedEmbedderFactories }),
+      });
+      await host.load();
+      this._skillHost = host;
+    }
 
     // ---- RAG resolution (interface-only) ----------------------------------
     // Resolve the tools/history stores and any named collections HERE so the
@@ -2208,6 +2251,9 @@ export class SmartServer {
       stepperKnowledgeBackend:
         this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend(),
       embedder: this._resolvedEmbedder,
+      // Skill plugin-host (built + loaded once in start()); undefined when no
+      // `skillPlugins:` config — pipelines that don't read it are unaffected.
+      ...(this._skillHost ? { skillHost: this._skillHost } : {}),
       // External tools are NOT carried on this build-time ctx: definitions arrive
       // per-REQUEST (HTTP body.tools) and the controller routes them per-request
       // via PipelineContext.externalTools inside the coordinator handler.
