@@ -22,6 +22,23 @@ export {
   type MarketplaceInput,
 } from './marketplace-adapter.js';
 export {
+  type ICatalogReader,
+  type ICatalogStore,
+  type IPgPool,
+  type IQdrantClient,
+  type IQdrantReader,
+  makeInProcessCatalogStore,
+  makePgCatalogReader,
+  makePgCatalogStore,
+  makeQdrantBackendProvider,
+  makeQdrantClient,
+  makeQdrantReader,
+  makeQdrantStoreProvider,
+  pointId,
+  type QdrantPoint,
+  type QdrantStoreProviderDeps,
+} from './qdrant-store.js';
+export {
   type IngestHostDeps,
   makeSkillPluginHost,
   type RecallHostDeps,
