@@ -5,6 +5,7 @@ import type {
   IEmbedder,
   ISkillPluginHost,
   ISkillSource,
+  ISkillsRagBackendProvider,
   ISkillsRagHandle,
   ISkillsStoreProvider,
   SkillGroupInfo,
@@ -15,6 +16,28 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { CatalogCasError } from '@mcp-abap-adt/llm-agent'; // value (class), not a type
 import { makeCompatibleSkillsRag } from './compatible-skills-rag.js';
+
+/** RECALL-ONLY construction: serves an already-materialised catalog through a READ-ONLY
+ *  backend provider (least privilege — no source, no store, no write/reconcile API). The
+ *  served collections are materialised out-of-band by a SEPARATE ingest job. */
+export interface RecallHostDeps {
+  backendProvider: ISkillsRagBackendProvider;
+  /** Serving embedder — text query embed + lazy dimension probe. */
+  embedder: IEmbedder;
+  embeddingSpaceId: string;
+  retrievalSchemaVersion: number;
+  dimension?: number;
+  /** The collections this host serves; each MUST exist in the backend's catalog. */
+  serveCollections: string[];
+  /** Threaded into makeCompatibleSkillsRag in rag() (Qdrant time-grace). */
+  recallTimeoutMs?: number;
+}
+
+export type SkillPluginHostDeps = IngestHostDeps | RecallHostDeps;
+
+function isRecallDeps(deps: SkillPluginHostDeps): deps is RecallHostDeps {
+  return 'backendProvider' in deps;
+}
 
 export interface IngestHostDeps {
   sources: ReadonlyArray<{ id: string; source: ISkillSource }>;
@@ -48,7 +71,80 @@ function setEq(a: Set<string>, b: Set<string>): boolean {
   return true;
 }
 
-export function makeSkillPluginHost(deps: IngestHostDeps): ISkillPluginHost {
+export function makeSkillPluginHost(
+  deps: SkillPluginHostDeps,
+): ISkillPluginHost {
+  if (isRecallDeps(deps)) return makeRecallOnlyHost(deps);
+  return makeIngestHost(deps);
+}
+
+/** RECALL-ONLY host: reads the persisted catalog for `groups()`, validates serveCollections,
+ *  eager compat-checks each served collection, and serves via the SAME compat wrapper over
+ *  the read-only backend. It opens no generation and writes nothing. */
+function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
+  const resolvedDimension = deps.dimension;
+  let _snapshot: SkillGroupInfo[] = [];
+
+  function rag(group?: string): ISkillsRagHandle {
+    let resolved = group;
+    if (resolved === undefined) {
+      if (_snapshot.length === 1) {
+        resolved = _snapshot[0].group;
+      } else {
+        throw new Error('rag(): must name the group (no unique default)');
+      }
+    }
+    // A group with no active generation simply serves nothing (the compat wrapper returns
+    // [] on a null activeSnapshot) — no throw for an unknown/inactive group.
+    return makeCompatibleSkillsRag({
+      backend: deps.backendProvider.forGroup(resolved),
+      embedder: deps.embedder,
+      embeddingSpaceId: deps.embeddingSpaceId,
+      retrievalSchemaVersion: deps.retrievalSchemaVersion,
+      dimension: resolvedDimension,
+      recallTimeoutMs: deps.recallTimeoutMs,
+    });
+  }
+
+  return {
+    async load(options?: CallOptions): Promise<SkillLoadResult> {
+      const cat = await deps.backendProvider.readCatalog(options);
+      // Validate every served collection exists in the persisted catalog (config error).
+      for (const g of deps.serveCollections) {
+        if (!cat.entries.some((e) => e.collection.group === g)) {
+          throw new Error(
+            `serveCollections names a collection absent from the catalog: ${g}`,
+          );
+        }
+      }
+      // groups() = the SkillGroupInfo of the served collections; register the fixed set.
+      _snapshot = deps.serveCollections.map(
+        (g) =>
+          (cat.entries.find((e) => e.collection.group === g) as CatalogEntry)
+            .collection,
+      );
+
+      // EAGER fail-fast: probe + compat-check each served collection's active generation.
+      // SkillsIncompatibleError propagates (recall-only load aborts on incompatibility).
+      for (const g of deps.serveCollections) {
+        await rag(g).activeManifest(options);
+      }
+
+      return {
+        committed: [...deps.serveCollections],
+        omitted: [],
+        tombstoned: [],
+        ok: true,
+      };
+    },
+    groups(): readonly SkillGroupInfo[] {
+      return _snapshot;
+    },
+    rag,
+  };
+}
+
+function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
   const maxAttempts = deps.catalogCasMaxAttempts ?? 3;
   const servingMode = deps.servingMode ?? true;
   const now = deps.now ?? Date.now;
