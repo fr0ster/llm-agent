@@ -113,28 +113,30 @@ export class ControllerPipelinePlugin
     // gate purely on host + group presence and do NOT couple to serveCollections.
     const skillHost = ctx.skillHost;
     const group = ctx.skillRecall?.controllerSkillGroup;
-    const skillsRecall =
-      skillHost && group
-        ? async (goal: string, options?: CallOptions): Promise<string> => {
-            const k = ctx.skillRecall?.k ?? 4;
-            const maxInjectChars = ctx.skillRecall?.maxInjectChars ?? 4000;
-            const queryOpts =
-              ctx.skillRecall?.threshold !== undefined
-                ? { k, threshold: ctx.skillRecall.threshold }
-                : { k };
-            const hits = await skillHost
-              .rag(group)
-              .query(goal, queryOpts, options);
-            if (hits.length === 0) return '';
-            let block = 'Relevant skills:\n';
-            for (const h of hits) {
-              const next = `${block}- ${h.record.content}\n`;
-              if (next.length > maxInjectChars) break;
-              block = next;
-            }
-            return block.trimEnd();
+    // Resolve the recall handle ONCE (the host memoises it anyway; this is the
+    // correct shape — no per-recall rag(group) lookup, and the wrapper's dimension/
+    // verdict cache is shared across recalls).
+    const skillRagHandle =
+      skillHost && group ? skillHost.rag(group) : undefined;
+    const skillsRecall = skillRagHandle
+      ? async (goal: string, options?: CallOptions): Promise<string> => {
+          const k = ctx.skillRecall?.k ?? 4;
+          const maxInjectChars = ctx.skillRecall?.maxInjectChars ?? 4000;
+          const queryOpts =
+            ctx.skillRecall?.threshold !== undefined
+              ? { k, threshold: ctx.skillRecall.threshold }
+              : { k };
+          const hits = await skillRagHandle.query(goal, queryOpts, options);
+          if (hits.length === 0) return '';
+          let block = 'Relevant skills:\n';
+          for (const h of hits) {
+            const next = `${block}- ${h.record.content}\n`;
+            if (next.length > maxInjectChars) break;
+            block = next;
           }
-        : undefined;
+          return block.trimEnd();
+        }
+      : undefined;
 
     // The factory resolves the three role LLMs via makeRoleLlm, wraps them as
     // subagent clients, validates the embedder requirement, and builds the

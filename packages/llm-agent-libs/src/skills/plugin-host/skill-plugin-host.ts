@@ -85,6 +85,12 @@ export function makeSkillPluginHost(
 function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
   const resolvedDimension = deps.dimension;
   let _snapshot: SkillGroupInfo[] = [];
+  // Memoise the per-group compat wrapper so repeated rag(g) calls return the SAME
+  // handle — preserving its lazy dimension probe AND per-revision compatibility
+  // verdict cache. Safe across catalog rotations: the wrapper reads activeSnapshot()
+  // fresh per query, its verdict cache is keyed by revision, and the dimension is
+  // embedder-stable.
+  const ragCache = new Map<string, ISkillsRagHandle>();
 
   function rag(group?: string): ISkillsRagHandle {
     let resolved = group;
@@ -97,14 +103,21 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
     }
     // A group with no active generation simply serves nothing (the compat wrapper returns
     // [] on a null activeSnapshot) — no throw for an unknown/inactive group.
-    return makeCompatibleSkillsRag({
-      backend: deps.backendProvider.forGroup(resolved),
-      embedder: deps.embedder,
-      embeddingSpaceId: deps.embeddingSpaceId,
-      retrievalSchemaVersion: deps.retrievalSchemaVersion,
-      dimension: resolvedDimension,
-      recallTimeoutMs: deps.recallTimeoutMs,
-    });
+    if (!ragCache.has(resolved)) {
+      ragCache.set(
+        resolved,
+        makeCompatibleSkillsRag({
+          backend: deps.backendProvider.forGroup(resolved),
+          embedder: deps.embedder,
+          embeddingSpaceId: deps.embeddingSpaceId,
+          retrievalSchemaVersion: deps.retrievalSchemaVersion,
+          dimension: resolvedDimension,
+          recallTimeoutMs: deps.recallTimeoutMs,
+        }),
+      );
+    }
+    // biome-ignore lint/style/noNonNullAssertion: set immediately above when absent
+    return ragCache.get(resolved)!;
   }
 
   return {
@@ -170,6 +183,13 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
     generations: { group: string; generation: string }[];
     tombstonedGroups: string[];
   } = { generations: [], tombstonedGroups: [] };
+
+  // Memoise the per-group compat wrapper so repeated rag(g) calls return the SAME
+  // handle — preserving its lazy dimension probe AND per-revision compatibility
+  // verdict cache. Safe across catalog rotations: the wrapper reads activeSnapshot()
+  // fresh per query, its verdict cache is keyed by revision, and the dimension is
+  // embedder-stable (the wrapper self-probes once if dimension is still unresolved).
+  const ragCache = new Map<string, ISkillsRagHandle>();
 
   // Resolved once before the first build so every manifest is complete.
   let resolvedDimension = deps.dimension;
@@ -442,14 +462,21 @@ function makeIngestHost(deps: IngestHostDeps): ISkillPluginHost {
       // A named group always yields a handle over its backend. A group that is not in
       // the active snapshot (omitted / tombstoned / never built) simply has no active
       // generation, so the compat wrapper serves nothing — no need to throw here.
-      return makeCompatibleSkillsRag({
-        backend: deps.storeProvider.forGroup(resolved),
-        embedder: deps.embedder,
-        embeddingSpaceId: deps.embeddingSpaceId,
-        retrievalSchemaVersion: deps.retrievalSchemaVersion,
-        dimension: resolvedDimension,
-        recallTimeoutMs: deps.recallTimeoutMs,
-      });
+      if (!ragCache.has(resolved)) {
+        ragCache.set(
+          resolved,
+          makeCompatibleSkillsRag({
+            backend: deps.storeProvider.forGroup(resolved),
+            embedder: deps.embedder,
+            embeddingSpaceId: deps.embeddingSpaceId,
+            retrievalSchemaVersion: deps.retrievalSchemaVersion,
+            dimension: resolvedDimension,
+            recallTimeoutMs: deps.recallTimeoutMs,
+          }),
+        );
+      }
+      // biome-ignore lint/style/noNonNullAssertion: set immediately above when absent
+      return ragCache.get(resolved)!;
     },
   };
 }

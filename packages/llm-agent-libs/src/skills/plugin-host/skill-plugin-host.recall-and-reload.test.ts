@@ -517,3 +517,40 @@ test('groups()/rag(): one group → rag() defaults; several → rag() throws; in
     assert.throws(() => host.rag(), /name the group/);
   }
 });
+
+// 8 — P2-A ------------------------------------------------------------------
+test('recall-only: rag(g) is memoised — same reference, and the lazy dimension probe runs only ONCE across rag() calls', async () => {
+  // Count embed calls so we can prove the wrapper's lazy dimension probe survives.
+  let embedCalls = 0;
+  const countingEmbedder = {
+    async embed(text: string): Promise<IEmbedResult> {
+      embedCalls++;
+      return { vector: hash3(text) };
+    },
+  };
+
+  const provider = await seedProvider('g1', [
+    rec('g1:a', 'seed', 'g1', 'alpha record'),
+  ]);
+
+  // NO dimension declared → the compat wrapper must lazily probe it (one embed).
+  const host = makeSkillPluginHost({
+    embedder: countingEmbedder as never,
+    embeddingSpaceId: 'sp',
+    retrievalSchemaVersion: 1,
+    backendProvider: provider.asBackendProvider(),
+    serveCollections: ['g1'],
+  });
+  await host.load(); // eager activeManifest → first probe + query embeds happen here
+
+  // Same reference across calls (memoised handle, cache preserved).
+  assert.strictEqual(host.rag('g1'), host.rag('g1'));
+
+  const before = embedCalls;
+  // Two queries via fresh rag('g1') lookups: the probe is NOT repeated (cache
+  // survives) — each query embeds exactly its text once, so embedCalls grows by
+  // exactly 2 (the two query embeds), NOT by 2 + an extra probe per rag() call.
+  await host.rag('g1').query('alpha record', { k: 5, threshold: 0 });
+  await host.rag('g1').query('alpha record', { k: 5, threshold: 0 });
+  assert.equal(embedCalls - before, 2, 'two query embeds, no repeated probe');
+});

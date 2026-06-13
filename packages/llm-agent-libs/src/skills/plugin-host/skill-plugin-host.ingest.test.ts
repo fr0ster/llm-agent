@@ -586,3 +586,45 @@ test('strict:true source failure → throw, nothing committed', async () => {
   const cat = await provider.readCatalog();
   assert.equal(cat.entries.length, 0);
 });
+
+// P2-A --------------------------------------------------------------------
+test('ingest: rag(g) is memoised — same reference, and the lazy dimension probe runs only ONCE across rag() calls', async () => {
+  // Count embed calls so we can prove the wrapper's lazy dimension probe survives.
+  let embedCalls = 0;
+  const countingEmbedder = {
+    async embed(text: string): Promise<IEmbedResult> {
+      embedCalls++;
+      return { vector: hash3(text) };
+    },
+  };
+
+  const provider = makeInMemoryStoreProvider({ embed });
+  // NO dimension declared → ensureDimension probes once during load(); the compat
+  // wrapper also lazily probes once on first query (its own cache).
+  const host = makeSkillPluginHost({
+    embedder: countingEmbedder as never,
+    embeddingSpaceId: 'sp',
+    retrievalSchemaVersion: 1,
+    storeProvider: provider,
+    sources: [
+      {
+        id: 's1',
+        source: makeStubSource({
+          collections: [info('c1')],
+          records: [rec('c1:a', 's1', 'c1', 'alpha')],
+        }),
+      },
+    ],
+  });
+  await host.load();
+
+  // Same reference across calls (memoised handle, cache preserved).
+  assert.strictEqual(host.rag('c1'), host.rag('c1'));
+
+  const before = embedCalls;
+  // Two queries via fresh rag('c1') lookups embed exactly their text once each
+  // (the wrapper's dimension probe is NOT repeated per rag() call) → +2.
+  await host.rag('c1').query('alpha', { k: 5, threshold: 0 });
+  await host.rag('c1').query('alpha', { k: 5, threshold: 0 });
+  assert.equal(embedCalls - before, 2, 'two query embeds, no repeated probe');
+});

@@ -108,6 +108,10 @@ export function makePgPool(
 
   return {
     async query(sql: string, params?: unknown[]) {
+      // A query after end() is a programming error: getPool() would lazily build a
+      // BRAND-NEW pool that the (now no-op) end() can never close → socket leak.
+      // Fail loud instead of silently reopening an unclosable pool.
+      if (ended) throw new Error('pg pool is closed (query after end())');
       const pool = await getPool();
       await ensureTable(pool);
       const res = await pool.query(sql, params);
@@ -154,6 +158,10 @@ export function makePgReadPool(
 
   return {
     async query(sql: string, params?: unknown[]) {
+      // A query after end() is a programming error: getPool() would lazily build a
+      // BRAND-NEW pool that the (now no-op) end() can never close → socket leak.
+      // Fail loud instead of silently reopening an unclosable pool.
+      if (ended) throw new Error('pg pool is closed (query after end())');
       const pool = await getPool();
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
