@@ -22,6 +22,22 @@ import type { IPgPool } from '@mcp-abap-adt/llm-agent-libs';
 /** Default catalog table — agrees with `makePgCatalogStore`'s default. */
 const DEFAULT_TABLE = 'skills_catalog';
 
+/**
+ * Strict SQL-identifier regex for the catalog table — bare identifier or one
+ * optional `schema.table` dot. The table name is interpolated into DDL/queries,
+ * so it MUST NOT trust its caller (belt-and-suspenders with the config-layer
+ * validation in `skill-plugins-config.ts`).
+ */
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
+
+function assertSafeTable(table: string): void {
+  if (!SQL_IDENTIFIER.test(table)) {
+    throw new Error(
+      `pg-pool: invalid catalog table identifier '${table}' (must match ${SQL_IDENTIFIER.source})`,
+    );
+  }
+}
+
 /** Minimal shape of the `pg.Pool` we consume (a subset of the real driver). */
 interface RawPgPool {
   query(
@@ -54,6 +70,7 @@ export function makePgPool(
   connectionString: string,
   table: string = DEFAULT_TABLE,
 ): IPgPool {
+  assertSafeTable(table);
   let poolPromise: Promise<RawPgPool> | undefined;
   let ensured: Promise<void> | undefined;
 
@@ -80,6 +97,32 @@ export function makePgPool(
     async query(sql: string, params?: unknown[]) {
       const pool = await getPool();
       await ensureTable(pool);
+      const res = await pool.query(sql, params);
+      return { rows: res.rows, rowCount: res.rowCount ?? 0 };
+    },
+  };
+}
+
+/**
+ * Build a READ-ONLY {@link IPgPool} backed by a real `pg.Pool`. Identical lazy
+ * dynamic-`import('pg')` Pool construction as {@link makePgPool}, but it NEVER
+ * runs DDL (no `CREATE TABLE`). A recall-only process configured with READ-ONLY
+ * pg credentials uses THIS pool so it does not crash attempting to create the
+ * catalog table it only ever reads.
+ *
+ * @param connectionString libpq connection string.
+ */
+export function makePgReadPool(connectionString: string): IPgPool {
+  let poolPromise: Promise<RawPgPool> | undefined;
+
+  const getPool = (): Promise<RawPgPool> => {
+    if (!poolPromise) poolPromise = createRawPool(connectionString);
+    return poolPromise;
+  };
+
+  return {
+    async query(sql: string, params?: unknown[]) {
+      const pool = await getPool();
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },

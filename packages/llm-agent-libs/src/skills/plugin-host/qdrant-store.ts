@@ -219,6 +219,22 @@ interface PgRow {
 
 const PG_ROW_ID = 'skills_catalog';
 
+/**
+ * Strict SQL-identifier guard for the catalog `table` — bare identifier or one
+ * optional `schema.table` dot. The table name is interpolated directly into SQL
+ * (`FROM ${table}`, `CREATE TABLE ... ${table}`, etc.), so the lib MUST NOT
+ * trust its caller (defence-in-depth with the config-layer validation).
+ */
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
+
+function assertSafeTable(table: string): void {
+  if (!SQL_IDENTIFIER.test(table)) {
+    throw new Error(
+      `invalid catalog table identifier '${table}' (must match ${SQL_IDENTIFIER.source})`,
+    );
+  }
+}
+
 // A fresh, collision-resistant revision token (the pg backend cannot use a simple
 // process-local counter — it is shared across processes and survives restarts).
 function freshRevisionToken(): string {
@@ -249,6 +265,7 @@ export function makePgCatalogStore(deps: {
 }): ICatalogStore {
   const { pool } = deps;
   const table = deps.table ?? 'skills_catalog';
+  assertSafeTable(table);
 
   async function ensureRow(): Promise<PgRow> {
     const existing = await pgRead(pool, table);
@@ -343,6 +360,7 @@ export function makePgCatalogReader(deps: {
 }): ICatalogReader {
   const { pool } = deps;
   const table = deps.table ?? 'skills_catalog';
+  assertSafeTable(table);
   return {
     async read(): Promise<CatalogSnapshot> {
       const row = await pgRead(pool, table);

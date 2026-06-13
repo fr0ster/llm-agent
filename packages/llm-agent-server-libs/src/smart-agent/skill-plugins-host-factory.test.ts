@@ -1,9 +1,18 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { IEmbedder, ISkillsStoreProvider } from '@mcp-abap-adt/llm-agent';
+import type {
+  IEmbedder,
+  ISkillPluginHost,
+  ISkillsStoreProvider,
+  SkillGroupInfo,
+} from '@mcp-abap-adt/llm-agent';
 import type { IPgPool } from '@mcp-abap-adt/llm-agent-libs';
+import type { SkillPluginsConfig } from './skill-plugins-config.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
-import { buildSkillHostFromConfig } from './skill-plugins-host-factory.js';
+import {
+  buildSkillHostFromConfig,
+  validateServedGroups,
+} from './skill-plugins-host-factory.js';
 
 /**
  * Deterministic stub embedder: maps a text to a fixed-length vector derived from
@@ -189,4 +198,146 @@ test('postgres catalog WITHOUT makePgPool throws fail-loud', async () => {
       }),
     /postgres catalog requires a pg pool provider/i,
   );
+});
+
+// P1-A — RECALL-ONLY uses the READ pool (no DDL), ingest uses the WRITE pool.
+
+/** A read pool that THROWS if a `CREATE TABLE` (DDL) SQL ever reaches it. */
+function makeNoDdlPool(): IPgPool {
+  return {
+    query: async (sql: string) => {
+      if (/create\s+table/i.test(sql)) {
+        throw new Error('read pool must NEVER run DDL');
+      }
+      return { rows: [], rowCount: 0 };
+    },
+  };
+}
+
+function recallOnlyCfg(): SkillPluginsConfig {
+  return parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: { type: 'qdrant', url: 'http://qdrant:6333', collection: 'skills' },
+    catalog: {
+      type: 'postgres',
+      connectionString: 'postgres://localhost/skills',
+    },
+    embeddingSpaceId: 'sp-1',
+    dimension: 8,
+    recallTimeoutMs: 1000,
+    loadOnStartup: false,
+  });
+}
+
+test('recall-only path uses makePgReadPool (NOT makePgPool) for the catalog reader', async () => {
+  let readPoolCalledWith: string | undefined;
+  let writePoolCalled = false;
+
+  const host = await buildSkillHostFromConfig(recallOnlyCfg(), {
+    resolveEmbedder: () => makeStubEmbedder(),
+    makePgPool: () => {
+      writePoolCalled = true;
+      return makeNoDdlPool();
+    },
+    makePgReadPool: (cs) => {
+      readPoolCalledWith = cs;
+      return makeNoDdlPool();
+    },
+  });
+
+  assert.equal(
+    readPoolCalledWith,
+    'postgres://localhost/skills',
+    'recall-only must build the catalog reader via makePgReadPool',
+  );
+  assert.equal(
+    writePoolCalled,
+    false,
+    'recall-only must NOT use the write (DDL) pool',
+  );
+  assert.ok(typeof host.load === 'function', 'host is constructed');
+});
+
+test('recall-only WITHOUT makePgReadPool throws fail-loud (even when makePgPool is present)', async () => {
+  await assert.rejects(
+    () =>
+      buildSkillHostFromConfig(recallOnlyCfg(), {
+        resolveEmbedder: () => makeStubEmbedder(),
+        makePgPool: () => makeNoDdlPool(),
+      }),
+    /recall-only postgres catalog requires a read pool/i,
+  );
+});
+
+// P1-B — validateServedGroups fails loud on unknown serveCollections / controllerSkillGroup.
+
+function hostWithGroups(groups: string[]): ISkillPluginHost {
+  const infos: SkillGroupInfo[] = groups.map((g) => ({
+    group: g,
+    description: g,
+    collection: g,
+  }));
+  return {
+    load: async () => ({
+      committed: [...groups],
+      omitted: [],
+      tombstoned: [],
+      ok: true,
+    }),
+    groups: () => infos,
+    rag: () => {
+      throw new Error('not used');
+    },
+  } as unknown as ISkillPluginHost;
+}
+
+function cfgWith(partial: Partial<SkillPluginsConfig>): SkillPluginsConfig {
+  return { ...recallOnlyCfg(), ...partial };
+}
+
+test('validateServedGroups: unknown serveCollections entry throws', () => {
+  const host = hostWithGroups(['abap', 'sql']);
+  assert.throws(
+    () => validateServedGroups(host, cfgWith({ serveCollections: ['typo'] })),
+    /serveCollections names unknown group\(s\) \[typo\]/i,
+  );
+});
+
+test('validateServedGroups: unknown controllerSkillGroup throws', () => {
+  const host = hostWithGroups(['abap', 'sql']);
+  assert.throws(
+    () =>
+      validateServedGroups(host, cfgWith({ controllerSkillGroup: 'missing' })),
+    /controllerSkillGroup 'missing' is not an available group/i,
+  );
+});
+
+test('validateServedGroups: controllerSkillGroup outside serveCollections throws', () => {
+  const host = hostWithGroups(['abap', 'sql']);
+  assert.throws(
+    () =>
+      validateServedGroups(
+        host,
+        cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
+      ),
+    /controllerSkillGroup 'sql' must be within serveCollections/i,
+  );
+});
+
+test('validateServedGroups: valid serveCollections + controllerSkillGroup passes', () => {
+  const host = hostWithGroups(['abap', 'sql']);
+  assert.doesNotThrow(() =>
+    validateServedGroups(
+      host,
+      cfgWith({
+        serveCollections: ['abap', 'sql'],
+        controllerSkillGroup: 'abap',
+      }),
+    ),
+  );
+});
+
+test('validateServedGroups: no served subset configured passes (all groups)', () => {
+  const host = hostWithGroups(['abap']);
+  assert.doesNotThrow(() => validateServedGroups(host, recallOnlyCfg()));
 });

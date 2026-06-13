@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import type { CatalogEntry, CatalogSnapshot } from '@mcp-abap-adt/llm-agent';
 import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
 import {
+  type IPgPool,
   type IQdrantClient,
   makeInProcessCatalogStore,
+  makePgCatalogReader,
   makePgCatalogStore,
   makeQdrantBackendProvider,
   makeQdrantStoreProvider,
@@ -552,4 +554,31 @@ test('asBackendProvider() gives an in-process read view', async () => {
   const active = await bp.forGroup('g1').activeSnapshot();
   assert.equal(active?.revision, g0);
   assert.ok(eq((await bp.readCatalog()).entries.length, 1));
+});
+
+// P2-C — defence-in-depth: the lib rejects an unsafe table identifier before any SQL.
+test('makePgCatalogStore rejects an unsafe table identifier', () => {
+  const pool: IPgPool = { query: async () => ({ rows: [], rowCount: 0 }) };
+  assert.throws(
+    () => makePgCatalogStore({ pool, table: 'foo; DROP TABLE x' }),
+    /invalid catalog table identifier/i,
+  );
+});
+
+test('makePgCatalogReader rejects an unsafe table identifier', () => {
+  const pool: IPgPool = { query: async () => ({ rows: [], rowCount: 0 }) };
+  assert.throws(
+    () => makePgCatalogReader({ pool, table: 'a"b' }),
+    /invalid catalog table identifier/i,
+  );
+});
+
+test('makePgCatalogStore / Reader accept a valid identifier and schema.table', () => {
+  const pool: IPgPool = { query: async () => ({ rows: [], rowCount: 0 }) };
+  assert.doesNotThrow(() =>
+    makePgCatalogStore({ pool, table: 'skills_catalog' }),
+  );
+  assert.doesNotThrow(() =>
+    makePgCatalogReader({ pool, table: 'public.skills_catalog' }),
+  );
 });

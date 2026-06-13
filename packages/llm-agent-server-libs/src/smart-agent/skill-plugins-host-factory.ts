@@ -80,6 +80,14 @@ export interface BuildSkillHostDeps {
    * configures `catalog.type: postgres`; absent → a config-time throw.
    */
   makePgPool?: (connectionString: string) => IPgPool;
+  /**
+   * OPTIONAL READ-ONLY pg `Pool` provider for a `postgres` catalog on the
+   * RECALL-ONLY path. Unlike `makePgPool` (which lazily runs `CREATE TABLE`),
+   * this pool NEVER runs DDL, so a recall-only process with READ-ONLY pg
+   * credentials does not crash at startup. REQUIRED for the recall-only branch
+   * (absent → fail-loud); the server injects it from `pg-pool.makePgReadPool`.
+   */
+  makePgReadPool?: (connectionString: string) => IPgPool;
   /** OPTIONAL test seam — fully replaces the config-driven store provider build. */
   makeStoreProvider?: (cfg: SkillPluginsConfig) => ISkillsStoreProvider;
   /** OPTIONAL test seam — fully replaces the config-driven catalog store build. */
@@ -219,11 +227,14 @@ export async function buildSkillHostFromConfig(
         'skillPlugins: recall-only (loadOnStartup:false) requires a qdrant store + postgres catalog',
       );
     }
-    if (!deps.makePgPool) {
+    // Recall-only MUST use a READ pool (no DDL) — a read-only-credentialed
+    // process would crash trying to CREATE TABLE with the write pool.
+    if (!deps.makePgReadPool) {
       throw new Error(
-        'skillPlugins: postgres catalog requires a pg pool provider (inject deps.makePgPool)',
+        'skillPlugins: recall-only postgres catalog requires a read pool provider',
       );
     }
+    const makeReadPool = deps.makePgReadPool;
     const collection = cfg.store.collection ?? 'skills';
     const backendProvider: ISkillsRagBackendProvider =
       makeQdrantBackendProvider({
@@ -235,7 +246,7 @@ export async function buildSkillHostFromConfig(
           collection,
         }),
         catalogReader: makePgCatalogReader({
-          pool: deps.makePgPool(cfg.catalog.connectionString),
+          pool: makeReadPool(cfg.catalog.connectionString),
           ...(cfg.catalog.table !== undefined
             ? { table: cfg.catalog.table }
             : {}),
@@ -295,4 +306,53 @@ export async function buildSkillHostFromConfig(
       ? { recallTimeoutMs: cfg.recallTimeoutMs }
       : {}),
   });
+}
+
+/**
+ * Fail-loud validation of the served-group subset AFTER `host.load()`, against
+ * the host's materialised `groups()`. A typo in `serveCollections` /
+ * `controllerSkillGroup` would otherwise SILENTLY disable skills (the filter in
+ * `registerSkillSources` drops unknown names) — the spec requires a STARTUP
+ * config error instead.
+ *
+ * Pure + side-effect-free so it is unit-testable without a full server: pass the
+ * loaded host and the normalized config.
+ */
+export function validateServedGroups(
+  host: ISkillPluginHost,
+  cfg: SkillPluginsConfig,
+): void {
+  const available = host.groups().map((g) => g.group);
+  const availableSet = new Set(available);
+
+  if (cfg.serveCollections !== undefined) {
+    const unknown = cfg.serveCollections.filter((g) => !availableSet.has(g));
+    if (unknown.length > 0) {
+      throw new Error(
+        `skillPlugins: serveCollections names unknown group(s) [${unknown.join(
+          ', ',
+        )}] — available groups: [${available.join(', ')}]`,
+      );
+    }
+  }
+
+  if (cfg.controllerSkillGroup !== undefined) {
+    if (!availableSet.has(cfg.controllerSkillGroup)) {
+      throw new Error(
+        `skillPlugins: controllerSkillGroup '${cfg.controllerSkillGroup}' is not an available group — available groups: [${available.join(
+          ', ',
+        )}]`,
+      );
+    }
+    if (
+      cfg.serveCollections !== undefined &&
+      !cfg.serveCollections.includes(cfg.controllerSkillGroup)
+    ) {
+      throw new Error(
+        `skillPlugins: controllerSkillGroup '${cfg.controllerSkillGroup}' must be within serveCollections [${cfg.serveCollections.join(
+          ', ',
+        )}]`,
+      );
+    }
+  }
 }

@@ -232,3 +232,147 @@ test('clean implicit config parses with defaults applied', () => {
   assert.equal(cfg.recallTimeoutMs, undefined);
   assert.equal(cfg.sources?.length, 1);
 });
+
+// 10. P2-C — catalog.table must be a valid SQL identifier.
+test('catalog.table with SQL injection chars throws', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        store: { type: 'qdrant', url: 'http://q' },
+        embeddingSpaceId: 'sp-1',
+        catalog: {
+          type: 'postgres',
+          connectionString: 'pg://x',
+          table: 'foo; DROP TABLE x',
+        },
+        sources: [{ id: 'a', records: [{ group: 'g', content: 'x' }] }],
+      }),
+    /catalog\.table.*valid SQL identifier/i,
+  );
+});
+
+test('catalog.table accepts a bare identifier and a schema.table', () => {
+  const base = {
+    store: { type: 'qdrant', url: 'http://q' } as const,
+    embeddingSpaceId: 'sp-1',
+    sources: [{ id: 'a', records: [{ group: 'g', content: 'x' }] }],
+  };
+  const bare = parseSkillPluginsConfig({
+    ...base,
+    catalog: {
+      type: 'postgres',
+      connectionString: 'pg://x',
+      table: 'my_table',
+    },
+  });
+  assert.deepEqual(bare.catalog, {
+    type: 'postgres',
+    connectionString: 'pg://x',
+    table: 'my_table',
+  });
+  const dotted = parseSkillPluginsConfig({
+    ...base,
+    catalog: {
+      type: 'postgres',
+      connectionString: 'pg://x',
+      table: 'schema.my_table',
+    },
+  });
+  assert.deepEqual(dotted.catalog, {
+    type: 'postgres',
+    connectionString: 'pg://x',
+    table: 'schema.my_table',
+  });
+});
+
+// 11. P2-D — numeric knobs reject NaN / zero / non-integer / out-of-range.
+const withSource = (extra: Record<string, unknown>) => ({
+  sources: [{ id: 'a', records: [{ group: 'g', content: 'x' }] }],
+  ...extra,
+});
+
+test('threshold non-numeric throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ threshold: 'x' })),
+    /threshold/i,
+  );
+});
+
+test('threshold out of [0,1] throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ threshold: 2 })),
+    /threshold/i,
+  );
+});
+
+test('threshold boundary values 0 and 1 parse', () => {
+  assert.equal(
+    parseSkillPluginsConfig(withSource({ threshold: 0 })).threshold,
+    0,
+  );
+  assert.equal(
+    parseSkillPluginsConfig(withSource({ threshold: 1 })).threshold,
+    1,
+  );
+});
+
+test('k zero throws', () => {
+  assert.throws(() => parseSkillPluginsConfig(withSource({ k: 0 })), /k must/i);
+});
+
+test('k non-integer throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ k: 1.5 })),
+    /k must/i,
+  );
+});
+
+test('k non-numeric (NaN-ish) throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ k: 'abc' })),
+    /k must/i,
+  );
+});
+
+test('maxInjectChars / catalogCasMaxAttempts / chunk.maxChars zero throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ maxInjectChars: 0 })),
+    /maxInjectChars/i,
+  );
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ catalogCasMaxAttempts: 0 })),
+    /catalogCasMaxAttempts/i,
+  );
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ chunk: { maxChars: 0 } })),
+    /chunk\.maxChars/i,
+  );
+});
+
+test('orphanGraceMs non-integer throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ orphanGraceMs: 1.5 })),
+    /orphanGraceMs/i,
+  );
+});
+
+test('valid numeric knobs parse', () => {
+  const cfg = parseSkillPluginsConfig(
+    withSource({
+      k: 8,
+      threshold: 0.5,
+      maxInjectChars: 2000,
+      catalogCasMaxAttempts: 5,
+      retiredGraceMs: 60000,
+      orphanGraceMs: 120000,
+      chunk: { maxChars: 800 },
+    }),
+  );
+  assert.equal(cfg.k, 8);
+  assert.equal(cfg.threshold, 0.5);
+  assert.equal(cfg.maxInjectChars, 2000);
+  assert.equal(cfg.catalogCasMaxAttempts, 5);
+  assert.equal(cfg.retiredGraceMs, 60000);
+  assert.equal(cfg.orphanGraceMs, 120000);
+  assert.deepEqual(cfg.chunk, { maxChars: 800 });
+});

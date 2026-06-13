@@ -394,14 +394,17 @@ import {
 } from './config.js';
 import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
-import { makePgPool } from './pg-pool.js';
+import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type {
   ISessionMetaStore,
   SessionMetaRow,
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
-import { buildSkillHostFromConfig } from './skill-plugins-host-factory.js';
+import {
+  buildSkillHostFromConfig,
+  validateServedGroups,
+} from './skill-plugins-host-factory.js';
 
 export {
   generateConfigTemplate,
@@ -416,6 +419,7 @@ export {
   YAML_TEMPLATE,
   type YamlConfig,
 } from './config.js';
+export { makePgPool, makePgReadPool } from './pg-pool.js';
 export {
   parseSkillPluginsConfig,
   type SkillPluginsCatalogConfig,
@@ -428,6 +432,7 @@ export {
 export {
   type BuildSkillHostDeps,
   buildSkillHostFromConfig,
+  validateServedGroups,
 } from './skill-plugins-host-factory.js';
 
 // ---------------------------------------------------------------------------
@@ -1217,8 +1222,15 @@ export class SmartServer {
               ? skillCfg.catalog.table
               : undefined,
           ),
+        // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
+        // recall-only process with read-only pg credentials does not crash
+        // attempting to CREATE the catalog table it only reads.
+        makePgReadPool: (connectionString) => makePgReadPool(connectionString),
       });
       await host.load();
+      // Fail loud on a misconfigured served-group subset (typo'd
+      // serveCollections/controllerSkillGroup silently disables skills).
+      validateServedGroups(host, skillCfg);
       this._skillHost = host;
     }
 

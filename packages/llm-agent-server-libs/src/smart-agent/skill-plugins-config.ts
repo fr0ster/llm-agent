@@ -94,6 +94,26 @@ function fail(msg: string): never {
   throw new Error(`skillPlugins: ${msg}`);
 }
 
+/**
+ * Strict SQL-identifier regex for `catalog.table` — a bare identifier or one
+ * optional `schema.table` dot. The table name is interpolated directly into SQL
+ * downstream (DDL + queries), so reject anything that is not a plain identifier.
+ */
+const SQL_IDENTIFIER = /^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)?$/;
+
+/**
+ * Parse a numeric knob as a positive INTEGER (finite, integer, `> 0`). A bad
+ * value fails loud naming the knob (NOT a silent NaN/default). The key being
+ * ABSENT is the caller's concern (defaults applied before this is called).
+ */
+function posInt(raw: unknown, name: string): number {
+  const n = Number(raw);
+  if (!Number.isInteger(n) || n <= 0) {
+    fail(`${name} must be a positive integer (got ${JSON.stringify(raw)})`);
+  }
+  return n;
+}
+
 function parseStore(raw: unknown): SkillPluginsStoreConfig {
   if (raw === undefined) return { type: 'in-memory' };
   if (!isObject(raw)) fail('store must be an object');
@@ -129,6 +149,13 @@ function parseCatalog(raw: unknown): SkillPluginsCatalogConfig {
       raw.connectionString.length === 0
     ) {
       fail('catalog.connectionString is required for catalog.type postgres');
+    }
+    if (raw.table !== undefined) {
+      if (typeof raw.table !== 'string' || !SQL_IDENTIFIER.test(raw.table)) {
+        fail(
+          `catalog.table '${String(raw.table)}' is not a valid SQL identifier (must match ${SQL_IDENTIFIER.source})`,
+        );
+      }
     }
     return {
       type: 'postgres',
@@ -231,24 +258,40 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     );
   }
 
-  // Numeric knobs + defaults.
-  const k = raw.k !== undefined ? Number(raw.k) : 4;
-  const threshold = raw.threshold !== undefined ? Number(raw.threshold) : 0.3;
+  // Numeric knobs + defaults. A present-but-invalid value fails loud naming the
+  // knob (NEVER a silent NaN/default); an ABSENT key keeps today's default.
+  const k = raw.k !== undefined ? posInt(raw.k, 'k') : 4;
+  let threshold = 0.3;
+  if (raw.threshold !== undefined) {
+    const t = Number(raw.threshold);
+    if (!Number.isFinite(t) || t < 0 || t > 1) {
+      fail(
+        `threshold must be a finite number in [0, 1] (got ${JSON.stringify(raw.threshold)})`,
+      );
+    }
+    threshold = t;
+  }
   const maxInjectChars =
-    raw.maxInjectChars !== undefined ? Number(raw.maxInjectChars) : 4000;
+    raw.maxInjectChars !== undefined
+      ? posInt(raw.maxInjectChars, 'maxInjectChars')
+      : 4000;
   const catalogCasMaxAttempts =
     raw.catalogCasMaxAttempts !== undefined
-      ? Number(raw.catalogCasMaxAttempts)
+      ? posInt(raw.catalogCasMaxAttempts, 'catalogCasMaxAttempts')
       : 3;
   const retiredGraceMs =
-    raw.retiredGraceMs !== undefined ? Number(raw.retiredGraceMs) : 30000;
+    raw.retiredGraceMs !== undefined
+      ? posInt(raw.retiredGraceMs, 'retiredGraceMs')
+      : 30000;
   const orphanGraceMs =
-    raw.orphanGraceMs !== undefined ? Number(raw.orphanGraceMs) : 3600000;
+    raw.orphanGraceMs !== undefined
+      ? posInt(raw.orphanGraceMs, 'orphanGraceMs')
+      : 3600000;
   const chunkRaw = isObject(raw.chunk) ? raw.chunk : undefined;
   const chunk = {
     maxChars:
       chunkRaw && chunkRaw.maxChars !== undefined
-        ? Number(chunkRaw.maxChars)
+        ? posInt(chunkRaw.maxChars, 'chunk.maxChars')
         : 1500,
   };
 
@@ -256,11 +299,12 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     fail('retiredGraceMs must be >= 1000 (too small to bound recall)');
   }
 
-  // recallTimeoutMs: explicit must be < retiredGraceMs; default = floor(grace*0.8)
-  // for a persistent store (always strictly < grace), unused for in-memory.
+  // recallTimeoutMs: explicit must be a positive integer < retiredGraceMs;
+  // default = floor(grace*0.8) for a persistent store (always strictly <
+  // grace), unused for in-memory.
   let recallTimeoutMs: number | undefined;
   if (raw.recallTimeoutMs !== undefined) {
-    recallTimeoutMs = Number(raw.recallTimeoutMs);
+    recallTimeoutMs = posInt(raw.recallTimeoutMs, 'recallTimeoutMs');
     if (recallTimeoutMs >= retiredGraceMs) {
       fail(
         `recallTimeoutMs (${recallTimeoutMs}) must be < retiredGraceMs (${retiredGraceMs})`,
