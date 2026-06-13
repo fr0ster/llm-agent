@@ -98,6 +98,85 @@ async function seedProvider(
   return provider;
 }
 
+/** Seed an in-memory provider with one committed generation per named group. */
+async function seedProviderMulti(
+  groups: Array<{ group: string; records: SkillRecord[] }>,
+  manifest = {
+    embeddingSpaceId: 'sp',
+    dimension: 3,
+    retrievalSchemaVersion: 1,
+  },
+) {
+  const provider = makeInMemoryStoreProvider({ embed });
+  const entries: CatalogEntry[] = [];
+  for (const { group, records } of groups) {
+    const generation = `${group}#g0`;
+    await provider._seed(
+      generation,
+      records.map((r) => ({ record: r, vector: hash3(r.retrievalText) })),
+    );
+    entries.push({
+      collection: info(group),
+      sources: ['seed'],
+      generation,
+      manifest,
+    });
+  }
+  await provider.publishCatalog('c0', entries);
+  return provider;
+}
+
+// 0a ------------------------------------------------------------------------
+test('recall-only: NO serveCollections → serves ALL cataloged collections', async () => {
+  const provider = await seedProviderMulti([
+    { group: 'a', records: [rec('a:1', 'seed', 'a', 'alpha record')] },
+    { group: 'b', records: [rec('b:1', 'seed', 'b', 'beta record')] },
+  ]);
+
+  // serveCollections OMITTED entirely → derive all from the catalog.
+  const host = makeSkillPluginHost({
+    ...SERVE_BASE,
+    backendProvider: provider.asBackendProvider(),
+  });
+
+  const res = await host.load();
+  assert.equal(res.ok, true);
+  assert.deepEqual([...res.committed].sort(), ['a', 'b']);
+
+  assert.deepEqual(
+    host
+      .groups()
+      .map((g) => g.group)
+      .sort(),
+    ['a', 'b'],
+  );
+
+  const hits = await host
+    .rag('a')
+    .query('alpha record', { k: 5, threshold: 0 });
+  assert.ok(hits.some((h) => h.record.id === 'a:1'));
+});
+
+// 0b ------------------------------------------------------------------------
+test('recall-only: explicit serveCollections → serves only the named subset', async () => {
+  const provider = await seedProviderMulti([
+    { group: 'a', records: [rec('a:1', 'seed', 'a', 'alpha record')] },
+    { group: 'b', records: [rec('b:1', 'seed', 'b', 'beta record')] },
+  ]);
+
+  const host = makeSkillPluginHost({
+    ...SERVE_BASE,
+    backendProvider: provider.asBackendProvider(),
+    serveCollections: ['a'],
+  });
+
+  await host.load();
+  assert.deepEqual(
+    host.groups().map((g) => g.group),
+    ['a'],
+  );
+});
+
 // 1 -------------------------------------------------------------------------
 test('recall-only: load() validates serveCollections + eager compat; groups()/rag() from catalog', async () => {
   const provider = await seedProvider('g1', [

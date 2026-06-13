@@ -953,6 +953,12 @@ export class SmartServer {
    * absent (everything unchanged).
    */
   private _skillHost?: ISkillPluginHost;
+  /**
+   * pg pools created for the skill plugin-host's `postgres` catalog. Captured at
+   * build time so the server can close their real sockets on shutdown (a closer
+   * is registered in `closeFns`); otherwise live PG sockets outlive `close()`.
+   */
+  private _skillPgPools: Array<{ end(): Promise<void> }> = [];
   /** Normalized LLM map + pipeline fallback + main temperature — captured in
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
@@ -1215,17 +1221,24 @@ export class SmartServer {
         // pass the configured table so the DDL targets the SAME table the
         // catalog store reads/writes. Absent skillPlugins.catalog.type:postgres
         // this is never invoked.
-        makePgPool: (connectionString) =>
-          makePgPool(
+        makePgPool: (connectionString) => {
+          const pool = makePgPool(
             connectionString,
             skillCfg.catalog.type === 'postgres'
               ? skillCfg.catalog.table
               : undefined,
-          ),
+          );
+          this._skillPgPools.push(pool);
+          return pool;
+        },
         // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
         // recall-only process with read-only pg credentials does not crash
         // attempting to CREATE the catalog table it only reads.
-        makePgReadPool: (connectionString) => makePgReadPool(connectionString),
+        makePgReadPool: (connectionString) => {
+          const pool = makePgReadPool(connectionString);
+          this._skillPgPools.push(pool);
+          return pool;
+        },
       });
       await host.load();
       // Fail loud on a misconfigured served-group subset (typo'd
@@ -1421,6 +1434,12 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // Close any pg pools created for the skill plugin-host's postgres catalog so
+    // their sockets do not outlive server shutdown.
+    closeFns.push(async () => {
+      for (const p of this._skillPgPools) await p.end();
+    });
 
     // Stepper-owned MCP clients (connected from YAML mcp: block when no
     // DI/plugin clients existed). Dispose on server shutdown.

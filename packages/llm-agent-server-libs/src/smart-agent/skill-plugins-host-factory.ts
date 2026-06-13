@@ -260,7 +260,11 @@ export async function buildSkillHostFromConfig(
       embeddingSpaceId: cfg.embeddingSpaceId as string,
       retrievalSchemaVersion: RETRIEVAL_SCHEMA_VERSION,
       ...(cfg.dimension !== undefined ? { dimension: cfg.dimension } : {}),
-      serveCollections: [...(cfg.serveCollections ?? [])],
+      // OMIT the key when unset so the recall host derives ALL collections from
+      // the catalog; an explicit list selects only those.
+      ...(cfg.serveCollections
+        ? { serveCollections: cfg.serveCollections }
+        : {}),
       ...(cfg.recallTimeoutMs !== undefined
         ? { recallTimeoutMs: cfg.recallTimeoutMs }
         : {}),
@@ -336,20 +340,14 @@ export function validateServedGroups(
     }
   }
 
+  // `controllerSkillGroup` (CONTROLLER PLANNER recall) and `serveCollections`
+  // (ASSEMBLER pipelines) are INDEPENDENT channels — the controller group is
+  // recalled on its own path that bypasses the assembler, so it need NOT be in
+  // serveCollections. Validate existence only.
   if (cfg.controllerSkillGroup !== undefined) {
     if (!availableSet.has(cfg.controllerSkillGroup)) {
       throw new Error(
         `skillPlugins: controllerSkillGroup '${cfg.controllerSkillGroup}' is not an available group — available groups: [${available.join(
-          ', ',
-        )}]`,
-      );
-    }
-    if (
-      cfg.serveCollections !== undefined &&
-      !cfg.serveCollections.includes(cfg.controllerSkillGroup)
-    ) {
-      throw new Error(
-        `skillPlugins: controllerSkillGroup '${cfg.controllerSkillGroup}' must be within serveCollections [${cfg.serveCollections.join(
           ', ',
         )}]`,
       );

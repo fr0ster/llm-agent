@@ -312,15 +312,16 @@ test('validateServedGroups: unknown controllerSkillGroup throws', () => {
   );
 });
 
-test('validateServedGroups: controllerSkillGroup outside serveCollections throws', () => {
+test('validateServedGroups: controllerSkillGroup outside serveCollections is allowed (independent channels)', () => {
+  // controllerSkillGroup drives the CONTROLLER PLANNER recall (its own path) and
+  // is INDEPENDENT of serveCollections (assembler pipelines). A valid group that
+  // is NOT in serveCollections must pass — existence is all that is required.
   const host = hostWithGroups(['abap', 'sql']);
-  assert.throws(
-    () =>
-      validateServedGroups(
-        host,
-        cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
-      ),
-    /controllerSkillGroup 'sql' must be within serveCollections/i,
+  assert.doesNotThrow(() =>
+    validateServedGroups(
+      host,
+      cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
+    ),
   );
 });
 

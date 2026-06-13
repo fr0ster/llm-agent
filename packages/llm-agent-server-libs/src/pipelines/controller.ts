@@ -108,16 +108,13 @@ export class ControllerPipelinePlugin
     // bounded "Relevant skills" block the planner injects into create-plan/replan.
     // Wired ONLY when a host AND a controller group are present; otherwise left
     // undefined so the planner prompt stays byte-identical to the agnostic path.
+    // `controllerSkillGroup` is an INDEPENDENT channel from `serveCollections`
+    // (assembler pipelines); the group's existence is validated at startup, so we
+    // gate purely on host + group presence and do NOT couple to serveCollections.
     const skillHost = ctx.skillHost;
     const group = ctx.skillRecall?.controllerSkillGroup;
-    // Recall the controller group only when it is within the served subset. If
-    // `serveCollections` is configured and excludes the group, that group is not
-    // served, so the hook stays off (the planner prompt remains agnostic).
-    const serve = ctx.skillRecall?.serveCollections;
-    const groupServed =
-      group !== undefined && (serve === undefined || serve.includes(group));
     const skillsRecall =
-      skillHost && group && groupServed
+      skillHost && group
         ? async (goal: string, options?: CallOptions): Promise<string> => {
             const k = ctx.skillRecall?.k ?? 4;
             const maxInjectChars = ctx.skillRecall?.maxInjectChars ?? 4000;

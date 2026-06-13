@@ -27,8 +27,9 @@ export interface RecallHostDeps {
   embeddingSpaceId: string;
   retrievalSchemaVersion: number;
   dimension?: number;
-  /** The collections this host serves; each MUST exist in the backend's catalog. */
-  serveCollections: string[];
+  /** The collections this host serves; each MUST exist in the backend's catalog.
+   *  OMIT to serve ALL (non-tombstoned) collections present in the catalog. */
+  serveCollections?: readonly string[];
   /** Threaded into makeCompatibleSkillsRag in rag() (Qdrant time-grace). */
   recallTimeoutMs?: number;
 }
@@ -109,16 +110,23 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
   return {
     async load(options?: CallOptions): Promise<SkillLoadResult> {
       const cat = await deps.backendProvider.readCatalog(options);
-      // Validate every served collection exists in the persisted catalog (config error).
-      for (const g of deps.serveCollections) {
-        if (!cat.entries.some((e) => e.collection.group === g)) {
-          throw new Error(
-            `serveCollections names a collection absent from the catalog: ${g}`,
-          );
+      // No serveCollections → serve ALL non-tombstoned collections in the catalog.
+      const served =
+        deps.serveCollections ??
+        cat.entries.filter((e) => !e.tombstone).map((e) => e.collection.group);
+      // Validate every EXPLICITLY-named served collection exists in the persisted
+      // catalog (config error). When derived from the catalog they trivially exist.
+      if (deps.serveCollections) {
+        for (const g of served) {
+          if (!cat.entries.some((e) => e.collection.group === g)) {
+            throw new Error(
+              `serveCollections names a collection absent from the catalog: ${g}`,
+            );
+          }
         }
       }
       // groups() = the SkillGroupInfo of the served collections; register the fixed set.
-      _snapshot = deps.serveCollections.map(
+      _snapshot = served.map(
         (g) =>
           (cat.entries.find((e) => e.collection.group === g) as CatalogEntry)
             .collection,
@@ -126,12 +134,12 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
 
       // EAGER fail-fast: probe + compat-check each served collection's active generation.
       // SkillsIncompatibleError propagates (recall-only load aborts on incompatibility).
-      for (const g of deps.serveCollections) {
+      for (const g of served) {
         await rag(g).activeManifest(options);
       }
 
       return {
-        committed: [...deps.serveCollections],
+        committed: [...served],
         omitted: [],
         tombstoned: [],
         ok: true,

@@ -44,6 +44,8 @@ interface RawPgPool {
     sql: string,
     params?: unknown[],
   ): Promise<{ rows: unknown[]; rowCount: number | null }>;
+  /** The real `pg.Pool` exposes this; closes all sockets in the pool. */
+  end(): Promise<void>;
 }
 
 /** Lazily resolve the `pg` driver and construct a real Pool. */
@@ -69,13 +71,20 @@ async function createRawPool(connectionString: string): Promise<RawPgPool> {
 export function makePgPool(
   connectionString: string,
   table: string = DEFAULT_TABLE,
-): IPgPool {
+): IPgPool & { end(): Promise<void> } {
   assertSafeTable(table);
   let poolPromise: Promise<RawPgPool> | undefined;
   let ensured: Promise<void> | undefined;
+  // The raw pool once created — captured so end() can really close it.
+  let createdPool: RawPgPool | undefined;
 
   const getPool = (): Promise<RawPgPool> => {
-    if (!poolPromise) poolPromise = createRawPool(connectionString);
+    if (!poolPromise) {
+      poolPromise = createRawPool(connectionString).then((p) => {
+        createdPool = p;
+        return p;
+      });
+    }
     return poolPromise;
   };
 
@@ -100,6 +109,11 @@ export function makePgPool(
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
+    // Close the real pool if it was ever created (no-op otherwise) so its
+    // sockets do not outlive server shutdown.
+    async end() {
+      if (createdPool) await createdPool.end();
+    },
   };
 }
 
@@ -112,11 +126,20 @@ export function makePgPool(
  *
  * @param connectionString libpq connection string.
  */
-export function makePgReadPool(connectionString: string): IPgPool {
+export function makePgReadPool(
+  connectionString: string,
+): IPgPool & { end(): Promise<void> } {
   let poolPromise: Promise<RawPgPool> | undefined;
+  // The raw pool once created — captured so end() can really close it.
+  let createdPool: RawPgPool | undefined;
 
   const getPool = (): Promise<RawPgPool> => {
-    if (!poolPromise) poolPromise = createRawPool(connectionString);
+    if (!poolPromise) {
+      poolPromise = createRawPool(connectionString).then((p) => {
+        createdPool = p;
+        return p;
+      });
+    }
     return poolPromise;
   };
 
@@ -125,6 +148,11 @@ export function makePgReadPool(connectionString: string): IPgPool {
       const pool = await getPool();
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
+    },
+    // Close the real pool if it was ever created (no-op otherwise) — calling
+    // end() before any query never constructs a pool.
+    async end() {
+      if (createdPool) await createdPool.end();
     },
   };
 }
