@@ -242,6 +242,13 @@ export interface SmartServerConfig {
   skills?: SmartServerSkillsConfig;
   /** Pre-built skill manager injected via DI. Takes precedence over `skills` config. */
   skillManager?: ISkillManager;
+  /**
+   * Skill PLUGIN-HOST config (the `skillPlugins:` YAML key) — a SEPARATE feature
+   * from `skills:` above. It feeds consumer-supplied domain skills to the agnostic
+   * engine through a grouped skills-RAG (gnostification). When omitted, no host is
+   * built and behaviour is unchanged. See {@link SkillPluginsConfig}.
+   */
+  skillPlugins?: SkillPluginsConfig;
   /** Pre-built MCP clients injected via DI. Takes precedence over `mcp` config. */
   mcpClients?: IMcpClient[];
   /** Client adapters for auto-detecting prompt-based clients (e.g. Cline). */
@@ -387,6 +394,7 @@ import type {
   SessionMetaRow,
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
+import type { SkillPluginsConfig } from './skill-plugins-config.js';
 
 export {
   generateConfigTemplate,
@@ -401,6 +409,15 @@ export {
   YAML_TEMPLATE,
   type YamlConfig,
 } from './config.js';
+export {
+  parseSkillPluginsConfig,
+  type SkillPluginsCatalogConfig,
+  type SkillPluginsConfig,
+  type SkillPluginsFetchedSource,
+  type SkillPluginsRecordsSource,
+  type SkillPluginsSource,
+  type SkillPluginsStoreConfig,
+} from './skill-plugins-config.js';
 
 // ---------------------------------------------------------------------------
 // Worker-LLM cache + RAG-registry sharing (Task A7)
