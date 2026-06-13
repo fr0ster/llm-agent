@@ -677,6 +677,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         resumedExternal,
         retrying: planParseRetries > 0,
         logUsage,
+        // Same request CallOptions the handler threads into every other LLM/RAG
+        // call (subagents, knowledgeRagFor, target-state) so the skills-recall
+        // embedding is metered, cancellable, and joins the request trace.
+        options: ctx.options,
       });
       // The call completed → clear the in-flight marker + reset the resume counter
       // (a malformed reply is still a completed call; parse-retry is handled below).

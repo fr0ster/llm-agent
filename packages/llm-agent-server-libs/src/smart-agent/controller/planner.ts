@@ -82,8 +82,10 @@ export class IncrementalPlanner implements IControllerPlanner {
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, retrying, logUsage } = input;
-    const block = this.skillsRecall ? await this.skillsRecall(bundle.goal) : '';
+    const { bundle, prompt, retrying, logUsage, options } = input;
+    const block = this.skillsRecall
+      ? await this.skillsRecall(bundle.goal, options)
+      : '';
     const res = await this.planner.send([
       {
         role: 'system',
@@ -208,8 +210,15 @@ export class AdaptivePlanner implements IControllerPlanner {
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, lastOutcome, resumedExternal, retrying, logUsage } =
-      input;
+    const {
+      bundle,
+      prompt,
+      lastOutcome,
+      resumedExternal,
+      retrying,
+      logUsage,
+      options,
+    } = input;
 
     // 1. No plan yet → create it.
     if (!bundle.plan) {
@@ -219,6 +228,8 @@ export class AdaptivePlanner implements IControllerPlanner {
         prompt,
         retrying,
         logUsage,
+        [],
+        options,
       );
       // An EMPTY plan from createPlan is invalid: it would skip straight to the
       // finalizer and answer WITHOUT fetching the required data. Treat it as a
@@ -254,6 +265,7 @@ export class AdaptivePlanner implements IControllerPlanner {
         retrying,
         logUsage,
         completed,
+        options,
       );
       if (rest === null) return null;
       bundle.plan = [...bundle.plan.slice(0, cursor), ...rest];
@@ -323,6 +335,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     retrying: boolean,
     logUsage?: (role: string, u?: LlmUsage) => void,
     completed: Step[] = [],
+    options?: CallOptions,
   ): Promise<Step[] | null> {
     // On replan, the planner MUST know which steps already ran (their results are
     // in Progress / the step-result collection) so it plans ONLY the remaining
@@ -334,7 +347,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     // its bounded block. When the hook is absent OR returns '' the user message is
     // byte-identical to the agnostic prompt (the measurement toggle).
     const skillsBlock = this.skillsRecall
-      ? await this.skillsRecall(bundle.goal)
+      ? await this.skillsRecall(bundle.goal, options)
       : '';
     const res = await this.planner.send([
       {

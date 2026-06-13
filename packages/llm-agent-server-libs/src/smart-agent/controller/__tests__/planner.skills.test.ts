@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
+import type { CallOptions } from '@mcp-abap-adt/llm-agent';
 import { AdaptivePlanner, IncrementalPlanner } from '../planner.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import type { SessionBundle } from '../types.js';
@@ -112,5 +113,45 @@ describe('IncrementalPlanner skills recall injection', () => {
     });
 
     assert.equal(emptyHook.userMsg(), without.userMsg());
+  });
+});
+
+describe('skills recall receives the request CallOptions', () => {
+  // A unique sentinel so we can assert the EXACT options object (request logger /
+  // trace / cancellation signal) flows through to the recall embedding.
+  const SENTINEL = {
+    trace: { traceId: 'sentinel-trace' },
+  } as unknown as CallOptions;
+
+  it('AdaptivePlanner threads input.options into skillsRecall (create-plan)', async () => {
+    const { client } = recordingClient(PLAN_REPLY);
+    let seen: CallOptions | undefined;
+    const spy = async (_goal: string, options?: CallOptions) => {
+      seen = options;
+      return SKILLS_BLOCK;
+    };
+    await new AdaptivePlanner(client, undefined, spy).next({
+      bundle: bundle(),
+      prompt: 'r',
+      retrying: false,
+      options: SENTINEL,
+    });
+    assert.equal(seen, SENTINEL);
+  });
+
+  it('IncrementalPlanner threads input.options into skillsRecall', async () => {
+    const { client } = recordingClient(STEP_REPLY);
+    let seen: CallOptions | undefined;
+    const spy = async (_goal: string, options?: CallOptions) => {
+      seen = options;
+      return SKILLS_BLOCK;
+    };
+    await new IncrementalPlanner(client, undefined, spy).next({
+      bundle: bundle(),
+      prompt: 'r',
+      retrying: false,
+      options: SENTINEL,
+    });
+    assert.equal(seen, SENTINEL);
   });
 });
