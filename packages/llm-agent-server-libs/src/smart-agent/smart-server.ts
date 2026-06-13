@@ -394,6 +394,7 @@ import {
 } from './config.js';
 import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import { makePgPool } from './pg-pool.js';
 import type {
   ISessionMetaStore,
   SessionMetaRow,
@@ -1204,6 +1205,18 @@ export class SmartServer {
           reuseAgentEmbedder
             ? (resolvedEmbedder as IEmbedder)
             : resolveEmbedder(ec, { extraFactories: mergedEmbedderFactories }),
+        // Real pg `Pool` provider for a `postgres` catalog (qdrant deployment).
+        // Lazily imports `pg` and ensures the catalog table exists on first use;
+        // pass the configured table so the DDL targets the SAME table the
+        // catalog store reads/writes. Absent skillPlugins.catalog.type:postgres
+        // this is never invoked.
+        makePgPool: (connectionString) =>
+          makePgPool(
+            connectionString,
+            skillCfg.catalog.type === 'postgres'
+              ? skillCfg.catalog.table
+              : undefined,
+          ),
       });
       await host.load();
       this._skillHost = host;
@@ -2269,6 +2282,9 @@ export class SmartServer {
                 : {}),
               ...(this.cfg.skillPlugins?.maxInjectChars !== undefined
                 ? { maxInjectChars: this.cfg.skillPlugins.maxInjectChars }
+                : {}),
+              ...(this.cfg.skillPlugins?.serveCollections !== undefined
+                ? { serveCollections: this.cfg.skillPlugins.serveCollections }
                 : {}),
             },
           }

@@ -130,3 +130,63 @@ test('store.type qdrant + catalog.type postgres selects the Qdrant provider path
   );
   assert.ok(typeof host.load === 'function', 'host is constructed');
 });
+
+test('qdrant + postgres catalog uses the injected makePgPool for the catalog', async () => {
+  const cfg = parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: { type: 'qdrant', url: 'http://qdrant:6333', collection: 'skills' },
+    catalog: {
+      type: 'postgres',
+      connectionString: 'postgres://localhost/skills',
+      table: 'skills_catalog',
+    },
+    embeddingSpaceId: 'sp-1',
+    dimension: 8,
+    recallTimeoutMs: 1000,
+    sources: [{ id: 'vendor', records: [{ id: 'v:x#0', group: 'abap' }] }],
+  });
+
+  // Fake pg pool whose construction we observe. The ingest store-provider build
+  // calls buildCatalogStore → deps.makePgPool(connectionString) for a postgres
+  // catalog; load() is NOT invoked so the pool itself is never queried.
+  let pgPoolCalledWith: string | undefined;
+  const fakePool: IPgPool = { query: async () => ({ rows: [], rowCount: 0 }) };
+
+  const host = await buildSkillHostFromConfig(cfg, {
+    resolveEmbedder: () => makeStubEmbedder(),
+    makePgPool: (connectionString) => {
+      pgPoolCalledWith = connectionString;
+      return fakePool;
+    },
+  });
+
+  assert.equal(
+    pgPoolCalledWith,
+    'postgres://localhost/skills',
+    'the postgres catalog must be built via the injected makePgPool',
+  );
+  assert.ok(typeof host.load === 'function', 'host is constructed');
+});
+
+test('postgres catalog WITHOUT makePgPool throws fail-loud', async () => {
+  const cfg = parseSkillPluginsConfig({
+    mode: 'implicit',
+    store: { type: 'qdrant', url: 'http://qdrant:6333', collection: 'skills' },
+    catalog: {
+      type: 'postgres',
+      connectionString: 'postgres://localhost/skills',
+    },
+    embeddingSpaceId: 'sp-1',
+    dimension: 8,
+    recallTimeoutMs: 1000,
+    sources: [{ id: 'vendor', records: [{ id: 'v:x#0', group: 'abap' }] }],
+  });
+
+  await assert.rejects(
+    () =>
+      buildSkillHostFromConfig(cfg, {
+        resolveEmbedder: () => makeStubEmbedder(),
+      }),
+    /postgres catalog requires a pg pool provider/i,
+  );
+});

@@ -37,8 +37,15 @@ export function registerSkillSources(
   const k = ctx.skillRecall?.k ?? 4;
   const threshold = ctx.skillRecall?.threshold;
 
+  // Honor the operator-configured served subset (`skillPlugins.serveCollections`):
+  // register ONLY those groups so conflicting groups are not read together. When
+  // unset, register every group the host serves (prior behavior).
+  const serve = ctx.skillRecall?.serveCollections;
+  const served = serve !== undefined ? new Set(serve) : undefined;
+
   let out = builder;
   for (const g of host.groups()) {
+    if (served && !served.has(g.group)) continue;
     const name = `${SKILLS_STORE_KEY}:${g.group}`;
     out = out.addRagCollection({
       name,

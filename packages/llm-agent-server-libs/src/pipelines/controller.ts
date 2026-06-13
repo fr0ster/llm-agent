@@ -110,8 +110,14 @@ export class ControllerPipelinePlugin
     // undefined so the planner prompt stays byte-identical to the agnostic path.
     const skillHost = ctx.skillHost;
     const group = ctx.skillRecall?.controllerSkillGroup;
+    // Recall the controller group only when it is within the served subset. If
+    // `serveCollections` is configured and excludes the group, that group is not
+    // served, so the hook stays off (the planner prompt remains agnostic).
+    const serve = ctx.skillRecall?.serveCollections;
+    const groupServed =
+      group !== undefined && (serve === undefined || serve.includes(group));
     const skillsRecall =
-      skillHost && group
+      skillHost && group && groupServed
         ? async (goal: string, options?: CallOptions): Promise<string> => {
             const k = ctx.skillRecall?.k ?? 4;
             const maxInjectChars = ctx.skillRecall?.maxInjectChars ?? 4000;

@@ -70,6 +70,15 @@ export interface IServerPipelineContext extends IPipelineContext {
     threshold?: number;
     controllerSkillGroup?: string;
     maxInjectChars?: number;
+    /**
+     * The operator-configured served collection subset
+     * (`skillPlugins.serveCollections`). When set, the implicit assembler wiring
+     * (B3) registers ONLY these groups (a compatible subset that may be read
+     * together), and the controller recall hook (B4) recalls a
+     * `controllerSkillGroup` only if it is within this set. When unset, all
+     * groups the host serves are registered.
+     */
+    serveCollections?: readonly string[];
   };
 }
 

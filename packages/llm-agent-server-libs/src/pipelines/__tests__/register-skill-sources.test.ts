@@ -141,4 +141,49 @@ describe('registerSkillSources', () => {
     registerSkillSources(makeMockBuilder(sink), ctx);
     assert.equal(sink.length, 0);
   });
+
+  it('registers ONLY the served subset when serveCollections is set', () => {
+    const sink: RegisteredCollection[] = [];
+    const handle = makeStubHandle({});
+    const host = makeStubHost(
+      [
+        { group: 'a', description: '', collection: 'a' },
+        { group: 'b', description: '', collection: 'b' },
+        { group: 'c', description: '', collection: 'c' },
+      ],
+      handle,
+    );
+    const ctx = makeCtx({
+      skillHost: host,
+      skillRecall: { k: 4, serveCollections: ['a'] },
+    });
+
+    registerSkillSources(makeMockBuilder(sink), ctx);
+
+    assert.deepEqual(
+      sink.map((c) => c.name),
+      ['relevant-skills:a'],
+    );
+  });
+
+  it('registers all groups when serveCollections is unset', () => {
+    const sink: RegisteredCollection[] = [];
+    const handle = makeStubHandle({});
+    const host = makeStubHost(
+      [
+        { group: 'a', description: '', collection: 'a' },
+        { group: 'b', description: '', collection: 'b' },
+        { group: 'c', description: '', collection: 'c' },
+      ],
+      handle,
+    );
+    const ctx = makeCtx({ skillHost: host, skillRecall: { k: 4 } });
+
+    registerSkillSources(makeMockBuilder(sink), ctx);
+
+    assert.deepEqual(
+      sink.map((c) => c.name),
+      ['relevant-skills:a', 'relevant-skills:b', 'relevant-skills:c'],
+    );
+  });
 });
