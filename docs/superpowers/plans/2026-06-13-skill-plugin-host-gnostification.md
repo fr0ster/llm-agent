@@ -201,6 +201,11 @@ export interface ISkillsRagBackendProvider extends ISkillsCatalog {
  *  The host catches it to retry the whole reconciliation; any other error is rethrown. */
 export class CatalogCasError extends Error {}
 
+/** Thrown by ISkillsRagHandle.activeManifest when the serving descriptor does not match the
+ *  active generation's manifest — the EAGER (startup/health) fail-fast. Runtime query()
+ *  degrades to [] instead of throwing. */
+export class SkillsIncompatibleError extends Error {}
+
 /** The injected acquisition + materialisation strategy (== a `source`). */
 export interface ISkillSource {
   acquire(options?: CallOptions): Promise<SkillIngestResult>;
@@ -886,7 +891,7 @@ test('compatible revision: embeds once, calls queryRevision', async () => {
   assert.equal(sb.queryCalls(), 1);
 });
 
-test('incompatible revision: ZERO embeds, empty result', async () => {
+test('incompatible revision: query() degrades to empty (ZERO embeds), but activeManifest() THROWS', async () => {
   let embeds = 0;
   const sb = stubBackend({ snapshot: async () => ({ revision: 'g0', manifest: { ...MANIFEST, embeddingSpaceId: 'OTHER' } }) });
   const rag = makeCompatibleSkillsRag({
@@ -894,9 +899,12 @@ test('incompatible revision: ZERO embeds, empty result', async () => {
     embedder: { embed: async () => { embeds++; return { vector: [1, 0, 0] }; } } as never,
     embeddingSpaceId: 'sp', retrievalSchemaVersion: 1, dimension: 3,
   });
+  // RUNTIME query() degrades to []
   const hits = await rag.query('q', { k: 1 });
   assert.equal(hits.length, 0);
   assert.equal(embeds, 0); // embed skipped on incompatible
+  // EAGER activeManifest() THROWS (so recall-only load()/healthCheck can fail-fast)
+  await assert.rejects(() => rag.activeManifest(), (e) => e instanceof SkillsIncompatibleError);
 });
 
 test('null snapshot: ZERO embeds, empty', async () => {
@@ -934,6 +942,7 @@ import type {
   CallOptions, ActiveSnapshot, IEmbedder, SkillHit, SkillsEmbeddingDescriptor,
   ISkillsRagBackend, ISkillsRagHandle,
 } from '@mcp-abap-adt/llm-agent';
+import { SkillsIncompatibleError } from '@mcp-abap-adt/llm-agent'; // value (class)
 
 export interface CompatibleSkillsRagDeps {
   backend: ISkillsRagBackend;
@@ -982,11 +991,18 @@ export function makeCompatibleSkillsRag(deps: CompatibleSkillsRagDeps): ISkillsR
 
   return {
     async activeManifest(options?: CallOptions): Promise<ActiveSnapshot | null> {
+      // EAGER fail-fast (startup + healthCheck): THROW on incompatibility (P1.3) so a
+      // recall-only load() can actually abort and healthCheck() reports the fault. Only
+      // the RUNTIME query() degrades to [] on incompatibility.
       await ensureDimension(options);
       const snap = await deps.backend.activeSnapshot(); // pins if non-null
       try {
-        if (snap) compatible(snap); // eager check (caches verdict)
-        return snap;
+        if (snap && !compatible(snap)) {
+          throw new SkillsIncompatibleError(
+            `serving descriptor != active manifest for generation ${snap.revision}`,
+          );
+        }
+        return snap; // null (no active generation) is OK — empty recall, no abort
       } finally {
         if (snap) deps.backend.release?.(snap.revision);
       }
@@ -1323,9 +1339,10 @@ A fetched-source strategy (`ISkillSource`) that pulls a marketplace manifest + `
 
 **Files:**
 - Create: `packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.ts`
+- Create: `packages/llm-agent-libs/src/skills/plugin-host/source-strategies.ts` (registry + built-ins)
 - Create: `packages/llm-agent-libs/src/skills/plugin-host/index.ts` (barrel)
 - Modify: `packages/llm-agent-libs/src/index.ts` (re-export the plugin-host barrel)
-- Test: `packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.test.ts`
+- Test: `packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.test.ts`, `.../source-strategies.test.ts`
 
 - [ ] **Step 1: Write the failing test** (mock transport — inject a `fetchJson`/`fetchText` fn; ZERO real network/FS)
 
@@ -1361,11 +1378,22 @@ test('enabled "*" loads every offered plugin; empty enabled is a caller error', 
 
 Run — Expected: FAIL.
 
-- [ ] **Step 2: Implement**
+- [ ] **Step 2: Implement** `makeHttpMarketplaceSource` (validates `enabled`; `['*']` = all; fetches each `SKILL.md`; calls `buildIngestResult` with a `placement` supplied by the chosen STRATEGY) + `makeHttpTransport({ registry })` over global `fetch`.
 
-`makeHttpMarketplaceSource` validates `enabled` (non-empty; `['*']` = all), filters the transport's `listPlugins()` to enabled, fetches each `SKILL.md`, and calls `buildIngestResult` with placement default = one-group-per-plugin. The `transport` interface (`listPlugins`, `fetchSkillMd`) is injected so the real HTTP impl (using `fetch`) is a thin separate concern; provide a `makeHttpTransport({ registry })` using global `fetch` (no test needed for the thin transport — it is exercised live in Phase C). Export `ISkillSource`-shaped object.
+- [ ] **Step 2b: Strategy registry (P1.2 — configured strategy must actually drive placement/materialisation).** A `strategy` is a factory `(sourceCfg) => ISkillSource` that owns acquisition AND placement. Add a small registry so config `strategy:` resolves to a real factory:
+```ts
+export type SkillSourceStrategy = (cfg: FetchedSourceConfig) => ISkillSource; // cfg incl. transport + strategyConfig
+const REGISTRY = new Map<string, SkillSourceStrategy>();
+export function registerSkillSourceStrategy(name: string, f: SkillSourceStrategy): void { REGISTRY.set(name, f); }
+export function resolveSkillSourceStrategy(name: string): SkillSourceStrategy {
+  const f = REGISTRY.get(name);
+  if (!f) throw new Error(`unknown skill source strategy: ${name} (registered: ${[...REGISTRY.keys()].join(', ')})`);
+  return f;
+}
+```
+Register built-ins: `'one-group-per-plugin'` (default — placement `(plugin) => ({ group: plugin, description: ... })`) and `'single-collection'` (placement bundles every plugin into one collection named by `strategyConfig.collection`). Each built-in builds a `makeHttpMarketplaceSource` with its placement. A consumer can `registerSkillSourceStrategy` a custom one (e.g. the gnostic SAP grouping) at startup. Test: `resolveSkillSourceStrategy('one-group-per-plugin')(cfg).acquire()` groups per plugin; `'single-collection'` bundles; an unknown name throws.
 
-Barrel `index.ts` re-exports: `chunkSkill`, `buildIngestResult`, `makeInMemoryStoreProvider`, `makeCompatibleSkillsRag`, `makeSkillPluginHost`, `skillsRagSource`, `makeHttpMarketplaceSource`, `makeHttpTransport`, and the relevant types.
+Barrel `index.ts` re-exports: `chunkSkill`, `buildIngestResult`, `makeInMemoryStoreProvider`, `makeCompatibleSkillsRag`, `makeSkillPluginHost`, `skillsRagSource`, `makeHttpMarketplaceSource`, `makeHttpTransport`, `registerSkillSourceStrategy`, `resolveSkillSourceStrategy`, and the relevant types.
 
 Run — Expected: PASS.
 
@@ -1373,8 +1401,8 @@ Run — Expected: PASS.
 
 ```bash
 npm run build && npm run lint
-git add packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.ts packages/llm-agent-libs/src/skills/plugin-host/index.ts packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.test.ts
-git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plugin-host barrel"
+git add packages/llm-agent-libs/src/skills/plugin-host/http-marketplace-source.ts packages/llm-agent-libs/src/skills/plugin-host/source-strategies.ts packages/llm-agent-libs/src/skills/plugin-host/index.ts packages/llm-agent-libs/src/index.ts packages/llm-agent-libs/src/skills/plugin-host/*.test.ts
+git commit -m "feat(skills): HTTP marketplace source + source-strategy registry (configured placement) + barrel"
 ```
 
 ---
@@ -1419,8 +1447,9 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
    `record.id` work. Each skill point id = a **deterministic UUIDv5** of
    `${generation}:${record.id}` via an injected `pointId(generation, recordId): string`
    (uuid v5 over a fixed namespace — deterministic, no `Math.random`/`Date.now`). The
-   payload carries `{ generation, group, recordId, content, name, provenance, sourceId }`;
-   the vector is the embedding.
+   payload carries `{ generation, group, recordId, content, name, provenance, sourceId,
+   createdAt }` (createdAt = the `beginGeneration` time via injected `now()`, used by the
+   age-protected orphan sweep); the vector is the embedding.
 3. **carryForward needs a SCROLL primitive (P1.3).** Copying a served generation's points
    by `sourceId` requires reading them WITH vectors + payload — `search` (top-k by vector)
    cannot enumerate. Add a paginated **`scroll(filter)`** to the client (returns
@@ -1434,30 +1463,46 @@ git commit -m "feat(skills): HTTP marketplace source (mockable transport) + plug
    `load()` and/or periodically) reclaims durably:
    - read `retired` from the catalog store; for each whose `retiredAt + retiredGraceMs < now()`
      → `client.deleteByFilter({ generation })`, then `pruneRetired(rev, [those])`.
-   - **Orphan reconcile (crash safety):** `scroll` the DISTINCT `payload.generation` values in
-     Qdrant; any generation that is neither in the ACTIVE catalog nor in `retired` is an
-     orphan from a crashed build → delete it (with its own grace from a `firstSeen` or just
-     immediately, since it was never committed/served). This recomputes physical state vs the
-     durable catalog, so reclaim never depends on lost in-memory state.
+   - **Orphan reconcile (crash safety) — AGE-PROTECTED (P1.1).** `scroll` the DISTINCT
+     `payload.generation` values in Qdrant; a generation that is neither ACTIVE nor in
+     `retired` is EITHER a crashed-build orphan OR a CONCURRENT loader's generation currently
+     being built (not yet committed). The sweeper MUST NOT delete the latter mid-`upsert`. So
+     each point carries `createdAt` (= the `beginGeneration` time, injected `now()`), and an
+     orphan is deleted ONLY if `min(createdAt of its points) + orphanGraceMs < now()` —
+     `orphanGraceMs` (config, default e.g. 1h) MUST exceed the longest expected ingest. A
+     fresh in-build generation is younger than the grace → never swept. NEVER delete an
+     orphan "immediately".
    `retiredGraceMs` is thus consumed by the sweeper. Recall must run with a deadline
    `< retiredGraceMs` — enforced by the compat wrapper's `recallTimeoutMs` (set by B2/B3 wiring).
    Qdrant retention is best-effort time-grace (the in-memory lease is exact; Qdrant
    `release()` is a no-op). The host's in-memory `_pendingReclaim` is NOT used for the Qdrant
    path — the durable `retired[]` + sweeper replace it.
-5. **Read-only provider for recall-only (P2.6).** Expose `makeQdrantBackendProvider({
-   client, collection, catalogStore, ... })` returning `ISkillsRagBackendProvider`
-   (readCatalog + forGroup→backend, NO write API) so a serving process gets read-only
-   Qdrant creds and no reconcile surface. `makeQdrantStoreProvider(...).asBackendProvider()`
-   returns the same read view for the self-ingest-then-serve case.
+5. **Recall-only gets READ-ONLY CLIENTS, not just a hidden API (P1.4/P2.6).** Hiding write
+   methods in the return type does NOT remove write credentials. So the read side is built
+   over SEPARATE reader interfaces wired to READ-ONLY clients/pools:
+   - `IQdrantReader = { search, scroll }` (NO upsert/delete) — `makeQdrantReader({ url,
+     apiKey: READ_ONLY_KEY, collection })`.
+   - `ICatalogReader = { read }` (NO casPublish/pruneRetired) — `makePgCatalogReader({ pool:
+     READ_ONLY_POOL, table })`.
+   `makeQdrantBackendProvider({ reader: IQdrantReader, catalogReader: ICatalogReader,
+   collection })` returns `ISkillsRagBackendProvider` (readCatalog + forGroup→backend). The
+   recall-only serving process is configured with read-only credentials and constructs these
+   readers — it never holds a write client. `makeQdrantStoreProvider(...).asBackendProvider()`
+   still gives an in-process read view for the self-ingest-then-serve case (same process,
+   already has write creds — acceptable there).
 
-Client interface (minimal, mockable):
+Client interfaces (minimal, mockable) — WRITE is a superset of READ:
 ```ts
-interface IQdrantClient {
-  search(filter: object, vector: number[], k: number): Promise<Array<{ payload: Record<string, unknown>; score: number }>>;
+interface IQdrantReader {
+  search(filter: object, vector: number[], k: number, options?: { signal?: AbortSignal }): Promise<Array<{ payload: Record<string, unknown>; score: number }>>;
   scroll(filter: object, cursor?: string): Promise<{ points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>; next?: string }>;
+}
+interface IQdrantClient extends IQdrantReader {
   upsertPoints(points: Array<{ id: string; vector: number[]; payload: Record<string, unknown> }>): Promise<void>;
   deleteByFilter(filter: object): Promise<void>;
 }
+interface ICatalogReader { read(): Promise<CatalogSnapshot>; }
+interface ICatalogStore extends ICatalogReader { /* casPublish, pruneRetired — see (1) */ }
 ```
 
 - [ ] **Step 1: Write the failing tests** (mock `IQdrantClient` + the REAL `makeInProcessCatalogStore` and/or a mock `ICatalogStore` + injected `embed`/`pointId`/`now`):
@@ -1466,10 +1511,10 @@ interface IQdrantClient {
   - `carryForward` SCROLLS the live generation by sourceId and re-upserts with new-generation point ids (assert `pointId` re-derivation).
   - **durable retirement**: a commit that drops generation G stamps `retired=[{G, retiredAt: now}]` in the catalog snapshot; assert it is readable via `catalogStore.read()`.
   - **sweeper + retiredGraceMs**: with `retired=[{G, retiredAt:T}]`, a sweep at `now < T+grace` does NOT `deleteByFilter`; a sweep at `now ≥ T+grace` deletes G's points AND `pruneRetired`s G.
-  - **crash-resumable orphan reconcile**: Qdrant has points for a generation X that is NEITHER active NOR in `retired` (simulating a crash before commit) → the orphan sweep `deleteByFilter({generation:X})`.
+  - **crash-resumable orphan reconcile (age-protected, P1.1)**: a generation X with points NEITHER active NOR in `retired` whose `createdAt` is OLDER than `orphanGraceMs` → swept (`deleteByFilter({generation:X})`); a YOUNGER such generation (simulating a concurrent in-build loader) is NOT swept.
   - point ids are the injected `pointId(generation, recordId)` (deterministic UUIDv5).
-  - `makeQdrantBackendProvider` exposes NO write API (no `forGroup().beginGeneration`/`upsert`/`publishCatalog`).
-- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })` (write — `publishCatalog` delegates to `catalogStore.casPublish` and returns its snapshot; a `sweep()` method or inline sweep at provider construction/load) and `makeQdrantBackendProvider({ client, collection, catalogStore })` (read). Ship the real adapters: `makeQdrantClient({ url, apiKey, collection })` (Qdrant REST/SDK — `scroll`/`search`/`upsert`/`delete`), `makeInProcessCatalogStore()`, and **`makePgCatalogStore({ pool, table })`** (the durable production CAS — conditional `UPDATE`; add `pg` as a dep if absent). `pointId` = `uuid` v5 over a fixed namespace (add `uuid` dep or a sha1→uuid helper). The Qdrant/pg REST adapters get NO unit test (live smoke in Phase C); `makeInProcessCatalogStore` and `makePgCatalogStore` (against a test pool or a fake) DO.
+  - `makeQdrantBackendProvider({ reader, catalogReader, collection })` is constructed over an `IQdrantReader` + `ICatalogReader` that have NO upsert/delete/casPublish methods at all (compile-time read-only), and serves `query`/`activeSnapshot`/`readCatalog`.
+- [ ] **Step 2: Implement** `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs, orphanGraceMs })` (write — `publishCatalog` delegates to `catalogStore.casPublish` and returns its snapshot; `sweep(now)` does the durable retired-reclaim + age-protected orphan reconcile) and `makeQdrantBackendProvider({ reader, catalogReader, collection })` (read, over the READER interfaces). Ship the real adapters: `makeQdrantClient({ url, apiKey, collection })` (write — `IQdrantClient`) and `makeQdrantReader({ url, apiKey, collection })` (read — `IQdrantReader`, read-only key); `makeInProcessCatalogStore()`, **`makePgCatalogStore({ pool, table })`** (durable production CAS — conditional `UPDATE`; add `pg` if absent) and `makePgCatalogReader({ pool, table })` (read-only pool). `pointId` = `uuid` v5 over a fixed namespace (add `uuid` dep or a sha1→uuid helper). The Qdrant/pg REST adapters get NO unit test (live smoke in Phase C); `makeInProcessCatalogStore`/`makePgCatalogStore` (against a fake/test pool) DO.
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): Qdrant provider + durable Postgres catalog (CAS, durable retirement, crash-resumable sweeper)`).
 
 ---
@@ -1491,14 +1536,15 @@ Read `config.ts` and the `SmartServerConfig`/`SmartServerSkillsConfig` block in 
   - `mode: explicit` → throws "explicit … not yet implemented".
   - `store.type` other than `in-memory`/`qdrant` → throws; persistent `store` (`qdrant`) without `embeddingSpaceId` → throws.
   - **`store.type: qdrant` with `catalog.type` absent or `in-process` → throws** ("a persistent store requires a persistent catalog (postgres); in-process catalog would vanish on restart and is invisible to a separate recall-only process"). `store: qdrant` + `catalog: { type: postgres, connectionString }` → ok.
-  - `recallTimeoutMs` (if set) must be `< retiredGraceMs` → otherwise throws (the time-grace invariant).
+  - `retiredGraceMs < 1000` → throws (too small to bound recall). `recallTimeoutMs` (if set) must be `< retiredGraceMs` → otherwise throws; the DEFAULT `floor(retiredGraceMs*0.8)` is asserted strictly `< retiredGraceMs` for boundary grace values (e.g. 1000 → 800).
   - fetched source with empty/missing `enabled` → throws; `["*"]` ok.
   - duplicate `sourceId` across sources → throws.
   - `sources` + `loadOnStartup:false` together → throws; both `sources` and a persistent `store` omitted → throws (recall-only needs a persistent store).
   - a `groups`/`plugins→group` block is NOT accepted (placement is the strategy's job) — assert an unknown `groups:` key is ignored or rejected per the spec.
+  - a fetched source with an UNKNOWN `strategy` name → throws (validated against `resolveSkillSourceStrategy`); a known `strategy` (e.g. `one-group-per-plugin`) parses. `strategyConfig` is passed through opaque.
   - a clean `mode:implicit` config parses to a normalized object with defaults applied.
 
-- [ ] **Step 2: Implement `parseSkillPluginsConfig(raw): SkillPluginsConfig`** with the validations above. Config shape adds `catalog?: { type: 'in-process' | 'postgres'; connectionString?: string; table?: string }` and `recallTimeoutMs?`. Defaults: `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000`, `recallTimeoutMs:` defaults to `retiredGraceMs - 5000` (clamped ≥1000) for a qdrant store, unused for in-memory; `chunk.maxChars:1500`, `mode:'implicit'`, `catalog.type:'in-process'` (default; required `postgres` for qdrant). Add `skillPlugins?: SkillPluginsConfig` to `SmartServerConfig`.
+- [ ] **Step 2: Implement `parseSkillPluginsConfig(raw): SkillPluginsConfig`** with the validations above. Config shape adds `catalog?: { type: 'in-process' | 'postgres'; connectionString?: string; table?: string }` and `recallTimeoutMs?`. Defaults: `threshold:0.3`, `k:4`, `catalogCasMaxAttempts:3`, `retiredGraceMs:30000` (validated `≥ 1000`), `recallTimeoutMs:` defaults to `Math.floor(retiredGraceMs * 0.8)` (ALWAYS strictly `< retiredGraceMs`, so it never violates the invariant for any valid grace) for a qdrant store, unused for in-memory; `chunk.maxChars:1500`, `mode:'implicit'`, `catalog.type:'in-process'` (default; required `postgres` for qdrant). Add `skillPlugins?: SkillPluginsConfig` to `SmartServerConfig`.
 
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): skillPlugins config parse + validation (new key, no clash with skills:)`).
 
@@ -1514,7 +1560,7 @@ Wire normalized config → a concrete `ISkillPluginHost`: resolve the embedder (
 - Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts`
 
 - [ ] **Step 1: Test** — a programmatic `records`-source `in-memory` config builds a host; after `load()`, `host.rag(group).query` returns injected records. Use a stub embedder. Also assert `store.type: qdrant` + `catalog.type: postgres` selects the Qdrant provider over a `makePgCatalogStore` (inject a mock Qdrant client + a fake pg pool; assert the host is constructed over them) and threads `recallTimeoutMs`.
-- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `makeHttpMarketplaceSource`. Build the **catalog store** by `catalog.type` (`in-process` → `makeInProcessCatalogStore`; `postgres` → `makePgCatalogStore({ pool, table })`). Select the store provider by `store.type` (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })`). Thread `recallTimeoutMs` into the host deps. **Recall-only (`loadOnStartup:false`)** → build a READ-ONLY backend provider (`makeQdrantBackendProvider({ client, collection, catalogStore })`, or `provider.asBackendProvider()`) — NOT a write store — and construct the recall-only host shape (Task A7) over it + `serveCollections`, so the serving process holds no write credentials. Return the host.
+- [ ] **Step 2: Implement** — map config sources to `ISkillSource`: a `records` source wraps pre-supplied records into an `acquire()` that returns `{collections, records}` with a single-collection catalog and STAMPS the configured `id` onto each record's `sourceId`; a fetched source → `resolveSkillSourceStrategy(src.strategy ?? 'one-group-per-plugin')(src)` (the resolved strategy owns placement — config grouping now actually drives it). Build the **catalog store** by `catalog.type` (`in-process` → `makeInProcessCatalogStore`; `postgres` → `makePgCatalogStore({ pool, table })`). Select the store provider by `store.type` (`in-memory` → `makeInMemoryStoreProvider`; `qdrant` → `makeQdrantStoreProvider({ client, collection, catalogStore, embed, pointId, now, retiredGraceMs })`). Thread `recallTimeoutMs` into the host deps. **Recall-only (`loadOnStartup:false`)** → build a READ-ONLY backend provider (`makeQdrantBackendProvider({ client, collection, catalogStore })`, or `provider.asBackendProvider()`) — NOT a write store — and construct the recall-only host shape (Task A7) over it + `serveCollections`, so the serving process holds no write credentials. Return the host.
 - [ ] **Step 3: Build + test + lint + commit** (`feat(skills): build skill plugin-host from config + startup lifecycle`).
 
 ---
