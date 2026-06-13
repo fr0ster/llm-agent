@@ -6,7 +6,12 @@
     "composite": true
   },
   "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules", "**/__tests__/**"],
+  "exclude": [
+    "dist",
+    "node_modules",
+    "**/__tests__/**",
+    "src/**/plan-analysis.ts"
+  ],
   "references": [
     { "path": "../llm-agent" },
     { "path": "../llm-agent-mcp" },
