@@ -11,6 +11,8 @@ import type { SkillPluginsConfig } from './skill-plugins-config.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import {
   buildSkillHostFromConfig,
+  type IClosablePool,
+  initSkillHost,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
 
@@ -341,4 +343,105 @@ test('validateServedGroups: valid serveCollections + controllerSkillGroup passes
 test('validateServedGroups: no served subset configured passes (all groups)', () => {
   const host = hostWithGroups(['abap']);
   assert.doesNotThrow(() => validateServedGroups(host, recallOnlyCfg()));
+});
+
+// P1-B — initSkillHost ends captured pg pools on a startup failure.
+
+/** A fake pool that records whether end() ran (and may fail end()). */
+function makeFakePool(opts?: { failEnd?: boolean }): IClosablePool & {
+  ended: boolean;
+} {
+  const pool = {
+    ended: false,
+    async end() {
+      pool.ended = true;
+      if (opts?.failEnd) throw new Error('end() failed');
+    },
+  };
+  return pool;
+}
+
+test('initSkillHost: success path returns the loaded+validated host (pools NOT ended)', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  const host = hostWithGroups(['abap', 'sql']);
+
+  const out = await initSkillHost(
+    async () => {
+      // The build captures a pool (as the server's makePgPool would).
+      return host;
+    },
+    cfgWith({ serveCollections: ['abap'], controllerSkillGroup: 'sql' }),
+    pools,
+  );
+
+  assert.equal(out, host, 'returns the built host');
+  assert.equal(pool.ended, false, 'pools survive on the normal path');
+  assert.equal(pools.length, 1, 'pools array left intact for later closeFns');
+});
+
+test('initSkillHost: host.load() throwing ends captured pools and rethrows', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  const throwingHost = {
+    load: async () => {
+      throw new Error('load boom');
+    },
+    groups: () => [],
+    rag: () => {
+      throw new Error('not used');
+    },
+  } as unknown as ISkillPluginHost;
+
+  await assert.rejects(
+    () => initSkillHost(async () => throwingHost, recallOnlyCfg(), pools),
+    /load boom/,
+  );
+  assert.equal(pool.ended, true, 'captured pool must be ended on failure');
+  assert.equal(pools.length, 0, 'pools array cleared after cleanup');
+});
+
+test('initSkillHost: validateServedGroups throwing ends captured pools and rethrows', async () => {
+  const pool = makeFakePool();
+  const pools: IClosablePool[] = [pool];
+  const host = hostWithGroups(['abap']);
+
+  await assert.rejects(
+    () =>
+      initSkillHost(
+        async () => host,
+        cfgWith({ controllerSkillGroup: 'missing' }),
+        pools,
+      ),
+    /controllerSkillGroup 'missing' is not an available group/i,
+  );
+  assert.equal(
+    pool.ended,
+    true,
+    'captured pool must be ended on a validation failure',
+  );
+  assert.equal(pools.length, 0, 'pools array cleared after cleanup');
+});
+
+test('initSkillHost: one pool end() error does not mask the original (allSettled) and other pools still end', async () => {
+  const failing = makeFakePool({ failEnd: true });
+  const ok = makeFakePool();
+  const pools: IClosablePool[] = [failing, ok];
+  const throwingHost = {
+    load: async () => {
+      throw new Error('original failure');
+    },
+    groups: () => [],
+    rag: () => {
+      throw new Error('not used');
+    },
+  } as unknown as ISkillPluginHost;
+
+  await assert.rejects(
+    () => initSkillHost(async () => throwingHost, recallOnlyCfg(), pools),
+    /original failure/,
+    'the ORIGINAL error is rethrown, not the pool end() error',
+  );
+  assert.equal(failing.ended, true, 'failing pool end() was attempted');
+  assert.equal(ok.ended, true, 'the other pool still ends despite the failure');
 });

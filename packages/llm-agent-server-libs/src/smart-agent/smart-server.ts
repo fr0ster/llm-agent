@@ -403,7 +403,7 @@ import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
 import {
   buildSkillHostFromConfig,
-  validateServedGroups,
+  initSkillHost,
 } from './skill-plugins-host-factory.js';
 
 export {
@@ -432,6 +432,8 @@ export {
 export {
   type BuildSkillHostDeps,
   buildSkillHostFromConfig,
+  type IClosablePool,
+  initSkillHost,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
 
@@ -1211,40 +1213,46 @@ export class SmartServer {
           skillCfg.embedder?.provider ?? 'ollama',
         ]);
       }
-      const host = await buildSkillHostFromConfig(skillCfg, {
-        resolveEmbedder: (ec) =>
-          reuseAgentEmbedder
-            ? (resolvedEmbedder as IEmbedder)
-            : resolveEmbedder(ec, { extraFactories: mergedEmbedderFactories }),
-        // Real pg `Pool` provider for a `postgres` catalog (qdrant deployment).
-        // Lazily imports `pg` and ensures the catalog table exists on first use;
-        // pass the configured table so the DDL targets the SAME table the
-        // catalog store reads/writes. Absent skillPlugins.catalog.type:postgres
-        // this is never invoked.
-        makePgPool: (connectionString) => {
-          const pool = makePgPool(
-            connectionString,
-            skillCfg.catalog.type === 'postgres'
-              ? skillCfg.catalog.table
-              : undefined,
-          );
-          this._skillPgPools.push(pool);
-          return pool;
-        },
-        // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
-        // recall-only process with read-only pg credentials does not crash
-        // attempting to CREATE the catalog table it only reads.
-        makePgReadPool: (connectionString) => {
-          const pool = makePgReadPool(connectionString);
-          this._skillPgPools.push(pool);
-          return pool;
-        },
-      });
-      await host.load();
-      // Fail loud on a misconfigured served-group subset (typo'd
-      // serveCollections/controllerSkillGroup silently disables skills).
-      validateServedGroups(host, skillCfg);
-      this._skillHost = host;
+      // Build → load → validate as one fail-fast unit. If ANY step throws, the
+      // captured pg pools are ended INSIDE initSkillHost (the later closeFns
+      // cleanup never runs when start() rejects before returning a handle), so
+      // the pools cannot leak open sockets on a startup failure.
+      this._skillHost = await initSkillHost(
+        () =>
+          buildSkillHostFromConfig(skillCfg, {
+            resolveEmbedder: (ec) =>
+              reuseAgentEmbedder
+                ? (resolvedEmbedder as IEmbedder)
+                : resolveEmbedder(ec, {
+                    extraFactories: mergedEmbedderFactories,
+                  }),
+            // Real pg `Pool` provider for a `postgres` catalog (qdrant
+            // deployment). Lazily imports `pg` and ensures the catalog table
+            // exists on first use; pass the configured table so the DDL targets
+            // the SAME table the catalog store reads/writes. Absent
+            // skillPlugins.catalog.type:postgres this is never invoked.
+            makePgPool: (connectionString) => {
+              const pool = makePgPool(
+                connectionString,
+                skillCfg.catalog.type === 'postgres'
+                  ? skillCfg.catalog.table
+                  : undefined,
+              );
+              this._skillPgPools.push(pool);
+              return pool;
+            },
+            // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
+            // recall-only process with read-only pg credentials does not crash
+            // attempting to CREATE the catalog table it only reads.
+            makePgReadPool: (connectionString) => {
+              const pool = makePgReadPool(connectionString);
+              this._skillPgPools.push(pool);
+              return pool;
+            },
+          }),
+        skillCfg,
+        this._skillPgPools,
+      );
     }
 
     // ---- RAG resolution (interface-only) ----------------------------------

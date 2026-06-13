@@ -158,7 +158,7 @@ test('recall-only: NO serveCollections → serves ALL cataloged collections', as
 });
 
 // 0b ------------------------------------------------------------------------
-test('recall-only: explicit serveCollections → serves only the named subset', async () => {
+test('recall-only: explicit serveCollections → committed = the named subset, but groups() exposes the FULL catalog', async () => {
   const provider = await seedProviderMulti([
     { group: 'a', records: [rec('a:1', 'seed', 'a', 'alpha record')] },
     { group: 'b', records: [rec('b:1', 'seed', 'b', 'beta record')] },
@@ -170,11 +170,51 @@ test('recall-only: explicit serveCollections → serves only the named subset', 
     serveCollections: ['a'],
   });
 
-  await host.load();
+  const res = await host.load();
+  // The assembler subset (committed) is the named set only.
+  assert.deepEqual(res.committed, ['a']);
+  // groups() = the FULL available catalog (independent of serveCollections) so
+  // the controller recall channel can validate its own group against it.
   assert.deepEqual(
-    host.groups().map((g) => g.group),
-    ['a'],
+    host
+      .groups()
+      .map((g) => g.group)
+      .sort(),
+    ['a', 'b'],
   );
+});
+
+// 0c ------------------------------------------------------------------------
+test('recall-only: catalog {abap, sql}, serveCollections:[abap] → groups() includes BOTH; rag(sql) still serves the unserved group', async () => {
+  const provider = await seedProviderMulti([
+    { group: 'abap', records: [rec('abap:1', 'seed', 'abap', 'abap record')] },
+    { group: 'sql', records: [rec('sql:1', 'seed', 'sql', 'sql record')] },
+  ]);
+
+  const host = makeSkillPluginHost({
+    ...SERVE_BASE,
+    backendProvider: provider.asBackendProvider(),
+    serveCollections: ['abap'],
+  });
+
+  const res = await host.load();
+  assert.deepEqual(res.committed, ['abap']);
+  // groups() exposes the full catalog — abap AND sql — even though only abap is
+  // in serveCollections (controllerSkillGroup channel is independent).
+  assert.deepEqual(
+    host
+      .groups()
+      .map((g) => g.group)
+      .sort(),
+    ['abap', 'sql'],
+  );
+
+  // rag(anyCatalogGroup) resolves from the catalog backend, so the unserved sql
+  // group is recallable (probed lazily on first recall).
+  const hits = await host
+    .rag('sql')
+    .query('sql record', { k: 5, threshold: 0 });
+  assert.ok(hits.some((h) => h.record.id === 'sql:1'));
 });
 
 // 1 -------------------------------------------------------------------------

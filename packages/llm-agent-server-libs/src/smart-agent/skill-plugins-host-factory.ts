@@ -354,3 +354,44 @@ export function validateServedGroups(
     }
   }
 }
+
+/** Minimal handle on a created pg pool — only `end()` is needed for cleanup. */
+export interface IClosablePool {
+  end(): Promise<void>;
+}
+
+/**
+ * Build → `await host.load()` → {@link validateServedGroups} as ONE fail-fast
+ * unit, ending any pg pools the build captured into `pools` if ANY step throws.
+ *
+ * The server registers a `closeFns` cleanup that ends these pools, but that
+ * registration happens much LATER in `start()` — if `load()` or validation
+ * throws, `start()` never returns a handle, so `close()` is never callable and
+ * the captured pools would leak open sockets (blocking process exit). Running
+ * the cleanup HERE on failure closes that gap; the normal-path pools are still
+ * ended by the later `closeFns` registration.
+ *
+ * `buildHost` is a thunk so the pool-capturing side effect (the server pushes
+ * each created pool into `pools` from its `makePgPool`/`makePgReadPool`) has
+ * already happened by the time we catch — i.e. we end exactly what was created.
+ * Side-effect-free of the server instance → unit-testable with a fake host.
+ */
+export async function initSkillHost(
+  buildHost: () => Promise<ISkillPluginHost>,
+  cfg: SkillPluginsConfig,
+  pools: IClosablePool[],
+): Promise<ISkillPluginHost> {
+  try {
+    const host = await buildHost();
+    await host.load();
+    // Fail loud on a misconfigured served-group subset (a typo'd
+    // serveCollections/controllerSkillGroup silently disables skills).
+    validateServedGroups(host, cfg);
+    return host;
+  } catch (e) {
+    // `allSettled` so one pool's end() error does not mask the original.
+    await Promise.allSettled(pools.map((p) => p.end()));
+    pools.length = 0;
+    throw e;
+  }
+}

@@ -110,14 +110,13 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
   return {
     async load(options?: CallOptions): Promise<SkillLoadResult> {
       const cat = await deps.backendProvider.readCatalog(options);
-      // No serveCollections → serve ALL non-tombstoned collections in the catalog.
-      const served =
-        deps.serveCollections ??
-        cat.entries.filter((e) => !e.tombstone).map((e) => e.collection.group);
+      // The FULL available set — every non-tombstoned collection in the catalog.
+      const allGroups = cat.entries.filter((e) => !e.tombstone);
       // Validate every EXPLICITLY-named served collection exists in the persisted
-      // catalog (config error). When derived from the catalog they trivially exist.
+      // catalog (config error). When omitted, the served set is derived from the
+      // catalog and trivially exists.
       if (deps.serveCollections) {
-        for (const g of served) {
+        for (const g of deps.serveCollections) {
           if (!cat.entries.some((e) => e.collection.group === g)) {
             throw new Error(
               `serveCollections names a collection absent from the catalog: ${g}`,
@@ -125,14 +124,21 @@ function makeRecallOnlyHost(deps: RecallHostDeps): ISkillPluginHost {
           }
         }
       }
-      // groups() = the SkillGroupInfo of the served collections; register the fixed set.
-      _snapshot = served.map(
-        (g) =>
-          (cat.entries.find((e) => e.collection.group === g) as CatalogEntry)
-            .collection,
-      );
+      // The SERVED set (assembler subset) — explicit serveCollections or, when
+      // omitted, the whole catalog.
+      const served =
+        deps.serveCollections ?? allGroups.map((e) => e.collection.group);
+      // groups() exposes the FULL catalog (NOT just the served subset): the
+      // controller recall channel (controllerSkillGroup) and the assembler channel
+      // (serveCollections) are independent and each validate against the full set.
+      // host.rag(anyCatalogGroup) already resolves from the catalog via
+      // backendProvider.forGroup, so serving any available group is correct; the
+      // assembler still narrows to serveCollections downstream.
+      _snapshot = allGroups.map((e) => e.collection);
 
-      // EAGER fail-fast: probe + compat-check each served collection's active generation.
+      // EAGER fail-fast: probe + compat-check the SERVED set's active generations
+      // (don't force-probe the whole catalog when a subset is served — a controller
+      // group outside the served set is probed lazily at first recall).
       // SkillsIncompatibleError propagates (recall-only load aborts on incompatibility).
       for (const g of served) {
         await rag(g).activeManifest(options);
