@@ -57,8 +57,20 @@ export interface IServerPipelineContext extends IPipelineContext {
    * Skills recall knobs (`skillPlugins.k` / `skillPlugins.threshold`) threaded
    * from the host config so the implicit assembler wiring (B3) can size each
    * registered skills RAG source. Present iff `skillHost` is present.
+   *
+   * `controllerSkillGroup` / `maxInjectChars` (`skillPlugins.controllerSkillGroup`
+   * / `skillPlugins.maxInjectChars`) are threaded for the controller pipeline's
+   * own recall hook (B4): the controller does NOT use the context-assembler, so
+   * it builds its own `skillsRecall(goal)` that queries this group and injects a
+   * bounded "Relevant skills" block into the planner's create-plan/replan. When
+   * `controllerSkillGroup` is absent the controller stays agnostic (no hook).
    */
-  skillRecall?: { k: number; threshold?: number };
+  skillRecall?: {
+    k: number;
+    threshold?: number;
+    controllerSkillGroup?: string;
+    maxInjectChars?: number;
+  };
 }
 
 /**

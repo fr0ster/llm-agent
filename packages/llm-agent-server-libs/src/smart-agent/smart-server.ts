@@ -2261,6 +2261,15 @@ export class SmartServer {
               ...(this.cfg.skillPlugins?.threshold !== undefined
                 ? { threshold: this.cfg.skillPlugins.threshold }
                 : {}),
+              ...(this.cfg.skillPlugins?.controllerSkillGroup !== undefined
+                ? {
+                    controllerSkillGroup:
+                      this.cfg.skillPlugins.controllerSkillGroup,
+                  }
+                : {}),
+              ...(this.cfg.skillPlugins?.maxInjectChars !== undefined
+                ? { maxInjectChars: this.cfg.skillPlugins.maxInjectChars }
+                : {}),
             },
           }
         : {}),

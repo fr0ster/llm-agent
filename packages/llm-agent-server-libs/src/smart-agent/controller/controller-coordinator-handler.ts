@@ -157,6 +157,13 @@ export interface ControllerHandlerDeps {
   now?: () => string;
   /** Terminal-store TTL in ms (default 24h). */
   terminalTtlMs?: number;
+  /**
+   * Optional controller-own skills recall hook. When present it is threaded into
+   * the planner, which queries it before each create-plan/replan and injects a
+   * bounded "Relevant skills" block into the prompt. Absent → the planner prompt
+   * is byte-identical to the agnostic path.
+   */
+  skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +342,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       deps.config.planner ?? 'incremental',
       deps.planner,
       deps.config.subagents.planner?.hint,
+      deps.skillsRecall,
     );
 
     if (bundle.pending?.kind === 'external-tool') {

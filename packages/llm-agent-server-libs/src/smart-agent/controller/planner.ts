@@ -1,4 +1,4 @@
-import type { LlmUsage } from '@mcp-abap-adt/llm-agent';
+import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import {
   extractJsonObject,
   parseNextStep,
@@ -55,15 +55,35 @@ const RETRY_HINT =
   '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw ' +
   'JSON object — no prose, no explanation, no markdown code fences.';
 
+/**
+ * Controller-own skills recall hook (B4). Given the goal, returns a bounded,
+ * pre-formatted "Relevant skills" block (or '' when there is nothing to inject).
+ * Threaded host → ctx → factory → handler → planner. Absent OR returning '' →
+ * the planner prompt is byte-identical to the agnostic path (measurement toggle).
+ */
+export type SkillsRecall = (
+  goal: string,
+  options?: CallOptions,
+) => Promise<string>;
+
+/** Append a non-empty recall block to a user message, preserving the agnostic
+ *  message byte-for-byte when the block is empty. */
+function withSkillsBlock(userContent: string, block: string): string {
+  return block ? `${userContent}\n\n${block}` : userContent;
+}
+
 export class IncrementalPlanner implements IControllerPlanner {
   constructor(
     private readonly planner: ISubagentClient,
     /** Optional consumer domain hint appended to the agnostic planner prompt. */
     private readonly hint?: string,
+    /** Optional controller-own skills recall hook (B4). */
+    private readonly skillsRecall?: SkillsRecall,
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
     const { bundle, prompt, retrying, logUsage } = input;
+    const block = this.skillsRecall ? await this.skillsRecall(bundle.goal) : '';
     const res = await this.planner.send([
       {
         role: 'system',
@@ -72,7 +92,10 @@ export class IncrementalPlanner implements IControllerPlanner {
       },
       {
         role: 'user',
-        content: `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}`,
+        content: withSkillsBlock(
+          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}`,
+          block,
+        ),
       },
     ]);
     logUsage?.('planner', res.usage);
@@ -179,6 +202,9 @@ export class AdaptivePlanner implements IControllerPlanner {
     /** Optional consumer domain hint appended to every agnostic planner/
      *  create-plan/replan/finalize prompt this planner emits. */
     private readonly hint?: string,
+    /** Optional controller-own skills recall hook (B4). Queried before each
+     *  create-plan/replan; its block is injected into the user message. */
+    private readonly skillsRecall?: SkillsRecall,
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
@@ -304,6 +330,12 @@ export class AdaptivePlanner implements IControllerPlanner {
     const completedBlock = completed.length
       ? `\nALREADY-EXECUTED steps — their results are in Progress above; do NOT plan or repeat these, plan only what is still missing:\n${completed.map((s) => `- ${s.name}`).join('\n')}`
       : '';
+    // Recall the configured controller skill group BEFORE the LLM call and inject
+    // its bounded block. When the hook is absent OR returns '' the user message is
+    // byte-identical to the agnostic prompt (the measurement toggle).
+    const skillsBlock = this.skillsRecall
+      ? await this.skillsRecall(bundle.goal)
+      : '';
     const res = await this.planner.send([
       {
         role: 'system',
@@ -315,7 +347,10 @@ export class AdaptivePlanner implements IControllerPlanner {
       },
       {
         role: 'user',
-        content: `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}`,
+        content: withSkillsBlock(
+          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}`,
+          skillsBlock,
+        ),
       },
     ]);
     logUsage?.('planner', res.usage);
@@ -328,8 +363,9 @@ export function makePlanner(
   kind: PlannerKind,
   planner: ISubagentClient,
   hint?: string,
+  skillsRecall?: SkillsRecall,
 ): IControllerPlanner {
   return kind === 'adaptive'
-    ? new AdaptivePlanner(planner, hint)
-    : new IncrementalPlanner(planner, hint);
+    ? new AdaptivePlanner(planner, hint, skillsRecall)
+    : new IncrementalPlanner(planner, hint, skillsRecall);
 }

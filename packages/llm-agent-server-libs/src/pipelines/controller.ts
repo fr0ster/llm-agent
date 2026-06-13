@@ -102,6 +102,37 @@ export class ControllerPipelinePlugin
     const selectTools = (query: string, k?: number, options?: CallOptions) =>
       toolsRag ? toolsRag.query(query, k, options) : Promise.resolve([]);
 
+    // Controller-OWN skills recall hook (B4). The controller pipeline builds its
+    // subagent prompts itself (it does NOT use the context-assembler), so it needs
+    // its own recall: query the configured controller skill group and format a
+    // bounded "Relevant skills" block the planner injects into create-plan/replan.
+    // Wired ONLY when a host AND a controller group are present; otherwise left
+    // undefined so the planner prompt stays byte-identical to the agnostic path.
+    const skillHost = ctx.skillHost;
+    const group = ctx.skillRecall?.controllerSkillGroup;
+    const skillsRecall =
+      skillHost && group
+        ? async (goal: string, options?: CallOptions): Promise<string> => {
+            const k = ctx.skillRecall?.k ?? 4;
+            const maxInjectChars = ctx.skillRecall?.maxInjectChars ?? 4000;
+            const queryOpts =
+              ctx.skillRecall?.threshold !== undefined
+                ? { k, threshold: ctx.skillRecall.threshold }
+                : { k };
+            const hits = await skillHost
+              .rag(group)
+              .query(goal, queryOpts, options);
+            if (hits.length === 0) return '';
+            let block = 'Relevant skills:\n';
+            for (const h of hits) {
+              const next = `${block}- ${h.record.content}\n`;
+              if (next.length > maxInjectChars) break;
+              block = next;
+            }
+            return block.trimEnd();
+          }
+        : undefined;
+
     // The factory resolves the three role LLMs via makeRoleLlm, wraps them as
     // subagent clients, validates the embedder requirement, and builds the
     // handler. external-tool routing is decided PER-REQUEST inside the handler
@@ -116,6 +147,7 @@ export class ControllerPipelinePlugin
       knowledgeRagFor: (sessionId) => ctx.knowledgeRagFor(sessionId),
       embedder: ctx.embedder,
       selectTools,
+      ...(skillsRecall ? { skillsRecall } : {}),
     };
 
     const { handler } = await new ControllerFactory().build(cfg, deps);
