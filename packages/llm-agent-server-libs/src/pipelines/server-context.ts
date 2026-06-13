@@ -53,6 +53,12 @@ export interface IServerPipelineContext extends IPipelineContext {
    * `skillPlugins:` config is present.
    */
   skillHost?: ISkillPluginHost;
+  /**
+   * Skills recall knobs (`skillPlugins.k` / `skillPlugins.threshold`) threaded
+   * from the host config so the implicit assembler wiring (B3) can size each
+   * registered skills RAG source. Present iff `skillHost` is present.
+   */
+  skillRecall?: { k: number; threshold?: number };
 }
 
 /**

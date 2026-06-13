@@ -4,6 +4,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { LinearFactory } from '../factories/index.js';
 import { parseLinearConfig } from './parsers.js';
+import { registerSkillSources } from './register-skill-sources.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 /** Config = the raw `coordinator:` (linear) YAML block. */
@@ -34,7 +35,7 @@ export class LinearPipelinePlugin
       makeRoleLlm: (role) => ctx.resolveLlm(role),
       callMcp: (n, a, s) => ctx.callMcp(n, a, s).then(String),
     });
-    const builder = await ctx.createAgentBuilder();
+    const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };
   }

@@ -2253,7 +2253,17 @@ export class SmartServer {
       embedder: this._resolvedEmbedder,
       // Skill plugin-host (built + loaded once in start()); undefined when no
       // `skillPlugins:` config — pipelines that don't read it are unaffected.
-      ...(this._skillHost ? { skillHost: this._skillHost } : {}),
+      ...(this._skillHost
+        ? {
+            skillHost: this._skillHost,
+            skillRecall: {
+              k: this.cfg.skillPlugins?.k ?? 4,
+              ...(this.cfg.skillPlugins?.threshold !== undefined
+                ? { threshold: this.cfg.skillPlugins.threshold }
+                : {}),
+            },
+          }
+        : {}),
       // External tools are NOT carried on this build-time ctx: definitions arrive
       // per-REQUEST (HTTP body.tools) and the controller routes them per-request
       // via PipelineContext.externalTools inside the coordinator handler.
