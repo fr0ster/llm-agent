@@ -203,16 +203,23 @@ Responsibilities, in order:
    upsert 404s.)
 5. Run the test under a **hard timeout** with its own process group (POSIX — see
    scope above): spawn `npx tsx --test …` async with `detached: true`, inherit
-   stdio, all env set. Arm a wall-clock timer (e.g. 5 min); on expiry, kill the
-   WHOLE process group (`process.kill(-child.pid, 'SIGKILL')` — not just the npx
-   parent, so a hung `tsx`/`node`/Ollama-waiting grandchild dies too) and mark the
-   run failed. The kill is wrapped in try/catch so a kill failure still falls
-   through to teardown. `spawnSync` is NOT used here: it blocks the event loop,
-   so a timer could never fire and a hung child would wedge the wrapper forever,
-   never reaching teardown.
+   stdio, all env set. Arm a wall-clock timer (e.g. 5 min). On expiry, escalate:
+   (a) `process.kill(-child.pid, 'SIGKILL')` to take the WHOLE group (so a hung
+   `tsx`/`node`/Ollama-waiting grandchild dies too); (b) if that throws, fall back
+   to `child.kill('SIGKILL')` on the parent alone — both wrapped so a kill failure
+   never throws out of the timer. The promise resolves only on the child's
+   `exit`/`close` event OR a bounded post-kill grace (e.g. 5 s): if `close` still
+   has not fired after the grace, resolve anyway with exit code 124 and log an
+   EXPLICIT warning that an orphan child/group may survive — the wrapper does NOT
+   block forever waiting to confirm death. `spawnSync` is NOT used here: it blocks
+   the event loop, so the timer could never fire and a hung child would wedge the
+   wrapper, never reaching teardown.
 6. In a `finally`, always `docker compose down -v` (drop the volume so each run
-   starts from a clean DB + clean Qdrant storage). Because step 5 guarantees the
-   child is dead (completed OR killed), the `finally` always runs.
+   starts from a clean DB + clean Qdrant storage). The `finally` runs because
+   step 5 ALWAYS resolves — on normal exit, on a confirmed post-kill `close`, or
+   on the bounded-grace timeout (with the orphan warning). `down -v` is the
+   authoritative cleanup of the containers/volume regardless of any lingering
+   host-side orphan process.
 7. Propagate the test's exit code as the process exit code.
 8. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
    (this is an explicit, opt-in run — never a silent skip). On `up --wait`

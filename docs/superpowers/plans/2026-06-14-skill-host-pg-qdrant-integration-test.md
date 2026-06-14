@@ -463,9 +463,13 @@ if (probe.status !== 0) {
 
 // Run the test async, detached into its OWN process group, under a hard timeout.
 // spawnSync is unusable here: it blocks the event loop, so a timer could never
-// fire and a hung child would wedge the wrapper forever. On timeout we SIGKILL
-// the whole group (negative pid) so a stuck tsx/node/Ollama-waiting grandchild
-// dies too — guaranteeing the finally reaches `down -v`.
+// fire and a hung child would wedge the wrapper forever. On timeout we escalate:
+// SIGKILL the whole group (negative pid) so a stuck tsx/node/Ollama-waiting
+// grandchild dies too; if that throws, fall back to killing the parent. We do NOT
+// claim the child is guaranteed dead — we wait a BOUNDED grace for `close`, then
+// resolve regardless (warning about a possible orphan) so the finally always
+// reaches `down -v`, the authoritative container/volume cleanup.
+const POST_KILL_GRACE_MS = 5_000;
 function runTestWithTimeout() {
   return new Promise((resolve) => {
     const child = spawn(
@@ -473,21 +477,36 @@ function runTestWithTimeout() {
       ['tsx', '--test', 'test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts'],
       { cwd: repoRoot, stdio: 'inherit', env, detached: true },
     );
+    let settled = false;
+    const done = (code) => {
+      if (settled) return;
+      settled = true;
+      resolve(code);
+    };
     let timedOut = false;
     const timer = setTimeout(() => {
       timedOut = true;
       console.error(`[run.mjs] test exceeded ${TEST_TIMEOUT_MS}ms — killing process group`);
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+      // (a) whole-group kill; (b) fallback to the parent. Neither may throw out.
+      try { process.kill(-child.pid, 'SIGKILL'); }
+      catch { try { child.kill('SIGKILL'); } catch { /* already gone */ } }
+      // Bounded wait for `close`; if it never comes, proceed anyway (orphan warning).
+      setTimeout(() => {
+        if (!settled) {
+          console.error('[run.mjs] WARNING: test did not exit after SIGKILL — a host-side orphan child/group may survive; continuing to teardown (down -v still cleans containers/volume).');
+          done(124);
+        }
+      }, POST_KILL_GRACE_MS);
     }, TEST_TIMEOUT_MS);
-    child.on('exit', (code, signal) => {
+    child.on('close', (code, signal) => {
       clearTimeout(timer);
-      if (timedOut) return resolve(124); // conventional timeout exit code
-      resolve(signal ? 1 : (code ?? 1));
+      if (timedOut) return done(124); // conventional timeout exit code
+      done(signal ? 1 : (code ?? 1));
     });
     child.on('error', (err) => {
       clearTimeout(timer);
       console.error(`[run.mjs] failed to spawn test: ${err.message}`);
-      resolve(1);
+      done(1);
     });
   });
 }
@@ -534,7 +553,7 @@ process.exit(testStatus);
 
 - [ ] **Step 2: Verify the wrapper fails loud without docker (sanity)**
 
-This is a structural check — confirm the preflight path exists. Read the file and confirm: preflight `docker compose version` guard present; the `/api/tags` model-digest gate (`EXPECTED_MODEL_DIGEST`) runs after `up --wait` and fails loud on drift/absence; the test runs via async `spawn` with `detached: true` under `TEST_TIMEOUT_MS`; on timeout `process.kill(-child.pid, 'SIGKILL')` kills the whole group and returns 124; `down -v` is inside `finally` (so it runs whether the test passed, failed, or was killed); collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
+This is a structural check — confirm the preflight path exists. Read the file and confirm: `win32` guard exits early; preflight `docker compose version` guard present; the `/api/tags` model-digest gate (`EXPECTED_MODEL_DIGEST`) runs after `up --wait` and fails loud on drift/absence; the test runs via async `spawn` with `detached: true` under `TEST_TIMEOUT_MS`; on timeout it group-kills, falls back to `child.kill`, waits a bounded `POST_KILL_GRACE_MS` for `close`, then resolves 124 with an orphan warning (never blocks forever); `down -v` is inside `finally` (so it runs whether the test passed, failed, was killed, or timed out); collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
 
 - [ ] **Step 3: Commit**
 
@@ -1060,6 +1079,9 @@ git commit -m "test(skills): finalize PG+Qdrant integration test end-to-end run"
 **Fourth review round (2 carry-over findings) — addressed:**
 - Port contract: dynamic-port promise dropped; FIXED defaults overridable by `PG_TEST_PORT`/`QDRANT_TEST_PORT`/`OLLAMA_TEST_PORT`, wired identically into compose `${VAR:-default}:container` mappings (Task 2) AND the URLs `run.mjs` builds (Task 4) — they share the variables, so host port and URL never disagree. ✓
 - POSIX scope declared: `run.mjs` exits with a clear message on `win32`; the process-group kill is POSIX-only and wrapped in try/catch; README lists "POSIX host (Linux/macOS/WSL)" as a prerequisite. ✓
+
+**Fifth review round (1 finding) — addressed:**
+- Timeout contract no longer self-contradictory → Task 4: on timeout, escalate (group-kill → fallback `child.kill`), wait a bounded `POST_KILL_GRACE_MS` for `close`, then resolve 124 with an EXPLICIT orphan warning. The wrapper never claims the child is guaranteed dead and never blocks forever; `down -v` (authoritative container/volume cleanup) always follows. ✓
 
 **Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 (`/api/tags` for the model, `docker inspect` for the postgres/qdrant images) and pastes in — concrete values, not vague work.
 
