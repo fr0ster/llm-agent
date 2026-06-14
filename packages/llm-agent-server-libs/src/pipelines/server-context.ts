@@ -2,6 +2,7 @@ import type {
   IEmbedder,
   ILlm,
   IPipelineContext,
+  ISkillPluginHost,
   ISubAgent,
   IToolsRagHandle,
 } from '@mcp-abap-adt/llm-agent';
@@ -45,6 +46,40 @@ export interface IServerPipelineContext extends IPipelineContext {
    * embedder is configured.
    */
   embedder?: IEmbedder;
+  /**
+   * The live skill plugin-host, built once at startup from `skillPlugins:` config
+   * and `await host.load()`-ed before serving. Consumed by the implicit
+   * assembler wiring (B3) and the controller recall hook (B4). Undefined when no
+   * `skillPlugins:` config is present.
+   */
+  skillHost?: ISkillPluginHost;
+  /**
+   * Skills recall knobs (`skillPlugins.k` / `skillPlugins.threshold`) threaded
+   * from the host config so the implicit assembler wiring (B3) can size each
+   * registered skills RAG source. Present iff `skillHost` is present.
+   *
+   * `controllerSkillGroup` / `maxInjectChars` (`skillPlugins.controllerSkillGroup`
+   * / `skillPlugins.maxInjectChars`) are threaded for the controller pipeline's
+   * own recall hook (B4): the controller does NOT use the context-assembler, so
+   * it builds its own `skillsRecall(goal)` that queries this group and injects a
+   * bounded "Relevant skills" block into the planner's create-plan/replan. When
+   * `controllerSkillGroup` is absent the controller stays agnostic (no hook).
+   */
+  skillRecall?: {
+    k: number;
+    threshold?: number;
+    controllerSkillGroup?: string;
+    maxInjectChars?: number;
+    /**
+     * The operator-configured served collection subset
+     * (`skillPlugins.serveCollections`). When set, the implicit assembler wiring
+     * (B3) registers ONLY these groups (a compatible subset that may be read
+     * together), and the controller recall hook (B4) recalls a
+     * `controllerSkillGroup` only if it is within this set. When unset, all
+     * groups the host serves are registered.
+     */
+    serveCollections?: readonly string[];
+  };
 }
 
 /**

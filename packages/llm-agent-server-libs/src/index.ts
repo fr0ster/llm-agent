@@ -4,6 +4,7 @@ export * from './smart-agent/build-dag-coordinator-deps.js';
 export * from './smart-agent/build-stepper-root.js';
 export * from './smart-agent/config.js';
 export * from './smart-agent/jsonl-knowledge-backend.js';
+export { makePgPool, makePgReadPool } from './smart-agent/pg-pool.js';
 export * from './smart-agent/pipeline.js';
 export * from './smart-agent/resolve-agent-embedder.js';
 export * from './smart-agent/session-identity-resolver.js';

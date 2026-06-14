@@ -25,6 +25,7 @@ import type {
   IRagRegistry,
   IRequestLogger,
   ISkillManager,
+  ISkillPluginHost,
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
@@ -77,7 +78,11 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
-import { makeRag } from '@mcp-abap-adt/llm-agent-rag';
+import {
+  makeRag,
+  prefetchEmbedderFactories,
+  resolveEmbedder,
+} from '@mcp-abap-adt/llm-agent-rag';
 import { PACKAGE_VERSION } from '../generated/version.js';
 import { resolveAgentEmbedder } from './resolve-agent-embedder.js';
 import { resolveSessionIdentity } from './session-identity-resolver.js';
@@ -242,6 +247,13 @@ export interface SmartServerConfig {
   skills?: SmartServerSkillsConfig;
   /** Pre-built skill manager injected via DI. Takes precedence over `skills` config. */
   skillManager?: ISkillManager;
+  /**
+   * Skill PLUGIN-HOST config (the `skillPlugins:` YAML key) — a SEPARATE feature
+   * from `skills:` above. It feeds consumer-supplied domain skills to the agnostic
+   * engine through a grouped skills-RAG (gnostification). When omitted, no host is
+   * built and behaviour is unchanged. See {@link SkillPluginsConfig}.
+   */
+  skillPlugins?: SkillPluginsConfig;
   /** Pre-built MCP clients injected via DI. Takes precedence over `mcp` config. */
   mcpClients?: IMcpClient[];
   /** Client adapters for auto-detecting prompt-based clients (e.g. Cline). */
@@ -382,11 +394,17 @@ import {
 } from './config.js';
 import { makeKnowledgeSemanticIndex } from './embedder-knowledge-index.js';
 import { JsonlKnowledgeBackend } from './jsonl-knowledge-backend.js';
+import { makePgPool, makePgReadPool } from './pg-pool.js';
 import type {
   ISessionMetaStore,
   SessionMetaRow,
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
+import type { SkillPluginsConfig } from './skill-plugins-config.js';
+import {
+  buildSkillHostFromConfig,
+  initSkillHost,
+} from './skill-plugins-host-factory.js';
 
 export {
   generateConfigTemplate,
@@ -401,6 +419,23 @@ export {
   YAML_TEMPLATE,
   type YamlConfig,
 } from './config.js';
+export { makePgPool, makePgReadPool } from './pg-pool.js';
+export {
+  parseSkillPluginsConfig,
+  type SkillPluginsCatalogConfig,
+  type SkillPluginsConfig,
+  type SkillPluginsFetchedSource,
+  type SkillPluginsRecordsSource,
+  type SkillPluginsSource,
+  type SkillPluginsStoreConfig,
+} from './skill-plugins-config.js';
+export {
+  type BuildSkillHostDeps,
+  buildSkillHostFromConfig,
+  type IClosablePool,
+  initSkillHost,
+  validateServedGroups,
+} from './skill-plugins-host-factory.js';
 
 // ---------------------------------------------------------------------------
 // Worker-LLM cache + RAG-registry sharing (Task A7)
@@ -913,6 +948,19 @@ export class SmartServer {
    * semantic distance). Undefined when no embedder is configured.
    */
   private _resolvedEmbedder?: IEmbedder;
+  /**
+   * The live skill plugin-host, built ONCE in `start()` from `skillPlugins:`
+   * config and `await host.load()`-ed before serving. Held so `buildServerCtx`
+   * can thread it onto every pipeline context. Undefined when `skillPlugins:` is
+   * absent (everything unchanged).
+   */
+  private _skillHost?: ISkillPluginHost;
+  /**
+   * pg pools created for the skill plugin-host's `postgres` catalog. Captured at
+   * build time so the server can close their real sockets on shutdown (a closer
+   * is registered in `closeFns`); otherwise live PG sockets outlive `close()`.
+   */
+  private _skillPgPools: Array<{ end(): Promise<void> }> = [];
   /** Normalized LLM map + pipeline fallback + main temperature — captured in
    *  `start()` so buildServerCtx can hand the raw role-LLM materials to the
    *  context factory (mirrors the inline DAG/linear resolution). */
@@ -982,6 +1030,30 @@ export class SmartServer {
   }
 
   async start(): Promise<SmartServerHandle> {
+    // Startup pg-pool cleanup must span the ENTIRE start(): host.load() (via
+    // initSkillHost) creates pg pools, but fallible work AFTER it — makeRag,
+    // builder.build(), server.listen — can still throw/reject before the handle
+    // is returned and `closeFns` becomes callable. Without this guard those
+    // pools would leak open sockets and block process exit. initSkillHost keeps
+    // its own catch-cleanup (it clears the array, so this finally then no-ops —
+    // no double-end; pool end() is idempotent regardless). No-op when
+    // skillPlugins is unconfigured (_skillPgPools stays empty).
+    let started = false;
+    try {
+      // Single success path: the handle is only produced once server.listen
+      // succeeds (a listen error rejects this promise → finally cleans up).
+      const handle = await this._start();
+      started = true;
+      return handle;
+    } finally {
+      if (!started) {
+        await Promise.allSettled(this._skillPgPools.map((p) => p.end()));
+        this._skillPgPools = [];
+      }
+    }
+  }
+
+  private async _start(): Promise<SmartServerHandle> {
     const log = this.cfg.log ?? this.noop;
     const fileLogger: ILogger = {
       log: (e) => log(e as unknown as Record<string, unknown>),
@@ -1148,6 +1220,64 @@ export class SmartServer {
     // Hold the resolved embedder so buildServerCtx can thread it onto every
     // pipeline context (the controller pipeline needs it for target-state).
     this._resolvedEmbedder = resolvedEmbedder;
+
+    // ---- Skill plugin-host (the `skillPlugins:` feature) ------------------
+    // Build the host ONCE from config and `load()` it before serving, so its
+    // fixed serving collection set is established at startup. Reuses the SAME
+    // embedder-resolution path as the agent RAG (prefetch + resolveEmbedder from
+    // llm-agent-rag). Absent `skillPlugins:` → no host, behaviour unchanged.
+    if (this.cfg.skillPlugins) {
+      const skillCfg = this.cfg.skillPlugins;
+      const reuseAgentEmbedder =
+        skillCfg.embedder === undefined && resolvedEmbedder !== undefined;
+      // Prefetch the named embedder factory only when we will actually build a
+      // dedicated one (the agent embedder is already prefetched + wrapped).
+      if (!reuseAgentEmbedder) {
+        await prefetchEmbedderFactories([
+          skillCfg.embedder?.provider ?? 'ollama',
+        ]);
+      }
+      // Build → load → validate as one fail-fast unit. If ANY step throws, the
+      // captured pg pools are ended INSIDE initSkillHost (the later closeFns
+      // cleanup never runs when start() rejects before returning a handle), so
+      // the pools cannot leak open sockets on a startup failure.
+      this._skillHost = await initSkillHost(
+        () =>
+          buildSkillHostFromConfig(skillCfg, {
+            resolveEmbedder: (ec) =>
+              reuseAgentEmbedder
+                ? (resolvedEmbedder as IEmbedder)
+                : resolveEmbedder(ec, {
+                    extraFactories: mergedEmbedderFactories,
+                  }),
+            // Real pg `Pool` provider for a `postgres` catalog (qdrant
+            // deployment). Lazily imports `pg` and ensures the catalog table
+            // exists on first use; pass the configured table so the DDL targets
+            // the SAME table the catalog store reads/writes. Absent
+            // skillPlugins.catalog.type:postgres this is never invoked.
+            makePgPool: (connectionString) => {
+              const pool = makePgPool(
+                connectionString,
+                skillCfg.catalog.type === 'postgres'
+                  ? skillCfg.catalog.table
+                  : undefined,
+              );
+              this._skillPgPools.push(pool);
+              return pool;
+            },
+            // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
+            // recall-only process with read-only pg credentials does not crash
+            // attempting to CREATE the catalog table it only reads.
+            makePgReadPool: (connectionString) => {
+              const pool = makePgReadPool(connectionString);
+              this._skillPgPools.push(pool);
+              return pool;
+            },
+          }),
+        skillCfg,
+        this._skillPgPools,
+      );
+    }
 
     // ---- RAG resolution (interface-only) ----------------------------------
     // Resolve the tools/history stores and any named collections HERE so the
@@ -1336,6 +1466,12 @@ export class SmartServer {
     }
 
     const closeFns: Array<() => Promise<void> | void> = [closeAgent];
+
+    // Close any pg pools created for the skill plugin-host's postgres catalog so
+    // their sockets do not outlive server shutdown.
+    closeFns.push(async () => {
+      for (const p of this._skillPgPools) await p.end();
+    });
 
     // Stepper-owned MCP clients (connected from YAML mcp: block when no
     // DI/plugin clients existed). Dispose on server shutdown.
@@ -2191,6 +2327,31 @@ export class SmartServer {
       stepperKnowledgeBackend:
         this._stepperKnowledgeBackend ?? new InMemoryKnowledgeBackend(),
       embedder: this._resolvedEmbedder,
+      // Skill plugin-host (built + loaded once in start()); undefined when no
+      // `skillPlugins:` config — pipelines that don't read it are unaffected.
+      ...(this._skillHost
+        ? {
+            skillHost: this._skillHost,
+            skillRecall: {
+              k: this.cfg.skillPlugins?.k ?? 4,
+              ...(this.cfg.skillPlugins?.threshold !== undefined
+                ? { threshold: this.cfg.skillPlugins.threshold }
+                : {}),
+              ...(this.cfg.skillPlugins?.controllerSkillGroup !== undefined
+                ? {
+                    controllerSkillGroup:
+                      this.cfg.skillPlugins.controllerSkillGroup,
+                  }
+                : {}),
+              ...(this.cfg.skillPlugins?.maxInjectChars !== undefined
+                ? { maxInjectChars: this.cfg.skillPlugins.maxInjectChars }
+                : {}),
+              ...(this.cfg.skillPlugins?.serveCollections !== undefined
+                ? { serveCollections: this.cfg.skillPlugins.serveCollections }
+                : {}),
+            },
+          }
+        : {}),
       // External tools are NOT carried on this build-time ctx: definitions arrive
       // per-REQUEST (HTTP body.tools) and the controller routes them per-request
       // via PipelineContext.externalTools inside the coordinator handler.

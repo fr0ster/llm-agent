@@ -13,6 +13,7 @@
     "lint:check": "biome check packages",
     "format": "biome format --write packages",
     "test": "npm run test --workspaces --if-present",
+    "test:integration:skill-host": "node test/integration/skill-host-pg-qdrant/run.mjs",
     "dev": "tsx packages/llm-agent-server/src/smart-agent/cli.ts",
     "dev:ollama": "npm run dev -- --config examples/docker-ollama/smart-server.yaml",
     "dev:deepseek": "npm run dev -- --config examples/docker-deepseek/smart-server.yaml",

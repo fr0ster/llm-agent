@@ -11,6 +11,32 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Skill plugin-host & runtime gnostification.** A reusable, domain-agnostic host
+  that materialises consumer-supplied skills into a grouped skills-RAG and lets
+  pipelines recall them — keeping the engine (MIT) free of any bundled domain
+  knowledge.
+  - **The host (`@mcp-abap-adt/llm-agent-libs/skills/plugin-host`).** `ISkillPluginHost`
+    composed from an injected acquisition+materialisation **strategy** (which owns
+    collection placement — the host imposes no grouping rule) and a store provider.
+    A single fenced **catalog commit** is the only activation (no per-collection
+    `activate`): generations are built inactive, multi-source results merge (union +
+    ownership; conflicting descriptions error), a failed source carries forward into
+    a new generation, a no-prior build failure omits the collection, and orphans are
+    cleaned keyed on the committed catalog with a bounded catalog-CAS retry.
+  - **Stores.** An in-memory provider with **exact refcount-lease retention** and a
+    Qdrant provider with a **durable Postgres catalog** (conditional-UPDATE CAS),
+    durable retirement, and an age-protected crash-resumable sweeper; deterministic
+    UUIDv5 point ids; read-only reader interfaces for least-privilege recall-only
+    serving. The compat wrapper checks embedding-space compatibility per revision
+    (eager fail-fast vs runtime degrade), embeds last, and bounds recall by a
+    deadline.
+  - **Consumption.** Implicit recall for assembler pipelines (flat/default, linear)
+    via an `IRag` adapter registered as a context-assembler source, and a dedicated
+    controller-planner recall hook (configured group, bounded block, byte-identical
+    when off). New `skillPlugins:` server config (distinct from the existing
+    `skills:` skill-manager key) with validation; built and `load()`ed at startup.
+    A `mode: explicit` (planner-driven per-step group selection), dag/stepper implicit
+    wiring, and live-DB retention guarantees remain follow-on work.
 - **Controller execution-result control & data backbone.** The `controller`
   pipeline now separates DOING (executor) from JUDGING (a new reviewer role) and
   persists every step outcome *after review* into an append-only results-RAG.

@@ -207,6 +207,7 @@ export {
   CodexSkillManager,
   FileSystemSkillManager,
 } from './skills/index.js';
+export * from './skills/plugin-host/index.js';
 export {
   DefaultSubAgentContextBuilder,
   type DefaultSubAgentContextBuilderConfig,
