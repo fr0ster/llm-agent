@@ -105,6 +105,29 @@ it only by choosing a pipeline preset.
 An optional **combined planner+reviewer** implementation is allowed: with no
 separate reviewer, the planner produces its own digest from the full-result-in-RAG.
 
+**Selection contract (concrete).** Replace `PlannerKind = 'incremental' |
+'adaptive'` with `PlannerKind = 'smart-executor' | 'weak-executor'`, and replace
+`makePlanner(kind, …)` with `makeControllerPlanner(kind: PlannerKind, deps):
+IControllerPlanner`. The **composition code** chooses `kind` — there is no
+user-facing `planner:` YAML field and no autodetection. Concretely:
+
+- Capability is a property of the **executor component the preset wires**, encoded
+  in the **preset builder code** (the factory that assembles that controller), NOT
+  a user YAML knob. A preset that wires a small/weak executor model passes
+  `kind: 'weak-executor'`; one that wires a capable model passes
+  `'smart-executor'`.
+- Named pipeline presets in the registry (`pipeline: { name }`): `controller`
+  (default → `smart-executor`) and `controller-weak` (→ `weak-executor`). The end
+  user selects a preset; the preset's builder is the single source of truth for
+  the planner↔executor pairing.
+- A consumer composing its own pipeline in code calls `makeControllerPlanner`
+  directly with the `kind` matching the executor it pairs — same rule, no config
+  surface.
+
+(If a future deployment needs the capability to be data-driven rather than
+preset-encoded, that is the deferred per-step `Step.tier` routing below — not a
+new top-level toggle.)
+
 ### D. Deferred expansion (weak-executor planner)
 
 The operative criterion (sharpened from 2026-06-09 V3): **is the step's
@@ -124,9 +147,28 @@ expand-on-success**:
 4. The discovery step is marked **`expanded`** so its fan-out is never generated
    twice.
 
-The full discovery result stays in RAG for the executor; the planner sees only
-the digest list. The smart-executor planner does NOT use this — it emits the
-coarse step and lets the executor iterate.
+**Discovery-digest contract (structured, NOT free-text).** "Fan out exactly one
+step per element" requires a machine-readable, validated digest — a free-text
+summary cannot guarantee the 1:1 mapping. A discovery step's digest is therefore:
+
+```
+DiscoveryDigest = {
+  items: { id: string; label: string }[];   // id stable+unique within the step; label = human/intent text
+  truncated: boolean;                        // true if the reviewer capped the list
+}
+```
+
+Validation at expand time: `items` non-empty (empty ⇒ NOT a discovery completion →
+treated as `partial`/replan, never a 0-step fan-out); `items.length ≤
+maxFanOut` (config, default e.g. 50) and each `label` ≤ `maxItemChars` — on
+overflow the reviewer sets `truncated: true` and the planner emits a follow-up
+discovery step for the remainder rather than silently dropping items. The fanned-out
+steps are generated 1:1 from `items` (one step per `{id, label}`), each carrying
+the source `item.id` in its provenance so re-expansion/crash-replay is comparable.
+NON-discovery step digests stay free-text (§B). The full discovery result stays in
+RAG for the executor; the planner sees only the structured digest. The
+smart-executor planner does NOT use this — it emits the coarse step and lets the
+executor iterate.
 
 ### E. Step-state machine (the board's vocabulary)
 
@@ -151,6 +193,45 @@ two genuinely NEW states are **`planned`** (the cursor is currently implicit) an
 **`expanded`** (discovery fan-out already emitted). Decisions locked: (1) state is
 a projection; (2) `expanded` is a distinct gating state, not a side flag; (3)
 `awaiting-*` ARE shown to the planner (a blocked step is neither done nor todo).
+
+### F. Step identity & durable board persistence
+
+**Canonical identity.** A board entry is keyed by a stable **`stepId`**, NOT by
+`seq`. `stepId` is assigned when the step first enters the plan (at create-plan
+or at fan-out — for a fanned-out step it is derived deterministically from the
+discovery `stepId` + the source `item.id`, so a re-expansion produces the SAME
+ids). `seq` is assigned only when the step starts executing (monotonic, run-scoped);
+retries/replans of the same step share its `stepId` and produce distinct
+`attempt` values under that `seq`. The mapping is therefore:
+
+```
+stepId (stable, plan-time)  ──1:1──►  board entry / state
+stepId  ──assigned at start──►  seq (monotonic)  ──1:N──►  attempt (retries)
+```
+
+State updates and crash-recovery resolve a step by `stepId` (a planned step has a
+`stepId` but no `seq` yet; the existing `step-result` artifacts gain a `stepId`
+field alongside `seq`/`attempt`, and `resolveByPrecedence` collapses attempts
+within a `(stepId)` — the latest committed `writeOrdinal` wins). The board is a
+projection but is RECONSTRUCTIBLE because every entry has a durable `stepId`.
+
+**Durable, atomic expansion.** `expanded` and the fan-out are NOT mere projection
+— they are committed by ONE atomic bundle update so a crash cannot duplicate or
+lose the fan-out. The single persist writes together:
+
+- the discovery step's `expanded: true`,
+- the appended fan-out steps (each with its deterministic `stepId`, `state:
+  'planned'`, and source `item.id`),
+- a **planner-call marker** (the expand-remainder invocation is recorded BEFORE
+  its result is applied, so a crash after the planner LLM call but before persist
+  replays deterministically — no second LLM call, no double fan-out),
+- the plan **cursor** advance.
+
+This reuses the existing payload-free, `writeOrdinal`-fenced bundle-write pattern
+(the same mechanism that makes step settles crash-idempotent today). On replay:
+if the discovery step is already `expanded`, expansion is skipped entirely
+(idempotent); if the planner-call marker exists but the persist did not complete,
+the deterministic `stepId`s make the re-applied fan-out identical (no duplication).
 
 ## Data flow
 
@@ -207,16 +288,38 @@ Primary signal is **plan GENERATION**, not execution (agreed scope: "зніма�
 - Assert STRUCTURE, never retrieval quality: no repeated identical step (the loop
   regression we observed), discovery step present for fan-out prompts under the
   weak planner, fan-out count == digest list length, `expanded` set exactly once.
-- Reviewer-digest unit tests: a discovery result yields a digest containing the
-  enumerable list; a normal result yields a compact extract.
+- Reviewer-digest unit tests: a discovery result yields a STRUCTURED digest
+  (`items: [{id,label}]`, validated, bounded by `maxFanOut`/`maxItemChars`,
+  `truncated` set on overflow); a normal result yields a free-text extract.
 
-(The exploratory capture used during design lives in `/tmp` logs; the harness
-extension above is the durable, plan-defined version.)
+Plan-generation alone does NOT cover the real production risk — **settle /
+recovery / retries and the crash window between expansion and persist**. Add
+handler-level tests (the existing controller-handler test seam, with the
+in-memory bundle store + a fake reviewer/executor):
+
+- **Crash-injection around expansion.** Inject a crash (a) after the planner-call
+  marker but before the bundle persist, and (b) after the artifact write but
+  before the bundle persist; on replay assert the fan-out is **neither duplicated
+  nor lost** — the deterministic `stepId`s and the `expanded` guard produce an
+  identical board, and a single set of fan-out steps.
+- **Retry/replan identity.** A step that fails then retries keeps one `stepId`
+  with incrementing `attempt` under one `seq`; `resolveByPrecedence` collapses to
+  the latest committed outcome; the board shows one entry.
+- **Expansion-only-on-done.** A discovery step that settles `partial`/`failed`
+  triggers replan, NOT expansion; `expanded` is never set.
+- **Idempotent re-expand.** Re-invoking expand on an already-`expanded` discovery
+  step is a no-op.
+
+(The exploratory plan-generation capture used during design lives in `/tmp` logs;
+the harness extension + handler crash tests above are the durable, plan-defined
+verification.)
 
 ## Open / deferred
 
-- **Digest format** (free text vs structured list) — start free-text; structure
-  only if fan-out parsing needs it.
+- **Digest format** — RESOLVED, not deferred: discovery digests are STRUCTURED
+  (`items: [{id,label}]`, validated, bounded — §D); non-discovery digests are
+  free-text. (The earlier "start free-text everywhere" idea is dropped — free-text
+  cannot guarantee the 1:1 fan-out.)
 - **Per-step model routing** (`Step.tier: cheap | capable`, routing each step to a
   matching executor endpoint — 2026-06-09 Variants 2/3) — the deeper future layer;
   deferred. Capability is global-per-composition for now (YAGNI). A mis-tagged
