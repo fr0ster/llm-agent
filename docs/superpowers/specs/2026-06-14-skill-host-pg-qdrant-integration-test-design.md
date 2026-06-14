@@ -118,24 +118,38 @@ The collection name and size are passed to the test via env
 
 ### ollama.Dockerfile
 
+Ollama does not expose a verified `pull model@sha256:…` syntax across versions,
+so we DO NOT rely on a digest-addressed pull. Instead we pull the model by its
+tag and then **fail-loud verify** the resolved digest against an expected value
+recorded as a build arg — if Ollama ever serves different bytes under that tag,
+the image build fails rather than silently changing the vectors:
+
 ```dockerfile
 # Base image pinned by digest (resolved at implementation time from ollama/ollama:<tag>).
 FROM ollama/ollama@sha256:<resolved-at-impl-time>
-# Bake the embedding model INTO the image so each run is deterministic and does
-# not re-pull at container start (avoids network flakiness + cold-start latency).
-# The model is pinned by DIGEST (nomic-embed-text@sha256:…) so the baked vectors
-# and 768-dim geometry are reproducible across rebuilds.
+# Expected model digest, resolved once at authoring time (see README) and pinned here.
+ARG NOMIC_DIGEST=sha256:<resolved-at-impl-time>
+# Bake the embedding model INTO the image (deterministic; no re-pull at container
+# start → no network flakiness, no cold start). Pull by TAG, then assert the
+# manifest digest equals the pinned ARG — fail the build on any drift.
 RUN ollama serve & \
     until ollama list >/dev/null 2>&1; do sleep 1; done; \
-    ollama pull nomic-embed-text@sha256:<resolved-at-impl-time>; \
-    pkill ollama
+    ollama pull nomic-embed-text; \
+    GOT="$(ollama show nomic-embed-text --modelfile | grep -oE 'sha256:[0-9a-f]{64}' | head -n1)"; \
+    echo "baked nomic-embed-text digest: $GOT (expected $NOMIC_DIGEST)"; \
+    test "$GOT" = "$NOMIC_DIGEST" || { echo 'ERROR: nomic-embed-text digest drift'; exit 1; }; \
+    pkill ollama || true
 ```
 
-Model: `nomic-embed-text` (768-dim), pinned by digest. Both the base image and
-the model digest are resolved during implementation (`docker inspect` /
-`ollama show`) and written in verbatim with a comment recording the tag they came
-from. The healthcheck confirms the server is up; the test confirms the model is
-present and returns a 768-length vector by issuing one embed call before ingest.
+Model: `nomic-embed-text` (768-dim). The base image is digest-pinned; the model
+is tag-pulled then digest-verified, so the baked bytes and 768-dim geometry are
+reproducible across rebuilds (or the build fails). The exact `NOMIC_DIGEST` is
+captured during implementation (`ollama pull nomic-embed-text` then `ollama show
+nomic-embed-text --modelfile`). The integration test additionally confirms the
+model returns a 768-length vector by issuing one embed call before ingest.
+If `ollama show`'s output format differs in the pinned Ollama version, the
+implementer adjusts the `grep` to the field that carries the model digest — the
+fail-loud `test "$GOT" = "$NOMIC_DIGEST"` gate stays.
 
 ### run.mjs (lifecycle wrapper)
 
@@ -150,10 +164,16 @@ Plain Node ESM, no test logic. Responsibilities, in order:
    `{ vectors: { size: 768, distance: "Cosine" } }`, then `GET` it and assert
    `size === 768`. (The client never creates collections; without this the first
    upsert 404s.)
-4. Run the test: `npx tsx --test test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`,
-   inheriting stdio, with all env vars set.
+4. Run the test under a **hard timeout** with its own process group: spawn
+   `npx tsx --test …` async with `detached: true`, inherit stdio, all env set.
+   Arm a wall-clock timer (e.g. 5 min); on expiry, kill the WHOLE process group
+   (`process.kill(-child.pid, 'SIGKILL')` — not just the npx parent, so a hung
+   `tsx`/`node`/Ollama-waiting grandchild dies too) and mark the run failed.
+   `spawnSync` is NOT used here: it blocks the event loop, so a timer could never
+   fire and a hung child would wedge the wrapper forever, never reaching teardown.
 5. In a `finally`, always `docker compose down -v` (drop the volume so each run
-   starts from a clean DB + clean Qdrant storage).
+   starts from a clean DB + clean Qdrant storage). Because step 4 guarantees the
+   child is dead (completed OR killed), the `finally` always runs.
 6. Propagate the test's exit code as the process exit code.
 7. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
    (this is an explicit, opt-in run — never a silent skip). On `up --wait`
@@ -168,6 +188,13 @@ Shared by the test to keep it readable and to remove two classes of flakiness:
   so writes/deletes are not synchronously visible. Every "expect N points" /
   "expect generation gone" assertion goes through `pollUntil` (e.g. 5 s timeout,
   100 ms interval) rather than reading once immediately after `load()`/`sweep()`.
+- **`assertHoldsFor(fn, { predicate, windowMs, intervalMs })`** — the inverse of
+  `pollUntil`: re-samples `fn` for the whole window and FAILS if the predicate
+  ever breaks. Used for the age-protection check: after `sweep(now)` (pre-grace),
+  a retired generation's count must stay at its full value for a sustained window
+  — a one-shot `count > 0` would pass instantly (the delete simply hadn't
+  propagated yet) and prove nothing. `assertHoldsFor(count === fullCount, 1.5 s)`
+  proves the sweep genuinely did NOT delete.
 - **`withPools(pools, body)`** — registers every `makePgPool`/`makePgReadPool`
   instance and `await`s `end()` on ALL of them in a `finally`, even when `body`
   throws. Open pg sockets keep the tsx subprocess alive; if it never exits,
@@ -216,25 +243,32 @@ env vars. The embedder is the real `@mcp-abap-adt/ollama-embedder` pointed at
    The stale call throws `CatalogCasError` (real conditional `UPDATE … WHERE
    revision = $expected` matching 0 rows); a follow-up read confirms the catalog
    is unchanged.
-4. **Retirement + sweeper.**
-   - Switch the fixture to v2 (`setRevision('v2')`) and `load()` again: publishes
-     a new generation (read back from the catalog; assert it differs from v1's)
-     and retires the prior one (durable `retired[]` row present). `pollUntil`
-     confirms Qdrant now holds `V2_POINTS` (6) for the new generation.
-   - **Age protection:** `sweep(now)` BEFORE the grace elapses leaves the retired
-     generation's vectors in place — `pollUntil` (short timeout) confirms the
-     retired-generation count stays > 0.
-   - **Post-grace reclaim:** `sweep(now + retiredGraceMs + 1)` removes the
-     retired generation's vectors — `pollUntil` confirms that generation's count
-     reaches 0.
+4. **Retirement + sweeper.** NOTE: `load()` rebuilds EVERY desired collection,
+   so a reload produces a NEW generation for **both** `alpha` and `beta` and
+   retires **both** prior generations — not one. The test captures the v1
+   generation map `{alpha: g1a, beta: g1b}` and the v2 map `{alpha: g2a, beta: g2b}`
+   and asserts `g2a ≠ g1a` AND `g2b ≠ g1b`.
+   - Switch the fixture to v2 (`setRevision('v2')`) and `load()` again. `pollUntil`
+     confirms Qdrant holds `V2_POINTS` (6) total across the two new generations.
+     The durable `retired[]` contains BOTH g1a and g1b.
+   - **Age protection (sustained):** `sweep(now)` BEFORE the grace elapses must
+     delete nothing — `assertHoldsFor` confirms the combined retired count
+     (g1a + g1b) stays at its full value (5) for a sustained window, not merely
+     "> 0 once".
+   - **Post-grace reclaim (both):** `sweep(now + retiredGraceMs + 1)` removes the
+     vectors of BOTH retired generations — `pollUntil` confirms g1a's count AND
+     g1b's count each reach 0.
 5. **Recall-only read path (restricted creds).** Build the read-only path with
    `makePgReadPool` + `makePgCatalogReader` over `PG_READ_TEST_URL` (the
    SELECT-only role) and `makeQdrantReader`. Assert it (a) reads the same
-   committed catalog and returns the same vectors, AND (b) a write/DDL attempt
-   through the read-only login is REJECTED by Postgres (e.g. `makePgPool` over
-   `PG_READ_TEST_URL` issuing `CREATE TABLE` throws a permission error) — proving
-   the read path genuinely runs without write privileges, not merely that our
-   code declined to call DDL.
+   committed catalog and returns the same vectors, AND (b) write/DDL through the
+   read-only login is REJECTED by Postgres. The negative check runs UNAMBIGUOUSLY
+   forbidden statements directly through the restricted pool — `INSERT INTO
+   skills_catalog …` AND `CREATE TABLE readonly_probe (i int)` (a NEW table name,
+   so it is never short-circuited the way `CREATE TABLE IF NOT EXISTS
+   skills_catalog` would be on the already-existing catalog table). Both must
+   throw a permission error — proving the read path genuinely runs without write
+   privileges, not merely that our code declined to call DDL.
 
 ## Data Flow
 

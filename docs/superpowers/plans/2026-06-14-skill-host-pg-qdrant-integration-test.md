@@ -141,7 +141,14 @@ docker pull qdrant/qdrant:v1.12.4 && docker inspect --format='{{index .RepoDiges
 docker pull ollama/ollama:latest && docker inspect --format='{{index .RepoDigests 0}}' ollama/ollama:latest
 ```
 
-For the model digest, after the Ollama container is first built you can read it with `ollama show --modelfile nomic-embed-text`; if a digest-pinned pull is unavailable for the model, pin the model by its tag `nomic-embed-text` and record in a comment that the model is tag-pinned (the image bake still freezes the bytes into the image layer, preserving reproducibility per rebuild).
+For the MODEL digest, do NOT assume a digest-addressed pull works. Resolve the expected digest once and pin it as a build ARG that the Dockerfile verifies (fail-loud on drift):
+
+```bash
+docker run --rm --entrypoint sh ollama/ollama:latest -c \
+  'ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull nomic-embed-text >/dev/null; ollama show nomic-embed-text --modelfile | grep -oE "sha256:[0-9a-f]{64}" | head -n1'
+```
+
+Record the printed `sha256:…` as `NOMIC_DIGEST` in `ollama.Dockerfile` (Step 2). If `ollama show`'s output format differs in this Ollama version, adjust the `grep` to the field carrying the model digest — the fail-loud equality gate stays.
 
 - [ ] **Step 2: Write `ollama.Dockerfile`**
 
@@ -150,11 +157,17 @@ Paste the resolved `ollama/ollama` digest into `FROM`:
 ```dockerfile
 # Base pinned by digest (resolved from ollama/ollama:latest at authoring time — see compose comment).
 FROM ollama/ollama@sha256:PASTE_OLLAMA_DIGEST_HERE
-# Bake the embedding model INTO the image so each run is deterministic and does
-# not re-pull at container start (no network flakiness, no cold-start latency).
+# Expected model digest, resolved once in Step 1 and pinned here.
+ARG NOMIC_DIGEST=sha256:PASTE_NOMIC_MODEL_DIGEST_HERE
+# Bake the embedding model INTO the image (deterministic; no re-pull at container
+# start). Pull by TAG, then assert the manifest digest equals the pinned ARG —
+# fail the build on any drift (no verified pull-by-digest syntax across versions).
 RUN ollama serve & \
     until ollama list >/dev/null 2>&1; do sleep 1; done; \
     ollama pull nomic-embed-text; \
+    GOT="$(ollama show nomic-embed-text --modelfile | grep -oE 'sha256:[0-9a-f]{64}' | head -n1)"; \
+    echo "baked nomic-embed-text digest: $GOT (expected $NOMIC_DIGEST)"; \
+    test "$GOT" = "$NOMIC_DIGEST" || { echo 'ERROR: nomic-embed-text digest drift'; exit 1; }; \
     pkill ollama || true
 ```
 
@@ -295,6 +308,31 @@ export async function pollUntil<T>(
   }
 }
 
+/**
+ * The inverse of pollUntil: re-sample `fn` for the WHOLE window and throw if
+ * `predicate` ever breaks. Proves a condition is SUSTAINED — e.g. a retired
+ * generation's point count stays at its full value after a pre-grace sweep
+ * (a one-shot `count > 0` would pass instantly because the delete simply hadn't
+ * propagated yet, proving nothing).
+ */
+export async function assertHoldsFor<T>(
+  fn: () => Promise<T>,
+  opts: { predicate: (v: T) => boolean; windowMs?: number; intervalMs?: number; label?: string },
+): Promise<void> {
+  const windowMs = opts.windowMs ?? 1500;
+  const intervalMs = opts.intervalMs ?? 150;
+  const deadline = Date.now() + windowMs;
+  do {
+    const v = await fn();
+    if (!opts.predicate(v)) {
+      throw new Error(
+        `assertHoldsFor: predicate broke${opts.label ? ` for ${opts.label}` : ''}; value: ${JSON.stringify(v)}`,
+      );
+    }
+    await new Promise((r) => setTimeout(r, intervalMs));
+  } while (Date.now() < deadline);
+}
+
 /** Anything with an async end() — both makePgPool and makePgReadPool qualify. */
 export interface Closable {
   end(): Promise<void>;
@@ -352,11 +390,14 @@ git commit -m "test(skills): integration-test helpers (pollUntil + withPools)"
 ```js
 #!/usr/bin/env node
 // Lifecycle wrapper for the skill-host PG+Qdrant integration test.
-// up --wait --build → bootstrap Qdrant collection → run the test via tsx →
-// ALWAYS `docker compose down -v` in a finally. No test logic lives here.
-import { spawnSync } from 'node:child_process';
+// up --wait --build → bootstrap Qdrant collection → run the test via tsx under a
+// HARD TIMEOUT in its own process group → ALWAYS `docker compose down -v` in a
+// finally. No test logic lives here.
+import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+
+const TEST_TIMEOUT_MS = 5 * 60_000; // hard cap: a hung test/Ollama must not wedge teardown
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -391,6 +432,37 @@ if (probe.status !== 0) {
   fail('docker compose is not available — this is an explicit, opt-in integration run.');
 }
 
+// Run the test async, detached into its OWN process group, under a hard timeout.
+// spawnSync is unusable here: it blocks the event loop, so a timer could never
+// fire and a hung child would wedge the wrapper forever. On timeout we SIGKILL
+// the whole group (negative pid) so a stuck tsx/node/Ollama-waiting grandchild
+// dies too — guaranteeing the finally reaches `down -v`.
+function runTestWithTimeout() {
+  return new Promise((resolve) => {
+    const child = spawn(
+      'npx',
+      ['tsx', '--test', 'test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts'],
+      { cwd: repoRoot, stdio: 'inherit', env, detached: true },
+    );
+    let timedOut = false;
+    const timer = setTimeout(() => {
+      timedOut = true;
+      console.error(`[run.mjs] test exceeded ${TEST_TIMEOUT_MS}ms — killing process group`);
+      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
+    }, TEST_TIMEOUT_MS);
+    child.on('exit', (code, signal) => {
+      clearTimeout(timer);
+      if (timedOut) return resolve(124); // conventional timeout exit code
+      resolve(signal ? 1 : (code ?? 1));
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      console.error(`[run.mjs] failed to spawn test: ${err.message}`);
+      resolve(1);
+    });
+  });
+}
+
 let testStatus = 1;
 try {
   console.log('[run.mjs] starting stack (first run builds the Ollama image)…');
@@ -413,13 +485,8 @@ try {
     fail(`Qdrant collection has size ${size}, expected ${env.EMBED_DIM}`);
   }
 
-  console.log('[run.mjs] running the integration test…');
-  const test = spawnSync(
-    'npx',
-    ['tsx', '--test', 'test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts'],
-    { cwd: repoRoot, stdio: 'inherit', env },
-  );
-  testStatus = test.status ?? 1;
+  console.log('[run.mjs] running the integration test (hard timeout)…');
+  testStatus = await runTestWithTimeout();
 } finally {
   console.log('[run.mjs] tearing down (down -v)…');
   compose(['down', '-v']);
@@ -430,7 +497,7 @@ process.exit(testStatus);
 
 - [ ] **Step 2: Verify the wrapper fails loud without docker (sanity)**
 
-This is a structural check — confirm the preflight path exists. Read the file and confirm: preflight `docker compose version` guard present; `down -v` is inside `finally`; collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
+This is a structural check — confirm the preflight path exists. Read the file and confirm: preflight `docker compose version` guard present; the test runs via async `spawn` with `detached: true` under `TEST_TIMEOUT_MS`; on timeout `process.kill(-child.pid, 'SIGKILL')` kills the whole group and returns 124; `down -v` is inside `finally` (so it runs whether the test passed, failed, or was killed); collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
 
 - [ ] **Step 3: Commit**
 
@@ -784,8 +851,12 @@ git commit -m "test(skills): integration Case 3 — fenced catalog CAS rejects s
 
 Use an injected clock so grace windows are deterministic. The provider accepts `now`; rebuild it with a controllable clock for this case (do NOT reuse `buildIngestHost`'s default clock).
 
+`load()` rebuilds EVERY desired collection, so a reload makes a NEW generation for BOTH `alpha` and `beta` and retires BOTH prior ones. The test captures the per-group generation map for v1 and v2, asserts both changed, and reclaims both old generations. Add `assertHoldsFor` to the helper import.
+
 ```ts
-test('Case 4: reload retires prior generation; sweeper is age-protected', async () => {
+import { assertHoldsFor, pollUntil, withPools, type Closable } from './helpers.js';
+
+test('Case 4: reload retires BOTH prior generations; sweeper is age-protected', async () => {
   await withPools(async (register) => {
     let clock = 1_000_000;
     const now = () => clock;
@@ -808,36 +879,44 @@ test('Case 4: reload retires prior generation; sweeper is age-protected', async 
     });
 
     await host.load(); // v1
-    const v1Alpha = await activeGeneration(catalogStore, 'alpha');
+    const g1a = await activeGeneration(catalogStore, 'alpha');
+    const g1b = await activeGeneration(catalogStore, 'beta');
 
-    // Reload v2 → new generation for alpha, prior retired.
+    // Reload v2 → NEW generation for BOTH groups; BOTH prior generations retired.
     source.setRevision('v2');
     await host.load();
-    const v2Alpha = await activeGeneration(catalogStore, 'alpha');
-    assert.notEqual(v2Alpha, v1Alpha, 'alpha generation must change on reload');
+    const g2a = await activeGeneration(catalogStore, 'alpha');
+    const g2b = await activeGeneration(catalogStore, 'beta');
+    assert.notEqual(g2a, g1a, 'alpha generation must change on reload');
+    assert.notEqual(g2b, g1b, 'beta generation must change on reload');
 
-    // v2 active points visible.
-    const genBeta = await activeGeneration(catalogStore, 'beta');
+    // v2 active points visible across the two NEW generations.
     await pollUntil(
-      async () => (await countGeneration(v2Alpha)) + (await countGeneration(genBeta)),
+      async () => (await countGeneration(g2a)) + (await countGeneration(g2b)),
       { predicate: (n) => n === V2_POINTS, label: `v2 committed points == ${V2_POINTS}` },
     );
 
-    // Durable retired[] holds the prior generation.
+    // Durable retired[] holds BOTH prior generations.
     const snap = await catalogStore.read();
-    assert.ok((snap.retired ?? []).some((r) => r.generation === v1Alpha), 'v1 generation retired');
+    const retired = new Set((snap.retired ?? []).map((r) => r.generation));
+    assert.ok(retired.has(g1a), 'v1 alpha generation retired');
+    assert.ok(retired.has(g1b), 'v1 beta generation retired');
 
-    // AGE PROTECTION: sweep BEFORE grace → retired points stay.
+    // AGE PROTECTION (sustained): sweep BEFORE grace must delete NOTHING. The
+    // combined retired count must stay at its full value (V1_POINTS) for a
+    // window — a one-shot "> 0" would pass instantly (delete not yet propagated).
     await storeProvider.sweep(clock); // tick == now, retiredAt + grace > now
-    const keptCount = await countGeneration(v1Alpha);
-    assert.ok(keptCount > 0, 'retired generation must survive a pre-grace sweep');
+    await assertHoldsFor(
+      async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
+      { predicate: (n) => n === V1_POINTS, windowMs: 1500, label: 'retired count stays full pre-grace' },
+    );
 
-    // POST-GRACE: advance past the grace, sweep → retired points reclaimed.
+    // POST-GRACE: advance past the grace, sweep → BOTH retired generations reclaimed.
     clock += RETIRED_GRACE_MS + 1;
     await storeProvider.sweep(clock);
     await pollUntil(
-      async () => countGeneration(v1Alpha),
-      { predicate: (n) => n === 0, label: 'retired generation reclaimed to 0' },
+      async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
+      { predicate: (n) => n === 0, label: 'both retired generations reclaimed to 0' },
     );
   });
 });
@@ -889,13 +968,22 @@ test('Case 5: recall-only read path under SELECT-only credentials', async () => 
     const page = await qreader.scroll({ generation: genAlpha });
     assert.ok(page.points.length > 0, 'read-only Qdrant reader sees committed points');
 
-    // (b) The read-only login must REJECT write/DDL. makePgPool issues CREATE TABLE
-    // on first query; over PG_READ_URL that must throw a permission error.
-    const writeAttemptPool = register(makePgPool(PG_READ_URL, 'itest_forbidden')) as ReturnType<typeof makePgPool>;
+    // (b) The read-only login must REJECT write AND DDL. Run UNAMBIGUOUSLY
+    // forbidden statements directly through the restricted pool — NOT
+    // `CREATE TABLE IF NOT EXISTS skills_catalog`, which Postgres may short-circuit
+    // on the already-existing table. makePgReadPool.query runs raw SQL (no DDL
+    // wrapper), so it is the clean vehicle for the negative probes.
+    //   INSERT into the existing catalog table → denied (no INSERT grant).
     await assert.rejects(
-      () => writeAttemptPool.query('SELECT 1'), // triggers ensureTable → CREATE TABLE itest_forbidden
-      /permission denied|must be owner|insufficient/i,
-      'read-only role must be denied DDL',
+      () => readPool.query(`INSERT INTO ${TABLE} (id, revision, snapshot) VALUES ('x','x','{}')`),
+      /permission denied/i,
+      'read-only role must be denied INSERT',
+    );
+    //   CREATE a brand-new table (never short-circuited) → denied (no CREATE grant).
+    await assert.rejects(
+      () => readPool.query('CREATE TABLE readonly_probe (i int)'),
+      /permission denied/i,
+      'read-only role must be denied CREATE TABLE',
     );
   });
 });
@@ -966,6 +1054,13 @@ git commit -m "test(skills): finalize PG+Qdrant integration test end-to-end run"
 - Case 1 ingest+commit → Task 6; Case 2 recall → Task 7; Case 3 CAS → Task 8; Case 4 retirement+age-protected sweep → Task 9; Case 5 recall-only restricted creds + rejected write → Task 10. ✓
 - Wrapper fail-loud + always `down -v` → Task 4, validated Task 11. ✓
 - Not in CI/`npm test` → Task 1 (script only) + Task 11 Step 4. ✓
+
+**Second review round (5 findings) — addressed:**
+- P1 wrapper hard timeout → Task 4: async `spawn` with `detached` process group, `TEST_TIMEOUT_MS`, `process.kill(-pid,'SIGKILL')` on expiry, `down -v` always reached. ✓
+- P1 reload makes a generation PER GROUP (both alpha+beta rebuild/retire, not one) → Task 9: per-group generation map, assert both changed, reclaim BOTH old generations. ✓ (confirmed against `skill-plugin-host.ts` load loop over `desiredSet`).
+- P2 age-protection one-shot proves nothing → Task 3 `assertHoldsFor` + Task 9: combined retired count must stay at `V1_POINTS` for a sustained window after pre-grace sweep. ✓
+- P2 ambiguous read-only negative → Task 10: direct forbidden `INSERT` + `CREATE TABLE readonly_probe` through the restricted pool (no `IF NOT EXISTS` short-circuit). ✓
+- P2 model digest pin mechanism → Task 2: pull by tag, then fail-loud verify the manifest digest against a pinned `ARG NOMIC_DIGEST` (no reliance on unverified pull-by-digest). ✓
 
 **Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 with exact commands and pastes in — concrete values, not vague work.
 
