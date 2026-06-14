@@ -112,6 +112,9 @@ bootstraps the Qdrant collection, runs the test, and ALWAYS tears the stack down
 4. Retirement + age-protected sweeper (pre-grace keep, post-grace reclaim)
 5. Recall-only read path under SELECT-only Postgres credentials (write/DDL rejected)
 
+The five cases are ONE ordered scenario (awaited subtests sharing one catalog
+row, collection, host and clock) — not independently runnable, by design.
+
 No GPL `sap-skills` content — synthetic MIT-clean fixtures only.
 ```
 
@@ -141,14 +144,17 @@ docker pull qdrant/qdrant:v1.12.4 && docker inspect --format='{{index .RepoDiges
 docker pull ollama/ollama:latest && docker inspect --format='{{index .RepoDigests 0}}' ollama/ollama:latest
 ```
 
-For the MODEL digest, do NOT assume a digest-addressed pull works. Resolve the expected digest once and pin it as a build ARG that the Dockerfile verifies (fail-loud on drift):
+For the MODEL digest, use the AUTHORITATIVE, documented source — the `/api/tags` `models[].digest` field (the model's manifest digest), NOT `ollama show --modelfile` (which can surface a per-blob digest). Resolve it once and paste it into `run.mjs` as `EXPECTED_MODEL_DIGEST` (Task 4); the Dockerfile only bakes by tag:
 
 ```bash
-docker run --rm --entrypoint sh ollama/ollama:latest -c \
-  'ollama serve & until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull nomic-embed-text >/dev/null; ollama show nomic-embed-text --modelfile | grep -oE "sha256:[0-9a-f]{64}" | head -n1'
+docker run -d --name ollama_probe ollama/ollama
+docker exec ollama_probe sh -c 'until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull nomic-embed-text >/dev/null'
+docker exec ollama_probe sh -c 'wget -qO- 127.0.0.1:11434/api/tags' \
+  | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).models.find(x=>x.name==="nomic-embed-text:latest");console.log(m?m.digest:"NOT FOUND")})'
+docker rm -f ollama_probe
 ```
 
-Record the printed `sha256:…` as `NOMIC_DIGEST` in `ollama.Dockerfile` (Step 2). If `ollama show`'s output format differs in this Ollama version, adjust the `grep` to the field carrying the model digest — the fail-loud equality gate stays.
+Record the printed `sha256:…` value — it is `EXPECTED_MODEL_DIGEST` in `run.mjs`. The same `/api/tags` `digest` field is what `run.mjs` re-reads at runtime to fail-loud verify, so the resolution and the gate use the identical, unambiguous source.
 
 - [ ] **Step 2: Write `ollama.Dockerfile`**
 
@@ -157,17 +163,13 @@ Paste the resolved `ollama/ollama` digest into `FROM`:
 ```dockerfile
 # Base pinned by digest (resolved from ollama/ollama:latest at authoring time — see compose comment).
 FROM ollama/ollama@sha256:PASTE_OLLAMA_DIGEST_HERE
-# Expected model digest, resolved once in Step 1 and pinned here.
-ARG NOMIC_DIGEST=sha256:PASTE_NOMIC_MODEL_DIGEST_HERE
 # Bake the embedding model INTO the image (deterministic; no re-pull at container
-# start). Pull by TAG, then assert the manifest digest equals the pinned ARG —
-# fail the build on any drift (no verified pull-by-digest syntax across versions).
+# start → no network flakiness, no cold start). Pulled by TAG; the exact bytes are
+# verified at runtime by run.mjs via /api/tags (the documented manifest-digest
+# field) — there is no verified pull-by-digest syntax across Ollama versions.
 RUN ollama serve & \
     until ollama list >/dev/null 2>&1; do sleep 1; done; \
     ollama pull nomic-embed-text; \
-    GOT="$(ollama show nomic-embed-text --modelfile | grep -oE 'sha256:[0-9a-f]{64}' | head -n1)"; \
-    echo "baked nomic-embed-text digest: $GOT (expected $NOMIC_DIGEST)"; \
-    test "$GOT" = "$NOMIC_DIGEST" || { echo 'ERROR: nomic-embed-text digest drift'; exit 1; }; \
     pkill ollama || true
 ```
 
@@ -398,6 +400,9 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const TEST_TIMEOUT_MS = 5 * 60_000; // hard cap: a hung test/Ollama must not wedge teardown
+// Authoritative manifest digest of the baked model (resolved in Task 2 Step 1 via
+// /api/tags). run.mjs re-reads the SAME field at runtime and fails loud on drift.
+const EXPECTED_MODEL_DIGEST = 'sha256:PASTE_NOMIC_MODEL_DIGEST_HERE';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
@@ -471,6 +476,14 @@ try {
     fail('docker compose up --wait failed (see logs above).');
   }
 
+  console.log('[run.mjs] verifying baked Ollama model digest via /api/tags…');
+  const tags = await (await fetch(`${env.OLLAMA_TEST_URL}/api/tags`)).json();
+  const model = (tags?.models ?? []).find((m) => m.name === `${env.OLLAMA_TEST_MODEL}:latest`);
+  if (!model) fail(`model ${env.OLLAMA_TEST_MODEL}:latest not present in /api/tags`);
+  if (model.digest !== EXPECTED_MODEL_DIGEST) {
+    fail(`model digest drift: got ${model.digest}, expected ${EXPECTED_MODEL_DIGEST}`);
+  }
+
   console.log('[run.mjs] bootstrapping Qdrant collection…');
   const put = await fetch(`${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`, {
     method: 'PUT',
@@ -497,7 +510,7 @@ process.exit(testStatus);
 
 - [ ] **Step 2: Verify the wrapper fails loud without docker (sanity)**
 
-This is a structural check — confirm the preflight path exists. Read the file and confirm: preflight `docker compose version` guard present; the test runs via async `spawn` with `detached: true` under `TEST_TIMEOUT_MS`; on timeout `process.kill(-child.pid, 'SIGKILL')` kills the whole group and returns 124; `down -v` is inside `finally` (so it runs whether the test passed, failed, or was killed); collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
+This is a structural check — confirm the preflight path exists. Read the file and confirm: preflight `docker compose version` guard present; the `/api/tags` model-digest gate (`EXPECTED_MODEL_DIGEST`) runs after `up --wait` and fails loud on drift/absence; the test runs via async `spawn` with `detached: true` under `TEST_TIMEOUT_MS`; on timeout `process.kill(-child.pid, 'SIGKILL')` kills the whole group and returns 124; `down -v` is inside `finally` (so it runs whether the test passed, failed, or was killed); collection bootstrap asserts `size === 768`; exit code propagates `testStatus`. (A real end-to-end run happens in Task 11 once the test exists.)
 
 - [ ] **Step 3: Commit**
 
@@ -602,18 +615,21 @@ git commit -m "test(skills): revisioned v1/v2 synthetic skill source fixture"
 
 ---
 
-### Task 6: Test harness + Case 1 (ingest + commit)
+### Task 6: Ordered-scenario harness + Case 1 (ingest + commit)
 
 **Files:**
 - Create: `test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 
-- [ ] **Step 1: Write the shared harness + Case 1**
+The five cases share ONE Postgres catalog row, ONE Qdrant collection, and ONE host+clock, and each depends on the state the previous committed. They are therefore a SINGLE top-level `test()` with ordered, **awaited** `t.test(...)` subtests (the `await` forbids concurrency and pins order). Tasks 7–10 each append one awaited subtest at the marker comment. The test is NOT independently runnable per case — by design (see README).
 
-Establish the host-build helper used by all cases, then assert ingest. The store provider needs `embed: (text) => Promise<number[]>` — wrap the embedder's `{ vector }`.
+- [ ] **Step 1: Write the scenario harness + Case 1**
+
+The store provider needs `embed: (text) => Promise<number[]>` — wrap the embedder's `{ vector }`. Counting is generation-scoped via Qdrant's exact `/points/count` (a collection-level count is meaningless once active+retired generations coexist).
 
 ```ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
 import { makePgPool, makePgReadPool } from '@mcp-abap-adt/llm-agent-server-libs';
 import {
   makePgCatalogReader,
@@ -624,7 +640,7 @@ import {
   makeSkillPluginHost,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { OllamaEmbedder } from '@mcp-abap-adt/ollama-embedder';
-import { pollUntil, withPools, type Closable } from './helpers.js';
+import { assertHoldsFor, pollUntil, withPools } from './helpers.js';
 import { makeRevisionedSource, V1_POINTS, V2_POINTS, SOURCE_ID } from './fixtures/revisioned-source.js';
 
 const PG_URL = process.env.PG_TEST_URL!;
@@ -639,101 +655,108 @@ const TABLE = 'skills_catalog';
 const RETIRED_GRACE_MS = 10_000;
 const ORPHAN_GRACE_MS = 60_000;
 
-function makeEmbedder() {
-  return new OllamaEmbedder({ ollamaUrl: OLLAMA_URL, model: MODEL });
-}
-
-// Count points belonging to a generation via Qdrant scroll (exact count).
+// EXACT, generation-scoped count via /points/count. Active AND retired generations
+// share the collection after a reload, so a collection-level count is wrong.
 async function countGeneration(generation: string): Promise<number> {
-  const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/points/scroll`, {
+  const res = await fetch(`${QDRANT_URL}/collections/${COLLECTION}/points/count`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({
       filter: { must: [{ key: 'generation', match: { value: generation } }] },
-      limit: 1000,
-      with_payload: false,
-      with_vector: false,
+      exact: true,
     }),
   });
-  const json = (await res.json()) as { result?: { points?: unknown[] } };
-  return json.result?.points?.length ?? 0;
+  if (!res.ok) throw new Error(`qdrant points/count failed: ${res.status}`);
+  const json = (await res.json()) as { result?: { count?: number } };
+  return json.result?.count ?? 0;
 }
 
-// Build an ingest-capable host over the live engines. `register` tracks pools.
-function buildIngestHost(register: (p: Closable) => Closable, source: ReturnType<typeof makeRevisionedSource>) {
-  const pgPool = register(makePgPool(PG_URL, TABLE)) as ReturnType<typeof makePgPool>;
-  const catalogStore = makePgCatalogStore({ pool: pgPool, table: TABLE });
-  const client = makeQdrantClient({ url: QDRANT_URL, collection: COLLECTION });
-  const embedder = makeEmbedder();
-  const storeProvider = makeQdrantStoreProvider({
-    client,
-    collection: COLLECTION,
-    catalogStore,
-    embed: async (t, o) => (await embedder.embed(t, o)).vector,
-    retiredGraceMs: RETIRED_GRACE_MS,
-    orphanGraceMs: ORPHAN_GRACE_MS,
-  });
-  const host = makeSkillPluginHost({
-    sources: [{ id: SOURCE_ID, source }],
-    storeProvider,
-    embedder,
-    embeddingSpaceId: 'itest-ollama-nomic-embed-text',
-    retrievalSchemaVersion: 1,
-    dimension: EMBED_DIM,
-  });
-  return { host, pgPool, catalogStore, storeProvider, client };
-}
-
-// Read the active generation for a group from the committed catalog snapshot.
-async function activeGeneration(catalogStore: { read(): Promise<{ entries: { collection: { group: string }; generation: string }[] }> }, group: string): Promise<string> {
+// Active generation for a group from the committed catalog snapshot.
+async function activeGeneration(
+  catalogStore: { read(): Promise<{ entries: { collection: { group: string }; generation: string }[] }> },
+  group: string,
+): Promise<string> {
   const snap = await catalogStore.read();
   const entry = snap.entries.find((e) => e.collection.group === group);
   assert.ok(entry, `no committed entry for group '${group}'`);
   return entry.generation;
 }
 
-test('embedder returns a 768-dim vector (model present)', async () => {
-  const v = (await makeEmbedder().embed('hello')).vector;
-  assert.equal(v.length, EMBED_DIM);
-});
-
-test('Case 1: ingest + commit → PG catalog row + Qdrant vectors', async () => {
+test('skill-host PG+Qdrant durable persistence (ordered scenario)', async (t) => {
   await withPools(async (register) => {
+    // Shared state for the whole scenario. Injected clock so Case 4's sweep
+    // grace windows are deterministic.
+    let clock = 1_000_000;
+    const now = () => clock;
     const source = makeRevisionedSource();
     source.setRevision('v1');
-    const { host, catalogStore } = buildIngestHost(register, source);
 
-    const result = await host.load();
-    assert.equal(result.ok, true, `load not ok: ${JSON.stringify(result)}`);
-    assert.deepEqual([...result.committed].sort(), ['alpha', 'beta']);
+    const pgPool = register(makePgPool(PG_URL, TABLE)) as ReturnType<typeof makePgPool>;
+    const catalogStore = makePgCatalogStore({ pool: pgPool, table: TABLE });
+    const client = makeQdrantClient({ url: QDRANT_URL, collection: COLLECTION });
+    const embedder = new OllamaEmbedder({ ollamaUrl: OLLAMA_URL, model: MODEL });
+    const storeProvider = makeQdrantStoreProvider({
+      client,
+      collection: COLLECTION,
+      catalogStore,
+      embed: async (tx, o) => (await embedder.embed(tx, o)).vector,
+      retiredGraceMs: RETIRED_GRACE_MS,
+      orphanGraceMs: ORPHAN_GRACE_MS,
+      now,
+    });
+    const host = makeSkillPluginHost({
+      sources: [{ id: SOURCE_ID, source }],
+      storeProvider,
+      embedder,
+      embeddingSpaceId: 'itest-ollama-nomic-embed-text',
+      retrievalSchemaVersion: 1,
+      dimension: EMBED_DIM,
+      now,
+    });
 
-    // PG: the catalog row has a non-empty revision and both entries.
-    const snap = await catalogStore.read();
-    assert.ok(snap.catalogRevision && snap.catalogRevision !== 'c0', 'revision advanced');
-    assert.equal(snap.entries.length, 2);
+    // Per-group v1 generations captured in Case 1, consumed by Case 4.
+    let g1a = '';
+    let g1b = '';
 
-    // Qdrant: total committed points across both active generations == V1_POINTS.
-    const genAlpha = await activeGeneration(catalogStore, 'alpha');
-    const genBeta = await activeGeneration(catalogStore, 'beta');
-    await pollUntil(
-      async () => (await countGeneration(genAlpha)) + (await countGeneration(genBeta)),
-      { predicate: (n) => n === V1_POINTS, label: `total committed points == ${V1_POINTS}` },
-    );
+    await t.test('embedder returns a 768-dim vector (model present)', async () => {
+      const v = (await embedder.embed('hello')).vector;
+      assert.equal(v.length, EMBED_DIM);
+    });
+
+    await t.test('Case 1: ingest + commit (v1) → PG row + Qdrant vectors', async () => {
+      const result = await host.load();
+      assert.equal(result.ok, true, `load not ok: ${JSON.stringify(result)}`);
+      assert.deepEqual([...result.committed].sort(), ['alpha', 'beta']);
+
+      const snap = await catalogStore.read();
+      assert.ok(snap.catalogRevision && snap.catalogRevision !== 'c0', 'revision advanced');
+      assert.equal(snap.entries.length, 2);
+
+      g1a = await activeGeneration(catalogStore, 'alpha');
+      g1b = await activeGeneration(catalogStore, 'beta');
+      await pollUntil(
+        async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
+        { predicate: (n) => n === V1_POINTS, label: `v1 committed points == ${V1_POINTS}` },
+      );
+    });
+
+    // >>> APPEND-POINT: Cases 2–5 (Tasks 7–10) go here, each an awaited t.test
+    //     using the shared host / catalogStore / storeProvider / clock / g1a / g1b.
   });
 });
 ```
 
-- [ ] **Step 2: Run Case 1 against a running stack**
+- [ ] **Step 2: Run the scenario (Case 1) against a running stack**
 
-Bring the stack up per the development-loop note, then run with the env vars set:
+Bring the stack up per the development-loop note (and bootstrap the collection), then run with the env vars set:
 Run (env vars as in the dev-loop note): `npx tsx --test test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
-Expected: the embedder test + Case 1 PASS. If `countGeneration` never reaches 5, check the upsert reached Qdrant (`docker compose logs qdrant`) and that the collection exists.
+Expected: the embedder subtest + Case 1 PASS. If the count never reaches 5, check the upsert reached Qdrant (`docker compose logs qdrant`) and that the collection exists.
 
 - [ ] **Step 3: Commit**
 
 ```bash
 git add test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts
-git commit -m "test(skills): integration Case 1 — ingest + commit (PG row + Qdrant vectors)"
+git commit -m "test(skills): integration scenario harness + Case 1 (ingest + commit)"
 ```
 
 ---
@@ -743,33 +766,24 @@ git commit -m "test(skills): integration Case 1 — ingest + commit (PG row + Qd
 **Files:**
 - Modify: `test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 
-- [ ] **Step 1: Append Case 2**
+- [ ] **Step 1: Append Case 2 at the APPEND-POINT** (inside the scenario, replacing the marker comment with this subtest followed by the marker again)
 
-`host.rag(group).query(text, { k, threshold? })` returns `SkillHit[]` (`{ record, score }`) in descending score. Query text close to an `alpha` record's `retrievalText`.
+Recall reads the v1 state Case 1 committed — no new load. `host.rag(group).query(text, { k, threshold? })` returns `SkillHit[]` (`{ record, score }`) in descending score.
 
 ```ts
-test('Case 2: recall returns ranked hits from the queried collection', async () => {
-  await withPools(async (register) => {
-    const source = makeRevisionedSource();
-    source.setRevision('v1');
-    const { host } = buildIngestHost(register, source);
-    await host.load();
-
-    const hits = await host.rag('alpha').query('reading a file from disk', { k: 3 });
-    assert.ok(hits.length > 0, 'expected at least one hit');
-    // all hits belong to the alpha collection
-    for (const h of hits) assert.equal(h.record.group, 'alpha');
-    // descending score order
-    for (let i = 1; i < hits.length; i++) {
-      assert.ok(hits[i - 1].score >= hits[i].score, 'scores not descending');
-    }
-    // the file-reading skill should rank first for this query
-    assert.match(hits[0].record.name, /open-file/);
-  });
-});
+    await t.test('Case 2: recall returns ranked hits from the queried collection', async () => {
+      const hits = await host.rag('alpha').query('reading a file from disk', { k: 3 });
+      assert.ok(hits.length > 0, 'expected at least one hit');
+      for (const h of hits) assert.equal(h.record.group, 'alpha'); // only alpha
+      for (let i = 1; i < hits.length; i++) {
+        assert.ok(hits[i - 1].score >= hits[i].score, 'scores not descending');
+      }
+      // the file-reading skill should rank at/near the top for this query
+      assert.match(hits[0].record.name, /open-file/);
+    });
 ```
 
-- [ ] **Step 2: Run Cases 1–2**
+- [ ] **Step 2: Run the scenario (Cases 1–2)**
 
 Run (env vars set): `npx tsx --test test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 Expected: all pass. If the top-hit assertion is flaky for the chosen query, relax it to "open-file is among the top 2" — but keep the group + ordering assertions strict.
@@ -788,47 +802,36 @@ git commit -m "test(skills): integration Case 2 — ranked recall from queried c
 **Files:**
 - Modify: `test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 
-- [ ] **Step 1: Append Case 3**
+- [ ] **Step 1: Append Case 3 at the APPEND-POINT** (must run BEFORE Case 4 — it advances the revision but leaves the v1 generation set intact, keeping Case 4's counts clean)
 
-Two store providers share the same PG row. Advance the revision through provider A (a real `load()`), then call `publishCatalog` on provider B with the now-stale revision → `CatalogCasError`.
+Advance the revision with a BENIGN republish of the SAME entries (no `beginGeneration`/`upsert`, so the active generation set is untouched), then attempt a second `casPublish` against the now-stale revision → `CatalogCasError`.
 
 ```ts
-import { CatalogCasError } from '@mcp-abap-adt/llm-agent';
+    await t.test('Case 3: fenced catalog CAS rejects a stale revision', async () => {
+      const r0 = await catalogStore.read();
+      const R0 = r0.catalogRevision;
 
-test('Case 3: fenced catalog CAS rejects a stale revision', async () => {
-  await withPools(async (register) => {
-    const source = makeRevisionedSource();
-    source.setRevision('v1');
-    const { host, catalogStore } = buildIngestHost(register, source);
-    await host.load(); // commit v1 → revision R1
+      // Benign republish: same entries, bumps the revision to R1, no generation churn.
+      const r1 = await catalogStore.casPublish(R0, r0.entries, now());
+      const R1 = r1.catalogRevision;
+      assert.notEqual(R1, R0, 'benign republish advanced the revision');
 
-    // Capture R1, then advance to R2 via a second load (v2).
-    const before = await catalogStore.read();
-    const staleRevision = before.catalogRevision;
+      // A second publish against the now-stale R0 must be rejected.
+      await assert.rejects(
+        () => catalogStore.casPublish(R0, r0.entries, now()),
+        (err) => err instanceof CatalogCasError,
+        'expected CatalogCasError on stale revision',
+      );
 
-    source.setRevision('v2');
-    await host.load(); // commit v2 → revision R2 (R1 is now stale)
-
-    // A second provider attempting to publish against the STALE R1 must fail.
-    const pgPoolB = register(makePgPool(PG_URL, TABLE)) as ReturnType<typeof makePgPool>;
-    const catalogStoreB = makePgCatalogStore({ pool: pgPoolB, table: TABLE });
-    const current = await catalogStoreB.read();
-    await assert.rejects(
-      () => catalogStoreB.casPublish(staleRevision, current.entries, Date.now()),
-      (err) => err instanceof CatalogCasError,
-      'expected CatalogCasError on stale revision',
-    );
-
-    // The committed catalog is unchanged by the rejected attempt.
-    const after = await catalogStoreB.read();
-    assert.equal(after.catalogRevision, current.catalogRevision);
-  });
-});
+      // The committed revision is R1, unchanged by the rejected attempt.
+      const after = await catalogStore.read();
+      assert.equal(after.catalogRevision, R1);
+    });
 ```
 
-Confirmed against `qdrant-store.ts`: `ICatalogStore.casPublish(expectedCatalogRevision, entries, now)` is the atomic CAS primitive `makePgCatalogStore` returns; it throws `CatalogCasError` when the active revision ≠ expected. Using it directly keeps the test at the exact CAS layer the finding targets (the provider's `publishCatalog` delegates to it).
+Confirmed against `qdrant-store.ts`: `ICatalogStore.casPublish(expectedCatalogRevision, entries, now)` is the atomic CAS primitive `makePgCatalogStore` returns; it throws `CatalogCasError` when the active revision ≠ expected (real `UPDATE … WHERE revision=$expected` matching 0 rows). Republishing the snapshot's own active entries advances the revision without creating or retiring any generation.
 
-- [ ] **Step 2: Run Cases 1–3**
+- [ ] **Step 2: Run the scenario (Cases 1–3)**
 
 Run (env vars set): `npx tsx --test test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 Expected: all pass; Case 3 confirms the rejection comes from a real `UPDATE … WHERE revision=$expected` matching 0 rows.
@@ -847,82 +850,52 @@ git commit -m "test(skills): integration Case 3 — fenced catalog CAS rejects s
 **Files:**
 - Modify: `test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 
-- [ ] **Step 1: Append Case 4**
+`load()` rebuilds EVERY desired collection, so a reload makes a NEW generation for BOTH `alpha` and `beta` and retires BOTH prior ones. Uses the SHARED host/storeProvider/clock (the injected `now` makes grace windows deterministic) and the `g1a`/`g1b` captured in Case 1. (`assertHoldsFor` is already imported in Task 6.)
 
-Use an injected clock so grace windows are deterministic. The provider accepts `now`; rebuild it with a controllable clock for this case (do NOT reuse `buildIngestHost`'s default clock).
-
-`load()` rebuilds EVERY desired collection, so a reload makes a NEW generation for BOTH `alpha` and `beta` and retires BOTH prior ones. The test captures the per-group generation map for v1 and v2, asserts both changed, and reclaims both old generations. Add `assertHoldsFor` to the helper import.
+- [ ] **Step 1: Append Case 4 at the APPEND-POINT**
 
 ```ts
-import { assertHoldsFor, pollUntil, withPools, type Closable } from './helpers.js';
+    await t.test('Case 4: reload retires BOTH prior generations; sweeper is age-protected', async () => {
+      // Reload v2 → NEW generation for BOTH groups; BOTH prior generations retired.
+      source.setRevision('v2');
+      await host.load();
+      const g2a = await activeGeneration(catalogStore, 'alpha');
+      const g2b = await activeGeneration(catalogStore, 'beta');
+      assert.notEqual(g2a, g1a, 'alpha generation must change on reload');
+      assert.notEqual(g2b, g1b, 'beta generation must change on reload');
 
-test('Case 4: reload retires BOTH prior generations; sweeper is age-protected', async () => {
-  await withPools(async (register) => {
-    let clock = 1_000_000;
-    const now = () => clock;
+      // v2 active points visible across the two NEW generations.
+      await pollUntil(
+        async () => (await countGeneration(g2a)) + (await countGeneration(g2b)),
+        { predicate: (n) => n === V2_POINTS, label: `v2 committed points == ${V2_POINTS}` },
+      );
 
-    const source = makeRevisionedSource();
-    source.setRevision('v1');
+      // Durable retired[] holds BOTH prior generations.
+      const snap = await catalogStore.read();
+      const retired = new Set((snap.retired ?? []).map((r) => r.generation));
+      assert.ok(retired.has(g1a), 'v1 alpha generation retired');
+      assert.ok(retired.has(g1b), 'v1 beta generation retired');
 
-    const pgPool = register(makePgPool(PG_URL, TABLE)) as ReturnType<typeof makePgPool>;
-    const catalogStore = makePgCatalogStore({ pool: pgPool, table: TABLE });
-    const client = makeQdrantClient({ url: QDRANT_URL, collection: COLLECTION });
-    const embedder = makeEmbedder();
-    const storeProvider = makeQdrantStoreProvider({
-      client, collection: COLLECTION, catalogStore,
-      embed: async (t, o) => (await embedder.embed(t, o)).vector,
-      retiredGraceMs: RETIRED_GRACE_MS, orphanGraceMs: ORPHAN_GRACE_MS, now,
+      // AGE PROTECTION (sustained): sweep BEFORE grace must delete NOTHING. The
+      // combined retired count must stay at its full value (V1_POINTS) over a
+      // window — a one-shot "> 0" would pass instantly (delete not yet propagated).
+      await storeProvider.sweep(clock); // tick == now, retiredAt + grace > now
+      await assertHoldsFor(
+        async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
+        { predicate: (n) => n === V1_POINTS, windowMs: 1500, label: 'retired count stays full pre-grace' },
+      );
+
+      // POST-GRACE: advance past the grace, sweep → BOTH retired generations reclaimed.
+      clock += RETIRED_GRACE_MS + 1;
+      await storeProvider.sweep(clock);
+      await pollUntil(
+        async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
+        { predicate: (n) => n === 0, label: 'both retired generations reclaimed to 0' },
+      );
     });
-    const host = makeSkillPluginHost({
-      sources: [{ id: SOURCE_ID, source }], storeProvider, embedder,
-      embeddingSpaceId: 'itest-ollama-nomic-embed-text', retrievalSchemaVersion: 1, dimension: EMBED_DIM, now,
-    });
-
-    await host.load(); // v1
-    const g1a = await activeGeneration(catalogStore, 'alpha');
-    const g1b = await activeGeneration(catalogStore, 'beta');
-
-    // Reload v2 → NEW generation for BOTH groups; BOTH prior generations retired.
-    source.setRevision('v2');
-    await host.load();
-    const g2a = await activeGeneration(catalogStore, 'alpha');
-    const g2b = await activeGeneration(catalogStore, 'beta');
-    assert.notEqual(g2a, g1a, 'alpha generation must change on reload');
-    assert.notEqual(g2b, g1b, 'beta generation must change on reload');
-
-    // v2 active points visible across the two NEW generations.
-    await pollUntil(
-      async () => (await countGeneration(g2a)) + (await countGeneration(g2b)),
-      { predicate: (n) => n === V2_POINTS, label: `v2 committed points == ${V2_POINTS}` },
-    );
-
-    // Durable retired[] holds BOTH prior generations.
-    const snap = await catalogStore.read();
-    const retired = new Set((snap.retired ?? []).map((r) => r.generation));
-    assert.ok(retired.has(g1a), 'v1 alpha generation retired');
-    assert.ok(retired.has(g1b), 'v1 beta generation retired');
-
-    // AGE PROTECTION (sustained): sweep BEFORE grace must delete NOTHING. The
-    // combined retired count must stay at its full value (V1_POINTS) for a
-    // window — a one-shot "> 0" would pass instantly (delete not yet propagated).
-    await storeProvider.sweep(clock); // tick == now, retiredAt + grace > now
-    await assertHoldsFor(
-      async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
-      { predicate: (n) => n === V1_POINTS, windowMs: 1500, label: 'retired count stays full pre-grace' },
-    );
-
-    // POST-GRACE: advance past the grace, sweep → BOTH retired generations reclaimed.
-    clock += RETIRED_GRACE_MS + 1;
-    await storeProvider.sweep(clock);
-    await pollUntil(
-      async () => (await countGeneration(g1a)) + (await countGeneration(g1b)),
-      { predicate: (n) => n === 0, label: 'both retired generations reclaimed to 0' },
-    );
-  });
-});
 ```
 
-- [ ] **Step 2: Run Cases 1–4**
+- [ ] **Step 2: Run the scenario (Cases 1–4)**
 
 Run (env vars set): `npx tsx --test test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 Expected: all pass. Case 4 proves durable retirement, pre-grace age protection, and post-grace reclaim against real Qdrant.
@@ -941,52 +914,45 @@ git commit -m "test(skills): integration Case 4 — retirement + age-protected s
 **Files:**
 - Modify: `test/integration/skill-host-pg-qdrant/skill-host.integration.test.ts`
 
-- [ ] **Step 1: Append Case 5**
+The read path uses `makePgReadPool` (no DDL) + `makePgCatalogReader` + `makeQdrantReader`. By now (post–Case 4) the committed catalog is the v2 state; this case reads THAT via restricted credentials and asserts write/DDL is rejected.
 
-The read path uses `makePgReadPool` (no DDL) + `makePgCatalogReader` + `makeQdrantReader`. Assert it reads the same committed catalog AND that the read-only login is genuinely write/DDL-rejected.
+- [ ] **Step 1: Append Case 5 at the APPEND-POINT** (runs LAST — reads the post-reload committed catalog)
 
 ```ts
-test('Case 5: recall-only read path under SELECT-only credentials', async () => {
-  await withPools(async (register) => {
-    // First commit data with the WRITE path (superuser).
-    const source = makeRevisionedSource();
-    source.setRevision('v1');
-    const { host, catalogStore } = buildIngestHost(register, source);
-    await host.load();
-    const expected = await catalogStore.read();
+    await t.test('Case 5: recall-only read path under SELECT-only credentials', async () => {
+      const expected = await catalogStore.read(); // v2 committed state from Case 4
 
-    // (a) READ path over the SELECT-only role reads the same committed catalog.
-    const readPool = register(makePgReadPool(PG_READ_URL)) as ReturnType<typeof makePgReadPool>;
-    const reader = makePgCatalogReader({ pool: readPool, table: TABLE });
-    const seen = await reader.read();
-    assert.equal(seen.catalogRevision, expected.catalogRevision);
-    assert.equal(seen.entries.length, expected.entries.length);
+      // (a) READ path over the SELECT-only role reads the same committed catalog.
+      const readPool = register(makePgReadPool(PG_READ_URL)) as ReturnType<typeof makePgReadPool>;
+      const reader = makePgCatalogReader({ pool: readPool, table: TABLE });
+      const seen = await reader.read();
+      assert.equal(seen.catalogRevision, expected.catalogRevision);
+      assert.equal(seen.entries.length, expected.entries.length);
 
-    // Qdrant reader returns vectors for the active alpha generation.
-    const qreader = makeQdrantReader({ url: QDRANT_URL, collection: COLLECTION });
-    const genAlpha = expected.entries.find((e) => e.collection.group === 'alpha')!.generation;
-    const page = await qreader.scroll({ generation: genAlpha });
-    assert.ok(page.points.length > 0, 'read-only Qdrant reader sees committed points');
+      // Qdrant reader returns vectors for the active alpha generation.
+      const qreader = makeQdrantReader({ url: QDRANT_URL, collection: COLLECTION });
+      const genAlpha = expected.entries.find((e) => e.collection.group === 'alpha')!.generation;
+      const page = await qreader.scroll({ generation: genAlpha });
+      assert.ok(page.points.length > 0, 'read-only Qdrant reader sees committed points');
 
-    // (b) The read-only login must REJECT write AND DDL. Run UNAMBIGUOUSLY
-    // forbidden statements directly through the restricted pool — NOT
-    // `CREATE TABLE IF NOT EXISTS skills_catalog`, which Postgres may short-circuit
-    // on the already-existing table. makePgReadPool.query runs raw SQL (no DDL
-    // wrapper), so it is the clean vehicle for the negative probes.
-    //   INSERT into the existing catalog table → denied (no INSERT grant).
-    await assert.rejects(
-      () => readPool.query(`INSERT INTO ${TABLE} (id, revision, snapshot) VALUES ('x','x','{}')`),
-      /permission denied/i,
-      'read-only role must be denied INSERT',
-    );
-    //   CREATE a brand-new table (never short-circuited) → denied (no CREATE grant).
-    await assert.rejects(
-      () => readPool.query('CREATE TABLE readonly_probe (i int)'),
-      /permission denied/i,
-      'read-only role must be denied CREATE TABLE',
-    );
-  });
-});
+      // (b) The read-only login must REJECT write AND DDL. Run UNAMBIGUOUSLY
+      // forbidden statements directly through the restricted pool — NOT
+      // `CREATE TABLE IF NOT EXISTS skills_catalog`, which Postgres may short-circuit
+      // on the already-existing table. makePgReadPool.query runs raw SQL (no DDL
+      // wrapper), so it is the clean vehicle for the negative probes.
+      //   INSERT into the existing catalog table → denied (no INSERT grant).
+      await assert.rejects(
+        () => readPool.query(`INSERT INTO ${TABLE} (id, revision, snapshot) VALUES ('x','x','{}')`),
+        /permission denied/i,
+        'read-only role must be denied INSERT',
+      );
+      //   CREATE a brand-new table (never short-circuited) → denied (no CREATE grant).
+      await assert.rejects(
+        () => readPool.query('CREATE TABLE readonly_probe (i int)'),
+        /permission denied/i,
+        'read-only role must be denied CREATE TABLE',
+      );
+    });
 ```
 
 Confirmed against `qdrant-store.ts`: `IQdrantReader.scroll(filter, cursor?) → { points: QdrantPoint[]; next? }`, so `qreader.scroll({ generation: genAlpha })` returns the generation's points directly.
@@ -1062,6 +1028,11 @@ git commit -m "test(skills): finalize PG+Qdrant integration test end-to-end run"
 - P2 ambiguous read-only negative → Task 10: direct forbidden `INSERT` + `CREATE TABLE readonly_probe` through the restricted pool (no `IF NOT EXISTS` short-circuit). ✓
 - P2 model digest pin mechanism → Task 2: pull by tag, then fail-loud verify the manifest digest against a pinned `ARG NOMIC_DIGEST` (no reliance on unverified pull-by-digest). ✓
 
-**Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 with exact commands and pastes in — concrete values, not vague work.
+**Third review round (3 findings) — addressed:**
+- P1 model-digest mechanism undefined → Task 2 + Task 4: verify via the documented `/api/tags` `models[].digest` (manifest digest) in `run.mjs`, not `ollama show` grep; resolution and gate use the identical field. No "implementer adjusts grep". ✓
+- P2 count not generation-specific → Task 6 `countGeneration` uses exact `/points/count` with a `generation` filter; all assertions sum specific generations, never the collection. ✓
+- P2 cases depend on execution order → restructured into ONE top-level `test()` with ordered, awaited `t.test(...)` subtests sharing one host/catalog/collection/clock; concurrency impossible; NOT independently runnable (stated in README + spec). Case 3 advances the revision via a benign republish (no generation churn) so Case 4 counts stay clean. ✓
+
+**Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 (`/api/tags`) and the postgres/qdrant image digests in Task 2 Step 1 (`docker inspect`) and pastes in — concrete values, not vague work.
 
 **Type/name consistency:** `makeSkillPluginHost`/`IngestHostDeps`, `makeQdrantStoreProvider` (`embed:(t,o)=>Promise<number[]>`, `retiredGraceMs`, `orphanGraceMs`, `now`, `.sweep(at?)`), `makePgCatalogStore`/`makePgCatalogReader` (`{pool,table?}`), `makeQdrantClient`/`makeQdrantReader` (`{url,collection}`), `OllamaEmbedder({ollamaUrl,model})` with `embed→{vector}`, `CatalogCasError`, `V1_POINTS`/`V2_POINTS`/`SOURCE_ID` from the fixture — all match the symbols verified in the codebase. Both previously-uncertain methods are now confirmed against `qdrant-store.ts`: `ICatalogStore.casPublish(expectedCatalogRevision, entries, now)` (Case 3) and `IQdrantReader.scroll(filter, cursor?) → {points, next?}` (Case 5).

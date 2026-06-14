@@ -118,38 +118,55 @@ The collection name and size are passed to the test via env
 
 ### ollama.Dockerfile
 
-Ollama does not expose a verified `pull model@sha256:…` syntax across versions,
-so we DO NOT rely on a digest-addressed pull. Instead we pull the model by its
-tag and then **fail-loud verify** the resolved digest against an expected value
-recorded as a build arg — if Ollama ever serves different bytes under that tag,
-the image build fails rather than silently changing the vectors:
+Ollama has no verified `pull model@sha256:…` syntax across versions, so we DO
+NOT rely on a digest-addressed pull. The Dockerfile pulls by TAG to bake the
+bytes into the image; the **digest verification is done by `run.mjs`** against
+the authoritative, documented source — the Ollama REST API `GET /api/tags`, whose
+`models[].digest` field is the model's **manifest digest** (a full `sha256:…`).
+This is unambiguous and version-stable (a documented API contract), unlike
+scraping `ollama show --modelfile`, which can surface a per-blob digest rather
+than the manifest digest.
 
 ```dockerfile
 # Base image pinned by digest (resolved at implementation time from ollama/ollama:<tag>).
 FROM ollama/ollama@sha256:<resolved-at-impl-time>
-# Expected model digest, resolved once at authoring time (see README) and pinned here.
-ARG NOMIC_DIGEST=sha256:<resolved-at-impl-time>
 # Bake the embedding model INTO the image (deterministic; no re-pull at container
-# start → no network flakiness, no cold start). Pull by TAG, then assert the
-# manifest digest equals the pinned ARG — fail the build on any drift.
+# start → no network flakiness, no cold start). Pulled by TAG; the exact bytes are
+# verified by run.mjs via /api/tags (see below), not here.
 RUN ollama serve & \
     until ollama list >/dev/null 2>&1; do sleep 1; done; \
     ollama pull nomic-embed-text; \
-    GOT="$(ollama show nomic-embed-text --modelfile | grep -oE 'sha256:[0-9a-f]{64}' | head -n1)"; \
-    echo "baked nomic-embed-text digest: $GOT (expected $NOMIC_DIGEST)"; \
-    test "$GOT" = "$NOMIC_DIGEST" || { echo 'ERROR: nomic-embed-text digest drift'; exit 1; }; \
     pkill ollama || true
 ```
 
+**Digest gate in `run.mjs` (exact, authoritative):** after `up --wait`, before
+the collection bootstrap, `run.mjs` does:
+
+```
+GET {OLLAMA_TEST_URL}/api/tags
+→ models = body.models
+→ entry = models.find(m => m.name === 'nomic-embed-text:latest')   // exact tag match
+→ assert entry && entry.digest === EXPECTED_MODEL_DIGEST            // full sha256: manifest digest
+   else fail-loud (exit 1) — the baked model is not the pinned one
+```
+
+`EXPECTED_MODEL_DIGEST` is a constant in `run.mjs`, resolved once at
+implementation time by reading the SAME field:
+
+```
+docker run --rm -d --name ollama_probe ollama/ollama && \
+docker exec ollama_probe sh -c 'until ollama list >/dev/null 2>&1; do sleep 1; done; ollama pull nomic-embed-text >/dev/null' && \
+curl -s localhost:11434/api/tags  # ← but the probe port is internal; instead curl from inside:
+docker exec ollama_probe sh -c 'wget -qO- 127.0.0.1:11434/api/tags' | \
+  node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const m=JSON.parse(s).models.find(x=>x.name==="nomic-embed-text:latest");console.log(m.digest)})'
+# then: docker rm -f ollama_probe
+```
+
 Model: `nomic-embed-text` (768-dim). The base image is digest-pinned; the model
-is tag-pulled then digest-verified, so the baked bytes and 768-dim geometry are
-reproducible across rebuilds (or the build fails). The exact `NOMIC_DIGEST` is
-captured during implementation (`ollama pull nomic-embed-text` then `ollama show
-nomic-embed-text --modelfile`). The integration test additionally confirms the
-model returns a 768-length vector by issuing one embed call before ingest.
-If `ollama show`'s output format differs in the pinned Ollama version, the
-implementer adjusts the `grep` to the field that carries the model digest — the
-fail-loud `test "$GOT" = "$NOMIC_DIGEST"` gate stays.
+is tag-pulled and then its manifest digest is fail-loud verified against the
+pinned constant via the documented `/api/tags` `digest` field. The integration
+test additionally confirms the model returns a 768-length vector by issuing one
+embed call before ingest.
 
 ### run.mjs (lifecycle wrapper)
 
@@ -160,22 +177,25 @@ Plain Node ESM, no test logic. Responsibilities, in order:
    `QDRANT_TEST_URL`, `QDRANT_TEST_COLLECTION`, `EMBED_DIM=768`, `OLLAMA_TEST_URL`.
 2. `docker compose up -d --wait --build` (build picks up `ollama.Dockerfile`;
    `--wait` blocks on the healthchecks).
-3. **Bootstrap the Qdrant collection** — `PUT /collections/<name>` with
+3. **Verify the baked model digest** — `GET /api/tags`, find the
+   `nomic-embed-text:latest` entry, assert its `digest` equals
+   `EXPECTED_MODEL_DIGEST`; fail-loud (exit 1) on mismatch or absence.
+4. **Bootstrap the Qdrant collection** — `PUT /collections/<name>` with
    `{ vectors: { size: 768, distance: "Cosine" } }`, then `GET` it and assert
    `size === 768`. (The client never creates collections; without this the first
    upsert 404s.)
-4. Run the test under a **hard timeout** with its own process group: spawn
+5. Run the test under a **hard timeout** with its own process group: spawn
    `npx tsx --test …` async with `detached: true`, inherit stdio, all env set.
    Arm a wall-clock timer (e.g. 5 min); on expiry, kill the WHOLE process group
    (`process.kill(-child.pid, 'SIGKILL')` — not just the npx parent, so a hung
    `tsx`/`node`/Ollama-waiting grandchild dies too) and mark the run failed.
    `spawnSync` is NOT used here: it blocks the event loop, so a timer could never
    fire and a hung child would wedge the wrapper forever, never reaching teardown.
-5. In a `finally`, always `docker compose down -v` (drop the volume so each run
-   starts from a clean DB + clean Qdrant storage). Because step 4 guarantees the
+6. In a `finally`, always `docker compose down -v` (drop the volume so each run
+   starts from a clean DB + clean Qdrant storage). Because step 5 guarantees the
    child is dead (completed OR killed), the `finally` always runs.
-6. Propagate the test's exit code as the process exit code.
-7. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
+7. Propagate the test's exit code as the process exit code.
+8. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
    (this is an explicit, opt-in run — never a silent skip). On `up --wait`
    timeout, dump `docker compose logs` before tearing down.
 
@@ -229,7 +249,32 @@ env vars. The embedder is the real `@mcp-abap-adt/ollama-embedder` pointed at
 `withPools`, and every "expect N points / generation gone" check goes through
 `pollUntil` (writes are async — see helpers).
 
-## Test Cases (assertions)
+**Counting is ALWAYS generation-scoped.** After a reload, active AND retired
+generations coexist in the SAME collection, so a collection-level count is
+meaningless (it would read 11, not 6). Every count uses Qdrant's exact,
+generation-filtered count endpoint:
+
+```
+POST {QDRANT_TEST_URL}/collections/{collection}/points/count
+  { "filter": { "must": [ { "key": "generation", "match": { "value": "<gen>" } } ] }, "exact": true }
+→ body.result.count
+```
+
+A `countGeneration(gen)` helper wraps this; assertions sum the counts of the
+specific generations under test, never the whole collection.
+
+**Single ordered scenario (not independent cases).** The five cases share one
+Postgres catalog row and one Qdrant collection, and each depends on the state the
+previous one committed (CAS advances the revision; the reload retires the v1
+generations; recall-only reads the post-reload catalog). They are therefore
+written as ONE top-level `test()` containing ordered, **awaited** `t.test(...)`
+subtests — `await` between subtests forbids concurrency and fixes execution
+order. A single `withPools` wraps the whole scenario; one host + clock are shared.
+Running an individual case in isolation, or with test concurrency enabled, is NOT
+supported and would assert against the wrong shared state — this is by design for
+an expensive-to-provision integration scenario, and is stated in the README.
+
+## Test Cases (ordered subtests of one scenario)
 
 1. **Ingest + commit.** `host.load()` (fixture at v1) returns `ok: true` and
    `committed` listing both collections. A direct `PG_TEST_URL` query confirms
@@ -237,12 +282,14 @@ env vars. The embedder is the real `@mcp-abap-adt/ollama-embedder` pointed at
    Qdrant holds `V1_POINTS` (5) points for the committed generation.
 2. **Recall.** `host.rag('alpha').query(text, { k })` returns non-empty hits in
    descending score order, all from the `alpha` collection.
-3. **Fenced CAS.** Build a SECOND store provider on the same `PG_TEST_URL`. Read
-   the current catalog revision, then call `publishCatalog(staleRevision, …)`
-   with a now-stale expected revision (advance it via the first provider first).
-   The stale call throws `CatalogCasError` (real conditional `UPDATE … WHERE
-   revision = $expected` matching 0 rows); a follow-up read confirms the catalog
-   is unchanged.
+3. **Fenced CAS.** Capture the current catalog revision `R0`. Advance the
+   revision with a BENIGN republish — `casPublish(R0, sameEntries, now)` — which
+   bumps the revision to `R1` WITHOUT changing the active generation set (no
+   `beginGeneration`/`upsert`, so Case 4's counts stay clean). Then attempt a
+   second `casPublish(R0, …)` with the now-stale `R0`: it throws `CatalogCasError`
+   (real conditional `UPDATE … WHERE revision = $expected` matching 0 rows). A
+   follow-up read confirms the committed revision is `R1`, unchanged by the
+   rejected attempt.
 4. **Retirement + sweeper.** NOTE: `load()` rebuilds EVERY desired collection,
    so a reload produces a NEW generation for **both** `alpha` and `beta` and
    retires **both** prior generations — not one. The test captures the v1
