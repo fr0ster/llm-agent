@@ -58,3 +58,78 @@ test('makePgReadPool: query() after end() throws /closed/ and does not construct
   await pool.end();
   await assert.rejects(() => pool.query('SELECT 1'), /closed/);
 });
+
+// P1 (round 7) — RACE between a lazy query() and end(). query() checks `ended`,
+// then awaits getPool() which kicks off the async pool creation. If end() lands
+// WHILE creation is still in flight, a `createdPool` snapshot is still undefined
+// → end() closes nothing → the pool finishes creating and leaks (unclosable,
+// since `ended` is now true). The fix: end() awaits the in-flight `poolPromise`
+// and closes whatever it resolves to. We drive the race deterministically with a
+// `createPool` seam whose creation promise we resolve AFTER end() is already
+// awaiting it — then assert the created pool's end() was called exactly once.
+
+// A spy pool whose creation we control via an externally-resolved deferred.
+function deferredPoolSeam() {
+  let resolveCreate!: (p: {
+    query: typeof spyQuery;
+    end: typeof spyEnd;
+  }) => void;
+  const createStarted = { value: false };
+  let endCalls = 0;
+  const spyEnd = async () => {
+    endCalls++;
+  };
+  const spyQuery = async () => ({ rows: [], rowCount: 0 });
+  const created = new Promise<{ query: typeof spyQuery; end: typeof spyEnd }>(
+    (res) => {
+      resolveCreate = res;
+    },
+  );
+  const createPool = async () => {
+    createStarted.value = true;
+    return created;
+  };
+  return {
+    createPool,
+    createStarted,
+    finishCreation: () => resolveCreate({ query: spyQuery, end: spyEnd }),
+    endCalls: () => endCalls,
+  };
+}
+
+test('makePgPool: end() during an in-flight pool creation closes the created pool (no leak)', async () => {
+  const seam = deferredPoolSeam();
+  const pool = makePgPool(
+    'postgres://user@localhost:5432/db',
+    'skills_catalog',
+    {
+      createPool: seam.createPool,
+    },
+  );
+  // Kick off a query → triggers pool creation, which parks on the deferred.
+  const q = pool.query('SELECT 1').catch(() => undefined);
+  await Promise.resolve(); // let query() reach `await getPool()`
+  assert.equal(seam.createStarted.value, true, 'creation started');
+  // end() lands WHILE creation is still in flight.
+  const e = pool.end();
+  // Now creation completes — the pool that just got built must still be closed.
+  seam.finishCreation();
+  await e;
+  await q;
+  assert.equal(seam.endCalls(), 1, 'the created pool was closed exactly once');
+});
+
+test('makePgReadPool: end() during an in-flight pool creation closes the created pool (no leak)', async () => {
+  const seam = deferredPoolSeam();
+  const pool = makePgReadPool('postgres://user@localhost:5432/db', {
+    createPool: seam.createPool,
+  });
+  const q = pool.query('SELECT 1').catch(() => undefined);
+  await Promise.resolve();
+  assert.equal(seam.createStarted.value, true, 'creation started');
+  const e = pool.end();
+  seam.finishCreation();
+  await e;
+  await q;
+  assert.equal(seam.endCalls(), 1, 'the created pool was closed exactly once');
+});

@@ -71,24 +71,19 @@ async function createRawPool(connectionString: string): Promise<RawPgPool> {
 export function makePgPool(
   connectionString: string,
   table: string = DEFAULT_TABLE,
+  deps: { createPool?: (cs: string) => Promise<RawPgPool> } = {},
 ): IPgPool & { end(): Promise<void> } {
   assertSafeTable(table);
+  const create = deps.createPool ?? createRawPool;
   let poolPromise: Promise<RawPgPool> | undefined;
   let ensured: Promise<void> | undefined;
-  // The raw pool once created — captured so end() can really close it.
-  let createdPool: RawPgPool | undefined;
   // The real `pg.Pool` throws on a second `.end()`. Overlapping cleanup paths
   // (initSkillHost on failure + the start() finally + closeFns) may all reach
   // here, so guard so a second end() is a no-op rather than a throw.
   let ended = false;
 
   const getPool = (): Promise<RawPgPool> => {
-    if (!poolPromise) {
-      poolPromise = createRawPool(connectionString).then((p) => {
-        createdPool = p;
-        return p;
-      });
-    }
+    if (!poolPromise) poolPromise = create(connectionString);
     return poolPromise;
   };
 
@@ -117,13 +112,18 @@ export function makePgPool(
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
-    // Close the real pool if it was ever created (no-op otherwise) so its
-    // sockets do not outlive server shutdown. Idempotent: a second end() is a
-    // no-op (the raw pg.Pool throws on double-end).
+    // Close the real pool so its sockets do not outlive server shutdown.
+    // AWAIT `poolPromise` (not a `createdPool` snapshot): if creation is still
+    // IN FLIGHT when end() is called, we wait for it and close the resulting
+    // pool — otherwise a pool that finishes creating after end() would leak.
+    // Idempotent: a second end() is a no-op (the raw pg.Pool throws on double-end).
     async end() {
       if (ended) return;
       ended = true;
-      if (createdPool) await createdPool.end();
+      if (poolPromise) {
+        const pool = await poolPromise.catch(() => undefined);
+        if (pool) await pool.end();
+      }
     },
   };
 }
@@ -139,20 +139,15 @@ export function makePgPool(
  */
 export function makePgReadPool(
   connectionString: string,
+  deps: { createPool?: (cs: string) => Promise<RawPgPool> } = {},
 ): IPgPool & { end(): Promise<void> } {
+  const create = deps.createPool ?? createRawPool;
   let poolPromise: Promise<RawPgPool> | undefined;
-  // The raw pool once created — captured so end() can really close it.
-  let createdPool: RawPgPool | undefined;
   // The real `pg.Pool` throws on a second `.end()`; guard for idempotency.
   let ended = false;
 
   const getPool = (): Promise<RawPgPool> => {
-    if (!poolPromise) {
-      poolPromise = createRawPool(connectionString).then((p) => {
-        createdPool = p;
-        return p;
-      });
-    }
+    if (!poolPromise) poolPromise = create(connectionString);
     return poolPromise;
   };
 
@@ -166,13 +161,16 @@ export function makePgReadPool(
       const res = await pool.query(sql, params);
       return { rows: res.rows, rowCount: res.rowCount ?? 0 };
     },
-    // Close the real pool if it was ever created (no-op otherwise) — calling
-    // end() before any query never constructs a pool. Idempotent: a second
-    // end() is a no-op (the raw pg.Pool throws on double-end).
+    // Close the pool, awaiting an IN-FLIGHT creation (see makePgPool.end). A pool
+    // that finishes creating after end() must still be closed, not leaked.
+    // Idempotent: a second end() is a no-op (the raw pg.Pool throws on double-end).
     async end() {
       if (ended) return;
       ended = true;
-      if (createdPool) await createdPool.end();
+      if (poolPromise) {
+        const pool = await poolPromise.catch(() => undefined);
+        if (pool) await pool.end();
+      }
     },
   };
 }
