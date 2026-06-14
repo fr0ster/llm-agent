@@ -93,8 +93,13 @@ persistence path: real Postgres catalog + Qdrant vectors + real Ollama embedder.
 NOT part of `npm test`, the build, or CI.
 
 ## Prerequisites
+- **POSIX host (Linux / macOS, or WSL).** The wrapper uses a detached process
+  group + group kill for its hard timeout; Windows is not supported (it exits
+  with a clear message).
 - Docker + Docker Compose v2
 - The monorepo built: `npm run build` (workspace imports resolve to `dist/`)
+- Ports 5432 / 6333 / 11434 free, or override via `PG_TEST_PORT` /
+  `QDRANT_TEST_PORT` / `OLLAMA_TEST_PORT` (same vars feed compose AND the URLs).
 
 ## Run
     npm run build
@@ -202,7 +207,7 @@ services:
       POSTGRES_PASSWORD: test
       POSTGRES_DB: skills
     ports:
-      - "5432:5432"
+      - "${PG_TEST_PORT:-5432}:5432"
     volumes:
       - ./pg-init:/docker-entrypoint-initdb.d:ro
     healthcheck:
@@ -214,7 +219,7 @@ services:
   qdrant:
     image: qdrant/qdrant:v1.12.4@sha256:PASTE_QDRANT_DIGEST_HERE  # qdrant/qdrant:v1.12.4
     ports:
-      - "6333:6333"
+      - "${QDRANT_TEST_PORT:-6333}:6333"
     healthcheck:
       # qdrant image has no curl/wget; use its bundled health endpoint via the
       # built-in `qdrant` static binary's /readyz over TCP with bash redirection.
@@ -228,7 +233,7 @@ services:
       context: .
       dockerfile: ollama.Dockerfile
     ports:
-      - "11434:11434"
+      - "${OLLAMA_TEST_PORT:-11434}:11434"
     healthcheck:
       test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
       interval: 3s
@@ -407,14 +412,37 @@ const EXPECTED_MODEL_DIGEST = 'sha256:PASTE_NOMIC_MODEL_DIGEST_HERE';
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = join(here, '..', '..', '..');
 
+function fail(msg) {
+  console.error(`\n[run.mjs] ${msg}`);
+  process.exit(1);
+}
+
+// POSIX-only: this wrapper uses a detached process group + negative-PID group
+// kill, unsupported on Windows. Declare the scope and bail clearly rather than
+// half-work. (A Windows port would use `taskkill /T` — out of scope.)
+if (process.platform === 'win32') {
+  fail('this integration test is POSIX-only (uses process-group kill); run on Linux/macOS or in WSL.');
+}
+
+// Port contract: fixed defaults, each overridable by ONE env var, wired
+// IDENTICALLY into compose (`${PG_TEST_PORT:-5432}:5432`) and the URLs below, so
+// the published host port and the URL the test dials never disagree.
+const PG_PORT = process.env.PG_TEST_PORT ?? '5432';
+const QDRANT_PORT = process.env.QDRANT_TEST_PORT ?? '6333';
+const OLLAMA_PORT = process.env.OLLAMA_TEST_PORT ?? '11434';
+
 const env = {
   ...process.env,
-  PG_TEST_URL: 'postgres://test:test@localhost:5432/skills',
-  PG_READ_TEST_URL: 'postgres://readonly:readonly@localhost:5432/skills',
-  QDRANT_TEST_URL: 'http://localhost:6333',
+  // re-export the ports so `docker compose` interpolates the SAME values
+  PG_TEST_PORT: PG_PORT,
+  QDRANT_TEST_PORT: QDRANT_PORT,
+  OLLAMA_TEST_PORT: OLLAMA_PORT,
+  PG_TEST_URL: `postgres://test:test@localhost:${PG_PORT}/skills`,
+  PG_READ_TEST_URL: `postgres://readonly:readonly@localhost:${PG_PORT}/skills`,
+  QDRANT_TEST_URL: `http://localhost:${QDRANT_PORT}`,
   QDRANT_TEST_COLLECTION: 'skills_test',
   EMBED_DIM: '768',
-  OLLAMA_TEST_URL: 'http://localhost:11434',
+  OLLAMA_TEST_URL: `http://localhost:${OLLAMA_PORT}`,
   OLLAMA_TEST_MODEL: 'nomic-embed-text',
 };
 
@@ -422,13 +450,9 @@ function compose(args, opts = {}) {
   return spawnSync('docker', ['compose', ...args], {
     cwd: here,
     stdio: 'inherit',
+    env, // pass the port contract through to compose interpolation
     ...opts,
   });
-}
-
-function fail(msg) {
-  console.error(`\n[run.mjs] ${msg}`);
-  process.exit(1);
 }
 
 // Preflight: docker compose must exist.
@@ -1033,6 +1057,10 @@ git commit -m "test(skills): finalize PG+Qdrant integration test end-to-end run"
 - P2 count not generation-specific → Task 6 `countGeneration` uses exact `/points/count` with a `generation` filter; all assertions sum specific generations, never the collection. ✓
 - P2 cases depend on execution order → restructured into ONE top-level `test()` with ordered, awaited `t.test(...)` subtests sharing one host/catalog/collection/clock; concurrency impossible; NOT independently runnable (stated in README + spec). Case 3 advances the revision via a benign republish (no generation churn) so Case 4 counts stay clean. ✓
 
-**Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 (`/api/tags`) and the postgres/qdrant image digests in Task 2 Step 1 (`docker inspect`) and pastes in — concrete values, not vague work.
+**Fourth review round (2 carry-over findings) — addressed:**
+- Port contract: dynamic-port promise dropped; FIXED defaults overridable by `PG_TEST_PORT`/`QDRANT_TEST_PORT`/`OLLAMA_TEST_PORT`, wired identically into compose `${VAR:-default}:container` mappings (Task 2) AND the URLs `run.mjs` builds (Task 4) — they share the variables, so host port and URL never disagree. ✓
+- POSIX scope declared: `run.mjs` exits with a clear message on `win32`; the process-group kill is POSIX-only and wrapped in try/catch; README lists "POSIX host (Linux/macOS/WSL)" as a prerequisite. ✓
+
+**Placeholder scan:** The only intentional placeholders are the image/model `sha256:` digests, which the engineer resolves in Task 2 Step 1 (`/api/tags` for the model, `docker inspect` for the postgres/qdrant images) and pastes in — concrete values, not vague work.
 
 **Type/name consistency:** `makeSkillPluginHost`/`IngestHostDeps`, `makeQdrantStoreProvider` (`embed:(t,o)=>Promise<number[]>`, `retiredGraceMs`, `orphanGraceMs`, `now`, `.sweep(at?)`), `makePgCatalogStore`/`makePgCatalogReader` (`{pool,table?}`), `makeQdrantClient`/`makeQdrantReader` (`{url,collection}`), `OllamaEmbedder({ollamaUrl,model})` with `embed→{vector}`, `CatalogCasError`, `V1_POINTS`/`V2_POINTS`/`SOURCE_ID` from the fixture — all match the symbols verified in the codebase. Both previously-uncertain methods are now confirmed against `qdrant-store.ts`: `ICatalogStore.casPublish(expectedCatalogRevision, entries, now)` (Case 3) and `IQdrantReader.scroll(filter, cursor?) → {points, next?}` (Case 5).

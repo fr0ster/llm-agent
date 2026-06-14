@@ -74,9 +74,12 @@ deterministic-vector guarantees the test relies on.
 | `ollama` | built from `ollama.Dockerfile` (its `FROM` is digest-pinned) | 11434 | HTTP `GET /api/tags` | Embedding model baked in by digest (see below). |
 
 Ports are published to the host so the test (running on the host via tsx) can
-reach them. Defaults are overridable via env in `run.mjs`. The exact digests are
-captured at implementation time (`docker buildx imagetools inspect` / `docker
-inspect`) and written into the compose file with a comment recording the
+reach them, using the env-var port contract: the compose `ports:` mappings are
+`"${PG_TEST_PORT:-5432}:5432"`, `"${QDRANT_TEST_PORT:-6333}:6333"`,
+`"${OLLAMA_TEST_PORT:-11434}:11434"` — the SAME variables and defaults `run.mjs`
+uses to build the URLs, so host port and URL never disagree. The exact image
+digests are captured at implementation time (`docker buildx imagetools inspect` /
+`docker inspect`) and written into the compose file with a comment recording the
 human-readable tag they resolved from.
 
 ### pg-init/01-readonly-role.sql (read-only role)
@@ -170,9 +173,23 @@ embed call before ingest.
 
 ### run.mjs (lifecycle wrapper)
 
-Plain Node ESM, no test logic. Responsibilities, in order:
+Plain Node ESM, no test logic. **Scope: POSIX only (Linux / macOS).** It uses
+detached process groups and a negative-PID group kill, which Windows does not
+support; the script declares this and exits with a clear message on `win32`.
+(The whole stack is Docker-based and the project's dev targets are Linux/macOS,
+so POSIX-only is acceptable; a Windows port would swap the group-kill for a
+`taskkill /T` tree-kill but is out of scope.)
 
-1. Resolve the compose project dir; pick free-or-default ports; assemble
+Responsibilities, in order:
+
+1. Resolve the compose project dir. **Port contract:** ports are FIXED defaults,
+   each overridable by one env var, wired IDENTICALLY into compose and the URLs:
+   `PG_TEST_PORT` (5432), `QDRANT_TEST_PORT` (6333), `OLLAMA_TEST_PORT` (11434).
+   `run.mjs` reads these (with the same defaults), publishes them to `docker
+   compose` via the environment, and assembles the URLs from the SAME values, so
+   compose's `"${PG_TEST_PORT:-5432}:5432"` mappings and the test's `PG_TEST_URL`
+   never disagree. It does NOT auto-detect free ports (that promise is dropped —
+   a fixed, overridable contract is simpler and deterministic). It then assembles
    `PG_TEST_URL` (superuser), `PG_READ_TEST_URL` (read-only role),
    `QDRANT_TEST_URL`, `QDRANT_TEST_COLLECTION`, `EMBED_DIM=768`, `OLLAMA_TEST_URL`.
 2. `docker compose up -d --wait --build` (build picks up `ollama.Dockerfile`;
@@ -184,13 +201,15 @@ Plain Node ESM, no test logic. Responsibilities, in order:
    `{ vectors: { size: 768, distance: "Cosine" } }`, then `GET` it and assert
    `size === 768`. (The client never creates collections; without this the first
    upsert 404s.)
-5. Run the test under a **hard timeout** with its own process group: spawn
-   `npx tsx --test …` async with `detached: true`, inherit stdio, all env set.
-   Arm a wall-clock timer (e.g. 5 min); on expiry, kill the WHOLE process group
-   (`process.kill(-child.pid, 'SIGKILL')` — not just the npx parent, so a hung
-   `tsx`/`node`/Ollama-waiting grandchild dies too) and mark the run failed.
-   `spawnSync` is NOT used here: it blocks the event loop, so a timer could never
-   fire and a hung child would wedge the wrapper forever, never reaching teardown.
+5. Run the test under a **hard timeout** with its own process group (POSIX — see
+   scope above): spawn `npx tsx --test …` async with `detached: true`, inherit
+   stdio, all env set. Arm a wall-clock timer (e.g. 5 min); on expiry, kill the
+   WHOLE process group (`process.kill(-child.pid, 'SIGKILL')` — not just the npx
+   parent, so a hung `tsx`/`node`/Ollama-waiting grandchild dies too) and mark the
+   run failed. The kill is wrapped in try/catch so a kill failure still falls
+   through to teardown. `spawnSync` is NOT used here: it blocks the event loop,
+   so a timer could never fire and a hung child would wedge the wrapper forever,
+   never reaching teardown.
 6. In a `finally`, always `docker compose down -v` (drop the volume so each run
    starts from a clean DB + clean Qdrant storage). Because step 5 guarantees the
    child is dead (completed OR killed), the `finally` always runs.
