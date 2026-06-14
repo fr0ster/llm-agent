@@ -136,7 +136,10 @@ FROM ollama/ollama@sha256:<resolved-at-impl-time>
 # Bake the embedding model INTO the image (deterministic; no re-pull at container
 # start → no network flakiness, no cold start). Pulled by TAG; the exact bytes are
 # verified by run.mjs via /api/tags (see below), not here.
-RUN ollama serve & \
+# set -eu: a failed `ollama pull` MUST abort the build — otherwise the trailing
+# `pkill ... || true` returns 0 and the image ships WITHOUT the model baked in.
+RUN set -eu; \
+    ollama serve & \
     until ollama list >/dev/null 2>&1; do sleep 1; done; \
     ollama pull nomic-embed-text; \
     pkill ollama || true
@@ -219,7 +222,12 @@ Responsibilities, in order:
    step 5 ALWAYS resolves — on normal exit, on a confirmed post-kill `close`, or
    on the bounded-grace timeout (with the orphan warning). `down -v` is the
    authoritative cleanup of the containers/volume regardless of any lingering
-   host-side orphan process.
+   host-side orphan process. **Critically: once the stack is UP, every in-lifecycle
+   failure (digest gate, collection bootstrap, `up` failure) `throw`s rather than
+   `process.exit`s** — `process.exit` inside the try would skip the `finally` and
+   LEAK the containers/volume. A `catch` records the failure (testStatus = 1) and
+   falls through to the teardown `finally`. The preflight `fail()` (win32, missing
+   docker) may still `process.exit` because no container exists yet.
 7. Propagate the test's exit code as the process exit code.
 8. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
    (this is an explicit, opt-in run — never a silent skip). On `up --wait`

@@ -153,6 +153,9 @@ test('skill-host PG+Qdrant durable persistence (ordered scenario)', async (t) =>
         const hits = await host
           .rag('alpha')
           .query('reading a file from disk', { k: 3 });
+        // PLUMBING only — non-empty, correct group, descending score. We do NOT
+        // assert WHICH record ranks first: retrieval quality is a non-goal of this
+        // infra test (spec), and a top-hit assertion would be model-dependent/flaky.
         assert.ok(hits.length > 0, 'expected at least one hit');
         for (const h of hits) assert.equal(h.record.group, 'alpha'); // only alpha
         for (let i = 1; i < hits.length; i++) {
@@ -161,8 +164,6 @@ test('skill-host PG+Qdrant durable persistence (ordered scenario)', async (t) =>
             'scores not descending',
           );
         }
-        // the file-reading skill should rank at/near the top for this query
-        assert.match(hits[0].record.name, /open-file/);
       },
     );
 

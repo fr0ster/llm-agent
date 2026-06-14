@@ -124,20 +124,23 @@ function runTestWithTimeout() {
   });
 }
 
+// Once the stack is UP, every failure MUST `throw` (not process.exit) so the
+// finally below always runs `down -v` — process.exit would skip it and leak the
+// containers/volume. (`fail()` above is for PREFLIGHT only, before any container.)
 let testStatus = 1;
 try {
   console.log('[run.mjs] starting stack (first run builds the Ollama image)…');
   if (compose(['up', '-d', '--wait', '--build']).status !== 0) {
     compose(['logs']);
-    fail('docker compose up --wait failed (see logs above).');
+    throw new Error('docker compose up --wait failed (see logs above).');
   }
 
   console.log('[run.mjs] verifying baked Ollama model digest via /api/tags…');
   const tags = await (await fetch(`${env.OLLAMA_TEST_URL}/api/tags`)).json();
   const model = (tags?.models ?? []).find((m) => m.name === `${env.OLLAMA_TEST_MODEL}:latest`);
-  if (!model) fail(`model ${env.OLLAMA_TEST_MODEL}:latest not present in /api/tags`);
+  if (!model) throw new Error(`model ${env.OLLAMA_TEST_MODEL}:latest not present in /api/tags`);
   if (model.digest !== EXPECTED_MODEL_DIGEST) {
-    fail(`model digest drift: got ${model.digest}, expected ${EXPECTED_MODEL_DIGEST}`);
+    throw new Error(`model digest drift: got ${model.digest}, expected ${EXPECTED_MODEL_DIGEST}`);
   }
 
   console.log('[run.mjs] bootstrapping Qdrant collection…');
@@ -146,16 +149,19 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ vectors: { size: Number(env.EMBED_DIM), distance: 'Cosine' } }),
   });
-  if (!put.ok) fail(`Qdrant collection create failed: ${put.status}`);
+  if (!put.ok) throw new Error(`Qdrant collection create failed: ${put.status}`);
   const got = await fetch(`${env.QDRANT_TEST_URL}/collections/${env.QDRANT_TEST_COLLECTION}`);
   const cfg = await got.json();
   const size = cfg?.result?.config?.params?.vectors?.size;
   if (size !== Number(env.EMBED_DIM)) {
-    fail(`Qdrant collection has size ${size}, expected ${env.EMBED_DIM}`);
+    throw new Error(`Qdrant collection has size ${size}, expected ${env.EMBED_DIM}`);
   }
 
   console.log('[run.mjs] running the integration test (hard timeout)…');
   testStatus = await runTestWithTimeout();
+} catch (err) {
+  console.error(`[run.mjs] ${err.message}`);
+  testStatus = 1;
 } finally {
   console.log('[run.mjs] tearing down (down -v)…');
   compose(['down', '-v']);
