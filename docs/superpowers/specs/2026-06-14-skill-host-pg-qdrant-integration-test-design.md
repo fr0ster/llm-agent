@@ -227,7 +227,10 @@ Responsibilities, in order:
    `process.exit`s** — `process.exit` inside the try would skip the `finally` and
    LEAK the containers/volume. A `catch` records the failure (testStatus = 1) and
    falls through to the teardown `finally`. The preflight `fail()` (win32, missing
-   docker) may still `process.exit` because no container exists yet.
+   docker) may still `process.exit` because no container exists yet. The teardown's
+   OWN exit status is checked: if `down -v` fails (leftover containers / volume /
+   busy ports), `run.mjs` logs it and forces a non-zero exit — but never downgrades
+   an already-failing `testStatus` (a test failure outranks a teardown failure).
 7. Propagate the test's exit code as the process exit code.
 8. If `docker` / `docker compose` is unavailable, fail LOUD with a clear message
    (this is an explicit, opt-in run — never a silent skip). On `up --wait`

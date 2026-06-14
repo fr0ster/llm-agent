@@ -554,7 +554,14 @@ try {
   testStatus = 1;
 } finally {
   console.log('[run.mjs] tearing down (down -v)…');
-  compose(['down', '-v']);
+  // A FAILED teardown must not hide behind a green test: leftover containers /
+  // volume / busy ports would silently break the next run. Surface it via a
+  // non-zero exit, but never DOWNGRADE an existing test failure code.
+  const teardown = compose(['down', '-v']);
+  if (teardown.status !== 0) {
+    console.error(`[run.mjs] WARNING: docker compose down -v failed (exit ${teardown.status}) — containers/volume may remain.`);
+    if (testStatus === 0) testStatus = 1;
+  }
 }
 
 process.exit(testStatus);
