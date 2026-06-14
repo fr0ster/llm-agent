@@ -6,7 +6,12 @@
 /** Re-invoke `fn` until `predicate(result)` is true or the timeout elapses. */
 export async function pollUntil<T>(
   fn: () => Promise<T>,
-  opts: { predicate: (v: T) => boolean; timeoutMs?: number; intervalMs?: number; label?: string },
+  opts: {
+    predicate: (v: T) => boolean;
+    timeoutMs?: number;
+    intervalMs?: number;
+    label?: string;
+  },
 ): Promise<T> {
   const timeoutMs = opts.timeoutMs ?? 5000;
   const intervalMs = opts.intervalMs ?? 100;
@@ -34,7 +39,12 @@ export async function pollUntil<T>(
  */
 export async function assertHoldsFor<T>(
   fn: () => Promise<T>,
-  opts: { predicate: (v: T) => boolean; windowMs?: number; intervalMs?: number; label?: string },
+  opts: {
+    predicate: (v: T) => boolean;
+    windowMs?: number;
+    intervalMs?: number;
+    label?: string;
+  },
 ): Promise<void> {
   const windowMs = opts.windowMs ?? 1500;
   const intervalMs = opts.intervalMs ?? 150;
