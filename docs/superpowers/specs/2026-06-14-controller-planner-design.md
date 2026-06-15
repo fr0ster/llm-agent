@@ -341,27 +341,36 @@ replacement is a fresh `planned`/… entry. This prevents one board entry from
 conflating two different units of work. (A pure retry never sets
 `supersedesStepId`.)
 
-**Outcome resolution = precedence first, `writeOrdinal` only as tie-break.**
-Multiple artifacts can exist for one `(stepId, seq)` (retries, crash-replay). They
-collapse via the EXISTING `resolveByPrecedence` semantics — `ok|exists > partial >
-failed` — and `writeOrdinal` breaks ties ONLY within an equal rank (latest equal-rank
-write wins). A plain "latest-write-wins" is explicitly REJECTED: it could let a
-later `failed` overwrite a committed `ok`. A board entry's STRUCTURE (its
-existence, `stepId`, instructions) comes from the canonical `plan-decision`
-artifact that introduced it; its STATE comes from the precedence-resolved
-`step-result` outcome. Board reconstruction is a merge of **THREE sources**, with
-a clear precedence — a transient state must never mask a committed one:
+**Outcome resolution is ATTEMPT-SCOPED — pick the current attempt first, THEN
+resolve.** Multiple artifacts can exist for one `(stepId, seq)` across retries
+(`attempt 0, 1, …`). A naive "any `step-result` outbeats any transient" is WRONG:
+after `attempt 0 = failed`, once `attempt 1` has a claim/in-flight but no result
+yet, the board must show `executing` (the live retry), not the stale `failed`. So:
 
-1. **Structure** ← `plan-decision` artifacts (a step's existence, `stepId`,
-   instructions, `slotId`).
-2. **Terminal state** ← `step-result` artifacts (precedence-resolved
-   `done|partial|failed` + digest). HIGHEST precedence — if a `step-result` exists,
-   that is the step's state.
+1. **Current attempt** = the MAX `attempt` seen across all records (claims,
+   in-flight, step-results) for `(stepId, seq)`.
+2. **If the current attempt is unsettled** (a `step-start` claim / in-flight exists
+   for it but no `step-result` for that attempt) → state = its TRANSIENT state
+   (`executing`, or `awaiting-external` if its `pending` is external) — this
+   overrides any OLDER attempt's terminal outcome.
+3. **If the current attempt is settled** → state = `resolveByPrecedence` over the
+   SETTLED attempts' outcomes (`ok|exists > partial > failed`; `writeOrdinal`
+   tie-breaks equal rank). A plain "latest-write-wins" is REJECTED (a late `failed`
+   must not overwrite a committed `ok`).
+
+So `failed(attempt 0) → executing(attempt 1) → done(attempt 1)` renders correctly:
+the new attempt's transient supersedes the old terminal, and precedence applies
+only once no newer attempt is live. A board entry's STRUCTURE (existence, `stepId`,
+instructions) still comes from the canonical `plan-decision`; its STATE from this
+attempt-scoped resolution. Board reconstruction merges **THREE sources**:
+
+1. **Structure** ← `plan-decision` artifacts (`stepId`, instructions, `slotId`).
+2. **Terminal state** ← `step-result` artifacts (per-attempt; precedence-resolved
+   among settled attempts) + digest.
 3. **Transient state** ← `step-start` claim + the bundle's in-flight/`pending`
-   (a claimed-but-not-settled step is `executing`; a `pending` external-tool step
-   is `awaiting-external`). Used ONLY when no `step-result` exists yet.
+   (current-attempt `executing` / `awaiting-external`).
 
-Precedence: **terminal (2) > transient (3) > planned (1-only)**. So the STRUCTURE
+Per the attempt-scoped rule above: the STRUCTURE
 and TERMINAL states are reconstructible from immutable artifacts alone; the
 TRANSIENT states (`executing` / `awaiting-external`) additionally need the
 `step-start` claim + the bundle's `pending` (run-execution state, which lives in
@@ -454,9 +463,14 @@ there NO history is at stake, so a deterministic pick is safe:
   the append-only `KnowledgeBackend` (artifacts) nor `persistBundle` (LWW snapshot)
   provides it, and an after-the-fact "ignore older writes" merge is wrong (old
   artifacts are legitimate history, and a LWW bundle write from a stale coordinator
-  would still clobber `pending`/transcript/budgets). So a multi-process deployment
-  must either run at most one process per session (sticky routing — the simple
-  path) or first adopt a fenced/CAS-capable store; that is a separate
+  would still clobber `pending`/transcript/budgets). **Sticky routing is NOT a
+  single-writer guarantee** — during restart, rebalance, or rolling deploy two
+  processes can transiently serve the same session, and that overlap is exactly
+  when the clobber happens. So the supported deployments are: (i) **single
+  process**, or (ii) multi-process ONLY with **deployment-level EXCLUSIVE
+  per-session ownership** (a real distributed lock/lease with fencing, provided by
+  the deployment). Plain sticky routing without such an external exclusivity
+  guarantee is **unsupported**. The fenced/CAS-store path is a separate
   infrastructure decision, explicitly deferred.
 - **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
   `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
@@ -619,6 +633,11 @@ in-memory bundle store + a fake reviewer/executor):
   resumes the SAME `attempt N` (the in-flight record + claim carry `attempt`),
   matching its `(stepId, seq, attempt)` `step-result` — assert recovery never
   resumes the wrong attempt or double-counts a retry.
+- **Attempt-scoped board state.** Drive `failed(attempt 0) → claim/in-flight
+  (attempt 1) → done(attempt 1)` and assert the board shows, in order, `failed`
+  then **`executing`** (the live retry, NOT the stale `failed`) then `done` — the
+  newer attempt's transient supersedes the older attempt's terminal; precedence
+  (`ok>partial>failed`) applies only once no newer attempt is live.
 - **Expansion-only-on-done.** A discovery step that settles `partial`/`failed`
   triggers replan, NOT expansion; NO `plan-decision{kind:expand}` is written and
   the step never enters `expanding`.
