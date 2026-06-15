@@ -136,7 +136,7 @@ policy and a GUARANTEED cap).**
 - **Compaction never endangers expansion (both continuation kinds).** Expansion
   does not depend on the board digest at all: the CONTROLLER owns the durable
   continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the raw
-  token in the durable `page-token` artifact, §D), windows it, and passes the
+  token in the durable `page-token` secret record, §D), windows it, and passes the
   bounded window to the planner. So neither an `enumeration` offset nor a `tool`
   token can be lost to board compaction (both are durable artifacts, not bundle
   state).
@@ -272,7 +272,7 @@ Validation at expand time (only when a well-formed digest is present):
 ```
 Continuation =
   | { kind: 'artifact-offset'; artifactId: string; offset: number }   // controller windows locally — NO executor step
-  | { kind: 'tool'; tokenRef: string }                                // CONTROLLER schedules a follow-up page executor step (no planner call); raw token in the durable page-token artifact, NOT here
+  | { kind: 'tool'; tokenRef: string }                                // CONTROLLER schedules a follow-up page executor step (no planner call); raw token in the durable page-token SECRET record, NOT here
 ```
 
 - **`artifact-offset` (preferred, controller-local).** When the executor's
@@ -329,10 +329,31 @@ Continuation =
   follow-up page step is **controller-authored** with deterministic
   **`stepId = uuidv5(discoveryChainId, pageIndex)`** and **`decisionId = uuidv5(runId,
   'page', discoveryChainId, pageIndex, tokenHash)`** (the general `decisionId`
-  formula's `anchorStepId / continuation / plannerOutput` do not apply); canonical
-  dedup is by `decisionId` (a `stepId` match ALONE cannot dedup append-only
-  artifacts), so a duplicate scheduling collapses and a page is never lost or
-  duplicated.
+  formula's `anchorStepId / continuation / plannerOutput` do not apply).
+  - **Canonical selection is PARENT-bound, not just min-`decisionId`.** A page
+    decision carries its **`parent = {stepId, seq, attempt}`** (or the parent's
+    `enumerationId`) — the PRIOR page's settle that emitted this `tokenRef/tokenHash`.
+    Because a parent can be RETRIED, several page decisions for one
+    `(chainId, pageIndex)` may carry different `tokenHash` from different parent
+    attempts; choosing the bare smallest `decisionId` could pick a token from a
+    stale/failed parent attempt. So selection FIRST filters to decisions whose
+    `parent` is the **canonical** (precedence-resolved + claim-fixed, §F) parent
+    outcome; decisions built on a non-canonical parent are rejected. The
+    `decisionId` tie-break applies only WITHIN that eligible set. Thus a page is
+    derived from the live parent's token, never an orphaned retry's.
+
+  **Secret-store contract (concrete, not "namespace-or-encrypted hand-wave").**
+  The page-token store is an injected dependency with a minimal interface —
+  `put(sessionId, key, value)`, `get(sessionId, key) → value | undefined`,
+  `deleteSession(sessionId)` (key = `(tokenRef, tokenHash)`). Requirements: (1)
+  **durable** across process restart / bundle loss; (2) **never indexed** — it is
+  NOT the semantic `KnowledgeBackend`, so values are never embedded/RAG-queried/
+  surfaced by artifact or diagnostic APIs; (3) **session-scoped cleanup** — the
+  server's `DELETE /v1/sessions/:id` and session GC MUST call `deleteSession` so
+  tokens never outlive their session. The default impl is an in-process/disk store
+  in this dedicated namespace; a deployment may swap an encrypted secret store
+  behind the same interface. Wired into the controller deps alongside the
+  `KnowledgeBackend`.
 
 **Tool-pagination is a CHAIN with its own identity + completion rule.** A
 tool-paginated source produces a CHAIN of discovery steps (page 0, page 1, …),
@@ -527,11 +548,12 @@ steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`; payload =
 `kind` (`create | replan | expand | page`), the produced/affected steps (`stepId`,
 full `instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), for an
 expand the `discoveryStepId` + the `continuation` window (`offset, len`) consumed,
-and for a `page` the `discoveryChainId` + `pageIndex` + `tokenRef` (NEVER the raw
-token — that lives in its own durable append-only `page-token` artifact, written
-BEFORE the page decision, redacted from board/intent/logs; §D). A `page` is a
-controller-authored decision (not an LLM call) but durable via the same mechanism,
-with its own `decisionId = uuidv5(runId,'page',discoveryChainId,pageIndex,
+and for a `page` the `discoveryChainId` + `pageIndex` + `(tokenRef, tokenHash)` +
+`parent` (the canonical prior-page settle) (NEVER the raw token — that lives in
+its own durable `page-token` SECRET record in the dedicated non-indexed secret
+store, written BEFORE the page decision; §D). A `page` is a controller-authored
+decision (not an LLM call) but durable via the same mechanism, with its own
+`decisionId = uuidv5(runId,'page',discoveryChainId,pageIndex,
 tokenHash)` (§D) + the `(runId,'page',…)` slot.
 
 **Finality is fixed by EXECUTION, not by a hash race.** An executed step is
@@ -705,6 +727,10 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   read; NOT the semantically-indexed `KnowledgeBackend`, never embedded/RAG-queried/
   surfaced by diagnostics) — or an encrypted secret store — so a lost bundle never
   breaks dereference and the token cannot leak via indexing/APIs (§D).
+- **Secret store (`put`/`get`/`deleteSession`)** — a NEW injected dependency
+  backing the `page-token` records: durable across restart, never indexed, and
+  cleaned up on `DELETE /v1/sessions/:id` + session GC (so tokens never outlive
+  their session). Default in-process/disk; swappable for an encrypted store (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
   dispatched (`{runId, slotId, stepId, seq, attempt, decisionId}`, `slotId` = the
   whole decision); pins the winning decision for a `slotId` at dispatch time so no
