@@ -221,6 +221,12 @@ Continuation =
   point at divergent sources). The controller windows it locally (`items =
   enumeration[offset : offset+maxFanOut]`) on each expand — **no executor/tool
   re-run**, so the offset is stable across crashes and cannot re-trigger discovery.
+  **Durable write order (fixed): `enumeration` artifact FIRST, then the
+  `step-result` that references its `enumerationId`.** A crash between the two
+  leaves only a harmless orphan enumeration (no `step-result` -> the discovery step
+  is not `done` -> re-review re-produces it idempotently via the deterministic
+  `enumerationId`). The reverse order is FORBIDDEN — it would commit a `step-result`
+  whose canonical digest dangles at a missing enumeration.
 - **`tool` (only when the source itself paginates).** If the underlying tool could
   NOT enumerate fully in one result and exposes its own next-page token, that token
   is carried verbatim; the planner must emit a **follow-up discovery executor
@@ -339,10 +345,25 @@ write wins). A plain "latest-write-wins" is explicitly REJECTED: it could let a
 later `failed` overwrite a committed `ok`. A board entry's STRUCTURE (its
 existence, `stepId`, instructions) comes from the canonical `plan-decision`
 artifact that introduced it; its STATE comes from the precedence-resolved
-`step-result` outcome. The BOARD (plan + step states) is fully RECONSTRUCTIBLE from
-those two immutable artifact streams alone — its bundle snapshot is never required.
-(Run-EXECUTION state — budgets, in-flight phase, transcript, resume counters — is a
-SEPARATE concern that DOES live in the bundle; see below.)
+`step-result` outcome. Board reconstruction is a merge of **THREE sources**, with
+a clear precedence — a transient state must never mask a committed one:
+
+1. **Structure** ← `plan-decision` artifacts (a step's existence, `stepId`,
+   instructions, `slotId`).
+2. **Terminal state** ← `step-result` artifacts (precedence-resolved
+   `done|partial|failed` + digest). HIGHEST precedence — if a `step-result` exists,
+   that is the step's state.
+3. **Transient state** ← `step-start` claim + the bundle's in-flight/`pending`
+   (a claimed-but-not-settled step is `executing`; a `pending` external-tool step
+   is `awaiting-external`). Used ONLY when no `step-result` exists yet.
+
+Precedence: **terminal (2) > transient (3) > planned (1-only)**. So the STRUCTURE
+and TERMINAL states are reconstructible from immutable artifacts alone; the
+TRANSIENT states (`executing` / `awaiting-external`) additionally need the
+`step-start` claim + the bundle's `pending` (run-execution state, which lives in
+the bundle — below). A lost bundle thus loses only transient in-flight precision,
+recovered by re-deriving from the claim (re-`executing`) — never a committed
+outcome.
 
 **What is artifact-backed vs what stays in the bundle.** Reality check:
 `persistBundle()` is an append-only `KnowledgeBackend.put()`; `hydrateBundle()`
@@ -387,22 +408,40 @@ there NO history is at stake, so a deterministic pick is safe:
 - A decision carries a content-hash `decisionId` (UUIDv5 over `{runId, kind,
   anchorStepId, continuation?, plannerOutput}`). Identical output → identical id
   (dedup); different output → different id.
-- **The winner is fixed at DISPATCH by a durable `step-start` claim, BEFORE the
-  step runs** — not at the first `step-result`. The gap the late-binding left open:
-  a step is dispatched and goes in-flight before any result exists, and a competing
-  decision could still win in that interval. So immediately before dispatching a
-  step the controller writes an immutable **`step-start` claim** artifact
-  `{ runId, stepId, seq, decisionId }`. The claim PINS `stepId → decisionId`: the
-  winner for a slot is the decision named by the **earliest `step-start` claim**
-  (and, only if no claim yet exists — the pre-dispatch crash window — the smallest
-  `decisionId` deterministically). Its steps are taken **wholesale** (ids AND
-  instructions — never a cross-decision merge, resolving "two LLM calls, different
-  instructions"). Once a claim is written, that decision is locked and any
-  competing decision is inert.
+- **The winner is fixed at DISPATCH by a durable `step-start` claim keyed by the
+  contested SLOT, BEFORE the step runs.** A claim is
+  `{ runId, slotId, stepId, seq, decisionId }`. The **`slotId`** is the stable
+  identifier of the contested plan position — independent of which `stepId` fills
+  it (competing decisions may propose DIFFERENT `stepId`s, so keying on `stepId`
+  alone could not detect that two claims contend for the same slot). `slotId` is:
+  the plan position for a create step; the **superseded `stepId`** for a
+  replan-replacement; `(discoveryStepId, offset)` for an expand window. The winner
+  for a `slotId` is the decision named by the **first claim for that `slotId`**;
+  before any claim exists (the pre-dispatch crash window) the merge picks the
+  smallest `decisionId` deterministically. The winning decision's steps are taken
+  **wholesale** (ids AND instructions). Once a claim for a `slotId` exists, that
+  decision is locked and competing decisions are inert.
+- **Concurrency precondition (single-writer per run).** "First claim wins" is
+  deterministic ONLY under the existing **single-writer-per-run invariant**: the
+  controller's suspend/resume is stateless and assumes at most ONE coordinator
+  advances a given `runId` at a time (a crashed coordinator is replaced, never
+  run concurrently). Under it, claims for a `slotId` are totally ordered by the one
+  writer's append order. A deployment that may run CONCURRENT turns for the same
+  session MUST provide a session lease/lock (append-only artifacts alone do NOT
+  give exclusive dispatch) — stated as a precondition, not solved here.
+- **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
+  `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
+  decisionId, phase=`executing`) is persisted to the bundle; THEN the executor is
+  dispatched. Recovery per crash window: (a) claim present, no in-flight in bundle
+  → not yet dispatched → resume persists in-flight and dispatches (the claim
+  already fixed the decision); (b) in-flight present, no `step-result` → resume via
+  the EXISTING in-flight replay/suspend path (executor-call idempotency is that
+  path's existing concern); (c) `step-result` present → terminal.
 
-This gives finality WITHOUT CAS: a content-hashed write-once decision + a
-pre-dispatch durable claim that fixes the winner before execution — never a
-retroactive flip, and no in-flight window in which the winner can change.
+This gives finality WITHOUT CAS (under the single-writer invariant): a
+content-hashed write-once decision + a slot-keyed pre-dispatch claim that fixes the
+winner before execution — never a retroactive flip, no in-flight window in which
+the winner can change.
 
 **Expand is per-WINDOW, so batching does not collapse the slot.** The expand slot
 is `(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)`. Each
@@ -464,9 +503,9 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
-  dispatched (`{runId, stepId, seq, decisionId}`); pins the winning decision for a
-  slot at dispatch time so no competing decision can win during the in-flight
-  window (§F).
+  dispatched (`{runId, slotId, stepId, seq, decisionId}`); pins the winning
+  decision for a `slotId` at dispatch time so no competing decision can win during
+  the in-flight window (§F). Requires the single-writer-per-run precondition (§F).
 - **Reused / already implemented (do NOT re-spec):** per-step tool selection
   (`selectTools(step.instructions)` in `runStep`; the old prompt-level
   `selectTools(goal+prompt)` is gone — the 2026-06-09 shared change, DONE); skills
@@ -531,9 +570,15 @@ in-memory bundle store + a fake reviewer/executor):
   replan-replacement gets a NEW `stepId` + `supersedesStepId` and shows as a
   separate board entry.
 - **Expansion-only-on-done.** A discovery step that settles `partial`/`failed`
-  triggers replan, NOT expansion; `expanded` is never set.
-- **Idempotent re-expand.** Re-invoking expand on an already-`expanded` discovery
-  step is a no-op.
+  triggers replan, NOT expansion; NO `plan-decision{kind:expand}` is written and
+  the step never enters `expanding`.
+- **Idempotent per-window re-expand.** Re-invoking expand for an already-emitted
+  `(discoveryStepId, offset)` window writes no new decision; the discovery reaches
+  `expanded` only via the terminal (`truncated:false`) window, and a re-invoke
+  after that emits nothing.
+- **Slot-claim contention.** Two competing decisions for one `slotId` (different
+  `stepId`s) → the first `step-start` claim's decision wins; the loser's steps
+  never appear executing on the board.
 
 (The exploratory plan-generation capture used during design lives in `/tmp` logs;
 the harness extension + handler crash tests above are the durable, plan-defined
