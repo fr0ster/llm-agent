@@ -115,19 +115,24 @@ policy and a GUARANTEED cap).**
 - **Actionable entries are NEVER aggregated.** A `"P planned, X executing"` count
   would erase the `stepId`/intent/individual state of unfinished steps — the
   planner would lose track of what is already planned and could re-create the same
-  steps. So actionable (not-terminal) entries are ALWAYS rendered individually
-  (`stepId` + a — possibly terse — intent + state). Only TERMINAL digests are
-  compacted (rules 2–3).
-- **The cap is GUARANTEED by BOUNDING the actionable set, then fail-loud:**
-  - The number of simultaneously-actionable steps is bounded by config
-    (`maxActiveSteps`; fan-out width is already ≤ `maxFanOut` per window, one
-    window at a time), so the protected set fits by construction.
-  - **Config invariants validated at load (fail-loud):** the bounded actionable
-    set's worst-case size + `K × maxDigestChars` + headroom ≤ `maxBoardChars`.
-  - If, despite the invariants, the (individually-rendered) actionable set would
-    STILL exceed `maxBoardChars`, the controller does NOT feed the planner a lossy
-    board — it **fails loud / suspends BEFORE the planner call** (an
-    over-large/misconfigured run, surfaced, not silently degraded).
+  steps. So actionable (not-terminal) entries are ALWAYS rendered individually:
+  `stepId` + state ALWAYS in full, and the intent rendered bounded to
+  **`maxIntentChars`** (terse but present — never dropped). Only TERMINAL digests
+  are compacted (rules 2–3).
+- **The cap is GUARANTEED by BOUNDING both COUNT and PER-ENTRY size, then
+  fail-loud:**
+  - Count of simultaneously-actionable steps is bounded by `maxActiveSteps`
+    (fan-out is ≤ `maxFanOut` per window, one window at a time via the §D capacity
+    gate); per-entry size is bounded by `maxIntentChars` (+ fixed `stepId`/state).
+    So the actionable set's worst-case rendered size = `maxActiveSteps ×
+    (stepIdLen + stateLen + maxIntentChars)` — a finite, known bound.
+  - **Config invariant validated at load (fail-loud):** that worst-case actionable
+    size + `K × maxDigestChars` + headroom ≤ `maxBoardChars`. (Without
+    `maxIntentChars` the actionable size would be unbounded and no invariant could
+    hold — hence it is REQUIRED.)
+  - If, despite the invariant, the board would STILL exceed `maxBoardChars`, the
+    controller does NOT feed the planner a lossy board — it **fails loud / suspends
+    BEFORE the planner call** (surfaced, never silently degraded).
 - **Compaction never endangers expansion (both continuation kinds).** Expansion
   does not depend on the board digest at all: the CONTROLLER owns the durable
   continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the token
@@ -212,19 +217,26 @@ expand-on-success**:
 2. When that step settles **`done`**, the controller **re-invokes the planner** in
    an *expand-remainder* mode (a new trigger alongside `REPLAN` /
    `EXTERNAL_RESULT_REPLAN`).
-3. **Single data flow: the CONTROLLER owns the window, the planner receives it.**
-   The controller reads the durable continuation (the `enumeration` artifact for
-   `artifact-offset`, or the durable `tool` token), forms the **bounded window**
-   (≤ `maxFanOut` items), and passes THAT window to the planner. The planner does
-   NOT read the artifact or the raw board digest — it is handed the window and
-   **fans out one concrete step per element** of it. (This is the single
-   authoritative source; the board digest is informational only.)
-4. Each window is recorded as a `plan-decision{kind:expand, offset}` so it is
-   never generated twice; if the window was `truncated`, the CONTROLLER advances
-   to the next window (§D continuation) and hands the planner the next window. The
-   discovery becomes **`fully-expanded`**
-   once the terminal (`truncated:false`) window is emitted. (Identity & durability
-   of these per-window decisions: §F.)
+3. **Two DISTINCT transitions — do not conflate them:**
+   - **Within-page fan-out (`artifact-offset`).** The CONTROLLER reads the page's
+     durable `enumeration` artifact, forms a **bounded window** (≤ `maxFanOut`
+     items) and passes THAT window of `items` to the planner, which fans out one
+     concrete step per element. The planner never reads the artifact or board
+     digest — it is handed items. A token is NEVER passed to the planner.
+   - **Next-page pagination (`tool` token).** A token is NOT a window and CANNOT be
+     fanned out. When a page is exhausted AND it carried a next-page token, the
+     CONTROLLER schedules a **follow-up discovery EXECUTOR step** (a real tool
+     round-trip carrying the token) that produces the NEXT page's `enumeration`
+     artifact. This is an executor transition, not a planner fan-out.
+4. **Capacity gate (enforces "one window at a time", bounds the actionable set).**
+   The controller emits the NEXT window only when **`activeCount + nextWindowSize ≤
+   maxActiveSteps`** (i.e. enough of the previous window has SETTLED to free
+   capacity) — windows are NOT all emitted up front, so actionable steps cannot
+   pile up past `maxActiveSteps`. Each window is recorded as a
+   `plan-decision{kind:expand, offset}` (never generated twice). The discovery
+   **page** is fully windowed when offset reaches the end of its enumeration; the
+   **chain** is `fully-expanded` per the chain rule below. (Identity & durability
+   of per-window decisions: §F.)
 
 **Discovery-digest contract (structured, NOT free-text).** "Fan out exactly one
 step per element" requires a machine-readable, validated digest — a free-text
@@ -289,6 +301,20 @@ Continuation =
   artifact + continuation. So for BOTH kinds the continuation lives in durable
   state the controller reads, not in the board.
 
+**Tool-pagination is a CHAIN with its own identity + completion rule.** A
+tool-paginated source produces a CHAIN of discovery steps (page 0, page 1, …),
+each its own discovery step with its own `enumeration` artifact, all sharing a
+stable **`discoveryChainId`** (the first page's `discoveryStepId`) and carrying a
+`pageIndex`. Each page is **page-complete** when its own enumeration is fully
+windowed (offset reached its end). The CHAIN is **`fully-expanded`** when (a) the
+**terminal page** — the one whose digest has NO next-page token — has been reached,
+AND (b) every page in the chain is page-complete. So the `fully-expanded` predicate
+ranges over `discoveryChainId` (all pages), NOT a single `discoveryStepId`: a page
+that still has a next-page token is never the end, and the initial page is not
+"forever truncated" — it is just page 0 of a chain that completes at its terminal
+page. (A single-page discovery is the degenerate chain of length 1: no token ⇒ its
+page-complete IS chain-`fully-expanded`.)
+
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
 `truncated: true` WITHOUT a `continuation` is invalid (→ `partial`/replan). The
@@ -323,7 +349,7 @@ planned ──start──► executing ──reviewer verdict──►  done    
 executing ──tool suspend──► awaiting-external ──resume──► executing      (a SPECIFIC step paused on an external tool)
 
 DISCOVERY step only (sub-states of done — windowed fan-out):
-done(discovery) ──first window emitted──► expanding ──terminal (truncated:false) window emitted──► expanded
+done(discovery) ──first window emitted──► expanding ──chain fully-expanded (terminal page reached + all pages page-complete)──► expanded
 
 RUN-level (the run, not a step):
 running | awaiting-clarify | awaiting-budget | finalizing | done | failed
@@ -334,21 +360,23 @@ awaiting-external | expanding | expanded`. **Run-status set (locked):** `running
 awaiting-clarify | awaiting-budget | finalizing | done | failed`.
 
 **Windowed-expansion state model (locked).** A discovery step that settles `done`
-enters `expanding` and stays there while windows remain; it reaches `expanded`
-only when the terminal (`truncated:false`) window's `plan-decision{expand,offset}`
-exists. Both are **derived predicates** over the present expand decisions for the
-`discoveryStepId`, NOT stored flags:
-- `expanding` ⇔ at least one `expand{offset}` decision exists AND no terminal-window
-  decision yet.
-- `expanded` (fully) ⇔ a terminal-window decision exists.
-- **Next offset to emit** = `max(emitted offsets) + maxFanOut` while the last
-  emitted window was `truncated:true`; the controller emits exactly that next
-  window decision (idempotent — keyed by `offset`). When the last window was
-  `truncated:false`, no further window is emitted and the step is `expanded`.
-This makes the completion condition and the next-window trigger fully determined
-by the artifacts; there is no "expanded set exactly once" — instead each
-`(discoveryStepId, offset)` window decision is emitted exactly once, and the
-discovery transitions `done → expanding → expanded` monotonically.
+enters `expanding`; the CHAIN reaches `expanded` only when it is `fully-expanded`
+per §D (terminal page reached AND every page page-complete). These are **derived
+predicates** over the present expand decisions + page steps of the
+`discoveryChainId`, NOT stored flags:
+- a page is **page-complete** ⇔ `expand{offset}` decisions cover its enumeration to
+  the end (no further within-page offset remains).
+- `expanding` (chain) ⇔ some page is not yet page-complete, OR the terminal page
+  has not been reached (a next-page token is outstanding).
+- `expanded` (chain, fully) ⇔ terminal page reached AND all pages page-complete.
+- **Next within-page offset** = `max(emitted offsets of this page) + maxFanOut`
+  while offset < page enumeration length, emitted under the §D capacity gate
+  (idempotent — keyed by `(discoveryStepId, offset)`). When a page is page-complete
+  AND it carried a next-page token, the controller instead schedules the follow-up
+  discovery EXECUTOR step for the next page (§D), not another window.
+Each `(discoveryStepId, offset)` window decision is emitted exactly once; the chain
+transitions `done → expanding → expanded` monotonically (no "expanded set exactly
+once" flag).
 
 `awaiting-clarify` and budget escalation are **run-level**, not step-level: a
 clarification request or a budget-cap pause blocks the whole run (it may arise
@@ -693,14 +721,15 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   deterministic compaction: protected (not-terminal) steps + most recent `K`
   terminal digests kept in full; older terminal digests collapse to
   `[seq N name status]` oldest-first; then to `"… M omitted"`; same board ⇒
-  identical output. (b) **Discovery protection:** a `done`-but-not-`fully-expanded`
-  discovery whose digest would be evicted by budget is KEPT (or, equivalently, the
-  next expand window still succeeds because it reads the `enumeration` artifact,
-  not the board) — assert fan-out is unaffected by compaction. (c) **Guaranteed
-  cap:** a run with so many unfinished steps that the protected set alone exceeds
-  the cap still renders a board ≤ `maxBoardChars` (protected-set degradation to
-  counts), and a config with `K × maxDigestChars > maxBoardChars` fails loud at
-  load.
+  identical output. Assert actionable (not-terminal) entries are NEVER aggregated —
+  each keeps `stepId` + state + a `maxIntentChars`-bounded intent. (b) **Discovery
+  protection:** the next expand window still succeeds under budget pressure because
+  it reads the durable `enumeration` artifact (and durable token), not the board —
+  assert fan-out is unaffected by compaction. (c) **Guaranteed cap / fail-loud:** a
+  config violating the invariant (`maxActiveSteps × (stepId+state+maxIntentChars) +
+  K × maxDigestChars + headroom > maxBoardChars`) fails loud at load; and a run
+  whose actionable set still would not fit **suspends/fails BEFORE the planner
+  call** — it is NOT silently degraded to counts.
 
 Plan-generation alone does NOT cover the real production risk — **settle /
 recovery / retries and the crash window between expansion and persist**. Add
