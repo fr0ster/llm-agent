@@ -425,7 +425,8 @@ be written:
   `chain-outcome` TRIGGER; the replan ITSELF is an ordinary
   `plan-decision{kind:'replan'}` that **carries `triggerId = chainOutcome.id` in
   its payload AND folds it into its `decisionId`** (`uuidv5(runId, 'replan',
-  triggerId, plannerOutput)`), and is keyed by a **trigger-specific slot
+  'trigger', triggerId, plannerOutput)` — same formula as the kind table in §F),
+  and is keyed by a **trigger-specific slot
   `(runId, 'replan', 'trigger', triggerId)`** — NOT the failed-step replan slot
   `(runId, 'replan', 'anchor', anchorStepId)` (the `'anchor'`/`'trigger'`
   discriminator keeps the two slot kinds structurally distinct) — so hydrate
@@ -815,11 +816,16 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   `executing` / `awaiting-external` — do NOT omit these; a board without source 3
   cannot show a live or blocked step) + (4) the `chain-outcome` artifact, which
   projects a tool-pagination chain's `partial`/`failed` terminal (+ digest) onto
-  the ROOT discovery entry, OUTRANKING its derived `expanding`. The BOARD portion of
-  the bundle is a derived cache; run-EXECUTION state (budgets, phase, transcript,
-  resume counters, `pending`, `toolCallCount`) lives authoritatively in the
-  SessionBundle. The projection is EXTENSIBLE — further sources/states may be added
-  as the system grows (the four above are the current set, not a closed limit).
+  the ROOT discovery entry. **Precedence for a discovery-root entry: chain-outcome
+  (4) > step-result (2) > transient (3) > structure (1)** — a chain-outcome
+  overrides even the root's own `done` step-result (§F); non-root entries use
+  `(2) > (3) > (1)`. The BOARD portion of the bundle is a derived cache; MOST
+  run-EXECUTION state (budgets, phase, transcript, resume counters, `pending`,
+  `toolCallCount`) lives authoritatively in the SessionBundle — BUT the durable
+  continuation execution state (the `enumeration` artifacts and `page-token` secret
+  records) lives OUT-OF-BUNDLE so it survives a lost snapshot (§F). The projection
+  is EXTENSIBLE — further sources/states may be added as the system grows (the four
+  above are the current set, not a closed limit).
 - **Two planner implementations** + the **expand-remainder** trigger; the
   composition factory selects the implementation.
 - **`Step`** — gains `stepId` (stable), `discovery?: true`, and
