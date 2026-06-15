@@ -82,18 +82,19 @@ boundary (reviewer judges; controller persists).
 **Raw-token ingress (transient, never persisted by the producer).** For a
 tool-paginated discovery the reviewer/executor return value carries a SEPARATE
 **transient `rawContinuationToken`** field — IN-MEMORY only, distinct from the
-persisted `DiscoveryDigest.continuation` (which holds only `{tokenRef, tokenHash}`).
+persisted `DiscoveryDigest.continuation` (which holds only `{settleRef, tokenHash}`).
 The controller is the ONLY component that touches the raw token, in an ORDERED,
 crash-recoverable sequence (NOT one atomic op — the durable writes are distinct and
 the crash windows between them are handled in §D): (a) compute the deterministic
-`tokenRef` + `tokenHash`; (b) write the secret-class **`pending-settle` envelope**
-`{items, digest, verdict, rawToken}` keyed by `tokenRef` FIRST; (c) DERIVE the
-`enumeration` artifact, the `page-token` record, and the page `step-result`
-(sanitized `continuation:{tokenRef, tokenHash}`) from it. A crash after (b) is
-recoverable — the deterministic `tokenRef` re-reads the envelope and the settle is
-re-derived with NO re-review (§D). The producer (reviewer/executor) NEVER writes the
-raw token to a board/intent/log/indexed artifact — it only hands it over via the
-transient field, dropped after step (b).
+`settleRef` + `tokenHash`; (b) write the secret-class **`settle-envelope`** — the
+COMPLETE reviewer output `{status, approved, remainder, note, digest, items,
+rawNextPageToken?}` keyed by `settleRef` FIRST; (c) DERIVE the `enumeration`
+artifact and the page `step-result` from it. A crash after (b) is recoverable — the
+deterministic `settleRef` re-reads the envelope and the settle is re-derived with NO
+re-review (§D). There is ONE secret record (the envelope) — no separate `page-token`
+write to collide at the key. The producer (reviewer/executor) NEVER writes the raw
+token to a board/intent/log/indexed artifact — only via the transient field,
+dropped after step (b).
 
 ### B. Planner context = a step-state digest board
 
@@ -152,11 +153,10 @@ policy and a GUARANTEED cap).**
 - **Compaction never endangers expansion (both continuation kinds).** Expansion
   does not depend on the board digest at all: the CONTROLLER owns the durable
   continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the raw
-  token in the durable `page-token` secret record, §D), windows it, and passes the
+  token in the durable `settle-envelope`, §D), windows it, and passes the
   bounded window to the planner. So neither an `enumeration` offset nor a `tool`
   token can be lost to board compaction — both live in durable, out-of-bundle
-  stores (the `enumeration` artifact; the `page-token` SECRET record in its
-  dedicated secret store, NOT an indexed artifact), never in the compactable board.
+  stores (the `enumeration` artifact; the `settle-envelope` (its dedicated secret store), NOT an indexed artifact), never in the compactable board.
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -289,7 +289,7 @@ Validation at expand time (only when a well-formed digest is present):
 ```
 Continuation =
   | { kind: 'artifact-offset'; artifactId: string; offset: number }   // controller windows locally — NO executor step
-  | { kind: 'tool'; tokenRef: string; tokenHash: string }             // CONTROLLER schedules a follow-up page executor step (no planner call); BOTH tokenRef+tokenHash are durable (non-secret) so a crash recovers the exact (tokenRef,tokenHash) address; raw token only in the page-token SECRET record
+  | { kind: 'tool'; settleRef: string; tokenHash: string }            // CONTROLLER schedules a follow-up page executor step (no planner call); settleRef (= producing page's settle-envelope key) + tokenHash are durable non-secret locators; raw token lives only inside that settle-envelope
 ```
 
 - **`artifact-offset` (preferred, controller-local).** When the executor's
@@ -313,41 +313,38 @@ Continuation =
   is not `done` -> re-review re-produces it idempotently via the deterministic
   `enumerationId`). The reverse order is FORBIDDEN — it would commit a `step-result`
   whose canonical digest dangles at a missing enumeration.
-- **`tool` (only when the source itself paginates).** If the underlying tool could
-  NOT enumerate fully in one result and exposes its own next-page token, the RAW
-  token is stored in its own durable **`page-token` record in a DEDICATED secret
-  namespace** — NOT in the LWW `SessionBundle` (lost/clobbered → broken
-  dereference), NOT in any board/plan artifact, and **NOT in the general
-  semantically-indexed `KnowledgeBackend`** (a render/log ban is not enough: an
-  ordinary artifact could be embedded, RAG-queried, or surfaced by diagnostics/
-  artifact APIs). The secret namespace is **non-indexed, access-policied**
-  (controller-only read; never embedded/queryable) — or an encrypted secret store.
-  - **`pageIndex` convention (fixed, used identically everywhere):** a token emitted
-    by the settle of page `parentPageIndex` OPENS the NEXT page, so all of `tokenRef`,
-    the `page` decision, the page `stepId`, and recovery use **`pageIndex =
-    nextPageIndex = parentPageIndex + 1`** (the page the token CREATES, never the
-    page that produced it). Page 0 is the initial discovery (no token opened it).
-  - **Identity = a DETERMINISTIC ingress key (recovery needs no hash).** The record
-    is keyed by **`tokenRef = uuidv5(runId, discoveryChainId, nextPageIndex,
-    parentAttempt)`** — fully computable at recovery from the chain position + the
-    (claim-fixed) parent attempt, WITHOUT the raw token or its hash. It stores
-    `{ rawToken, tokenHash }` (so `tokenHash` is re-derivable from the record). A
-    retry of the parent emitting a different token has a different `parentAttempt`
-    ⇒ a different `tokenRef` ⇒ its OWN record, so a single `tokenRef` maps to ONE
-    record (retries are disambiguated by the key, not by hash). The sanitized
-    continuation and the page decision still carry `{tokenRef, tokenHash}` —
-    `tokenHash` is a VERIFICATION field (the page decision dereferences `tokenRef`,
-    then checks the stored hash matches), NOT the locator.
-  - **Crash-durability needs the FULL settle captured first — a token alone is not
-    enough.** The reviewer output (enumeration items, digest, verdict, rawToken) is
-    in-memory; a `page-token` record holding only `{rawToken, tokenHash}` would NOT
-    let recovery rebuild the enumeration/digest/verdict without re-review. So the
-    FIRST durable write of a discovery-page settle is a **`pending-settle` envelope**
-    — secret-class (it contains the rawToken → same non-indexed store as
-    `page-token`), keyed by the deterministic `tokenRef`, holding EVERYTHING the
-    settle needs: the enumeration items, digest, verdict, and rawToken. From the
-    envelope the controller DERIVES the `enumeration` artifact, the `page-token`
-    record, and the page `step-result`. A crash any time AFTER the envelope → resume
+- **`tool` (only when the source itself paginates).** A tool-paginated discovery
+  page is captured by a SINGLE durable secret record — the **`settle-envelope`** —
+  in a DEDICATED secret namespace (NOT the LWW `SessionBundle`; NOT a board/plan
+  artifact; NOT the semantically-indexed `KnowledgeBackend` — a render/log ban is
+  not enough, an ordinary artifact could be embedded/RAG-queried/diagnostic-surfaced;
+  the namespace is non-indexed, access-policied, controller-only — or encrypted).
+  There is **NO separate `page-token` record** (that would collide at the same key
+  and overwrite this one); the raw token is a FIELD of this single tagged record.
+  - **`pageIndex` convention (fixed, used identically everywhere):** the settle of
+    page `p` produces page `p`'s data and (optionally) a token OPENING page `p+1`.
+    The `settle-envelope` is keyed by the PRODUCING page `p` (`settleRef` uses `p`);
+    the `page` decision / page `stepId` for the page the token OPENS use
+    `nextPageIndex = p + 1`, and that page decision references its parent's
+    `settleRef` (= `p`'s) to read the token. Page 0 is the initial discovery (no
+    token opened it).
+  - **Identity = a DETERMINISTIC key (recovery needs no hash); ONE record per page
+    settle.** The `settle-envelope` is keyed by **`settleRef = uuidv5(runId,
+    discoveryChainId, pageIndex, attempt)`** (the producing page) — computable at
+    recovery from the chain position + the claim-fixed attempt, WITHOUT the token or
+    hash. A retry has a different `attempt` ⇒ a different `settleRef` ⇒ its OWN
+    record (retries disambiguated by the key). The next page (`p+1`) dereferences its
+    PARENT's `settleRef` to read the token; its `page` decision + the parent's
+    `step-result` `continuation` carry `{ settleRef (= parent's), tokenHash }` —
+    `tokenHash` is a VERIFICATION field (deref `settleRef`, check the stored hash),
+    NOT the locator.
+  - **The envelope holds the COMPLETE reviewer settle output — a token alone is not
+    enough.** Recovery must rebuild not just the enumeration but the FULL
+    `step-result`, so the envelope payload is the entire reviewer output:
+    `{ status, approved (full content), remainder, note, digest, items,
+    rawNextPageToken? }`. From it the controller DERIVES the `enumeration` artifact
+    and the page `step-result` (`approved`→RAG, `digest`→board, continuation). A
+    crash any time AFTER the envelope → resume
     the settle deterministically FROM the envelope (re-derive all three; idempotent;
     NO re-review of a possibly single-use cursor). Only a crash BEFORE the envelope
     re-runs discovery; if a single-use cursor cannot be reproduced there, the page
@@ -355,12 +352,13 @@ Continuation =
 
   **Durable write order (fixed) — full settle captured FIRST, next page only after
   page-complete (capacity-gated, §B):**
-  1. **`pending-settle` envelope** (secret-class, key = deterministic `tokenRef`) —
-     the complete reviewer output {items, digest, verdict, rawToken}. The recovery
-     source.
-  2. derive the `enumeration` artifact + the `page-token` record from the envelope.
-  3. derive the current page's **`step-result`** carrying the sanitized
-     `continuation:{tokenRef, tokenHash}` (durable continuation lives HERE).
+  1. **`settle-envelope`** (secret-class, key = deterministic `settleRef`) — the
+     COMPLETE reviewer output `{status, approved, remainder, note, digest, items,
+     rawNextPageToken?}`. The single recovery source (no separate `page-token`).
+  2. derive the `enumeration` artifact from the envelope.
+  3. derive the current page's **`step-result`** (`approved`/`remainder`/`note`/
+     `status` + `digest`) carrying the sanitized continuation
+     `{ settleRef, tokenHash }` for the next page (durable continuation lives HERE).
   4. expand windows for THIS page are all **EMITTED** covering its enumeration to
      the end → the page is **page-complete** (the §E locked definition:
      page-complete = expand decisions cover the enumeration; it is about EMISSION,
@@ -369,16 +367,16 @@ Continuation =
      emission coverage — the next page is scheduled once all of this page's windows
      are emitted, NOT after all their fanned-out steps settle.
   5. ONLY THEN, if the continuation is a `tool` token, the next
-     `plan-decision{kind:'page'}` (refs `{tokenRef, tokenHash}` from step 3) →
-     `step-start` claim → durable `inFlightStep` → dispatch.
+     `plan-decision{kind:'page'}` (refs the parent's `{settleRef, tokenHash}`) →
+     `step-start` claim → durable `inFlightStep` → dispatch (reads the token from
+     the parent's `settle-envelope`).
 
-  Recovery splits at the `pending-settle` envelope write (step 1), NOT at the
-  `step-result`:
+  Recovery splits at the `settle-envelope` write (step 1), NOT at the `step-result`:
   - **Crash BEFORE step 1** (no envelope yet) → nothing durable for this page;
     re-run discovery, and if a single-use cursor cannot be reproduced → fail-loud.
   - **Crash AFTER step 1, BEFORE the `step-result`** (steps 2–3) → the envelope
-    EXISTS at the deterministic `tokenRef`; the controller `get`s it and re-derives
-    the `enumeration`, `page-token`, and `step-result` from its captured
+    EXISTS at the deterministic `settleRef`; the controller `get`s it and re-derives
+    the `enumeration` and full `step-result` from its captured
     {items, digest, verdict, rawToken} — **NO re-review** of the cursor (the full
     settle was captured).
   - **Crash after the `step-result`** → continuation is durable; the next page is
@@ -392,7 +390,7 @@ Continuation =
   formula's `anchorStepId / continuation / plannerOutput` do not apply).
   - **Canonical selection is PARENT-bound and the parent is CLAIM-FIXED (not
     precedence-recomputed).** A page decision carries its **`parent = {stepId, seq,
-    attempt}`** — the PRIOR page's settle that emitted this `tokenRef/tokenHash`.
+    attempt}`** — the PRIOR page's settle that emitted this token (its `settleRef`).
     Naively "filter to the precedence-canonical parent" is WRONG: precedence/
     `writeOrdinal` is not "the live parent token" — if parent `attempt 0 = ok`
     (token A) and a later `attempt 1 = ok` (token B) tie on rank, writeOrdinal would
@@ -413,12 +411,13 @@ Continuation =
     parent token — never silently re-pointed at a retry.
 
   **Secret-store contract (concrete, not "namespace-or-encrypted hand-wave").**
-  The page-token store is an injected dependency with a minimal interface —
-  `put(sessionId, tokenRef, value)`, `get(sessionId, tokenRef) → value | undefined`,
-  `deleteSession(sessionId)`. The LOCATOR is the deterministic `tokenRef` ALONE
-  (= `uuidv5(runId, discoveryChainId, pageIndex, parentAttempt)` — recovery-
-  computable without the token/hash); the stored VALUE is `{rawToken, tokenHash}`
-  (so `tokenHash` is read back for verification, never used to locate).
+  The settle-envelope store is an injected dependency with a minimal interface —
+  `put(sessionId, settleRef, value)`, `get(sessionId, settleRef) → value |
+  undefined`, `deleteSession(sessionId)`. The LOCATOR is the deterministic
+  `settleRef` ALONE (= `uuidv5(runId, discoveryChainId, pageIndex, attempt)` of the
+  PRODUCING page — recovery-computable without the token/hash); the stored VALUE is
+  the full settle output incl. `rawNextPageToken` + `tokenHash` (the hash is read
+  back for verification, never used to locate).
   Requirements: (1)
   **durable** across process restart / bundle loss; (2) **never indexed** — it is
   NOT the semantic `KnowledgeBackend`, so values are never embedded/RAG-queried/
@@ -683,7 +682,7 @@ external-tool and crash resume, so the bundle is still persisted on every
 transition as today. What becomes **additionally artifact-backed** is the BOARD
 projection — the plan STRUCTURE and the step OUTCOMES — PLUS the small set of
 durable execution data that recovery needs out-of-bundle: the `enumeration`
-artifacts and the **`page-token` secret records** (§D). (So it is not "only the
+artifacts and the **`settle-envelope` records** (§D). (So it is not "only the
 board": page tokens are artifact-backed execution state in a dedicated secret
 namespace — the bundle remains authoritative for transcript/budgets/phase/etc.,
 but the continuation secrets must survive a lost bundle, hence they are durable
@@ -714,12 +713,12 @@ kind-specific key fields and `decisionId`/`slotId`:
 | `replan` (failed step) | `anchorStepId` | `(runId,'replan','anchor',anchorStepId,plannerOutput)` | `(runId,'replan','anchor',anchorStepId)` |
 | `replan` (chain-driven) | `triggerId` (= `chainOutcome.id`) | `(runId,'replan','trigger',triggerId,plannerOutput)` | `(runId,'replan','trigger',triggerId)` |
 | `expand` | `discoveryStepId`, `continuation{offset,len}` | `(runId,'expand',discoveryStepId,offset,plannerOutput)` | `(runId,'expand',discoveryStepId,offset)` |
-| `page` | `discoveryChainId`, `pageIndex`, `(tokenRef,tokenHash)`, `parent` | `(runId,'page',discoveryChainId,pageIndex,tokenHash)` | `(runId,'page',discoveryChainId,pageIndex)` |
+| `page` | `discoveryChainId`, `pageIndex`, parent's `{settleRef,tokenHash}`, `parent` | `(runId,'page',discoveryChainId,pageIndex,tokenHash)` | `(runId,'page',discoveryChainId,pageIndex)` |
 
 `plannerOutput` is included for LLM-authored kinds (create/replan/expand — content
 hash, §F) and ABSENT for the controller-authored `page` (deterministic). For a
-`page` the raw token is NEVER in the payload — only `tokenRef`/`tokenHash`; it lives
-in the `page-token` SECRET record (§D).
+`page` the raw token is NEVER in the payload — only the parent's `{settleRef,
+tokenHash}`; the raw token lives in that parent `settle-envelope` (§D).
 
 **Finality is fixed by EXECUTION, not by a hash race.** An executed step is
 IMMUTABLE — the executed prefix of the plan is never rewritten. A new planner
@@ -885,8 +884,7 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   `(2) > (3) > (1)`. The BOARD portion of the bundle is a derived cache; MOST
   run-EXECUTION state (budgets, phase, transcript, resume counters, `pending`,
   `toolCallCount`) lives authoritatively in the SessionBundle — BUT the durable
-  continuation execution state (the `enumeration` artifacts and `page-token` secret
-  records) lives OUT-OF-BUNDLE so it survives a lost snapshot (§F). The projection
+  continuation execution state (the `enumeration` artifacts and `settle-envelope` secret records) lives OUT-OF-BUNDLE so it survives a lost snapshot (§F). The projection
   is EXTENSIBLE — further sources/states may be added as the system grows (the four
   above are the current set, not a closed limit).
 - **Two planner implementations** + the **expand-remainder** trigger; the
@@ -901,8 +899,7 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   written before the bundle reflects it; the board is replayed from these +
   `step-result` artifacts (§F). The board portion of the bundle is thereby a
   derived cache; MOST run-execution state still lives in the bundle, EXCEPT the
-  durable continuation state (`enumeration` artifacts + `page-token` secret
-  records) which is out-of-bundle so it survives a lost snapshot (§F).
+  durable continuation state (`enumeration` artifacts + `settle-envelope` secret records) which is out-of-bundle so it survives a lost snapshot (§F).
 - **`enumeration` artifact** — a new run-scoped artifact holding a discovery
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
@@ -913,23 +910,21 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   failedPageStepId, attempt, failedPageIndex, note}`); the idempotency TRIGGER for
   the chain's single replan, projected onto the root discovery board entry. The
   replan it drives is an ordinary content-hashed `plan-decision{replan}` (§D).
-- **`pending-settle` envelope** — a new secret-class durable record (key =
-  deterministic `tokenRef`) capturing the FULL discovery-page reviewer output
-  `{items, digest, verdict, rawToken}`. Written FIRST; the `enumeration` artifact,
-  `page-token`, and page `step-result` are DERIVED from it, so a crash after it
-  resumes the settle with NO re-review (§D). Secret-class because it carries the raw
-  token; session-scoped cleanup.
-- **`page-token` secret record** — a durable `{rawToken, tokenHash}`, keyed by the
-  DETERMINISTIC ingress key **`tokenRef = uuidv5(runId, discoveryChainId,
-  nextPageIndex, parentAttempt)`** (`nextPageIndex = parentPageIndex + 1` — the page
-  the token opens; recovery computes it without the token/hash; retries differ by
-  `parentAttempt`). Derived from the envelope. Lives in a **dedicated non-indexed, access-policied secret
-  namespace** (controller-only read; NOT the semantically-indexed `KnowledgeBackend`,
-  never embedded/RAG-queried/surfaced by diagnostics) — or an encrypted secret store
-  — so a lost bundle never breaks dereference and the token cannot leak via
-  indexing/APIs (§D).
+- **`settle-envelope`** — the SINGLE secret-class durable record per discovery-page
+  settle (there is NO separate `page-token` record — that would collide at the key).
+  Keyed by the DETERMINISTIC **`settleRef = uuidv5(runId, discoveryChainId,
+  pageIndex, attempt)`** (the PRODUCING page; recovery-computable without the
+  token/hash; retries differ by `attempt`). Payload = the COMPLETE reviewer output
+  `{status, approved, remainder, note, digest, items, rawNextPageToken?, tokenHash?}`.
+  Written FIRST; the `enumeration` artifact and the full page `step-result` are
+  DERIVED from it, so a crash after it resumes the settle with NO re-review (§D).
+  Lives in a **dedicated non-indexed, access-policied secret namespace**
+  (controller-only read; NOT the semantically-indexed `KnowledgeBackend`, never
+  embedded/RAG-queried/surfaced by diagnostics) — or an encrypted store — so a lost
+  bundle never breaks dereference and the raw token cannot leak via indexing/APIs.
+  The next page (`p+1`) dereferences its PARENT's `settleRef` to read the token.
 - **Secret store (`put`/`get`/`deleteSession`)** — a NEW injected dependency
-  backing the `page-token` records: durable across restart, never indexed, and
+  backing the `settle-envelope` records: durable across restart, never indexed, and
   cleaned up on `DELETE /v1/sessions/:id` + session GC (so tokens never outlive
   their session). **Production default = durable disk-backed**; an in-memory impl
   is tests/ephemeral-only (does not meet restart-durability). Swappable for an
@@ -1021,25 +1016,25 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   the controller is the only writer (secret-store `put`), and the raw token NEVER
   appears in the rendered board / any `intent` / logs / the indexed
   `KnowledgeBackend` (assert absent from RAG/embedding/diagnostic surfaces); only
-  `(tokenRef, tokenHash)` are in board/plan artifacts and on the page's
-  `step-result` continuation; (e) **retry disambiguation** — a parent retry emits a
-  new token under a DIFFERENT `parentAttempt` ⇒ a different deterministic `tokenRef`
-  ⇒ its own record (one record per `tokenRef`); the page decision dereferences its
-  `tokenRef` and the stored `tokenHash` verifies the exact token it was built with;
-  AND **deterministic-key recovery** — after a crash between the envelope write and
-  the page `step-result`, the controller re-computes `tokenRef` from
-  `(runId,chainId,nextPageIndex,parentAttempt)` and `get`s the envelope WITHOUT
-  knowing the hash; (f) **crash-recovery / ordering** — write order
-  `pending-settle envelope (full {items,digest,verdict,rawToken}) → derive
-  enumeration + page-token + step-result{continuation:{tokenRef,tokenHash}} →
-  (this page's windows page-complete) → next page-decision → claim → in-flight →
-  dispatch`: assert THREE windows — (i) crash BEFORE the envelope → nothing durable
-  → re-run / fail-loud (no recovery promise); (ii) crash AFTER the envelope but
-  BEFORE the `step-result` → resume the settle from the envelope (re-derive
-  enumeration/page-token/step-result, NO re-review of the cursor); (iii) crash after
-  the `step-result` (bundle snapshot LOST) → recover `(tokenRef,tokenHash)` from the
-  durable continuation + secret and schedule the next page. The next page is NEVER
-  scheduled before the current page is page-complete (EMISSION); (g) **missing-token fail-loud** — a genuinely absent record → the page
+  `(settleRef, tokenHash)` are in board/plan artifacts and on the page's
+  `step-result` continuation; (e) **retry disambiguation** — a retry of the
+  producing page (different `attempt`) ⇒ a different deterministic `settleRef` ⇒ its
+  OWN `settle-envelope`; the next page's decision dereferences its parent's
+  `settleRef` and the stored `tokenHash` verifies the exact token; AND
+  **single-record / no key collision** — assert NO separate `page-token` write
+  exists at the same key (one tagged `settle-envelope` per page settle); (f)
+  **crash-recovery / ordering** — write order `settle-envelope (FULL
+  {status,approved,remainder,note,digest,items,rawNextPageToken?}) → derive
+  enumeration + step-result{continuation:{settleRef,tokenHash}} → (this page's
+  windows page-complete) → next page-decision → claim → in-flight → dispatch`:
+  assert THREE windows — (i) crash BEFORE the envelope → nothing durable → re-run /
+  fail-loud (no recovery promise); (ii) crash AFTER the envelope but BEFORE the
+  `step-result` → resume the FULL settle from the envelope (re-derive enumeration +
+  the complete step-result incl. `approved`/`remainder`/`note`, NO re-review of the
+  cursor); (iii) crash after the `step-result` (bundle snapshot LOST) → recover
+  `(settleRef,tokenHash)` from the durable continuation + envelope and schedule the
+  next page. The next page is NEVER scheduled before the current page is
+  page-complete (EMISSION); (g) **missing-token fail-loud** — a genuinely absent record → the page
   step settles `failed` with a clear reason (no tokenless tool call, no silent
   stall); (h) **frozen-parent retry is REJECTED** — after page P is claimed on
   parent `attempt 0` (token A), issue a retry REQUEST for that parent discovery:
