@@ -83,12 +83,17 @@ boundary (reviewer judges; controller persists).
 tool-paginated discovery the reviewer/executor return value carries a SEPARATE
 **transient `rawContinuationToken`** field — IN-MEMORY only, distinct from the
 persisted `DiscoveryDigest.continuation` (which holds only `{tokenRef, tokenHash}`).
-The controller is the ONLY component that touches the raw token: it atomically
-(a) computes `tokenHash`, (b) `secretStore.put`s the raw token as the `page-token`
-record, and (c) builds the SANITIZED `continuation:{tokenRef, tokenHash}` for the
-durable `step-result`/digest. The producer (reviewer/executor) NEVER writes the raw
-token to an artifact, the board, or logs — it only hands it to the controller via
-this transient field, which is dropped after the `secretStore.put`.
+The controller is the ONLY component that touches the raw token, in an ORDERED,
+crash-recoverable sequence (NOT one atomic op — `secretStore.put` and the
+`step-result` write are distinct durable operations, and the crash window between
+them is explicitly handled in §D): (a) compute the deterministic `tokenRef` +
+`tokenHash`; (b) `secretStore.put(sessionId, tokenRef, {rawToken, tokenHash})`
+FIRST; (c) THEN write the page's `step-result` with the SANITIZED
+`continuation:{tokenRef, tokenHash}`. A crash between (b) and (c) is recoverable —
+the deterministic `tokenRef` is re-computable, so the controller re-reads the
+secret and completes the step-result (§D). The producer (reviewer/executor) NEVER
+writes the raw token to an artifact, the board, or logs — it only hands it over via
+the transient field, dropped after step (b).
 
 ### B. Planner context = a step-state digest board
 
@@ -358,13 +363,19 @@ Continuation =
      `plan-decision{kind:'page'}` (refs `{tokenRef, tokenHash}` from step 3) →
      `step-start` claim → durable `inFlightStep` → dispatch.
 
-  So a crash BEFORE step 3 leaves no durable continuation (re-review re-produces it
-  idempotently); a crash after step 3 has the continuation on the step-result, so
-  the next page is recoverable; and the next page is NEVER scheduled before the
-  current page's fan-out completes. Recovery per crash window for the next-page
-  scheduling tail: (a) continuation present, no page-decision → schedule it; (b)
-  page-decision, no claim → claim; (c) claim, no in-flight → persist + dispatch; (d)
-  in-flight → replay path. The
+  Recovery splits at the `page-token` write (step 1), NOT at the `step-result`:
+  - **Crash BEFORE step 1** (no `page-token` yet) → nothing durable for this page;
+    re-run discovery, and if a single-use cursor cannot be reproduced → fail-loud.
+  - **Crash AFTER step 1, BEFORE the `step-result`** (steps 2–3) → the `page-token`
+    EXISTS; the controller re-computes the deterministic `tokenRef` from
+    `(runId,chainId,pageIndex,parentAttempt)`, `get`s the secret (no hash needed),
+    re-derives `tokenHash`, and completes the `enumeration` + `step-result`
+    continuation — **NO re-review** of the cursor.
+  - **Crash after the `step-result`** → continuation is durable; the next page is
+    recoverable. The next page is NEVER scheduled before this page is page-complete.
+  Recovery per crash window for the next-page scheduling tail: (a) continuation
+  present, no page-decision → schedule it; (b) page-decision, no claim → claim; (c)
+  claim, no in-flight → persist + dispatch; (d) in-flight → replay path. The
   follow-up page step is **controller-authored** with deterministic
   **`stepId = uuidv5(discoveryChainId, pageIndex)`** and **`decisionId = uuidv5(runId,
   'page', discoveryChainId, pageIndex, tokenHash)`** (the general `decisionId`
@@ -393,8 +404,12 @@ Continuation =
 
   **Secret-store contract (concrete, not "namespace-or-encrypted hand-wave").**
   The page-token store is an injected dependency with a minimal interface —
-  `put(sessionId, key, value)`, `get(sessionId, key) → value | undefined`,
-  `deleteSession(sessionId)` (key = `(tokenRef, tokenHash)`). Requirements: (1)
+  `put(sessionId, tokenRef, value)`, `get(sessionId, tokenRef) → value | undefined`,
+  `deleteSession(sessionId)`. The LOCATOR is the deterministic `tokenRef` ALONE
+  (= `uuidv5(runId, discoveryChainId, pageIndex, parentAttempt)` — recovery-
+  computable without the token/hash); the stored VALUE is `{rawToken, tokenHash}`
+  (so `tokenHash` is read back for verification, never used to locate).
+  Requirements: (1)
   **durable** across process restart / bundle loss; (2) **never indexed** — it is
   NOT the semantic `KnowledgeBackend`, so values are never embedded/RAG-queried/
   surfaced by artifact or diagnostic APIs; (3) **session-scoped cleanup** — the
@@ -1001,11 +1016,14 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   the hash; (f) **crash-recovery / ordering** — write order
   `page-token → enumeration → step-result{continuation:{tokenRef,tokenHash}} →
   (this page's windows page-complete) → next page-decision → claim → in-flight →
-  dispatch`: assert a crash before the `step-result` leaves no durable continuation
-  (re-review re-produces idempotently); a crash after the `step-result` (bundle
-  snapshot LOST) recovers `(tokenRef, tokenHash)` from the durable continuation +
-  secret store and schedules the next page; and the next page is NEVER scheduled
-  before the current page is page-complete; (g) **missing-token fail-loud** — a genuinely absent record → the page
+  dispatch`: assert THREE windows — (i) crash BEFORE the `page-token` write →
+  nothing durable → re-run / fail-loud (no recovery promise); (ii) crash AFTER
+  `page-token` but BEFORE the `step-result` → recover via the deterministic
+  `tokenRef` (get the secret, NO re-review of the cursor) and complete the
+  step-result; (iii) crash after the `step-result` (bundle snapshot LOST) →
+  recover `(tokenRef,tokenHash)` from the durable continuation + secret and schedule
+  the next page. The next page is NEVER scheduled before the current page is
+  page-complete (EMISSION); (g) **missing-token fail-loud** — a genuinely absent record → the page
   step settles `failed` with a clear reason (no tokenless tool call, no silent
   stall); (h) **frozen-parent retry is REJECTED** — after page P is claimed on
   parent `attempt 0` (token A), issue a retry REQUEST for that parent discovery:
