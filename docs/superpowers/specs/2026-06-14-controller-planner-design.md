@@ -463,15 +463,23 @@ there NO history is at stake, so a deterministic pick is safe:
   the append-only `KnowledgeBackend` (artifacts) nor `persistBundle` (LWW snapshot)
   provides it, and an after-the-fact "ignore older writes" merge is wrong (old
   artifacts are legitimate history, and a LWW bundle write from a stale coordinator
-  would still clobber `pending`/transcript/budgets). **Sticky routing is NOT a
-  single-writer guarantee** — during restart, rebalance, or rolling deploy two
-  processes can transiently serve the same session, and that overlap is exactly
-  when the clobber happens. So the supported deployments are: (i) **single
-  process**, or (ii) multi-process ONLY with **deployment-level EXCLUSIVE
-  per-session ownership** (a real distributed lock/lease with fencing, provided by
-  the deployment). Plain sticky routing without such an external exclusivity
-  guarantee is **unsupported**. The fenced/CAS-store path is a separate
-  infrastructure decision, explicitly deferred.
+  would still clobber `pending`/transcript/budgets). **A fencing token does NOT
+  help here**: it protects only if the STORE verifies it on write, but neither
+  `KnowledgeBackend` nor `persistBundle` checks any token — so a lease-holder that
+  lost its lease can still issue a clobbering LWW bundle write. And **sticky
+  routing is NOT a single-writer guarantee** — restart/rebalance/rolling-deploy
+  overlap two processes on one session, exactly when the clobber happens. So the
+  only supported deployments are:
+  - (i) **single process**, or
+  - (ii) multi-process ONLY if the deployment provides an EXTERNAL mechanism that
+    **provably fail-stops / isolates the previous owner BEFORE the session is
+    handed to a new owner** (a hard handoff barrier — not a soft lease the old
+    owner can outlive). Without that guarantee, multi-process is **unsupported**.
+
+  Making our own stores enforce exclusivity (a token they verify on write, i.e. a
+  fenced/CAS-capable store) is a separate infrastructure decision, explicitly
+  deferred — and is the only thing that would let the controller itself, rather
+  than the deployment, guarantee single-writer.
 - **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
   `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
   **`attempt`**, decisionId, phase=`executing`) is persisted to the bundle; THEN the
