@@ -317,21 +317,27 @@ Continuation =
   ordinary artifact could be embedded, RAG-queried, or surfaced by diagnostics/
   artifact APIs). The secret namespace is **non-indexed, access-policied**
   (controller-only read; never embedded/queryable) — or an encrypted secret store.
-  - **Identity (disambiguates retries):** the record is addressed by
-    **`(tokenRef, tokenHash)`** where `tokenRef = uuidv5(discoveryChainId,
-    pageIndex)` and `tokenHash = hash(rawToken)`. After a retry the same `tokenRef`
-    may have SEVERAL records with different `tokenHash`; the page decision carries
-    BOTH, so dereference matches the EXACT token it was built with (the canonical
-    page decision per `decisionId` selects which `tokenHash` is live). Addressing by
-    `tokenRef` alone would be ambiguous.
-  - **Crash-durability:** BOTH `tokenRef` AND `tokenHash` are durable, NON-secret
-    fields on the continuation (carried on the prior page's `step-result` and the
-    `page-decision`), so after a crash BETWEEN the `page-token` write and the
-    `page-decision` write the controller can still reconstruct the exact
-    `(tokenRef, tokenHash)` address WITHOUT the raw token — and then dereference the
-    secret record. The raw token lives ONLY in the secret store. A genuinely-missing
-    record → the page step settles a **fail-loud terminal** (`failed` with a clear
-    reason), never a tokenless tool call / silent stall.
+  - **Identity = a DETERMINISTIC ingress key (recovery needs no hash).** The record
+    is keyed by **`tokenRef = uuidv5(runId, discoveryChainId, pageIndex,
+    parentAttempt)`** — fully computable at recovery from the chain position + the
+    (claim-fixed) parent attempt, WITHOUT the raw token or its hash. It stores
+    `{ rawToken, tokenHash }` (so `tokenHash` is re-derivable from the record). A
+    retry of the parent emitting a different token has a different `parentAttempt`
+    ⇒ a different `tokenRef` ⇒ its OWN record, so a single `tokenRef` maps to ONE
+    record (retries are disambiguated by the key, not by hash). The sanitized
+    continuation and the page decision still carry `{tokenRef, tokenHash}` —
+    `tokenHash` is a VERIFICATION field (the page decision dereferences `tokenRef`,
+    then checks the stored hash matches), NOT the locator.
+  - **Crash-durability (the page-token↔step-result window IS recoverable):** because
+    `tokenRef` is deterministic, after a crash BETWEEN the `page-token` write and the
+    page's `step-result`, the controller RE-COMPUTES `tokenRef` from
+    `(runId, discoveryChainId, pageIndex, parentAttempt)`, `get`s the secret record
+    by that key (no hash needed), re-derives `tokenHash`, and completes the
+    `step-result` continuation — no reliance on re-reviewing a possibly single-use
+    cursor. Only a crash BEFORE the `page-token` write requires re-running discovery
+    (nothing recorded yet); if a single-use cursor cannot be reproduced there, the
+    page settles a **fail-loud terminal** (`failed`), never a tokenless tool call /
+    silent stall.
 
   **Durable write order (fixed) — the CURRENT page's settle records the
   continuation BEFORE any next page is scheduled, and the next page is scheduled
@@ -341,8 +347,13 @@ Continuation =
   3. the current page's **`step-result`** carrying the sanitized
      `continuation:{tokenRef, tokenHash}` (the durable continuation lives HERE, on
      the page that produced it — not on a not-yet-written next-page decision).
-  4. expand windows for THIS page fan out and SETTLE (capacity gate) until the page
-     is **page-complete**.
+  4. expand windows for THIS page are all **EMITTED** covering its enumeration to
+     the end → the page is **page-complete** (the §E locked definition:
+     page-complete = expand decisions cover the enumeration; it is about EMISSION,
+     not the settling of every spawned step). The capacity gate only PACES emission
+     (the next window waits for `activeCount` to free), but page-complete itself is
+     emission coverage — the next page is scheduled once all of this page's windows
+     are emitted, NOT after all their fanned-out steps settle.
   5. ONLY THEN, if the continuation is a `tool` token, the next
      `plan-decision{kind:'page'}` (refs `{tokenRef, tokenHash}` from step 3) →
      `step-start` claim → durable `inFlightStep` → dispatch.
@@ -877,13 +888,15 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   failedPageStepId, attempt, failedPageIndex, note}`); the idempotency TRIGGER for
   the chain's single replan, projected onto the root discovery board entry. The
   replan it drives is an ordinary content-hashed `plan-decision{replan}` (§D).
-- **`page-token` secret record** — a new durable record holding the RAW next-page
-  token for tool-pagination, addressed by **`(tokenRef, tokenHash)`** (`tokenRef =
-  uuidv5(discoveryChainId, pageIndex)`), written BEFORE the `page` decision. Lives
-  in a **dedicated non-indexed, access-policied secret namespace** (controller-only
-  read; NOT the semantically-indexed `KnowledgeBackend`, never embedded/RAG-queried/
-  surfaced by diagnostics) — or an encrypted secret store — so a lost bundle never
-  breaks dereference and the token cannot leak via indexing/APIs (§D).
+- **`page-token` secret record** — a new durable record holding `{rawToken,
+  tokenHash}` for tool-pagination, keyed by a DETERMINISTIC ingress key **`tokenRef
+  = uuidv5(runId, discoveryChainId, pageIndex, parentAttempt)`** (recovery computes
+  it without the token/hash; retries differ by `parentAttempt`). Written BEFORE the
+  page's `step-result`. Lives in a **dedicated non-indexed, access-policied secret
+  namespace** (controller-only read; NOT the semantically-indexed `KnowledgeBackend`,
+  never embedded/RAG-queried/surfaced by diagnostics) — or an encrypted secret store
+  — so a lost bundle never breaks dereference and the token cannot leak via
+  indexing/APIs (§D).
 - **Secret store (`put`/`get`/`deleteSession`)** — a NEW injected dependency
   backing the `page-token` records: durable across restart, never indexed, and
   cleaned up on `DELETE /v1/sessions/:id` + session GC (so tokens never outlive
@@ -978,9 +991,14 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   appears in the rendered board / any `intent` / logs / the indexed
   `KnowledgeBackend` (assert absent from RAG/embedding/diagnostic surfaces); only
   `(tokenRef, tokenHash)` are in board/plan artifacts and on the page's
-  `step-result` continuation; (e) **retry disambiguation** — two token records under one `tokenRef`
-  with different `tokenHash`: the page decision dereferences the EXACT `(tokenRef,
-  tokenHash)` it was built with; (f) **crash-recovery / ordering** — write order
+  `step-result` continuation; (e) **retry disambiguation** — a parent retry emits a
+  new token under a DIFFERENT `parentAttempt` ⇒ a different deterministic `tokenRef`
+  ⇒ its own record (one record per `tokenRef`); the page decision dereferences its
+  `tokenRef` and the stored `tokenHash` verifies the exact token it was built with;
+  AND **deterministic-key recovery** — after a crash between the `page-token` write
+  and the page `step-result`, the controller re-computes `tokenRef` from
+  `(runId,chainId,pageIndex,parentAttempt)` and `get`s the secret WITHOUT knowing
+  the hash; (f) **crash-recovery / ordering** — write order
   `page-token → enumeration → step-result{continuation:{tokenRef,tokenHash}} →
   (this page's windows page-complete) → next page-decision → claim → in-flight →
   dispatch`: assert a crash before the `step-result` leaves no durable continuation
