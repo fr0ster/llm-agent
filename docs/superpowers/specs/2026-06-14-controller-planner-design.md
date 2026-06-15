@@ -395,6 +395,24 @@ page never reached). It transitions to a terminal chain outcome:
 So chain states are `expanding | expanded | partial | failed`; a page failure
 propagates to one of the terminal two, never an infinite `expanding`.
 
+**The chain terminal is DURABLE, projected onto the ROOT discovery entry, with a
+single idempotent replan.** A derived predicate alone is not enough — the
+artifacts hold only the failed page step + prior decisions, so the terminal must
+be written:
+- The controller writes a **`chain-outcome` artifact** —
+  `artifactType:'chain-outcome'`, deterministic `id = uuidv5(runId,
+  discoveryChainId)`, payload `{ status: 'partial'|'failed', failedPageIndex,
+  note }`. Append-only duplicates collapse by that deterministic id.
+- **Board projection:** the chain terminal is shown on the ROOT discovery entry
+  (the `discoveryChainId` = page-0 `stepId`); its state becomes `partial`/`failed`
+  and its digest carries the `"pagination incomplete at page N (reason)"` note. The
+  per-page steps stay as their own entries; the planner reads the chain terminal at
+  the root.
+- **Exactly one replan, idempotent on hydrate:** the follow-up replan is a
+  `plan-decision{kind:'replan'}` with deterministic `decisionId = uuidv5(runId,
+  'replan', discoveryChainId, 'pagination-incomplete')`, so re-deriving it after a
+  crash collapses by `decisionId` — the replan fires once, not once per hydrate.
+
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
 `truncated: true` WITHOUT a `continuation` is invalid (→ `partial`/replan). The
@@ -430,7 +448,8 @@ planned ──start──► executing ──reviewer verdict──►  done    
 executing ──tool suspend──► awaiting-external ──resume──► executing      (a SPECIFIC step paused on an external tool)
 
 DISCOVERY step only (sub-states of done — windowed fan-out):
-done(discovery) ──first window emitted──► expanding ──chain fully-expanded (terminal page reached + all pages page-complete)──► expanded
+done(discovery) ──first window emitted──► expanding ──chain fully-expanded (terminal page + all pages page-complete)──► expanded
+                                          expanding ──follow-up page failed──► partial (≥1 page complete) | failed (none)  [→ replan]
 
 RUN-level (the run, not a step):
 running | awaiting-clarify | awaiting-budget | finalizing | done | failed
@@ -461,8 +480,10 @@ predicates** over the present expand decisions + page steps of the
   next-page token, the controller instead schedules the follow-up discovery
   EXECUTOR step for the next page (§D), not another window.
 Each `(discoveryStepId, offset)` window decision is emitted exactly once; the chain
-transitions `done → expanding → expanded` monotonically (no "expanded set exactly
-once" flag).
+transitions monotonically `done → expanding → {expanded | partial | failed}` — it
+always reaches one of the three terminals (a failed follow-up page yields
+`partial`/`failed` per §D), never an infinite `expanding`, and never a non-monotone
+flap (no "expanded set exactly once" flag).
 
 `awaiting-clarify` and budget escalation are **run-level**, not step-level: a
 clarification request or a budget-cap pause blocks the whole run (it may arise
@@ -750,6 +771,10 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
+- **`chain-outcome` artifact** — a new run-scoped artifact recording a
+  tool-pagination chain's TERMINAL result (`id = uuidv5(runId, discoveryChainId)`,
+  `{status:'partial'|'failed', failedPageIndex, note}`); projected onto the root
+  discovery board entry and driving a single deterministic replan (§D).
 - **`page-token` secret record** — a new durable record holding the RAW next-page
   token for tool-pagination, addressed by **`(tokenRef, tokenHash)`** (`tokenRef =
   uuidv5(discoveryChainId, pageIndex)`), written BEFORE the `page` decision. Lives
@@ -832,7 +857,9 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   regression we observed); discovery step present for fan-out prompts under the
   weak planner; per-window fan-out count == that window's actual `len`; each
   `(discoveryStepId, offset)` window decision emitted exactly once; the chain
-  transitions `done → expanding → expanded` monotonically.
+  transitions monotonically `done → expanding → {expanded | partial | failed}` —
+  including the failed-page branch (assert a failed follow-up page yields chain
+  `partial`/`failed` + a `chain-outcome` artifact, NOT an infinite `expanding`).
 - **Tool-pagination chain tests.** A multi-page discovery: (a) each follow-up page
   is a `plan-decision{kind:'page', discoveryChainId, pageIndex}` with deterministic
   `stepId = uuidv5(discoveryChainId, pageIndex)` AND `decisionId = uuidv5(runId,
@@ -854,10 +881,17 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   LOST still dereferences `(tokenRef, tokenHash)` from the durable secret store and
   dispatches; (g) **missing-token fail-loud** — a genuinely absent record → the page
   step settles `failed` with a clear reason (no tokenless tool call, no silent
-  stall); (h) **claim-fixed parent** — after page P is claimed on parent
-  `attempt 0` (token A), RETRY the parent to `attempt 1` (token B): assert P's
-  parent stays `attempt 0`/token A (NOT retroactively re-pointed at B), and a
-  settled discovery with a claimed downstream is not retried for chain purposes.
+  stall); (h) **frozen-parent retry is REJECTED** — after page P is claimed on
+  parent `attempt 0` (token A), issue a retry REQUEST for that parent discovery:
+  assert the controller transition **rejects/no-ops it** — NO `attempt 1` step-result
+  is minted, the parent outcome is unchanged, and P's parent stays `attempt 0`/token
+  A. (A genuinely new exploration must open a NEW `discoveryChainId`, not a new
+  attempt of the consumed step.)
+- **Chain-failure / replan test.** A follow-up page that `failed` with ≥1 prior
+  page complete → chain `partial`, a `chain-outcome` artifact
+  (`id=uuidv5(runId,discoveryChainId)`) is written, the root discovery entry shows
+  `partial` + the "pagination incomplete at page N" digest, and EXACTLY ONE replan
+  fires (idempotent on re-hydrate via the deterministic replan `decisionId`).
 - **Secret-store cleanup tests.** Assert `DELETE /v1/sessions/:id` AND the actual
   session-GC path both call `secretStore.deleteSession(sessionId)` (page tokens do
   not outlive the session); and a reused `sessionId` never reads a prior session's
