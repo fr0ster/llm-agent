@@ -593,8 +593,22 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
 
 ## Testing strategy
 
-Primary signal is **plan GENERATION**, not execution (agreed scope: "знімаємо
-генерацію планів, виконувати необовʼязково"). Extend the build-excluded
+**Two test scopes — they differ by what is pipeline-agnostic vs planner-specific:**
+
+- **Gnostification (skills WITH/WITHOUT) — test across ALL pipelines.** The skill
+  gnostificator must work for ANY pipeline, so the WITH/WITHOUT toggle is exercised
+  on every pipeline that takes a skills source — flat, linear, controller, and dag/
+  stepper as far as each supports one (per the skill-plugin-host spec's wiring;
+  "наскільки можливо"). This scope is NOT planner-specific and is not gated on a
+  planner existing.
+- **Replanning / deferred expansion / capability planners / board+claim+attempt+
+  crash — ONLY pipelines that HAVE a planner.** These behaviors exist only in the
+  controller; they are tested for the controller with BOTH planner kinds
+  (`smart-executor`, `weak-executor`). Pipelines without a planner (flat/linear/…)
+  get only the gnostification scope above.
+
+Primary signal for the planner scope is **plan GENERATION**, not execution (agreed:
+"знімаємо генерацію планів, виконувати необовʼязково"). Extend the build-excluded
 `plan-analysis.ts` dev harness:
 
 - Add an `EVAL_PLANS_ONLY` capture mode + data-dependent fan-out prompts
