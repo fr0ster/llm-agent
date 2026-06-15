@@ -375,8 +375,11 @@ Continuation =
      separate `page-token`).
   2. derive the `enumeration` artifact from the envelope.
   3. derive the current page's **`step-result`** (`approved`/`remainder`/`note`/
-     `status` + `digest`) carrying the sanitized continuation
-     `{ settleRef, tokenHash }` for the next page (durable continuation lives HERE).
+     `status` + `digest`). A sanitized continuation `{ settleRef, tokenHash }` for
+     the next page is carried HERE **only when the envelope has `pagination`**
+     (non-terminal page; durable continuation lives HERE). A **terminal** page
+     (no `pagination`, no `tokenHash`) carries NO continuation — `truncated:false`,
+     no next-page decision follows.
   4. expand windows for THIS page are all **EMITTED** covering its enumeration to
      the end → the page is **page-complete** (the §E locked definition:
      page-complete = expand decisions cover the enumeration; it is about EMISSION,
@@ -1049,8 +1052,10 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   separate `page-token` write exists at any key (one tagged record per page settle);
   (f) **crash-recovery / ordering** — write order `settle-envelope (putIfAbsent, FULL
   tagged {status,approved,remainder,note,digest,items,pagination?}) → derive
-  enumeration + step-result{continuation:{settleRef,tokenHash}} → (this page's
-  windows page-complete) → next page-decision → claim → in-flight → dispatch`:
+  enumeration + step-result (continuation `{settleRef,tokenHash}` ONLY for a
+  non-terminal page; a terminal page → `truncated:false`, NO continuation, NO
+  next-page decision) → (this page's windows page-complete) → next page-decision
+  (non-terminal only) → claim → in-flight → dispatch`:
   assert THREE windows — (i) crash BEFORE the envelope → nothing durable → re-run /
   fail-loud (no recovery promise); (ii) crash AFTER the envelope but BEFORE the
   `step-result` → resume the FULL settle from the envelope (re-derive enumeration +
