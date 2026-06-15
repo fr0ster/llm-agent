@@ -86,7 +86,9 @@ persisted `DiscoveryDigest.continuation` (which holds only `{settleRef, tokenHas
 The controller is the ONLY component that touches the raw token, in an ORDERED,
 crash-recoverable sequence (NOT one atomic op — the durable writes are distinct and
 the crash windows between them are handled in §D): (a) compute the deterministic
-`settleRef` + `tokenHash`; (b) `putIfAbsent` the secret-class **`settle-envelope`**
+`settleRef` (and, ONLY if the page emitted a next-page token, `tokenHash =
+hash(rawNextPageToken)` — a terminal page has neither token nor hash); (b)
+`putIfAbsent` the secret-class **`settle-envelope`**
 — the COMPLETE reviewer output `{status, approved, remainder, note, digest, items,
 pagination?:{rawNextPageToken, tokenHash}}` (one tagged schema; `pagination` present
 for a non-terminal page, absent at the terminal) keyed by `settleRef` FIRST
@@ -366,9 +368,11 @@ Continuation =
 
   **Durable write order (fixed) — full settle captured FIRST, next page only after
   page-complete (capacity-gated, §B):**
-  1. **`settle-envelope`** (secret-class, key = deterministic `settleRef`) — the
-     COMPLETE reviewer output `{status, approved, remainder, note, digest, items,
-     rawNextPageToken?}`. The single recovery source (no separate `page-token`).
+  1. **`settle-envelope`** (secret-class, key = deterministic `settleRef`,
+     `putIfAbsent`) — the COMPLETE reviewer output per the tagged `SettleEnvelope`
+     schema `{status, approved, remainder, note, digest, items,
+     pagination?:{rawNextPageToken, tokenHash}}`. The single recovery source (no
+     separate `page-token`).
   2. derive the `enumeration` artifact from the envelope.
   3. derive the current page's **`step-result`** (`approved`/`remainder`/`note`/
      `status` + `digest`) carrying the sanitized continuation
@@ -1031,18 +1035,20 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   insufficient), never losing or duplicating a page; (d) **token redaction +
   ingress** — the raw token reaches the controller ONLY via the transient
   `rawContinuationToken` return field (NOT inside the persisted `DiscoveryDigest`);
-  the controller is the only writer (secret-store `put`), and the raw token NEVER
-  appears in the rendered board / any `intent` / logs / the indexed
+  the controller is the only writer (secret-store **`putIfAbsent`**), and the raw
+  token NEVER appears in the rendered board / any `intent` / logs / the indexed
   `KnowledgeBackend` (assert absent from RAG/embedding/diagnostic surfaces); only
   `(settleRef, tokenHash)` are in board/plan artifacts and on the page's
-  `step-result` continuation; (e) **retry disambiguation** — a retry of the
-  producing page (different `attempt`) ⇒ a different deterministic `settleRef` ⇒ its
-  OWN `settle-envelope`; the next page's decision dereferences its parent's
-  `settleRef` and the stored `tokenHash` verifies the exact token; AND
-  **single-record / no key collision** — assert NO separate `page-token` write
-  exists at the same key (one tagged `settle-envelope` per page settle); (f)
-  **crash-recovery / ordering** — write order `settle-envelope (FULL
-  {status,approved,remainder,note,digest,items,rawNextPageToken?}) → derive
+  `step-result` continuation; (e) **write-once + schema** — assert the envelope is
+  written via `putIfAbsent`: an identical re-write is a no-op, a DIVERGENT re-write
+  at the same `settleRef` is REJECTED loud; and the payload validates against the
+  tagged `SettleEnvelope` schema — `pagination:{rawNextPageToken, tokenHash}`
+  PRESENT for a non-terminal page, ABSENT (and no `tokenHash`) for the terminal
+  page; AND **retry disambiguation / single record** — a retry of the producing
+  page (different `attempt`) ⇒ a different `settleRef` ⇒ its OWN envelope; NO
+  separate `page-token` write exists at any key (one tagged record per page settle);
+  (f) **crash-recovery / ordering** — write order `settle-envelope (putIfAbsent, FULL
+  tagged {status,approved,remainder,note,digest,items,pagination?}) → derive
   enumeration + step-result{continuation:{settleRef,tokenHash}} → (this page's
   windows page-complete) → next page-decision → claim → in-flight → dispatch`:
   assert THREE windows — (i) crash BEFORE the envelope → nothing durable → re-run /
