@@ -69,10 +69,15 @@ gnosticized as it works:
 | **Full result** | run-scoped **RAG, addressable by step (`runId`+`seq`)** — existing `step-result` artifacts | the **executor** (a later step recalls a prior step's full output by seq) |
 | **Digest** (the planning-relevant slice) | the **planner's step-state board** | the **planner** — strictly digest-only, never reads the full RAG |
 
-The **reviewer** writes BOTH on each settle: full `approved` → RAG (as today); a
-purpose-built **digest** → the board. The reviewer **decides what from the result
-is needed for planning** — a targeted extract (e.g. *the list of include names*),
-not a generic summary.
+The **reviewer stays a pure judging role: it RETURNS data, it does not persist.**
+On each settle the reviewer returns its verdict plus a purpose-built **digest**
+(and, for a discovery step, the structured `{id,label}[]` enumeration) — it
+**decides what from the result is needed for planning** (a targeted extract, e.g.
+*the list of include names*, not a generic summary). The **controller** then does
+the durable writes and assigns ids: full `approved` → run-scoped RAG (as today),
+digest → the board, and — for discovery — the `enumeration` artifact + the
+`plan-decision` artifacts (§D, §F). This preserves the existing reviewer/controller
+boundary (reviewer judges; controller persists).
 
 ### B. Planner context = a step-state digest board
 
@@ -160,10 +165,14 @@ expand-on-success**:
 2. When that step settles **`done`**, the controller **re-invokes the planner** in
    an *expand-remainder* mode (a new trigger alongside `REPLAN` /
    `EXTERNAL_RESULT_REPLAN`).
-3. The planner reads the discovery step's **digest** (= the enumerated list) and
-   **fans out one concrete step per element**.
-4. The discovery step is marked **`expanded`** so its fan-out is never generated
-   twice.
+3. The planner reads the discovery step's **digest** (= the enumerated list,
+   windowed at `maxFanOut`) and **fans out one concrete step per element** of the
+   window.
+4. Each window is recorded as a `plan-decision{kind:expand, offset}` so it is
+   never generated twice; if the window was `truncated`, the planner advances to
+   the next window (§D continuation). The discovery becomes **`fully-expanded`**
+   once the terminal (`truncated:false`) window is emitted. (Identity & durability
+   of these per-window decisions: §F.)
 
 **Discovery-digest contract (structured, NOT free-text).** "Fan out exactly one
 step per element" requires a machine-readable, validated digest — a free-text
@@ -198,13 +207,14 @@ Continuation =
 ```
 
 - **`artifact-offset` (preferred, controller-local).** When the executor's
-  enumeration is fully captured, the reviewer writes a durable **structured
-  enumeration artifact** — `artifactType: 'enumeration'`, payload = the canonical
-  `{ id, label }[]` array (NOT arbitrary `approved` text — a stable, indexable
-  array). The `continuation` then references THAT artifact by `artifactId` +
-  `offset`, and the **controller windows it locally** (`items =
-  enumeration[offset : offset+maxFanOut]`) on each expand — **no executor/tool
-  re-run**, so the offset is stable across crashes and cannot re-trigger discovery.
+  enumeration is fully captured, the reviewer RETURNS the canonical `{ id, label }[]`
+  array and the **controller** persists it as a durable **structured enumeration
+  artifact** (`artifactType: 'enumeration'`, NOT arbitrary `approved` text — a
+  stable, indexable array) and assigns its `artifactId`. The `continuation`
+  references THAT artifact by `artifactId` + `offset`, and the controller windows
+  it locally (`items = enumeration[offset : offset+maxFanOut]`) on each expand —
+  **no executor/tool re-run**, so the offset is stable across crashes and cannot
+  re-trigger discovery.
 - **`tool` (only when the source itself paginates).** If the underlying tool could
   NOT enumerate fully in one result and exposes its own next-page token, that token
   is carried verbatim; the planner must emit a **follow-up discovery executor
@@ -303,57 +313,78 @@ write wins). A plain "latest-write-wins" is explicitly REJECTED: it could let a
 later `failed` overwrite a committed `ok`. A board entry's STRUCTURE (its
 existence, `stepId`, instructions) comes from the canonical `plan-decision`
 artifact that introduced it; its STATE comes from the precedence-resolved
-`step-result` outcome. The board is fully RECONSTRUCTIBLE from those two immutable
-artifact streams alone — the bundle snapshot is never required.
+`step-result` outcome. The BOARD (plan + step states) is fully RECONSTRUCTIBLE from
+those two immutable artifact streams alone — its bundle snapshot is never required.
+(Run-EXECUTION state — budgets, in-flight phase, transcript, resume counters — is a
+SEPARATE concern that DOES live in the bundle; see below.)
 
-**Durability rests on IMMUTABLE ARTIFACTS + deterministic merge — NOT bundle CAS.**
-Reality check on the persistence layer: `persistBundle()` is an append-only
-`KnowledgeBackend.put()`; `hydrateBundle()` takes the LATEST bundle snapshot
-(last-write-wins by scan order). There is **no CAS / version fencing** on the
-bundle, and `writeOrdinal` only orders/ties artifacts — it does NOT fence the
-bundle write. So nothing here claims an atomic fenced bundle update (it does not
-exist). The bundle is a **derived, last-write-wins cache**; the **source of truth
-for recovery is the immutable, append-only artifacts**, over which the board is
-rebuilt by a **deterministic merge** at hydrate.
+**What is artifact-backed vs what stays in the bundle.** Reality check:
+`persistBundle()` is an append-only `KnowledgeBackend.put()`; `hydrateBundle()`
+takes the LATEST snapshot (last-write-wins); there is **no CAS** and `writeOrdinal`
+only orders artifacts. So we do NOT claim an atomic fenced bundle update, and — be
+precise — the bundle is **NOT** a "pure cache of everything." The **SessionBundle
+remains the durable run-execution state** that lives nowhere else: `pending` /
+external-tool + clarify suspension, the executor transcript, `toolCallCount`,
+resume counters, `budgets`, and the in-flight `phase`. Losing those breaks
+external-tool and crash resume, so the bundle is still persisted on every
+transition as today. What becomes **additionally artifact-backed is ONLY the BOARD
+projection** — the plan STRUCTURE and the step OUTCOMES — so a torn plan/board
+write is recoverable:
 
-**EVERY planner decision is an immutable artifact — not just expansion.** The
-create-plan, every replan, AND every expand-remainder output is written as a
-`plan-decision` artifact BEFORE its effect is reflected in the bundle. (Without
-this, the initial plan and replans would live only in the bundle snapshot — a lost
-snapshot would make `planned` steps and their `stepId`s unrecoverable, the gap this
-closes.) The board is reconstructed by replaying `plan-decision` artifacts (the
-plan structure + step ids/instructions) and `step-result` artifacts (the outcomes)
-— the bundle adds nothing the artifacts lack.
+- **Plan structure** ← `plan-decision` artifacts (below).
+- **Step state** ← `step-result` artifacts (precedence-resolved).
 
-**`plan-decision` artifact — storage contract:**
-- `artifactType: 'plan-decision'`; payload = the decision kind (`create | replan |
-  expand`), the produced/affected steps (each with `stepId`, full `instructions`,
-  `discovery?`, `supersedesStepId?`, source `item.id` for fan-out), the
-  `discoveryStepId` for an expand, and the `continuation` consumed (if any).
-- **Stable `decisionId` = content hash** of the canonical decision inputs+output
-  (UUIDv5 over `{runId, kind, anchorStepId, plannerOutput}`). This does NOT depend
-  on the non-CAS bundle `writeOrdinal` (which two crash/concurrent branches could
-  duplicate). Identical inputs+output → identical `decisionId` (natural dedup);
-  different LLM outputs → different `decisionId`.
-- **Canonical selection (total order, CAS-free):** for a given decision slot
-  (e.g. `(runId, discoveryStepId)` for an expand, or `(runId, replan-of-stepId)`
-  for a replan), the canonical decision is the one with the **lexicographically
-  smallest `decisionId`**, and its content is used **wholesale** — ids AND
-  instructions. This resolves the "two LLM calls produced different instructions
-  for the same `stepId`" problem: we never merge two decisions; we pick ONE by a
-  stable total order and take its steps verbatim. Non-canonical decisions are
-  ignored (and may be GC'd).
+**EVERY planner decision is an immutable artifact (not just expansion).** The
+controller writes a `plan-decision` artifact for create-plan, every replan, and
+every expand-window BEFORE the board reflects it — otherwise the initial plan and
+replans would live only in the snapshot and a lost snapshot would make `planned`
+steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`; payload =
+`kind` (`create | replan | expand`), the produced/affected steps (`stepId`, full
+`instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), and for an
+expand the `discoveryStepId` + the `continuation` window it consumed.
 
-**Crash recovery (no bundle CAS needed):**
-- **A decision artifact for the slot exists** → the merge applies the canonical one
-  (NO new LLM call); its steps define the board entries.
-- **No decision artifact for the slot** (crash before it was written) → re-CALL the
-  planner; the new decision is written and selected canonically. A duplicate that
-  arrives later loses the `decisionId` total-order tie and is ignored.
-- **Discovery already has a canonical expand decision** → expansion skipped
-  (idempotent). `expanded` is thus a **derived predicate**: "a canonical
-  `plan-decision{kind:expand}` exists for this `discoveryStepId`," not a
-  CAS-protected flag. The merge is the authority; the bundle is an optimization.
+**Finality is fixed by EXECUTION, not by a hash race.** An executed step is
+IMMUTABLE — the executed prefix of the plan is never rewritten. A new planner
+decision is computed FORWARD from the board (it reads the digests of already-`done`
+steps — "what is done" — and only appends or replaces NOT-yet-executed work; a
+pure-retry keeps identity, a replacement uses a new `stepId` + `supersedesStepId`).
+So a later decision can never overwrite a step whose outcome already committed.
+The only ambiguity is the narrow window where two decisions for the same
+not-yet-executed slot exist (a crash/re-call before any of their steps ran) — and
+there NO history is at stake, so a deterministic pick is safe:
+
+- A decision carries a content-hash `decisionId` (UUIDv5 over `{runId, kind,
+  anchorStepId, continuation?, plannerOutput}`). Identical output → identical id
+  (dedup); different output → different id.
+- **Winner = the decision whose step FIRST commits a `step-result`** (execution
+  fixes the winner). Before any execution, the merge picks the smallest
+  `decisionId` deterministically and takes its steps **wholesale** (ids AND
+  instructions — never a cross-decision merge, resolving "two LLM calls, different
+  instructions"). Once one of those steps executes, that decision is locked; the
+  loser is inert (its `stepId`s either coincide or belong to never-executed,
+  GC-able entries).
+
+This gives finality WITHOUT CAS: write-once-per-output by content hash + an
+execution-fixed winner, never a retroactive flip of executed history.
+
+**Expand is per-WINDOW, so batching does not collapse the slot.** The expand slot
+is `(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)`. Each
+`maxFanOut` window is its own `plan-decision{kind:expand}` keyed by its `offset`
+into the `enumeration` artifact, so successive windows coexist instead of the first
+one marking the whole discovery done. The discovery is **`fully-expanded`** only
+when the window covering the end has been emitted (the one whose digest had
+`truncated: false`). `expanded` (per window) and `fully-expanded` (the discovery)
+are both **derived predicates** over the present `plan-decision{expand}` artifacts,
+not CAS flags.
+
+**Crash recovery:**
+- **A `plan-decision` for the (slot, window) exists** → re-apply it (NO new LLM
+  call).
+- **None exists** (crash before write) → re-CALL the planner forward from the
+  board; the new decision is written and execution-or-deterministic-id fixes the
+  winner.
+- **Window already expanded / discovery already fully-expanded** → skipped
+  (idempotent).
 
 ## Data flow
 
@@ -361,20 +392,25 @@ plan structure + step ids/instructions) and `step-result` artifacts (the outcome
 planner (digest board) ──emits step──► controller ──dispatches──► executor
                                                                       │ recalls prior FULL results from run-scoped RAG by seq as needed
                                                                       ▼
-reviewer ──verdict (Outcome)──┬─► FULL approved content ─► run-scoped RAG (step-result by seq)   [executor consumes]
-                              └─► planning DIGEST ───────► planner board (state + digest)          [planner consumes]
-weak planner: discovery done ──► controller re-invokes planner (expand-remainder)
-                                  reads discovery digest (list) ──► fans out N steps ──► mark `expanded`
+reviewer ──RETURNS {verdict, approved, digest, enumeration?}──► controller persists + assigns ids:
+                              ├─► FULL approved content ─► run-scoped RAG (step-result by seq)   [executor consumes]
+                              ├─► planning DIGEST ───────► planner board (state + digest)          [planner consumes]
+                              └─► enumeration (discovery) ─► 'enumeration' artifact (windowed locally)
+weak planner: discovery done ──► controller re-invokes planner (expand-remainder, per offset window)
+                                  windows enumeration artifact ──► fans out ≤maxFanOut steps ──► plan-decision{expand,offset}
 ```
 
 ## Components & boundaries
 
-- **`outcome.ts` / reviewer** — gains a `digest` field (planning-relevant extract)
-  alongside `approved`/`remainder`/`note`.
+- **`outcome.ts` / reviewer** — the verdict gains a `digest` field (and, for
+  discovery, a structured `enumeration`) that the reviewer RETURNS; the reviewer
+  does NOT persist — the controller does (boundary preserved).
 - **Step-state board** — a structured projection replayed from the `plan-decision`
   artifacts (structure) + `step-result` artifacts (state), rendered into the
-  planner prompt (replaces the payload-free `plannerPrivate` blob; the bundle is a
-  pure cache of this projection).
+  planner prompt (replaces the payload-free `plannerPrivate` blob). The BOARD
+  portion of the bundle is a derived cache; run-EXECUTION state (budgets, phase,
+  transcript, resume counters, `pending`, `toolCallCount`) is NOT — it lives
+  authoritatively in the SessionBundle.
 - **Two planner implementations** + the **expand-remainder** trigger; the
   composition factory selects the implementation.
 - **`Step`** — gains `stepId` (stable), `discovery?: true`, and
@@ -383,7 +419,8 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
 - **`plan-decision` artifact** — a new run-scoped immutable artifact for EVERY
   planner decision (`create | replan | expand`), with a content-hash `decisionId`,
   written before the bundle reflects it; the board is replayed from these +
-  `step-result` artifacts (§F). The bundle becomes a pure derived cache.
+  `step-result` artifacts (§F). Only the board portion of the bundle is thereby a
+  derived cache — run-execution state still lives in the bundle.
 - **`enumeration` artifact** — a new run-scoped artifact holding a discovery
   step's canonical `{id,label}[]` list, windowed locally by the controller for
   `artifact-offset` continuation (§D).
