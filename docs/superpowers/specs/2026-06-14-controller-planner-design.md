@@ -92,6 +92,26 @@ planner prompt. Because the board carries state + digests, the planner (i) never
 re-issues a `done` step (fixes the loop + bloat), and (ii) fans out from a
 discovery step's digest (the digest of a discovery step IS the enumerable list).
 
+**Board budget (REQUIRED — the board is bounded, with a deterministic compaction
+policy).** Accumulating every digest in one context would re-introduce token bloat
+on a long run, so the board has two caps:
+- **`maxDigestChars`** (per digest): the reviewer truncates each step's digest to
+  this length when it returns it (the FULL result is in RAG regardless).
+- **`maxBoardChars`** (whole board): when the rendered board would exceed it, a
+  DETERMINISTIC compaction runs — same board ⇒ same output:
+  1. Always keep IN FULL the structure + state of every NOT-terminal step
+     (`planned` / `executing` / `awaiting-external` / `expanding`) and the most
+     recent `K` terminal steps' digests.
+  2. Older terminal (`done`/`partial`/`failed`) digests are compacted oldest-first
+     (by `seq`) to a one-line summary (`[seq N name status]`, digest elided), until
+     the board fits.
+  3. If it still does not fit, drop the elided summaries oldest-first, leaving a
+     `"… M earlier steps omitted"` marker (their full results remain in RAG, so the
+     executor can still recall them by seq).
+  The caps and `K` are config with sane defaults. This keeps the planner context
+  bounded without ever discarding a not-yet-finished step's state or the freshest
+  results.
+
 ### C. Two capability-tuned planner implementations (clean break)
 
 Retire `IncrementalPlanner`/`AdaptivePlanner` and the `planner: 'incremental' |
@@ -595,12 +615,19 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
 
 **Two test scopes — they differ by what is pipeline-agnostic vs planner-specific:**
 
-- **Gnostification (skills WITH/WITHOUT) — test across ALL pipelines.** The skill
-  gnostificator must work for ANY pipeline, so the WITH/WITHOUT toggle is exercised
-  on every pipeline that takes a skills source — flat, linear, controller, and dag/
-  stepper as far as each supports one (per the skill-plugin-host spec's wiring;
-  "наскільки можливо"). This scope is NOT planner-specific and is not gated on a
-  planner existing.
+- **Gnostification (skills WITH/WITHOUT) — a CONCRETE conformance matrix across
+  ALL pipelines (pass/fail, not "as far as possible").** A row per pipeline
+  (`flat`, `linear`, `controller`, `dag`, `stepper`) in the existing
+  `pipelines/__tests__/conformance.test.ts` seam. Each SUPPORTED row asserts three
+  checkpoints with a stub skill source + a probe prompt: (1) the skill source is
+  attached to that pipeline; (2) a relevant skill is SELECTED for the probe; (3)
+  the selected skill's CONTENT actually appears in the exact context the pipeline
+  feeds the model (the assembler prompt for flat/linear; the planner recall block
+  for controller; the step/tool-query context for dag/stepper). A pipeline that
+  does NOT yet wire skills (per the skill-plugin-host spec — e.g. dag/stepper if
+  still deferred there) is an EXPLICIT matrix entry marked `unsupported(reason)` /
+  `xfail`, not a silent gap — so the matrix is exhaustive and every cell is a
+  definite supported-pass or recorded-deferred. This scope is NOT planner-specific.
 - **Replanning / deferred expansion / capability planners / board+claim+attempt+
   crash — ONLY pipelines that HAVE a planner.** These behaviors exist only in the
   controller; they are tested for the controller with BOTH planner kinds
@@ -626,7 +653,14 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   the terminal `truncated:false` window).
 - Reviewer-digest unit tests: a discovery result yields a STRUCTURED digest
   (`items: [{id,label}]`, validated, bounded by `maxFanOut`/`maxItemChars`,
-  `truncated` set on overflow); a normal result yields a free-text extract.
+  `truncated` set on overflow); a normal result yields a free-text extract
+  truncated to `maxDigestChars`.
+- **Board-budget tests.** Drive a run long enough to exceed `maxBoardChars` and
+  assert the deterministic compaction: not-terminal steps + the most recent `K`
+  terminal digests are kept in full; older terminal digests collapse to
+  `[seq N name status]` oldest-first; if still over, the oldest collapse to a
+  `"… M earlier steps omitted"` marker — and the same board always compacts
+  identically (determinism).
 
 Plan-generation alone does NOT cover the real production risk — **settle /
 recovery / retries and the crash window between expansion and persist**. Add
