@@ -273,7 +273,7 @@ Validation at expand time (only when a well-formed digest is present):
 ```
 Continuation =
   | { kind: 'artifact-offset'; artifactId: string; offset: number }   // controller windows locally — NO executor step
-  | { kind: 'tool'; tokenRef: string }                                // CONTROLLER schedules a follow-up page executor step (no planner call); raw token in the durable page-token SECRET record, NOT here
+  | { kind: 'tool'; tokenRef: string; tokenHash: string }             // CONTROLLER schedules a follow-up page executor step (no planner call); BOTH tokenRef+tokenHash are durable (non-secret) so a crash recovers the exact (tokenRef,tokenHash) address; raw token only in the page-token SECRET record
 ```
 
 - **`artifact-offset` (preferred, controller-local).** When the executor's
@@ -313,11 +313,14 @@ Continuation =
     BOTH, so dereference matches the EXACT token it was built with (the canonical
     page decision per `decisionId` selects which `tokenHash` is live). Addressing by
     `tokenRef` alone would be ambiguous.
-  - **Crash-durability:** the record survives a lost bundle (separate durable
-    store), so a page recovered from its `plan-decision` still dereferences its
-    `(tokenRef, tokenHash)`. A genuinely-missing record → the page step settles a
-    **fail-loud terminal** (`failed` with a clear reason), never a tokenless tool
-    call / silent stall.
+  - **Crash-durability:** BOTH `tokenRef` AND `tokenHash` are durable, NON-secret
+    fields on the continuation (carried on the prior page's `step-result` and the
+    `page-decision`), so after a crash BETWEEN the `page-token` write and the
+    `page-decision` write the controller can still reconstruct the exact
+    `(tokenRef, tokenHash)` address WITHOUT the raw token — and then dereference the
+    secret record. The raw token lives ONLY in the secret store. A genuinely-missing
+    record → the page step settles a **fail-loud terminal** (`failed` with a clear
+    reason), never a tokenless tool call / silent stall.
 
   **Durable write order (fixed): `page-token` record → `plan-decision{kind:'page'}`
   (refs `{tokenRef, tokenHash}`) → `step-start` claim → durable `inFlightStep`
@@ -836,8 +839,10 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   planner/controller decision (`create | replan | expand | page`), with a
   content-hash `decisionId`,
   written before the bundle reflects it; the board is replayed from these +
-  `step-result` artifacts (§F). Only the board portion of the bundle is thereby a
-  derived cache — run-execution state still lives in the bundle.
+  `step-result` artifacts (§F). The board portion of the bundle is thereby a
+  derived cache; MOST run-execution state still lives in the bundle, EXCEPT the
+  durable continuation state (`enumeration` artifacts + `page-token` secret
+  records) which is out-of-bundle so it survives a lost snapshot (§F).
 - **`enumeration` artifact** — a new run-scoped artifact holding a discovery
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
