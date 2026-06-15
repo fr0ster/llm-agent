@@ -135,10 +135,11 @@ policy and a GUARANTEED cap).**
     BEFORE the planner call** (surfaced, never silently degraded).
 - **Compaction never endangers expansion (both continuation kinds).** Expansion
   does not depend on the board digest at all: the CONTROLLER owns the durable
-  continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the token
-  in a durable record, §D), windows it, and passes the bounded window to the
-  planner. So neither an `enumeration` offset nor a `tool` token can be lost to
-  board compaction.
+  continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the raw
+  token in the durable `page-token` artifact, §D), windows it, and passes the
+  bounded window to the planner. So neither an `enumeration` offset nor a `tool`
+  token can be lost to board compaction (both are durable artifacts, not bundle
+  state).
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -297,29 +298,35 @@ Continuation =
   whose canonical digest dangles at a missing enumeration.
 - **`tool` (only when the source itself paginates).** If the underlying tool could
   NOT enumerate fully in one result and exposes its own next-page token, the RAW
-  token is stored in **durable EXECUTION state** (a continuation record in the
-  bundle/run-state), NOT in any board/plan artifact. The board-side `continuation`
-  carries only an opaque **`tokenRef`** (a stable handle) and the artifacts/board
-  reference it by ref or by `tokenHash` — so the raw token is **NEVER rendered into
-  the planner board, an `intent`, or logs** (redaction policy: the token is
-  execution-secret-class; only the controller dereferences it to make the tool
-  call). The controller then schedules a **follow-up discovery executor step**
-  (no planner call) carrying the dereferenced token to fetch the next page.
+  token is stored in its own **durable, append-only `page-token` artifact** — NOT
+  in the LWW `SessionBundle` (which can be lost/clobbered, breaking dereference)
+  and NOT in any board/plan artifact. It is keyed by a deterministic
+  **`tokenRef = uuidv5(discoveryChainId, pageIndex)`**; the board-side
+  `continuation` and the page decision carry only this `tokenRef` (+ a `tokenHash`
+  for the decisionId). Redaction: the raw token lives ONLY in the `page-token`
+  artifact, is **NEVER rendered into the board, an `intent`, or logs**, and only the
+  controller reads it to make the tool call.
+  - **Crash-durability:** because the `page-token` artifact is in the same durable
+    append-only store as every other artifact (not the bundle), a lost bundle does
+    NOT lose the token — the page step recovered from its `plan-decision` can still
+    dereference `tokenRef`. If a `page-token` is genuinely missing (e.g. the chain
+    was provably never written), the page step settles a **fail-loud terminal**
+    (`failed` with a clear reason) rather than dispatching a tool call with no
+    token — no silent stall.
 
-  **The follow-up page step has a durable, deterministic identity** (controller-
-  authored, but the board reconstructs only from artifacts): the controller writes
-  a **`plan-decision{kind:'page', discoveryChainId, pageIndex, tokenRef}`** BEFORE
-  dispatch — NO raw token in it — with:
-  - deterministic **`stepId = uuidv5(discoveryChainId, pageIndex)`**, and
-  - deterministic **`decisionId = uuidv5(runId, 'page', discoveryChainId,
-    pageIndex, tokenHash)`** (the general `decisionId` formula's `anchorStepId /
-    continuation / plannerOutput` do not apply to a controller-authored page; this
-    is its dedicated identity). Canonical selection/dedup is the SAME as other
-    decisions (smallest `decisionId` for the slot) — a stepId match ALONE is not
-    enough to dedup append-only artifacts, so the `decisionId` is what collapses
-    duplicate page schedulings. Crash-replay: if the page-decision exists it is
-    replayed deterministically; if not, re-derivation produces the identical
-    `decisionId`/`stepId` and dedups — a page is never lost or duplicated.
+  **Durable write order (fixed) — token artifact FIRST:**
+  `page-token` artifact → `plan-decision{kind:'page'}` (references `tokenRef`) →
+  `step-start` claim → dispatch. So a page decision can never reference an absent
+  token. Recovery per crash window: (a) after `page-token` only → orphan token
+  (harmless; re-derivation writes the page-decision referencing it); (b) after
+  page-decision, before claim → resume claims + dispatches (token present); (c)
+  after claim, before/at dispatch → in-flight replay path. The follow-up page step
+  is **controller-authored** with deterministic **`stepId = uuidv5(discoveryChainId,
+  pageIndex)`** and **`decisionId = uuidv5(runId, 'page', discoveryChainId,
+  pageIndex, tokenHash)`** (the general `decisionId` formula's `anchorStepId /
+  continuation / plannerOutput` do not apply); canonical dedup is by `decisionId`
+  (a `stepId` match ALONE cannot dedup append-only artifacts), so a duplicate
+  scheduling collapses and a page is never lost or duplicated.
 
 **Tool-pagination is a CHAIN with its own identity + completion rule.** A
 tool-paginated source produces a CHAIN of discovery steps (page 0, page 1, …),
@@ -338,8 +345,9 @@ page-complete IS chain-`fully-expanded`.)
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
 `truncated: true` WITHOUT a `continuation` is invalid (→ `partial`/replan). The
-planner fans out the current window, then (artifact-offset) advances the offset
-locally or (tool) emits the follow-up step, until a digest returns `truncated:
+planner only fans out the window it is HANDED; the **CONTROLLER** then either
+(artifact-offset) advances the offset locally and hands the next window, or (tool)
+schedules the follow-up page executor step — until a digest returns `truncated:
 false`. A source that can neither be fully enumerated into an artifact NOR provide
 a tool cursor cannot be safely fanned out → the discovery step fails loud (never
 silently drops items).
@@ -509,10 +517,11 @@ steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`; payload =
 full `instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), for an
 expand the `discoveryStepId` + the `continuation` window (`offset, len`) consumed,
 and for a `page` the `discoveryChainId` + `pageIndex` + `tokenRef` (NEVER the raw
-token — that lives in durable execution state, redacted from board/intent/logs;
-§D). A `page` is a controller-authored decision (not an LLM call) but durable via
-the same mechanism, with its own `decisionId = uuidv5(runId,'page',
-discoveryChainId,pageIndex,tokenHash)` (§D) + the `(runId,'page',…)` slot.
+token — that lives in its own durable append-only `page-token` artifact, written
+BEFORE the page decision, redacted from board/intent/logs; §D). A `page` is a
+controller-authored decision (not an LLM call) but durable via the same mechanism,
+with its own `decisionId = uuidv5(runId,'page',discoveryChainId,pageIndex,
+tokenHash)` (§D) + the `(runId,'page',…)` slot.
 
 **Finality is fixed by EXECUTION, not by a hash race.** An executed step is
 IMMUTABLE — the executed prefix of the plan is never rewritten. A new planner
@@ -678,6 +687,11 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
+- **`page-token` artifact** — a new durable, append-only artifact holding the RAW
+  next-page token for tool-pagination, keyed by `tokenRef = uuidv5(discoveryChainId,
+  pageIndex)`, written BEFORE the `page` decision. Lives in the durable artifact
+  store (NOT the LWW bundle), so a lost bundle never breaks dereference; redacted
+  from board/intent/logs (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
   dispatched (`{runId, slotId, stepId, seq, attempt, decisionId}`, `slotId` = the
   whole decision); pins the winning decision for a `slotId` at dispatch time so no
@@ -759,8 +773,14 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   write, or a duplicate scheduling, collapses by `decisionId` (stepId alone is
   insufficient), never losing or duplicating a page; (d) **token redaction** — the
   raw next-page token NEVER appears in the rendered board / any `intent` / logs;
-  only a `tokenRef`/`tokenHash` is in artifacts, the raw token only in durable
-  execution state.
+  only a `tokenRef`/`tokenHash` is in board/plan artifacts, the raw token only in
+  the `page-token` artifact; (e) **tokenRef crash-recovery** — write order
+  `page-token → page-decision → claim → dispatch`: assert a crash after only the
+  `page-token` leaves a harmless orphan; a crash after the page-decision (with the
+  bundle snapshot LOST) still dereferences `tokenRef` from the durable `page-token`
+  artifact and dispatches the page; (f) **missing-token fail-loud** — if the
+  `page-token` artifact is genuinely absent, the page step settles `failed` with a
+  clear reason (no tool call with no token, no silent stall).
 - **Capacity-gated windows.** With `maxActiveSteps` small relative to the
   enumeration, assert windows are emitted incrementally as capacity frees (not all
   up front), `windowSize = min(maxFanOut, maxActiveSteps − activeCount, remaining)`,
