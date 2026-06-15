@@ -399,19 +399,31 @@ propagates to one of the terminal two, never an infinite `expanding`.
 single idempotent replan.** A derived predicate alone is not enough — the
 artifacts hold only the failed page step + prior decisions, so the terminal must
 be written:
-- The controller writes a **`chain-outcome` artifact** —
-  `artifactType:'chain-outcome'`, deterministic `id = uuidv5(runId,
-  discoveryChainId)`, payload `{ status: 'partial'|'failed', failedPageIndex,
-  note }`. Append-only duplicates collapse by that deterministic id.
+- The controller writes a **`chain-outcome` artifact** — `artifactType:
+  'chain-outcome'`, payload `{ status:'partial'|'failed', failedPageStepId,
+  attempt, failedPageIndex, note }`. It is the **idempotency TRIGGER** ("this chain
+  owes exactly one replan"), and it is **WRITE-ONCE / FROZEN**: its `id = uuidv5(
+  runId, discoveryChainId, failedPageStepId, attempt, status)` binds it to the
+  canonical (claim-fixed lineage, §F) failed page, so a genuinely different terminal
+  would have a different id; but a chain terminal, once written, is NOT mutated —
+  an admin/recovery retry that would change the outcome must open a NEW chain, not
+  rewrite this one. (Among any append-only duplicates, the canonical one is the
+  claim-fixed-lineage outcome.)
 - **Board projection:** the chain terminal is shown on the ROOT discovery entry
-  (the `discoveryChainId` = page-0 `stepId`); its state becomes `partial`/`failed`
-  and its digest carries the `"pagination incomplete at page N (reason)"` note. The
-  per-page steps stay as their own entries; the planner reads the chain terminal at
-  the root.
-- **Exactly one replan, idempotent on hydrate:** the follow-up replan is a
-  `plan-decision{kind:'replan'}` with deterministic `decisionId = uuidv5(runId,
-  'replan', discoveryChainId, 'pagination-incomplete')`, so re-deriving it after a
-  crash collapses by `decisionId` — the replan fires once, not once per hydrate.
+  (`discoveryChainId` = page-0 `stepId`); its state becomes `partial`/`failed`, its
+  digest carries `"pagination incomplete at page N (reason)"`. Per-page steps stay
+  their own entries; the planner reads the chain terminal at the root.
+- **Exactly one replan — trigger and decision are SEPARATE (the replan `decisionId`
+  cannot be output-independent).** The deterministic part is the `chain-outcome`
+  trigger; the replan ITSELF is an ordinary `plan-decision{kind:'replan'}` whose
+  `decisionId` is the normal CONTENT hash (includes `plannerOutput`), since two
+  planner calls may emit different steps. Idempotency = "one replan per
+  chain-outcome trigger": on hydrate, if the `chain-outcome` exists AND a
+  `plan-decision{replan}` referencing it exists → done (no re-call); if the trigger
+  exists but NO replan decision yet (crash between trigger and the LLM) → re-CALL
+  the planner once and write the replan decision. So the trigger fixes
+  "exactly once", and the content-hashed decision carries the (possibly differing)
+  output — never a fixed `decisionId` pretending to predate the LLM.
 
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
@@ -447,9 +459,11 @@ planned ──start──► executing ──reviewer verdict──►  done    
                                                      failed    (Outcome failed)         + digest: note
 executing ──tool suspend──► awaiting-external ──resume──► executing      (a SPECIFIC step paused on an external tool)
 
-DISCOVERY step only (sub-states of done — windowed fan-out):
-done(discovery) ──first window emitted──► expanding ──chain fully-expanded (terminal page + all pages page-complete)──► expanded
-                                          expanding ──follow-up page failed──► partial (≥1 page complete) | failed (none)  [→ replan]
+DISCOVERY step only (sub-states of done — windowed fan-out / tool-pagination chain):
+done(discovery) ──first window emitted──► expanding
+                                            expanding ─┬─[chain fully-expanded: terminal page reached + all pages page-complete]─► expanded
+                                                        ├─[follow-up page failed, ≥1 page complete]──────────────────────────────► partial  [→ one replan]
+                                                        └─[follow-up page failed, no page complete]──────────────────────────────► failed   [→ replan]
 
 RUN-level (the run, not a step):
 running | awaiting-clarify | awaiting-budget | finalizing | done | failed
@@ -771,10 +785,12 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
-- **`chain-outcome` artifact** — a new run-scoped artifact recording a
-  tool-pagination chain's TERMINAL result (`id = uuidv5(runId, discoveryChainId)`,
-  `{status:'partial'|'failed', failedPageIndex, note}`); projected onto the root
-  discovery board entry and driving a single deterministic replan (§D).
+- **`chain-outcome` artifact** — a new run-scoped, WRITE-ONCE artifact recording a
+  tool-pagination chain's TERMINAL result (`id = uuidv5(runId, discoveryChainId,
+  failedPageStepId, attempt, status)`, payload `{status:'partial'|'failed',
+  failedPageStepId, attempt, failedPageIndex, note}`); the idempotency TRIGGER for
+  the chain's single replan, projected onto the root discovery board entry. The
+  replan it drives is an ordinary content-hashed `plan-decision{replan}` (§D).
 - **`page-token` secret record** — a new durable record holding the RAW next-page
   token for tool-pagination, addressed by **`(tokenRef, tokenHash)`** (`tokenRef =
   uuidv5(discoveryChainId, pageIndex)`), written BEFORE the `page` decision. Lives
@@ -888,10 +904,15 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   A. (A genuinely new exploration must open a NEW `discoveryChainId`, not a new
   attempt of the consumed step.)
 - **Chain-failure / replan test.** A follow-up page that `failed` with ≥1 prior
-  page complete → chain `partial`, a `chain-outcome` artifact
-  (`id=uuidv5(runId,discoveryChainId)`) is written, the root discovery entry shows
-  `partial` + the "pagination incomplete at page N" digest, and EXACTLY ONE replan
-  fires (idempotent on re-hydrate via the deterministic replan `decisionId`).
+  page complete → chain `partial`; a WRITE-ONCE `chain-outcome` artifact
+  (`id=uuidv5(runId,discoveryChainId,failedPageStepId,attempt,status)`) is written
+  and is NOT mutated by a later admin/recovery retry (which opens a new chain
+  instead); the root discovery entry shows `partial` + the "pagination incomplete
+  at page N" digest. Replan idempotency: the `chain-outcome` TRIGGER fires EXACTLY
+  ONE replan — on re-hydrate, if a `plan-decision{replan}` referencing the trigger
+  exists no planner re-call happens; if the trigger exists but no replan decision
+  (crash before the LLM) the planner is re-called once. The replan `decisionId` is
+  a CONTENT hash (includes `plannerOutput`), not a fixed chain-only id.
 - **Secret-store cleanup tests.** Assert `DELETE /v1/sessions/:id` AND the actual
   session-GC path both call `secretStore.deleteSession(sessionId)` (page tokens do
   not outlive the session); and a reused `sessionId` never reads a prior session's
