@@ -423,9 +423,14 @@ be written:
 - **Replan = AT-LEAST-ONCE planner invocation, EXACTLY-ONCE applied effect
   (trigger and decision are SEPARATE).** The deterministic part is the
   `chain-outcome` TRIGGER; the replan ITSELF is an ordinary
-  `plan-decision{kind:'replan'}` whose `decisionId` is the normal CONTENT hash
-  (includes `plannerOutput`) — it cannot be output-independent, since two planner
-  calls may emit different steps. The external LLM call and the durable write CANNOT
+  `plan-decision{kind:'replan'}` that **carries `triggerId = chainOutcome.id` in
+  its payload AND folds it into its `decisionId`** (`uuidv5(runId, 'replan',
+  triggerId, plannerOutput)`), and is keyed by a **trigger-specific slot
+  `(runId, 'replan', triggerId)`** — NOT the generic `(runId,'replan',anchorStepId)`
+  — so hydrate unambiguously matches THIS replan to THIS chain-outcome and never
+  confuses it with another replan of the same root step. Its `decisionId` is still
+  a CONTENT hash (includes `plannerOutput`) — it cannot be output-independent, since
+  two planner calls may emit different steps. The external LLM call and the durable write CANNOT
   be made atomic, so **exactly-once invocation is impossible**: a crash AFTER the
   planner responds but BEFORE the replan decision persists leaves the trigger with
   no decision, and the next hydrate re-CALLs. The honest guarantee is therefore:
@@ -575,13 +580,19 @@ So `failed(attempt 0) → executing(attempt 1) → done(attempt 1)` renders corr
 the new attempt's transient supersedes the old terminal, and precedence applies
 only once no newer attempt is live. A board entry's STRUCTURE (existence, `stepId`,
 instructions) still comes from the canonical `plan-decision`; its STATE from this
-attempt-scoped resolution. Board reconstruction merges **THREE sources**:
+attempt-scoped resolution. Board reconstruction merges **FOUR sources** (the
+fourth applies only to a discovery root entry):
 
 1. **Structure** ← `plan-decision` artifacts (`stepId`, instructions, `slotId`).
 2. **Terminal state** ← `step-result` artifacts (per-attempt; precedence-resolved
    among settled attempts) + digest.
 3. **Transient state** ← `step-start` claim + the bundle's in-flight/`pending`
    (current-attempt `executing` / `awaiting-external`).
+4. **Chain terminal** ← `chain-outcome` artifact, projected onto the ROOT discovery
+   entry: it sets that entry's state to `partial`/`failed` and supplies the
+   "pagination incomplete…" digest. Precedence: for the root discovery entry a
+   present `chain-outcome` OUTRANKS the otherwise-derived `expanding` (the chain has
+   terminated); it does not affect any other entry.
 
 Per the attempt-scoped rule above: the STRUCTURE
 and TERMINAL states are reconstructible from immutable artifacts alone; the
@@ -666,7 +677,9 @@ there NO history is at stake, so a deterministic pick is safe:
   cross-decision merge. So a decision occupies ONE slot and a claim on ANY of its
   steps fixes the WHOLE decision:
   - create-plan → `slotId = (runId, 'create')` — one per run;
-  - replan → `slotId = (runId, 'replan', anchorStepId)` — one per replaced anchor;
+  - replan → `slotId = (runId, 'replan', anchorStepId)` for a failed-step replan;
+    `slotId = (runId, 'replan', triggerId)` for a chain-outcome-driven replan (so
+    it is distinct from any other replan of the same root step);
   - expand → `slotId = (runId, 'expand', discoveryStepId, offset)` — one per window;
   - page → `slotId = (runId, 'page', discoveryChainId, pageIndex)` — one per
     follow-up page step (it is dispatched, so it MUST have a slot + `step-start`
@@ -765,8 +778,10 @@ reviewer ──RETURNS {verdict, approved, digest, enumeration?}──► contro
                               ├─► FULL approved content ─► run-scoped RAG (step-result by seq)   [executor consumes]
                               ├─► planning DIGEST ───────► planner board (state + digest)          [planner consumes]
                               └─► enumeration (discovery) ─► 'enumeration' artifact (windowed locally)
-discovery done ──► CONTROLLER windows the durable enumeration/tool-token (≤maxFanOut)
-               ──► hands the window to the planner (expand-remainder) ──► planner fans out ──► plan-decision{expand,offset}
+discovery done ──► CONTROLLER windows the durable ENUMERATION (≤maxFanOut)
+               ──► hands the item window to the planner (expand-remainder) ──► planner fans out ──► plan-decision{expand,offset}
+page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE executor step (token deref'd; NO planner call)
+                                ──► that page yields the next enumeration ──► (windows resume as above)
 ```
 
 ## Components & boundaries
@@ -775,16 +790,18 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   discovery, a structured `enumeration`) that the reviewer RETURNS; the reviewer
   does NOT persist — the controller does (boundary preserved).
 - **Step-state board** — a structured projection rendered into the planner prompt
-  (replaces the payload-free `plannerPrivate` blob), merged from THREE sources
+  (replaces the payload-free `plannerPrivate` blob), merged from FOUR sources
   with the attempt-scoped resolution of §F: (1) `plan-decision` artifacts
   (structure) + (2) `step-result` artifacts (terminal state + digest) + (3) the
   `step-start` claim and the bundle's in-flight/`pending` (the TRANSIENT states
   `executing` / `awaiting-external` — do NOT omit these; a board without source 3
-  cannot show a live or blocked step). The BOARD portion of the bundle is a derived
-  cache; run-EXECUTION state (budgets, phase, transcript, resume counters,
-  `pending`, `toolCallCount`) lives authoritatively in the SessionBundle. The
-  projection is EXTENSIBLE — further sources/states may be added as the system
-  grows (the three above are the current set, not a closed limit).
+  cannot show a live or blocked step) + (4) the `chain-outcome` artifact, which
+  projects a tool-pagination chain's `partial`/`failed` terminal (+ digest) onto
+  the ROOT discovery entry, OUTRANKING its derived `expanding`. The BOARD portion of
+  the bundle is a derived cache; run-EXECUTION state (budgets, phase, transcript,
+  resume counters, `pending`, `toolCallCount`) lives authoritatively in the
+  SessionBundle. The projection is EXTENSIBLE — further sources/states may be added
+  as the system grows (the four above are the current set, not a closed limit).
 - **Two planner implementations** + the **expand-remainder** trigger; the
   composition factory selects the implementation.
 - **`Step`** — gains `stepId` (stable), `discovery?: true`, and
