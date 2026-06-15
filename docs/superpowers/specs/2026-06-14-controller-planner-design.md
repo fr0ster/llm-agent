@@ -409,26 +409,33 @@ there NO history is at stake, so a deterministic pick is safe:
   anchorStepId, continuation?, plannerOutput}`). Identical output → identical id
   (dedup); different output → different id.
 - **The winner is fixed at DISPATCH by a durable `step-start` claim keyed by the
-  contested SLOT, BEFORE the step runs.** A claim is
-  `{ runId, slotId, stepId, seq, decisionId }`. The **`slotId`** is the stable
-  identifier of the contested plan position — independent of which `stepId` fills
-  it (competing decisions may propose DIFFERENT `stepId`s, so keying on `stepId`
-  alone could not detect that two claims contend for the same slot). `slotId` is:
-  the plan position for a create step; the **superseded `stepId`** for a
-  replan-replacement; `(discoveryStepId, offset)` for an expand window. The winner
-  for a `slotId` is the decision named by the **first claim for that `slotId`**;
-  before any claim exists (the pre-dispatch crash window) the merge picks the
-  smallest `decisionId` deterministically. The winning decision's steps are taken
-  **wholesale** (ids AND instructions). Once a claim for a `slotId` exists, that
-  decision is locked and competing decisions are inert.
-- **Concurrency precondition (single-writer per run).** "First claim wins" is
-  deterministic ONLY under the existing **single-writer-per-run invariant**: the
-  controller's suspend/resume is stateless and assumes at most ONE coordinator
-  advances a given `runId` at a time (a crashed coordinator is replaced, never
-  run concurrently). Under it, claims for a `slotId` are totally ordered by the one
-  writer's append order. A deployment that may run CONCURRENT turns for the same
-  session MUST provide a session lease/lock (append-only artifacts alone do NOT
-  give exclusive dispatch) — stated as a precondition, not solved here.
+  contested DECISION slot, BEFORE the step runs.** A claim is
+  `{ runId, slotId, stepId, seq, decisionId }`. The **`slotId` identifies the whole
+  planner DECISION, not a per-step position** — otherwise position 0 could claim
+  decision A while position 1 claims a competing decision B, exactly the forbidden
+  cross-decision merge. So a decision occupies ONE slot and a claim on ANY of its
+  steps fixes the WHOLE decision:
+  - create-plan → `slotId = (runId, 'create')` — one per run;
+  - replan → `slotId = (runId, 'replan', anchorStepId)` — one per replaced anchor;
+  - expand → `slotId = (runId, 'expand', discoveryStepId, offset)` — one per window.
+  The winner for a `slotId` is the decision named by its **first `step-start`
+  claim**; before any claim exists (the pre-dispatch crash window) the merge picks
+  the smallest `decisionId` deterministically. The winning decision's steps are
+  applied **wholesale** (all of its steps, ids AND instructions — never a
+  step-by-step mix of two decisions). Once a claim for a `slotId` exists, that
+  decision is locked and competing decisions for the slot are inert.
+- **Concurrency: this design ADDS a per-run serialization lock (it is NOT already
+  guaranteed).** Reality check: `SmartServer._withSession` only refcount-`acquire`s
+  a shared session graph — it does NOT serialize concurrent requests, so two HTTP
+  turns with the same session cookie CAN advance the controller in parallel today.
+  "First claim wins" is sound only when one writer advances a `runId` at a time, so
+  the design REQUIRES a **per-run async mutex** (keyed by `runId`/`sessionId`),
+  acquired at the start of a controller turn-advance and released at
+  suspend/complete — a new component, not an assumed invariant. For a single
+  process this in-process mutex suffices; a **horizontally-scaled (multi-process)**
+  deployment MUST back it with a distributed lease keyed by `runId` (append-only
+  artifacts give no exclusive dispatch on their own) — stated as the deployment
+  precondition.
 - **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
   `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
   decisionId, phase=`executing`) is persisted to the bundle; THEN the executor is
@@ -438,10 +445,10 @@ there NO history is at stake, so a deterministic pick is safe:
   the EXISTING in-flight replay/suspend path (executor-call idempotency is that
   path's existing concern); (c) `step-result` present → terminal.
 
-This gives finality WITHOUT CAS (under the single-writer invariant): a
-content-hashed write-once decision + a slot-keyed pre-dispatch claim that fixes the
-winner before execution — never a retroactive flip, no in-flight window in which
-the winner can change.
+This gives finality WITHOUT backend CAS — but NOT without serialization: under the
+per-run lock above, a content-hashed write-once decision + a decision-slot-keyed
+pre-dispatch claim fix the winner before execution — never a retroactive flip, no
+in-flight window in which the winner can change.
 
 **Expand is per-WINDOW, so batching does not collapse the slot.** The expand slot
 is `(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)`. Each
@@ -503,9 +510,13 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
-  dispatched (`{runId, slotId, stepId, seq, decisionId}`); pins the winning
-  decision for a `slotId` at dispatch time so no competing decision can win during
-  the in-flight window (§F). Requires the single-writer-per-run precondition (§F).
+  dispatched (`{runId, slotId, stepId, seq, decisionId}`, `slotId` = the whole
+  decision); pins the winning decision for a `slotId` at dispatch time so no
+  competing decision can win during the in-flight window (§F).
+- **Per-run serialization lock** — a NEW component: an async mutex keyed by
+  `runId`/`sessionId` held for a controller turn-advance (in-process by default; a
+  distributed lease for multi-process deployments). Required because
+  `_withSession` does NOT serialize concurrent same-session requests today (§F).
 - **Reused / already implemented (do NOT re-spec):** per-step tool selection
   (`selectTools(step.instructions)` in `runStep`; the old prompt-level
   `selectTools(goal+prompt)` is gone — the 2026-06-09 shared change, DONE); skills
@@ -558,10 +569,15 @@ in-memory bundle store + a fake reviewer/executor):
   snapshot reflects it (→ `expanded` predicate skips).
   In all three, on replay assert the fan-out is **neither duplicated nor lost** —
   an identical board and a single set of fan-out steps.
-- **Dispatch claim fixes the winner.** Inject a crash after the `step-start` claim
-  is written but BEFORE the step's `step-result`; on replay assert the SAME
-  decision wins (the claim is authoritative) and the in-flight step is not
-  re-dispatched under a competing decision.
+- **Dispatch claim fixes the winner — BOTH pre-dispatch windows (distinct
+  recovery).** (a) Crash after the `step-start` claim is written but BEFORE
+  `inFlightStep` is persisted to the bundle → on resume, no in-flight exists, so
+  the step is (re-)dispatched, but the claim already pins the decision (assert the
+  SAME decision wins, not a competing one). (b) Crash after `inFlightStep` is
+  persisted but BEFORE the executor was dispatched → on resume the in-flight replay
+  path runs the step under the claimed decision. In BOTH, assert the claimed
+  decision wins and no competing decision's steps appear. Also assert a crash after
+  the claim but before any `step-result` never lets a later competing decision win.
 - **Retry identity + precedence resolution.** A step that fails then retries to
   `ok` keeps one `stepId` with incrementing `attempt` under one `seq`;
   `resolveByPrecedence` collapses to the `ok` (precedence `ok|exists > partial >
