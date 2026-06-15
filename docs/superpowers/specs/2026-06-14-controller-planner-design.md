@@ -637,17 +637,25 @@ out-of-bundle.) A torn plan/board write is thus recoverable:
 controller writes a `plan-decision` artifact for create-plan, every replan, and
 every expand-window BEFORE the board reflects it — otherwise the initial plan and
 replans would live only in the snapshot and a lost snapshot would make `planned`
-steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`; payload =
-`kind` (`create | replan | expand | page`), the produced/affected steps (`stepId`,
-full `instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), for an
-expand the `discoveryStepId` + the `continuation` window (`offset, len`) consumed,
-and for a `page` the `discoveryChainId` + `pageIndex` + `(tokenRef, tokenHash)` +
-`parent` (the canonical prior-page settle) (NEVER the raw token — that lives in
-its own durable `page-token` SECRET record in the dedicated non-indexed secret
-store, written BEFORE the page decision; §D). A `page` is a controller-authored
-decision (not an LLM call) but durable via the same mechanism, with its own
-`decisionId = uuidv5(runId,'page',discoveryChainId,pageIndex,
-tokenHash)` (§D) + the `(runId,'page',…)` slot.
+steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`. The payload and
+the `decisionId`/`slotId` keys are **KIND-SPECIFIC** (a single universal
+`anchorStepId` formula is wrong — a chain-driven replan keys on `triggerId`, a page
+on `discoveryChainId`). Every kind shares `{ kind, steps[] }` (each step: `stepId`,
+`instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`); the
+kind-specific key fields and `decisionId`/`slotId`:
+
+| kind | key fields in payload | `decisionId = uuidv5(...)` | `slotId` |
+|------|----------------------|----------------------------|----------|
+| `create` | — | `(runId,'create',plannerOutput)` | `(runId,'create')` |
+| `replan` (failed step) | `anchorStepId` | `(runId,'replan','anchor',anchorStepId,plannerOutput)` | `(runId,'replan','anchor',anchorStepId)` |
+| `replan` (chain-driven) | `triggerId` (= `chainOutcome.id`) | `(runId,'replan','trigger',triggerId,plannerOutput)` | `(runId,'replan','trigger',triggerId)` |
+| `expand` | `discoveryStepId`, `continuation{offset,len}` | `(runId,'expand',discoveryStepId,offset,plannerOutput)` | `(runId,'expand',discoveryStepId,offset)` |
+| `page` | `discoveryChainId`, `pageIndex`, `(tokenRef,tokenHash)`, `parent` | `(runId,'page',discoveryChainId,pageIndex,tokenHash)` | `(runId,'page',discoveryChainId,pageIndex)` |
+
+`plannerOutput` is included for LLM-authored kinds (create/replan/expand — content
+hash, §F) and ABSENT for the controller-authored `page` (deterministic). For a
+`page` the raw token is NEVER in the payload — only `tokenRef`/`tokenHash`; it lives
+in the `page-token` SECRET record (§D).
 
 **Finality is fixed by EXECUTION, not by a hash race.** An executed step is
 IMMUTABLE — the executed prefix of the plan is never rewritten. A new planner
@@ -659,9 +667,12 @@ The only ambiguity is the narrow window where two decisions for the same
 not-yet-executed slot exist (a crash/re-call before any of their steps ran) — and
 there NO history is at stake, so a deterministic pick is safe:
 
-- A decision carries a content-hash `decisionId` (UUIDv5 over `{runId, kind,
-  anchorStepId, continuation?, plannerOutput}`). Identical output → identical id
-  (dedup); different output → different id. **Planner INVOCATION is at-least-once**
+- A decision carries a content-hash `decisionId` computed from its **kind-specific
+  key fields** (the per-kind formulas are tabulated above — e.g. `anchorStepId` for
+  a failed-step replan, `triggerId` for a chain-driven replan, `discoveryStepId`+
+  `offset` for an expand — NOT a single universal `anchorStepId` form). For
+  LLM-authored kinds the hash includes `plannerOutput`: identical output → identical
+  id (dedup); different output → different id. **Planner INVOCATION is at-least-once**
   (the external LLM call cannot be atomic with the durable write — a crash after
   the LLM responds but before the decision persists re-calls on hydrate); the
   content-hash `decisionId` + the canonical selection below make the APPLIED effect
@@ -955,6 +966,12 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   is single (identical outputs dedup by content-hash `decisionId`; differing
   outputs collapse to the canonical one). The replan `decisionId` is a CONTENT hash
   (includes `plannerOutput`), not a fixed chain-only id.
+- **Trigger-namespace contract.** Assert the chain-driven replan decision's payload
+  carries `triggerId = chainOutcome.id`, its `decisionId` is
+  `uuidv5(runId,'replan','trigger',triggerId,plannerOutput)`, and its `slotId` is
+  `(runId,'replan','trigger',triggerId)`; and that this slot does NOT collide with a
+  failed-step replan of the SAME root step (`(runId,'replan','anchor',anchorStepId)`)
+  — the two coexist as distinct slots, neither shadowing the other.
 - **Chain-outcome contention/replay.** Two `chain-outcome` artifacts for one
   `discoveryChainId`: an identical duplicate is idempotent (first-by-`writeOrdinal`,
   tie-broken by `id`, wins); a DIVERGENT second (different `status`/`failedPageIndex`)
