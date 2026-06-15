@@ -407,23 +407,35 @@ be written:
   canonical (claim-fixed lineage, §F) failed page, so a genuinely different terminal
   would have a different id; but a chain terminal, once written, is NOT mutated —
   an admin/recovery retry that would change the outcome must open a NEW chain, not
-  rewrite this one. (Among any append-only duplicates, the canonical one is the
-  claim-fixed-lineage outcome.)
+  rewrite this one.
+  - **Canonical resolution (formal):** among `chain-outcome` artifacts for one
+    `discoveryChainId`, the canonical one is the **FIRST written by deterministic
+    order** — ascending `writeOrdinal`, tie-broken by ascending `id`. Because the
+    terminal is FROZEN, every admissible duplicate must be byte-identical to it
+    (idempotent re-write); a later artifact with a DIFFERENT `status`/`failedPage…`
+    is a **contract violation** — it is inert (ignored — the first stands) and
+    raises a loud diagnostic. (A legitimately different outcome must open a new
+    chain, never a second terminal for this one.)
 - **Board projection:** the chain terminal is shown on the ROOT discovery entry
   (`discoveryChainId` = page-0 `stepId`); its state becomes `partial`/`failed`, its
   digest carries `"pagination incomplete at page N (reason)"`. Per-page steps stay
   their own entries; the planner reads the chain terminal at the root.
-- **Exactly one replan — trigger and decision are SEPARATE (the replan `decisionId`
-  cannot be output-independent).** The deterministic part is the `chain-outcome`
-  trigger; the replan ITSELF is an ordinary `plan-decision{kind:'replan'}` whose
-  `decisionId` is the normal CONTENT hash (includes `plannerOutput`), since two
-  planner calls may emit different steps. Idempotency = "one replan per
-  chain-outcome trigger": on hydrate, if the `chain-outcome` exists AND a
-  `plan-decision{replan}` referencing it exists → done (no re-call); if the trigger
-  exists but NO replan decision yet (crash between trigger and the LLM) → re-CALL
-  the planner once and write the replan decision. So the trigger fixes
-  "exactly once", and the content-hashed decision carries the (possibly differing)
-  output — never a fixed `decisionId` pretending to predate the LLM.
+- **Replan = AT-LEAST-ONCE planner invocation, EXACTLY-ONCE applied effect
+  (trigger and decision are SEPARATE).** The deterministic part is the
+  `chain-outcome` TRIGGER; the replan ITSELF is an ordinary
+  `plan-decision{kind:'replan'}` whose `decisionId` is the normal CONTENT hash
+  (includes `plannerOutput`) — it cannot be output-independent, since two planner
+  calls may emit different steps. The external LLM call and the durable write CANNOT
+  be made atomic, so **exactly-once invocation is impossible**: a crash AFTER the
+  planner responds but BEFORE the replan decision persists leaves the trigger with
+  no decision, and the next hydrate re-CALLs. The honest guarantee is therefore:
+  on hydrate, if a `plan-decision{replan}` referencing the trigger exists → done
+  (no re-call); else re-call (possibly again). Multiple invocations are **deduped at
+  the EFFECT level**: identical outputs collapse by content-hash `decisionId`, and
+  when outputs differ the canonical selection (§F: first claim, else smallest
+  `decisionId`) applies exactly one. So invocation is at-least-once; the APPLIED
+  replan is exactly-once. (This is the same property as every planner decision —
+  §F — never a fixed `decisionId` pretending to predate the LLM.)
 
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
@@ -633,7 +645,11 @@ there NO history is at stake, so a deterministic pick is safe:
 
 - A decision carries a content-hash `decisionId` (UUIDv5 over `{runId, kind,
   anchorStepId, continuation?, plannerOutput}`). Identical output → identical id
-  (dedup); different output → different id.
+  (dedup); different output → different id. **Planner INVOCATION is at-least-once**
+  (the external LLM call cannot be atomic with the durable write — a crash after
+  the LLM responds but before the decision persists re-calls on hydrate); the
+  content-hash `decisionId` + the canonical selection below make the APPLIED effect
+  exactly-once regardless of how many times the LLM ran.
 - **The winner is fixed at DISPATCH by a durable `step-start` claim keyed by the
   contested DECISION slot, BEFORE the step runs.** A claim is
   `{ runId, slotId, stepId, seq, attempt, decisionId }`. The `attempt` is REQUIRED:
@@ -908,11 +924,18 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   (`id=uuidv5(runId,discoveryChainId,failedPageStepId,attempt,status)`) is written
   and is NOT mutated by a later admin/recovery retry (which opens a new chain
   instead); the root discovery entry shows `partial` + the "pagination incomplete
-  at page N" digest. Replan idempotency: the `chain-outcome` TRIGGER fires EXACTLY
-  ONE replan — on re-hydrate, if a `plan-decision{replan}` referencing the trigger
-  exists no planner re-call happens; if the trigger exists but no replan decision
-  (crash before the LLM) the planner is re-called once. The replan `decisionId` is
-  a CONTENT hash (includes `plannerOutput`), not a fixed chain-only id.
+  at page N" digest. **Replan is at-least-once invocation / exactly-once effect:**
+  if a `plan-decision{replan}` referencing the trigger exists, hydrate does NOT
+  re-call; if the trigger exists but no replan decision (crash before OR after the
+  LLM responded but before the write), hydrate re-calls — assert the APPLIED replan
+  is single (identical outputs dedup by content-hash `decisionId`; differing
+  outputs collapse to the canonical one). The replan `decisionId` is a CONTENT hash
+  (includes `plannerOutput`), not a fixed chain-only id.
+- **Chain-outcome contention/replay.** Two `chain-outcome` artifacts for one
+  `discoveryChainId`: an identical duplicate is idempotent (first-by-`writeOrdinal`,
+  tie-broken by `id`, wins); a DIVERGENT second (different `status`/`failedPageIndex`)
+  is inert (the first stands) and raises a loud diagnostic — the terminal is frozen,
+  a real different outcome must open a new chain.
 - **Secret-store cleanup tests.** Assert `DELETE /v1/sessions/:id` AND the actual
   session-GC path both call `secretStore.deleteSession(sessionId)` (page tokens do
   not outlive the session); and a reused `sessionId` never reads a prior session's
