@@ -298,35 +298,41 @@ Continuation =
   whose canonical digest dangles at a missing enumeration.
 - **`tool` (only when the source itself paginates).** If the underlying tool could
   NOT enumerate fully in one result and exposes its own next-page token, the RAW
-  token is stored in its own **durable, append-only `page-token` artifact** — NOT
-  in the LWW `SessionBundle` (which can be lost/clobbered, breaking dereference)
-  and NOT in any board/plan artifact. It is keyed by a deterministic
-  **`tokenRef = uuidv5(discoveryChainId, pageIndex)`**; the board-side
-  `continuation` and the page decision carry only this `tokenRef` (+ a `tokenHash`
-  for the decisionId). Redaction: the raw token lives ONLY in the `page-token`
-  artifact, is **NEVER rendered into the board, an `intent`, or logs**, and only the
-  controller reads it to make the tool call.
-  - **Crash-durability:** because the `page-token` artifact is in the same durable
-    append-only store as every other artifact (not the bundle), a lost bundle does
-    NOT lose the token — the page step recovered from its `plan-decision` can still
-    dereference `tokenRef`. If a `page-token` is genuinely missing (e.g. the chain
-    was provably never written), the page step settles a **fail-loud terminal**
-    (`failed` with a clear reason) rather than dispatching a tool call with no
-    token — no silent stall.
+  token is stored in its own durable **`page-token` record in a DEDICATED secret
+  namespace** — NOT in the LWW `SessionBundle` (lost/clobbered → broken
+  dereference), NOT in any board/plan artifact, and **NOT in the general
+  semantically-indexed `KnowledgeBackend`** (a render/log ban is not enough: an
+  ordinary artifact could be embedded, RAG-queried, or surfaced by diagnostics/
+  artifact APIs). The secret namespace is **non-indexed, access-policied**
+  (controller-only read; never embedded/queryable) — or an encrypted secret store.
+  - **Identity (disambiguates retries):** the record is addressed by
+    **`(tokenRef, tokenHash)`** where `tokenRef = uuidv5(discoveryChainId,
+    pageIndex)` and `tokenHash = hash(rawToken)`. After a retry the same `tokenRef`
+    may have SEVERAL records with different `tokenHash`; the page decision carries
+    BOTH, so dereference matches the EXACT token it was built with (the canonical
+    page decision per `decisionId` selects which `tokenHash` is live). Addressing by
+    `tokenRef` alone would be ambiguous.
+  - **Crash-durability:** the record survives a lost bundle (separate durable
+    store), so a page recovered from its `plan-decision` still dereferences its
+    `(tokenRef, tokenHash)`. A genuinely-missing record → the page step settles a
+    **fail-loud terminal** (`failed` with a clear reason), never a tokenless tool
+    call / silent stall.
 
-  **Durable write order (fixed) — token artifact FIRST:**
-  `page-token` artifact → `plan-decision{kind:'page'}` (references `tokenRef`) →
-  `step-start` claim → dispatch. So a page decision can never reference an absent
-  token. Recovery per crash window: (a) after `page-token` only → orphan token
-  (harmless; re-derivation writes the page-decision referencing it); (b) after
-  page-decision, before claim → resume claims + dispatches (token present); (c)
-  after claim, before/at dispatch → in-flight replay path. The follow-up page step
-  is **controller-authored** with deterministic **`stepId = uuidv5(discoveryChainId,
-  pageIndex)`** and **`decisionId = uuidv5(runId, 'page', discoveryChainId,
-  pageIndex, tokenHash)`** (the general `decisionId` formula's `anchorStepId /
-  continuation / plannerOutput` do not apply); canonical dedup is by `decisionId`
-  (a `stepId` match ALONE cannot dedup append-only artifacts), so a duplicate
-  scheduling collapses and a page is never lost or duplicated.
+  **Durable write order (fixed): `page-token` record → `plan-decision{kind:'page'}`
+  (refs `{tokenRef, tokenHash}`) → `step-start` claim → durable `inFlightStep`
+  (bundle) → dispatch.** (Same claim → in-flight → dispatch tail as every step;
+  §F.) A page decision can thus never reference an absent token. Recovery per crash
+  window: (a) after the token record only → harmless orphan (re-derivation writes
+  the page-decision referencing it); (b) after page-decision, before claim → resume
+  claims; (c) after claim, before in-flight persist → resume persists in-flight and
+  dispatches; (d) after in-flight, before/at dispatch → in-flight replay path. The
+  follow-up page step is **controller-authored** with deterministic
+  **`stepId = uuidv5(discoveryChainId, pageIndex)`** and **`decisionId = uuidv5(runId,
+  'page', discoveryChainId, pageIndex, tokenHash)`** (the general `decisionId`
+  formula's `anchorStepId / continuation / plannerOutput` do not apply); canonical
+  dedup is by `decisionId` (a `stepId` match ALONE cannot dedup append-only
+  artifacts), so a duplicate scheduling collapses and a page is never lost or
+  duplicated.
 
 **Tool-pagination is a CHAIN with its own identity + completion rule.** A
 tool-paginated source produces a CHAIN of discovery steps (page 0, page 1, …),
@@ -496,9 +502,14 @@ remains the durable run-execution state** that lives nowhere else: `pending` /
 external-tool + clarify suspension, the executor transcript, `toolCallCount`,
 resume counters, `budgets`, and the in-flight `phase`. Losing those breaks
 external-tool and crash resume, so the bundle is still persisted on every
-transition as today. What becomes **additionally artifact-backed is ONLY the BOARD
-projection** — the plan STRUCTURE and the step OUTCOMES — so a torn plan/board
-write is recoverable:
+transition as today. What becomes **additionally artifact-backed** is the BOARD
+projection — the plan STRUCTURE and the step OUTCOMES — PLUS the small set of
+durable execution data that recovery needs out-of-bundle: the `enumeration`
+artifacts and the **`page-token` secret records** (§D). (So it is not "only the
+board": page tokens are artifact-backed execution state in a dedicated secret
+namespace — the bundle remains authoritative for transcript/budgets/phase/etc.,
+but the continuation secrets must survive a lost bundle, hence they are durable
+out-of-bundle.) A torn plan/board write is thus recoverable:
 
 - **Plan structure** ← `plan-decision` artifacts (below).
 - **Step state** ← `step-result` artifacts (precedence-resolved). The step-result
@@ -687,11 +698,13 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   step's canonical `{id,label}[]` list (deterministic `enumerationId =
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
-- **`page-token` artifact** — a new durable, append-only artifact holding the RAW
-  next-page token for tool-pagination, keyed by `tokenRef = uuidv5(discoveryChainId,
-  pageIndex)`, written BEFORE the `page` decision. Lives in the durable artifact
-  store (NOT the LWW bundle), so a lost bundle never breaks dereference; redacted
-  from board/intent/logs (§D).
+- **`page-token` secret record** — a new durable record holding the RAW next-page
+  token for tool-pagination, addressed by **`(tokenRef, tokenHash)`** (`tokenRef =
+  uuidv5(discoveryChainId, pageIndex)`), written BEFORE the `page` decision. Lives
+  in a **dedicated non-indexed, access-policied secret namespace** (controller-only
+  read; NOT the semantically-indexed `KnowledgeBackend`, never embedded/RAG-queried/
+  surfaced by diagnostics) — or an encrypted secret store — so a lost bundle never
+  breaks dereference and the token cannot leak via indexing/APIs (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
   dispatched (`{runId, slotId, stepId, seq, attempt, decisionId}`, `slotId` = the
   whole decision); pins the winning decision for a `slotId` at dispatch time so no
@@ -771,16 +784,19 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   reached AND every page is page-complete (NOT at the first page's last window);
   (c) **deterministic page replay/dedup** — a crash before/after the page-decision
   write, or a duplicate scheduling, collapses by `decisionId` (stepId alone is
-  insufficient), never losing or duplicating a page; (d) **token redaction** — the
-  raw next-page token NEVER appears in the rendered board / any `intent` / logs;
-  only a `tokenRef`/`tokenHash` is in board/plan artifacts, the raw token only in
-  the `page-token` artifact; (e) **tokenRef crash-recovery** — write order
-  `page-token → page-decision → claim → dispatch`: assert a crash after only the
-  `page-token` leaves a harmless orphan; a crash after the page-decision (with the
-  bundle snapshot LOST) still dereferences `tokenRef` from the durable `page-token`
-  artifact and dispatches the page; (f) **missing-token fail-loud** — if the
-  `page-token` artifact is genuinely absent, the page step settles `failed` with a
-  clear reason (no tool call with no token, no silent stall).
+  insufficient), never losing or duplicating a page; (d) **token redaction +
+  non-indexing** — the raw token NEVER appears in the rendered board / any `intent`
+  / logs, and is NOT in the indexed `KnowledgeBackend` (assert absent from
+  RAG/embedding/diagnostic surfaces); only `(tokenRef, tokenHash)` are in board/plan
+  artifacts; (e) **retry disambiguation** — two token records under one `tokenRef`
+  with different `tokenHash`: the page decision dereferences the EXACT `(tokenRef,
+  tokenHash)` it was built with; (f) **crash-recovery** — write order `page-token →
+  page-decision → claim → in-flight → dispatch`: a crash after only the token record
+  leaves a harmless orphan; a crash after the page-decision WITH the bundle snapshot
+  LOST still dereferences `(tokenRef, tokenHash)` from the durable secret store and
+  dispatches; (g) **missing-token fail-loud** — a genuinely absent record → the page
+  step settles `failed` with a clear reason (no tokenless tool call, no silent
+  stall).
 - **Capacity-gated windows.** With `maxActiveSteps` small relative to the
   enumeration, assert windows are emitted incrementally as capacity frees (not all
   up front), `windowSize = min(maxFanOut, maxActiveSteps − activeCount, remaining)`,
