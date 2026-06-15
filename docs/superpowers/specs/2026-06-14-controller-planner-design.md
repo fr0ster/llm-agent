@@ -426,9 +426,11 @@ be written:
   `plan-decision{kind:'replan'}` that **carries `triggerId = chainOutcome.id` in
   its payload AND folds it into its `decisionId`** (`uuidv5(runId, 'replan',
   triggerId, plannerOutput)`), and is keyed by a **trigger-specific slot
-  `(runId, 'replan', triggerId)`** — NOT the generic `(runId,'replan',anchorStepId)`
-  — so hydrate unambiguously matches THIS replan to THIS chain-outcome and never
-  confuses it with another replan of the same root step. Its `decisionId` is still
+  `(runId, 'replan', 'trigger', triggerId)`** — NOT the failed-step replan slot
+  `(runId, 'replan', 'anchor', anchorStepId)` (the `'anchor'`/`'trigger'`
+  discriminator keeps the two slot kinds structurally distinct) — so hydrate
+  unambiguously matches THIS replan to THIS chain-outcome and never confuses it
+  with another replan of the same root step. Its `decisionId` is still
   a CONTENT hash (includes `plannerOutput`) — it cannot be output-independent, since
   two planner calls may emit different steps. The external LLM call and the durable write CANNOT
   be made atomic, so **exactly-once invocation is impossible**: a crash AFTER the
@@ -590,9 +592,12 @@ fourth applies only to a discovery root entry):
    (current-attempt `executing` / `awaiting-external`).
 4. **Chain terminal** ← `chain-outcome` artifact, projected onto the ROOT discovery
    entry: it sets that entry's state to `partial`/`failed` and supplies the
-   "pagination incomplete…" digest. Precedence: for the root discovery entry a
-   present `chain-outcome` OUTRANKS the otherwise-derived `expanding` (the chain has
-   terminated); it does not affect any other entry.
+   "pagination incomplete…" digest. **Full precedence for a discovery-root entry:
+   `chain-outcome (4) > step-result (2) > transient (3) > structure (1)`** — a
+   present `chain-outcome` OUTRANKS even the root's own `done` `step-result` (page 0
+   settled `done`, but the CHAIN terminated `partial`/`failed`, and the chain
+   terminal is what the planner must act on). For every NON-root entry source 4 is
+   absent and the normal `(2) > (3) > (1)` precedence (above) applies.
 
 Per the attempt-scoped rule above: the STRUCTURE
 and TERMINAL states are reconstructible from immutable artifacts alone; the
@@ -677,9 +682,11 @@ there NO history is at stake, so a deterministic pick is safe:
   cross-decision merge. So a decision occupies ONE slot and a claim on ANY of its
   steps fixes the WHOLE decision:
   - create-plan → `slotId = (runId, 'create')` — one per run;
-  - replan → `slotId = (runId, 'replan', anchorStepId)` for a failed-step replan;
-    `slotId = (runId, 'replan', triggerId)` for a chain-outcome-driven replan (so
-    it is distinct from any other replan of the same root step);
+  - replan → `slotId = (runId, 'replan', 'anchor', anchorStepId)` for a failed-step
+    replan; `slotId = (runId, 'replan', 'trigger', triggerId)` for a
+    chain-outcome-driven replan — the explicit `'anchor'`/`'trigger'` discriminator
+    segment keeps the two slot KINDS structurally distinct (both otherwise end in a
+    UUID/string), so merge/typing never conflates their origin;
   - expand → `slotId = (runId, 'expand', discoveryStepId, offset)` — one per window;
   - page → `slotId = (runId, 'page', discoveryChainId, pageIndex)` — one per
     follow-up page step (it is dispatched, so it MUST have a slot + `step-start`
@@ -953,6 +960,12 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   tie-broken by `id`, wins); a DIVERGENT second (different `status`/`failedPageIndex`)
   is inert (the first stands) and raises a loud diagnostic — the terminal is frozen,
   a real different outcome must open a new chain.
+- **Root precedence: chain-outcome over root step-result.** The root discovery
+  step's page 0 settled `done` (a `step-result` exists), AND a `chain-outcome`
+  `partial` exists. On hydrate, assert the root entry projects to **`partial`** (the
+  chain terminal), NOT `done` — i.e. source 4 outranks source 2 for the root entry
+  (and the planner therefore sees the pagination-incomplete digest, not a false
+  "done").
 - **Secret-store cleanup tests.** Assert `DELETE /v1/sessions/:id` AND the actual
   session-GC path both call `secretStore.deleteSession(sessionId)` (page tokens do
   not outlive the session); and a reused `sessionId` never reads a prior session's
