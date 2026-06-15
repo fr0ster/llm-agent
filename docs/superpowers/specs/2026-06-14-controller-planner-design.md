@@ -89,8 +89,11 @@ are generally done. Concretely: replace the payload-free `[seq N name ok]` blob
 (and the misleading "fetched results appear under Progress" clause) with a
 structured board — per step **intent + state + digest** — rendered into the
 planner prompt. Because the board carries state + digests, the planner (i) never
-re-issues a `done` step (fixes the loop + bloat), and (ii) fans out from a
-discovery step's digest (the digest of a discovery step IS the enumerable list).
+re-issues a `done` step (fixes the loop + bloat), and (ii) for a discovery step,
+fans out — though it does so over a **bounded window the controller hands it from
+the durable enumeration** (§D), not by reading the board digest itself (the board
+digest of a discovery step is informational; the authoritative list is the
+durable `enumeration` artifact).
 
 **Board budget (REQUIRED — the board is bounded, with a deterministic compaction
 policy and a GUARANTEED cap).**
@@ -109,20 +112,28 @@ policy and a GUARANTEED cap).**
   3. Older terminal digests compact oldest-first (by `seq`) to `[seq N name
      status]`; then those summaries drop oldest-first to a `"… M earlier steps
      omitted"` marker (full results stay in RAG, recallable by seq).
-- **The cap is GUARANTEED, not aspirational:**
-  - **Config invariants validated at load (fail-loud):** `K × maxDigestChars +
-    headroom ≤ maxBoardChars`, and `maxDigestChars ≥` a per-line floor.
-  - **Final fallback when the PROTECTED set alone exceeds the cap** (a huge plan
-    with very many in-flight/unfinished steps): protected steps degrade
-    deterministically too — their digests collapse to a one-line state, then to
-    counts (`"P planned, X executing, …"`) — so the rendered board ALWAYS fits.
-    If even the floor cannot fit, emit a loud diagnostic and hard-truncate with a
-    marker rather than silently overflow the model context.
-- **Compaction never endangers expansion.** Expand-remainder windows are read from
-  the durable `enumeration` artifact by `enumerationId` (§D), NOT from the board
-  digest — so even if a discovery digest were compacted, fan-out is unaffected.
-  Belt-and-suspenders: rule 1 also protects a not-`fully-expanded` discovery's
-  digest until expansion completes.
+- **Actionable entries are NEVER aggregated.** A `"P planned, X executing"` count
+  would erase the `stepId`/intent/individual state of unfinished steps — the
+  planner would lose track of what is already planned and could re-create the same
+  steps. So actionable (not-terminal) entries are ALWAYS rendered individually
+  (`stepId` + a — possibly terse — intent + state). Only TERMINAL digests are
+  compacted (rules 2–3).
+- **The cap is GUARANTEED by BOUNDING the actionable set, then fail-loud:**
+  - The number of simultaneously-actionable steps is bounded by config
+    (`maxActiveSteps`; fan-out width is already ≤ `maxFanOut` per window, one
+    window at a time), so the protected set fits by construction.
+  - **Config invariants validated at load (fail-loud):** the bounded actionable
+    set's worst-case size + `K × maxDigestChars` + headroom ≤ `maxBoardChars`.
+  - If, despite the invariants, the (individually-rendered) actionable set would
+    STILL exceed `maxBoardChars`, the controller does NOT feed the planner a lossy
+    board — it **fails loud / suspends BEFORE the planner call** (an
+    over-large/misconfigured run, surfaced, not silently degraded).
+- **Compaction never endangers expansion (both continuation kinds).** Expansion
+  does not depend on the board digest at all: the CONTROLLER owns the durable
+  continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the token
+  in a durable record, §D), windows it, and passes the bounded window to the
+  planner. So neither an `enumeration` offset nor a `tool` token can be lost to
+  board compaction.
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -201,12 +212,17 @@ expand-on-success**:
 2. When that step settles **`done`**, the controller **re-invokes the planner** in
    an *expand-remainder* mode (a new trigger alongside `REPLAN` /
    `EXTERNAL_RESULT_REPLAN`).
-3. The planner reads the discovery step's **digest** (= the enumerated list,
-   windowed at `maxFanOut`) and **fans out one concrete step per element** of the
-   window.
+3. **Single data flow: the CONTROLLER owns the window, the planner receives it.**
+   The controller reads the durable continuation (the `enumeration` artifact for
+   `artifact-offset`, or the durable `tool` token), forms the **bounded window**
+   (≤ `maxFanOut` items), and passes THAT window to the planner. The planner does
+   NOT read the artifact or the raw board digest — it is handed the window and
+   **fans out one concrete step per element** of it. (This is the single
+   authoritative source; the board digest is informational only.)
 4. Each window is recorded as a `plan-decision{kind:expand, offset}` so it is
-   never generated twice; if the window was `truncated`, the planner advances to
-   the next window (§D continuation). The discovery becomes **`fully-expanded`**
+   never generated twice; if the window was `truncated`, the CONTROLLER advances
+   to the next window (§D continuation) and hands the planner the next window. The
+   discovery becomes **`fully-expanded`**
    once the terminal (`truncated:false`) window is emitted. (Identity & durability
    of these per-window decisions: §F.)
 
@@ -265,9 +281,13 @@ Continuation =
   whose canonical digest dangles at a missing enumeration.
 - **`tool` (only when the source itself paginates).** If the underlying tool could
   NOT enumerate fully in one result and exposes its own next-page token, that token
-  is carried verbatim; the planner must emit a **follow-up discovery executor
-  step** to fetch the next page (a real tool round-trip), which itself yields the
-  next enumeration artifact / continuation.
+  is carried verbatim — and is persisted DURABLY (on the discovery step's
+  `step-result` / a small continuation record), NEVER relied upon from the
+  compactable board digest (else board compaction could lose it). The controller
+  then emits a **follow-up discovery executor step** carrying the durable token to
+  fetch the next page (a real tool round-trip), which yields the next `enumeration`
+  artifact + continuation. So for BOTH kinds the continuation lives in durable
+  state the controller reads, not in the board.
 
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
@@ -559,8 +579,8 @@ reviewer ──RETURNS {verdict, approved, digest, enumeration?}──► contro
                               ├─► FULL approved content ─► run-scoped RAG (step-result by seq)   [executor consumes]
                               ├─► planning DIGEST ───────► planner board (state + digest)          [planner consumes]
                               └─► enumeration (discovery) ─► 'enumeration' artifact (windowed locally)
-weak planner: discovery done ──► controller re-invokes planner (expand-remainder, per offset window)
-                                  windows enumeration artifact ──► fans out ≤maxFanOut steps ──► plan-decision{expand,offset}
+discovery done ──► CONTROLLER windows the durable enumeration/tool-token (≤maxFanOut)
+               ──► hands the window to the planner (expand-remainder) ──► planner fans out ──► plan-decision{expand,offset}
 ```
 
 ## Components & boundaries
