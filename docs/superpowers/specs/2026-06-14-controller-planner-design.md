@@ -536,12 +536,17 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
 - **`outcome.ts` / reviewer** — the verdict gains a `digest` field (and, for
   discovery, a structured `enumeration`) that the reviewer RETURNS; the reviewer
   does NOT persist — the controller does (boundary preserved).
-- **Step-state board** — a structured projection replayed from the `plan-decision`
-  artifacts (structure) + `step-result` artifacts (state), rendered into the
-  planner prompt (replaces the payload-free `plannerPrivate` blob). The BOARD
-  portion of the bundle is a derived cache; run-EXECUTION state (budgets, phase,
-  transcript, resume counters, `pending`, `toolCallCount`) is NOT — it lives
-  authoritatively in the SessionBundle.
+- **Step-state board** — a structured projection rendered into the planner prompt
+  (replaces the payload-free `plannerPrivate` blob), merged from THREE sources
+  with the attempt-scoped resolution of §F: (1) `plan-decision` artifacts
+  (structure) + (2) `step-result` artifacts (terminal state + digest) + (3) the
+  `step-start` claim and the bundle's in-flight/`pending` (the TRANSIENT states
+  `executing` / `awaiting-external` — do NOT omit these; a board without source 3
+  cannot show a live or blocked step). The BOARD portion of the bundle is a derived
+  cache; run-EXECUTION state (budgets, phase, transcript, resume counters,
+  `pending`, `toolCallCount`) lives authoritatively in the SessionBundle. The
+  projection is EXTENSIBLE — further sources/states may be added as the system
+  grows (the three above are the current set, not a closed limit).
 - **Two planner implementations** + the **expand-remainder** trigger; the
   composition factory selects the implementation.
 - **`Step`** — gains `stepId` (stable), `discovery?: true`, and
@@ -593,7 +598,8 @@ Primary signal is **plan GENERATION**, not execution (agreed scope: "зніма�
 `plan-analysis.ts` dev harness:
 
 - Add an `EVAL_PLANS_ONLY` capture mode + data-dependent fan-out prompts
-  (`read-includes`, `find-usages`) + full incremental/weak-planner trajectories.
+  (`read-includes`, `find-usages`) + full trajectories for BOTH new planners
+  (`smart-executor` and `weak-executor`) — NOT the retired `incremental`/`adaptive`.
 - Capture, per prompt × planner, the **generated plan** (full, instructions +
   per-step state) and the **deferred-expansion trajectory** (discovery step + the
   fanned-out steps after feeding a synthetic discovery digest), WITH/WITHOUT
