@@ -330,17 +330,23 @@ Continuation =
   **`stepId = uuidv5(discoveryChainId, pageIndex)`** and **`decisionId = uuidv5(runId,
   'page', discoveryChainId, pageIndex, tokenHash)`** (the general `decisionId`
   formula's `anchorStepId / continuation / plannerOutput` do not apply).
-  - **Canonical selection is PARENT-bound, not just min-`decisionId`.** A page
-    decision carries its **`parent = {stepId, seq, attempt}`** (or the parent's
-    `enumerationId`) — the PRIOR page's settle that emitted this `tokenRef/tokenHash`.
-    Because a parent can be RETRIED, several page decisions for one
-    `(chainId, pageIndex)` may carry different `tokenHash` from different parent
-    attempts; choosing the bare smallest `decisionId` could pick a token from a
-    stale/failed parent attempt. So selection FIRST filters to decisions whose
-    `parent` is the **canonical** (precedence-resolved + claim-fixed, §F) parent
-    outcome; decisions built on a non-canonical parent are rejected. The
-    `decisionId` tie-break applies only WITHIN that eligible set. Thus a page is
-    derived from the live parent's token, never an orphaned retry's.
+  - **Canonical selection is PARENT-bound and the parent is CLAIM-FIXED (not
+    precedence-recomputed).** A page decision carries its **`parent = {stepId, seq,
+    attempt}`** — the PRIOR page's settle that emitted this `tokenRef/tokenHash`.
+    Naively "filter to the precedence-canonical parent" is WRONG: precedence/
+    `writeOrdinal` is not "the live parent token" — if parent `attempt 0 = ok`
+    (token A) and a later `attempt 1 = ok` (token B) tie on rank, writeOrdinal would
+    flip the canonical parent to B and retroactively make an ALREADY-CLAIMED page A
+    ineligible. So the rule is the §F finality principle applied to the parent:
+    **once a child page is `step-start`-claimed, its `parent` attempt is LOCKED**
+    and never re-evaluated; a later retry of the parent discovery does NOT change an
+    already-claimed page's parent. Consequently, **a settled discovery whose
+    downstream (expand window or next page) has been claimed is FROZEN — it is not
+    retried for chain purposes** (its consumed outcome cannot change under a claimed
+    child). For an as-yet-unclaimed next page, the parent is the claim-fixed lineage
+    of the chain (the attempt whose token the chain has been consuming), not a
+    precedence re-pick. So a page is always derived from the live, claim-fixed
+    parent token — never silently re-pointed at a retry.
 
   **Secret-store contract (concrete, not "namespace-or-encrypted hand-wave").**
   The page-token store is an injected dependency with a minimal interface —
@@ -350,9 +356,11 @@ Continuation =
   NOT the semantic `KnowledgeBackend`, so values are never embedded/RAG-queried/
   surfaced by artifact or diagnostic APIs; (3) **session-scoped cleanup** — the
   server's `DELETE /v1/sessions/:id` and session GC MUST call `deleteSession` so
-  tokens never outlive their session. The default impl is an in-process/disk store
-  in this dedicated namespace; a deployment may swap an encrypted secret store
-  behind the same interface. Wired into the controller deps alongside the
+  tokens never outlive their session. **Production default = a durable DISK-backed
+  store** (it MUST survive process restart — requirement (1)); an **in-memory impl
+  is ONLY for tests / an explicit ephemeral mode**, never the production default
+  (it would violate restart-durability). A deployment may swap an encrypted secret
+  store behind the same interface. Wired into the controller deps alongside the
   `KnowledgeBackend`.
 
 **Tool-pagination is a CHAIN with its own identity + completion rule.** A
@@ -730,7 +738,9 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
 - **Secret store (`put`/`get`/`deleteSession`)** — a NEW injected dependency
   backing the `page-token` records: durable across restart, never indexed, and
   cleaned up on `DELETE /v1/sessions/:id` + session GC (so tokens never outlive
-  their session). Default in-process/disk; swappable for an encrypted store (§D).
+  their session). **Production default = durable disk-backed**; an in-memory impl
+  is tests/ephemeral-only (does not meet restart-durability). Swappable for an
+  encrypted store (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
   dispatched (`{runId, slotId, stepId, seq, attempt, decisionId}`, `slotId` = the
   whole decision); pins the winning decision for a `slotId` at dispatch time so no
@@ -822,7 +832,14 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   LOST still dereferences `(tokenRef, tokenHash)` from the durable secret store and
   dispatches; (g) **missing-token fail-loud** — a genuinely absent record → the page
   step settles `failed` with a clear reason (no tokenless tool call, no silent
-  stall).
+  stall); (h) **claim-fixed parent** — after page P is claimed on parent
+  `attempt 0` (token A), RETRY the parent to `attempt 1` (token B): assert P's
+  parent stays `attempt 0`/token A (NOT retroactively re-pointed at B), and a
+  settled discovery with a claimed downstream is not retried for chain purposes.
+- **Secret-store cleanup tests.** Assert `DELETE /v1/sessions/:id` AND the actual
+  session-GC path both call `secretStore.deleteSession(sessionId)` (page tokens do
+  not outlive the session); and a reused `sessionId` never reads a prior session's
+  token records.
 - **Capacity-gated windows.** With `maxActiveSteps` small relative to the
   enumeration, assert windows are emitted incrementally as capacity frees (not all
   up front), `windowSize = min(maxFanOut, maxActiveSteps − activeCount, remaining)`,
