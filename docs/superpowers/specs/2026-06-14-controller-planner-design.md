@@ -81,12 +81,16 @@ boundary (reviewer judges; controller persists).
 
 ### B. Planner context = a step-state digest board
 
-Replace the payload-free `[seq N name ok]` blob (and the misleading "fetched
-results appear under Progress" clause) with a structured board: per step the
-planner sees **intent + state + digest**. Because the board carries state, the
-planner (i) never re-issues a `done` step (fixes loop + bloat), and (ii) fans out
-from a discovery step's digest (the digest of a discovery step IS the enumerable
-list).
+The heart of the design, in plain terms: **the digests of executed steps
+accumulate into ONE context block that is appended to the planner LLM's request.**
+So the planner sees, for every step, what was needed, what was done, the result of
+doing it, and what helped or not — and (when skills are attached) how such things
+are generally done. Concretely: replace the payload-free `[seq N name ok]` blob
+(and the misleading "fetched results appear under Progress" clause) with a
+structured board — per step **intent + state + digest** — rendered into the
+planner prompt. Because the board carries state + digests, the planner (i) never
+re-issues a `done` step (fixes the loop + bloat), and (ii) fans out from a
+discovery step's digest (the digest of a discovery step IS the enumerable list).
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -432,44 +436,45 @@ there NO history is at stake, so a deterministic pick is safe:
   applied **wholesale** (all of its steps, ids AND instructions — never a
   step-by-step mix of two decisions). Once a claim for a `slotId` exists, that
   decision is locked and competing decisions for the slot are inert.
-- **Concurrency: this design ADDS a serialization lock keyed by `sessionId` (it is
-  NOT already guaranteed).** Reality check: `SmartServer._withSession` only
-  refcount-`acquire`s a shared session graph — it does NOT serialize concurrent
-  requests, so two HTTP turns with the same session cookie CAN advance the
-  controller in parallel today. The lock MUST be keyed by **`sessionId`, NOT
-  `runId`** — `runId` does not exist until hydrate/classify/mint, so two parallel
-  turns keyed on `runId` could each mint a DIFFERENT run before any lock is taken.
-  `sessionId` is the stable identity available at request entry, before hydrate. So
-  the design REQUIRES a **per-`sessionId` async mutex**, acquired at turn entry
-  (BEFORE hydrate/classify) and released in a **`finally` covering ALL exits —
-  success, suspend, error, AND abort** — a new component, not an assumed invariant.
-  For a single process this in-process mutex suffices; a **horizontally-scaled
-  (multi-process)** deployment MUST back it with a distributed lease keyed by
-  `sessionId` (append-only artifacts give no exclusive dispatch on their own).
-- **A distributed lease REQUIRES a fencing token (a bare lease is unsafe).** If a
-  lease expires while the old coordinator is still mid-turn, a new coordinator
-  acquires it AND the old one keeps issuing durable writes — split-brain. So the
-  lease MUST carry a **monotonically increasing fencing token**: every durable
-  write (`step-start` claim, `plan-decision`, `step-result`, `enumeration`, bundle
-  persist) is STAMPED with the writer's token, and (a) the merge IGNORES any write
-  whose token is older than the highest token seen for the `sessionId` (a stale old
-  coordinator's writes are inert), and (b) the old coordinator heartbeats the lease
-  and **fail-stops** (ceases all writes) on lease loss. Either guard alone is
-  acceptable; both together are belt-and-suspenders. A lease without fencing is
-  explicitly out of contract.
+- **Concurrency: one turn per session at a time, via an in-process lock.**
+  `SmartServer._withSession` only refcount-`acquire`s a shared session graph today
+  — it does NOT serialize concurrent requests, so two HTTP turns with the same
+  session cookie CAN advance the controller in parallel. This design adds a simple
+  **per-`sessionId` async lock**: a turn takes the lock at entry (BEFORE
+  hydrate/classify — `runId` does not exist yet, so the lock MUST key on
+  `sessionId`, the identity present at request entry; keying on `runId` would let
+  two parallel turns mint two runs before any lock) and releases it in a `finally`
+  on every exit (success / suspend / error / abort). With one turn at a time, there
+  is a single writer: the bundle's last-write-wins snapshot is safe and the artifact
+  streams need no version token.
+- **Multi-process horizontal scaling is OUT OF SCOPE (deferred).** Running
+  CONCURRENT turns for the SAME session across processes is NOT supported by this
+  design and is deliberately not solved here. Doing it correctly needs a
+  storage-side fenced/CAS write that REJECTS a stale writer at write time — neither
+  the append-only `KnowledgeBackend` (artifacts) nor `persistBundle` (LWW snapshot)
+  provides it, and an after-the-fact "ignore older writes" merge is wrong (old
+  artifacts are legitimate history, and a LWW bundle write from a stale coordinator
+  would still clobber `pending`/transcript/budgets). So a multi-process deployment
+  must either run at most one process per session (sticky routing — the simple
+  path) or first adopt a fenced/CAS-capable store; that is a separate
+  infrastructure decision, explicitly deferred.
 - **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
   `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
-  decisionId, phase=`executing`) is persisted to the bundle; THEN the executor is
-  dispatched. Recovery per crash window: (a) claim present, no in-flight in bundle
-  → not yet dispatched → resume persists in-flight and dispatches (the claim
-  already fixed the decision); (b) in-flight present, no `step-result` → resume via
-  the EXISTING in-flight replay/suspend path (executor-call idempotency is that
-  path's existing concern); (c) `step-result` present → terminal.
+  **`attempt`**, decisionId, phase=`executing`) is persisted to the bundle; THEN the
+  executor is dispatched. The `attempt` is REQUIRED on the in-flight record too: a
+  retry bumps `attempt`, so after a crash recovery must know WHICH attempt to
+  resume and match to its `(stepId, seq, attempt)` `step-result`/claim — without it
+  a retry could resume the wrong attempt. Recovery per crash window: (a) claim
+  present, no in-flight in bundle → not yet dispatched → resume persists in-flight
+  and dispatches (the claim already fixed the decision); (b) in-flight present, no
+  `step-result` for that `attempt` → resume via the EXISTING in-flight
+  replay/suspend path (executor-call idempotency is that path's existing concern);
+  (c) `step-result` for the `attempt` present → terminal.
 
-This gives finality WITHOUT backend CAS — but NOT without serialization: under the
-per-run lock above, a content-hashed write-once decision + a decision-slot-keyed
-pre-dispatch claim fix the winner before execution — never a retroactive flip, no
-in-flight window in which the winner can change.
+This gives finality without backend CAS — but NOT without serialization: under the
+single-writer per-`sessionId` lock above, a content-hashed write-once decision + a
+decision-slot-keyed pre-dispatch claim fix the winner before execution — never a
+retroactive flip, no in-flight window in which the winner can change.
 
 **Expand is per-WINDOW, so batching does not collapse the slot.** The expand slot
 is `(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)`. Each
@@ -535,14 +540,13 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
   whole decision); pins the winning decision for a `slotId` at dispatch time so no
   competing decision can win during the in-flight window; `attempt` matches it 1:1
   to its `step-result` (§F).
-- **Per-`sessionId` serialization lock** — a NEW component: an async mutex keyed
-  by `sessionId` (NOT `runId` — it must exist before hydrate/mint), acquired at
-  turn entry before hydrate and released in `finally` on every exit
-  (success/suspend/error/abort). In-process by default; a multi-process deployment
-  backs it with a distributed lease + **fencing token** stamped on every durable
-  write (stale-token writes ignored at merge; old coordinator fail-stops on lease
-  loss). Required because `_withSession` does NOT serialize concurrent same-session
-  requests today (§F).
+- **Per-`sessionId` serialization lock** — a NEW component: an in-process async
+  lock keyed by `sessionId` (NOT `runId` — `runId` does not exist before
+  hydrate/mint), acquired at turn entry before hydrate and released in `finally` on
+  every exit (success/suspend/error/abort). It makes ONE turn advance a session at
+  a time → single writer → the bundle's LWW snapshot is safe. Required because
+  `_withSession` does NOT serialize concurrent same-session requests today.
+  Multi-process concurrent same-session is OUT OF SCOPE (§F).
 - **Reused / already implemented (do NOT re-spec):** per-step tool selection
   (`selectTools(step.instructions)` in `runStep`; the old prompt-level
   `selectTools(goal+prompt)` is gone — the 2026-06-09 shared change, DONE); skills
@@ -611,6 +615,10 @@ in-memory bundle store + a fake reviewer/executor):
   an earlier committed `ok`; `writeOrdinal` only tie-breaks equal rank. A
   replan-replacement gets a NEW `stepId` + `supersedesStepId` and shows as a
   separate board entry.
+- **Attempt-correct crash resume.** A step at `attempt N` that crashes mid-flight
+  resumes the SAME `attempt N` (the in-flight record + claim carry `attempt`),
+  matching its `(stepId, seq, attempt)` `step-result` — assert recovery never
+  resumes the wrong attempt or double-counts a retry.
 - **Expansion-only-on-done.** A discovery step that settles `partial`/`failed`
   triggers replan, NOT expansion; NO `plan-decision{kind:expand}` is written and
   the step never enters `expanding`.
@@ -627,9 +635,8 @@ in-memory bundle store + a fake reviewer/executor):
   first releases — assert no interleaved writes). (b) **Fresh-run race:** two
   parallel first-requests for a new session mint exactly ONE `runId`, not two
   (lock taken on `sessionId` BEFORE hydrate/mint). (c) The lock is released after a
-  thrown exception AND after an abort (the `finally` runs on every exit). (d)
-  Multi-process: a write stamped with a stale fencing token is ignored at merge and
-  does not corrupt the board.
+  thrown exception AND after an abort (the `finally` runs on every exit). (No
+  multi-process / distributed-lease test — that case is out of scope, §F.)
 
 (The exploratory plan-generation capture used during design lives in `/tmp` logs;
 the harness extension + handler crash tests above are the durable, plan-defined
