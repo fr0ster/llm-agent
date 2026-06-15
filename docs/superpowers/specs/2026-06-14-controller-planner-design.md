@@ -93,24 +93,36 @@ re-issues a `done` step (fixes the loop + bloat), and (ii) fans out from a
 discovery step's digest (the digest of a discovery step IS the enumerable list).
 
 **Board budget (REQUIRED — the board is bounded, with a deterministic compaction
-policy).** Accumulating every digest in one context would re-introduce token bloat
-on a long run, so the board has two caps:
-- **`maxDigestChars`** (per digest): the reviewer truncates each step's digest to
-  this length when it returns it (the FULL result is in RAG regardless).
-- **`maxBoardChars`** (whole board): when the rendered board would exceed it, a
-  DETERMINISTIC compaction runs — same board ⇒ same output:
-  1. Always keep IN FULL the structure + state of every NOT-terminal step
-     (`planned` / `executing` / `awaiting-external` / `expanding`) and the most
-     recent `K` terminal steps' digests.
-  2. Older terminal (`done`/`partial`/`failed`) digests are compacted oldest-first
-     (by `seq`) to a one-line summary (`[seq N name status]`, digest elided), until
-     the board fits.
-  3. If it still does not fit, drop the elided summaries oldest-first, leaving a
-     `"… M earlier steps omitted"` marker (their full results remain in RAG, so the
-     executor can still recall them by seq).
-  The caps and `K` are config with sane defaults. This keeps the planner context
-  bounded without ever discarding a not-yet-finished step's state or the freshest
-  results.
+policy and a GUARANTEED cap).**
+- **`maxDigestChars` applies ONLY to non-discovery free-text digests** — the
+  reviewer truncates those to it (full result is in RAG regardless). A **structured
+  discovery digest is NEVER char-truncated** (that would corrupt the JSON / drop
+  `continuation` and break 1:1 fan-out); it is bounded STRUCTURALLY by `maxFanOut`,
+  `maxItemChars`, and a valid `continuation` (§D).
+- **`maxBoardChars`** (whole board): on overflow a DETERMINISTIC compaction runs
+  (same board ⇒ same output):
+  1. **Actionable (protected) steps** are kept in full: every NOT-terminal step
+     (`planned`/`executing`/`awaiting-external`/`expanding`) AND every discovery
+     step that is `done` but **not yet `fully-expanded`** (its enumerable digest is
+     still needed for the next expand window — see below).
+  2. The most recent `K` other-terminal digests are kept in full.
+  3. Older terminal digests compact oldest-first (by `seq`) to `[seq N name
+     status]`; then those summaries drop oldest-first to a `"… M earlier steps
+     omitted"` marker (full results stay in RAG, recallable by seq).
+- **The cap is GUARANTEED, not aspirational:**
+  - **Config invariants validated at load (fail-loud):** `K × maxDigestChars +
+    headroom ≤ maxBoardChars`, and `maxDigestChars ≥` a per-line floor.
+  - **Final fallback when the PROTECTED set alone exceeds the cap** (a huge plan
+    with very many in-flight/unfinished steps): protected steps degrade
+    deterministically too — their digests collapse to a one-line state, then to
+    counts (`"P planned, X executing, …"`) — so the rendered board ALWAYS fits.
+    If even the floor cannot fit, emit a loud diagnostic and hard-truncate with a
+    marker rather than silently overflow the model context.
+- **Compaction never endangers expansion.** Expand-remainder windows are read from
+  the durable `enumeration` artifact by `enumerationId` (§D), NOT from the board
+  digest — so even if a discovery digest were compacted, fan-out is unaffected.
+  Belt-and-suspenders: rule 1 also protects a not-`fully-expanded` discovery's
+  digest until expansion completes.
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -629,8 +641,10 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
   `xfail`, not a silent gap — so the matrix is exhaustive and every cell is a
   definite supported-pass or recorded-deferred. This scope is NOT planner-specific.
 - **Replanning / deferred expansion / capability planners / board+claim+attempt+
-  crash — ONLY pipelines that HAVE a planner.** These behaviors exist only in the
-  controller; they are tested for the controller with BOTH planner kinds
+  crash — the CONTROLLER pipeline ONLY.** ("Has a planner" is too broad — `dag`
+  and `deep stepper` also have planners but do NOT implement this board / claim /
+  expand protocol; only the `controller` does.) They are tested for the controller
+  with BOTH planner kinds
   (`smart-executor`, `weak-executor`). Pipelines without a planner (flat/linear/…)
   get only the gnostification scope above.
 
@@ -655,12 +669,18 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   (`items: [{id,label}]`, validated, bounded by `maxFanOut`/`maxItemChars`,
   `truncated` set on overflow); a normal result yields a free-text extract
   truncated to `maxDigestChars`.
-- **Board-budget tests.** Drive a run long enough to exceed `maxBoardChars` and
-  assert the deterministic compaction: not-terminal steps + the most recent `K`
-  terminal digests are kept in full; older terminal digests collapse to
-  `[seq N name status]` oldest-first; if still over, the oldest collapse to a
-  `"… M earlier steps omitted"` marker — and the same board always compacts
-  identically (determinism).
+- **Board-budget tests.** (a) Drive a run past `maxBoardChars` and assert the
+  deterministic compaction: protected (not-terminal) steps + most recent `K`
+  terminal digests kept in full; older terminal digests collapse to
+  `[seq N name status]` oldest-first; then to `"… M omitted"`; same board ⇒
+  identical output. (b) **Discovery protection:** a `done`-but-not-`fully-expanded`
+  discovery whose digest would be evicted by budget is KEPT (or, equivalently, the
+  next expand window still succeeds because it reads the `enumeration` artifact,
+  not the board) — assert fan-out is unaffected by compaction. (c) **Guaranteed
+  cap:** a run with so many unfinished steps that the protected set alone exceeds
+  the cap still renders a board ≤ `maxBoardChars` (protected-set degradation to
+  counts), and a config with `K × maxDigestChars > maxBoardChars` fails loud at
+  load.
 
 Plan-generation alone does NOT cover the real production risk — **settle /
 recovery / retries and the crash window between expansion and persist**. Add
