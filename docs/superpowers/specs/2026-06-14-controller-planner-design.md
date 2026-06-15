@@ -410,7 +410,15 @@ there NO history is at stake, so a deterministic pick is safe:
   (dedup); different output → different id.
 - **The winner is fixed at DISPATCH by a durable `step-start` claim keyed by the
   contested DECISION slot, BEFORE the step runs.** A claim is
-  `{ runId, slotId, stepId, seq, decisionId }`. The **`slotId` identifies the whole
+  `{ runId, slotId, stepId, seq, attempt, decisionId }`. The `attempt` is REQUIRED:
+  a retry of the same `(stepId, seq)` is a new `attempt`, and each dispatched
+  attempt writes its own claim — without it, two attempts' claims would be
+  indistinguishable and crash recovery could not match a claim to the
+  `(runId, stepId, seq, attempt)` `step-result` it dispatched. Resolution splits by
+  concern: the **DECISION winner** for a `slotId` is fixed by the FIRST claim for
+  that slot (attempt-independent — a retry never changes which decision owns the
+  slot); the **per-attempt dispatch record** is the claim matched 1:1 to its
+  `(stepId, seq, attempt)` `step-result`. The **`slotId` identifies the whole
   planner DECISION, not a per-step position** — otherwise position 0 could claim
   decision A while position 1 claims a competing decision B, exactly the forbidden
   cross-decision merge. So a decision occupies ONE slot and a claim on ANY of its
@@ -424,18 +432,31 @@ there NO history is at stake, so a deterministic pick is safe:
   applied **wholesale** (all of its steps, ids AND instructions — never a
   step-by-step mix of two decisions). Once a claim for a `slotId` exists, that
   decision is locked and competing decisions for the slot are inert.
-- **Concurrency: this design ADDS a per-run serialization lock (it is NOT already
-  guaranteed).** Reality check: `SmartServer._withSession` only refcount-`acquire`s
-  a shared session graph — it does NOT serialize concurrent requests, so two HTTP
-  turns with the same session cookie CAN advance the controller in parallel today.
-  "First claim wins" is sound only when one writer advances a `runId` at a time, so
-  the design REQUIRES a **per-run async mutex** (keyed by `runId`/`sessionId`),
-  acquired at the start of a controller turn-advance and released at
-  suspend/complete — a new component, not an assumed invariant. For a single
-  process this in-process mutex suffices; a **horizontally-scaled (multi-process)**
-  deployment MUST back it with a distributed lease keyed by `runId` (append-only
-  artifacts give no exclusive dispatch on their own) — stated as the deployment
-  precondition.
+- **Concurrency: this design ADDS a serialization lock keyed by `sessionId` (it is
+  NOT already guaranteed).** Reality check: `SmartServer._withSession` only
+  refcount-`acquire`s a shared session graph — it does NOT serialize concurrent
+  requests, so two HTTP turns with the same session cookie CAN advance the
+  controller in parallel today. The lock MUST be keyed by **`sessionId`, NOT
+  `runId`** — `runId` does not exist until hydrate/classify/mint, so two parallel
+  turns keyed on `runId` could each mint a DIFFERENT run before any lock is taken.
+  `sessionId` is the stable identity available at request entry, before hydrate. So
+  the design REQUIRES a **per-`sessionId` async mutex**, acquired at turn entry
+  (BEFORE hydrate/classify) and released in a **`finally` covering ALL exits —
+  success, suspend, error, AND abort** — a new component, not an assumed invariant.
+  For a single process this in-process mutex suffices; a **horizontally-scaled
+  (multi-process)** deployment MUST back it with a distributed lease keyed by
+  `sessionId` (append-only artifacts give no exclusive dispatch on their own).
+- **A distributed lease REQUIRES a fencing token (a bare lease is unsafe).** If a
+  lease expires while the old coordinator is still mid-turn, a new coordinator
+  acquires it AND the old one keeps issuing durable writes — split-brain. So the
+  lease MUST carry a **monotonically increasing fencing token**: every durable
+  write (`step-start` claim, `plan-decision`, `step-result`, `enumeration`, bundle
+  persist) is STAMPED with the writer's token, and (a) the merge IGNORES any write
+  whose token is older than the highest token seen for the `sessionId` (a stale old
+  coordinator's writes are inert), and (b) the old coordinator heartbeats the lease
+  and **fail-stops** (ceases all writes) on lease loss. Either guard alone is
+  acceptable; both together are belt-and-suspenders. A lease without fencing is
+  explicitly out of contract.
 - **Write order is fixed: claim → durable in-flight (bundle) → dispatch.** The
   `step-start` claim is written first; THEN `inFlightStep` (seq, stepId,
   decisionId, phase=`executing`) is persisted to the bundle; THEN the executor is
@@ -510,13 +531,18 @@ weak planner: discovery done ──► controller re-invokes planner (expand-rem
   uuidv5(runId,discoveryStepId,seq,attempt)`), windowed locally by the controller
   for `artifact-offset` continuation (§D).
 - **`step-start` claim artifact** — written immediately BEFORE a step is
-  dispatched (`{runId, slotId, stepId, seq, decisionId}`, `slotId` = the whole
-  decision); pins the winning decision for a `slotId` at dispatch time so no
-  competing decision can win during the in-flight window (§F).
-- **Per-run serialization lock** — a NEW component: an async mutex keyed by
-  `runId`/`sessionId` held for a controller turn-advance (in-process by default; a
-  distributed lease for multi-process deployments). Required because
-  `_withSession` does NOT serialize concurrent same-session requests today (§F).
+  dispatched (`{runId, slotId, stepId, seq, attempt, decisionId}`, `slotId` = the
+  whole decision); pins the winning decision for a `slotId` at dispatch time so no
+  competing decision can win during the in-flight window; `attempt` matches it 1:1
+  to its `step-result` (§F).
+- **Per-`sessionId` serialization lock** — a NEW component: an async mutex keyed
+  by `sessionId` (NOT `runId` — it must exist before hydrate/mint), acquired at
+  turn entry before hydrate and released in `finally` on every exit
+  (success/suspend/error/abort). In-process by default; a multi-process deployment
+  backs it with a distributed lease + **fencing token** stamped on every durable
+  write (stale-token writes ignored at merge; old coordinator fail-stops on lease
+  loss). Required because `_withSession` does NOT serialize concurrent same-session
+  requests today (§F).
 - **Reused / already implemented (do NOT re-spec):** per-step tool selection
   (`selectTools(step.instructions)` in `runStep`; the old prompt-level
   `selectTools(goal+prompt)` is gone — the 2026-06-09 shared change, DONE); skills
@@ -594,7 +620,16 @@ in-memory bundle store + a fake reviewer/executor):
   after that emits nothing.
 - **Slot-claim contention.** Two competing decisions for one `slotId` (different
   `stepId`s) → the first `step-start` claim's decision wins; the loser's steps
-  never appear executing on the board.
+  never appear executing on the board. (Note: this assumes the lock already
+  serialized the turns — it does NOT by itself prove serialization; see below.)
+- **Per-`sessionId` lock protocol (separate tests).** (a) Two concurrent
+  turn-advances for one `sessionId` are SERIALIZED (the second blocks until the
+  first releases — assert no interleaved writes). (b) **Fresh-run race:** two
+  parallel first-requests for a new session mint exactly ONE `runId`, not two
+  (lock taken on `sessionId` BEFORE hydrate/mint). (c) The lock is released after a
+  thrown exception AND after an abort (the `finally` runs on every exit). (d)
+  Multi-process: a write stamped with a stale fencing token is ignored at merge and
+  does not corrupt the board.
 
 (The exploratory plan-generation capture used during design lives in `/tmp` logs;
 the harness extension + handler crash tests above are the durable, plan-defined
