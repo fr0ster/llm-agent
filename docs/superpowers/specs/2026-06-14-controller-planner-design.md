@@ -272,7 +272,7 @@ Validation at expand time (only when a well-formed digest is present):
 ```
 Continuation =
   | { kind: 'artifact-offset'; artifactId: string; offset: number }   // controller windows locally — NO executor step
-  | { kind: 'tool'; tokenRef: string }                                // CONTROLLER schedules a follow-up page executor step (no planner call); raw token in durable execution state, NOT here
+  | { kind: 'tool'; tokenRef: string }                                // CONTROLLER schedules a follow-up page executor step (no planner call); raw token in the durable page-token artifact, NOT here
 ```
 
 - **`artifact-offset` (preferred, controller-local).** When the executor's
