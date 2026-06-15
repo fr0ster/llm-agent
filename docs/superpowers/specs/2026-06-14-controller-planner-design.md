@@ -124,18 +124,23 @@ user-facing `planner:` YAML field and no autodetection. Concretely:
   directly with the `kind` matching the executor it pairs — same rule, no config
   surface.
 
-**Preset must guarantee the pairing (fail-loud, not honour-system).** Selecting
-`controller-weak` while leaving a strong model in `subagents.executor` (or vice
-versa) is a real footgun. To close it, the executor subagent config carries a
-`capability: 'smart' | 'weak'` descriptor used **only for validation, never for
-selection**: each preset declares the capability it pairs the planner with, and at
-composition/build time the factory asserts `executor.capability` matches the
-preset's expectation — **mismatch fails loud** (consistent with the project's
-fail-loud config ethos), rather than silently running a weak model under the
-smart-executor planner. The preset sets a sensible default `capability`; a user
-who overrides the executor model must set a matching `capability` or the build is
-rejected. (This is a validation descriptor, NOT the rejected user-facing planner
-toggle — the planner is still chosen by the preset/composition code.)
+**Pairing guarantee — two honest levels (no false "verified capability").** Nothing
+can inspect a model and prove it is "smart"; a self-declared capability is an
+operator ASSERTION, not a verified fact. The spec is honest about this:
+
+- **Strong guarantee — preset-pinned executor.** A preset MAY own (pin) its
+  executor model/endpoint, so the user cannot override it within that preset.
+  Here the pairing is genuinely guaranteed (the preset chose both planner and
+  executor). This is the recommended shape for the shipped presets.
+- **Weak guarantee — `declaredCapability` validation.** When a preset allows the
+  user to supply `subagents.executor`, that config carries a
+  `declaredCapability: 'smart' | 'weak'` field (honestly named — an assertion).
+  The factory asserts it matches the preset's expectation and **fails loud on a
+  declared mismatch** (catches the obvious `controller-weak` + declared-smart
+  footgun). **Residual risk, documented:** the factory cannot detect a *mis*-declared
+  model (an operator labelling a weak model `smart`); that is on the operator. It
+  is NOT used for selection — the planner is still chosen by the preset/composition
+  code, never by this field.
 
 (If a future deployment needs the capability to be data-driven rather than
 preset-encoded, that is the deferred per-step `Step.tier` routing below — not a
@@ -172,22 +177,37 @@ DiscoveryDigest = {
 }
 ```
 
-Validation at expand time: `items` non-empty (empty ⇒ NOT a discovery completion →
-treated as `partial`/replan, never a 0-step fan-out); `items.length ≤ maxFanOut`
-(config, default e.g. 50) and each `label` ≤ `maxItemChars`.
+**Empty is a VALID completion, not a failure.** `items: []` with `truncated: false`
+means the discovery legitimately found nothing (e.g. a program with zero includes)
+→ the discovery step is marked `expanded` with **zero fan-out steps**, and the run
+proceeds. This is distinct from a MALFORMED outcome where the reviewer could not
+produce a valid `DiscoveryDigest` at all (no `items` field / parse failure) — THAT
+is the `partial`/`failed` → replan case. A 0-item completed discovery must NEVER
+loop into replan.
 
-**Continuation contract (truncation is resumable, not lossy).** `truncated: true`
-WITHOUT a `continuation` token is invalid (rejected → `partial`/replan) — a bare
-`truncated` flag cannot recover the remainder. When the source enumeration exceeds
-`maxFanOut`, the reviewer sets `truncated: true` and an **opaque `continuation`
-token** (offset / page cursor / next-id — defined by whatever produced the list;
-the planner treats it as opaque). After fanning out the current `items`, the
-planner emits a **follow-up discovery step** carrying that `continuation` token in
-its instructions, so the executor resumes enumeration from exactly where it
-stopped; its digest may itself be `truncated` with a further token, until a digest
-returns `truncated: false`. If a source genuinely cannot paginate, the reviewer
-MUST return the full list (no truncation) or the discovery step fails loud — never
-silently drops items.
+Validation at expand time (only when a well-formed digest is present):
+`items.length ≤ maxFanOut` (config, default e.g. 50) and each `label` ≤
+`maxItemChars`.
+
+**Continuation contract — engine-owned, reviewer never fabricates a cursor.** The
+generic reviewer cannot invent a valid source cursor for an arbitrary MCP tool, so
+`continuation` has two DEFINED origins (never a reviewer guess):
+1. **Tool-native cursor passthrough** — if the executor's tool result carries
+   pagination metadata (a next-page token per the tool contract), the reviewer
+   passes it through verbatim as the opaque `continuation`.
+2. **Engine offset into the durable full result** — otherwise the executor's
+   complete enumeration is in run-scoped RAG; "truncation" is only about how many
+   items the planner fans out at once. `continuation` is then an **engine-owned
+   offset** into that stored full list (the engine windows `[offset, offset+maxFanOut)`);
+   the reviewer reports the window, the engine owns the offset.
+
+`truncated: true` WITHOUT a `continuation` is invalid (→ `partial`/replan) — a bare
+flag cannot recover the remainder. The planner, after fanning out the current
+window, emits a **follow-up discovery step** carrying the `continuation` so
+enumeration resumes exactly where it stopped, until a digest returns `truncated:
+false`. A source that can neither return the full list in one executor result NOR
+provide a tool cursor cannot be safely fanned out → the discovery step fails loud
+(never silently drops items).
 
 The fanned-out steps are generated 1:1 from `items` (one step per `{id, label}`),
 each carrying the source `item.id` in its provenance so re-expansion/crash-replay
@@ -273,30 +293,44 @@ later `failed` overwrite a committed `ok`. The board state is the projection of 
 precedence-resolved outcome. The board is RECONSTRUCTIBLE because every entry has a
 durable `stepId`.
 
-**Durable, atomic expansion via a decision artifact.** A bare "planner was called"
-marker is insufficient: if the process dies AFTER the planner LLM returns but
-BEFORE the bundle persists, the fan-out would be lost. So the planner's FULL
-expand-remainder output (the generated fan-out steps) is first written as a
-**durable decision artifact** (run-scoped, keyed by the discovery `stepId`), and
-THEN applied. The apply is ONE atomic `writeOrdinal`-fenced bundle update writing
-together:
+**Durability rests on IMMUTABLE ARTIFACTS + deterministic merge — NOT bundle CAS.**
+Reality check on the persistence layer: `persistBundle()` is an append-only
+`KnowledgeBackend.put()`; `hydrateBundle()` takes the LATEST bundle snapshot
+(last-write-wins by scan order). There is **no CAS / version fencing** on the
+bundle, and `writeOrdinal` only orders/ties artifacts — it does NOT fence the
+bundle write. So the expansion contract must NOT claim an atomic fenced bundle
+update (it does not exist). Instead:
 
-- the discovery step's `expanded: true`,
-- the appended fan-out steps (each with its deterministic `stepId`, `state:
-  'planned'`, source `item.id`),
-- the plan **cursor** advance.
+- The bundle is a **derived, last-write-wins cache**. The **source of truth for
+  recovery is the immutable, append-only artifacts** — the `step-result` artifacts
+  and the **expand-decision artifact** below — over which the board is rebuilt by a
+  **deterministic merge** at hydrate. A lost/torn final `persistBundle` therefore
+  costs at most a re-merge from artifacts, never a duplicated or lost fan-out.
 
-Crash recovery is deterministic on TWO levels (belt-and-suspenders):
-- **Decision artifact present, apply not yet committed** → re-APPLY the persisted
-  decision (NO second LLM call); the deterministic `stepId`s make a partially-applied
-  fan-out converge to the same set (no duplication).
-- **Decision artifact absent** (crash before it persisted) → re-CALL the planner;
-  because the fan-out `stepId`s are derived deterministically from the discovery
-  `stepId` + `item.id`, any re-derived steps dedup against existing ones.
-- **Discovery already `expanded`** → expansion skipped entirely (idempotent).
+**Expand-decision artifact — storage contract.** The planner's FULL
+expand-remainder output is written as an immutable artifact BEFORE its effect is
+reflected in the bundle:
+- `artifactType: 'expand-decision'`; identity key `(runId, discoveryStepId)`;
+  payload = the generated fan-out steps (each with its deterministic `stepId`,
+  source `item.id`) + the digest `continuation` consumed.
+- Because the backend is append-only, **two decision artifacts for one
+  `(runId, discoveryStepId)` can coexist** (e.g. a re-call after a crash). They are
+  resolved deterministically: **earliest `writeOrdinal` wins** (first-writer-wins),
+  and — since fan-out `stepId`s are derived deterministically from
+  `discoveryStepId + item.id` — any two honest decisions yield the SAME stepId set,
+  so the choice is convergent, not lossy.
 
-This reuses the existing `writeOrdinal`-fenced bundle-write pattern that already
-makes step settles crash-idempotent.
+**Crash recovery (no bundle CAS needed):**
+- **Decision artifact present** → the merge re-applies it deterministically (NO
+  second LLM call); duplicate fan-out steps collapse by `stepId`.
+- **Decision artifact absent** (crash before it was written) → re-CALL the planner;
+  the deterministic `stepId`s dedup any re-derived steps against existing ones.
+- **Discovery already `expanded`** (reflected in the latest bundle OR derivable
+  from a present decision artifact) → expansion skipped (idempotent).
+
+`expanded` is thus not a CAS-protected flag but a **derived predicate**: "an
+`expand-decision` artifact exists for this `discoveryStepId`." The merge is the
+authority; the bundle snapshot is an optimization.
 
 ## Data flow
 
@@ -369,13 +403,18 @@ in-memory bundle store + a fake reviewer/executor):
 - **Crash-injection around expansion.** Inject a crash (a) after the planner LLM
   returns but BEFORE the decision artifact is written (→ replay re-CALLs; assert no
   duplication via deterministic `stepId`s), (b) after the decision artifact is
-  written but before the atomic apply/persist (→ replay re-APPLIES the persisted
-  decision, NO second LLM call), and (c) after apply (→ `expanded` guard skips).
+  written but before the bundle snapshot reflects it (→ the hydrate-time merge
+  re-APPLIES the persisted decision, NO second LLM call), and (c) after the
+  snapshot reflects it (→ `expanded` predicate skips).
   In all three, on replay assert the fan-out is **neither duplicated nor lost** —
   an identical board and a single set of fan-out steps.
-- **Retry/replan identity.** A step that fails then retries keeps one `stepId`
-  with incrementing `attempt` under one `seq`; `resolveByPrecedence` collapses to
-  the latest committed outcome; the board shows one entry.
+- **Retry identity + precedence resolution.** A step that fails then retries to
+  `ok` keeps one `stepId` with incrementing `attempt` under one `seq`;
+  `resolveByPrecedence` collapses to the `ok` (precedence `ok|exists > partial >
+  failed`, NOT latest-write) — assert a later `failed` artifact does NOT overwrite
+  an earlier committed `ok`; `writeOrdinal` only tie-breaks equal rank. A
+  replan-replacement gets a NEW `stepId` + `supersedesStepId` and shows as a
+  separate board entry.
 - **Expansion-only-on-done.** A discovery step that settles `partial`/`failed`
   triggers replan, NOT expansion; `expanded` is never set.
 - **Idempotent re-expand.** Re-invoking expand on an already-`expanded` discovery
