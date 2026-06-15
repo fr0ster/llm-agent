@@ -138,8 +138,9 @@ policy and a GUARANTEED cap).**
   continuation (`artifact-offset` → the `enumeration` artifact; `tool` → the raw
   token in the durable `page-token` secret record, §D), windows it, and passes the
   bounded window to the planner. So neither an `enumeration` offset nor a `tool`
-  token can be lost to board compaction (both are durable artifacts, not bundle
-  state).
+  token can be lost to board compaction — both live in durable, out-of-bundle
+  stores (the `enumeration` artifact; the `page-token` SECRET record in its
+  dedicated secret store, NOT an indexed artifact), never in the compactable board.
 
 ### C. Two capability-tuned planner implementations (clean break)
 
@@ -341,9 +342,13 @@ Continuation =
     **once a child page is `step-start`-claimed, its `parent` attempt is LOCKED**
     and never re-evaluated; a later retry of the parent discovery does NOT change an
     already-claimed page's parent. Consequently, **a settled discovery whose
-    downstream (expand window or next page) has been claimed is FROZEN — it is not
-    retried for chain purposes** (its consumed outcome cannot change under a claimed
-    child). For an as-yet-unclaimed next page, the parent is the claim-fixed lineage
+    downstream (expand window or next page) has been claimed is FROZEN**, and this
+    is enforced at the controller transition, not left to convention: a retry
+    REQUEST for such a step is **rejected / no-op** (the general retry machinery may
+    NOT mint a new `attempt` of a consumed `stepId`, which would change the board
+    outcome out from under a claimed child). Genuinely new exploration starts a NEW
+    chain (a fresh `discoveryStepId`), never a new attempt of the consumed step. For
+    an as-yet-unclaimed next page, the parent is the claim-fixed lineage
     of the chain (the attempt whose token the chain has been consuming), not a
     precedence re-pick. So a page is always derived from the live, claim-fixed
     parent token — never silently re-pointed at a retry.
@@ -376,6 +381,19 @@ that still has a next-page token is never the end, and the initial page is not
 "forever truncated" — it is just page 0 of a chain that completes at its terminal
 page. (A single-page discovery is the degenerate chain of length 1: no token ⇒ its
 page-complete IS chain-`fully-expanded`.)
+
+**A failed follow-up page gives the chain a TERMINAL outcome — it never hangs in
+`expanding`.** If a follow-up page step settles `failed` (missing token, tool
+error, retries exhausted), the chain does NOT stay `expanding` forever (terminal
+page never reached). It transitions to a terminal chain outcome:
+- **`partial`** (default) when ≥1 earlier page is page-complete: the already
+  fanned-out work stands, and the controller routes a **replan** with a
+  "pagination incomplete at page N (reason)" note in the digest, so the planner
+  decides how to proceed with the partial enumeration (it knows what is missing).
+- **`failed`** when NO page completed (the discovery produced nothing usable) →
+  normal failed-step replan.
+So chain states are `expanding | expanded | partial | failed`; a page failure
+propagates to one of the terminal two, never an infinite `expanding`.
 
 The reviewer never FABRICATES a cursor: it either emits the structured enumeration
 artifact (→ `artifact-offset`) or passes through a tool-native token (→ `tool`).
@@ -429,9 +447,13 @@ predicates** over the present expand decisions + page steps of the
 `discoveryChainId`, NOT stored flags:
 - a page is **page-complete** ⇔ `expand{offset}` decisions cover its enumeration to
   the end (no further within-page offset remains).
-- `expanding` (chain) ⇔ some page is not yet page-complete, OR the terminal page
-  has not been reached (a next-page token is outstanding).
+- `expanding` (chain) ⇔ some page is not yet page-complete OR the terminal page is
+  not reached, AND **no page has `failed`** (a failed page ends `expanding`).
 - `expanded` (chain, fully) ⇔ terminal page reached AND all pages page-complete.
+- `partial`/`failed` (chain, terminal) ⇔ a follow-up page `failed` (§D): `partial`
+  if ≥1 page was page-complete (replan with the partial enumeration), else
+  `failed`. So the chain always reaches a terminal state — never an infinite
+  `expanding`.
 - **Next within-page offset** = `prevOffset + prevWindow.len` (the ACTUAL recorded
   length, since windows are sized to available capacity — §D), while offset < page
   enumeration length, emitted under the §D capacity gate (idempotent — keyed by
