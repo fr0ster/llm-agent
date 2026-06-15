@@ -228,15 +228,19 @@ expand-on-success**:
      CONTROLLER schedules a **follow-up discovery EXECUTOR step** (a real tool
      round-trip carrying the token) that produces the NEXT page's `enumeration`
      artifact. This is an executor transition, not a planner fan-out.
-4. **Capacity gate (enforces "one window at a time", bounds the actionable set).**
-   The controller emits the NEXT window only when **`activeCount + nextWindowSize ≤
-   maxActiveSteps`** (i.e. enough of the previous window has SETTLED to free
-   capacity) — windows are NOT all emitted up front, so actionable steps cannot
-   pile up past `maxActiveSteps`. Each window is recorded as a
-   `plan-decision{kind:expand, offset}` (never generated twice). The discovery
-   **page** is fully windowed when offset reaches the end of its enumeration; the
-   **chain** is `fully-expanded` per the chain rule below. (Identity & durability
-   of per-window decisions: §F.)
+4. **Capacity gate — sized to AVAILABLE capacity (cannot deadlock).** The window
+   is NOT a fixed `maxFanOut` stride. The controller emits the next window with
+   `windowSize = min(maxFanOut, maxActiveSteps − activeCount, itemsRemaining)`, and
+   only when `windowSize ≥ 1`; it records the ACTUAL emitted length so the next
+   offset = `prevOffset + actualWindowLen` (NOT `+ maxFanOut`). A config invariant
+   **`maxActiveSteps ≥ maxFanOut`** is validated at load (fail-loud), so at
+   `activeCount = 0` a full window always fits — the gate can never block forever.
+   Windows are NOT all emitted up front (so actionable steps never pile up past
+   `maxActiveSteps`); each is recorded as a `plan-decision{kind:expand, offset,
+   len}` (never generated twice, keyed by `(discoveryStepId, offset)`). A discovery
+   **page** is fully windowed when the emitted windows cover its enumeration to the
+   end; the **chain** is `fully-expanded` per the chain rule below. (Identity &
+   durability of per-window decisions and follow-up page steps: §F.)
 
 **Discovery-digest contract (structured, NOT free-text).** "Fan out exactly one
 step per element" requires a machine-readable, validated digest — a free-text
@@ -300,6 +304,17 @@ Continuation =
   fetch the next page (a real tool round-trip), which yields the next `enumeration`
   artifact + continuation. So for BOTH kinds the continuation lives in durable
   state the controller reads, not in the board.
+
+  **The follow-up page step has a durable, deterministic identity** (it is a
+  controller-authored step, but the board reconstructs only from artifacts, so it
+  cannot be ad-hoc): the controller writes a `plan-decision{kind:'page',
+  discoveryChainId, pageIndex, token}` BEFORE dispatching it, with a deterministic
+  **`stepId = uuidv5(discoveryChainId, pageIndex)`**. Crash-replay: if that
+  page-decision exists, the page step is replayed with the same `stepId` (no second
+  scheduling); if not, the controller re-derives it — the deterministic `stepId`
+  dedups, so a page is never lost or duplicated. (`kind:'page'` is a
+  controller-scheduled decision, not an LLM planner call, but uses the SAME durable
+  `plan-decision` mechanism so the board stays artifact-reconstructible — §F.)
 
 **Tool-pagination is a CHAIN with its own identity + completion rule.** A
 tool-paginated source produces a CHAIN of discovery steps (page 0, page 1, …),
@@ -369,11 +384,12 @@ predicates** over the present expand decisions + page steps of the
 - `expanding` (chain) ⇔ some page is not yet page-complete, OR the terminal page
   has not been reached (a next-page token is outstanding).
 - `expanded` (chain, fully) ⇔ terminal page reached AND all pages page-complete.
-- **Next within-page offset** = `max(emitted offsets of this page) + maxFanOut`
-  while offset < page enumeration length, emitted under the §D capacity gate
-  (idempotent — keyed by `(discoveryStepId, offset)`). When a page is page-complete
-  AND it carried a next-page token, the controller instead schedules the follow-up
-  discovery EXECUTOR step for the next page (§D), not another window.
+- **Next within-page offset** = `prevOffset + prevWindow.len` (the ACTUAL recorded
+  length, since windows are sized to available capacity — §D), while offset < page
+  enumeration length, emitted under the §D capacity gate (idempotent — keyed by
+  `(discoveryStepId, offset)`). When a page is page-complete AND it carried a
+  next-page token, the controller instead schedules the follow-up discovery
+  EXECUTOR step for the next page (§D), not another window.
 Each `(discoveryStepId, offset)` window decision is emitted exactly once; the chain
 transitions `done → expanding → expanded` monotonically (no "expanded set exactly
 once" flag).
@@ -484,9 +500,11 @@ controller writes a `plan-decision` artifact for create-plan, every replan, and
 every expand-window BEFORE the board reflects it — otherwise the initial plan and
 replans would live only in the snapshot and a lost snapshot would make `planned`
 steps + `stepId`s unrecoverable. `artifactType: 'plan-decision'`; payload =
-`kind` (`create | replan | expand`), the produced/affected steps (`stepId`, full
-`instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), and for an
-expand the `discoveryStepId` + the `continuation` window it consumed.
+`kind` (`create | replan | expand | page`), the produced/affected steps (`stepId`,
+full `instructions`, `discovery?`, `supersedesStepId?`, fan-out `item.id`), for an
+expand the `discoveryStepId` + the `continuation` window (`offset, len`) consumed,
+and for a `page` the `discoveryChainId` + `pageIndex` + token (a controller-authored
+decision — not an LLM call — but durable via the same mechanism, §D).
 
 **Finality is fixed by EXECUTION, not by a hash race.** An executed step is
 IMMUTABLE — the executed prefix of the plan is never rewritten. A new planner
@@ -578,24 +596,30 @@ single-writer per-`sessionId` lock above, a content-hashed write-once decision +
 decision-slot-keyed pre-dispatch claim fix the winner before execution — never a
 retroactive flip, no in-flight window in which the winner can change.
 
-**Expand is per-WINDOW, so batching does not collapse the slot.** The expand slot
-is `(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)`. Each
-`maxFanOut` window is its own `plan-decision{kind:expand}` keyed by its `offset`
-into the `enumeration` artifact, so successive windows coexist instead of the first
-one marking the whole discovery done. The discovery is **`fully-expanded`** only
-when the window covering the end has been emitted (the one whose digest had
-`truncated: false`). `expanded` (per window) and `fully-expanded` (the discovery)
-are both **derived predicates** over the present `plan-decision{expand}` artifacts,
-not CAS flags.
+**Expand is per-WINDOW within a per-PAGE chain.** The expand slot is
+`(runId, discoveryStepId, offset)` — NOT just `(runId, discoveryStepId)` — so each
+capacity-sized window (`plan-decision{kind:expand, offset, len}`) coexists instead
+of the first one marking the whole discovery done. Across pages, a tool-paginated
+discovery is a CHAIN keyed by `discoveryChainId`; each follow-up page is a
+`plan-decision{kind:'page', discoveryChainId, pageIndex}` with deterministic
+`stepId = uuidv5(discoveryChainId, pageIndex)` (§D). Completion is at the CHAIN
+level: a **page** is page-complete when its windows cover its enumeration; the
+**chain** is **`fully-expanded`** when the terminal page (digest with NO next-page
+token) is reached AND every page is page-complete. `page-complete`, `expanding`,
+and `fully-expanded` are all **derived predicates** over the present
+`plan-decision{expand}` + `plan-decision{page}` artifacts of the
+`discoveryChainId`, not CAS flags. (The old single-`discoveryStepId` +
+`truncated:false` definition is superseded.)
 
 **Crash recovery:**
-- **A `plan-decision` for the (slot, window) exists** → re-apply it (NO new LLM
-  call).
-- **None exists** (crash before write) → re-CALL the planner forward from the
-  board; the new decision is written and execution-or-deterministic-id fixes the
-  winner.
-- **Window already expanded / discovery already fully-expanded** → skipped
-  (idempotent).
+- **A `plan-decision{expand, offset}` or `{page, pageIndex}` exists** → re-apply it
+  with its deterministic id (NO new LLM/scheduling).
+- **None exists** (crash before write) → re-derive: a window is re-formed forward
+  from the board under the capacity gate; a follow-up page is re-scheduled from the
+  durable token — the deterministic `stepId`s dedup, so no page/window is lost or
+  duplicated.
+- **Window already emitted / page already page-complete / chain already
+  `fully-expanded`** → skipped (idempotent).
 
 ## Data flow
 
@@ -634,7 +658,8 @@ discovery done ──► CONTROLLER windows the durable enumeration/tool-token (
   `state` + `digest`. `step-result` artifacts gain `stepId` AND the reviewer
   `digest` (so the board's digests are artifact-reconstructible).
 - **`plan-decision` artifact** — a new run-scoped immutable artifact for EVERY
-  planner decision (`create | replan | expand`), with a content-hash `decisionId`,
+  planner/controller decision (`create | replan | expand | page`), with a
+  content-hash `decisionId`,
   written before the bundle reflects it; the board is replayed from these +
   `step-result` artifacts (§F). Only the board portion of the bundle is thereby a
   derived cache — run-execution state still lives in the bundle.
@@ -709,10 +734,21 @@ Primary signal for the planner scope is **plan GENERATION**, not execution (agre
   skills.
 - Assert STRUCTURE, never retrieval quality: no repeated identical step (the loop
   regression we observed); discovery step present for fan-out prompts under the
-  weak planner; per-window fan-out count == that window's item count; each
-  `(discoveryStepId, offset)` window decision emitted exactly once; the discovery
-  transitions `done → expanding → expanded` and reaches `expanded` exactly once (at
-  the terminal `truncated:false` window).
+  weak planner; per-window fan-out count == that window's actual `len`; each
+  `(discoveryStepId, offset)` window decision emitted exactly once; the chain
+  transitions `done → expanding → expanded` monotonically.
+- **Tool-pagination chain tests.** A multi-page discovery: (a) each follow-up page
+  is a `plan-decision{kind:'page', discoveryChainId, pageIndex}` with deterministic
+  `stepId = uuidv5(discoveryChainId, pageIndex)`; (b) **terminal-page completion** —
+  the chain reaches `fully-expanded` only after the page with NO next-page token is
+  reached AND every page is page-complete (NOT at the first page's last window);
+  (c) **deterministic page replay** — a crash before/after a page-decision write
+  replays the SAME page `stepId`, never losing or duplicating a page.
+- **Capacity-gated windows.** With `maxActiveSteps` small relative to the
+  enumeration, assert windows are emitted incrementally as capacity frees (not all
+  up front), `windowSize = min(maxFanOut, maxActiveSteps − activeCount, remaining)`,
+  next offset advances by ACTUAL `len`, and a config with `maxActiveSteps <
+  maxFanOut` fails loud at load (no deadlock).
 - Reviewer-digest unit tests: a discovery result yields a STRUCTURED digest
   (`items: [{id,label}]`, validated, bounded by `maxFanOut`/`maxItemChars`,
   `truncated` set on overflow); a normal result yields a free-text extract
@@ -773,9 +809,9 @@ in-memory bundle store + a fake reviewer/executor):
   triggers replan, NOT expansion; NO `plan-decision{kind:expand}` is written and
   the step never enters `expanding`.
 - **Idempotent per-window re-expand.** Re-invoking expand for an already-emitted
-  `(discoveryStepId, offset)` window writes no new decision; the discovery reaches
-  `expanded` only via the terminal (`truncated:false`) window, and a re-invoke
-  after that emits nothing.
+  `(discoveryStepId, offset)` window writes no new decision; the chain reaches
+  `fully-expanded` only when the terminal page is reached AND all pages
+  page-complete, and a re-invoke after that emits nothing.
 - **Slot-claim contention.** Two competing decisions for one `slotId` (different
   `stepId`s) → the first `step-start` claim's decision wins; the loser's steps
   never appear executing on the board. (Note: this assumes the lock already
