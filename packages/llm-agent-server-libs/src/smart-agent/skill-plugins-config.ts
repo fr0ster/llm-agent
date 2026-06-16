@@ -406,6 +406,26 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     serveCollections = raw.serveCollections as readonly string[];
   }
 
+  // controllerSkillGroup: ABSENT → the controller planner recalls no dedicated
+  // skill group. A PRESENT key with the wrong type (a typo `123` / `['abap']`)
+  // must FAIL LOUD, not silently drop to undefined — otherwise controller skill
+  // recall is silently disabled and the typo never reaches validateServedGroups
+  // (skill-plugins-host-factory.ts, which treats an unknown group as a startup
+  // config error).
+  let controllerSkillGroup: string | undefined;
+  if (raw.controllerSkillGroup !== undefined) {
+    if (
+      typeof raw.controllerSkillGroup !== 'string' ||
+      raw.controllerSkillGroup.trim().length === 0
+    ) {
+      fail(
+        'controllerSkillGroup must be a non-empty string when set ' +
+          `(got ${JSON.stringify(raw.controllerSkillGroup)})`,
+      );
+    }
+    controllerSkillGroup = raw.controllerSkillGroup;
+  }
+
   return {
     mode: 'implicit',
     store,
@@ -424,9 +444,7 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     retiredGraceMs,
     orphanGraceMs,
     ...(recallTimeoutMs !== undefined ? { recallTimeoutMs } : {}),
-    ...(typeof raw.controllerSkillGroup === 'string'
-      ? { controllerSkillGroup: raw.controllerSkillGroup }
-      : {}),
+    ...(controllerSkillGroup !== undefined ? { controllerSkillGroup } : {}),
     ...(serveCollections ? { serveCollections } : {}),
     loadOnStartup,
     ...(sources ? { sources } : {}),

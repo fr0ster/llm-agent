@@ -536,3 +536,40 @@ test('sources present + default loadOnStartup → ingest (loadOnStartup true)', 
   );
   assert.equal(cfg.loadOnStartup, true);
 });
+
+// --- controllerSkillGroup: PRESENT-but-malformed must FAIL LOUD -------------
+// (a typo would otherwise silently disable controller skill recall and never
+//  reach the factory's validateServedGroups startup check).
+test('controllerSkillGroup as a number → fail loud', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ controllerSkillGroup: 123 })),
+    /controllerSkillGroup must be a non-empty string/i,
+  );
+});
+
+test('controllerSkillGroup as an array → fail loud', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig(withSource({ controllerSkillGroup: ['abap'] })),
+    /controllerSkillGroup must be a non-empty string/i,
+  );
+});
+
+test('controllerSkillGroup empty/whitespace string → fail loud', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ controllerSkillGroup: '  ' })),
+    /controllerSkillGroup must be a non-empty string/i,
+  );
+});
+
+test('controllerSkillGroup absent → undefined', () => {
+  const cfg = parseSkillPluginsConfig(withSource({}));
+  assert.equal(cfg.controllerSkillGroup, undefined);
+});
+
+test('controllerSkillGroup valid string parses through', () => {
+  const cfg = parseSkillPluginsConfig(
+    withSource({ controllerSkillGroup: 'abap' }),
+  );
+  assert.equal(cfg.controllerSkillGroup, 'abap');
+});
