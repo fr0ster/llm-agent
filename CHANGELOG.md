@@ -37,6 +37,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     `skills:` skill-manager key) with validation; built and `load()`ed at startup.
     A `mode: explicit` (planner-driven per-step group selection), dag/stepper implicit
     wiring, and live-DB retention guarantees remain follow-on work.
+  - **Fail-fast config + safe activation (review hardening).** Present-but-malformed
+    config keys now fail loud at parse instead of silently disabling behavior:
+    `serveCollections` / `controllerSkillGroup` (must be a non-empty string array /
+    non-empty string), and `dimension` (must be a positive integer). A persistent
+    config with **no sources** resolves to **recall-only** rather than driving a
+    destructive empty ingest that would tombstone the live catalog; an explicit
+    `loadOnStartup: true` with no sources fails loud. The catalog-activation ingest
+    waits for Qdrant point visibility (`wait=true`) before publishing a generation
+    active, closing a read-after-write gap where recall could see a half-built
+    generation.
 - **Controller execution-result control & data backbone.** The `controller`
   pipeline now separates DOING (executor) from JUDGING (a new reviewer role) and
   persists every step outcome *after review* into an append-only results-RAG.

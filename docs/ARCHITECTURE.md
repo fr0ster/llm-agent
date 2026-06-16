@@ -458,6 +458,32 @@ skills:
 builder.withSkillManager(new ClaudeSkillManager(process.cwd()));
 ```
 
+#### Skill plugin-host (runtime gnostification — `skillPlugins:`)
+
+A **second, distinct** skills channel, separate from the SKILL.md skill-manager
+above. The skill plugin-host (`@mcp-abap-adt/llm-agent-libs/skills/plugin-host`,
+`ISkillPluginHost`) is a **domain-agnostic** host that materializes
+**consumer-supplied** skills into a grouped, durable **skills-RAG** and serves
+recall — so the engine (MIT) bundles no domain knowledge, yet any model is
+gnosticized at runtime.
+
+- **Composition.** An injected acquisition+materialization **strategy** (owns
+  collection placement — the host imposes no grouping rule) over a **store
+  provider**. A single fenced **catalog commit** is the only activation:
+  generations build inactive, multi-source results merge (union + ownership;
+  conflicting descriptions error), a failed source carries forward, and orphaned
+  generations are reclaimed by an age-protected, crash-resumable sweeper.
+- **Stores.** `in-memory` (refcount-lease retention) or `qdrant` vectors with a
+  durable **Postgres catalog** (conditional-UPDATE CAS), deterministic UUIDv5
+  point ids, and read-only reader interfaces for least-privilege recall-only
+  serving. The activation ingest waits for point visibility (`wait=true`) before
+  the catalog is published, so recall never sees a half-built active generation.
+- **Consumption.** Implicit for the assembler pipelines (`flat`/default,
+  `linear`) via an `IRag` source rendered under a "Relevant Skills" block, plus a
+  dedicated `controller`-planner recall hook (the configured
+  `controllerSkillGroup`). Wired from the `skillPlugins:` server config (see
+  EXAMPLES.md). `mode: explicit` and dag/stepper implicit wiring are follow-on.
+
 ## Internal Interfaces and Default Implementations
 
 | Interface | Role | Default implementation |
