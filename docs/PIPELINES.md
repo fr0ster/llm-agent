@@ -88,7 +88,7 @@ pipeline:
 - The **skills RAG** is provided by the **skill plugin-host** (`skillPlugins:`
   server config) — a domain-agnostic host that materializes consumer-supplied
   skills into a grouped, durable skills-RAG. Assembler pipelines (`flat`,
-  `linear`) recall it implicitly under a "Relevant Skills" block; the
+  `linear`, `dag`) recall it implicitly under a "Relevant Skills" block; the
   `controller` planner recalls the configured `controllerSkillGroup`. This keeps
   the engine free of bundled domain knowledge while gnosticizing any model at
   runtime. Config + examples: [EXAMPLES.md](EXAMPLES.md#skill-plugin-host-skillplugins--runtime-gnostification).

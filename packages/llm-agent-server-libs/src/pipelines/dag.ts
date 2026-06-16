@@ -4,6 +4,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import { DagCoordinatorHandler } from '@mcp-abap-adt/llm-agent-libs';
 import { buildDagCoordinatorDeps } from '../smart-agent/build-dag-coordinator-deps.js';
+import { registerSkillSources } from './register-skill-sources.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 /** Config = the raw `coordinator:` (DAG) YAML block, validated by parseConfig. */
@@ -54,7 +55,7 @@ export class DagPipelinePlugin implements IPipelinePlugin<DagPipelineConfig> {
       );
     }
     const handler = new DagCoordinatorHandler(deps);
-    const builder = await ctx.createAgentBuilder();
+    const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };
   }

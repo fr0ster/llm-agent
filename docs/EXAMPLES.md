@@ -375,7 +375,7 @@ SKILL.md skill-manager (file-system discovery, vectorized into the tools RAG).
 **consumer-supplied** skills into a grouped, durable **skills-RAG** and lets
 pipelines recall them at runtime — so the engine ships **no** bundled domain
 knowledge, yet any model is gnosticized as it works. Recall is implicit for the
-assembler pipelines (`flat`/default, `linear`) under a "Relevant Skills" block,
+assembler pipelines (`flat`/default, `linear`, `dag`) under a "Relevant Skills" block,
 and the `controller` planner recalls a configured group.
 
 **Quick start — in-memory, inline record sources** (ephemeral; no DB):
@@ -438,7 +438,7 @@ skillPlugins:
 | `maxInjectChars` | `4000` | "Relevant Skills" block char budget (assembler pipelines) |
 | `retiredGraceMs` / `orphanGraceMs` | `30000` / `3600000` | Grace before reclaiming retired / orphaned generations |
 
-> `mode: explicit` (planner-driven per-step group selection) and dag/stepper
+> `mode: explicit` (planner-driven per-step group selection) and stepper
 > implicit wiring are follow-on work.
 
 ### Custom pipeline implementation
