@@ -64,7 +64,15 @@ export interface IQdrantReader {
 }
 
 export interface IQdrantClient extends IQdrantReader {
-  upsertPoints(points: QdrantPoint[]): Promise<void>;
+  /**
+   * Upsert points. `opts.wait` (default false) maps to Qdrant `?wait=true`:
+   * the request returns only after the operation is APPLIED and the points are
+   * searchable. The general default omits it (throughput); the catalog-activation
+   * ingest path passes `wait: true` so a generation is never published active
+   * before its points are visible to recall (read-after-write at the activation
+   * boundary).
+   */
+  upsertPoints(points: QdrantPoint[], opts?: { wait?: boolean }): Promise<void>;
   deleteByFilter(filter: object): Promise<void>;
 }
 
@@ -470,8 +478,9 @@ export function makeQdrantClient(opts: QdrantRestOptions): IQdrantClient {
   const base = `${opts.url.replace(/\/$/, '')}/collections/${opts.collection}`;
   return {
     ...reader,
-    async upsertPoints(points) {
-      const res = await fetch(`${base}/points`, {
+    async upsertPoints(points, upsertOpts) {
+      const q = upsertOpts?.wait ? '?wait=true' : '';
+      const res = await fetch(`${base}/points${q}`, {
         method: 'PUT',
         headers: qdrantHeaders(opts.apiKey),
         body: JSON.stringify({
@@ -632,7 +641,10 @@ export function makeQdrantStoreProvider(
             },
           });
         }
-        if (points.length > 0) await client.upsertPoints(points);
+        // wait=true: this generation is about to be published active by the
+        // host; its points MUST be searchable before activation (read-after-write).
+        if (points.length > 0)
+          await client.upsertPoints(points, { wait: true });
       },
 
       async carryForward(generation, sourceIds) {
@@ -652,7 +664,10 @@ export function makeQdrantStoreProvider(
             payload: { ...p.payload, generation, createdAt },
           };
         });
-        if (points.length > 0) await client.upsertPoints(points);
+        // wait=true: carried-forward points join the same about-to-be-activated
+        // generation, so they too must be visible before publishCatalog.
+        if (points.length > 0)
+          await client.upsertPoints(points, { wait: true });
       },
 
       async discardGeneration(generation) {

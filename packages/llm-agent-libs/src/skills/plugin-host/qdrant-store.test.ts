@@ -9,6 +9,7 @@ import {
   makePgCatalogReader,
   makePgCatalogStore,
   makeQdrantBackendProvider,
+  makeQdrantClient,
   makeQdrantStoreProvider,
   pointId,
 } from './qdrant-store.js';
@@ -57,9 +58,11 @@ interface StoredPoint {
 function makeMockClient(): IQdrantClient & {
   _points: Map<string, StoredPoint>;
   _deleteCalls: number;
+  _upsertWaits: boolean[];
 } {
   const points = new Map<string, StoredPoint>();
   const counter = { deleteCalls: 0 };
+  const upsertWaits: boolean[] = [];
   const matches = (
     p: StoredPoint,
     filter: Record<string, unknown>,
@@ -88,10 +91,12 @@ function makeMockClient(): IQdrantClient & {
   };
   return {
     _points: points,
+    _upsertWaits: upsertWaits,
     get _deleteCalls() {
       return counter.deleteCalls;
     },
-    async upsertPoints(pts) {
+    async upsertPoints(pts, opts) {
+      upsertWaits.push(opts?.wait === true);
       for (const p of pts) points.set(p.id, { ...p });
     },
     async deleteByFilter(filter) {
@@ -581,4 +586,63 @@ test('makePgCatalogStore / Reader accept a valid identifier and schema.table', (
   assert.doesNotThrow(() =>
     makePgCatalogReader({ pool, table: 'public.skills_catalog' }),
   );
+});
+
+// --- read-after-write visibility at the activation boundary -----------------
+
+test('makeQdrantClient.upsertPoints adds ?wait=true only when opts.wait set', async () => {
+  const urls: string[] = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async (input: unknown) => {
+    urls.push(String(input));
+    return { ok: true, status: 200 } as Response;
+  }) as typeof fetch;
+  try {
+    const client = makeQdrantClient({
+      url: 'http://q',
+      collection: 'skills',
+    });
+    const pts = [{ id: 'p1', vector: [1, 0, 0], payload: { generation: 'g' } }];
+    await client.upsertPoints(pts); // default: throughput, no wait
+    await client.upsertPoints(pts, { wait: true }); // activation ingest
+    assert.equal(urls.length, 2);
+    assert.equal(urls[0], 'http://q/collections/skills/points');
+    assert.equal(urls[1], 'http://q/collections/skills/points?wait=true');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('store.upsert ingest passes wait:true (points visible before publishCatalog)', async () => {
+  const client = makeMockClient();
+  const p = makeProvider(client);
+  const store = p.forGroup('g1');
+  const g0 = (await store.beginGeneration()).generation;
+  await store.upsert(g0, [rec('a'), rec('b')]);
+  // the generation-build upsert MUST request wait=true so the about-to-be
+  // activated generation's points are searchable before activation
+  assert.deepEqual(client._upsertWaits, [true]);
+});
+
+test('store.carryForward ingest passes wait:true', async () => {
+  const client = makeMockClient();
+  const catalogStore = makeInProcessCatalogStore();
+  const p = makeProvider(client, { catalogStore });
+  const store = p.forGroup('g1');
+  // publish an active generation g0 with one source so there is something live
+  const g0 = (await store.beginGeneration()).generation;
+  await store.upsert(g0, [rec('a', 'g1', 's')]);
+  await p.publishCatalog((await p.readCatalog()).catalogRevision, [
+    {
+      collection: { group: 'g1', description: 'd', collection: 'skills' },
+      sources: ['s'],
+      generation: g0,
+      manifest: MANIFEST,
+    },
+  ]);
+  client._upsertWaits.length = 0; // reset; measure carryForward only
+  const g1 = (await store.beginGeneration()).generation;
+  await store.carryForward(g1, ['s']);
+  assert.ok(client._upsertWaits.length > 0);
+  assert.ok(client._upsertWaits.every((w) => w === true));
 });

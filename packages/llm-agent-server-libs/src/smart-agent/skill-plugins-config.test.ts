@@ -376,3 +376,79 @@ test('valid numeric knobs parse', () => {
   assert.equal(cfg.orphanGraceMs, 120000);
   assert.deepEqual(cfg.chunk, { maxChars: 800 });
 });
+
+// serveCollections: PRESENT-but-malformed must FAIL LOUD (no silent serve-all
+// fail-open). Absent is the only "serve all" path.
+test('serveCollections set to a bare string throws (typo: abap, not [abap])', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ serveCollections: 'abap' })),
+    /serveCollections must be an array of non-empty strings/i,
+  );
+});
+
+test('serveCollections with a non-string entry throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ serveCollections: ['a', 2] })),
+    /serveCollections must be an array of non-empty strings/i,
+  );
+});
+
+test('serveCollections with an empty/whitespace entry throws', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig(withSource({ serveCollections: ['a', '  '] })),
+    /serveCollections must be an array of non-empty strings/i,
+  );
+});
+
+test('serveCollections absent → undefined (serve all, downstream default)', () => {
+  const cfg = parseSkillPluginsConfig(withSource({}));
+  assert.equal(cfg.serveCollections, undefined);
+});
+
+test('serveCollections valid string[] parses through', () => {
+  const cfg = parseSkillPluginsConfig(
+    withSource({ serveCollections: ['abap', 'btp'] }),
+  );
+  assert.deepEqual(cfg.serveCollections, ['abap', 'btp']);
+});
+
+test('serveCollections empty array → explicit serve-none (kept, not serve-all)', () => {
+  const cfg = parseSkillPluginsConfig(withSource({ serveCollections: [] }));
+  assert.deepEqual(cfg.serveCollections, []);
+});
+
+// dimension must be a positive integer (vector/embedding size) — not NaN, 0,
+// negative, or fractional.
+test('dimension non-numeric throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ dimension: 'big' })),
+    /dimension must be a positive integer/i,
+  );
+});
+
+test('dimension zero throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ dimension: 0 })),
+    /dimension must be a positive integer/i,
+  );
+});
+
+test('dimension fractional throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ dimension: 768.5 })),
+    /dimension must be a positive integer/i,
+  );
+});
+
+test('dimension negative throws', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(withSource({ dimension: -1 })),
+    /dimension must be a positive integer/i,
+  );
+});
+
+test('dimension valid positive integer parses', () => {
+  const cfg = parseSkillPluginsConfig(withSource({ dimension: 768 }));
+  assert.equal(cfg.dimension, 768);
+});

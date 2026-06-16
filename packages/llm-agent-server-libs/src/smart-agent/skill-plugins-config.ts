@@ -355,11 +355,27 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
       }
     : undefined;
 
-  const serveCollections =
-    Array.isArray(raw.serveCollections) &&
-    raw.serveCollections.every((c) => typeof c === 'string')
-      ? (raw.serveCollections as readonly string[])
-      : undefined;
+  // serveCollections: ABSENT → serve all served groups (downstream default).
+  // But a PRESENT key with the wrong shape must FAIL LOUD, not silently fall
+  // back to "serve all" — a typo (`serveCollections: abap` instead of
+  // `['abap']`) or a non-string entry would otherwise fail-OPEN and register
+  // every (possibly conflicting) group. See register-skill-sources.ts, where
+  // `undefined` means "all".
+  let serveCollections: readonly string[] | undefined;
+  if (raw.serveCollections !== undefined) {
+    if (
+      !Array.isArray(raw.serveCollections) ||
+      !raw.serveCollections.every(
+        (c) => typeof c === 'string' && c.trim().length > 0,
+      )
+    ) {
+      fail(
+        'serveCollections must be an array of non-empty strings when set ' +
+          `(got ${JSON.stringify(raw.serveCollections)})`,
+      );
+    }
+    serveCollections = raw.serveCollections as readonly string[];
+  }
 
   return {
     mode: 'implicit',
@@ -367,7 +383,7 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
     ...(embeddingSpaceId ? { embeddingSpaceId } : {}),
     ...(embedder ? { embedder } : {}),
     ...(raw.dimension !== undefined
-      ? { dimension: Number(raw.dimension) }
+      ? { dimension: posInt(raw.dimension, 'dimension') }
       : {}),
     catalog,
     k,
