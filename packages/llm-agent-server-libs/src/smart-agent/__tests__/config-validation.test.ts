@@ -578,3 +578,59 @@ describe('legacy coordinator:/pipeline: migration guard (clean break)', () => {
     );
   });
 });
+
+describe('resolveSmartServerConfig — skillPlugins block', () => {
+  const llm = { provider: 'ollama', model: 'm' };
+
+  it('parses a minimal skillPlugins block into the normalized config', () => {
+    const cfg = resolveSmartServerConfig(
+      {},
+      {
+        llm,
+        skillPlugins: {
+          mode: 'implicit',
+          store: { type: 'in-memory' },
+          catalog: { type: 'in-process' },
+          sources: [
+            {
+              id: 'src',
+              records: [
+                {
+                  id: 'r1',
+                  group: 'g1',
+                  content: 'do A',
+                  retrievalText: 'how to A',
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {},
+    );
+    assert.ok(cfg.skillPlugins);
+    assert.equal(cfg.skillPlugins.mode, 'implicit');
+    assert.equal(cfg.skillPlugins.store.type, 'in-memory');
+    assert.equal(cfg.skillPlugins.catalog.type, 'in-process');
+    // Defaults applied by the normalizer.
+    assert.equal(cfg.skillPlugins.k, 4);
+    assert.equal(cfg.skillPlugins.sources?.length, 1);
+  });
+
+  it('leaves skillPlugins undefined when the block is absent', () => {
+    const cfg = resolveSmartServerConfig({}, { llm }, {});
+    assert.equal(cfg.skillPlugins, undefined);
+  });
+
+  it('fail-loud propagates a skillPlugins parse error', () => {
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          { llm, skillPlugins: { mode: 'explicit' } },
+          {},
+        ),
+      /explicit.*not yet implemented/i,
+    );
+  });
+});

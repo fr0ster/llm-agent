@@ -2,6 +2,7 @@ import type {
   IPipelineInstance,
   IPipelinePlugin,
 } from '@mcp-abap-adt/llm-agent';
+import { registerSkillSources } from './register-skill-sources.js';
 import type { IServerPipelineContext } from './server-context.js';
 
 /**
@@ -23,7 +24,7 @@ export class FlatPipelinePlugin
     _cfg: Record<string, never>,
     ctx: IServerPipelineContext,
   ): Promise<IPipelineInstance> {
-    const builder = await ctx.createAgentBuilder();
+    const builder = registerSkillSources(await ctx.createAgentBuilder(), ctx);
     const handle = await builder.build();
     return { agent: handle.agent, close: () => handle.close() };
   }

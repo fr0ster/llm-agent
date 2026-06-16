@@ -367,6 +367,80 @@ Look for these log entries:
 
 **Note:** Skill discovery requires an embedder (e.g., Ollama) for semantic matching. BM25 keyword matching (in-memory without embedder) may not match skills if the user query doesn't contain the skill's exact keywords.
 
+### Skill plugin-host (`skillPlugins:`) — runtime gnostification
+
+`skillPlugins:` is **distinct from `skills:`** above. `skills:` is the local
+SKILL.md skill-manager (file-system discovery, vectorized into the tools RAG).
+`skillPlugins:` is a **domain-agnostic host** that materializes
+**consumer-supplied** skills into a grouped, durable **skills-RAG** and lets
+pipelines recall them at runtime — so the engine ships **no** bundled domain
+knowledge, yet any model is gnosticized as it works. Recall is implicit for the
+assembler pipelines (`flat`/default, `linear`, `dag`) under a "Relevant Skills" block,
+and the `controller` planner recalls a configured group.
+
+**Quick start — in-memory, inline record sources** (ephemeral; no DB):
+
+```yaml
+skillPlugins:
+  # store defaults to in-memory; catalog to in-process
+  sources:
+    - id: my-skills
+      records:
+        - { group: abap, name: read-include, content: "To read an include, first read the main program, then fetch each include by name." }
+        - { group: abap, name: where-used, content: "Resolve where-used via the cross-reference tool, not by scanning sources." }
+```
+
+**Durable — Qdrant vectors + Postgres catalog + a real embedder:**
+
+```yaml
+skillPlugins:
+  store: { type: qdrant, url: http://localhost:6333 }
+  catalog: { type: postgres, connectionString: postgres://user:pass@localhost:5432/skills }
+  embeddingSpaceId: nomic-768          # MANDATORY for a persistent store (stable vector-space id)
+  embedder: { provider: ollama, model: nomic-embed-text }
+  dimension: 768                       # optional; skips the probe embed (must be a positive integer)
+  serveCollections: [abap]             # which groups assembler pipelines read; omit → all produced
+  controllerSkillGroup: abap           # the single group the controller planner recalls
+  k: 4                                  # records recalled per query (default 4)
+  threshold: 0.3                        # min cosine similarity (default 0.3)
+  sources:
+    - id: vendor-skills
+      registry: https://skills.example.com
+      enabled: ["*"]                   # which plugins to materialize ('*' = all)
+```
+
+**Recall-only** (read a catalog another process ingested — never writes):
+
+```yaml
+skillPlugins:
+  store: { type: qdrant, url: http://localhost:6333 }
+  catalog: { type: postgres, connectionString: postgres://reader:pass@localhost:5432/skills }
+  embeddingSpaceId: nomic-768
+  embedder: { provider: ollama, model: nomic-embed-text }
+  loadOnStartup: false                 # recall-only: no ingest (requires a persistent store; no sources)
+  serveCollections: [abap]
+```
+
+**Key knobs:**
+
+| Key | Default | Purpose |
+|-----|---------|---------|
+| `store` | `{ type: in-memory }` | `in-memory` (ephemeral) or `qdrant` (durable vectors) |
+| `catalog` | `{ type: in-process }` | `in-process` or `postgres` (durable; required with `qdrant`) |
+| `embeddingSpaceId` | — | Stable vector-space id; **mandatory** for a `qdrant` store |
+| `embedder` | — | `{ provider, model? }` for the serving embedder |
+| `dimension` | — | Declared vector size (positive integer) — skips the probe embed |
+| `sources` | — | Acquisition sources: inline `{ id, records }` or fetched `{ id, registry, enabled[] }`. **Absent → recall-only** (needs a persistent store) |
+| `loadOnStartup` | `true` | `false` = recall-only (no ingest). A **no-source** config is recall-only automatically; an explicit `true` with no sources fails fast |
+| `serveCollections` | all produced | Which groups assembler pipelines read. Set but not a non-empty string array → fails fast |
+| `controllerSkillGroup` | — | Single group the controller planner recalls. Set but not a non-empty string → fails fast |
+| `k` / `threshold` | `4` / `0.3` | Records per query / min cosine similarity |
+| `maxInjectChars` | `4000` | "Relevant Skills" block char budget (assembler pipelines) |
+| `retiredGraceMs` / `orphanGraceMs` | `30000` / `3600000` | Grace before reclaiming retired / orphaned generations |
+
+> `mode: explicit` (planner-driven per-step group selection) and stepper
+> implicit wiring are follow-on work.
+
 ### Custom pipeline implementation
 
 ```ts

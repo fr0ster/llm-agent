@@ -85,6 +85,13 @@ pipeline:
   the agnostic prompt cover those, and richer per-situation procedures belong to
   the **skills RAG** (a separate, dynamic mechanism, not wired via `hint`).
   `controller-mixed.yaml` carries an executor hint as a worked example.
+- The **skills RAG** is provided by the **skill plugin-host** (`skillPlugins:`
+  server config) — a domain-agnostic host that materializes consumer-supplied
+  skills into a grouped, durable skills-RAG. Assembler pipelines (`flat`,
+  `linear`, `dag`) recall it implicitly under a "Relevant Skills" block; the
+  `controller` planner recalls the configured `controllerSkillGroup`. This keeps
+  the engine free of bundled domain knowledge while gnosticizing any model at
+  runtime. Config + examples: [EXAMPLES.md](EXAMPLES.md#skill-plugin-host-skillplugins--runtime-gnostification).
 - Internal (MCP) tools are surfaced to the executor by **semantic top-K** from
   the vectorized tool catalog (`toolsRag`); a distance-based `targetState`
   strategy therefore needs an embedder (`consumer-confirm` does not).

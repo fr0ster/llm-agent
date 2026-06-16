@@ -1,4 +1,5 @@
 import type {
+  CallOptions,
   LlmUsage,
   Message,
   StreamToolCall,
@@ -203,6 +204,10 @@ export interface PlannerNextInput {
    *  executor prompt does NOT include plannerPrivate). Incremental ignores it. */
   resumedExternal?: boolean;
   logUsage?: (role: string, u?: LlmUsage) => void;
+  /** Request-scoped call options (request logger / trace / cancellation signal).
+   *  Threaded into the skills-recall hook so the recall embedding is metered,
+   *  cancellable, and joins the request trace. */
+  options?: CallOptions;
 }
 
 export interface IControllerPlanner {

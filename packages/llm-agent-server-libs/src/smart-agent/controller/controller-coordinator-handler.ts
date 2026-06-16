@@ -157,6 +157,13 @@ export interface ControllerHandlerDeps {
   now?: () => string;
   /** Terminal-store TTL in ms (default 24h). */
   terminalTtlMs?: number;
+  /**
+   * Optional controller-own skills recall hook. When present it is threaded into
+   * the planner, which queries it before each create-plan/replan and injects a
+   * bounded "Relevant skills" block into the prompt. Absent → the planner prompt
+   * is byte-identical to the agnostic path.
+   */
+  skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
 }
 
 // ---------------------------------------------------------------------------
@@ -335,6 +342,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       deps.config.planner ?? 'incremental',
       deps.planner,
       deps.config.subagents.planner?.hint,
+      deps.skillsRecall,
     );
 
     if (bundle.pending?.kind === 'external-tool') {
@@ -669,6 +677,10 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         resumedExternal,
         retrying: planParseRetries > 0,
         logUsage,
+        // Same request CallOptions the handler threads into every other LLM/RAG
+        // call (subagents, knowledgeRagFor, target-state) so the skills-recall
+        // embedding is metered, cancellable, and joins the request trace.
+        options: ctx.options,
       });
       // The call completed → clear the in-flight marker + reset the resume counter
       // (a malformed reply is still a completed call; parse-retry is handled below).

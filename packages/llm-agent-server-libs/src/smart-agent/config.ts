@@ -27,6 +27,7 @@ import {
   TopKToolSelection,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { parse as parseYaml } from 'yaml';
+import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import type {
   SmartServerConfig,
   SmartServerLlmConfig,
@@ -1172,6 +1173,9 @@ export function resolveSmartServerConfig(
               | undefined,
           },
         }
+      : {}),
+    ...(yaml.skillPlugins
+      ? { skillPlugins: parseSkillPluginsConfig(yaml.skillPlugins) }
       : {}),
   };
   validateResolvedConfig(resolved, yaml, env);

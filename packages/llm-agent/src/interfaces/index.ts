@@ -175,6 +175,28 @@ export type {
   ISkillResource,
 } from './skill.js';
 export type {
+  ActiveSnapshot,
+  CatalogEntry,
+  CatalogSnapshot,
+  ISkillPluginHost,
+  ISkillSource,
+  ISkillsCatalog,
+  ISkillsRagBackend,
+  ISkillsRagBackendProvider,
+  ISkillsRagHandle,
+  ISkillsStore,
+  ISkillsStoreProvider,
+  RetiredGeneration,
+  SkillGroupInfo,
+  SkillHit,
+  SkillIngestResult,
+  SkillLoadResult,
+  SkillRecord,
+  SkillsEmbeddingDescriptor,
+  SkillsManifest,
+} from './skills-rag.js';
+export { CatalogCasError, SkillsIncompatibleError } from './skills-rag.js';
+export type {
   IStateOracle,
   StateOracleInput,
   StateOracleResult,

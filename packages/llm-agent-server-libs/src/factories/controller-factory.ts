@@ -40,6 +40,14 @@ export interface ControllerFactoryDeps extends PipelineFactoryDepsBase {
   ) => Promise<readonly LlmTool[]>;
   /** Optional override marking a tool as consumer-supplied (test-only). */
   isExternalTool?: (toolName: string) => boolean;
+  /**
+   * Optional controller-own skills recall hook. When present, the planner queries
+   * it before each create-plan/replan and injects a bounded "Relevant skills"
+   * block into the prompt. The controller pipeline builds this from the skill
+   * plugin-host + configured group. Absent → the planner prompt is byte-identical
+   * to the agnostic path (the measurement toggle).
+   */
+  skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
 }
 
 /**
@@ -122,6 +130,7 @@ export class ControllerFactory
       callMcp: (name, args) => deps.callMcp(name, args),
       selectTools: deps.selectTools,
       ...(deps.isExternalTool ? { isExternalTool: deps.isExternalTool } : {}),
+      ...(deps.skillsRecall ? { skillsRecall: deps.skillsRecall } : {}),
       reviewer: new LlmReviewer(makeSubagentClient(reviewerLlm)),
       finalizer: new LlmFinalizer(makeSubagentClient(finalizerLlm), {
         budget: 12000,
