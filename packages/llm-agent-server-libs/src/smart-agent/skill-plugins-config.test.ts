@@ -452,3 +452,87 @@ test('dimension valid positive integer parses', () => {
   const cfg = parseSkillPluginsConfig(withSource({ dimension: 768 }));
   assert.equal(cfg.dimension, 768);
 });
+
+// --- no-source / sources-shape safety (no destructive empty ingest) ---------
+
+// A persistent store config (qdrant + postgres catalog) WITHOUT extra knobs.
+const persistent = (extra: Record<string, unknown>) => ({
+  store: { type: 'qdrant', url: 'http://q' },
+  embeddingSpaceId: 'sp-1',
+  catalog: { type: 'postgres', connectionString: 'pg://x' },
+  ...extra,
+});
+
+test('persistent + no sources + default loadOnStartup → recall-only (NOT destructive ingest)', () => {
+  const cfg = parseSkillPluginsConfig(persistent({}));
+  // default true must resolve to recall-only when there is nothing to ingest —
+  // otherwise the ingest path would tombstone the live catalog + publish empty.
+  assert.equal(cfg.loadOnStartup, false);
+  assert.equal(cfg.sources, undefined);
+});
+
+test('persistent + no sources + EXPLICIT loadOnStartup:true → fail loud', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(persistent({ loadOnStartup: true })),
+    /loadOnStartup:true requires sources to ingest/i,
+  );
+});
+
+test('persistent + empty sources [] + default loadOnStartup → recall-only', () => {
+  const cfg = parseSkillPluginsConfig(persistent({ sources: [] }));
+  assert.equal(cfg.loadOnStartup, false);
+});
+
+test('persistent + empty sources [] + EXPLICIT loadOnStartup:true → fail loud', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig(persistent({ sources: [], loadOnStartup: true })),
+    /loadOnStartup:true requires sources to ingest/i,
+  );
+});
+
+test('sources present but NOT an array (typo sources:{...}) → fail loud', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig(
+        persistent({ sources: { id: 'a', records: [] } }),
+      ),
+    /sources must be an array when set/i,
+  );
+});
+
+test('sources present but a scalar (sources: 5) → fail loud', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig(persistent({ sources: 5 })),
+    /sources must be an array when set/i,
+  );
+});
+
+test('regression: sources present + loadOnStartup:false still fails', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig(
+        persistent({
+          sources: [{ id: 'a', records: [{ group: 'g', content: 'x' }] }],
+          loadOnStartup: false,
+        }),
+      ),
+    /sources cannot be combined with loadOnStartup:false/i,
+  );
+});
+
+test('regression: no sources + in-memory store (default) → requires persistent store', () => {
+  assert.throws(
+    () => parseSkillPluginsConfig({}),
+    /requires a persistent store/i,
+  );
+});
+
+test('sources present + default loadOnStartup → ingest (loadOnStartup true)', () => {
+  const cfg = parseSkillPluginsConfig(
+    persistent({
+      sources: [{ id: 'a', records: [{ group: 'g', content: 'x' }] }],
+    }),
+  );
+  assert.equal(cfg.loadOnStartup, true);
+});

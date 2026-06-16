@@ -315,16 +315,45 @@ export function parseSkillPluginsConfig(raw: unknown): SkillPluginsConfig {
   }
 
   // loadOnStartup + sources/store mutual constraints.
-  const loadOnStartup =
-    raw.loadOnStartup !== undefined ? Boolean(raw.loadOnStartup) : true;
+  //
+  // A PRESENT `sources` that is NOT an array (typo `sources: {...}` / `sources: 5`)
+  // must fail loud — otherwise it is mistaken for "no sources", which on a
+  // persistent store with the default loadOnStartup:true drives a DESTRUCTIVE
+  // empty ingest (tombstone every prior catalog entry + publish an empty catalog).
   const rawSources = raw.sources;
-  const hasSources = Array.isArray(rawSources) && rawSources.length > 0;
-
-  if (hasSources && loadOnStartup === false) {
+  if (rawSources !== undefined && !Array.isArray(rawSources)) {
     fail(
-      'sources cannot be combined with loadOnStartup:false (recall-only has nothing to ingest)',
+      `sources must be an array when set (got ${JSON.stringify(rawSources)})`,
     );
   }
+  const hasSources = Array.isArray(rawSources) && rawSources.length > 0;
+  const loadOnStartupReq =
+    raw.loadOnStartup !== undefined ? Boolean(raw.loadOnStartup) : undefined;
+
+  // Resolve loadOnStartup with the no-source safety rule. The contract
+  // (`sources` absent → recall-only) means the default true must NEVER turn a
+  // no-source config into an ingest: with nothing to ingest, ingest mode only
+  // wipes the live catalog. So no sources → recall-only; an EXPLICIT
+  // loadOnStartup:true with no sources is a mistake and fails loud.
+  let loadOnStartup: boolean;
+  if (hasSources) {
+    loadOnStartup = loadOnStartupReq ?? true;
+    if (loadOnStartup === false) {
+      fail(
+        'sources cannot be combined with loadOnStartup:false (recall-only has nothing to ingest)',
+      );
+    }
+  } else {
+    if (loadOnStartupReq === true) {
+      fail(
+        'loadOnStartup:true requires sources to ingest — a no-source config is ' +
+          'recall-only. Add sources or set loadOnStartup:false. (Ingesting with ' +
+          'no sources would tombstone the active catalog and publish an empty one.)',
+      );
+    }
+    loadOnStartup = false;
+  }
+
   if (!hasSources && !persistentStore) {
     fail(
       'recall-only (no sources) requires a persistent store (an in-memory store with nothing to ingest is always empty)',
