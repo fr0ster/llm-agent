@@ -994,12 +994,16 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   checkpoints with a stub skill source + a probe prompt: (1) the skill source is
   attached to that pipeline; (2) a relevant skill is SELECTED for the probe; (3)
   the selected skill's CONTENT actually appears in the exact context the pipeline
-  feeds the model (the assembler prompt for flat/linear; the planner recall block
-  for controller; the step/tool-query context for dag/stepper). A pipeline that
-  does NOT yet wire skills (per the skill-plugin-host spec — e.g. dag/stepper if
-  still deferred there) is an EXPLICIT matrix entry marked `unsupported(reason)` /
-  `xfail`, not a silent gap — so the matrix is exhaustive and every cell is a
-  definite supported-pass or recorded-deferred. This scope is NOT planner-specific.
+  feeds the model (the assembler "Relevant Skills" block for flat/linear/**dag** —
+  all three recall skills via the implicit assembler source as of the merged
+  skill-plugin-host; the planner recall block for controller). A pipeline that
+  does NOT yet wire skills (per the skill-plugin-host follow-on — currently
+  **`stepper`**, whose implicit wiring is deferred) is an EXPLICIT matrix entry
+  marked `unsupported(reason)` / `xfail`, not a silent gap — so the matrix is
+  exhaustive and every cell is a definite supported-pass or recorded-deferred.
+  This scope is NOT planner-specific. (State as of skill-plugin-host merge: flat,
+  linear, dag = supported; controller = supported via its planner recall hook;
+  stepper = `xfail` until its implicit wiring lands.)
 - **Replanning / deferred expansion / capability planners / board+claim+attempt+
   crash — the CONTROLLER pipeline ONLY.** ("Has a planner" is too broad — `dag`
   and `deep stepper` also have planners but do NOT implement this board / claim /
