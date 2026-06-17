@@ -1093,6 +1093,31 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   (`smart-executor`, `weak-executor`). Pipelines without a planner (flat/linear/…)
   get only the gnostification scope above.
 
+**Canonical test-prompt set (record in permanent docs — see the docs task below).**
+The prompts both scopes use, kept in ONE list so they are not re-invented per run
+(English — the artifact-language invariant; a prompt may be ISSUED in the user's
+language, but the canonical record is English):
+
+- **Gnostification probes** (run WITH/WITHOUT skills, across the pipeline matrix):
+  - `review` — "Review ABAP program ZDAZ_R_DELAYED_UPDATE for security, performance, Clean Core, and maintainability."
+  - `table-read` — "Read the structure of table T100 and list its key fields."
+  - `class-with-code` — "Create ABAP class ZCL_CTRL_DEMO in package $TMP with a public method GET_GREETING returning 'Hello from the controller'."
+  - `compound-create` — "In package $TMP create, in dependency order, domain ZDOM_CTRL → data element ZDTE_CTRL → transparent table ZTAB_CTRL." (planner dependency-ordering)
+  - `cds-composition` — "In package $TMP create two CDS views in a composition: root ZI_CTRL_HEAD + child ZI_CTRL_ITEM."
+- **Deferred-expansion probes** (§D, CONTROLLER-only, planner-scope) — data-dependent fan-out, decomposition NOT knowable at plan time:
+  - `read-includes`, `find-usages` (existing harness names).
+  - **VBAK include pair** — a DISCRIMINATING pair that tests §D's criterion in BOTH directions:
+    - `vbak-all-fields` (POSITIVE) — "Read ALL fields of structure VBAK." Correct: read the structure → discover its `.INCLUDE`s → fan out one read per include → merge into the COMPLETE field set. Catches under-delivery (a single `GetStructure` returns top-level fields with unexpanded includes) and name confabulation.
+    - `vbak-top-level` (NEGATIVE / over-expansion guard) — "Read the top-level fields of VBAK." Correct: ONE structure read, NO include fan-out (decomposition IS knowable; expanding here is wrong). Catches blind-always-expand.
+
+> **Docs task (REQUIRED — the "fix docs" item):** the implementation (Phase 6 /
+> testing) MUST record this canonical prompt set in the PERMANENT docs testing
+> description (a dedicated `docs/` testing section, e.g. extend EXAMPLES.md's
+> testing area or a new `docs/TESTING.md`). This spec is deleted on implementation
+> and `plan-analysis.ts` is a build-excluded dev harness — neither is the durable,
+> user-discoverable home. The docs entry states, per prompt: the text, which scope
+> (gnostification vs deferred-expansion), and the expected structural outcome.
+
 Primary signal for the planner scope is **plan GENERATION**, not execution (agreed:
 "знімаємо генерацію планів, виконувати необовʼязково"). Extend the build-excluded
 `plan-analysis.ts` dev harness:
