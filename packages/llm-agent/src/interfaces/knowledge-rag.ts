@@ -32,6 +32,20 @@ export interface KnowledgeEntryMetadata {
    *  dedup when createdAt collides (all artifacts of one synthMeta() call share
    *  the same timestamp). Higher ordinal = later write = wins the dedup. */
   writeOrdinal?: number;
+  /** Stable plan-time step identity (controller board). 1:1 with a board entry;
+   *  retries share it, a replan-replacement gets a new one + `supersedesStepId`. */
+  stepId?: string;
+  /** A replan-replacement step's superseded predecessor (§F). */
+  supersedesStepId?: string;
+  /** Content-hash id of a `plan-decision` (dedup / canonical selection, §F). */
+  decisionId?: string;
+  /** The decision SLOT a `plan-decision`/`step-start` claim occupies (§F). */
+  slotId?: string;
+  /** `plan-decision` kind: 'create' | 'replan' | 'expand' | 'page'. */
+  kind?: string;
+  /** The reviewer's planning-relevant digest, persisted on `step-result` so the
+   *  board's per-step digest is reconstructible from artifacts (§A/§F). */
+  digest?: string;
 }
 
 export interface KnowledgeEntry {
@@ -50,6 +64,10 @@ export interface KnowledgeFilter {
   seq?: number;
   attempt?: number;
   status?: 'ok' | 'exists' | 'failed' | 'partial';
+  stepId?: string;
+  decisionId?: string;
+  slotId?: string;
+  kind?: string;
 }
 
 export interface IKnowledgeRagHandle {
