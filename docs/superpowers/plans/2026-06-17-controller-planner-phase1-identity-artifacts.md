@@ -262,7 +262,7 @@ export function deterministicId(...segments: (string | number)[]): string {
   for (const s of segments) {
     const str = String(s);
     h.update(String(str.length));
-    h.update(' ');
+    h.update('\u0000');
     h.update(str);
   }
   return h.digest('hex');
@@ -534,10 +534,10 @@ export interface PlanDecisionRecord {
 }
 
 export async function readPlanDecisions(
-  rag: IKnowledgeRagHandle | KnowledgeBackend,
+  rag: IKnowledgeRagHandle,
   runId: string,
 ): Promise<PlanDecisionRecord[]> {
-  const list = await (rag as IKnowledgeRagHandle).list({
+  const list = await rag.list({
     runId, artifactType: PLAN_DECISION_ARTIFACT,
   });
   return list.map((e) => ({
@@ -550,7 +550,12 @@ export async function readPlanDecisions(
 }
 ```
 
-> Note: `KnowledgeBackend.list`/`IKnowledgeRagHandle.list` share the `{runId,artifactType}` filter shape used by `collectApproved`; the union type keeps both the handler (rag) and tests (backend stub) callable. The board (Task 8) consumes `PlanDecisionRecord[]` (read-shape), not the write-input union.
+> Note: READS go through `IKnowledgeRagHandle.list({runId,artifactType})` (the
+> same handle `collectApproved` uses); WRITES go through `KnowledgeBackend.put`.
+> The real `KnowledgeBackend` has `scan(sessionId)`, NOT `list()` — so the read
+> helpers take the RAG handle, never the backend. The test's fake satisfies the
+> `.list` shape and is passed with an `as never` cast. The board (Task 8) consumes
+> `PlanDecisionRecord[]` (read-shape), not the write-input union.
 
 - [ ] **Step 4: Build (lower package edits in core were Task 1) + run → pass.**
 
@@ -630,10 +635,10 @@ export async function writeStepStartClaim(
 }
 
 export async function readClaims(
-  rag: IKnowledgeRagHandle | KnowledgeBackend,
+  rag: IKnowledgeRagHandle,
   runId: string,
 ): Promise<StepStartClaim[]> {
-  const list = await (rag as IKnowledgeRagHandle).list({
+  const list = await rag.list({
     runId, artifactType: STEP_START_ARTIFACT,
   });
   // A persisted claim ALWAYS has a writeOrdinal (writeStepStartClaim sets it).
@@ -723,6 +728,20 @@ test('a planned step with no result/claim is "planned"', () => {
   const b = reconstructBoard({ structure, stepResults: [], claims: [], inFlight: undefined } as BoardInputs);
   assert.equal(b.get('s1')!.state, 'planned');
 });
+
+test('in-flight step + external-tool pending → awaiting-external (run-level pending threaded in)', () => {
+  const structure = [{ runId: 'r', kind: 'create' as const, steps: [{ stepId: 's1', name: 'X', instructions: 'y' }] }];
+  const inFlight = {
+    seq: 0, step: { stepId: 's1', name: 'X', instructions: 'y' }, attempt: 0,
+    resumeCount: 0, phase: 'executing', transcript: [], toolCallCount: 0,
+  };
+  const pending = { kind: 'external-tool', extId: 'e', toolName: 't', args: {}, position: 'p' };
+  const b = reconstructBoard({ structure, stepResults: [], claims: [], inFlight, pending } as unknown as BoardInputs);
+  assert.equal(b.get('s1')!.state, 'awaiting-external');
+  // same in-flight, no external pending → plain executing
+  const b2 = reconstructBoard({ structure, stepResults: [], claims: [], inFlight } as unknown as BoardInputs);
+  assert.equal(b2.get('s1')!.state, 'executing');
+});
 ```
 
 - [ ] **Step 2: Run → fail** (module missing).
@@ -737,7 +756,7 @@ import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
 import type { Outcome } from './outcome.js';
 import { projectStepState, resolveByPrecedence } from './outcome.js';
 import type { PlanDecisionRecord, StepStartClaim } from './artifacts.js';
-import type { InFlightStep } from './types.js';
+import type { InFlightStep, PendingMarker } from './types.js';
 
 export type StepState =
   | 'planned' | 'executing' | 'awaiting-external'
@@ -758,6 +777,11 @@ export interface BoardInputs {
   stepResults: readonly KnowledgeEntry[];
   claims: StepStartClaim[];
   inFlight?: InFlightStep;
+  /** The run-level pending marker — it lives on the SessionBundle, NOT on
+   *  InFlightStep. Passed in so the board can refine the current in-flight step's
+   *  transient state to `awaiting-external` when the run is suspended on an
+   *  external tool. */
+  pending?: PendingMarker;
 }
 
 /** Rebuild the step-state board from artifacts (§F), sources 1–3. */
@@ -805,7 +829,7 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
     if (settledForCurrent.length === 0) {
       // (3) current attempt unsettled (claim/in-flight, no result) → transient.
       entry.state =
-        inFlightForStep?.phase === 'executing' && inFlightForStep.pending?.kind === 'external-tool'
+        inFlightForStep?.phase === 'executing' && input.pending?.kind === 'external-tool'
           ? 'awaiting-external'
           : 'executing';
       entry.attempt = maxAttempt;
@@ -831,9 +855,14 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
 }
 ```
 
-> `InFlightStep.step` is the existing `{ step: Step }` field (`types.ts`); after Task 2 it carries `stepId`. `pending` lives on the bundle, but `InFlightStep` exposes the executing/awaiting distinction via `phase`; the `awaiting-external` refinement reads `bundle.pending` in the caller (Phase 5 wires the real bundle) — for Phase 1 the unit test covers `executing` and the terminal states; the `awaiting-external` branch is guarded and unit-covered with a synthetic in-flight in a follow-up assertion.
+> `InFlightStep.step` is the existing `{ step: Step }` field (`types.ts`); after
+> Task 2 it carries `stepId`. The run-level `pending` lives on the SessionBundle
+> (NOT on `InFlightStep`), so it is passed via `BoardInputs.pending`; the
+> `awaiting-external` branch reads `input.pending`. The caller threads
+> `bundle.pending` in Phase 2/5; for Phase 1 the unit test (Step 1b below) covers
+> the `awaiting-external` refinement with a synthetic `inFlight` + `pending`.
 
-- [ ] **Step 4: Build + run → pass.** Expected: PASS (3 tests).
+- [ ] **Step 4: Build + run → pass.** Expected: PASS (4 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -867,7 +896,13 @@ git commit -m "feat(controller/board): artifact-reconstructed step-state board (
 - `step-start` claim + first-claim-per-slot winner — Task 7 ✓
 - Board reconstruction sources 1–3 + attempt-scoped resolution — Task 8 ✓; source 4 (`chain-outcome`) explicitly Phase 4.
 
-**2. Placeholder scan:** every step has runnable code/commands; no TBD/TODO. The one forward-reference (`step-result.digest` write-site, `awaiting-external` bundle.pending) is explicitly scoped to Phase 2/5 with the field/branch already present and guarded — not a placeholder in this plan's code.
+**2. Placeholder scan:** every step has runnable code/commands; no TBD/TODO; no
+literal NUL bytes (the `deterministicId` separator is the escaped `'\u0000'`). The
+only forward-reference is the `step-result.digest`/`stepId` PRODUCTION write-site
+(the handler writing them, gated on the reviewer returning a digest) — explicitly
+Phase 2, with the field + read path present here. `awaiting-external` is NOT
+deferred: `BoardInputs.pending` carries the run-level marker and Task 8 unit-tests
+the refinement.
 
 **3. Type consistency:** `deterministicId` signature stable across Tasks 3/5/6; `DecisionKey` reused by `decisionSlotId`/`decisionId`; `PlanDecision`/`StepStartClaim` exported from `artifacts.ts` and imported by `board.ts`; `projectStepState`/`resolveByPrecedence`/`Outcome` all from `outcome.ts`; `KnowledgeEntry`/`KnowledgeEntryMetadata` from core. `Step.stepId` optional (migration-safe) — board skips entries without it.
 
