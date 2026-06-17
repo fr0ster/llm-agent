@@ -2,9 +2,27 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Lay the durable identity + artifact foundation the rest of the controller-planner spec builds on — stable `stepId`, the `plan-decision` / `step-start`-claim artifacts, the `step-result` digest field, and an artifact-reconstructed step-state board (3 of the 4 sources; the `chain-outcome` source-4 lands in Phase 4).
+**Goal (LIBRARY FOUNDATION ONLY):** Ship the durable identity + artifact
+foundation the rest of the controller-planner spec builds on — as **types,
+helpers, and a pure reconstruction function with unit tests**. Specifically:
+stable `Step.stepId`; the metadata FIELDS + filter predicate for `plan-decision`
+/ `step-start` / `step-result.digest`; the `plan-decision` and `step-start`
+write/read helpers; and `reconstructBoard` (3 of the 4 sources; `chain-outcome`
+source-4 lands in Phase 4). **Explicit non-goal:** Phase 1 does NOT make the live
+controller PRODUCE these artifacts — the handler still writes `step-result`
+WITHOUT `stepId`/`digest` (`controller-coordinator-handler.ts:~1040`), the planner
+does not yet assign `stepId`, and the reviewer does not yet return a `digest`.
+That PRODUCTION wiring is Phase 2+ (reviewer returns digest, planner assigns
+stepId, handler writes `plan-decision`/`step-start`/digest). So `reconstructBoard`
+is validated against SYNTHETIC artifacts here; it cannot reconstruct a real run
+until Phase 2 wires production.
 
-**Architecture:** Append-only `KnowledgeBackend` artifacts (existing `be.put(sessionId,{content,metadata})` + `rag.list({runId,artifactType})` pattern). New artifacts carry deterministic content-hash ids. The board is a DERIVED projection rebuilt from artifacts + the bundle's in-flight state, with the spec's §F attempt-scoped resolution. NO new runtime behaviour is wired into the handler yet (Phase 2 renders the board into the planner prompt) — Phase 1 ships the types, helpers, and pure reconstruction function with unit tests.
+**Architecture:** Append-only `KnowledgeBackend` artifacts (existing
+`be.put(sessionId,{content,metadata})` + `rag.list({runId,artifactType})`
+pattern). New artifacts carry deterministic content-hash ids. The board is a
+DERIVED projection rebuilt from artifacts + the bundle's in-flight state, with the
+spec's §F attempt-scoped resolution. **NO handler behaviour change in Phase 1** —
+pure types/helpers/reconstruction + unit tests; the handler is wired in Phase 2.
 
 **Tech Stack:** TypeScript (ESM, `.js` import extensions), `node:test` via `tsx`, Biome, `node:crypto` `createHash` (NO new `uuid` dependency — the spec's `uuidv5(...)` is realised as a deterministic sha256-based id, matching `run-scope.ts`).
 
@@ -25,11 +43,20 @@
 
 ---
 
-### Task 1: Extend the artifact metadata contract (core)
+### Task 1: Extend the artifact metadata contract + the filter predicate
+
+> Adding fields to `KnowledgeFilter` is INERT unless the `matches()` predicate
+> (`packages/llm-agent-libs/src/rag/knowledge-rag.ts`) honours them — today it
+> checks only traceId/turnId/stepperId/parentStepperId/toolName/artifactType/
+> runId/seq/attempt/status. A `list({ slotId })` would silently ignore `slotId`.
+> So this task updates BOTH the contract (core) AND the predicate (libs), with a
+> test that proves the new filters actually filter.
 
 **Files:**
-- Modify: `packages/llm-agent/src/interfaces/knowledge-rag.ts`
-- Test: `packages/llm-agent/src/interfaces/__tests__/knowledge-rag-meta.test.ts` (create)
+- Modify: `packages/llm-agent/src/interfaces/knowledge-rag.ts` (the types)
+- Modify: `packages/llm-agent-libs/src/rag/knowledge-rag.ts` (the `matches()` predicate)
+- Test: `packages/llm-agent/src/interfaces/__tests__/knowledge-rag-meta.test.ts` (create, type-level)
+- Test: `packages/llm-agent-libs/src/rag/__tests__/matches-board-filters.test.ts` (create, predicate)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -80,16 +107,61 @@ In `KnowledgeEntryMetadata` (after `writeOrdinal`):
 
 In `KnowledgeFilter` (after `status`): add `stepId?: string; decisionId?: string; slotId?: string; kind?: string;`
 
-- [ ] **Step 4: Build the core package + run the test**
+- [ ] **Step 4: Failing predicate test** — `matches-board-filters.test.ts`:
 
-Run: `npm run build` then `node --import tsx/esm --test packages/llm-agent/src/interfaces/__tests__/knowledge-rag-meta.test.ts`
-Expected: PASS
+```ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { matches } from '../knowledge-rag.js';
+import type { KnowledgeEntryMetadata } from '@mcp-abap-adt/llm-agent';
+
+const m: KnowledgeEntryMetadata = {
+  traceId: 't', turnId: 't', stepperId: 'controller', task: 'controller',
+  artifactType: 'plan-decision', createdAt: 'now',
+  stepId: 's1', decisionId: 'dA', slotId: 'slot1', kind: 'create',
+};
+test('matches() honours the new board-identity filters', () => {
+  assert.equal(matches(m, { slotId: 'slot1' }), true);
+  assert.equal(matches(m, { slotId: 'slotX' }), false);
+  assert.equal(matches(m, { decisionId: 'dA' }), true);
+  assert.equal(matches(m, { decisionId: 'dB' }), false);
+  assert.equal(matches(m, { stepId: 's1' }), true);
+  assert.equal(matches(m, { stepId: 's2' }), false);
+  assert.equal(matches(m, { kind: 'create' }), true);
+  assert.equal(matches(m, { kind: 'replan' }), false);
+  // combined still ANDs with existing fields
+  assert.equal(matches(m, { artifactType: 'plan-decision', slotId: 'slot1' }), true);
+  assert.equal(matches(m, { artifactType: 'step-result', slotId: 'slot1' }), false);
+});
+```
+
+- [ ] **Step 5: Run → fail** (matches ignores the new fields → `slotX`/`dB`/`s2`/`replan` cases wrongly return true).
+
+Run: `node --import tsx/esm --test packages/llm-agent-libs/src/rag/__tests__/matches-board-filters.test.ts`
+Expected: FAIL.
+
+- [ ] **Step 6: Update `matches()`** (`packages/llm-agent-libs/src/rag/knowledge-rag.ts`, before `return true;`):
+
+```ts
+  if (f.stepId !== undefined && m.stepId !== f.stepId) return false;
+  if (f.decisionId !== undefined && m.decisionId !== f.decisionId) return false;
+  if (f.slotId !== undefined && m.slotId !== f.slotId) return false;
+  if (f.kind !== undefined && m.kind !== f.kind) return false;
+```
+
+- [ ] **Step 7: Build + run both tests → pass**
+
+Run: `npm run build` then both: the core meta test AND `matches-board-filters.test.ts`.
+Expected: PASS.
 
 - [ ] **Step 5: Commit**
 
 ```bash
-git add packages/llm-agent/src/interfaces/knowledge-rag.ts packages/llm-agent/src/interfaces/__tests__/knowledge-rag-meta.test.ts
-git commit -m "feat(knowledge-rag): board-identity metadata fields (stepId/decisionId/slotId/kind/digest/supersedesStepId)"
+git add packages/llm-agent/src/interfaces/knowledge-rag.ts \
+        packages/llm-agent/src/interfaces/__tests__/knowledge-rag-meta.test.ts \
+        packages/llm-agent-libs/src/rag/knowledge-rag.ts \
+        packages/llm-agent-libs/src/rag/__tests__/matches-board-filters.test.ts
+git commit -m "feat(knowledge-rag): board-identity metadata fields + matches() predicate (stepId/decisionId/slotId/kind/digest/supersedesStepId)"
 ```
 
 ---
@@ -398,20 +470,35 @@ import type { Step } from './types.js';
 
 export const PLAN_DECISION_ARTIFACT = 'plan-decision';
 
-export interface PlanDecision {
-  runId: string;
-  kind: DecisionKey['kind'];
-  /** Resolved on read; ignored on write (computed from the key + plannerOutput). */
-  decisionId?: string;
-  slotId?: string;
-  steps: Step[];
-  /** Kind-specific key fields (anchor/triggerId/discoveryStepId/offset/...). */
-  key?: Omit<DecisionKey, 'kind' | 'runId'>;
-}
+/** PlanDecision is a DISCRIMINATED UNION by kind, so the required key fields are
+ *  type-enforced (a `page` MUST carry `tokenHash`, an `expand` MUST carry
+ *  `discoveryStepId`+`offset`, etc.) — no silent empty-default. `decisionId`/
+ *  `slotId` are resolved on READ (computed on write). */
+export type PlanDecision = { steps: Step[]; decisionId?: string; slotId?: string } & (
+  | { kind: 'create'; runId: string }
+  | { kind: 'replan'; runId: string; anchor: string }
+  | { kind: 'replan'; runId: string; triggerId: string }
+  | { kind: 'expand'; runId: string; discoveryStepId: string; offset: number }
+  | { kind: 'page'; runId: string; discoveryChainId: string; pageIndex: number; tokenHash: string }
+);
 
-/** Build the DecisionKey for slot/id computation from a PlanDecision. */
-function keyOf(d: PlanDecision, tokenHash = ''): DecisionKey {
-  return { kind: d.kind, runId: d.runId, ...(d.key ?? {}), tokenHash } as DecisionKey;
+/** The DecisionKey for slot/id computation. Fail-loud: a malformed decision
+ *  (e.g. a `page` with no `tokenHash`) throws rather than hashing a '' field. */
+function keyOf(d: PlanDecision): DecisionKey {
+  switch (d.kind) {
+    case 'create': return { kind: 'create', runId: d.runId };
+    case 'replan':
+      if ('anchor' in d) return { kind: 'replan', runId: d.runId, anchor: d.anchor };
+      if ('triggerId' in d) return { kind: 'replan', runId: d.runId, triggerId: d.triggerId };
+      throw new Error('plan-decision replan requires anchor or triggerId');
+    case 'expand':
+      if (d.discoveryStepId === undefined || d.offset === undefined)
+        throw new Error('plan-decision expand requires discoveryStepId + offset');
+      return { kind: 'expand', runId: d.runId, discoveryStepId: d.discoveryStepId, offset: d.offset };
+    case 'page':
+      if (!d.tokenHash) throw new Error('plan-decision page requires tokenHash');
+      return { kind: 'page', runId: d.runId, discoveryChainId: d.discoveryChainId, pageIndex: d.pageIndex, tokenHash: d.tokenHash };
+  }
 }
 
 export async function writePlanDecision(
@@ -434,10 +521,22 @@ export async function writePlanDecision(
   });
 }
 
+/** Flat read-shape: the board's structure source needs only kind + steps + the
+ *  resolved ids, NOT the kind-specific key fields (anchor/offset/...), which are
+ *  not stored on the artifact. (Write input is the validated `PlanDecision`
+ *  union; read output is this record.) */
+export interface PlanDecisionRecord {
+  runId: string;
+  kind: DecisionKey['kind'];
+  decisionId?: string;
+  slotId?: string;
+  steps: Step[];
+}
+
 export async function readPlanDecisions(
   rag: IKnowledgeRagHandle | KnowledgeBackend,
   runId: string,
-): Promise<PlanDecision[]> {
+): Promise<PlanDecisionRecord[]> {
   const list = await (rag as IKnowledgeRagHandle).list({
     runId, artifactType: PLAN_DECISION_ARTIFACT,
   });
@@ -451,7 +550,7 @@ export async function readPlanDecisions(
 }
 ```
 
-> Note: `KnowledgeBackend.list`/`IKnowledgeRagHandle.list` share the `{runId,artifactType}` filter shape used by `collectApproved`; the union type keeps both the handler (rag) and tests (backend stub) callable.
+> Note: `KnowledgeBackend.list`/`IKnowledgeRagHandle.list` share the `{runId,artifactType}` filter shape used by `collectApproved`; the union type keeps both the handler (rag) and tests (backend stub) callable. The board (Task 8) consumes `PlanDecisionRecord[]` (read-shape), not the write-input union.
 
 - [ ] **Step 4: Build (lower package edits in core were Task 1) + run → pass.**
 
@@ -505,8 +604,11 @@ export interface StepStartClaim {
   seq: number;
   attempt: number;
   decisionId: string;
-  /** Write order, to resolve "first" deterministically (createdAt may collide). */
-  writeOrdinal?: number;
+  /** Monotonic per-run write ordinal (REQUIRED on a persisted claim — the
+   *  controller increments it before each write, so within one run two claims
+   *  NEVER share an ordinal). This is the deterministic "first" key; there is no
+   *  createdAt tie-break (claims of one synthMeta call share a timestamp). */
+  writeOrdinal: number;
 }
 
 export async function writeStepStartClaim(
@@ -534,20 +636,27 @@ export async function readClaims(
   const list = await (rag as IKnowledgeRagHandle).list({
     runId, artifactType: STEP_START_ARTIFACT,
   });
-  return list.map((e) => ({
-    runId, slotId: e.metadata.slotId ?? '', stepId: e.metadata.stepId ?? '',
-    seq: e.metadata.seq ?? 0, attempt: e.metadata.attempt ?? 0,
-    decisionId: e.metadata.decisionId ?? '', writeOrdinal: e.metadata.writeOrdinal,
-  }));
+  // A persisted claim ALWAYS has a writeOrdinal (writeStepStartClaim sets it).
+  // Drop any claim missing it (malformed/foreign row) rather than defaulting to
+  // 0, which would make ordering input-dependent.
+  return list.flatMap((e) => {
+    if (typeof e.metadata.writeOrdinal !== 'number') return [];
+    return [{
+      runId, slotId: e.metadata.slotId ?? '', stepId: e.metadata.stepId ?? '',
+      seq: e.metadata.seq ?? 0, attempt: e.metadata.attempt ?? 0,
+      decisionId: e.metadata.decisionId ?? '', writeOrdinal: e.metadata.writeOrdinal,
+    }];
+  });
 }
 
-/** The decision that owns a slot = the FIRST claim for it (ascending writeOrdinal,
- *  then createdAt order as a stable fallback). Attempt-independent: a retry never
- *  changes which decision owns the slot (§F). */
+/** The decision that owns a slot = the FIRST claim for it, by ascending
+ *  `writeOrdinal` (monotonic per run ⇒ unique ⇒ a total, input-order-independent
+ *  order). Attempt-independent: a retry never changes which decision owns the
+ *  slot (§F). */
 export function decisionWinner(claims: StepStartClaim[], slotId: string): string | undefined {
   const forSlot = claims.filter((c) => c.slotId === slotId);
   if (forSlot.length === 0) return undefined;
-  forSlot.sort((a, b) => (a.writeOrdinal ?? 0) - (b.writeOrdinal ?? 0));
+  forSlot.sort((a, b) => a.writeOrdinal - b.writeOrdinal);
   return forSlot[0].decisionId;
 }
 ```
@@ -627,7 +736,7 @@ Expected: FAIL.
 import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
 import type { Outcome } from './outcome.js';
 import { projectStepState, resolveByPrecedence } from './outcome.js';
-import type { PlanDecision, StepStartClaim } from './artifacts.js';
+import type { PlanDecisionRecord, StepStartClaim } from './artifacts.js';
 import type { InFlightStep } from './types.js';
 
 export type StepState =
@@ -645,7 +754,7 @@ export interface BoardEntry {
 }
 
 export interface BoardInputs {
-  structure: PlanDecision[];
+  structure: PlanDecisionRecord[];
   stepResults: readonly KnowledgeEntry[];
   claims: StepStartClaim[];
   inFlight?: InFlightStep;
@@ -750,7 +859,11 @@ git commit -m "feat(controller/board): artifact-reconstructed step-state board (
 **1. Spec coverage (Phase-1 slice of §A/§E/§F):**
 - `Step.stepId/discovery?/supersedesStepId?` — Task 2 ✓
 - `plan-decision` kind table (decisionId/slotId, create/replan/expand/page) — Task 5 ✓ (write of create/replan — Task 6; expand/page WRITE deferred to Phase 4, computation present)
-- `step-result` gains `digest` (+stepId) — metadata field added Task 1; the WRITE-SITE wiring (handler `synthMeta`/settle) is Phase 2 where the reviewer first RETURNS a digest, so Phase 1 only adds the field + reconstructs from it (board reads `metadata.digest`). Noted, not a gap.
+- `step-result` `digest`/`stepId` — **FIELD ONLY** (Task 1 adds the metadata
+  fields + filter predicate; `reconstructBoard` READS them). The PRODUCTION
+  write-site (handler writing `stepId`/`digest` onto `step-result`, gated on the
+  reviewer first RETURNING a digest) is **explicitly NOT in Phase 1** — it is Phase
+  2. So this row is "field + read path covered; production deferred", NOT "produced".
 - `step-start` claim + first-claim-per-slot winner — Task 7 ✓
 - Board reconstruction sources 1–3 + attempt-scoped resolution — Task 8 ✓; source 4 (`chain-outcome`) explicitly Phase 4.
 
