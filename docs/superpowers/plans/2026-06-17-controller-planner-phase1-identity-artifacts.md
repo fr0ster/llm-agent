@@ -619,7 +619,10 @@ export interface StepStartClaim {
 export async function writeStepStartClaim(
   be: KnowledgeBackend,
   sessionId: string,
-  c: StepStartClaim,
+  // `writeOrdinal` is supplied as a separate arg (it is the value WRITTEN to
+  // metadata), so the claim INPUT omits it; `StepStartClaim` stays the
+  // read/persisted shape with `writeOrdinal` required.
+  c: Omit<StepStartClaim, 'writeOrdinal'>,
   nowIso: string,
   writeOrdinal: number,
 ): Promise<void> {
@@ -695,6 +698,7 @@ git commit -m "feat(controller/artifacts): step-start claim + first-claim-per-sl
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { reconstructBoard, type BoardInputs } from '../board.js';
+import type { InFlightStep, PendingMarker } from '../types.js';
 
 const meta = (m: Record<string, unknown>) => ({ content: m.content ?? '', metadata: { traceId: 't', turnId: 't', stepperId: 'controller', task: 'controller', createdAt: 'now', ...m } });
 
@@ -731,15 +735,18 @@ test('a planned step with no result/claim is "planned"', () => {
 
 test('in-flight step + external-tool pending → awaiting-external (run-level pending threaded in)', () => {
   const structure = [{ runId: 'r', kind: 'create' as const, steps: [{ stepId: 's1', name: 'X', instructions: 'y' }] }];
+  // `satisfies` (not a cast) so the test catches drift in the real contracts.
   const inFlight = {
     seq: 0, step: { stepId: 's1', name: 'X', instructions: 'y' }, attempt: 0,
     resumeCount: 0, phase: 'executing', transcript: [], toolCallCount: 0,
-  };
-  const pending = { kind: 'external-tool', extId: 'e', toolName: 't', args: {}, position: 'p' };
-  const b = reconstructBoard({ structure, stepResults: [], claims: [], inFlight, pending } as unknown as BoardInputs);
+  } satisfies InFlightStep;
+  const pending = {
+    kind: 'external-tool', extId: 'e', toolName: 't', args: {}, position: 'p',
+  } satisfies PendingMarker;
+  const b = reconstructBoard({ structure, stepResults: [], claims: [], inFlight, pending } satisfies BoardInputs);
   assert.equal(b.get('s1')!.state, 'awaiting-external');
   // same in-flight, no external pending → plain executing
-  const b2 = reconstructBoard({ structure, stepResults: [], claims: [], inFlight } as unknown as BoardInputs);
+  const b2 = reconstructBoard({ structure, stepResults: [], claims: [], inFlight } satisfies BoardInputs);
   assert.equal(b2.get('s1')!.state, 'executing');
 });
 ```
