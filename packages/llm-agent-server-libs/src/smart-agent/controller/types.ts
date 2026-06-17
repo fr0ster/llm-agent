@@ -12,9 +12,17 @@ export type SubagentResult =
   | { kind: 'error'; error: string; usage?: LlmUsage };
 
 export interface Step {
+  /** Stable plan-time identity (§F). 1:1 with a board entry; assigned at
+   *  create-plan or fan-out. Optional only so older call-sites compile during
+   *  the migration; the planner/handler always set it. */
+  stepId?: string;
   name: string;
   instructions: string;
   type?: string;
+  /** Marks a discovery step whose result enumerates remaining work (§D). */
+  discovery?: true;
+  /** When this step REPLACES a failed step on replan, the superseded `stepId` (§F). */
+  supersedesStepId?: string;
   /** Plain-language references this step depends on (English — planner invariant).
    *  Decided by the reviewer, not the doer; drives the per-reference evidence map. */
   requires?: string[];
