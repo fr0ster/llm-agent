@@ -579,7 +579,7 @@ git commit -m "feat(controller/artifacts): plan-decision write/read helpers"
 - [ ] **Step 1: Failing test** (append):
 
 ```ts
-import { writeStepStartClaim, readClaims, decisionWinner, type StepStartClaim } from '../artifacts.js';
+import { writeStepStartClaim, readClaims, decisionWinner } from '../artifacts.js';
 
 test('decisionWinner = the decisionId of the FIRST claim for a slot (attempt-independent)', async () => {
   const be = fakeBackend();
