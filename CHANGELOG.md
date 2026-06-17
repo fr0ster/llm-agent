@@ -30,13 +30,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     serving. The compat wrapper checks embedding-space compatibility per revision
     (eager fail-fast vs runtime degrade), embeds last, and bounds recall by a
     deadline.
-  - **Consumption.** Implicit recall for assembler pipelines (flat/default, linear)
-    via an `IRag` adapter registered as a context-assembler source, and a dedicated
-    controller-planner recall hook (configured group, bounded block, byte-identical
-    when off). New `skillPlugins:` server config (distinct from the existing
-    `skills:` skill-manager key) with validation; built and `load()`ed at startup.
-    A `mode: explicit` (planner-driven per-step group selection), dag/stepper implicit
-    wiring, and live-DB retention guarantees remain follow-on work.
+  - **Consumption.** Implicit recall for assembler pipelines (flat/default, linear,
+    dag) via an `IRag` adapter registered as a context-assembler source, and a
+    dedicated controller-planner recall hook (configured group, bounded block,
+    byte-identical when off). New `skillPlugins:` server config (distinct from the
+    existing `skills:` skill-manager key) with validation; built and `load()`ed at
+    startup. **Skill import** is wired end-to-end: inline `records` sources and
+    **fetched marketplace sources** (`registry` + `enabled` → `GET /plugins` and
+    `GET /plugins/{plugin}/skills/{skill}`, placement via the `one-group-per-plugin`
+    or `single-collection` strategy). A `mode: explicit` (planner-driven per-step
+    group selection), `stepper` implicit wiring, the LIVE marketplace transport
+    (unit-tested only against a mock transport), and live-DB retention guarantees
+    remain follow-on work.
   - **Fail-fast config + safe activation (review hardening).** Present-but-malformed
     config keys now fail loud at parse instead of silently disabling behavior:
     `serveCollections` / `controllerSkillGroup` (must be a non-empty string array /
