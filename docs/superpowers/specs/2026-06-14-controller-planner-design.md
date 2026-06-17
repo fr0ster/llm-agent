@@ -270,11 +270,11 @@ the v19 `coordinator:`/legacy-`pipeline:` precedent — not a silent alias):
   resolution + unknown-name error path) and the conformance/registry tests
   (`pipelines/__tests__/conformance.test.ts` lists the built-in names). Without this
   the parser would accept the controller config but the new name would be unknown.
-- **Incidental cleanup (not a blocker, but the PR should fix it):** the comment in
-  `pipelines/server-context.ts` claiming `controllerSkillGroup` must be WITHIN
-  `serveCollections` is stale — the implementation already treats them as
-  independent channels (a `controllerSkillGroup` outside `serveCollections` is
-  allowed). Update the comment so it does not contradict the code and this spec.
+- **Incidental cleanup — DONE (PR #186, merged to main).** The stale
+  `pipelines/server-context.ts` comment claiming `controllerSkillGroup` must be
+  WITHIN `serveCollections` was corrected: they are independent channels (a
+  `controllerSkillGroup` outside `serveCollections` is allowed). Recorded here only
+  so the plan does not re-open it.
 
 **Pairing guarantee — two honest levels (no false "verified capability").** Nothing
 can inspect a model and prove it is "smart"; a self-declared capability is an
