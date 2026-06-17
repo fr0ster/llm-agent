@@ -57,8 +57,17 @@ tools. Domain knowledge enters at runtime through two channels, so any model is
 gnosticized as it works:
 - **Pipeline hints** (`subagents.<role>.hint`) — static, per-role *operational*
   steering (never names tools); mainly to scaffold weaker models. (Implemented.)
-- **Skills RAG** — dynamic procedural domain knowledge retrieved for the
-  goal/step. (Implemented — the skill plugin-host; the former "Variant 1".)
+- **Skills RAG** — dynamic procedural domain knowledge from the skill plugin-host
+  (the former "Variant 1"). **Precise current state (post skill-plugin-host merge):**
+  there are TWO SEPARATE channels — (a) the **assembler** "Relevant Skills" block
+  for flat/linear/dag, and (b) the **controller planner recall hook**, which
+  queries ONE configured group (`controllerSkillGroup`) **by `bundle.goal`**
+  (goal-level), NOT per step. So what is implemented today = **goal-level controller
+  recall**. **Step-level skill recall** (a recall keyed by the current step's
+  intent, the literal "retrieved for the step" reading) is **NOT implemented — it
+  is new work** if a phase below needs it; this spec does not assume it exists.
+  (Refs: `pipelines/controller.ts`, `controller/planner.ts` skillsRecall by goal,
+  `docs/PIPELINES.md`.)
 
 ## Architecture
 
@@ -78,6 +87,26 @@ the durable writes and assigns ids: full `approved` → run-scoped RAG (as today
 digest → the board, and — for discovery — the `enumeration` artifact + the
 `plan-decision` artifacts (§D, §F). This preserves the existing reviewer/controller
 boundary (reviewer judges; controller persists).
+
+**Reviewer output contract — migration (NOT what ships today).** The current
+reviewer returns ONLY `Outcome = {status, approved, remainder, note}`
+(`controller/outcome.ts`) and `parseReview` (`controller/reviewer.ts`) ignores any
+extra fields — `digest`/`enumeration` are NOT in the contract yet. The plan MUST
+introduce this explicitly:
+- A new **`ReviewOutcome`** = `Outcome` **+ `digest: string`** (the planning-relevant
+  extract; bounded by `maxDigestChars` for non-discovery, §B) **+ optional
+  `enumeration?: DiscoveryDigest`** (only for a discovery step, §D). Whether this
+  replaces `Outcome` or wraps it is an implementation choice the plan fixes; the
+  reviewer ROLE still only RETURNS it (controller persists).
+- `parseReview` is extended to PARSE + VALIDATE the new fields: `digest` required
+  (non-empty string) on a settle; for a discovery step `enumeration` must be a valid
+  `DiscoveryDigest` (`items:{id,label}[]` ≤ `maxFanOut`, each `label` ≤
+  `maxItemChars`, `truncated`+`continuation` rules — §D).
+- **Malformed digest/enumeration** (missing `digest`, unparsable, or a discovery
+  step with no valid `DiscoveryDigest`) is a JUDGE-failure → the existing
+  re-ask/`maxReviewRetries` path, then `partial`/`failed` — distinct from an
+  empty-but-valid discovery (`items:[]`, `truncated:false`), which is a legitimate
+  zero-fan-out completion (§D), NOT malformed.
 
 **Raw-token ingress (transient, never persisted by the producer).** For a
 tool-paginated discovery the reviewer/executor return value carries a SEPARATE
@@ -181,8 +210,13 @@ it only by choosing a pipeline preset.
   resolution of 2026-06-09 **Variant 2** (planner-driven completeness, reviewer in
   the loop) without per-group machinery.
 
-An optional **combined planner+reviewer** implementation is allowed: with no
-separate reviewer, the planner produces its own digest from the full-result-in-RAG.
+(A **combined planner+reviewer** implementation — one role producing its own digest
+from the full-result-in-RAG — is **explicitly OUT OF SCOPE for this plan**: it
+contradicts the core rules (planner reads the digest-only board, never full RAG; and
+execution≠control keeps judging in a reviewer the planner does not also embody). If
+ever needed it is a separate, explicit NON-DEFAULT component with its own boundary +
+tests — see Open/deferred. The two shipped planners both pair with a separate
+reviewer.)
 
 **Selection contract (concrete).** Replace `PlannerKind = 'incremental' |
 'adaptive'` with `PlannerKind = 'smart-executor' | 'weak-executor'`, and replace
@@ -202,6 +236,28 @@ user-facing `planner:` YAML field and no autodetection. Concretely:
 - A consumer composing its own pipeline in code calls `makeControllerPlanner`
   directly with the `kind` matching the executor it pairs — same rule, no config
   surface.
+
+**Migration contract (clean break — blast radius MUST be in the plan).** Today the
+`planner:` field IS a live config surface: `ControllerConfig.planner?: 'incremental'
+| 'adaptive'` (`controller/types.ts`), parsed in `pipelines/controller.ts`, and
+SHIPPED in `pipelines/controller.yaml` (`planner: ${PLANNER:-incremental}`) and
+`pipelines/controller-mixed.yaml`. The clean break is **fail-loud removal** (matching
+the v19 `coordinator:`/legacy-`pipeline:` precedent — not a silent alias):
+- Parsing a `planner:` key (or `incremental`/`adaptive` anywhere in the controller
+  config) **throws at config load** with a migration message: *"`planner:` removed;
+  capability is preset-encoded — select `pipeline: { name: controller }` (smart) or
+  `controller-weak` (weak), or pass `kind` to `makeControllerPlanner`."* No
+  compatibility alias (an alias would re-introduce the user-facing knob this break
+  removes).
+- **Files the plan MUST update (else it underestimates the blast radius):**
+  `controller/types.ts` (drop `planner?` from `ControllerConfig`; `PlannerKind`
+  enum), `controller/planner.ts` (`makePlanner`→`makeControllerPlanner`, retire
+  `IncrementalPlanner`/`AdaptivePlanner`), `pipelines/controller.ts` (parser:
+  reject `planner:`; add `controller-weak` preset wiring), `pipelines/controller.yaml`
+  + `pipelines/controller-mixed.yaml` (remove the `planner:` line; rely on the
+  preset), `factories/controller-factory.ts` (kind from preset), every test/example
+  referencing `planner: incremental|adaptive`, and `docs/PIPELINES.md` (controller
+  config table still lists the `incremental`/`adaptive` planner — update to presets).
 
 **Pairing guarantee — two honest levels (no false "verified capability").** Nothing
 can inspect a model and prove it is "smart"; a self-declared capability is an
@@ -948,8 +1004,12 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   embedded/RAG-queried/surfaced by diagnostics) — or an encrypted store — so a lost
   bundle never breaks dereference and the raw token cannot leak via indexing/APIs.
   The next page (`p+1`) dereferences its PARENT's `settleRef` to read the token.
-- **Secret store (`put`/`get`/`deleteSession`)** — a NEW injected dependency
-  backing the `settle-envelope` records: durable across restart, never indexed, and
+- **Secret store (`putIfAbsent`/`get`/`deleteSession`)** — a NEW injected dependency
+  backing the `settle-envelope` records. The write API is **`putIfAbsent`, NOT a
+  plain overwrite-capable `put`** (§D): first write wins, an identical re-write is a
+  no-op, a divergent re-write at the same `settleRef` is REJECTED loud — this is what
+  enforces the write-once / divergent-rewrite-rejection guarantee. Durable across
+  restart, never indexed, and
   cleaned up on `DELETE /v1/sessions/:id` + session GC (so tokens never outlive
   their session). **Production default = durable disk-backed**; an in-memory impl
   is tests/ephemeral-only (does not meet restart-durability). Swappable for an
@@ -980,8 +1040,9 @@ page-complete + next-page TOKEN ──► CONTROLLER schedules a follow-up PAGE 
   crash-replay).
 - A discovery step that settles `failed`/`partial` → normal replan, NOT expansion
   (expansion only on `done`).
-- Combined planner+reviewer variant: if no digest can be produced, fall back to
-  reading the full result from RAG once (documented exception to digest-only).
+- (No combined planner+reviewer variant in this plan — out of scope, see §C /
+  Open-deferred. Both shipped planners pair with a separate reviewer that produces
+  the digest, so there is NO digest-only exception: the planner never reads full RAG.)
 
 ## Testing strategy
 
@@ -1195,6 +1256,12 @@ verification.)
 
 ## Open / deferred
 
+- **Combined planner+reviewer** (one role; planner produces its own digest from
+  full-result-in-RAG) — DEFERRED, out of this plan. It conflicts with the core
+  digest-only-planner + execution≠control rules, so if ever built it is a separate,
+  explicit NON-DEFAULT component with its own boundary, its own digest-source
+  contract, and dedicated tests. The shipped controller always uses a SEPARATE
+  reviewer.
 - **Digest format** — RESOLVED, not deferred: discovery digests are STRUCTURED
   (`items: [{id,label}]`, validated, bounded — §D); non-discovery digests are
   free-text. (The earlier "start free-text everywhere" idea is dropped — free-text
