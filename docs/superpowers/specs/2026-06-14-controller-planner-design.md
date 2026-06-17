@@ -253,11 +253,28 @@ the v19 `coordinator:`/legacy-`pipeline:` precedent — not a silent alias):
   `controller/types.ts` (drop `planner?` from `ControllerConfig`; `PlannerKind`
   enum), `controller/planner.ts` (`makePlanner`→`makeControllerPlanner`, retire
   `IncrementalPlanner`/`AdaptivePlanner`), `pipelines/controller.ts` (parser:
-  reject `planner:`; add `controller-weak` preset wiring), `pipelines/controller.yaml`
+  reject `planner:`; pass `kind: 'smart-executor'`), `pipelines/controller.yaml`
   + `pipelines/controller-mixed.yaml` (remove the `planner:` line; rely on the
   preset), `factories/controller-factory.ts` (kind from preset), every test/example
   referencing `planner: incremental|adaptive`, and `docs/PIPELINES.md` (controller
   config table still lists the `incremental`/`adaptive` planner — update to presets).
+- **Registering the `controller-weak` pipeline NAME (else `pipeline: { name:
+  controller-weak }` never resolves).** A controller config-parser change ALONE
+  does not create a new pipeline name — names resolve from the **built-in plugin
+  registry** statically registered in `SmartServer` (`smart-agent/smart-server.ts`,
+  the built-ins map). The plan MUST register `controller-weak` there, as EITHER (a)
+  a distinct `ControllerWeakPipelinePlugin` with `name = 'controller-weak'` (its
+  `build` passes `kind: 'weak-executor'`), OR (b) one `ControllerPipelinePlugin`
+  parameterised by kind, registered under both names. It MUST also update pipeline
+  **name parsing / diagnostics** (`smart-agent/config.ts` — the pipeline-name
+  resolution + unknown-name error path) and the conformance/registry tests
+  (`pipelines/__tests__/conformance.test.ts` lists the built-in names). Without this
+  the parser would accept the controller config but the new name would be unknown.
+- **Incidental cleanup (not a blocker, but the PR should fix it):** the comment in
+  `pipelines/server-context.ts` claiming `controllerSkillGroup` must be WITHIN
+  `serveCollections` is stale — the implementation already treats them as
+  independent channels (a `controllerSkillGroup` outside `serveCollections` is
+  allowed). Update the comment so it does not contradict the code and this spec.
 
 **Pairing guarantee — two honest levels (no false "verified capability").** Nothing
 can inspect a model and prove it is "smart"; a self-declared capability is an
@@ -267,15 +284,18 @@ operator ASSERTION, not a verified fact. The spec is honest about this:
   executor model/endpoint, so the user cannot override it within that preset.
   Here the pairing is genuinely guaranteed (the preset chose both planner and
   executor). This is the recommended shape for the shipped presets.
-- **Weak guarantee — `declaredCapability` validation.** When a preset allows the
-  user to supply `subagents.executor`, that config carries a
-  `declaredCapability: 'smart' | 'weak'` field (honestly named — an assertion).
-  The factory asserts it matches the preset's expectation and **fails loud on a
-  declared mismatch** (catches the obvious `controller-weak` + declared-smart
-  footgun). **Residual risk, documented:** the factory cannot detect a *mis*-declared
-  model (an operator labelling a weak model `smart`); that is on the operator. It
-  is NOT used for selection — the planner is still chosen by the preset/composition
-  code, never by this field.
+- **Weak guarantee — `declaredCapability` validation — DEFERRED (NOT in the first
+  implementation).** The shipped `controller` / `controller-weak` presets are
+  **executor-pinned** (strong guarantee above), so the first implementation needs
+  NO `declaredCapability` field. It is deferred to when/if a preset lets the user
+  supply `subagents.executor`. **If added later** it is a concrete, scoped change —
+  the plan should NOT silently assume it exists: add `declaredCapability?: 'smart' |
+  'weak'` to `ControllerSubagentConfig` (today `SmartServerLlmConfig & { hint?: string
+  }`, `controller/types.ts`), parse + validate it, and the factory **fails loud on a
+  declared mismatch** vs the preset's expectation (with config-parse + mismatch
+  tests for both presets). It is NEVER used for selection (the preset/composition
+  code chooses the planner), and it cannot detect a *mis*-declared model — that
+  residual risk is on the operator. See Open/deferred.
 
 (If a future deployment needs the capability to be data-driven rather than
 preset-encoded, that is the deferred per-step `Step.tier` routing below — not a
@@ -1256,6 +1276,12 @@ verification.)
 
 ## Open / deferred
 
+- **`declaredCapability` weak-guarantee validation** — DEFERRED. The shipped
+  presets are executor-pinned (strong guarantee), so the first implementation does
+  not add the `declaredCapability: 'smart' | 'weak'` field. Needed only when a
+  preset lets the user supply `subagents.executor`; if added, it is the scoped
+  change described in §C (config-type field + parse/validate + fail-loud mismatch
+  tests), never used for planner selection.
 - **Combined planner+reviewer** (one role; planner produces its own digest from
   full-result-in-RAG) — DEFERRED, out of this plan. It conflicts with the core
   digest-only-planner + execution≠control rules, so if ever built it is a separate,
