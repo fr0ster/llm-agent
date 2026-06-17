@@ -72,11 +72,13 @@ export interface IServerPipelineContext extends IPipelineContext {
     maxInjectChars?: number;
     /**
      * The operator-configured served collection subset
-     * (`skillPlugins.serveCollections`). When set, the implicit assembler wiring
-     * (B3) registers ONLY these groups (a compatible subset that may be read
-     * together), and the controller recall hook (B4) recalls a
-     * `controllerSkillGroup` only if it is within this set. When unset, all
-     * groups the host serves are registered.
+     * (`skillPlugins.serveCollections`). It gates ONLY the implicit assembler
+     * wiring (B3): when set, the assembler registers ONLY these groups (a
+     * compatible subset that may be read together); when unset, all groups the
+     * host serves are registered. It does NOT gate the controller recall hook
+     * (B4): `controllerSkillGroup` is an INDEPENDENT channel — the controller
+     * recalls its configured group regardless of `serveCollections` (the factory
+     * validates only that the group exists, not membership in this set).
      */
     serveCollections?: readonly string[];
   };
