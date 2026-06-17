@@ -102,6 +102,34 @@ pipeline:
   (sonnet deciders + light `gpt-4o-mini` executor, with an executor hint that
   scaffolds the smaller model).
 
+### `linear` planning/dispatch behaviour & guidance
+
+`linear` is a **plan → dispatch** coordinator. The plan is built ONCE by the
+`planning` strategy; each step is run by the `dispatch` strategy. Pick the
+combination to match the task:
+
+- **`planning`**: `one-shot` (plan once, never replan) · `replan-on-error`
+  (delegates the initial plan to one-shot; rebuilds the remaining plan ONLY when a
+  step fails) · `skill-steps` (plan comes from a skill's `steps:` block, no planner
+  LLM). None of them feed step RESULTS back to the planner — the plan is static
+  (one-shot) or reactive-on-failure (replan-on-error), never result-adaptive.
+- **`dispatch`**: `self` (the coordinator's own LLM runs each step) · `subagent`
+  (delegate the step to a named worker from `subagents:`) · `hybrid` (subagent,
+  fall back to self).
+
+**Known characteristics (so you choose the right config):**
+- **The planner is tool-blind** — it sees only the request, the `subagents:` list,
+  and selected skills, NOT the live system. For a task that needs material fetched
+  first (e.g. "review program X"), `planning: one-shot` + `dispatch: self` may
+  return a **clarification asking you to supply the material** instead of planning a
+  fetch step. For such tasks use `dispatch: subagent`/`hybrid` with a tool-capable
+  worker (which fetches the material itself), as in
+  [`coordinator-orchestration.yaml`](examples/coordinator-orchestration.yaml).
+- **Subagent dispatch is stateless across steps** — each step's worker is a fresh
+  full agent run with no carried-over context, so a multi-step plan re-fetches the
+  same material per step (additive latency, redundant work). For **result-aware,
+  context-accumulating** planning, use the `controller` pipeline instead.
+
 ## Adding a custom pipeline (plugin)
 
 A pipeline is an `IPipelinePlugin` (from `@mcp-abap-adt/llm-agent`): it names
