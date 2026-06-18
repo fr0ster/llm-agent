@@ -38,3 +38,11 @@ export function resolveByPrecedence(
   }
   return best;
 }
+
+/** Board terminal state for a SETTLED step (§E): ok/exists → done; partial →
+ *  partial; failed → failed. (NOT the planner transition `advanced|...`.) */
+export type SettledStepState = 'done' | 'partial' | 'failed';
+export function projectStepState(status: Outcome['status']): SettledStepState {
+  if (status === 'ok' || status === 'exists') return 'done';
+  return status; // 'partial' | 'failed'
+}
