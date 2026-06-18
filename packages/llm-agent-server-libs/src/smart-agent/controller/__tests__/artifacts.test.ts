@@ -3,10 +3,13 @@ import { test } from 'node:test';
 import {
   decisionId,
   decisionSlotId,
+  decisionWinner,
   deterministicId,
   type PlanDecision,
+  readClaims,
   readPlanDecisions,
   writePlanDecision,
+  writeStepStartClaim,
 } from '../artifacts.js';
 
 test('deterministicId is stable + order-sensitive + collision-resistant on segments', () => {
@@ -110,4 +113,36 @@ test('writePlanDecision persists kind/decisionId/slotId + steps; readPlanDecisio
   assert.equal(got[0].slotId, deterministicId('r', 'create'));
   assert.equal(got[0].decisionId, deterministicId('r', 'create', 'PLAN-A'));
   assert.equal(got[0].steps[0].stepId, 's1');
+});
+
+test('decisionWinner = the decisionId of the FIRST claim for a slot (attempt-independent)', async () => {
+  const be = fakeBackend();
+  const base = { runId: 'r', slotId: 'slot1', stepId: 's1', seq: 0 };
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 0, decisionId: 'decA' },
+    'now',
+    1,
+  );
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 0, decisionId: 'decB' },
+    'now',
+    2,
+  );
+  const claims = await readClaims(be as never, 'r');
+  assert.equal(decisionWinner(claims, 'slot1'), 'decA');
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 1, decisionId: 'decA' },
+    'now',
+    3,
+  );
+  assert.equal(
+    decisionWinner(await readClaims(be as never, 'r'), 'slot1'),
+    'decA',
+  );
 });

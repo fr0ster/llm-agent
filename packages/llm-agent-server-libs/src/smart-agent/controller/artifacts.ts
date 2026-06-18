@@ -193,3 +193,86 @@ export async function readPlanDecisions(
     steps: (JSON.parse(e.content) as { steps: Step[] }).steps,
   }));
 }
+
+export const STEP_START_ARTIFACT = 'step-start';
+
+export interface StepStartClaim {
+  runId: string;
+  slotId: string;
+  stepId: string;
+  seq: number;
+  attempt: number;
+  decisionId: string;
+  /** Monotonic per-run write ordinal (REQUIRED on a persisted claim — the
+   *  controller increments it before each write, so within one run two claims
+   *  NEVER share an ordinal). This is the deterministic "first" key; there is no
+   *  createdAt tie-break (claims of one synthMeta call share a timestamp). */
+  writeOrdinal: number;
+}
+
+export async function writeStepStartClaim(
+  be: KnowledgeBackend,
+  sessionId: string,
+  // `writeOrdinal` is supplied as a separate arg (the value WRITTEN to metadata),
+  // so the claim INPUT omits it; `StepStartClaim` stays the read/persisted shape.
+  c: Omit<StepStartClaim, 'writeOrdinal'>,
+  nowIso: string,
+  writeOrdinal: number,
+): Promise<void> {
+  await be.put(sessionId, {
+    content: '',
+    metadata: {
+      traceId: sessionId,
+      turnId: sessionId,
+      stepperId: 'controller',
+      task: 'controller',
+      artifactType: STEP_START_ARTIFACT,
+      runId: c.runId,
+      slotId: c.slotId,
+      stepId: c.stepId,
+      seq: c.seq,
+      attempt: c.attempt,
+      decisionId: c.decisionId,
+      createdAt: nowIso,
+      writeOrdinal,
+    },
+  });
+}
+
+export async function readClaims(
+  rag: IKnowledgeRagHandle,
+  runId: string,
+): Promise<StepStartClaim[]> {
+  const list = await rag.list({ runId, artifactType: STEP_START_ARTIFACT });
+  // A persisted claim ALWAYS has a writeOrdinal (writeStepStartClaim sets it).
+  // Drop any claim missing it (malformed/foreign row) rather than defaulting to
+  // 0, which would make ordering input-dependent.
+  return list.flatMap((e) => {
+    if (typeof e.metadata.writeOrdinal !== 'number') return [];
+    return [
+      {
+        runId,
+        slotId: e.metadata.slotId ?? '',
+        stepId: e.metadata.stepId ?? '',
+        seq: e.metadata.seq ?? 0,
+        attempt: e.metadata.attempt ?? 0,
+        decisionId: e.metadata.decisionId ?? '',
+        writeOrdinal: e.metadata.writeOrdinal,
+      },
+    ];
+  });
+}
+
+/** The decision that owns a slot = the FIRST claim for it, by ascending
+ *  `writeOrdinal` (monotonic per run ⇒ unique ⇒ a total, input-order-independent
+ *  order). Attempt-independent: a retry never changes which decision owns the
+ *  slot (§F). */
+export function decisionWinner(
+  claims: StepStartClaim[],
+  slotId: string,
+): string | undefined {
+  const forSlot = claims.filter((c) => c.slotId === slotId);
+  if (forSlot.length === 0) return undefined;
+  forSlot.sort((a, b) => a.writeOrdinal - b.writeOrdinal);
+  return forSlot[0].decisionId;
+}
