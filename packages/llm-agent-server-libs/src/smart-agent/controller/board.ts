@@ -116,9 +116,16 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
     if (!resolved) continue;
     entry.state = projectStepState(resolved.status);
     entry.attempt = maxAttempt;
-    const winner = [...settledForCurrent]
-      .reverse()
-      .find((e) => (e.metadata.status ?? 'failed') === resolved.status);
+    const winner = settledForCurrent
+      .filter((e) => (e.metadata.status ?? 'failed') === resolved.status)
+      .reduce<(typeof settledForCurrent)[number] | undefined>(
+        (best, e) =>
+          !best ||
+          (e.metadata.writeOrdinal ?? 0) >= (best.metadata.writeOrdinal ?? 0)
+            ? e
+            : best,
+        undefined,
+      );
     entry.digest = winner?.metadata.digest;
   }
   return board;

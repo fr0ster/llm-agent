@@ -146,3 +146,67 @@ test('decisionWinner = the decisionId of the FIRST claim for a slot (attempt-ind
     'decA',
   );
 });
+
+test('writePlanDecision fails loud on malformed decisions (keyOf guards)', async () => {
+  const be = fakeBackend();
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        {
+          runId: 'r',
+          kind: 'page',
+          discoveryChainId: 'c',
+          pageIndex: 0,
+          steps: [],
+        } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /page requires tokenHash/,
+  );
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        { runId: 'r', kind: 'expand', steps: [] } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /expand requires discoveryStepId/,
+  );
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        { runId: 'r', kind: 'replan', steps: [] } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /replan requires anchor or triggerId/,
+  );
+});
+
+test('readClaims drops a claim row missing writeOrdinal', async () => {
+  const be = fakeBackend();
+  await be.put('sess', {
+    content: '',
+    metadata: {
+      artifactType: 'step-start',
+      runId: 'r',
+      slotId: 'sl',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      decisionId: 'd',
+    },
+  });
+  const claims = await readClaims(be as never, 'r');
+  assert.equal(claims.length, 0);
+});

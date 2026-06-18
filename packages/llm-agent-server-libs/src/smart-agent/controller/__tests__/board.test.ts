@@ -77,6 +77,47 @@ test('failed(attempt0) → executing(attempt1 claim, no result) → done(attempt
   assert.equal(board2.get('s1')!.digest, 'd1');
 });
 
+test('digest is taken from the max-writeOrdinal entry of the resolved status (order-independent)', () => {
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [{ stepId: 's1', name: 'X', instructions: 'y' }],
+    },
+  ];
+  // two 'ok' results for attempt 0, inserted HIGHER-ordinal FIRST:
+  const stepResults = [
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      status: 'ok',
+      digest: 'latest',
+      writeOrdinal: 5,
+    }),
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      status: 'ok',
+      digest: 'older',
+      writeOrdinal: 2,
+    }),
+  ];
+  const b = reconstructBoard({
+    structure,
+    stepResults,
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+  assert.equal(b.get('s1')!.state, 'done');
+  assert.equal(b.get('s1')!.digest, 'latest'); // max writeOrdinal, not insertion order
+});
+
 test('precedence among settled attempts: a late failed does NOT overwrite a committed ok', () => {
   const structure = [
     {
@@ -172,4 +213,26 @@ test('in-flight step + external-tool pending → awaiting-external (run-level pe
     inFlight,
   } satisfies BoardInputs);
   assert.equal(b2.get('s1')!.state, 'executing');
+});
+
+test('a later plan-decision replaces an earlier step entry (structure append/replace)', () => {
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [{ stepId: 's1', name: 'Old', instructions: 'old' }],
+    },
+    {
+      runId: 'r',
+      kind: 'replan' as const,
+      steps: [{ stepId: 's1', name: 'New', instructions: 'new' }],
+    },
+  ];
+  const b = reconstructBoard({
+    structure,
+    stepResults: [],
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+  assert.equal(b.get('s1')!.name, 'New');
 });
