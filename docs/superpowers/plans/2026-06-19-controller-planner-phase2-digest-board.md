@@ -812,30 +812,33 @@ This wires Phase-2's pieces into the live loop. Three integration points:
 Add to `controller-coordinator-handler.test.ts` (reuse the file's existing in-memory-backend + fake-deps harness). Two focused assertions:
 
 ```ts
+// NOTE: `KnowledgeBackend.scan(sessionId)` takes ONLY the sessionId and returns
+// ALL entries (no filter arg); filter in the test. (Filtered reads in product
+// code go through `IKnowledgeRagHandle.list({runId, artifactType})`.)
 test('handler persists a plan-decision after the planner creates a plan', async () => {
   // ... build deps with an AdaptivePlanner whose client returns a 1-step plan,
   //     an executor that returns content, a reviewer that returns ok+digest ...
   const { backend, sessionId, runId } = await runOneTurn(/* fixture */);
-  const decisions = await backend.scan(sessionId, {
-    runId,
-    artifactType: 'plan-decision',
-  });
+  const all = await backend.scan(sessionId);
+  const decisions = all.filter(
+    (e) => e.metadata.artifactType === 'plan-decision' && e.metadata.runId === runId,
+  );
   assert.ok(decisions.length >= 1);
 });
 
 test('handler writes stepId + digest on the step-result', async () => {
   const { backend, sessionId, runId } = await runOneTurn(/* fixture */);
-  const results = await backend.scan(sessionId, {
-    runId,
-    artifactType: 'step-result',
-  });
+  const all = await backend.scan(sessionId);
+  const results = all.filter(
+    (e) => e.metadata.artifactType === 'step-result' && e.metadata.runId === runId,
+  );
   assert.ok(results.length >= 1);
   assert.ok(results[0].metadata.stepId, 'stepId persisted');
   assert.ok(results[0].metadata.digest, 'digest persisted');
 });
 ```
 
-> Reuse the harness already in `controller-coordinator-handler.test.ts` (it constructs `deps` + an in-memory `KnowledgeBackend` and drives a turn). If a `runOneTurn`-style helper does not exist, follow the file's existing pattern for invoking the handler and reading back artifacts via `backend.scan`/the rag handle. Match the actual `KnowledgeBackend` read API used elsewhere in that test file (`scan` vs the rag `list`).
+> Reuse the harness already in `controller-coordinator-handler.test.ts` (it constructs `deps` + an in-memory `KnowledgeBackend` and drives a turn). If a `runOneTurn`-style helper does not exist, follow the file's existing pattern for invoking the handler and reading back artifacts via `backend.scan(sessionId)` + a metadata filter.
 
 - [ ] **Step 2: Run the test to verify it fails**
 
