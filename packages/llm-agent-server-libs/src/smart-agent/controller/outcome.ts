@@ -11,6 +11,11 @@ export interface Outcome {
   note: string;
 }
 
+/** The reviewer's verdict PLUS the planning `digest` (§A): the planning-relevant
+ *  extract the planner board shows, distinct from the full `approved` content that
+ *  goes to RAG. Bounded by `maxDigestChars` (non-discovery free text, §B). */
+export type ReviewOutcome = Outcome & { digest: string };
+
 /** Rank used to collapse multiple artifacts at one (runId, seq) to a single
  *  resolved outcome. ok and exists share the top rank; partial beats failed. */
 const RANK: Record<Outcome['status'], number> = {
