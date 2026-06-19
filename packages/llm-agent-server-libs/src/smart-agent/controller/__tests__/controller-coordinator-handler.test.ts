@@ -2125,6 +2125,124 @@ describe('Phase 2 — Live Digest Board integration', () => {
     );
   });
 
+  it('I2: board→planner path — planner receives a non-empty boardText containing the settled step digest', async () => {
+    // Use a proxying rag whose list() reads from the InMemoryKnowledgeBackend so
+    // renderLiveBoard returns real artifacts (plan-decision, step-start, step-result).
+    // We keep the default stubRag for write() so other assertions still work, but
+    // override list() to scan the backend.  Approach (b): isolated rag for this test
+    // only — avoids disrupting other tests that rely on list() returning [].
+    const backend = new InMemoryKnowledgeBackend();
+    const writtenEntries: KnowledgeEntry[] = [];
+
+    const proxyRag: IKnowledgeRagHandle & { written: KnowledgeEntry[] } = {
+      written: writtenEntries,
+      query: async () => [],
+      async list(filter) {
+        const all = await backend.scan('sess-1');
+        return all.filter((e) => {
+          if (filter.runId !== undefined && e.metadata.runId !== filter.runId)
+            return false;
+          if (filter.artifactType !== undefined) {
+            const af = filter.artifactType;
+            if (typeof af === 'string') {
+              if (e.metadata.artifactType !== af) return false;
+            } else {
+              if (!af.includes(e.metadata.artifactType as string)) return false;
+            }
+          }
+          return true;
+        });
+      },
+      async write(entry) {
+        writtenEntries.push(entry);
+        // Also persist step-result entries to the backend so the board can read them.
+        if (entry.metadata.artifactType === 'step-result') {
+          await backend.put('sess-1', entry);
+        }
+      },
+      fingerprint() {
+        return 'proxy';
+      },
+    };
+
+    // Capture all messages the planner receives so we can assert boardText content.
+    const plannerMessages: Array<{ role: string; content: string }[]> = [];
+    const plannerReplies: SubagentResult[] = [
+      {
+        kind: 'content',
+        content: JSON.stringify({
+          plan: [{ name: 's1', instructions: 'fetch-digest-me' }],
+        }),
+      },
+      { kind: 'content', content: 'BOARD_FINAL' },
+    ];
+    const recordingPlanner: ISubagentClient = {
+      async send(messages) {
+        plannerMessages.push(
+          messages.map((m) => ({
+            role: m.role,
+            content: typeof m.content === 'string' ? m.content : '',
+          })),
+        );
+        return plannerReplies.shift() ?? { kind: 'content', content: '' };
+      },
+    };
+
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      planner: [], // overridden below
+      executor: [{ kind: 'content', content: 'STEP-RESULT-CONTENT' }],
+      config: { ...baseConfig(), planner: 'adaptive' },
+    });
+    h.deps.backend = backend;
+    h.deps.knowledgeRagFor = () => proxyRag;
+    h.deps.planner = recordingPlanner;
+
+    const { ctx, captured } = fakeCtx();
+    const ret = await new ControllerCoordinatorHandler(h.deps).execute(
+      ctx,
+      {},
+      undefined,
+    );
+
+    assert.equal(ret, true);
+    assert.ok(
+      captured.find(
+        (c) =>
+          c.ok &&
+          c.value.finishReason === 'stop' &&
+          c.value.content === 'BOARD_FINAL',
+      ),
+      'run reached done',
+    );
+
+    // The planner was called at least twice: (1) create plan, (2) finalize.
+    assert.ok(plannerMessages.length >= 2, 'planner called at least twice');
+
+    // Find the step-result written with a digest — that digest must appear in the
+    // second planner call (the finalize call that follows the executor).
+    const stepResult = writtenEntries.find(
+      (e) =>
+        e.metadata.artifactType === 'step-result' &&
+        typeof e.metadata.digest === 'string',
+    );
+    assert.ok(stepResult, 'a step-result with a digest was written');
+    const digest = (
+      stepResult as typeof stepResult & { metadata: { digest: string } }
+    ).metadata.digest;
+    assert.ok(digest.length > 0, 'digest is non-empty');
+
+    // The SECOND planner call (finalize) must include the board containing the digest.
+    const secondCallText = plannerMessages
+      .slice(1)
+      .flatMap((msgs) => msgs.map((m) => m.content))
+      .join('\n');
+    assert.ok(
+      secondCallText.includes(digest),
+      `second planner call boardText must contain the settled step digest "${digest}"`,
+    );
+  });
+
   it('handler writes a failed step-result with digest on a control failure', async () => {
     // Fixture: executor always returns an error → retries exhaust → settle('failed').
     // maxRetries=0 so the single error immediately exhausts retries.

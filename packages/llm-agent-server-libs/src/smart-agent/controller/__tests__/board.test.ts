@@ -376,6 +376,56 @@ test('renderBoard output never exceeds maxBoardChars when it does return', () =>
   assert.ok(text.length <= BUDGET.maxBoardChars);
 });
 
+test('reconstructBoard populates entry.seq from winner metadata for a settled step', () => {
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [{ stepId: 's1', name: 'Fetch', instructions: 'read' }],
+    },
+  ];
+  const stepResults = [
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's1',
+      seq: 3,
+      attempt: 0,
+      status: 'ok',
+      digest: 'd',
+      writeOrdinal: 1,
+    }),
+  ];
+  const b = reconstructBoard({
+    structure,
+    stepResults,
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+  assert.equal(b.get('s1')?.seq, 3, 'seq populated from winner metadata');
+});
+
+test('renderBoard recency-by-seq: keepRecentDigests=1 keeps the highest-seq digest', () => {
+  const budget: BoardBudget = { ...BUDGET, keepRecentDigests: 1 };
+  const board = new Map<string, BoardEntry>([
+    [
+      'a',
+      entry({ stepId: 'stepA', name: 'A', state: 'done', seq: 1, digest: 'D1' }),
+    ],
+    [
+      'b',
+      entry({ stepId: 'stepB', name: 'B', state: 'done', seq: 5, digest: 'D5' }),
+    ],
+  ]);
+  const text = renderBoard(board, budget);
+  // seq=5 (D5) is the most recent → kept in full
+  assert.match(text, /D5/, 'highest-seq digest kept in full');
+  // seq=1 (D1) is older → compacted to a summary line (no digest content)
+  assert.doesNotMatch(text, /D1/, 'older digest content compacted away');
+  // summary line for seq=1 still appears
+  assert.match(text, /seq 1/, 'summary line for older seq present');
+});
+
 test('validateBoardBudget passes a well-sized budget', () => {
   assert.doesNotThrow(() => validateBoardBudget(BUDGET));
 });

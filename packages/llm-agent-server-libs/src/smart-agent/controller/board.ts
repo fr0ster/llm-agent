@@ -98,6 +98,16 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
           ? 'awaiting-external'
           : 'executing';
       entry.attempt = maxAttempt;
+      // Populate seq from the in-flight step first; fall back to the max-attempt claim.
+      const maxAttemptClaim = claims.reduce<StepStartClaim | undefined>(
+        (best, c) =>
+          c.attempt === maxAttempt &&
+          (!best || c.writeOrdinal >= best.writeOrdinal)
+            ? c
+            : best,
+        undefined,
+      );
+      entry.seq = inFlightForStep?.seq ?? maxAttemptClaim?.seq;
       continue;
     }
     const outcomes: Outcome[] = settledForCurrent
@@ -127,6 +137,7 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
         undefined,
       );
     entry.digest = winner?.metadata.digest;
+    entry.seq = winner?.metadata.seq;
   }
   return board;
 }
