@@ -50,7 +50,7 @@ export function reconstructPlanStructure(
     if (dec.kind === 'create') {
       plan = dec.steps;
     } else if (dec.kind === 'replan') {
-      const anchor = dec.steps[0]?.supersedesStepId;
+      const anchor = dec.anchorStepId ?? dec.steps[0]?.supersedesStepId;
       const idx = anchor ? plan.findIndex((s) => s.stepId === anchor) : -1;
       plan =
         idx >= 0

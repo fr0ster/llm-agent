@@ -604,3 +604,101 @@ test('reconstructPlanStructure unit — create then replan produces correct cano
     'canonical plan must be [s0, s1prime] — s2 dropped by replan tail-replacement',
   );
 });
+
+// ─── Phase 2 P1: empty-replan tail-truncation fix ────────────────────────────
+
+test('reconstructPlanStructure: empty replan truncates the tail from the anchor', () => {
+  // create(s0,s1,s2)@1 + empty replan anchored at s1 @2
+  // s1 failed → the anchor is s1 → everything from s1 onward is dropped.
+  // canonical plan must be [s0] only.
+  const decisions = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      writeOrdinal: 1,
+      steps: [
+        { stepId: 's0', name: 'a', instructions: 'a' },
+        { stepId: 's1', name: 'b', instructions: 'b' },
+        { stepId: 's2', name: 'c', instructions: 'c' },
+      ],
+    },
+    {
+      runId: 'r',
+      kind: 'replan' as const,
+      writeOrdinal: 2,
+      anchorStepId: 's1',
+      steps: [],
+    },
+  ];
+  const plan = reconstructPlanStructure(
+    decisions as Parameters<typeof reconstructPlanStructure>[0],
+  );
+  assert.deepEqual(
+    plan.map((s) => s.stepId),
+    ['s0'],
+  );
+});
+
+test('reconstructBoard: empty replan drops unexecuted tail; executed anchor stays failed', () => {
+  // create(s0,s1,s2)@1 + empty replan anchored at s1 @2
+  // stepResults: s0 ok, s1 failed
+  // Expected board: s0(done), s1(failed, resurrected), NO s2
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      writeOrdinal: 1,
+      steps: [
+        { stepId: 's0', name: 'a', instructions: 'a' },
+        { stepId: 's1', name: 'b', instructions: 'b' },
+        { stepId: 's2', name: 'c', instructions: 'c' },
+      ],
+    },
+    {
+      runId: 'r',
+      kind: 'replan' as const,
+      writeOrdinal: 2,
+      anchorStepId: 's1',
+      steps: [],
+    },
+  ];
+  const stepResults = [
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's0',
+      seq: 0,
+      attempt: 0,
+      status: 'ok',
+      digest: 'd0',
+      writeOrdinal: 10,
+    }),
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's1',
+      seq: 1,
+      attempt: 0,
+      status: 'failed',
+      digest: 'err1',
+      writeOrdinal: 11,
+    }),
+  ];
+  const b = reconstructBoard({
+    structure: structure as BoardInputs['structure'],
+    stepResults,
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+
+  assert.ok(b.has('s0'), 's0 must be on the board');
+  assert.equal(b.get('s0')!.state, 'done', 's0 must be done');
+
+  assert.ok(b.has('s1'), 's1 must be resurrected (executed history)');
+  assert.equal(b.get('s1')!.state, 'failed', 's1 must be failed');
+
+  assert.ok(
+    !b.has('s2'),
+    's2 is unexecuted + dropped by empty replan — must not appear',
+  );
+});

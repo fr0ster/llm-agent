@@ -303,14 +303,12 @@ export class AdaptivePlanner implements IControllerPlanner {
       const anchor = bundle.plan[cursor]?.stepId ?? '';
       const mintedRest = mintReplanStepIds(rest, bundle.runId ?? '', anchor);
       bundle.plan = [...bundle.plan.slice(0, cursor), ...mintedRest];
-      if (mintedRest.length > 0) {
-        recordDecision(bundle, {
-          kind: 'replan',
-          runId: bundle.runId ?? '',
-          anchor,
-          steps: mintedRest,
-        });
-      }
+      recordDecision(bundle, {
+        kind: 'replan',
+        runId: bundle.runId ?? '',
+        anchor,
+        steps: mintedRest,
+      });
       // The failure has now been consumed into the revised plan. Clear the durable
       // failure marker BEFORE the (possible) finalize below, so that: a crash after
       // this replan does NOT replan again on resume, and a finalizer error after an

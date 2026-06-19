@@ -623,6 +623,33 @@ test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText e
   assert.match(client.lastUserContent(), /\[seq 0 a ok\]/);
 });
 
+test('AdaptivePlanner empty replan records a tail-truncating plan-decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({
+      plan: [
+        { name: 'a', instructions: 'fetch a' },
+        { name: 'b', instructions: 'fetch b' },
+      ],
+    }), // create (2 steps)
+    JSON.stringify({ plan: [] }), // empty replan
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  await planner2.next({ bundle: b, prompt: 'g', retrying: false }); // create
+  const anchor = b.plan?.[0].stepId; // cursor 0 → the failed step is plan[0]
+  b.pendingPlanDecisions = []; // controller drained create
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    lastOutcome: 'failed',
+  });
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'replan');
+  assert.equal(dec?.steps.length, 0); // empty replan still recorded
+  assert.equal((dec as { anchor?: string })?.anchor, anchor);
+});
+
 describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
   const createPlanWith = (step: object): ISubagentClient =>
     planner([{ kind: 'content', content: JSON.stringify({ plan: [step] }) }]);

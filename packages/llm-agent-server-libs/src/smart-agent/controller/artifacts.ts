@@ -166,12 +166,17 @@ export async function writePlanDecision(
       decisionId: decisionId(k, plannerOutput),
       createdAt: nowIso,
       writeOrdinal,
+      ...(d.kind === 'replan' && 'anchor' in d
+        ? { supersedesStepId: d.anchor }
+        : {}),
     },
   });
 }
 
 /** Flat read-shape: the board's structure source needs only kind + steps + the
- *  resolved ids, NOT the kind-specific key fields (not stored on the artifact). */
+ *  resolved ids, NOT the kind-specific key fields (not stored on the artifact).
+ *  `anchorStepId` is populated for replan decisions so an empty replan's
+ *  truncation point is recoverable without relying on steps[0].supersedesStepId. */
 export interface PlanDecisionRecord {
   runId: string;
   kind: DecisionKey['kind'];
@@ -179,6 +184,9 @@ export interface PlanDecisionRecord {
   slotId?: string;
   steps: Step[];
   writeOrdinal: number;
+  /** Populated for replan decisions: the stepId from which the tail was replaced
+   *  (stored durably so an empty-replan's anchor is not lost). */
+  anchorStepId?: string;
 }
 
 export async function readPlanDecisions(
@@ -193,6 +201,7 @@ export async function readPlanDecisions(
     slotId: e.metadata.slotId,
     steps: (JSON.parse(e.content) as { steps: Step[] }).steps,
     writeOrdinal: e.metadata.writeOrdinal ?? 0,
+    anchorStepId: e.metadata.supersedesStepId,
   }));
 }
 
