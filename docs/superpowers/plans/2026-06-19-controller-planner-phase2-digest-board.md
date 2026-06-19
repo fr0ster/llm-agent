@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make the step-state digest board LIVE for the plan-first (adaptive) controller path — every plan step gets a stable `stepId` at creation, each create/replan is persisted as a `plan-decision` artifact, the reviewer returns a planning `digest`, the controller persists `stepId`+`digest` on each `step-result`, and the rendered board (with a bounded, deterministic compaction budget) replaces the payload-free `plannerPrivate` blob in the planner's prompts.
+**Goal:** Make the step-state digest board LIVE for the plan-first (adaptive) controller path — every plan step gets a stable `stepId` at creation, each create/replan is persisted as a `plan-decision` artifact, the reviewer returns a planning `digest`, the controller persists `stepId`+`digest` on each `step-result` (and a `failed` `step-result` for control failures), and the rendered board (with a bounded, deterministic compaction budget) becomes the AUTHORITATIVE step-state context in the planner's prompts. The board supersedes the payload-free `plannerPrivate` step-state blob; the prompt stays ADDITIVE (board + `plannerPrivate` tail) so non-board replan deltas (clarify answers, legacy external-tool results) survive until `plannerPrivate` is retired in the §C planner restructure.
 
-**Architecture:** Phase 1 already added the READ side — `reconstructBoard` (board.ts) reads `metadata.stepId`/`metadata.digest` off `step-result` entries and merges `plan-decision` structure + claims + in-flight into a `Map<stepId, BoardEntry>`; `writePlanDecision`/`readPlanDecisions`/`deterministicId` (artifacts.ts) persist/read decisions; `projectStepState` (outcome.ts) projects status→board state. Phase 2 wires the WRITE side and the planner integration: (1) the adaptive planner mints `stepId`s and records `PlanDecision`s onto the bundle when it (re)builds `bundle.plan`; (2) the handler drains+persists those decisions before dispatch; (3) the reviewer's `ReviewOutcome` carries a `digest`, validated by `parseReview`; (4) the handler writes `stepId`+`digest` on the `step-result`; (5) a new pure `renderBoard` turns the reconstructed board into a bounded text block; (6) the handler reconstructs+renders the board each turn and passes it to the planner via `PlannerNextInput.boardText`, which the planner prompts use in place of `plannerPrivate` (graceful fallback to `plannerPrivate` when the board is empty — this is how the legacy `IncrementalPlanner`, which writes no decisions, keeps working unchanged).
+**Architecture:** Phase 1 already added the READ side — `reconstructBoard` (board.ts) reads `metadata.stepId`/`metadata.digest` off `step-result` entries and merges `plan-decision` structure + claims + in-flight into a `Map<stepId, BoardEntry>`; `writePlanDecision`/`readPlanDecisions`/`deterministicId` (artifacts.ts) persist/read decisions; `projectStepState` (outcome.ts) projects status→board state. Phase 2 wires the WRITE side and the planner integration: (1) the adaptive planner mints `stepId`s and records `PlanDecision`s onto the bundle when it (re)builds `bundle.plan`; (2) the handler drains+persists those decisions before dispatch; (3) the reviewer's `ReviewOutcome` carries a `digest`, validated by `parseReview`; (4) the handler writes `stepId`+`digest` on the `step-result`; (5) a new pure `renderBoard` turns the reconstructed board into a bounded text block; (6) the handler reconstructs+renders the board each turn and passes it to the planner via `PlannerNextInput.boardText`, which the planner prompts render ADDITIVELY — the authoritative board FOLLOWED BY the `plannerPrivate` tail (which still carries non-board deltas: clarify answers, the legacy seeded-bundle external result). An empty board (the legacy `IncrementalPlanner`, which writes no decisions) → `plannerPrivate` alone, byte-identical to today.
 
 **Tech Stack:** TypeScript (ESM, strict), Node ≥22 `node:test` (co-located `__tests__/*.test.ts`, run via `npm run -w @mcp-abap-adt/llm-agent-server-libs test`), Biome lint/format. Package: `@mcp-abap-adt/llm-agent-server-libs`, directory `src/smart-agent/controller/`.
 
@@ -402,10 +402,11 @@ Add to the `SessionBundle` interface (near `plan?`/`planCursor?`):
 
 ```ts
   /** The rendered step-state digest board (§B), reconstructed by the controller
-   *  from artifacts before each call. When present + non-empty it REPLACES the
-   *  legacy `plannerPrivate` blob in the planner prompt; empty/absent → the planner
-   *  falls back to `plannerPrivate` (so the decision-less IncrementalPlanner is
-   *  unchanged). */
+   *  from artifacts before each call. When present + non-empty it is the
+   *  AUTHORITATIVE step-state context, rendered ADDITIVELY ahead of the
+   *  `plannerPrivate` tail (which still carries non-board deltas — clarify answers,
+   *  the legacy external result). Empty/absent → the planner uses `plannerPrivate`
+   *  alone (so the decision-less IncrementalPlanner is byte-identical to today). */
   boardText?: string;
 ```
 
