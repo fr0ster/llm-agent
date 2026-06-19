@@ -178,6 +178,7 @@ export interface PlanDecisionRecord {
   decisionId?: string;
   slotId?: string;
   steps: Step[];
+  writeOrdinal: number;
 }
 
 export async function readPlanDecisions(
@@ -191,6 +192,7 @@ export async function readPlanDecisions(
     decisionId: e.metadata.decisionId,
     slotId: e.metadata.slotId,
     steps: (JSON.parse(e.content) as { steps: Step[] }).steps,
+    writeOrdinal: e.metadata.writeOrdinal ?? 0,
   }));
 }
 

@@ -5,6 +5,7 @@ import {
   type BoardEntry,
   type BoardInputs,
   reconstructBoard,
+  reconstructPlanStructure,
   renderBoard,
   validateBoardBudget,
 } from '../board.js';
@@ -446,5 +447,160 @@ test('validateBoardBudget fails loud when the worst case cannot fit', () => {
   assert.throws(
     () => validateBoardBudget({ ...BUDGET, maxBoardChars: 50 }),
     /maxBoardChars/,
+  );
+});
+
+// ─── Phase 2 P1: canonical plan-decision arbitration ─────────────────────────
+
+test('crash-dup create — latest create (higher writeOrdinal) wins, no orphan entries', () => {
+  // Two `create` decisions for the same run (crash-retry scenario): the first
+  // (writeOrdinal 1) had steps s0,s1,s2; the second (writeOrdinal 2) replaced
+  // it with only s0. No step-results — the orphan s1/s2 must NOT appear.
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [
+        { stepId: 's0', name: 'A', instructions: 'do A' },
+        { stepId: 's1', name: 'B', instructions: 'do B' },
+        { stepId: 's2', name: 'C', instructions: 'do C' },
+      ],
+      writeOrdinal: 1,
+    },
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [{ stepId: 's0', name: 'A', instructions: 'do A' }],
+      writeOrdinal: 2,
+    },
+  ];
+  const b = reconstructBoard({
+    structure,
+    stepResults: [],
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+  assert.ok(b.has('s0'), 's0 must be on the board');
+  assert.ok(
+    !b.has('s1'),
+    's1 is an orphan from the stale create — must not appear',
+  );
+  assert.ok(
+    !b.has('s2'),
+    's2 is an orphan from the stale create — must not appear',
+  );
+});
+
+test('replan tail-replacement — unexecuted dropped step excluded, executed superseded step resurrected', () => {
+  // create(s0,s1,s2)@wo1 + replan([s1prime supersedes s1])@wo2
+  // s0 ran and succeeded; s1 ran and failed; replan introduced s1prime.
+  // Expected board: s0(done), s1(failed — executed history), s1prime(planned), NO s2.
+  const structure = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [
+        { stepId: 's0', name: 'A', instructions: 'do A' },
+        { stepId: 's1', name: 'B', instructions: 'do B' },
+        { stepId: 's2', name: 'C', instructions: 'do C' },
+      ],
+      writeOrdinal: 1,
+    },
+    {
+      runId: 'r',
+      kind: 'replan' as const,
+      steps: [
+        {
+          stepId: 's1prime',
+          name: 'B-redo',
+          instructions: 'redo B',
+          supersedesStepId: 's1',
+        },
+      ],
+      writeOrdinal: 2,
+    },
+  ];
+  const stepResults = [
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's0',
+      seq: 0,
+      attempt: 0,
+      status: 'ok',
+      digest: 'd0',
+      writeOrdinal: 10,
+    }),
+    meta({
+      artifactType: 'step-result',
+      runId: 'r',
+      stepId: 's1',
+      seq: 1,
+      attempt: 0,
+      status: 'failed',
+      digest: 'err1',
+      writeOrdinal: 11,
+    }),
+  ];
+  const b = reconstructBoard({
+    structure,
+    stepResults,
+    claims: [],
+    inFlight: undefined,
+  } as BoardInputs);
+
+  assert.ok(
+    b.has('s0'),
+    's0 must be on the board (executed + in canonical plan)',
+  );
+  assert.equal(b.get('s0')!.state, 'done', 's0 state must be done');
+
+  assert.ok(b.has('s1'), 's1 must be resurrected (executed history, §F)');
+  assert.equal(b.get('s1')!.state, 'failed', 's1 state must be failed');
+
+  assert.ok(b.has('s1prime'), 's1prime must be on the board (canonical plan)');
+  assert.equal(
+    b.get('s1prime')!.state,
+    'planned',
+    's1prime state must be planned',
+  );
+
+  assert.ok(
+    !b.has('s2'),
+    's2 is unexecuted + dropped by replan — must not appear (phantom)',
+  );
+});
+
+test('reconstructPlanStructure unit — create then replan produces correct canonical stepIds', () => {
+  const decisions = [
+    {
+      runId: 'r',
+      kind: 'create' as const,
+      steps: [
+        { stepId: 's0', name: 'A', instructions: 'do A' },
+        { stepId: 's1', name: 'B', instructions: 'do B' },
+        { stepId: 's2', name: 'C', instructions: 'do C' },
+      ],
+      writeOrdinal: 1,
+    },
+    {
+      runId: 'r',
+      kind: 'replan' as const,
+      steps: [
+        {
+          stepId: 's1prime',
+          name: 'B-redo',
+          instructions: 'redo B',
+          supersedesStepId: 's1',
+        },
+      ],
+      writeOrdinal: 2,
+    },
+  ];
+  const plan = reconstructPlanStructure(decisions);
+  assert.deepEqual(
+    plan.map((s) => s.stepId),
+    ['s0', 's1prime'],
+    'canonical plan must be [s0, s1prime] — s2 dropped by replan tail-replacement',
   );
 });

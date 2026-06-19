@@ -2,7 +2,7 @@ import type { KnowledgeEntry } from '@mcp-abap-adt/llm-agent';
 import type { PlanDecisionRecord, StepStartClaim } from './artifacts.js';
 import type { Outcome } from './outcome.js';
 import { projectStepState, resolveByPrecedence } from './outcome.js';
-import type { InFlightStep, PendingMarker } from './types.js';
+import type { InFlightStep, PendingMarker, Step } from './types.js';
 
 export type StepState =
   | 'planned'
@@ -34,16 +34,68 @@ export interface BoardInputs {
   pending?: PendingMarker;
 }
 
+/** Replay create/replan decisions (writeOrdinal order) into the canonical CURRENT
+ *  plan (§F arbitration): a later `create` (a crash-retry of a not-yet-persisted
+ *  plan) REPLACES the earlier one; a `replan` replaces the plan tail from its
+ *  superseded anchor (steps[0].supersedesStepId) onward. Steps dropped by a
+ *  replacement therefore never appear as phantom `planned` entries. */
+export function reconstructPlanStructure(
+  decisions: PlanDecisionRecord[],
+): Step[] {
+  const ordered = [...decisions].sort(
+    (a, b) => a.writeOrdinal - b.writeOrdinal,
+  );
+  let plan: Step[] = [];
+  for (const dec of ordered) {
+    if (dec.kind === 'create') {
+      plan = dec.steps;
+    } else if (dec.kind === 'replan') {
+      const anchor = dec.steps[0]?.supersedesStepId;
+      const idx = anchor ? plan.findIndex((s) => s.stepId === anchor) : -1;
+      plan =
+        idx >= 0
+          ? [...plan.slice(0, idx), ...dec.steps]
+          : [...plan, ...dec.steps];
+    }
+    // expand/page kinds are not produced in Phase 2 — ignored (later-phase concern).
+  }
+  return plan;
+}
+
 /** Rebuild the step-state board from artifacts (§F), sources 1–3. */
 export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
   const board = new Map<string, BoardEntry>();
 
-  // (1) Structure ← plan-decision steps (later decisions append/replace).
+  // (1) Structure ← the canonical replayed plan (§F arbitration): a stale create or
+  //     a replan-dropped tail never becomes a phantom `planned` entry.
+  const canonical = reconstructPlanStructure(input.structure);
+  // Lookup over EVERY step ever decided — used to resurrect executed-but-dropped steps.
+  const everDecided = new Map<string, Step>();
   for (const dec of input.structure) {
     for (const s of dec.steps) {
-      if (!s.stepId) continue;
-      board.set(s.stepId, {
-        stepId: s.stepId,
+      if (s.stepId) everDecided.set(s.stepId, s);
+    }
+  }
+  for (const s of canonical) {
+    if (!s.stepId) continue;
+    board.set(s.stepId, {
+      stepId: s.stepId,
+      name: s.name,
+      instructions: s.instructions,
+      state: 'planned',
+    });
+  }
+  // (1b) Resurrect EXECUTED steps a replacement dropped from the canonical plan: an
+  //      executed step is immutable history (§F) and must stay on the board with its
+  //      terminal state; an UNEXECUTED dropped step is a phantom and stays out.
+  for (const e of input.stepResults) {
+    if (e.metadata.artifactType !== 'step-result') continue;
+    const id = e.metadata.stepId;
+    if (!id || board.has(id)) continue;
+    const s = everDecided.get(id);
+    if (s) {
+      board.set(id, {
+        stepId: id,
         name: s.name,
         instructions: s.instructions,
         state: 'planned',
