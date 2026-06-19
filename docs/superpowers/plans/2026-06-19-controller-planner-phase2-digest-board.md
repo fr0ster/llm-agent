@@ -27,7 +27,7 @@
 | `src/pipelines/controller.ts` | `parseConfig` defaults the five board knobs into `budgets` (Task 3). |
 | `src/factories/controller-factory.ts` | `build()` calls `validateBoardBudget` once (fail-loud at composition — the single chokepoint both the pipeline plugin and direct programmatic users pass through) (Task 8). |
 | `src/smart-agent/controller/planner.ts` | `AdaptivePlanner` mints stepIds + records `PlanDecision`s onto the bundle when it (re)builds `bundle.plan`; the three prompt sites use `boardText` with `plannerPrivate` fallback. |
-| `src/smart-agent/controller/controller-coordinator-handler.ts` | Drain+persist `bundle.pendingPlanDecisions` after `planner.next()`; reconstruct+render the board and pass `boardText` into `planner.next()`; write `stepId`+`digest` on the `step-result`; thread `maxDigestChars` (from `cfg`) into the reviewer and the default-reviewer/coerced paths. |
+| `src/smart-agent/controller/controller-coordinator-handler.ts` | Drain+persist `bundle.pendingPlanDecisions` after `planner.next()`; reconstruct+render the board and pass `boardText` into `planner.next()` (fail-loud on `BoardOverBudgetError`); write `stepId`+`digest` on the `step-result`; write a `failed` `step-result` for every control-failure branch so the board carries it (Task 6D); thread `maxDigestChars` (from `cfg`) into the reviewer and the default-reviewer/coerced paths. |
 
 ---
 
@@ -1118,12 +1118,62 @@ At the `writeArtifact` step-result call (lines ~1040-1056), add two metadata fie
 
 > `outcome` is now a `ReviewOutcome` (Task 2) so `outcome.digest` is typed. `step.stepId` is set because the adaptive planner minted it (Task 4). For a step with no `stepId` (legacy incremental path), `metadata.stepId` is `undefined` — `reconstructBoard` already skips entries with no `stepId`, so the incremental path stays board-less (its `step-result`s carry a digest but no board entry — harmless).
 
+- [ ] **Step 3d: Control-failure branches write a `failed` step-result (board carries the reason)**
+
+Several CONTROL-failure branches in the run loop currently write their reason ONLY to `bundle.plannerPrivate`, then `return settle('failed')` to drive a replan. Because the board is reconstructed from `step-result` artifacts, a control failure that writes no `step-result` leaves NO `failed` board entry — the planner's board-based replan would not see the reason (and the step would render as stale `executing` from the in-flight). Make every such branch ALSO write a `failed` `step-result` carrying `stepId` + the reason as `digest`/`note`, so the board (and thus the §C board-only planners) is authoritative for step failures. This is the durable, §C-ready half; the `plannerPrivate` append stays (Task 7 renders it as the non-board delta safety net).
+
+Add a closure inside the run-loop method (it captures `step`, `bundle`, `rag`, `meta`, `cfg`, `ctx` — all already in scope at the post-review write site):
+
+```ts
+    /** Persist a controller-level (non-reviewer) step failure as a `failed`
+     *  step-result so the board reflects it (the planner replans from the board). */
+    const writeControlFailure = async (reason: string): Promise<void> => {
+      const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
+      const attempt = bundle.inFlightStep?.attempt ?? 0;
+      bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+      await writeArtifact(
+        rag,
+        {
+          ...meta,
+          artifactType: 'step-result',
+          task: step.name,
+          runId: bundle.runId,
+          seq,
+          attempt,
+          status: 'failed',
+          note: reason,
+          remainder: '',
+          stepId: step.stepId,
+          digest: reason.slice(0, cfg.maxDigestChars ?? 500),
+          writeOrdinal: bundle.writeOrdinal,
+          content: '',
+        },
+        ctx.options,
+      );
+    };
+```
+
+At EACH of these branches, call `await writeControlFailure(<reason>);` immediately BEFORE the existing `bundle.plannerPrivate += ...` line (keep the append). Use the SAME reason text that goes to `plannerPrivate`:
+
+| handler line | reason |
+|---|---|
+| ~1022 reviewer unverifiable | `` `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}` `` |
+| ~1082 executor error (retries exhausted) | `` `executor error: ${res.error}` `` |
+| ~1101 empty tool call | `'empty tool call'` |
+| ~1114 maxToolCalls (external pre-check) | `'tool-call budget exhausted (maxToolCalls)'` |
+| ~1160 unavailable tool | `` `requested unavailable tool ${name}` `` |
+| ~1173 maxToolCalls (post-increment) | `'tool-call budget exhausted (maxToolCalls)'` |
+
+> All six already increment `bundle.budgets.stepsUsed` and `return settle('failed')` — leave that unchanged; only ADD the `writeControlFailure(...)` call. The reviewer-unverifiable branch (~1022) already builds its reason string inline; reuse it.
+
+Also add this assertion to the Step-1 `step-result` test (or a third test): drive a control-failure turn (e.g. an executor that always errors past `maxRetries`) and assert a `step-result` with `status === 'failed'` and a non-empty `digest` + `stepId` exists.
+
 - [ ] **Step 4: Build + run the handler tests**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs build`
 Expected: success.
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="plan-decision|stepId \+ digest"`
-Expected: PASS (2 tests).
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="plan-decision|stepId \+ digest|control.failure"`
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1141,9 +1191,11 @@ git commit -m "feat(controller): persist plan-decisions, render live board, writ
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts`
 
-Swap the payload-free `Progress:${bundle.plannerPrivate}` blob for the rendered board, with a graceful fallback to `plannerPrivate` when the board is empty (the decision-less `IncrementalPlanner` thus keeps its exact legacy prompt).
+Replace the payload-free `Progress:${bundle.plannerPrivate}` blob with the rendered board PLUS the `plannerPrivate` tail. The board is the AUTHORITATIVE structured step state (states + digests, incl. control failures via Task 6D), so it fixes the loop/bloat the spec targets. But `plannerPrivate` ALSO carries deltas the board does NOT model — clarify answers (`controller-coordinator-handler.ts:490`) and the legacy seeded-bundle external-tool result (`:464`) — and the adaptive replan reads them (`planner.ts:244`). So the render is ADDITIVE, not exclusive-or: dropping `plannerPrivate` when the board is non-empty would silently lose those replan signals. When the board is EMPTY (legacy `IncrementalPlanner`, which writes no decisions) the prompt is `plannerPrivate` alone — byte-identical to today.
 
-- [ ] **Step 1: Write the failing test**
+> The terse `[seq N name status]` lines in `plannerPrivate` now duplicate the board's terminal entries — accepted interim cost. They retire together with `plannerPrivate` when the §C planner restructure moves both planners to a board-only context.
+
+- [ ] **Step 1: Write the failing tests**
 
 Add to `planner.test.ts`:
 
@@ -1153,7 +1205,27 @@ test('AdaptivePlanner prompt carries boardText when present', async () => {
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]); // captures the messages it was sent
   const planner = new AdaptivePlanner(client);
-  const bundle = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '\n[seq 0 a ok]' });
+  const bundle = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
+  await planner.next({
+    bundle,
+    prompt: 'g',
+    retrying: false,
+    boardText: '[step1aaa done] includes A,B',
+  });
+  assert.match(client.lastUserContent(), /includes A,B/); // board used
+});
+
+test('AdaptivePlanner prompt is ADDITIVE: board + plannerPrivate deltas both survive', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner = new AdaptivePlanner(client);
+  // plannerPrivate carries a NON-board delta (clarify answer / external result).
+  const bundle = newBundle({
+    runId: 'run-1',
+    goal: 'g',
+    plannerPrivate: '\n[clarify answer] use system PRD',
+  });
   await planner.next({
     bundle,
     prompt: 'g',
@@ -1161,18 +1233,18 @@ test('AdaptivePlanner prompt carries boardText when present', async () => {
     boardText: '[step1aaa done] includes A,B',
   });
   const userMsg = client.lastUserContent();
-  assert.match(userMsg, /includes A,B/); // board used
-  assert.doesNotMatch(userMsg, /\[seq 0 a ok\]/); // legacy blob NOT used
+  assert.match(userMsg, /includes A,B/); // board present
+  assert.match(userMsg, /use system PRD/); // non-board delta NOT lost
 });
 
-test('AdaptivePlanner prompt falls back to plannerPrivate when boardText empty', async () => {
+test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText empty', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
   const planner = new AdaptivePlanner(client);
   const bundle = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '\n[seq 0 a ok]' });
   await planner.next({ bundle, prompt: 'g', retrying: false, boardText: '' });
-  assert.match(client.lastUserContent(), /\[seq 0 a ok\]/); // fallback to legacy blob
+  assert.match(client.lastUserContent(), /\[seq 0 a ok\]/); // legacy blob, unchanged
 });
 ```
 
@@ -1180,18 +1252,23 @@ test('AdaptivePlanner prompt falls back to plannerPrivate when boardText empty',
 
 - [ ] **Step 2: Run the tests to verify they fail**
 
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="prompt carries boardText|falls back to plannerPrivate"`
-Expected: FAIL — prompt still uses `plannerPrivate` unconditionally.
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="carries boardText|ADDITIVE|falls back to plannerPrivate"`
+Expected: FAIL — prompt still uses `plannerPrivate` unconditionally (board ignored).
 
-- [ ] **Step 3: Implement the swap**
+- [ ] **Step 3: Implement the additive swap**
 
 Add a module-level helper in `planner.ts` (after `withSkillsBlock`):
 
 ```ts
-/** The planner's progress context: the rendered digest board when present,
- *  else the legacy plannerPrivate blob (so a decision-less planner is unchanged). */
+/** The planner's progress context. With a live board, render the AUTHORITATIVE
+ *  structured board AND the plannerPrivate tail — the latter carries non-board
+ *  deltas the planner still needs (clarify answers, legacy external-tool result).
+ *  An empty board (decision-less IncrementalPlanner) → plannerPrivate alone,
+ *  byte-identical to the legacy prompt. */
 function progressBlock(bundle: SessionBundle, boardText?: string): string {
-  return boardText && boardText.length > 0 ? boardText : bundle.plannerPrivate;
+  return boardText && boardText.length > 0
+    ? `${boardText}\n${bundle.plannerPrivate}`
+    : bundle.plannerPrivate;
 }
 ```
 
@@ -1215,8 +1292,8 @@ Thread `boardText` into the three prompt sites:
 
 - [ ] **Step 4: Run the tests to verify they pass**
 
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="prompt carries boardText|falls back to plannerPrivate"`
-Expected: PASS (2 tests). Then the full planner suite:
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="carries boardText|ADDITIVE|falls back to plannerPrivate"`
+Expected: PASS (3 tests). Then the full planner suite:
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="Planner|planner"`
 
 - [ ] **Step 5: Commit**
@@ -1320,7 +1397,8 @@ git commit -m "feat(controller): validate board budget at composition (fail-loud
 **Spec coverage (§A, §B, §E, §F — Phase-2 slice):**
 - §A two representations / reviewer returns digest, controller persists → Task 2 (`ReviewOutcome`, `parseReview`) + Task 6c (controller writes `digest` to `step-result`). ✓
 - §A migration contract (digest required, bounded, malformed → judge-failure) → Task 2. ✓ (`enumeration` explicitly deferred to discovery phase.)
-- §B digest board replaces the blob → Task 7. ✓
+- §B digest board supplants the payload-free blob as the AUTHORITATIVE step state → Task 7. The render is ADDITIVE (board + `plannerPrivate` tail), NOT exclusive-or, so non-board replan deltas (clarify answers, legacy external-tool results) are never lost; control-step failures are promoted ONTO the board as `failed` step-results (Task 6D) so the board is authoritative for failures too (and the §C board-only planners will see them). The terse duplicate `[seq N name status]` lines retire with `plannerPrivate` in §C. ✓
+- Lost-signal safety: every handler branch that feeds a replan surfaces its reason into the planner prompt — control failures via a `failed` step-result on the board (Task 6D), clarify/legacy-external deltas via the additive `plannerPrivate` tail (Task 7). ✓
 - §B budget / deterministic compaction / GUARANTEED cap → Task 5 (`renderBoard` compacts terminals; throws `BoardOverBudgetError` rather than returning over-cap text). ✓
 - §B `maxIntentChars` REQUIRED + actionable never aggregated → Task 5 (actionable rendered individually, intent bounded). ✓
 - §B fail-loud, never a lossy board → Task 5 (`renderBoard` throws) + Task 6b (handler catches → terminal control error). ✓
