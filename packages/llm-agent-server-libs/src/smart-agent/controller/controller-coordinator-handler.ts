@@ -731,7 +731,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           sessionId,
           decision,
           JSON.stringify(decision.steps),
-          new Date().toISOString(),
+          now(),
           bundle.writeOrdinal,
         );
       }
