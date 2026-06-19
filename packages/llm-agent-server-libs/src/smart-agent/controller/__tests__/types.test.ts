@@ -7,6 +7,7 @@ import {
   type NextStep,
   type PendingMarker,
   type SessionBundle,
+  type Step,
   type SubagentResult,
   validateRequires,
 } from '../types.js';
@@ -60,6 +61,21 @@ describe('controller types', () => {
     assert.equal(cfg.planner, 'adaptive');
     assert.equal(bundle.plan?.[0].name, 's1');
     assert.equal(bundle.planCursor, 0);
+  });
+});
+
+describe('Step', () => {
+  it('Step carries stable stepId + optional discovery/supersedes', () => {
+    const s: Step = {
+      stepId: 's1',
+      name: 'Fetch',
+      instructions: 'read it',
+      discovery: true,
+      supersedesStepId: 's0',
+    };
+    assert.equal(s.stepId, 's1');
+    assert.equal(s.discovery, true);
+    assert.equal(s.supersedesStepId, 's0');
   });
 });
 

@@ -196,6 +196,10 @@ export function matches(
   if (f.seq !== undefined && m.seq !== f.seq) return false;
   if (f.attempt !== undefined && m.attempt !== f.attempt) return false;
   if (f.status !== undefined && m.status !== f.status) return false;
+  if (f.stepId !== undefined && m.stepId !== f.stepId) return false;
+  if (f.decisionId !== undefined && m.decisionId !== f.decisionId) return false;
+  if (f.slotId !== undefined && m.slotId !== f.slotId) return false;
+  if (f.kind !== undefined && m.kind !== f.kind) return false;
   return true;
 }
 

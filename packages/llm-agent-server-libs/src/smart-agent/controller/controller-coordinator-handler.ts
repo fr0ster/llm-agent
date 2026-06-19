@@ -21,6 +21,17 @@ import {
   summaryToUsage,
 } from '@mcp-abap-adt/llm-agent-libs';
 import { cosine } from '../embedder-knowledge-index.js';
+import {
+  readClaims,
+  readPlanDecisions,
+  writePlanDecision,
+} from './artifacts.js';
+import {
+  type BoardBudget,
+  BoardOverBudgetError,
+  reconstructBoard,
+  renderBoard,
+} from './board.js';
 import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import type { Outcome } from './outcome.js';
@@ -558,6 +569,13 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // runs (see runStep → selectTools). The agnostic planner prompt already tells
     // it to plan fetch steps ("the executor picks the exact one").
     const cfg = deps.config.budgets;
+    const boardBudget: BoardBudget = {
+      maxDigestChars: cfg.maxDigestChars ?? 500,
+      maxIntentChars: cfg.maxIntentChars ?? 120,
+      maxActiveSteps: cfg.maxActiveSteps ?? 16,
+      maxBoardChars: cfg.maxBoardChars ?? 12000,
+      keepRecentDigests: cfg.keepRecentDigests ?? 8,
+    };
     let planParseRetries = 0;
     // bundle.lastOutcome is the SINGLE source of truth for the last step's
     // outcome — durable, so a resume after a FAILED step replans instead of
@@ -670,6 +688,26 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // 'planning' regardless of the prior 'evaluating'/'executing' value.
       bundle.runPhase = 'planning';
       await persistBundle(deps.backend, sessionId, bundle);
+      // (B) Render the live board BEFORE the planner call (fail-loud on over-budget).
+      let boardText: string;
+      try {
+        boardText = await renderLiveBoard(rag, bundle, boardBudget);
+      } catch (err) {
+        if (err instanceof BoardOverBudgetError) {
+          bundle.plannerPrivate += `\n[board over budget] ${err.message}`;
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
+            `board exceeds maxBoardChars: ${err.message}`,
+            now,
+            terminalTtlMs,
+            usageNow(),
+          );
+          return true;
+        }
+        throw err;
+      }
       const next = await planner.next({
         bundle,
         prompt,
@@ -681,7 +719,22 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // call (subagents, knowledgeRagFor, target-state) so the skills-recall
         // embedding is metered, cancellable, and joins the request trace.
         options: ctx.options,
+        boardText,
       });
+      // (A) Drain + persist plan decisions the planner queued during next().
+      const drained = bundle.pendingPlanDecisions ?? [];
+      bundle.pendingPlanDecisions = [];
+      for (const decision of drained) {
+        bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+        await writePlanDecision(
+          deps.backend,
+          sessionId,
+          decision,
+          JSON.stringify(decision.steps),
+          now(),
+          bundle.writeOrdinal,
+        );
+      }
       // The call completed → clear the in-flight marker + reset the resume counter
       // (a malformed reply is still a completed call; parse-retry is handled below).
       bundle.plannerCallInFlight = false;
@@ -983,6 +1036,34 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     let retries = 0;
 
+    // (D) Persist a 'failed' step-result artifact for controller-level failures
+    // (reviewer unverifiable, executor error exhausted, maxToolCalls, unavailable
+    // tool) so the board can project the step's terminal state from artifacts alone.
+    const writeControlFailure = async (reason: string): Promise<void> => {
+      const seq = bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0;
+      const attempt = bundle.inFlightStep?.attempt ?? 0;
+      bundle.writeOrdinal = (bundle.writeOrdinal ?? 0) + 1;
+      await writeArtifact(
+        rag,
+        {
+          ...meta,
+          artifactType: 'step-result',
+          task: step.name,
+          runId: bundle.runId,
+          seq,
+          attempt,
+          status: 'failed',
+          note: reason,
+          remainder: '',
+          stepId: step.stepId,
+          digest: reason.slice(0, cfg.maxDigestChars ?? 500),
+          writeOrdinal: bundle.writeOrdinal,
+          content: '',
+        },
+        ctx.options,
+      );
+    };
+
     // Inner loop handles tool routing / error retries until the executor
     // produces content for this step (or the step suspends on an external tool).
     while (true) {
@@ -996,6 +1077,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           ? await deps.reviewer.review(step, evidence, res.content, {
               hint: deps.config.subagents.reviewer?.hint,
               logUsage,
+              maxDigestChars: cfg.maxDigestChars ?? 500,
             })
           : {
               kind: 'outcome',
@@ -1004,6 +1086,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 approved: res.content,
                 remainder: '',
                 note: '',
+                digest: res.content.slice(0, cfg.maxDigestChars ?? 500),
               },
             };
 
@@ -1019,6 +1102,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             // planner replans, rather than aborting the whole run — the terminal
             // backstop is maxStepAttempts/maxSteps, not a single unverifiable verdict.
             bundle.budgets.stepsUsed++;
+            await writeControlFailure(
+              `reviewer unverifiable after ${cfg.maxReviewRetries ?? 2} retries: ${review.reason}`,
+            );
             bundle.plannerPrivate += `\n[seq ${
               bundle.inFlightStep?.seq ?? bundle.nextSeq ?? 0
             } ${step.name} failed] reviewer unverifiable after ${
@@ -1029,6 +1115,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           review = await deps.reviewer!.review(step, evidence, res.content, {
             hint: deps.config.subagents.reviewer?.hint,
             logUsage,
+            maxDigestChars: cfg.maxDigestChars ?? 500,
           });
         }
 
@@ -1049,6 +1136,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
             status: outcome.status,
             note: outcome.note,
             remainder: outcome.remainder,
+            stepId: step.stepId,
+            digest: outcome.digest,
             writeOrdinal: bundle.writeOrdinal,
             content: outcome.approved,
           },
@@ -1079,6 +1168,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // Retries exhausted — feed the error back as the step result so the
         // planner can replan on the next iteration.
         bundle.budgets.stepsUsed++;
+        await writeControlFailure(`executor error: ${res.error}`);
         bundle.plannerPrivate += `\n[step ${step.name} failed] ${res.error}`;
         return settle('failed');
       }
@@ -1098,6 +1188,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           continue;
         }
         bundle.budgets.stepsUsed++;
+        await writeControlFailure('empty tool call');
         bundle.plannerPrivate += `\n[step ${step.name} failed] empty tool call`;
         return settle('failed');
       }
@@ -1111,6 +1202,9 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         // cannot exceed the cap. Exhausted → control-failed replan at the same seq.
         if (inFlight && inFlight.toolCallCount + 1 > maxToolCalls) {
           bundle.budgets.stepsUsed++;
+          await writeControlFailure(
+            'tool-call budget exhausted (maxToolCalls)',
+          );
           bundle.plannerPrivate += `\n[seq ${inFlight.seq} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
           inFlight.phase = 'awaiting-replan';
           inFlight.controlFailure = {
@@ -1157,6 +1251,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           continue;
         }
         bundle.budgets.stepsUsed++;
+        await writeControlFailure(`requested unavailable tool ${name}`);
         bundle.plannerPrivate += `\n[step ${step.name} failed] requested unavailable tool ${name}`;
         return settle('failed');
       }
@@ -1170,6 +1265,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       if ((inFlight?.toolCallCount ?? 0) > maxToolCalls) {
         // Controller-level failure (NOT a reviewer status): record durably and replan.
         bundle.budgets.stepsUsed++;
+        await writeControlFailure('tool-call budget exhausted (maxToolCalls)');
         bundle.plannerPrivate += `\n[seq ${inFlight?.seq ?? bundle.nextSeq ?? 0} ${step.name} control-failed] tool-call budget exhausted (maxToolCalls)`;
         if (inFlight) {
           inFlight.phase = 'awaiting-replan';
@@ -1671,6 +1767,30 @@ function toLlmToolCall(c: StreamToolCall): LlmToolCall {
     name: ('name' in c && c.name) || '',
     arguments: args,
   };
+}
+
+/** Reconstruct and render the live step-state board from artifacts.
+ *  Returns '' when there is no runId (the board has nothing to show yet). */
+async function renderLiveBoard(
+  rag: IKnowledgeRagHandle,
+  bundle: SessionBundle,
+  budget: BoardBudget,
+): Promise<string> {
+  const runId = bundle.runId;
+  if (!runId) return '';
+  const [structure, claims] = await Promise.all([
+    readPlanDecisions(rag, runId),
+    readClaims(rag, runId),
+  ]);
+  const stepResults = await rag.list({ runId, artifactType: 'step-result' });
+  const board = reconstructBoard({
+    structure,
+    stepResults,
+    claims,
+    inFlight: bundle.inFlightStep,
+    pending: bundle.pending,
+  });
+  return renderBoard(board, budget);
 }
 
 /** Synthesize the strict KnowledgeEntryMetadata for controller artifacts. */

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import {
   AdaptivePlanner,
   CREATE_PLAN_SYSTEM,
@@ -26,6 +26,87 @@ const bundle = (): SessionBundle => ({
   goal: 'g',
   plannerPrivate: '',
   budgets: { stepsUsed: 0, rewindsUsed: 0 },
+});
+
+const fakeClient = (replies: string[]): ISubagentClient => ({
+  async send() {
+    const content = replies.shift() ?? '';
+    return { kind: 'content', content };
+  },
+});
+
+const newBundle = (opts: {
+  runId: string;
+  goal: string;
+  plannerPrivate?: string;
+}): SessionBundle => ({
+  goal: opts.goal,
+  plannerPrivate: opts.plannerPrivate ?? '',
+  budgets: { stepsUsed: 0, rewindsUsed: 0 },
+  runId: opts.runId,
+});
+
+const recordingFakeClient = (
+  replies: string[],
+): ISubagentClient & { lastUserContent: () => string } => {
+  let _lastUserContent = '';
+  return {
+    async send(messages) {
+      const userMsg = messages.find((m) => m.role === 'user');
+      _lastUserContent =
+        typeof userMsg?.content === 'string' ? userMsg.content : '';
+      const content = replies.shift() ?? '';
+      return { kind: 'content', content };
+    },
+    lastUserContent: () => _lastUserContent,
+  };
+};
+
+test('AdaptivePlanner mints create stepIds + records a create plan-decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({
+      plan: [
+        { name: 'a', instructions: 'fetch a' },
+        { name: 'b', instructions: 'fetch b' },
+      ],
+    }),
+  ]);
+  const p = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  const next = await p.next({ bundle: b, prompt: 'g', retrying: false });
+  assert.equal(next?.kind, 'next');
+  assert.ok(b.plan?.every((s) => typeof s.stepId === 'string'));
+  assert.equal(b.pendingPlanDecisions?.length, 1);
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'create');
+  assert.equal(dec?.steps.length, 2);
+  assert.equal(dec?.steps[0].stepId, b.plan?.[0].stepId);
+});
+
+test('AdaptivePlanner replan mints anchored stepIds + records a replan decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }), // create
+    JSON.stringify({
+      plan: [{ name: 'a2', instructions: 'fetch a differently' }],
+    }), // replan
+  ]);
+  const p = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  await p.next({ bundle: b, prompt: 'g', retrying: false }); // create; cursor 0
+  const anchor = b.plan?.[0].stepId;
+  b.pendingPlanDecisions = []; // controller drained the create decision
+  const next = await p.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    lastOutcome: 'failed',
+  });
+  assert.equal(next?.kind, 'next');
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'replan');
+  assert.equal((dec as { anchor?: string })?.anchor, anchor);
+  assert.equal(dec?.steps[0].supersedesStepId, anchor);
+  assert.notEqual(dec?.steps[0].stepId, anchor);
 });
 
 describe('IncrementalPlanner', () => {
@@ -485,6 +566,88 @@ describe('AdaptivePlanner partial transition', () => {
     });
     assert.ok(sawReplan, 'partial triggered a REVISED replan');
   });
+});
+
+test('AdaptivePlanner prompt carries boardText when present', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '[step1aaa done] includes A,B',
+  });
+  assert.match(client.lastUserContent(), /includes A,B/);
+});
+
+test('AdaptivePlanner prompt is ADDITIVE: board + plannerPrivate deltas both survive', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({
+    runId: 'run-1',
+    goal: 'g',
+    plannerPrivate: '\n[clarify answer] use system PRD',
+  });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '[step1aaa done] includes A,B',
+  });
+  const userMsg = client.lastUserContent();
+  assert.match(userMsg, /includes A,B/);
+  assert.match(userMsg, /use system PRD/);
+});
+
+test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText empty', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({
+    runId: 'run-1',
+    goal: 'g',
+    plannerPrivate: '\n[seq 0 a ok]',
+  });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '',
+  });
+  assert.match(client.lastUserContent(), /\[seq 0 a ok\]/);
+});
+
+test('AdaptivePlanner empty replan records a tail-truncating plan-decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({
+      plan: [
+        { name: 'a', instructions: 'fetch a' },
+        { name: 'b', instructions: 'fetch b' },
+      ],
+    }), // create (2 steps)
+    JSON.stringify({ plan: [] }), // empty replan
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  await planner2.next({ bundle: b, prompt: 'g', retrying: false }); // create
+  const anchor = b.plan?.[0].stepId; // cursor 0 → the failed step is plan[0]
+  b.pendingPlanDecisions = []; // controller drained create
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    lastOutcome: 'failed',
+  });
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'replan');
+  assert.equal(dec?.steps.length, 0); // empty replan still recorded
+  assert.equal((dec as { anchor?: string })?.anchor, anchor);
 });
 
 describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {

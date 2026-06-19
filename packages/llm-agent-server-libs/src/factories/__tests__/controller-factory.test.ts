@@ -79,3 +79,27 @@ test('throws when an embedder is present but the backend is NOT semantic-recall-
     /semantic-recall-capable/,
   );
 });
+
+const semanticCapableDeps = (): ControllerFactoryDeps => ({
+  ...baseDeps(),
+  backend: { semanticRecallCapable: true } as never,
+  embedder,
+});
+
+test('ControllerFactory.build rejects a board budget that cannot fit', async () => {
+  const badBudgetConfig: ControllerConfig = {
+    ...config,
+    budgets: {
+      ...config.budgets,
+      maxBoardChars: 50, // far too small for the default actionable worst-case
+      maxActiveSteps: 16,
+      maxIntentChars: 120,
+      maxDigestChars: 500,
+      keepRecentDigests: 8,
+    },
+  };
+  await assert.rejects(
+    () => new ControllerFactory().build(badBudgetConfig, semanticCapableDeps()),
+    /maxBoardChars/,
+  );
+});

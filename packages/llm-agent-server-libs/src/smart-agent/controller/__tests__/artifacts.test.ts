@@ -1,0 +1,258 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import {
+  decisionId,
+  decisionSlotId,
+  decisionWinner,
+  deterministicId,
+  mintCreateStepIds,
+  mintReplanStepIds,
+  type PlanDecision,
+  readClaims,
+  readPlanDecisions,
+  writePlanDecision,
+  writeStepStartClaim,
+} from '../artifacts.js';
+
+test('deterministicId is stable + order-sensitive + collision-resistant on segments', () => {
+  assert.equal(
+    deterministicId('run1', 'create'),
+    deterministicId('run1', 'create'),
+  );
+  assert.notEqual(
+    deterministicId('run1', 'create'),
+    deterministicId('run1', 'replan'),
+  );
+  // segment boundary is unambiguous: ['a','bc'] !== ['ab','c']
+  assert.notEqual(deterministicId('a', 'bc'), deterministicId('ab', 'c'));
+});
+
+test('decisionSlotId follows the §F kind table', () => {
+  assert.equal(
+    decisionSlotId({ kind: 'create', runId: 'r' }),
+    deterministicId('r', 'create'),
+  );
+  assert.equal(
+    decisionSlotId({ kind: 'replan', runId: 'r', anchor: 'sX' }),
+    deterministicId('r', 'replan', 'anchor', 'sX'),
+  );
+  assert.equal(
+    decisionSlotId({ kind: 'replan', runId: 'r', triggerId: 'tg' }),
+    deterministicId('r', 'replan', 'trigger', 'tg'),
+  );
+  assert.notEqual(
+    decisionSlotId({ kind: 'replan', runId: 'r', anchor: 'x' }),
+    decisionSlotId({ kind: 'replan', runId: 'r', triggerId: 'x' }),
+  );
+  assert.equal(
+    decisionSlotId({
+      kind: 'expand',
+      runId: 'r',
+      discoveryStepId: 'd',
+      offset: 5,
+    }),
+    deterministicId('r', 'expand', 'd', 5),
+  );
+  assert.equal(
+    decisionSlotId({
+      kind: 'page',
+      runId: 'r',
+      discoveryChainId: 'c',
+      pageIndex: 2,
+      tokenHash: 'th',
+    }),
+    deterministicId('r', 'page', 'c', 2),
+  );
+});
+
+test('decisionId folds plannerOutput for LLM-authored kinds, omits it for page', () => {
+  const a = decisionId({ kind: 'create', runId: 'r' }, 'PLAN-A');
+  const b = decisionId({ kind: 'create', runId: 'r' }, 'PLAN-B');
+  assert.notEqual(a, b);
+  const p = decisionId(
+    {
+      kind: 'page',
+      runId: 'r',
+      discoveryChainId: 'c',
+      pageIndex: 2,
+      tokenHash: 'th',
+    },
+    'ignored',
+  );
+  assert.equal(p, deterministicId('r', 'page', 'c', 2, 'th'));
+});
+
+function fakeBackend() {
+  const rows: { content: string; metadata: Record<string, unknown> }[] = [];
+  return {
+    rows,
+    put: async (
+      _sid: string,
+      e: { content: string; metadata: Record<string, unknown> },
+    ) => {
+      rows.push(e);
+    },
+    list: async (f: { runId?: string; artifactType?: string }) =>
+      rows.filter(
+        (r) =>
+          (!f.runId || r.metadata.runId === f.runId) &&
+          (!f.artifactType || r.metadata.artifactType === f.artifactType),
+      ),
+  };
+}
+
+test('writePlanDecision persists kind/decisionId/slotId + steps; readPlanDecisions returns them', async () => {
+  const be = fakeBackend();
+  const dec: PlanDecision = {
+    runId: 'r',
+    kind: 'create',
+    steps: [{ stepId: 's1', name: 'Fetch', instructions: 'read' }],
+  };
+  await writePlanDecision(be as never, 'sess', dec, 'PLAN-A', 'now', 1);
+  const got = await readPlanDecisions(be as never, 'r');
+  assert.equal(got.length, 1);
+  assert.equal(got[0].kind, 'create');
+  assert.equal(got[0].slotId, deterministicId('r', 'create'));
+  assert.equal(got[0].decisionId, deterministicId('r', 'create', 'PLAN-A'));
+  assert.equal(got[0].steps[0].stepId, 's1');
+});
+
+test('decisionWinner = the decisionId of the FIRST claim for a slot (attempt-independent)', async () => {
+  const be = fakeBackend();
+  const base = { runId: 'r', slotId: 'slot1', stepId: 's1', seq: 0 };
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 0, decisionId: 'decA' },
+    'now',
+    1,
+  );
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 0, decisionId: 'decB' },
+    'now',
+    2,
+  );
+  const claims = await readClaims(be as never, 'r');
+  assert.equal(decisionWinner(claims, 'slot1'), 'decA');
+  await writeStepStartClaim(
+    be as never,
+    'sess',
+    { ...base, attempt: 1, decisionId: 'decA' },
+    'now',
+    3,
+  );
+  assert.equal(
+    decisionWinner(await readClaims(be as never, 'r'), 'slot1'),
+    'decA',
+  );
+});
+
+test('writePlanDecision fails loud on malformed decisions (keyOf guards)', async () => {
+  const be = fakeBackend();
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        {
+          runId: 'r',
+          kind: 'page',
+          discoveryChainId: 'c',
+          pageIndex: 0,
+          steps: [],
+        } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /page requires tokenHash/,
+  );
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        { runId: 'r', kind: 'expand', steps: [] } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /expand requires discoveryStepId/,
+  );
+  await assert.rejects(
+    () =>
+      writePlanDecision(
+        be as never,
+        'sess',
+        { runId: 'r', kind: 'replan', steps: [] } as never,
+        'P',
+        'now',
+        1,
+      ),
+    /replan requires anchor or triggerId/,
+  );
+});
+
+test('readClaims drops a claim row missing writeOrdinal', async () => {
+  const be = fakeBackend();
+  await be.put('sess', {
+    content: '',
+    metadata: {
+      artifactType: 'step-start',
+      runId: 'r',
+      slotId: 'sl',
+      stepId: 's1',
+      seq: 0,
+      attempt: 0,
+      decisionId: 'd',
+    },
+  });
+  const claims = await readClaims(be as never, 'r');
+  assert.equal(claims.length, 0);
+});
+
+test('mintCreateStepIds assigns deterministic per-index stepIds', () => {
+  const steps = [
+    { name: 'a', instructions: 'fetch a' },
+    { name: 'b', instructions: 'fetch b' },
+  ];
+  const out1 = mintCreateStepIds(steps, 'run-1');
+  const out2 = mintCreateStepIds(steps, 'run-1');
+  assert.equal(out1.length, 2);
+  assert.ok(out1[0].stepId && out1[1].stepId);
+  assert.notEqual(out1[0].stepId, out1[1].stepId); // distinct per index
+  assert.deepEqual(
+    out1.map((s) => s.stepId),
+    out2.map((s) => s.stepId),
+  ); // deterministic (re-call → same ids)
+  assert.notEqual(mintCreateStepIds(steps, 'run-2')[0].stepId, out1[0].stepId); // runId-scoped
+  // original input not mutated
+  assert.equal(steps[0].stepId, undefined);
+});
+
+test('mintReplanStepIds mints new ids; first supersedes the anchor', () => {
+  const rest = [
+    { name: 'x', instructions: 'redo' },
+    { name: 'y', instructions: 'then' },
+  ];
+  const out = mintReplanStepIds(rest, 'run-1', 'anchor-step');
+  assert.equal(out[0].supersedesStepId, 'anchor-step');
+  assert.equal(out[1].supersedesStepId, undefined); // only the first supersedes
+  assert.ok(out[0].stepId && out[1].stepId);
+  assert.notEqual(out[0].stepId, out[1].stepId);
+  // deterministic + anchor-scoped
+  assert.deepEqual(
+    mintReplanStepIds(rest, 'run-1', 'anchor-step').map((s) => s.stepId),
+    out.map((s) => s.stepId),
+  );
+  assert.notEqual(
+    mintReplanStepIds(rest, 'run-1', 'other-anchor')[0].stepId,
+    out[0].stepId,
+  );
+});
+
+test('mintReplanStepIds on an empty tail returns []', () => {
+  assert.deepEqual(mintReplanStepIds([], 'run-1', 'anchor'), []);
+});

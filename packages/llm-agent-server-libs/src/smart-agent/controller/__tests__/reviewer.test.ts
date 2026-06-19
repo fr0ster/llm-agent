@@ -1,7 +1,72 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import { LlmReviewer, parseReview } from '../reviewer.js';
 import type { ISubagentClient } from '../subagent-client.js';
+
+const MAX = 200;
+
+test('parseReview returns digest on a well-formed ok verdict', () => {
+  const r = parseReview(
+    JSON.stringify({
+      status: 'ok',
+      approved: 'FULL CONTENT',
+      remainder: '',
+      note: 'done',
+      digest: 'includes: A, B, C',
+    }),
+    MAX,
+  );
+  assert.equal(r.kind, 'outcome');
+  if (r.kind !== 'outcome') return;
+  assert.equal(r.outcome.status, 'ok');
+  assert.equal(r.outcome.digest, 'includes: A, B, C');
+});
+
+test('parseReview judge-fails when digest is missing on a settle', () => {
+  const r = parseReview(
+    JSON.stringify({ status: 'ok', approved: 'X', remainder: '', note: '' }),
+    MAX,
+  );
+  assert.equal(r.kind, 'judge-failure');
+});
+
+test('parseReview truncates an over-long digest to maxDigestChars', () => {
+  const long = 'x'.repeat(500);
+  const r = parseReview(
+    JSON.stringify({
+      status: 'ok',
+      approved: 'X',
+      remainder: '',
+      note: '',
+      digest: long,
+    }),
+    MAX,
+  );
+  assert.equal(r.kind, 'outcome');
+  if (r.kind !== 'outcome') return;
+  assert.equal(r.outcome.digest.length, MAX);
+});
+
+test('parseReview coerces empty-approved success to failed WITH a digest', () => {
+  const r = parseReview(
+    JSON.stringify({
+      status: 'ok',
+      approved: '',
+      remainder: 'still missing Z',
+      note: 'nothing usable',
+      digest: 'n/a',
+    }),
+    MAX,
+  );
+  assert.equal(r.kind, 'outcome');
+  if (r.kind !== 'outcome') return;
+  assert.equal(r.outcome.status, 'failed');
+  assert.ok(r.outcome.digest.length > 0); // synthesized from note
+});
+
+test('parseReview judge-fails on unparsable reply', () => {
+  assert.equal(parseReview('not json', MAX).kind, 'judge-failure');
+});
 
 const client = (reply: string): ISubagentClient => ({
   async send() {
@@ -18,6 +83,7 @@ describe('LlmReviewer', () => {
           approved: 'RESULT',
           remainder: '',
           note: 'good',
+          digest: 'produced RESULT',
         }),
       ),
     );
@@ -30,6 +96,10 @@ describe('LlmReviewer', () => {
     assert.equal(res.kind, 'outcome');
     assert.equal(res.kind === 'outcome' && res.outcome.status, 'ok');
     assert.equal(res.kind === 'outcome' && res.outcome.approved, 'RESULT');
+    assert.equal(
+      res.kind === 'outcome' && res.outcome.digest,
+      'produced RESULT',
+    );
   });
 
   it('a well-formed FAILED verdict is a real step outcome (NOT a judge failure)', async () => {
@@ -40,6 +110,7 @@ describe('LlmReviewer', () => {
           approved: '',
           remainder: 'all',
           note: 'not done',
+          digest: 'nothing fetched',
         }),
       ),
     );
@@ -61,6 +132,7 @@ describe('LlmReviewer', () => {
           approved: '',
           remainder: 'all',
           note: 'nothing usable',
+          digest: 'n/a',
         }),
       ),
     );
@@ -117,6 +189,7 @@ describe('parseReview — partial coercion (Finding 4)', () => {
         approved: 'ACCEPTED CONTENT',
         remainder: '',
         note: 'all done',
+        digest: 'accepted content',
       }),
     );
     assert.equal(res.kind, 'outcome');
@@ -136,6 +209,7 @@ describe('parseReview — partial coercion (Finding 4)', () => {
         approved: 'DONE',
         remainder: '   ',
         note: '',
+        digest: 'done',
       }),
     );
     assert.equal(res.kind, 'outcome');
@@ -150,6 +224,7 @@ describe('parseReview — partial coercion (Finding 4)', () => {
         approved: 'PART DONE',
         remainder: 'still need this',
         note: '',
+        digest: 'part done',
       }),
     );
     assert.equal(res.kind, 'outcome');
@@ -169,6 +244,7 @@ describe('parseReview — partial coercion (Finding 4)', () => {
           approved: 'COMPLETE RESULT',
           remainder: '',
           note: 'everything done',
+          digest: 'complete result',
         }),
       ),
     );

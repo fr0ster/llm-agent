@@ -11,6 +11,11 @@ export interface Outcome {
   note: string;
 }
 
+/** The reviewer's verdict PLUS the planning `digest` (§A): the planning-relevant
+ *  extract the planner board shows, distinct from the full `approved` content that
+ *  goes to RAG. Bounded by `maxDigestChars` (non-discovery free text, §B). */
+export type ReviewOutcome = Outcome & { digest: string };
+
 /** Rank used to collapse multiple artifacts at one (runId, seq) to a single
  *  resolved outcome. ok and exists share the top rank; partial beats failed. */
 const RANK: Record<Outcome['status'], number> = {
@@ -37,4 +42,12 @@ export function resolveByPrecedence(
     }
   }
   return best;
+}
+
+/** Board terminal state for a SETTLED step (§E): ok/exists → done; partial →
+ *  partial; failed → failed. (NOT the planner transition `advanced|...`.) */
+export type SettledStepState = 'done' | 'partial' | 'failed';
+export function projectStepState(status: Outcome['status']): SettledStepState {
+  if (status === 'ok' || status === 'exists') return 'done';
+  return status; // 'partial' | 'failed'
 }
