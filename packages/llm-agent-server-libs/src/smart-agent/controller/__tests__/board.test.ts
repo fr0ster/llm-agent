@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { type BoardInputs, reconstructBoard } from '../board.js';
+import {
+  type BoardBudget,
+  type BoardEntry,
+  type BoardInputs,
+  reconstructBoard,
+  renderBoard,
+  validateBoardBudget,
+} from '../board.js';
 import type { InFlightStep, PendingMarker } from '../types.js';
 
 const meta = (m: Record<string, unknown>) => ({
@@ -235,4 +242,147 @@ test('a later plan-decision replaces an earlier step entry (structure append/rep
     inFlight: undefined,
   } as BoardInputs);
   assert.equal(b.get('s1')!.name, 'New');
+});
+
+const BUDGET: BoardBudget = {
+  maxDigestChars: 80,
+  maxIntentChars: 40,
+  maxActiveSteps: 8,
+  maxBoardChars: 4000,
+  keepRecentDigests: 3,
+};
+
+function entry(p: Partial<BoardEntry> & { stepId: string }): BoardEntry {
+  return {
+    name: p.name ?? 'step',
+    instructions: p.instructions ?? 'do the thing',
+    state: p.state ?? 'planned',
+    ...p,
+  };
+}
+
+test('renderBoard renders actionable steps individually with stepId + state', () => {
+  const board = new Map<string, BoardEntry>([
+    [
+      's1',
+      entry({
+        stepId: 's1aaaaaa',
+        state: 'planned',
+        instructions: 'fetch the list',
+      }),
+    ],
+    [
+      's2',
+      entry({
+        stepId: 's2bbbbbb',
+        state: 'executing',
+        seq: 1,
+        instructions: 'read row 1',
+      }),
+    ],
+  ]);
+  const text = renderBoard(board, BUDGET);
+  assert.match(text, /planned/);
+  assert.match(text, /executing/);
+  assert.match(text, /fetch the list/);
+  assert.match(text, /s1aaaaaa/);
+});
+
+test('renderBoard keeps the most recent K terminal digests in full, summarizes older', () => {
+  const board = new Map<string, BoardEntry>();
+  for (let i = 0; i < 6; i++) {
+    board.set(
+      `d${i}`,
+      entry({
+        stepId: `step${i}`,
+        name: `n${i}`,
+        state: 'done',
+        seq: i,
+        digest: `DIGEST_${i}`,
+      }),
+    );
+  }
+  const text = renderBoard(board, BUDGET); // keepRecentDigests = 3
+  assert.match(text, /DIGEST_5/);
+  assert.match(text, /DIGEST_3/);
+  assert.doesNotMatch(text, /DIGEST_0/);
+  assert.match(text, /seq 0 n0 done/);
+});
+
+test('renderBoard truncates a non-discovery digest to maxDigestChars', () => {
+  const board = new Map<string, BoardEntry>([
+    [
+      'd',
+      entry({ stepId: 's', state: 'done', seq: 0, digest: 'y'.repeat(500) }),
+    ],
+  ]);
+  const text = renderBoard(board, BUDGET);
+  assert.ok(!text.includes('y'.repeat(81)));
+});
+
+test('renderBoard truncates actionable intent to maxIntentChars', () => {
+  const board = new Map<string, BoardEntry>([
+    [
+      's',
+      entry({ stepId: 's', state: 'planned', instructions: 'z'.repeat(200) }),
+    ],
+  ]);
+  const text = renderBoard(board, BUDGET);
+  assert.ok(!text.includes('z'.repeat(41)));
+});
+
+test('renderBoard is empty for an empty board', () => {
+  assert.equal(renderBoard(new Map(), BUDGET), '');
+});
+
+test('renderBoard never returns over-cap text — throws when it cannot compact enough', () => {
+  const tight: BoardBudget = {
+    ...BUDGET,
+    maxBoardChars: 60,
+    maxActiveSteps: 100,
+  };
+  const board = new Map<string, BoardEntry>();
+  for (let i = 0; i < 10; i++) {
+    board.set(
+      `s${i}`,
+      entry({
+        stepId: `actv${i}`,
+        state: 'planned',
+        instructions: 'x'.repeat(40),
+      }),
+    );
+  }
+  assert.throws(
+    () => renderBoard(board, tight),
+    /BoardOverBudget|maxBoardChars/,
+  );
+});
+
+test('renderBoard output never exceeds maxBoardChars when it does return', () => {
+  const board = new Map<string, BoardEntry>();
+  for (let i = 0; i < 40; i++) {
+    board.set(
+      `d${i}`,
+      entry({
+        stepId: `step${i}`,
+        name: `n${i}`,
+        state: 'done',
+        seq: i,
+        digest: `D${i}`.repeat(10),
+      }),
+    );
+  }
+  const text = renderBoard(board, BUDGET);
+  assert.ok(text.length <= BUDGET.maxBoardChars);
+});
+
+test('validateBoardBudget passes a well-sized budget', () => {
+  assert.doesNotThrow(() => validateBoardBudget(BUDGET));
+});
+
+test('validateBoardBudget fails loud when the worst case cannot fit', () => {
+  assert.throws(
+    () => validateBoardBudget({ ...BUDGET, maxBoardChars: 50 }),
+    /maxBoardChars/,
+  );
 });

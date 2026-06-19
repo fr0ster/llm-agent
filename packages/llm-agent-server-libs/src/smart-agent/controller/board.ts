@@ -130,3 +130,134 @@ export function reconstructBoard(input: BoardInputs): Map<string, BoardEntry> {
   }
   return board;
 }
+
+/** Thrown by renderBoard when the protected (uncompactable) content still exceeds
+ *  maxBoardChars (§B): the controller catches it and fails loud / suspends BEFORE
+ *  the planner call rather than feeding a lossy board. */
+export class BoardOverBudgetError extends Error {
+  constructor(
+    readonly rendered: number,
+    readonly cap: number,
+  ) {
+    super(`rendered board (${rendered} chars) exceeds maxBoardChars (${cap})`);
+    this.name = 'BoardOverBudgetError';
+  }
+}
+
+/** Board render budget (§B). All bounds are REQUIRED so the cap is guaranteed. */
+export interface BoardBudget {
+  /** Cap on a non-discovery free-text digest (terminal entries). */
+  maxDigestChars: number;
+  /** Cap on an actionable entry's rendered intent (never dropped, only trimmed). */
+  maxIntentChars: number;
+  /** Bound on simultaneously-actionable entries (the §D capacity gate enforces it;
+   *  here it sizes the load-time invariant). */
+  maxActiveSteps: number;
+  /** Hard cap on the whole rendered board. */
+  maxBoardChars: number;
+  /** Number of most-recent terminal digests kept in full before compaction. */
+  keepRecentDigests: number;
+}
+
+const TERMINAL: ReadonlySet<StepState> = new Set(['done', 'partial', 'failed']);
+
+/** Validate the board budget at load (§B fail-loud invariant): all knobs are
+ *  non-negative integers, and the worst-case actionable block + the kept digests +
+ *  headroom fit `maxBoardChars`. A fixed per-line overhead (~24 chars: `[`, stepId8,
+ *  space, state, `] `, newline) is folded into the estimate.
+ *
+ *  The `maxActiveSteps` term is the §D-capacity-gated worst case (fan-out ≤
+ *  maxFanOut, one window at a time). In Phase 2 (no §D gate) the actionable count is
+ *  NOT bounded by maxActiveSteps — a one-shot plan materialises every future step as
+ *  `planned`. So this check is the load-time sizing guide; the HARD runtime
+ *  guarantee that the board never exceeds the cap is `renderBoard`'s
+ *  `BoardOverBudgetError` throw (the controller catches it → fail-loud). */
+export function validateBoardBudget(b: BoardBudget): void {
+  for (const [k, v] of Object.entries(b)) {
+    if (!Number.isInteger(v) || v < 0) {
+      throw new Error(
+        `BoardBudget.${k} must be a non-negative integer (got ${v})`,
+      );
+    }
+  }
+  const PER_LINE_OVERHEAD = 24;
+  const actionableWorstCase =
+    b.maxActiveSteps * (PER_LINE_OVERHEAD + b.maxIntentChars);
+  const digestsWorstCase =
+    b.keepRecentDigests * (PER_LINE_OVERHEAD + b.maxDigestChars);
+  const headroom = 256;
+  const needed = actionableWorstCase + digestsWorstCase + headroom;
+  if (needed > b.maxBoardChars) {
+    throw new Error(
+      `BoardBudget invariant violated: worst-case board (${needed}) exceeds ` +
+        `maxBoardChars (${b.maxBoardChars}). Increase maxBoardChars or reduce ` +
+        `maxActiveSteps/maxIntentChars/keepRecentDigests/maxDigestChars.`,
+    );
+  }
+}
+
+/** Render the reconstructed board to ONE bounded text block (§B). Deterministic:
+ *  same board ⇒ same output. Actionable (not-terminal) entries are always rendered
+ *  individually (stepId + state + bounded intent); terminal entries keep the most
+ *  recent K digests in full and compact older ones oldest-first, dropping to an
+ *  "omitted" marker if the cap is still exceeded. */
+export function renderBoard(
+  board: Map<string, BoardEntry>,
+  budget: BoardBudget,
+): string {
+  const entries = [...board.values()];
+  if (entries.length === 0) return '';
+  const short = (id: string) => id.slice(0, 8);
+
+  const actionable = entries
+    .filter((e) => !TERMINAL.has(e.state))
+    .sort(
+      (a, b) =>
+        (a.seq ?? Number.POSITIVE_INFINITY) -
+          (b.seq ?? Number.POSITIVE_INFINITY) ||
+        a.stepId.localeCompare(b.stepId),
+    )
+    .map(
+      (e) =>
+        `[${short(e.stepId)} ${e.state}] ${e.instructions.slice(0, budget.maxIntentChars)}`,
+    );
+
+  const terminals = entries
+    .filter((e) => TERMINAL.has(e.state))
+    .sort((a, b) => (a.seq ?? 0) - (b.seq ?? 0));
+
+  const cutoff = Math.max(0, terminals.length - budget.keepRecentDigests);
+  const recentLines = terminals
+    .slice(cutoff)
+    .map(
+      (e) =>
+        `[seq ${e.seq ?? 0} ${e.name} ${e.state}] ${(e.digest ?? '').slice(0, budget.maxDigestChars)}`,
+    );
+  let olderLines = terminals
+    .slice(0, cutoff)
+    .map((e) => `[seq ${e.seq ?? 0} ${e.name} ${e.state}]`);
+
+  const assemble = (older: string[], omitted: number): string =>
+    [
+      ...actionable,
+      ...(omitted > 0 ? [`… ${omitted} earlier steps omitted`] : []),
+      ...older,
+      ...recentLines,
+    ].join('\n');
+
+  let text = assemble(olderLines, 0);
+  let omitted = 0;
+  while (text.length > budget.maxBoardChars && olderLines.length > 0) {
+    olderLines = olderLines.slice(1);
+    omitted++;
+    text = assemble(olderLines, omitted);
+  }
+  // GUARANTEED cap (§B): older summaries are now exhausted. The remaining content
+  // (protected actionable block + K recent digests + omitted marker) is
+  // uncompactable — if it STILL exceeds the cap, do NOT return a lossy board; throw
+  // so the controller fails loud / suspends BEFORE the planner call.
+  if (text.length > budget.maxBoardChars) {
+    throw new BoardOverBudgetError(text.length, budget.maxBoardChars);
+  }
+  return text;
+}
