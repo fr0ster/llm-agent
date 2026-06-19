@@ -1004,6 +1004,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
                 approved: res.content,
                 remainder: '',
                 note: '',
+                digest: res.content.slice(0, 500),
               },
             };
 
