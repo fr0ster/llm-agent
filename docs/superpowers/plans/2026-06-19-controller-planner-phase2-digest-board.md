@@ -24,7 +24,8 @@
 | `src/smart-agent/controller/board.ts` | ADD pure `renderBoard(board, budget)` + `BoardBudget` type + `validateBoardBudget(budget)` (load-time fail-loud invariant). |
 | `src/smart-agent/controller/types.ts` | `PlannerNextInput` gains `boardText?`; `SessionBundle` gains `pendingPlanDecisions?: PlanDecision[]`; `ControllerConfig['budgets']` gains the five board-budget knobs. |
 | `src/smart-agent/controller/session-bundle.ts` | `resetRun` clears `pendingPlanDecisions` (run-scoped). |
-| `src/pipelines/controller.ts` | `parseConfig` defaults the five board knobs into `budgets`; `build()` calls `validateBoardBudget` once (fail-loud at composition). |
+| `src/pipelines/controller.ts` | `parseConfig` defaults the five board knobs into `budgets` (Task 3). |
+| `src/factories/controller-factory.ts` | `build()` calls `validateBoardBudget` once (fail-loud at composition — the single chokepoint both the pipeline plugin and direct programmatic users pass through) (Task 8). |
 | `src/smart-agent/controller/planner.ts` | `AdaptivePlanner` mints stepIds + records `PlanDecision`s onto the bundle when it (re)builds `bundle.plan`; the three prompt sites use `boardText` with `plannerPrivate` fallback. |
 | `src/smart-agent/controller/controller-coordinator-handler.ts` | Drain+persist `bundle.pendingPlanDecisions` after `planner.next()`; reconstruct+render the board and pass `boardText` into `planner.next()`; write `stepId`+`digest` on the `step-result`; thread `maxDigestChars` (from `cfg`) into the reviewer and the default-reviewer/coerced paths. |
 
@@ -967,13 +968,17 @@ Expected: FAIL — no `plan-decision` artifacts written; `step-result` has no `s
 
 - [ ] **Step 3a: Drain + persist decisions (point A)**
 
-Add imports near the top of the handler:
+Add imports near the top of the handler (top-level — NOT inside any function body):
 ```ts
-import { writePlanDecision } from './artifacts.js';
-import { reconstructBoard, renderBoard, type BoardBudget } from './board.js';
-import { readPlanDecisions, readClaims } from './artifacts.js';
+import { readClaims, readPlanDecisions, writePlanDecision } from './artifacts.js';
+import {
+  BoardOverBudgetError,
+  type BoardBudget,
+  reconstructBoard,
+  renderBoard,
+} from './board.js';
 ```
-(Merge with the existing `./artifacts.js` import if one already exists.)
+(Merge with the existing `./artifacts.js` import if one already exists. `BoardOverBudgetError` is used by the §B fail-loud catch in Step 3b — it must be at the top, not re-imported inline.)
 
 Immediately AFTER the `const next = await planner.next({ ... })` call (~line 673-694) and BEFORE the code that acts on `next`, drain the queue:
 
@@ -1051,8 +1056,7 @@ are already in scope inside the run loop (bound at the top of the loop method, l
 `Promise<boolean>`, so `return true` after it (mirroring the existing callers):
 
 ```ts
-import { BoardOverBudgetError } from './board.js';
-// ...
+      // (BoardOverBudgetError is imported at the top of the file — Step 3a.)
       let boardText: string;
       try {
         boardText = await renderLiveBoard(rag, bundle, boardBudget);
@@ -1225,44 +1229,54 @@ git commit -m "feat(controller): planner prompts consume the rendered board (pla
 
 ---
 
-## Task 8: Validate the board budget at composition (controller.ts build) + green gate
+## Task 8: Validate the board budget at composition (ControllerFactory.build) + green gate
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts` (the `build()` method)
-- Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts`
+- Modify: `packages/llm-agent-server-libs/src/factories/controller-factory.ts` (the `build()` method)
+- Test: `packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts`
 
-Per §B the board-budget invariant is validated AT LOAD (fail-loud), not per-turn. `build(cfg, ctx)` (controller.ts) is the composition entry point — call `validateBoardBudget` there once, so a mis-sized config aborts pipeline construction with a clear message rather than degrading a planner prompt or throwing mid-turn.
+Per §B the board-budget invariant is validated AT LOAD (fail-loud), not per-turn. `ControllerFactory.build(config, deps)` is the SINGLE composition chokepoint: the pipeline plugin's `build()` delegates to it (`controller.ts:158` — `new ControllerFactory().build(cfg, deps)`), AND it is the documented programmatic entry point. Validating HERE (next to the existing embedder / `semanticRecallCapable` fail-loud asserts) covers BOTH paths — a direct factory user cannot bypass it and hit a runtime `BoardOverBudgetError` in the turn loop.
 
 - [ ] **Step 1: Write the failing test**
 
-Add to `controller.test.ts` (reuse the file's harness for invoking the pipeline `build()`/`parseConfig`):
+Add to `controller-factory.test.ts` (reuse the file's existing `deps` fixture — an embedder + semantic-capable backend, since those asserts run first):
 
 ```ts
-test('controller build rejects a board budget that cannot fit', async () => {
-  const cfg = parseConfig({
-    subagents: { /* minimal valid subagents */ },
-    budgets: { maxBoardChars: 50 }, // far too small for the default actionable worst-case
-  });
-  await assert.rejects(() => new ControllerPipeline().build(cfg, fakeCtx()), /maxBoardChars/);
+test('ControllerFactory.build rejects a board budget that cannot fit', async () => {
+  const config = {
+    ...baseControllerConfig, // the file's minimal valid ControllerConfig fixture
+    budgets: {
+      ...baseControllerConfig.budgets,
+      maxBoardChars: 50, // far too small for the default actionable worst-case
+      maxActiveSteps: 16,
+      maxIntentChars: 120,
+      maxDigestChars: 500,
+      keepRecentDigests: 8,
+    },
+  };
+  await assert.rejects(
+    () => new ControllerFactory().build(config, semanticCapableDeps()),
+    /maxBoardChars/,
+  );
 });
 ```
 
-> Match the actual pipeline class/entry name and the `ctx` fixture the other tests in this file use. The point: a clearly-too-small `maxBoardChars` aborts `build()`.
+> Match the file's actual `ControllerFactory` import + the deps fixture it already uses (it MUST pass the embedder + `semanticRecallCapable` backend asserts to reach the budget check). If the file lacks a ready `baseControllerConfig`, build a minimal valid `ControllerConfig` inline (3 subagents + a `budgets` block with the too-small `maxBoardChars`).
 
 - [ ] **Step 2: Run the test to verify it fails**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="board budget that cannot fit"`
 Expected: FAIL — `build()` does not validate the budget yet.
 
-- [ ] **Step 3: Wire `validateBoardBudget` into `build()`**
+- [ ] **Step 3: Wire `validateBoardBudget` into `ControllerFactory.build()`**
 
-Add the import to `controller.ts`:
+Add the import to `controller-factory.ts`:
 ```ts
 import { validateBoardBudget } from '../smart-agent/controller/board.js';
 ```
-Early in `build(cfg, ctx)` (after `cfg` is in hand), validate the resolved board budget (the five knobs are present — `parseConfig` defaulted them in Task 3):
+In `build(config, deps)`, AFTER the existing embedder + `semanticRecallCapable` fail-loud asserts and BEFORE the role-LLM resolution (`Promise.all([...])`), validate the resolved board budget (the five knobs are present when `config` came through `parseConfig`, which defaulted them in Task 3; the `?? default` keeps a hand-built config safe and the type `number`):
 ```ts
-    const b = cfg.budgets;
+    const b = config.budgets;
     validateBoardBudget({
       maxDigestChars: b.maxDigestChars ?? 500,
       maxIntentChars: b.maxIntentChars ?? 120,
@@ -1294,8 +1308,8 @@ Expected: all builds succeed, full server-libs suite green, lint clean. Confirm 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/pipelines/controller.ts \
-        packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts
+git add packages/llm-agent-server-libs/src/factories/controller-factory.ts \
+        packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts
 git commit -m "feat(controller): validate board budget at composition (fail-loud) (Phase 2)"
 ```
 
@@ -1310,7 +1324,7 @@ git commit -m "feat(controller): validate board budget at composition (fail-loud
 - §B budget / deterministic compaction / GUARANTEED cap → Task 5 (`renderBoard` compacts terminals; throws `BoardOverBudgetError` rather than returning over-cap text). ✓
 - §B `maxIntentChars` REQUIRED + actionable never aggregated → Task 5 (actionable rendered individually, intent bounded). ✓
 - §B fail-loud, never a lossy board → Task 5 (`renderBoard` throws) + Task 6b (handler catches → terminal control error). ✓
-- §B config invariant fail-loud at load → Task 5 (`validateBoardBudget`) + Task 8 (called in `build()` at composition). ✓
+- §B config invariant fail-loud at load → Task 5 (`validateBoardBudget`) + Task 8 (called in `ControllerFactory.build()` — the single chokepoint the pipeline plugin AND direct programmatic users pass through, so neither path can reach a runtime `BoardOverBudgetError`). ✓
 - §B board-budget config contract (knobs on `budgets`, defaulted in `parseConfig`, read by the handler as `cfg.*`) → Task 3. ✓
 - §E step-state vocabulary → already in Phase-1 `board.ts`; Task 5 renders the Phase-2 subset (terminal vs actionable); `expanding`/`expanded` deferred. ✓ (explicit scope note)
 - §F stepId at creation, retry vs replan identity (`supersedesStepId`) → Task 1 + Task 4. ✓
