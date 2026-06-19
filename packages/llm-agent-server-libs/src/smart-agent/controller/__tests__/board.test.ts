@@ -410,11 +410,23 @@ test('renderBoard recency-by-seq: keepRecentDigests=1 keeps the highest-seq dige
   const board = new Map<string, BoardEntry>([
     [
       'a',
-      entry({ stepId: 'stepA', name: 'A', state: 'done', seq: 1, digest: 'D1' }),
+      entry({
+        stepId: 'stepA',
+        name: 'A',
+        state: 'done',
+        seq: 1,
+        digest: 'D1',
+      }),
     ],
     [
       'b',
-      entry({ stepId: 'stepB', name: 'B', state: 'done', seq: 5, digest: 'D5' }),
+      entry({
+        stepId: 'stepB',
+        name: 'B',
+        state: 'done',
+        seq: 5,
+        digest: 'D5',
+      }),
     ],
   ]);
   const text = renderBoard(board, budget);
