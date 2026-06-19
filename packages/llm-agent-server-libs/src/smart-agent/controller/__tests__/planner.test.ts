@@ -35,12 +35,32 @@ const fakeClient = (replies: string[]): ISubagentClient => ({
   },
 });
 
-const newBundle = (opts: { runId: string; goal: string }): SessionBundle => ({
+const newBundle = (opts: {
+  runId: string;
+  goal: string;
+  plannerPrivate?: string;
+}): SessionBundle => ({
   goal: opts.goal,
-  plannerPrivate: '',
+  plannerPrivate: opts.plannerPrivate ?? '',
   budgets: { stepsUsed: 0, rewindsUsed: 0 },
   runId: opts.runId,
 });
+
+const recordingFakeClient = (
+  replies: string[],
+): ISubagentClient & { lastUserContent: () => string } => {
+  let _lastUserContent = '';
+  return {
+    async send(messages) {
+      const userMsg = messages.find((m) => m.role === 'user');
+      _lastUserContent =
+        typeof userMsg?.content === 'string' ? userMsg.content : '';
+      const content = replies.shift() ?? '';
+      return { kind: 'content', content };
+    },
+    lastUserContent: () => _lastUserContent,
+  };
+};
 
 test('AdaptivePlanner mints create stepIds + records a create plan-decision', async () => {
   const client = fakeClient([
@@ -546,6 +566,61 @@ describe('AdaptivePlanner partial transition', () => {
     });
     assert.ok(sawReplan, 'partial triggered a REVISED replan');
   });
+});
+
+test('AdaptivePlanner prompt carries boardText when present', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '[step1aaa done] includes A,B',
+  });
+  assert.match(client.lastUserContent(), /includes A,B/);
+});
+
+test('AdaptivePlanner prompt is ADDITIVE: board + plannerPrivate deltas both survive', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({
+    runId: 'run-1',
+    goal: 'g',
+    plannerPrivate: '\n[clarify answer] use system PRD',
+  });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '[step1aaa done] includes A,B',
+  });
+  const userMsg = client.lastUserContent();
+  assert.match(userMsg, /includes A,B/);
+  assert.match(userMsg, /use system PRD/);
+});
+
+test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText empty', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const planner2 = new AdaptivePlanner(client);
+  const b = newBundle({
+    runId: 'run-1',
+    goal: 'g',
+    plannerPrivate: '\n[seq 0 a ok]',
+  });
+  await planner2.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    boardText: '',
+  });
+  assert.match(client.lastUserContent(), /\[seq 0 a ok\]/);
 });
 
 describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {

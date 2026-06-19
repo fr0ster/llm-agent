@@ -77,6 +77,17 @@ function withSkillsBlock(userContent: string, block: string): string {
   return block ? `${userContent}\n\n${block}` : userContent;
 }
 
+/** The planner's progress context. With a live board, render the AUTHORITATIVE
+ *  structured board AND the plannerPrivate tail — the latter carries non-board
+ *  deltas the planner still needs (clarify answers, legacy external-tool result).
+ *  An empty board (decision-less IncrementalPlanner) → plannerPrivate alone,
+ *  byte-identical to the legacy prompt. */
+function progressBlock(bundle: SessionBundle, boardText?: string): string {
+  return boardText && boardText.length > 0
+    ? `${boardText}\n${bundle.plannerPrivate}`
+    : bundle.plannerPrivate;
+}
+
 export class IncrementalPlanner implements IControllerPlanner {
   constructor(
     private readonly planner: ISubagentClient,
@@ -87,7 +98,7 @@ export class IncrementalPlanner implements IControllerPlanner {
   ) {}
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, retrying, logUsage, options } = input;
+    const { bundle, prompt, retrying, logUsage, options, boardText } = input;
     const block = this.skillsRecall
       ? await this.skillsRecall(bundle.goal, options)
       : '';
@@ -100,7 +111,7 @@ export class IncrementalPlanner implements IControllerPlanner {
       {
         role: 'user',
         content: withSkillsBlock(
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}\nRequest: ${prompt}`,
+          `Goal: ${bundle.goal}\nProgress:${progressBlock(bundle, boardText)}\nRequest: ${prompt}`,
           block,
         ),
       },
@@ -230,6 +241,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       retrying,
       logUsage,
       options,
+      boardText,
     } = input;
 
     // 1. No plan yet → create it.
@@ -242,6 +254,7 @@ export class AdaptivePlanner implements IControllerPlanner {
         logUsage,
         [],
         options,
+        boardText,
       );
       // An EMPTY plan from createPlan is invalid: it would skip straight to the
       // finalizer and answer WITHOUT fetching the required data. Treat it as a
@@ -256,7 +269,7 @@ export class AdaptivePlanner implements IControllerPlanner {
         runId: bundle.runId ?? '',
         steps: minted,
       });
-      return this.stepAtCursor(bundle, prompt, logUsage);
+      return this.stepAtCursor(bundle, prompt, logUsage, boardText);
     }
 
     // 2. Previous step failed, OR an external-tool result just arrived → replan
@@ -284,6 +297,7 @@ export class AdaptivePlanner implements IControllerPlanner {
         logUsage,
         completed,
         options,
+        boardText,
       );
       if (rest === null) return null;
       const anchor = bundle.plan[cursor]?.stepId ?? '';
@@ -302,7 +316,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       // this replan does NOT replan again on resume, and a finalizer error after an
       // empty replan retries only the finalizer (not another replan).
       bundle.lastOutcome = undefined;
-      return this.stepAtCursor(bundle, prompt, logUsage);
+      return this.stepAtCursor(bundle, prompt, logUsage, boardText);
     }
 
     // 3. Otherwise emit the step at the cursor (or finalize). The cursor is
@@ -310,7 +324,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     //    is persisted together with the step result (see Task 4), and a resume
     //    with lastOutcome=undefined continues from the next uncompleted step
     //    instead of repeating the last one.
-    return this.stepAtCursor(bundle, prompt, logUsage);
+    return this.stepAtCursor(bundle, prompt, logUsage, boardText);
   }
 
   /** Commit the just-finished step's outcome so the advance is persisted with it.
@@ -336,6 +350,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     bundle: SessionBundle,
     prompt: string,
     logUsage?: (role: string, u?: LlmUsage) => void,
+    boardText?: string,
   ): Promise<NextStep | null> {
     const plan = bundle.plan ?? [];
     const cursor = bundle.planCursor ?? 0;
@@ -344,7 +359,7 @@ export class AdaptivePlanner implements IControllerPlanner {
         { role: 'system', content: appendHint(FINALIZE_SYSTEM, this.hint) },
         {
           role: 'user',
-          content: `Goal: ${bundle.goal}\nRequest: ${prompt}\nProgress:${bundle.plannerPrivate}`,
+          content: `Goal: ${bundle.goal}\nRequest: ${prompt}\nProgress:${progressBlock(bundle, boardText)}`,
         },
       ]);
       logUsage?.('finalizer', res.usage);
@@ -364,6 +379,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     logUsage?: (role: string, u?: LlmUsage) => void,
     completed: Step[] = [],
     options?: CallOptions,
+    boardText?: string,
   ): Promise<Step[] | null> {
     // On replan, the planner MUST know which steps already ran (their results are
     // in Progress / the step-result collection) so it plans ONLY the remaining
@@ -389,7 +405,7 @@ export class AdaptivePlanner implements IControllerPlanner {
       {
         role: 'user',
         content: withSkillsBlock(
-          `Goal: ${bundle.goal}\nProgress:${bundle.plannerPrivate}${completedBlock}\nRequest: ${prompt}`,
+          `Goal: ${bundle.goal}\nProgress:${progressBlock(bundle, boardText)}${completedBlock}\nRequest: ${prompt}`,
           skillsBlock,
         ),
       },
