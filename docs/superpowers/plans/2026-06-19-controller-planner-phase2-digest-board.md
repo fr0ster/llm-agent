@@ -10,6 +10,8 @@
 
 **Out of scope (later phases — do NOT implement here):** the §D deferred-expansion / discovery fan-out (`expand`/`page` decisions, `DiscoveryDigest` enumeration, `settle-envelope` secret store, `expanding`/`expanded` board states, `chain-outcome`), and the §C clean break to two capability-tuned planners. Phase 2 keeps the existing `IncrementalPlanner`/`AdaptivePlanner` and wires the live board into the adaptive (plan-first) path only. `ReviewOutcome` defines `digest` now; the optional `enumeration` field is added in the discovery phase.
 
+**Step-start claims (§F source 3) — explicitly deferred.** Phase 2 does NOT write the durable `step-start` claim artifact at dispatch. The board's transient `executing`/`awaiting-external` state therefore comes from the bundle's `inFlightStep` + `pending` (`reconstructBoard` source 3, the bundle half), which is correct for the live (non-crashed) path. The durable claim half — which lets a crash mid-step re-derive `executing` from an artifact after a lost bundle, and which fixes the §F contested-slot winner at dispatch — lands with the deferred-expansion phase (it needs the `stepId → {slotId, decisionId}` mapping that fan-out introduces). Consequence accepted for Phase 2: a crash AFTER a step started but BEFORE its `step-result` loses only that step's transient-`executing` precision on reconstruct (it reverts to `planned` until re-dispatched) — never a committed outcome. The handler still passes `claims: await readClaims(...)` to `reconstructBoard` (it is `[]` in Phase 2; wiring it now means the discovery phase only adds the WRITE, not the read).
+
 ---
 
 ## File Structure
@@ -20,9 +22,11 @@
 | `src/smart-agent/controller/outcome.ts` | ADD `ReviewOutcome = Outcome & { digest: string }`. |
 | `src/smart-agent/controller/reviewer.ts` | `ReviewResult.outcome` becomes `ReviewOutcome`; `REVIEWER_SYSTEM` asks for `digest`; `parseReview` validates+bounds `digest` (threaded `maxDigestChars`); `ReviewOpts` gains `maxDigestChars`. |
 | `src/smart-agent/controller/board.ts` | ADD pure `renderBoard(board, budget)` + `BoardBudget` type + `validateBoardBudget(budget)` (load-time fail-loud invariant). |
-| `src/smart-agent/controller/types.ts` | `PlannerNextInput` gains `boardText?`; `SessionBundle` gains `pendingPlanDecisions?: PlanDecision[]`. |
+| `src/smart-agent/controller/types.ts` | `PlannerNextInput` gains `boardText?`; `SessionBundle` gains `pendingPlanDecisions?: PlanDecision[]`; `ControllerConfig['budgets']` gains the five board-budget knobs. |
+| `src/smart-agent/controller/session-bundle.ts` | `resetRun` clears `pendingPlanDecisions` (run-scoped). |
+| `src/pipelines/controller.ts` | `parseConfig` defaults the five board knobs into `budgets`; `build()` calls `validateBoardBudget` once (fail-loud at composition). |
 | `src/smart-agent/controller/planner.ts` | `AdaptivePlanner` mints stepIds + records `PlanDecision`s onto the bundle when it (re)builds `bundle.plan`; the three prompt sites use `boardText` with `plannerPrivate` fallback. |
-| `src/smart-agent/controller/controller-coordinator-handler.ts` | Drain+persist `bundle.pendingPlanDecisions` after `planner.next()`; reconstruct+render the board and pass `boardText` into `planner.next()`; write `stepId`+`digest` on the `step-result`; thread `maxDigestChars` into the reviewer and the default-reviewer/coerced paths. |
+| `src/smart-agent/controller/controller-coordinator-handler.ts` | Drain+persist `bundle.pendingPlanDecisions` after `planner.next()`; reconstruct+render the board and pass `boardText` into `planner.next()`; write `stepId`+`digest` on the `step-result`; thread `maxDigestChars` (from `cfg`) into the reviewer and the default-reviewer/coerced paths. |
 
 ---
 
@@ -364,14 +368,23 @@ git commit -m "feat(controller): reviewer returns a bounded planning digest (Rev
 
 ---
 
-## Task 3: Bundle + planner-input fields for decisions and board text (types.ts)
+## Task 3: Contract — bundle/planner-input fields, board-budget config, reset (types.ts, session-bundle.ts, controller.ts)
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts`
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/session-bundle.ts`
+- Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts`
+- Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts`
 
-The adaptive planner records the `PlanDecision`s it produces this turn onto the bundle (the controller drains+persists them — preserving the "planner constructs, controller persists" boundary). The handler passes the rendered board into the planner via `PlannerNextInput.boardText`. No behavior yet — just the fields the next tasks fill.
+One coherent contract change so the rest compiles: (a) the adaptive planner records `PlanDecision`s on the bundle (controller drains+persists — "planner constructs, controller persists"); (b) the handler passes the rendered board via `PlannerNextInput.boardText`; (c) the five board-budget knobs live on `ControllerConfig['budgets']` (so the handler's `cfg = deps.config.budgets` reads them directly) WITH defaults applied in `parseConfig`; (d) `resetRun` clears the new run-scoped bundle field.
 
-- [ ] **Step 1: Add `pendingPlanDecisions` to `SessionBundle`**
+- [ ] **Step 1: Add `pendingPlanDecisions` to `SessionBundle` + the import**
+
+Add the import at the top of `types.ts` (type-only — `artifacts.ts` imports `Step` from `types.ts`, but `import type` emits no runtime require, so the ESM cycle is harmless):
+
+```ts
+import type { PlanDecision } from './artifacts.js';
+```
 
 Add to the `SessionBundle` interface (near `plan?`/`planCursor?`):
 
@@ -379,21 +392,12 @@ Add to the `SessionBundle` interface (near `plan?`/`planCursor?`):
   /** Plan decisions the planner produced this turn (create/replan), NOT yet
    *  persisted. The controller drains + `writePlanDecision`s them after
    *  `planner.next()` returns and BEFORE dispatch (§A: planner constructs, controller
-   *  persists; §F: every decision is a durable artifact). Cleared once drained. */
+   *  persists; §F: every decision is a durable artifact). Cleared once drained, and
+   *  on `resetRun`. */
   pendingPlanDecisions?: PlanDecision[];
 ```
 
-Add the import at the top of `types.ts` (alongside the existing imports):
-
-```ts
-import type { PlanDecision } from './artifacts.js';
-```
-
-> If this introduces an import cycle (`artifacts.ts` imports `Step` from `types.ts`), use a type-only import — `import type` does not emit a runtime require, so the ESM cycle is harmless. Confirm `npm run -w @mcp-abap-adt/llm-agent-server-libs build` stays green at Step 3.
-
 - [ ] **Step 2: Add `boardText` to `PlannerNextInput`**
-
-Add to the `PlannerNextInput` interface:
 
 ```ts
   /** The rendered step-state digest board (§B), reconstructed by the controller
@@ -404,16 +408,85 @@ Add to the `PlannerNextInput` interface:
   boardText?: string;
 ```
 
-- [ ] **Step 3: Build to verify the types compile**
+- [ ] **Step 3: Add the five board-budget knobs to `ControllerConfig['budgets']`**
+
+Add to the `budgets:` object in the `ControllerConfig` interface (after `maxReviewRetries?`):
+
+```ts
+    /** Board render budget (§B). Defaulted in parseConfig; validated at load. */
+    maxDigestChars?: number;
+    maxIntentChars?: number;
+    maxActiveSteps?: number;
+    maxBoardChars?: number;
+    keepRecentDigests?: number;
+```
+
+- [ ] **Step 4: Default the knobs in `parseConfig` (controller.ts)**
+
+In `parseConfig`, the `budgets` literal currently defaults `maxSteps/maxRetries/maxRewinds/maxToolCalls` then spreads `...budgetsRaw`. Add the five board defaults BEFORE the spread (so explicit config still overrides):
+
+```ts
+      budgets: {
+        maxSteps: 20,
+        maxRetries: 3,
+        maxRewinds: 5,
+        maxToolCalls: 10,
+        maxDigestChars: 500,
+        maxIntentChars: 120,
+        maxActiveSteps: 16,
+        maxBoardChars: 12000,
+        keepRecentDigests: 8,
+        ...budgetsRaw,
+      } as ControllerConfig['budgets'],
+```
+
+- [ ] **Step 5: Clear `pendingPlanDecisions` in `resetRun` (session-bundle.ts)**
+
+In `resetRun`, alongside the other run-scoped clears (e.g. after `bundle.plan = undefined;`):
+
+```ts
+  bundle.pendingPlanDecisions = undefined;
+```
+
+- [ ] **Step 6: Write a failing test for the defaults**
+
+Add to `controller.test.ts` (reuse its `parseConfig` access — match how the file already tests it):
+
+```ts
+test('parseConfig defaults the board-budget knobs', () => {
+  const cfg = parseConfig({ subagents: { /* minimal valid subagents */ } });
+  assert.equal(cfg.budgets.maxDigestChars, 500);
+  assert.equal(cfg.budgets.maxBoardChars, 12000);
+  assert.equal(cfg.budgets.keepRecentDigests, 8);
+});
+
+test('parseConfig lets explicit budgets override board defaults', () => {
+  const cfg = parseConfig({
+    subagents: { /* minimal valid subagents */ },
+    budgets: { maxBoardChars: 9000 },
+  });
+  assert.equal(cfg.budgets.maxBoardChars, 9000);
+  assert.equal(cfg.budgets.maxDigestChars, 500); // untouched default
+});
+```
+
+> Match the file's actual `parseConfig` import + the minimal valid `subagents` literal the other tests in this file already use.
+
+- [ ] **Step 7: Build + run**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs build`
-Expected: success (no emit errors).
+Expected: success.
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="board-budget knobs|override board defaults"`
+Expected: PASS (2 tests).
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts
-git commit -m "feat(controller): bundle.pendingPlanDecisions + PlannerNextInput.boardText (Phase 2)"
+git add packages/llm-agent-server-libs/src/smart-agent/controller/types.ts \
+        packages/llm-agent-server-libs/src/smart-agent/controller/session-bundle.ts \
+        packages/llm-agent-server-libs/src/pipelines/controller.ts \
+        packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts
+git commit -m "feat(controller): board-budget config contract + bundle/planner-input fields + reset (Phase 2)"
 ```
 
 ---
@@ -567,6 +640,7 @@ Rendering rules:
 1. **Actionable (NOT-terminal) entries** (`planned`/`executing`/`awaiting-external`) are ALWAYS rendered individually, never aggregated: `[<stepId8> <state>] <intent≤maxIntentChars>` (stepId shown as its first 8 chars for readability; intent truncated to `maxIntentChars`).
 2. **Terminal entries** (`done`/`partial`/`failed`): the most recent `K` (`keepRecentDigests`) by `seq` are kept in full — `[seq N name state] digest`. Older terminal entries compact oldest-first to `[seq N name state]`. If, after summarizing ALL older terminals, the rendered length still exceeds `maxBoardChars`, the oldest summaries drop to a single `… M earlier steps omitted` marker (full results stay in RAG, recallable by seq).
 3. Deterministic ordering: actionable block first (by `seq ?? Infinity`, then `stepId`), then terminal block by `seq`.
+4. **GUARANTEED cap (§B):** the only content `renderBoard` cannot compact away is the protected actionable block + the `K` recent digests + the omitted marker. If, after exhausting all older-summary drops, the text STILL exceeds `maxBoardChars`, `renderBoard` THROWS `BoardOverBudgetError` rather than returning a lossy/over-budget board — the controller catches it and fails loud / suspends BEFORE the planner call (§B). So `renderBoard` NEVER returns a string longer than `maxBoardChars`. `validateBoardBudget` sizes the load-time invariant so this throw is unreachable for a capacity-gated board; in Phase 2 (no §D capacity gate) a pathologically large plan can still trip it — fail-loud, by design.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -647,6 +721,25 @@ test('renderBoard is empty for an empty board', () => {
   assert.equal(renderBoard(new Map(), BUDGET), '');
 });
 
+test('renderBoard never returns over-cap text — throws when it cannot compact enough', () => {
+  // A tight cap with protected actionable content that alone exceeds it.
+  const tight: BoardBudget = { ...BUDGET, maxBoardChars: 60, maxActiveSteps: 100 };
+  const board = new Map<string, BoardEntry>();
+  for (let i = 0; i < 10; i++) {
+    board.set(`s${i}`, entry({ stepId: `actv${i}`, state: 'planned', instructions: 'x'.repeat(40) }));
+  }
+  assert.throws(() => renderBoard(board, tight), /BoardOverBudget|maxBoardChars/);
+});
+
+test('renderBoard output never exceeds maxBoardChars when it does return', () => {
+  const board = new Map<string, BoardEntry>();
+  for (let i = 0; i < 40; i++) {
+    board.set(`d${i}`, entry({ stepId: `step${i}`, name: `n${i}`, state: 'done', seq: i, digest: `D${i}`.repeat(10) }));
+  }
+  const text = renderBoard(board, BUDGET);
+  assert.ok(text.length <= BUDGET.maxBoardChars);
+});
+
 test('validateBoardBudget passes a well-sized budget', () => {
   assert.doesNotThrow(() => validateBoardBudget(BUDGET));
 });
@@ -669,6 +762,19 @@ Expected: FAIL — `renderBoard`/`validateBoardBudget`/`BoardBudget` not exporte
 Append to `board.ts`:
 
 ```ts
+/** Thrown by renderBoard when the protected (uncompactable) content still exceeds
+ *  maxBoardChars (§B): the controller catches it and fails loud / suspends BEFORE
+ *  the planner call rather than feeding a lossy board. */
+export class BoardOverBudgetError extends Error {
+  constructor(
+    readonly rendered: number,
+    readonly cap: number,
+  ) {
+    super(`rendered board (${rendered} chars) exceeds maxBoardChars (${cap})`);
+    this.name = 'BoardOverBudgetError';
+  }
+}
+
 /** Board render budget (§B). All bounds are REQUIRED so the cap is guaranteed. */
 export interface BoardBudget {
   /** Cap on a non-discovery free-text digest (terminal entries). */
@@ -690,10 +796,17 @@ const TERMINAL: ReadonlySet<StepState> = new Set([
   'failed',
 ]);
 
-/** Validate the board budget at load (§B fail-loud invariant): the worst-case
- *  actionable block + the kept digests + headroom must fit `maxBoardChars`.
- *  A fixed per-line overhead (~24 chars: `[`, stepId8, space, state, `] `, newline)
- *  is folded into the estimate. */
+/** Validate the board budget at load (§B fail-loud invariant): all knobs are
+ *  non-negative integers, and the worst-case actionable block + the kept digests +
+ *  headroom fit `maxBoardChars`. A fixed per-line overhead (~24 chars: `[`, stepId8,
+ *  space, state, `] `, newline) is folded into the estimate.
+ *
+ *  The `maxActiveSteps` term is the §D-capacity-gated worst case (fan-out ≤
+ *  maxFanOut, one window at a time). In Phase 2 (no §D gate) the actionable count is
+ *  NOT bounded by maxActiveSteps — a one-shot plan materialises every future step as
+ *  `planned`. So this check is the load-time sizing guide; the HARD runtime
+ *  guarantee that the board never exceeds the cap is `renderBoard`'s
+ *  `BoardOverBudgetError` throw (the controller catches it → fail-loud). */
 export function validateBoardBudget(b: BoardBudget): void {
   for (const [k, v] of Object.entries(b)) {
     if (!Number.isInteger(v) || v < 0) {
@@ -773,6 +886,13 @@ export function renderBoard(
     olderLines = olderLines.slice(1);
     omitted++;
     text = assemble(olderLines, omitted);
+  }
+  // GUARANTEED cap (§B): older summaries are now exhausted. The remaining content
+  // (protected actionable block + K recent digests + omitted marker) is
+  // uncompactable — if it STILL exceeds the cap, do NOT return a lossy board; throw
+  // so the controller fails loud / suspends BEFORE the planner call.
+  if (text.length > budget.maxBoardChars) {
+    throw new BoardOverBudgetError(text.length, budget.maxBoardChars);
   }
   return text;
 }
@@ -880,19 +1000,20 @@ Immediately AFTER the `const next = await planner.next({ ... })` call (~line 673
 
 - [ ] **Step 3b: Reconstruct + render the board (point B)**
 
-Define the board budget once near the handler's config resolution (use config values when present, else defaults that satisfy `validateBoardBudget`):
+Define the board budget once near the handler's config resolution. `parseConfig`
+(Task 3) guarantees the five knobs are present; the `?? default` is a defensive
+fallback for hand-built configs and keeps the type `number` (the config fields are
+optional). Build it from `cfg` (`= deps.config.budgets`):
 
 ```ts
     const boardBudget: BoardBudget = {
       maxDigestChars: cfg.maxDigestChars ?? 500,
       maxIntentChars: cfg.maxIntentChars ?? 120,
       maxActiveSteps: cfg.maxActiveSteps ?? 16,
-      maxIntentChars: cfg.maxIntentChars ?? 120,
       maxBoardChars: cfg.maxBoardChars ?? 12000,
       keepRecentDigests: cfg.keepRecentDigests ?? 8,
     };
 ```
-(Remove the duplicated `maxIntentChars` key — shown twice above by mistake; include it ONCE.)
 
 Add a helper (module scope) that builds the rendered board from artifacts:
 
@@ -920,10 +1041,30 @@ async function renderLiveBoard(
 }
 ```
 
-Then, right BEFORE the `planner.next({...})` call, compute the board text and pass it:
+Then, right BEFORE the `planner.next({...})` call, compute the board text and pass
+it. `renderLiveBoard` can throw `BoardOverBudgetError` (§B fail-loud) — do NOT
+swallow it into a truncated board; surface it as a terminal control error using the
+handler's existing terminal-error path (the same way an exhausted-budget/unverifiable
+case is surfaced — match the file's pattern; the requirement is fail-loud, never a
+lossy board):
 
 ```ts
-      const boardText = await renderLiveBoard(rag, bundle, boardBudget);
+import { BoardOverBudgetError } from './board.js';
+// ...
+      let boardText: string;
+      try {
+        boardText = await renderLiveBoard(rag, bundle, boardBudget);
+      } catch (err) {
+        if (err instanceof BoardOverBudgetError) {
+          // §B: never feed the planner a lossy board. Fail loud via the handler's
+          // terminal control-error path (mirror the existing terminal-error return).
+          bundle.plannerPrivate += `\n[board over budget] ${err.message}`;
+          return /* the handler's terminal control-error result, e.g. */ failRun(
+            `board exceeds maxBoardChars: ${err.message}`,
+          );
+        }
+        throw err;
+      }
       const next = await planner.next({
         bundle,
         prompt,
@@ -931,6 +1072,12 @@ Then, right BEFORE the `planner.next({...})` call, compute the board text and pa
         boardText,
       });
 ```
+
+> `failRun(...)` is a placeholder for whatever the handler ALREADY returns for a
+> terminal control error (search the file for how an exhausted budget / maxSteps
+> overflow / unverifiable-reviewer case returns its terminal result, and mirror that
+> exact shape). The mandatory behaviour: a `BoardOverBudgetError` ends the turn
+> loud — it must NOT be caught-and-truncated.
 
 > There is only ONE `planner.next()` call in the handler (line 673). If the board must be rendered AFTER decisions are persisted to reflect the just-created plan, note that the board for THIS turn's prompt is built from PRIOR turns' artifacts (the current plan is created INSIDE this `next()` call) — so render BEFORE `next()`. The newly drained decisions surface on the NEXT turn's board. This is correct: the planner needs "what happened so far," not the plan it is currently emitting.
 
@@ -1076,49 +1223,56 @@ git commit -m "feat(controller): planner prompts consume the rendered board (pla
 
 ---
 
-## Task 8: Validate the board budget at composition (factory) + green gate
+## Task 8: Validate the board budget at composition (controller.ts build) + green gate
 
 **Files:**
-- Modify: the controller factory that resolves controller config (search `src/factories/` for where `maxRetries`/`maxReviewRetries` are read — the same place resolves the new board knobs).
-- Test: `packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts`
+- Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts` (the `build()` method)
+- Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts`
 
-Per §B the board-budget invariant is validated AT LOAD (fail-loud), not per-turn. Call `validateBoardBudget` once during factory composition so a mis-sized config aborts startup with a clear message rather than degrading a planner prompt.
+Per §B the board-budget invariant is validated AT LOAD (fail-loud), not per-turn. `build(cfg, ctx)` (controller.ts) is the composition entry point — call `validateBoardBudget` there once, so a mis-sized config aborts pipeline construction with a clear message rather than degrading a planner prompt or throwing mid-turn.
 
-- [ ] **Step 1: Locate the config-resolution site**
+- [ ] **Step 1: Write the failing test**
 
-Run: `grep -rn "maxReviewRetries\|maxRetries" packages/llm-agent-server-libs/src/factories/`
-Read the resolution there. The new knobs (`maxDigestChars`, `maxIntentChars`, `maxActiveSteps`, `maxBoardChars`, `keepRecentDigests`) are optional config with the same defaults used in Task 6's `boardBudget`.
-
-- [ ] **Step 2: Write the failing test**
-
-Add to `controller-factory.test.ts`:
+Add to `controller.test.ts` (reuse the file's harness for invoking the pipeline `build()`/`parseConfig`):
 
 ```ts
-test('controller factory rejects a board budget that cannot fit', async () => {
-  await assert.rejects(
-    () => buildControllerFromConfig({ /* minimal valid config */,
-      controller: { maxBoardChars: 50, maxActiveSteps: 16, maxIntentChars: 120 },
-    }),
-    /maxBoardChars/,
-  );
+test('controller build rejects a board budget that cannot fit', async () => {
+  const cfg = parseConfig({
+    subagents: { /* minimal valid subagents */ },
+    budgets: { maxBoardChars: 50 }, // far too small for the default actionable worst-case
+  });
+  await assert.rejects(() => new ControllerPipeline().build(cfg, fakeCtx()), /maxBoardChars/);
 });
 ```
 
-> Match the actual factory entry-point name + config shape used by the other tests in this file. If the factory does not currently surface these knobs, the test asserts that a clearly-too-small `maxBoardChars` aborts composition.
+> Match the actual pipeline class/entry name and the `ctx` fixture the other tests in this file use. The point: a clearly-too-small `maxBoardChars` aborts `build()`.
 
-- [ ] **Step 3: Wire `validateBoardBudget` into the factory**
+- [ ] **Step 2: Run the test to verify it fails**
 
-In the factory, after resolving the controller config, build the same `BoardBudget` literal as Task 6 (with defaults) and call:
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="board budget that cannot fit"`
+Expected: FAIL — `build()` does not validate the budget yet.
+
+- [ ] **Step 3: Wire `validateBoardBudget` into `build()`**
+
+Add the import to `controller.ts`:
 ```ts
 import { validateBoardBudget } from '../smart-agent/controller/board.js';
-// ...
-validateBoardBudget(boardBudget);
 ```
-Resolve the budget once and pass it through to the handler (so the handler does not re-build it ad hoc — thread it via the controller deps/config). If threading is too invasive for Phase 2, keep the handler's local default budget AND validate the same literal in the factory; the defaults are identical so the invariant holds.
+Early in `build(cfg, ctx)` (after `cfg` is in hand), validate the resolved board budget (the five knobs are present — `parseConfig` defaulted them in Task 3):
+```ts
+    const b = cfg.budgets;
+    validateBoardBudget({
+      maxDigestChars: b.maxDigestChars ?? 500,
+      maxIntentChars: b.maxIntentChars ?? 120,
+      maxActiveSteps: b.maxActiveSteps ?? 16,
+      maxBoardChars: b.maxBoardChars ?? 12000,
+      keepRecentDigests: b.keepRecentDigests ?? 8,
+    });
+```
 
-- [ ] **Step 4: Run the factory test**
+- [ ] **Step 4: Run the test to verify it passes**
 
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="board budget"`
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="board budget that cannot fit"`
 Expected: PASS.
 
 - [ ] **Step 5: Full green gate**
@@ -1138,8 +1292,8 @@ Expected: all builds succeed, full server-libs suite green, lint clean. Confirm 
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/llm-agent-server-libs/src/factories/ \
-        packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.test.ts
+git add packages/llm-agent-server-libs/src/pipelines/controller.ts \
+        packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts
 git commit -m "feat(controller): validate board budget at composition (fail-loud) (Phase 2)"
 ```
 
@@ -1151,9 +1305,11 @@ git commit -m "feat(controller): validate board budget at composition (fail-loud
 - §A two representations / reviewer returns digest, controller persists → Task 2 (`ReviewOutcome`, `parseReview`) + Task 6c (controller writes `digest` to `step-result`). ✓
 - §A migration contract (digest required, bounded, malformed → judge-failure) → Task 2. ✓ (`enumeration` explicitly deferred to discovery phase.)
 - §B digest board replaces the blob → Task 7. ✓
-- §B budget / deterministic compaction / GUARANTEED cap → Task 5 (`renderBoard`). ✓
+- §B budget / deterministic compaction / GUARANTEED cap → Task 5 (`renderBoard` compacts terminals; throws `BoardOverBudgetError` rather than returning over-cap text). ✓
 - §B `maxIntentChars` REQUIRED + actionable never aggregated → Task 5 (actionable rendered individually, intent bounded). ✓
-- §B config invariant fail-loud at load → Task 5 (`validateBoardBudget`) + Task 8 (called at composition). ✓
+- §B fail-loud, never a lossy board → Task 5 (`renderBoard` throws) + Task 6b (handler catches → terminal control error). ✓
+- §B config invariant fail-loud at load → Task 5 (`validateBoardBudget`) + Task 8 (called in `build()` at composition). ✓
+- §B board-budget config contract (knobs on `budgets`, defaulted in `parseConfig`, read by the handler as `cfg.*`) → Task 3. ✓
 - §E step-state vocabulary → already in Phase-1 `board.ts`; Task 5 renders the Phase-2 subset (terminal vs actionable); `expanding`/`expanded` deferred. ✓ (explicit scope note)
 - §F stepId at creation, retry vs replan identity (`supersedesStepId`) → Task 1 + Task 4. ✓
 - §F every decision is a durable artifact (create/replan) → Task 4 (record) + Task 6a (persist). ✓ (`expand`/`page` deferred)
@@ -1161,8 +1317,8 @@ git commit -m "feat(controller): validate board budget at composition (fail-loud
 
 **Placeholder scan:** Every code step shows the actual code. Two deliberate "match the file's harness" notes (Task 4/6/7/8 tests) point at reusing the EXISTING test fixtures rather than re-inventing them — the test bodies are given; only the fixture wiring is delegated to the existing file conventions. No "TBD"/"add error handling"/"similar to" placeholders.
 
-**Type consistency:** `ReviewOutcome` (Task 2) = `Outcome & {digest}`; `ReviewResult.outcome` uses it (Task 2); the handler's `outcome` variable is therefore `ReviewOutcome` and `outcome.digest` is valid (Task 6c); the default-reviewer branch constructs a `ReviewOutcome` (Task 6c). `BoardBudget` fields are identical between `renderBoard`/`validateBoardBudget` (Task 5), the handler's local budget (Task 6b), and the factory (Task 8). `mintCreateStepIds`/`mintReplanStepIds` return `Step[]` consumed by `bundle.plan` and `PlanDecision.steps`. `PlannerNextInput.boardText` (Task 3) is read in Task 7. `bundle.pendingPlanDecisions: PlanDecision[]` (Task 3) is written in Task 4 and drained in Task 6a.
+**Type consistency:** `ReviewOutcome` (Task 2) = `Outcome & {digest}`; `ReviewResult.outcome` uses it (Task 2); the handler's `outcome` variable is therefore `ReviewOutcome` and `outcome.digest` is valid (Task 6c); the default-reviewer branch constructs a `ReviewOutcome` (Task 6c). `BoardBudget` fields are identical between `renderBoard`/`validateBoardBudget` (Task 5), the handler's budget built from `cfg` (Task 6b), and `build()` (Task 8). The five board knobs are defined ONCE on `ControllerConfig['budgets']` (Task 3), defaulted in `parseConfig` (Task 3), and read by the handler as `cfg.maxDigestChars` etc. (`cfg = deps.config.budgets`, Task 6). `mintCreateStepIds`/`mintReplanStepIds` return `Step[]` consumed by `bundle.plan` and `PlanDecision.steps`. `PlannerNextInput.boardText` (Task 3) is read in Task 7. `bundle.pendingPlanDecisions: PlanDecision[]` (Task 3) is written in Task 4, drained in Task 6a, cleared in `resetRun` (Task 3). `BoardOverBudgetError` (Task 5) is thrown by `renderBoard` and caught in Task 6b.
 
-**Known fix to apply during execution:** Task 6b's `boardBudget` literal lists `maxIntentChars` twice — include it ONCE (noted inline).
+**Config-contract closure (review fix):** the handler's `cfg = deps.config.budgets` reads the board knobs directly because Task 3 adds them to `ControllerConfig['budgets']` AND defaults them in `parseConfig` — one contract across types → parser → handler → `build()`. No task references a config field that another task did not define.
 
-**Deferred (later phases, NOT gaps):** discovery fan-out / `expand`/`page` decisions / `DiscoveryDigest` enumeration / `settle-envelope` / `expanding`/`expanded` states / `chain-outcome` (discovery phase); the §C clean break to capability-tuned planners (planner-restructure phase). The incremental planner stays on `plannerPrivate` and is unchanged.
+**Deferred (later phases, NOT gaps):** (1) discovery fan-out / `expand`/`page` decisions / `DiscoveryDigest` enumeration / `settle-envelope` / `expanding`/`expanded` states / `chain-outcome` (discovery phase); (2) the §C clean break to capability-tuned planners (planner-restructure phase); (3) the durable `step-start` claim write at dispatch (§F source-3 artifact half) — Phase 2 derives transient `executing`/`awaiting-external` from the bundle's in-flight only, and passes an (always-empty) `claims` array to `reconstructBoard`; the claim WRITE lands with the discovery phase (it needs the fan-out `stepId → {slotId, decisionId}` mapping). The incremental planner stays on `plannerPrivate` and is unchanged.
