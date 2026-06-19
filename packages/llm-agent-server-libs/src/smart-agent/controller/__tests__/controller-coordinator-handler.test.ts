@@ -2063,6 +2063,114 @@ describe('ControllerCoordinatorHandler', () => {
   });
 });
 
+describe('Phase 2 — Live Digest Board integration', () => {
+  it('handler persists a plan-decision after the planner creates a plan', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      // Adaptive planner: first call creates a 1-step plan; second call finalizes.
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'fetch A' }],
+          }),
+        },
+        { kind: 'content', content: 'FINAL' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+      config: { ...baseConfig(), planner: 'adaptive' },
+    });
+    const { ctx } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const bundle = await hydrateBundle(h.backend, 'sess-1');
+    const runId = bundle.runId;
+    assert.ok(runId, 'run has a runId');
+
+    const all = await h.backend.scan('sess-1');
+    const decisions = all.filter(
+      (e) =>
+        e.metadata.artifactType === 'plan-decision' &&
+        e.metadata.runId === runId,
+    );
+    assert.ok(decisions.length >= 1, 'at least one plan-decision persisted');
+  });
+
+  it('handler writes stepId + digest on the step-result', async () => {
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'fetch A' }],
+          }),
+        },
+        { kind: 'content', content: 'FINAL' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+      config: { ...baseConfig(), planner: 'adaptive' },
+    });
+    const { ctx } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const results = h.rag.written.filter(
+      (e) => e.metadata.artifactType === 'step-result',
+    );
+    assert.ok(results.length >= 1, 'at least one step-result written');
+    assert.ok(results[0].metadata.stepId, 'stepId persisted on step-result');
+    assert.ok(
+      typeof results[0].metadata.digest === 'string',
+      'digest persisted on step-result',
+    );
+  });
+
+  it('handler writes a failed step-result with digest on a control failure', async () => {
+    // Fixture: executor always returns an error → retries exhaust → settle('failed').
+    // maxRetries=0 so the single error immediately exhausts retries.
+    const h = harness({
+      evaluator: [{ kind: 'content', content: 'Goal: do it' }],
+      planner: [
+        {
+          kind: 'content',
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'fetch A' }],
+          }),
+        },
+        {
+          kind: 'content',
+          content: JSON.stringify({ plan: [] }),
+        },
+        { kind: 'content', content: 'FINAL' },
+      ],
+      executor: [{ kind: 'error', error: 'boom' }],
+      config: {
+        ...baseConfig(),
+        planner: 'adaptive',
+        budgets: { ...baseConfig().budgets, maxRetries: 0 },
+      },
+    });
+    const { ctx } = fakeCtx();
+    await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
+
+    const failed = h.rag.written.filter(
+      (e) =>
+        e.metadata.artifactType === 'step-result' &&
+        e.metadata.status === 'failed',
+    );
+    assert.ok(failed.length >= 1, 'a failed step-result exists');
+    assert.ok(
+      typeof failed[0].metadata.digest === 'string' &&
+        failed[0].metadata.digest.length > 0,
+      'control failure carries a digest',
+    );
+    assert.ok(
+      failed[0].metadata.stepId !== undefined,
+      'control failure carries stepId',
+    );
+  });
+});
+
 describe('parseNextStep requires validation', () => {
   it('rejects a malformed requires (non-string / oversized) → null (parse-retry)', () => {
     assert.equal(
