@@ -8,6 +8,7 @@ import type {
   PipelineFactoryDepsBase,
 } from '@mcp-abap-adt/llm-agent';
 import type { KnowledgeBackend } from '@mcp-abap-adt/llm-agent-libs';
+import { validateBoardBudget } from '../smart-agent/controller/board.js';
 import { ControllerCoordinatorHandler } from '../smart-agent/controller/controller-coordinator-handler.js';
 import { LlmFinalizer } from '../smart-agent/controller/finalizer.js';
 import { LlmReviewer } from '../smart-agent/controller/reviewer.js';
@@ -104,6 +105,15 @@ export class ControllerFactory
           'inject a semantic-capable one.',
       );
     }
+
+    const b = config.budgets;
+    validateBoardBudget({
+      maxDigestChars: b.maxDigestChars ?? 500,
+      maxIntentChars: b.maxIntentChars ?? 120,
+      maxActiveSteps: b.maxActiveSteps ?? 16,
+      maxBoardChars: b.maxBoardChars ?? 12000,
+      keepRecentDigests: b.keepRecentDigests ?? 8,
+    });
 
     const [evaluatorLlm, plannerLlm, executorLlm] = await Promise.all([
       deps.makeRoleLlm('evaluator'),
