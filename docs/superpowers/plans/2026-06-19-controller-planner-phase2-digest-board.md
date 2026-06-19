@@ -901,7 +901,7 @@ export function renderBoard(
 - [ ] **Step 4: Run the tests to verify they pass**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="renderBoard|validateBoardBudget"`
-Expected: PASS (7 tests).
+Expected: PASS (9 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -1043,10 +1043,12 @@ async function renderLiveBoard(
 
 Then, right BEFORE the `planner.next({...})` call, compute the board text and pass
 it. `renderLiveBoard` can throw `BoardOverBudgetError` (§B fail-loud) — do NOT
-swallow it into a truncated board; surface it as a terminal control error using the
-handler's existing terminal-error path (the same way an exhausted-budget/unverifiable
-case is surfaced — match the file's pattern; the requirement is fail-loud, never a
-lossy board):
+swallow it into a truncated board; surface it via the handler's EXISTING store-first
+terminal-error path, `abortTerminal`, exactly as the `maxStepAttempts` overflow does
+(`controller-coordinator-handler.ts:762`). `now`, `terminalTtlMs`, and `usageNow`
+are already in scope inside the run loop (bound at the top of the loop method, lines
+~203/207/220). `abortTerminal` returns `Promise<void>`; the loop method returns
+`Promise<boolean>`, so `return true` after it (mirroring the existing callers):
 
 ```ts
 import { BoardOverBudgetError } from './board.js';
@@ -1056,12 +1058,18 @@ import { BoardOverBudgetError } from './board.js';
         boardText = await renderLiveBoard(rag, bundle, boardBudget);
       } catch (err) {
         if (err instanceof BoardOverBudgetError) {
-          // §B: never feed the planner a lossy board. Fail loud via the handler's
-          // terminal control-error path (mirror the existing terminal-error return).
-          bundle.plannerPrivate += `\n[board over budget] ${err.message}`;
-          return /* the handler's terminal control-error result, e.g. */ failRun(
+          // §B: never feed the planner a lossy board — fail loud (store-first
+          // terminal error), identical to the maxStepAttempts overflow path.
+          await this.abortTerminal(
+            ctx,
+            sessionId,
+            bundle,
             `board exceeds maxBoardChars: ${err.message}`,
+            now,
+            terminalTtlMs,
+            usageNow(),
           );
+          return true;
         }
         throw err;
       }
@@ -1072,12 +1080,6 @@ import { BoardOverBudgetError } from './board.js';
         boardText,
       });
 ```
-
-> `failRun(...)` is a placeholder for whatever the handler ALREADY returns for a
-> terminal control error (search the file for how an exhausted budget / maxSteps
-> overflow / unverifiable-reviewer case returns its terminal result, and mirror that
-> exact shape). The mandatory behaviour: a `BoardOverBudgetError` ends the turn
-> loud — it must NOT be caught-and-truncated.
 
 > There is only ONE `planner.next()` call in the handler (line 673). If the board must be rendered AFTER decisions are persisted to reflect the just-created plan, note that the board for THIS turn's prompt is built from PRIOR turns' artifacts (the current plan is created INSIDE this `next()` call) — so render BEFORE `next()`. The newly drained decisions surface on the NEXT turn's board. This is correct: the planner needs "what happened so far," not the plan it is currently emitting.
 
@@ -1315,7 +1317,7 @@ git commit -m "feat(controller): validate board budget at composition (fail-loud
 - §F every decision is a durable artifact (create/replan) → Task 4 (record) + Task 6a (persist). ✓ (`expand`/`page` deferred)
 - §F step-result carries digest so the board is artifact-reconstructible → Task 6c. ✓
 
-**Placeholder scan:** Every code step shows the actual code. Two deliberate "match the file's harness" notes (Task 4/6/7/8 tests) point at reusing the EXISTING test fixtures rather than re-inventing them — the test bodies are given; only the fixture wiring is delegated to the existing file conventions. No "TBD"/"add error handling"/"similar to" placeholders.
+**Placeholder scan:** Every code step shows the actual code, including the §B fail-loud path (Task 6b now calls the concrete `this.abortTerminal(...)` + `return true`, mirroring the `maxStepAttempts` caller at `controller-coordinator-handler.ts:762` — no `failRun(...)` placeholder). The remaining "match the file's harness" notes (Task 4/6/7/8 TESTS) delegate only the reuse of EXISTING test fixtures (fake client / in-memory backend / ctx factory / `parseConfig` access) — the test bodies and all PRODUCTION code are given in full. No "TBD"/"add error handling"/"similar to" placeholders in any production-code step.
 
 **Type consistency:** `ReviewOutcome` (Task 2) = `Outcome & {digest}`; `ReviewResult.outcome` uses it (Task 2); the handler's `outcome` variable is therefore `ReviewOutcome` and `outcome.digest` is valid (Task 6c); the default-reviewer branch constructs a `ReviewOutcome` (Task 6c). `BoardBudget` fields are identical between `renderBoard`/`validateBoardBudget` (Task 5), the handler's budget built from `cfg` (Task 6b), and `build()` (Task 8). The five board knobs are defined ONCE on `ControllerConfig['budgets']` (Task 3), defaulted in `parseConfig` (Task 3), and read by the handler as `cfg.maxDigestChars` etc. (`cfg = deps.config.budgets`, Task 6). `mintCreateStepIds`/`mintReplanStepIds` return `Step[]` consumed by `bundle.plan` and `PlanDecision.steps`. `PlannerNextInput.boardText` (Task 3) is read in Task 7. `bundle.pendingPlanDecisions: PlanDecision[]` (Task 3) is written in Task 4, drained in Task 6a, cleared in `resetRun` (Task 3). `BoardOverBudgetError` (Task 5) is thrown by `renderBoard` and caught in Task 6b.
 
