@@ -1,5 +1,10 @@
 import type { CallOptions, LlmUsage } from '@mcp-abap-adt/llm-agent';
 import {
+  mintCreateStepIds,
+  mintReplanStepIds,
+  type PlanDecision,
+} from './artifacts.js';
+import {
   extractJsonObject,
   parseNextStep,
 } from './controller-coordinator-handler.js';
@@ -195,6 +200,13 @@ function parsePlan(content: string): Step[] | null {
   }
 }
 
+/** Queue a plan decision for the controller to persist (§A boundary: the planner
+ *  CONSTRUCTS the decision; the controller does the durable write). */
+function recordDecision(bundle: SessionBundle, decision: PlanDecision): void {
+  if (!bundle.pendingPlanDecisions) bundle.pendingPlanDecisions = [];
+  bundle.pendingPlanDecisions.push(decision);
+}
+
 export class AdaptivePlanner implements IControllerPlanner {
   // No budget field: replans are bounded by the loop's maxSteps (a failed step
   // bumps stepsUsed in runStep). Replan-specific budgeting is the deferred
@@ -236,8 +248,14 @@ export class AdaptivePlanner implements IControllerPlanner {
       // format failure → handler re-asks (bounded by maxRetries). (An empty plan
       // is only valid on REPLAN, where it means "remaining work is done".)
       if (plan === null || plan.length === 0) return null;
-      bundle.plan = plan;
+      const minted = mintCreateStepIds(plan, bundle.runId ?? '');
+      bundle.plan = minted;
       bundle.planCursor = 0;
+      recordDecision(bundle, {
+        kind: 'create',
+        runId: bundle.runId ?? '',
+        steps: minted,
+      });
       return this.stepAtCursor(bundle, prompt, logUsage);
     }
 
@@ -268,7 +286,17 @@ export class AdaptivePlanner implements IControllerPlanner {
         options,
       );
       if (rest === null) return null;
-      bundle.plan = [...bundle.plan.slice(0, cursor), ...rest];
+      const anchor = bundle.plan[cursor]?.stepId ?? '';
+      const mintedRest = mintReplanStepIds(rest, bundle.runId ?? '', anchor);
+      bundle.plan = [...bundle.plan.slice(0, cursor), ...mintedRest];
+      if (mintedRest.length > 0) {
+        recordDecision(bundle, {
+          kind: 'replan',
+          runId: bundle.runId ?? '',
+          anchor,
+          steps: mintedRest,
+        });
+      }
       // The failure has now been consumed into the revised plan. Clear the durable
       // failure marker BEFORE the (possible) finalize below, so that: a crash after
       // this replan does NOT replan again on resume, and a finalizer error after an

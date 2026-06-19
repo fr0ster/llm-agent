@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { describe, it } from 'node:test';
+import { describe, it, test } from 'node:test';
 import {
   AdaptivePlanner,
   CREATE_PLAN_SYSTEM,
@@ -26,6 +26,67 @@ const bundle = (): SessionBundle => ({
   goal: 'g',
   plannerPrivate: '',
   budgets: { stepsUsed: 0, rewindsUsed: 0 },
+});
+
+const fakeClient = (replies: string[]): ISubagentClient => ({
+  async send() {
+    const content = replies.shift() ?? '';
+    return { kind: 'content', content };
+  },
+});
+
+const newBundle = (opts: { runId: string; goal: string }): SessionBundle => ({
+  goal: opts.goal,
+  plannerPrivate: '',
+  budgets: { stepsUsed: 0, rewindsUsed: 0 },
+  runId: opts.runId,
+});
+
+test('AdaptivePlanner mints create stepIds + records a create plan-decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({
+      plan: [
+        { name: 'a', instructions: 'fetch a' },
+        { name: 'b', instructions: 'fetch b' },
+      ],
+    }),
+  ]);
+  const p = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  const next = await p.next({ bundle: b, prompt: 'g', retrying: false });
+  assert.equal(next?.kind, 'next');
+  assert.ok(b.plan?.every((s) => typeof s.stepId === 'string'));
+  assert.equal(b.pendingPlanDecisions?.length, 1);
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'create');
+  assert.equal(dec?.steps.length, 2);
+  assert.equal(dec?.steps[0].stepId, b.plan?.[0].stepId);
+});
+
+test('AdaptivePlanner replan mints anchored stepIds + records a replan decision', async () => {
+  const client = fakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }), // create
+    JSON.stringify({
+      plan: [{ name: 'a2', instructions: 'fetch a differently' }],
+    }), // replan
+  ]);
+  const p = new AdaptivePlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g' });
+  await p.next({ bundle: b, prompt: 'g', retrying: false }); // create; cursor 0
+  const anchor = b.plan?.[0].stepId;
+  b.pendingPlanDecisions = []; // controller drained the create decision
+  const next = await p.next({
+    bundle: b,
+    prompt: 'g',
+    retrying: false,
+    lastOutcome: 'failed',
+  });
+  assert.equal(next?.kind, 'next');
+  const dec = b.pendingPlanDecisions?.[0];
+  assert.equal(dec?.kind, 'replan');
+  assert.equal((dec as { anchor?: string })?.anchor, anchor);
+  assert.equal(dec?.steps[0].supersedesStepId, anchor);
+  assert.notEqual(dec?.steps[0].stepId, anchor);
 });
 
 describe('IncrementalPlanner', () => {
