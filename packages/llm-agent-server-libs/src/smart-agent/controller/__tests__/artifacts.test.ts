@@ -5,6 +5,8 @@ import {
   decisionSlotId,
   decisionWinner,
   deterministicId,
+  mintCreateStepIds,
+  mintReplanStepIds,
   type PlanDecision,
   readClaims,
   readPlanDecisions,
@@ -209,4 +211,48 @@ test('readClaims drops a claim row missing writeOrdinal', async () => {
   });
   const claims = await readClaims(be as never, 'r');
   assert.equal(claims.length, 0);
+});
+
+test('mintCreateStepIds assigns deterministic per-index stepIds', () => {
+  const steps = [
+    { name: 'a', instructions: 'fetch a' },
+    { name: 'b', instructions: 'fetch b' },
+  ];
+  const out1 = mintCreateStepIds(steps, 'run-1');
+  const out2 = mintCreateStepIds(steps, 'run-1');
+  assert.equal(out1.length, 2);
+  assert.ok(out1[0].stepId && out1[1].stepId);
+  assert.notEqual(out1[0].stepId, out1[1].stepId); // distinct per index
+  assert.deepEqual(
+    out1.map((s) => s.stepId),
+    out2.map((s) => s.stepId),
+  ); // deterministic (re-call → same ids)
+  assert.notEqual(mintCreateStepIds(steps, 'run-2')[0].stepId, out1[0].stepId); // runId-scoped
+  // original input not mutated
+  assert.equal(steps[0].stepId, undefined);
+});
+
+test('mintReplanStepIds mints new ids; first supersedes the anchor', () => {
+  const rest = [
+    { name: 'x', instructions: 'redo' },
+    { name: 'y', instructions: 'then' },
+  ];
+  const out = mintReplanStepIds(rest, 'run-1', 'anchor-step');
+  assert.equal(out[0].supersedesStepId, 'anchor-step');
+  assert.equal(out[1].supersedesStepId, undefined); // only the first supersedes
+  assert.ok(out[0].stepId && out[1].stepId);
+  assert.notEqual(out[0].stepId, out[1].stepId);
+  // deterministic + anchor-scoped
+  assert.deepEqual(
+    mintReplanStepIds(rest, 'run-1', 'anchor-step').map((s) => s.stepId),
+    out.map((s) => s.stepId),
+  );
+  assert.notEqual(
+    mintReplanStepIds(rest, 'run-1', 'other-anchor')[0].stepId,
+    out[0].stepId,
+  );
+});
+
+test('mintReplanStepIds on an empty tail returns []', () => {
+  assert.deepEqual(mintReplanStepIds([], 'run-1', 'anchor'), []);
 });

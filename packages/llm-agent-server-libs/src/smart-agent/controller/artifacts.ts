@@ -276,3 +276,28 @@ export function decisionWinner(
   forSlot.sort((a, b) => a.writeOrdinal - b.writeOrdinal);
   return forSlot[0].decisionId;
 }
+
+/** Mint stable plan-time stepIds for a freshly created plan (§F). Pure: returns
+ *  NEW step objects (does not mutate the input). `deterministicId(runId,'create',i)`
+ *  is replay-stable — an at-least-once planner re-call produces identical ids. */
+export function mintCreateStepIds(steps: Step[], runId: string): Step[] {
+  return steps.map((s, i) => ({
+    ...s,
+    stepId: deterministicId(runId, 'create', i),
+  }));
+}
+
+/** Mint stepIds for a replan's replacement tail (§F). Each replacement gets a NEW
+ *  stepId keyed by the superseded anchor; the FIRST replacement carries
+ *  `supersedesStepId = anchorStepId` (it replaces the failed step). Pure. */
+export function mintReplanStepIds(
+  steps: Step[],
+  runId: string,
+  anchorStepId: string,
+): Step[] {
+  return steps.map((s, i) => ({
+    ...s,
+    stepId: deterministicId(runId, 'replan', anchorStepId, i),
+    ...(i === 0 ? { supersedesStepId: anchorStepId } : {}),
+  }));
+}
