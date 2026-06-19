@@ -59,6 +59,34 @@ describe('ControllerPipelinePlugin', () => {
     );
   });
 
+  it('parseConfig defaults the board-budget knobs', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const cfg = plugin.parseConfig({
+      subagents: {
+        evaluator: { provider: 'openai' },
+        planner: { provider: 'openai' },
+        executor: { provider: 'openai' },
+      },
+    });
+    assert.equal(cfg.budgets.maxDigestChars, 500);
+    assert.equal(cfg.budgets.maxBoardChars, 12000);
+    assert.equal(cfg.budgets.keepRecentDigests, 8);
+  });
+
+  it('parseConfig lets explicit budgets override board defaults', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const cfg = plugin.parseConfig({
+      subagents: {
+        evaluator: { provider: 'openai' },
+        planner: { provider: 'openai' },
+        executor: { provider: 'openai' },
+      },
+      budgets: { maxBoardChars: 9000 },
+    });
+    assert.equal(cfg.budgets.maxBoardChars, 9000);
+    assert.equal(cfg.budgets.maxDigestChars, 500); // untouched default
+  });
+
   it('build returns an instance with agent + close', async () => {
     const plugin = new ControllerPipelinePlugin();
     const cfg = plugin.parseConfig({

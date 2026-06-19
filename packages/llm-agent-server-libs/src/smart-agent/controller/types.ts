@@ -5,6 +5,7 @@ import type {
   StreamToolCall,
 } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerLlmConfig } from '../smart-server.js';
+import type { PlanDecision } from './artifacts.js';
 
 export type SubagentResult =
   | { kind: 'content'; content: string; usage?: LlmUsage }
@@ -111,6 +112,12 @@ export interface SessionBundle {
   budgets: { stepsUsed: number; rewindsUsed: number };
   plan?: Step[];
   planCursor?: number;
+  /** Plan decisions the planner produced this turn (create/replan), NOT yet
+   *  persisted. The controller drains + `writePlanDecision`s them after
+   *  `planner.next()` returns and BEFORE dispatch (§A: planner constructs, controller
+   *  persists; §F: every decision is a durable artifact). Cleared once drained, and
+   *  on `resetRun`. */
+  pendingPlanDecisions?: PlanDecision[];
   pending?: PendingMarker;
   /** Last reviewed step outcome that drives the planner transition. */
   lastOutcome?: 'advanced' | 'failed' | 'partial';
@@ -186,6 +193,12 @@ export interface ControllerConfig {
     maxFinalizeRetries?: number;
     /** In-process re-ask budget for judge (reviewer) provider/malformed failures. */
     maxReviewRetries?: number;
+    /** Board render budget (§B). Defaulted in parseConfig; validated at load. */
+    maxDigestChars?: number;
+    maxIntentChars?: number;
+    maxActiveSteps?: number;
+    maxBoardChars?: number;
+    keepRecentDigests?: number;
   };
   /** Behaviour when the finalizer's retry budget is exhausted: 'error' → terminal
    *  control error (default); 'best-effort' → compose from approved results with an
@@ -211,6 +224,13 @@ export interface PlannerNextInput {
    *  plannerPrivate — instead of blindly re-running the suspended step (the
    *  executor prompt does NOT include plannerPrivate). Incremental ignores it. */
   resumedExternal?: boolean;
+  /** The rendered step-state digest board (§B), reconstructed by the controller
+   *  from artifacts before each call. When present + non-empty it is the
+   *  AUTHORITATIVE step-state context, rendered ADDITIVELY ahead of the
+   *  `plannerPrivate` tail (which still carries non-board deltas — clarify answers,
+   *  the legacy external result). Empty/absent → the planner uses `plannerPrivate`
+   *  alone (so the decision-less IncrementalPlanner is byte-identical to today). */
+  boardText?: string;
   logUsage?: (role: string, u?: LlmUsage) => void;
   /** Request-scoped call options (request logger / trace / cancellation signal).
    *  Threaded into the skills-recall hook so the recall embedding is metered,

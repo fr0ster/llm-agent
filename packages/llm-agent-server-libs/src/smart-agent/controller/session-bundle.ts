@@ -73,6 +73,7 @@ export function resetRun(bundle: SessionBundle, originalRequest: string): void {
   bundle.budgets = { stepsUsed: 0, rewindsUsed: 0 };
   bundle.plan = undefined;
   bundle.planCursor = undefined;
+  bundle.pendingPlanDecisions = undefined;
   bundle.pending = undefined;
   bundle.lastOutcome = undefined;
   bundle.runState = 'active';

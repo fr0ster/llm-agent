@@ -81,6 +81,11 @@ export class ControllerPipelinePlugin
         maxRetries: 3,
         maxRewinds: 5,
         maxToolCalls: 10,
+        maxDigestChars: 500,
+        maxIntentChars: 120,
+        maxActiveSteps: 16,
+        maxBoardChars: 12000,
+        keepRecentDigests: 8,
         ...budgetsRaw,
       } as ControllerConfig['budgets'],
     };
