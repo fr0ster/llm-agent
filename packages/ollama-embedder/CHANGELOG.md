@@ -1,5 +1,24 @@
 # @mcp-abap-adt/ollama-embedder
 
+## 19.2.0
+
+### Added
+- Controller planner — step identity & live digest board (Phase 1+2): stable per-step
+  `stepId`, `plan-decision` artifacts, reviewer planning `digest` (`ReviewOutcome`),
+  `stepId`+`digest` on every step-result (incl. control failures), bounded
+  `renderBoard` with a guaranteed cap (fail-loud), additive board+plannerPrivate
+  prompt, canonical writeOrdinal replay (no phantom planned orphans).
+- Skill plugin-host & runtime gnostification (`skillPlugins:`): domain-agnostic host
+  materialising consumer skills into a grouped skills-RAG; marketplace + inline
+  sources; controller + assembler recall.
+- Controller execution-result control & data backbone: reviewer/finalizer split,
+  durable run-scope + crash recovery, run-scoped embedding recall.
+
+### Fixed
+- Results-RAG: bound embed input (`maxEmbedChars`, default 16000) for large tool/step
+  results so an over-limit document no longer 400s the embedder and stalls the run;
+  stored content stays full.
+
 ## 19.1.2
 
 Release 19.1.2.

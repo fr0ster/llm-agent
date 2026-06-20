@@ -9,8 +9,35 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [19.2.0] — 2026-06-20
+
 ### Added
 
+- **Controller planner — step identity & live digest board.** The `controller`
+  planner now plans against a structured, bounded **step-state board** reconstructed
+  from durable artifacts instead of a payload-free progress blob, so it never
+  re-issues a completed step.
+  - **Identity (Phase 1).** Every plan step carries a stable `stepId` (1:1 with a
+    board entry); knowledge-RAG metadata + `matches()` gain
+    `stepId`/`decisionId`/`slotId`/`kind`/`digest`/`supersedesStepId`. A
+    `plan-decision` artifact records create/replan with a deterministic,
+    content-hashed id; `reconstructBoard` merges plan structure + per-attempt
+    step-results + claims into the board.
+  - **Live board (Phase 2).** `stepId` is minted at plan creation (and at replan,
+    with `supersedesStepId` on the replacement); each create/replan is persisted as
+    a `plan-decision`; the reviewer returns a bounded planning `digest`
+    (`ReviewOutcome`); the controller writes `stepId`+`digest` on every step-result
+    (including all control-failure paths) so the board is authoritative for
+    failures; `renderBoard` applies a deterministic compaction with a **guaranteed
+    cap** (`BoardOverBudgetError` → fail-loud, never a lossy board), validated at
+    composition. The planner prompt renders the board **additively** (board +
+    `plannerPrivate` tail) so non-board deltas (clarify answers, external results)
+    survive; an empty board falls back to the legacy blob unchanged. Canonical
+    arbitration replays decisions by `writeOrdinal` (a later create replaces a
+    stale one; a replan — including an empty `{plan:[]}` — truncates the tail from
+    its anchor) so a crash/retry never leaves phantom `planned` orphans on the
+    board. Deferred-expansion (discovery fan-out) and the capability-tuned planner
+    split remain follow-on work.
 - **Skill plugin-host & runtime gnostification.** A reusable, domain-agnostic host
   that materialises consumer-supplied skills into a grouped skills-RAG and lets
   pipelines recall them — keeping the engine (MIT) free of any bundled domain
@@ -83,6 +110,18 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
     the planner model. All results-RAG embedder calls — recall query, relevant-
     extract, write-time indexing, and lazy-rebuild rehydration — carry request
     options so their token cost is attributed to `/v1/usage`.
+
+### Fixed
+
+- **Results-RAG: bound the embed input for large tool/step results.** A large MCP
+  or step result (e.g. a full ABAP dictionary dump) could exceed the embedder's
+  input limit (SAP AI Core `text-embedding-3-small`: 8192 tokens), returning 400 on
+  upsert. That broke the JSONL semantic-index rebuild permanently and — because
+  run-scoped recall runs mid-turn — stalled the whole controller run (the step
+  never reached the reviewer/finalizer; the request returned `(no response)`).
+  `makeKnowledgeSemanticIndex` now embeds a bounded prefix (`maxEmbedChars`, default
+  16000) for both upsert content and query text; the stored entry keeps the full
+  content, so recall still returns the complete result.
 
 ## [19.1.2] — 2026-06-10
 
