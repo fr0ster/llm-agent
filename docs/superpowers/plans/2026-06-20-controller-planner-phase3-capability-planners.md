@@ -32,7 +32,7 @@
 
 ## Task 1: PlannerKind values + remove `ControllerConfig.planner` + handler dep (types.ts)
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP — Tasks 1, 2, 3, 4.** Do NOT run the package build or test suite between these four tasks: the break leaves PRODUCT code inconsistent in intermediate states — the handler calls `makePlanner` until Task 3, AND `pipelines/controller.ts` parseConfig still casts `as ControllerConfig['planner']` (a now-removed type) until Task 4, so `tsc` fails until Task 4 closes the parser. The single build+test green checkpoint is **Task 4 Step 4**. (Per-step grep checks within Tasks 1-3 are fine; a `npm run build` / `npm … test` run is not.)
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP — Tasks 1, 2, 3, 4.** Do NOT run the package build or test suite between these four tasks: the break leaves PRODUCT code inconsistent in intermediate states — the handler calls `makePlanner` until Task 3, AND `pipelines/controller.ts` parseConfig still casts `as ControllerConfig['planner']` (a now-removed type) until Task 4, so `tsc` fails until Task 4 closes the parser. The single build+test green checkpoint is **Task 4 Step 4b**. (Per-step grep checks within Tasks 1-3 are fine; a `npm run build` / `npm … test` run is not.)
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts`
