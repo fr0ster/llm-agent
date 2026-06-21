@@ -47,6 +47,7 @@ import { establishTargetState } from './target-state.js';
 import {
   type ControllerConfig,
   type NextStep,
+  type PlannerKind,
   type SessionBundle,
   type Step,
   validateRequires,
@@ -175,6 +176,10 @@ export interface ControllerHandlerDeps {
    * is byte-identical to the agnostic path.
    */
   skillsRecall?: (goal: string, options?: CallOptions) => Promise<string>;
+  /** Capability kind chosen by the PRESET (composition code), not user config.
+   *  Selects the planner implementation. Defaults to 'smart-executor' when absent
+   *  (a consumer building the handler directly without a preset). */
+  plannerKind?: PlannerKind;
 }
 
 // ---------------------------------------------------------------------------

@@ -178,7 +178,6 @@ export interface ControllerConfig {
     distanceThreshold: number;
   };
   sessionMemory: { collection: string };
-  planner?: 'incremental' | 'adaptive';
   budgets: {
     maxSteps: number;
     maxRetries: number;
@@ -206,7 +205,7 @@ export interface ControllerConfig {
   onFinalizeExhausted?: 'error' | 'best-effort';
 }
 
-export type PlannerKind = 'incremental' | 'adaptive';
+export type PlannerKind = 'smart-executor' | 'weak-executor';
 
 export interface PlannerNextInput {
   bundle: SessionBundle;
