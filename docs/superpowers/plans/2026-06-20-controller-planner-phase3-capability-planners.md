@@ -111,51 +111,62 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts`
 
-`AdaptivePlanner` (the Phase-2 plan-first engine) is renamed `SmartExecutorPlanner` verbatim. `WeakExecutorPlanner` subclasses it and overrides ONLY the create-plan/replan system prompts to demand the finest grain. `IncrementalPlanner` and `PLANNER_SYSTEM`/`RETRY_HINT` (incremental-only) are deleted. `makePlanner` → `makeControllerPlanner`.
+`AdaptivePlanner` (the Phase-2 plan-first engine) is renamed `SmartExecutorPlanner` — its control flow is unchanged, but its create/replan prompts gain a COARSE granularity clause (a capable executor self-expands a coarse step in its tool-loop). `WeakExecutorPlanner` subclasses it and overrides the prompt seam with the ATOMIC granularity clause (one action per step; never coarse, never self-expansion). So the two planners differ MATERIALLY in granularity, not just by a near-identical prompt. `IncrementalPlanner` and `PLANNER_SYSTEM`/`RETRY_HINT` (incremental-only) are deleted. `makePlanner` → `makeControllerPlanner`.
 
-- [ ] **Step 1: Add the WEAK create-plan prompt + a protected prompt seam (planner.ts)**
+- [ ] **Step 1: Add SMART + WEAK granularity prompt variants + a protected prompt seam (planner.ts)**
 
-The `AdaptivePlanner.callPlan` (line ~331 region) builds its system prompt from the module-level `CREATE_PLAN_SYSTEM` / `REPLAN_SYSTEM` / `EXTERNAL_RESULT_REPLAN_SYSTEM` constants. To let a subclass swap them, make the planner read them from protected getters. Add a fine-grained weak variant. Append to planner.ts (after the existing `EXTERNAL_RESULT_REPLAN_SYSTEM` constant):
+The Phase-2 `CREATE_PLAN_SYSTEM` / `REPLAN_SYSTEM` / `EXTERNAL_RESULT_REPLAN_SYSTEM` constants are the **shared agnostic base** (kept + still exported — the `planner prompt contract` test iterates them). §C needs the two planners to differ in GRANULARITY, so neither uses the base verbatim: each EXTENDS the base with an OPPOSITE granularity clause. `smart-executor` allows coarse, self-expanding steps; `weak-executor` forces atomic, one-action steps. Append to planner.ts (after the existing `EXTERNAL_RESULT_REPLAN_SYSTEM` constant):
 
 ```ts
-/** Weak-executor create-plan prompt (§C). Same agnostic contract as
- *  CREATE_PLAN_SYSTEM, but demands the FINEST grain: a weak executor cannot be
- *  trusted to self-expand a coarse step, so every step is exactly ONE concrete
- *  action. (Deferred discovery fan-out — §D — is Phase 4; here it is purely
- *  finer decomposition.) Stays AGNOSTIC: no tool names, no domain. */
-export const WEAK_CREATE_PLAN_SYSTEM =
-  CREATE_PLAN_SYSTEM +
-  ' GRANULARITY (weak executor): decompose to the FINEST actionable grain — each ' +
-  'step is EXACTLY ONE concrete fetch/action the executor performs in a single ' +
-  'tool use. NEVER combine actions into one step and NEVER rely on the executor ' +
-  'to expand a step into several actions itself; if a step would require the ' +
-  'executor to do more than one fetch/action, split it into that many steps.';
+/** Smart-executor granularity clause (§C). A capable executor can self-expand a
+ *  coarse step inside its own tool-loop, so the planner MAY plan coarse. Clarifies
+ *  that the base's "one concrete action" means one INTENT — a coarse batch step is
+ *  one intent, not a planner-side per-item fan-out. AGNOSTIC: no tool names. */
+const SMART_GRANULARITY =
+  ' GRANULARITY (smart executor): a step MAY be COARSE — a single intent that ' +
+  'covers a set of related items (e.g. "read every item referenced by the prior ' +
+  'result"); a capable executor enumerates and processes each item WITHIN ITS OWN ' +
+  'tool-loop, and control returns to the reviewer after the coarse step. This does ' +
+  'NOT violate "one concrete action": a coarse batch is ONE intent. PREFER fewer ' +
+  'coarse steps over enumerating items yourself.';
 
-export const WEAK_REPLAN_SYSTEM =
-  REPLAN_SYSTEM +
-  ' GRANULARITY (weak executor): each remaining step is EXACTLY ONE concrete ' +
-  'fetch/action; never combine actions or rely on executor self-expansion.';
+/** Weak-executor granularity clause (§C). A weak executor cannot be trusted to
+ *  self-expand, so every step is exactly one atomic action. (Deferred discovery
+ *  fan-out for plan-time-unknowable batches — §D — is Phase 4; in Phase 3 the weak
+ *  planner just plans the finest grain it can.) AGNOSTIC: no tool names. */
+const WEAK_GRANULARITY =
+  ' GRANULARITY (weak executor): each step is EXACTLY ONE ATOMIC action the ' +
+  'executor performs in a SINGLE tool use. NEVER emit a coarse/batch step and ' +
+  'NEVER rely on the executor to self-expand a step — the executor handles one ' +
+  'action at a time; if work spans several actions, emit that many steps.';
 
+export const SMART_CREATE_PLAN_SYSTEM = CREATE_PLAN_SYSTEM + SMART_GRANULARITY;
+export const SMART_REPLAN_SYSTEM = REPLAN_SYSTEM + SMART_GRANULARITY;
+export const SMART_EXTERNAL_RESULT_REPLAN_SYSTEM =
+  EXTERNAL_RESULT_REPLAN_SYSTEM + SMART_GRANULARITY;
+
+export const WEAK_CREATE_PLAN_SYSTEM = CREATE_PLAN_SYSTEM + WEAK_GRANULARITY;
+export const WEAK_REPLAN_SYSTEM = REPLAN_SYSTEM + WEAK_GRANULARITY;
 export const WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM =
-  EXTERNAL_RESULT_REPLAN_SYSTEM +
-  ' GRANULARITY (weak executor): each remaining step is EXACTLY ONE concrete ' +
-  'fetch/action; never combine actions or rely on executor self-expansion.';
+  EXTERNAL_RESULT_REPLAN_SYSTEM + WEAK_GRANULARITY;
 ```
+
+> The smart variants carry a genuine COARSE instruction the base lacks — so `smart-executor` is materially coarser than `weak-executor`, realizing §C (not a near-identical pair). The base constants stay exported as the shared contract.
 
 - [ ] **Step 2: Rename `AdaptivePlanner` → `SmartExecutorPlanner` + introduce protected prompt seam**
 
-In planner.ts, rename `export class AdaptivePlanner` (line ~221) to `export class SmartExecutorPlanner`. Inside it, add three protected accessors that default to the smart (coarse) prompts, and make `callPlan` use them instead of the module constants directly:
+In planner.ts, rename `export class AdaptivePlanner` (line ~221) to `export class SmartExecutorPlanner`. Inside it, add three protected accessors that default to the SMART (coarse) prompts, and make `callPlan`/`next` use them instead of the module constants directly:
 
 ```ts
-  /** Prompt seam — overridden by WeakExecutorPlanner for finer granularity (§C). */
+  /** Prompt seam — overridden by WeakExecutorPlanner for atomic granularity (§C). */
   protected get createPlanSystem(): string {
-    return CREATE_PLAN_SYSTEM;
+    return SMART_CREATE_PLAN_SYSTEM;
   }
   protected get replanSystem(): string {
-    return REPLAN_SYSTEM;
+    return SMART_REPLAN_SYSTEM;
   }
   protected get externalResultReplanSystem(): string {
-    return EXTERNAL_RESULT_REPLAN_SYSTEM;
+    return SMART_EXTERNAL_RESULT_REPLAN_SYSTEM;
   }
 ```
 
@@ -163,7 +174,7 @@ Then in `next()` and `callPlan()`, replace the direct use of the constants:
 - The create branch currently calls `this.callPlan(CREATE_PLAN_SYSTEM, ...)` → `this.callPlan(this.createPlanSystem, ...)`.
 - The replan branch currently selects `const system = resumedExternal ? EXTERNAL_RESULT_REPLAN_SYSTEM : REPLAN_SYSTEM;` → `const system = resumedExternal ? this.externalResultReplanSystem : this.replanSystem;`.
 
-(Leave `FINALIZE_SYSTEM` and `PLANNER_SYSTEM` usage as-is for now; `PLANNER_SYSTEM` is removed in Step 4 with `IncrementalPlanner`.)
+(Leave `FINALIZE_SYSTEM` usage as-is; `PLANNER_SYSTEM` is removed in Step 4 with `IncrementalPlanner`. The base `CREATE_PLAN_SYSTEM`/`REPLAN_SYSTEM`/`EXTERNAL_RESULT_REPLAN_SYSTEM` constants remain exported — they back the SMART/WEAK variants and the prompt-contract test.)
 
 - [ ] **Step 3: Add `WeakExecutorPlanner` (subclass)**
 
@@ -188,7 +199,7 @@ export class WeakExecutorPlanner extends SmartExecutorPlanner {
 
 - [ ] **Step 4: Delete `IncrementalPlanner` + its incremental-only constants**
 
-Remove the entire `export class IncrementalPlanner` (line ~91) and the module constants used ONLY by it: `PLANNER_SYSTEM` (line ~35) and `RETRY_HINT` (line ~54). (Confirm via grep that nothing else references them — `grep -n "PLANNER_SYSTEM\|RETRY_HINT\|IncrementalPlanner" packages/llm-agent-server-libs/src` should return only the planner.test.ts references you update in Step 6 + plan-analysis.ts which Task 7 fixes.)
+Remove the entire `export class IncrementalPlanner` (line ~91) and the module constants used ONLY by it: `PLANNER_SYSTEM` (line ~35) and `RETRY_HINT` (line ~54). (Confirm via grep — `grep -n "PLANNER_SYSTEM\|RETRY_HINT\|IncrementalPlanner" packages/llm-agent-server-libs/src` — the remaining references are: the `planner prompt contract` test in `planner.test.ts` (imports `PLANNER_SYSTEM` in its iteration list — fixed in Step 6) and `plan-analysis.ts` (Task 7). No PRODUCT code should reference them after this step.)
 
 - [ ] **Step 5: `makePlanner` → `makeControllerPlanner`**
 
@@ -224,27 +235,46 @@ test('makeControllerPlanner returns the kind-matched implementation', () => {
   assert.ok(makeControllerPlanner('weak-executor', client) instanceof WeakExecutorPlanner);
 });
 
-test('WeakExecutorPlanner create-plan prompt demands one action per step', async () => {
+test('WeakExecutorPlanner create-plan prompt demands ONE ATOMIC action per step (coarse forbidden)', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
   const planner = new WeakExecutorPlanner(client);
   const bundle = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
   await planner.next({ bundle, prompt: 'g', retrying: false });
-  // The weak granularity clause reached the system prompt.
-  assert.match(client.lastSystemContent(), /EXACTLY ONE concrete/);
+  const sys = client.lastSystemContent();
+  assert.match(sys, /EXACTLY ONE ATOMIC action/); // weak granularity clause present
+  assert.doesNotMatch(sys, /a step MAY be COARSE/); // NOT the smart clause
 });
 
-test('SmartExecutorPlanner create-plan prompt does NOT demand one action per step', async () => {
+test('SmartExecutorPlanner create-plan prompt PERMITS coarse, self-expanding steps', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
   const planner = new SmartExecutorPlanner(client);
   const bundle = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
   await planner.next({ bundle, prompt: 'g', retrying: false });
-  assert.doesNotMatch(client.lastSystemContent(), /EXACTLY ONE concrete/);
+  const sys = client.lastSystemContent();
+  assert.match(sys, /a step MAY be COARSE/); // smart granularity clause present
+  assert.doesNotMatch(sys, /EXACTLY ONE ATOMIC action/); // NOT the weak clause
 });
 ```
+
+Also fix the existing `planner prompt contract` test (it iterates `PLANNER_SYSTEM`, which is deleted): drop `PLANNER_SYSTEM` from the import + the iteration list, and add the four new variants so the English-invariant is still asserted across all live planner prompts:
+
+```ts
+// in `describe('planner prompt contract')` — the English-invariant iteration list:
+    for (const p of [
+      CREATE_PLAN_SYSTEM,
+      REPLAN_SYSTEM,
+      EXTERNAL_RESULT_REPLAN_SYSTEM,
+      SMART_CREATE_PLAN_SYSTEM,
+      WEAK_CREATE_PLAN_SYSTEM,
+      WEAK_REPLAN_SYSTEM,
+      WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM,
+    ]) {
+```
+(Update the import at the top of `planner.test.ts`: remove `PLANNER_SYSTEM`, add `SMART_CREATE_PLAN_SYSTEM`, `WEAK_CREATE_PLAN_SYSTEM`, `WEAK_REPLAN_SYSTEM`, `WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM`. The base `CREATE_PLAN_SYSTEM`/`REPLAN_SYSTEM`/`EXTERNAL_RESULT_REPLAN_SYSTEM` imports stay.)
 
 > Reuse / extend the existing `fakeClient`/`recordingFakeClient`/`newBundle` helpers from Task-4/7 of Phase 2 in this file. If `recordingFakeClient` exposes only `lastUserContent()`, add a `lastSystemContent()` accessor (the content of the last message with role `'system'`) the same way.
 
@@ -358,7 +388,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts`
 - Test: `packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts`
 
-`parseConfig` currently MAPS `cfg.planner` (`'adaptive'`/`'incremental'`) into the config. The clean break: a present `planner:` key (or the legacy values anywhere in the controller block) THROWS at parse with a migration message — no silent alias.
+`parseConfig` currently MAPS `cfg.planner` (`'adaptive'`/`'incremental'`) into the config. The clean break: a present **`planner` key on the controller config** THROWS at parse with a migration message — no silent alias.
+
+> SCOPE (deviation from the spec's loose "or incremental/adaptive anywhere" wording — deliberate): reject ONLY the `planner` key. A value-scan "anywhere in the controller block" would false-positive on legitimate string values in unrelated fields (a hint, a collection name, a model id containing "adaptive"), so it is intentionally NOT done. The `planner` key is the only live migration surface; rejecting it is the complete, safe break.
 
 - [ ] **Step 1: Write the failing test (controller.test.ts)**
 
@@ -579,9 +611,9 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Spec coverage (§C):**
 - Retire `IncrementalPlanner`/`AdaptivePlanner` + the enum → Task 1 (enum), Task 2 (classes). ✓
-- Two implementations, each with its own system prompt, selected by composition → Task 2 (`SmartExecutorPlanner`/`WeakExecutorPlanner` + prompt seam), Task 3 (preset→factory→handler threading). ✓
+- Two implementations, each with its own system prompt, selected by composition → Task 2 (`SmartExecutorPlanner` = base + COARSE clause / `WeakExecutorPlanner` = base + ATOMIC clause via the prompt seam — materially different granularity, tested by the coarse-vs-atomic prompt assertions), Task 3 (preset→factory→handler threading). ✓ (review P1: smart is genuinely coarse, not a verbatim rename of the already-fine-grained base.)
 - `PlannerKind = 'smart-executor' | 'weak-executor'`, `makePlanner`→`makeControllerPlanner` → Task 1, Task 2. ✓
-- Fail-loud removal of `planner:` (no alias) → Task 4. ✓
+- Fail-loud removal of `planner:` (no alias) → Task 4. ✓ (review P2: rejects the `planner` KEY only; the spec's "anywhere" value-scan is intentionally dropped — false-positive risk on legit values; noted in Task 4 scope.)
 - Files the spec lists (types, planner, controller.ts parser, controller.yaml + controller-mixed.yaml, factory, tests/examples, PIPELINES.md) → Tasks 1-7. ✓
 - Register `controller-weak` NAME in the built-in registry + name parsing/diagnostics + conformance test → Task 5. ✓
 - Strong guarantee (preset-pinned executor); `declaredCapability` DEFERRED → honored (no such field added; out-of-scope note). ✓
