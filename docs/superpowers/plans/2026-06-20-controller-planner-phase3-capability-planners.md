@@ -459,6 +459,41 @@ The existing pipeline test asserts the OLD mapping (around lines 55-58):
 ```
 These now break (the field is gone; a `planner:` key throws). DELETE both assertions — they are superseded by the two new fail-loud/accept tests from Step 1.
 
+- [ ] **Step 2c: Migrate the incremental-shaped handler tests to plan-first scripts (controller-coordinator-handler.test.ts)**
+
+> ⚠️ **REQUIRED for the Step 4b green gate — discovered in execution (review round 5).** The BULK of `controller-coordinator-handler.test.ts` scripts the planner in the **incremental** single-step shape (`{"kind":"next", step}` … then `{"kind":"done", result}`) and relied on the OLD default planner being `incremental` (these tests set NO `config.planner`). Phase 3 DELETES `IncrementalPlanner` and makes the default `smart-executor` (plan-first, `{"plan":[…]}`). So those scripts no longer parse → `planner.next()` returns null → ~25 handler tests fail. They MUST be migrated to the plan-first script shape. (This is NOT "harmless dead props" — the earlier plan wording was wrong; see the corrected Step 4b / Task 7 notes.)
+
+**The plan-first flow (smart-executor, the new default):** `planner.next()` is called by the handler loop. First call (no plan yet) → CREATE-PLAN: the planner client returns `{"plan":[…all steps…]}` once; the handler emits step 1. Each subsequent step is emitted from `bundle.plan` WITHOUT another planner-client call (the cursor advances on commit). When the plan is exhausted → FINALIZE: the planner client is called once more (FINALIZE_SYSTEM) and returns **plain text** (no JSON) which becomes the done result. So a test that scripted `N × {kind:next} + {kind:done,result:R}` (N+1 planner replies) becomes **`{plan:[…N…]}` + `R` (plain text)** (2 planner replies). Executor/reviewer replies (one per step) stay unchanged.
+
+**Worked example — the `happy: goal → one step → done` test.** BEFORE:
+```ts
+      planner: [
+        { kind: 'content', content: JSON.stringify({ kind: 'next', step: { name: 's1', instructions: 'do' } }) },
+        { kind: 'content', content: JSON.stringify({ kind: 'done', result: 'finished' }) },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+```
+AFTER:
+```ts
+      planner: [
+        // create-plan (plan-first): the full plan in one reply
+        { kind: 'content', content: JSON.stringify({ plan: [{ name: 's1', instructions: 'do' }] }) },
+        // finalize: FINALIZE_SYSTEM returns PLAIN TEXT → becomes the done result
+        { kind: 'content', content: 'finished' },
+      ],
+      executor: [{ kind: 'content', content: 'did s1' }],
+```
+The assertion `content === 'finished'` still holds (the finalize reply text is the done result). `stepsUsed === 1` still holds (one step executed).
+
+**Procedure (run-and-fix, per test — this is empirical, not blind find/replace):**
+1. Run the failing handler tests: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="ControllerCoordinatorHandler"`.
+2. For each failing test, apply the transform above to its `planner:` script: collapse the per-step `{kind:'next'}` replies into ONE `{plan:[…]}` create-plan reply, and turn the terminal `{kind:'done', result:R}` into a plain-text `R` finalize reply. Keep `evaluator`/`executor`/`reviewer` scripts as-is.
+3. **Replan/rewind/error/budget tests have MORE planner interactions** (a failed step triggers a replan → another planner-client call returning `{plan:[…remaining…]}` or `{plan:[]}`). Do NOT guess the exact reply count — RUN the test, read which call the scripted queue under-/over-feeds, and supply the matching plan-first reply. The handler/planner control flow is the spec; the test scripts adapt to it.
+4. Tests that explicitly set `deps.reviewer`/`deps.finalizer` (e.g. *"reviewer verdict decides the outcome"*, *"done → finalizer composes…"*) keep that setup — only the `planner:` script shape changes (create-plan + the step loop; the finalizer reply may come from `deps.finalizer` rather than the planner client when set — adjust per the run).
+5. Iterate until ALL `ControllerCoordinatorHandler` tests pass.
+
+> Do NOT weaken or delete a test to make it pass. Each test asserts real handler behaviour (dispatch, tools, rewind, budgets, reviewer, finalizer, suspend/resume) that is UNCHANGED by Phase 3 — only the planner SCRIPT shape changes from incremental to plan-first. If a test cannot be made to pass by re-scripting (i.e. the handler behaviour genuinely changed), STOP and report it — that would be an unexpected behavioural regression, not a test-shape issue.
+
 - [ ] **Step 3: Reject `planner:` in `parseConfig` (controller.ts)**
 
 In `parseConfig`, REMOVE the `planner: (cfg.planner === 'adaptive' ? 'adaptive' : 'incremental') as ...` mapping (lines ~67-69). BEFORE building the returned object, add the fail-loud guard:
@@ -488,18 +523,22 @@ npm run -w @mcp-abap-adt/llm-agent-server-libs test
 ```
 Expected: build SUCCESS (no `ControllerConfig.planner` / `makePlanner` / `AdaptivePlanner` / `IncrementalPlanner` references remain in product code); full suite GREEN — report counts. Notes:
 - `plan-analysis.ts` is excluded from BOTH the build (`tsconfig.exclude` lists `src/**/plan-analysis.ts`) and the runner (not a `*.test.ts`), so its stale `makePlanner` reference affects neither — fixed in Task 7 for hygiene.
-- `controller-coordinator-handler.test.ts` carries dead `planner: 'adaptive'` props — harmless under `tsx` (the handler defaults to `'smart-executor'`, the same board behaviour those tests exercised); Task 7 removes them.
+- `controller-coordinator-handler.test.ts` was migrated in Step 2c (incremental `{kind:next}` scripts → plan-first `{plan:[…]}`); the dead `planner: 'adaptive'` props on the few adaptive-shaped tests are removed in Task 7 (those are genuinely harmless — they already used `{plan:[…]}`). All `ControllerCoordinatorHandler` tests must be GREEN here.
 - If the build fails on a residual reference, it names the file — fix it before proceeding (it belongs to this atomic group).
+
+This is the gate: **a non-green suite here is a STOP, not a "proceed and fix later"** — the whole 1-2-3-4 break must land green together (verified against the `main` baseline of 0 failures).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/pipelines/controller.ts \
-        packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts
-git commit -m "feat(controller): fail-loud removal of the planner: config key — closes the clean break (Phase 3)
+        packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts \
+        packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts
+git commit -m "feat(controller): fail-loud planner: removal + migrate handler tests to plan-first — closes the clean break (Phase 3)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
+(The handler-test migration from Step 2c is committed here, with the parser change, since both are needed for the Step 4b green gate.)
 
 ---
 
@@ -633,7 +672,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - [ ] **Step 1: Fix the remaining references**
 
 - **`plan-analysis.ts`** (dev/eval harness — `tsconfig`-excluded from the build AND not a `*.test.ts`, so it broke neither prior checkpoint; fix for hygiene): it imports `makePlanner` and drives `incremental`+`adaptive`. Change the import to `makeControllerPlanner`, and replace the driven kinds with `'smart-executor'` and `'weak-executor'`. Update the file's header comment ("incremental + adaptive" → "smart-executor + weak-executor") and any stub-prompt comment that named `PLANNER_SYSTEM (incremental)`. Both planners are plan-first (`{"plan":[...]}`), so if a stub branch keyed on the incremental single-step `{"kind":"next"}` shape, that branch is dead — remove it. Quick check it still runs: `node --import tsx/esm packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts` (stub mode, no `EVAL_LIVE`) should print its summary without a module/`makePlanner` error.
-- **`controller-coordinator-handler.test.ts`**: remove the dead `planner: 'adaptive'` props from the `config: { ...baseConfig(), planner: 'adaptive' }` fixtures (lines ~1085, 1111, 1155, 1335, 1597, 1634) — the field is gone and the handler defaults to `'smart-executor'` (same board behaviour these tests already exercised). If any test wants to pin the kind explicitly, set `plannerKind: 'smart-executor'` (or `'weak-executor'`) on the handler deps object instead. Do NOT rewrite unrelated assertions.
+- **`controller-coordinator-handler.test.ts`**: the incremental→plan-first SCRIPT migration already happened in Task 4 Step 2c (required for the Step 4b gate). What remains here is hygiene: remove the now-dead `planner: 'adaptive'` props from the `config: { ...baseConfig(), planner: 'adaptive' }` fixtures (lines ~1085, 1111, 1155, 1335, 1597, 1634) — the field is gone and the handler defaults to `'smart-executor'`. If a test wants to pin the kind explicitly, set `plannerKind` on the handler deps object instead. Do NOT rewrite unrelated assertions. (If Step 2c already removed these props while migrating, this is a no-op — just confirm none remain.)
 
 - [ ] **Step 1b: Confirm the sweep is clean**
 
@@ -692,6 +731,6 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Clean-break sequencing (review rounds 2 + 3):** Tasks 1→2→3→4 are ONE atomic break — `tsc` is red from Task 1 (removes `ControllerConfig.planner`) until Task 4 Step 3 (removes the `as ControllerConfig['planner']` cast in `pipelines/controller.ts` parseConfig, the last product-code reference to the removed type). The `tsconfig` EXCLUDES `**/*.test.ts`, `**/__tests__/**`, and `src/**/plan-analysis.ts` from the BUILD, so the build green-checkpoint depends only on PRODUCT code (`types.ts`, `planner.ts`, handler, factory, `controller.ts`). The test RUNNER (`tsx`) imports every `*.test.ts` and strips types, so: (a) every test file referencing a retired symbol must be migrated before a suite run — `planner.test.ts` + `planner.skills.test.ts` + `controller-factory.skills.test.ts` in Task 2 Step 6, `controller.test.ts` parser assertions in Task 4 Step 2b; (b) Task 4's TDD run-fail/run-pass (Steps 2/4) execute under tsx even while `tsc` is red. The FIRST whole-group build+test green checkpoint is **Task 4 Step 4b**. `plan-analysis.ts` (build- AND runner-excluded) and the dead `planner:` props in `controller-coordinator-handler.test.ts` (harmless under tsx) are cleaned in Task 7.
 
-**Review fixes applied:** P1 (round 1) — smart-executor genuinely coarse (granularity clauses + tests). P2 (round 1) — key-only fail-loud. P1 (round 2) — all THREE planner-referencing test files migrated inside Task 2. P2 (round 2) — `SMART_REPLAN_SYSTEM`/`SMART_EXTERNAL_RESULT_REPLAN_SYSTEM` added to the prompt-contract list. P1 (round 3, external) — atomic group corrected to Tasks 1-**4** (the `controller.ts` parser cast keeps `tsc` red until Task 4); green checkpoint moved to Task 4 Step 4b; banners updated. P2 (round 3) — Task 2 Step 8 commit now adds all four migrated files (planner.ts + 3 test files).
+**Review fixes applied:** P1 (round 1) — smart-executor genuinely coarse (granularity clauses + tests). P2 (round 1) — key-only fail-loud. P1 (round 2) — all THREE planner-referencing test files migrated inside Task 2. P2 (round 2) — `SMART_REPLAN_SYSTEM`/`SMART_EXTERNAL_RESULT_REPLAN_SYSTEM` added to the prompt-contract list. P1 (round 3, external) — atomic group corrected to Tasks 1-**4**; green checkpoint moved to Task 4 Step 4b; banners updated. P2 (round 3) — Task 2 Step 8 commit adds all four migrated files. P4 (round 4, external) — Task 5 updates BOTH config.ts diagnostics. **P5 (round 5, EXECUTION-discovered)** — the BULK of `controller-coordinator-handler.test.ts` scripts the deleted incremental planner (`{kind:next}`) and relied on the old incremental default, so the clean break regresses ~25 handler tests (verified: `main` baseline = 0 failures). The earlier "harmless dead props" framing was WRONG. Added Task 4 **Step 2c** — migrate those tests to plan-first `{plan:[…]}` scripts (worked example + run-and-fix procedure) — REQUIRED for the Step 4b gate; corrected the Step 4b / Task 7 notes; the green gate is now an explicit STOP-if-red verified against the `main` 0-failure baseline.
 
 **Ordering note:** Tasks 1→2→3→4 are a contiguous clean-break group (`tsc` red until Task 4 Step 3 removes the `controller.ts` parser cast; first build+test green checkpoint at Task 4 Step 4b). Implement them in order before any green gate. Tasks 5-7 are independently green (each ends with its own passing run).
