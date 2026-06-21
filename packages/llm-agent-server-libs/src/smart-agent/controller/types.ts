@@ -228,7 +228,7 @@ export interface PlannerNextInput {
    *  AUTHORITATIVE step-state context, rendered ADDITIVELY ahead of the
    *  `plannerPrivate` tail (which still carries non-board deltas — clarify answers,
    *  the legacy external result). Empty/absent → the planner uses `plannerPrivate`
-   *  alone (so the decision-less IncrementalPlanner is byte-identical to today). */
+   *  alone (board-less path; prompt byte-identical to the pre-board baseline). */
   boardText?: string;
   logUsage?: (role: string, u?: LlmUsage) => void;
   /** Request-scoped call options (request logger / trace / cancellation signal).
