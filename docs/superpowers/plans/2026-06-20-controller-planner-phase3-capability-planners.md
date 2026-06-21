@@ -22,7 +22,7 @@
 | `src/factories/controller-factory.ts` | `build(config, deps, plannerKind = 'smart-executor')`; thread `plannerKind` into the handler deps. |
 | `src/pipelines/controller.ts` | `ControllerPipelinePlugin` parameterized by `(name, plannerKind)`; `parseConfig` REJECTS a `planner:` key fail-loud; pass `plannerKind` to the factory. |
 | `src/smart-agent/smart-server.ts` | Register BOTH `controller` (smart) and `controller-weak` (weak) built-ins. |
-| `src/smart-agent/config.ts` | Update the built-in pipeline-name diagnostic to list `controller` / `controller-weak`. |
+| `src/smart-agent/config.ts` | Update BOTH pipeline-name diagnostics (~721 + ~1151) + the ~419 comment to list `controller` / `controller-weak`. |
 | `src/pipelines/__tests__/conformance.test.ts` | Add `controller-weak` to the built-in conformance set. |
 | `pipelines/controller.yaml`, `pipelines/controller-mixed.yaml` | Remove the `planner:` line; `controller-mixed` → `name: controller-weak`. |
 | `docs/PIPELINES.md` | Replace the `planner: incremental\|adaptive` doc with the preset model. |
@@ -426,19 +426,21 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ```ts
 test('parseConfig rejects a removed planner: key with a migration message', () => {
+  const plugin = new ControllerPipelinePlugin();
   assert.throws(
-    () => parseConfig({ subagents: { /* minimal valid subagents */ }, planner: 'adaptive' }),
+    () => plugin.parseConfig({ subagents: { /* minimal valid subagents */ }, planner: 'adaptive' }),
     /planner:.*removed|capability is preset-encoded|controller-weak/,
   );
 });
 
 test('parseConfig accepts a controller config with no planner key', () => {
-  const cfg = parseConfig({ subagents: { /* minimal valid subagents */ } });
+  const plugin = new ControllerPipelinePlugin();
+  const cfg = plugin.parseConfig({ subagents: { /* minimal valid subagents */ } });
   // no throw; planner selection is preset-encoded (not on the parsed config)
   assert.ok(!('planner' in cfg));
 });
 ```
-(Reuse the file's existing minimal `subagents` fixture + `parseConfig` access.)
+(Access `parseConfig` via a `ControllerPipelinePlugin` instance — there is no standalone `parseConfig` export; the existing tests in this file (e.g. `plugin.parseConfig(base)`) use that exact access. After Task 3 the constructor is `new ControllerPipelinePlugin('controller', 'smart-executor')` — the no-arg form defaults to those, so either works here. Reuse the file's existing minimal `subagents` fixture.)
 
 - [ ] **Step 2: Run — verify FAIL**
 
@@ -519,13 +521,21 @@ In the built-in pipeline array (currently `new ControllerPipelinePlugin()`), rep
 ```
 (`PlannerKind` is a string literal here — the plugin constructor signature from Task 3 Step 3.)
 
-- [ ] **Step 2: Update the built-in name diagnostic (config.ts ~line 721)**
+- [ ] **Step 2: Update BOTH pipeline-name diagnostics (config.ts ~721 AND ~1151)**
 
-The shape-error message lists built-ins as `flat, linear, dag, stepper`. Append the controller presets so an unknown-name diagnostic is accurate:
+`config.ts` has TWO user-facing `pipeline:` diagnostics — both fire on a missing/non-string `name` (a shape error) and both list the built-ins as an example. They must be updated TOGETHER for consistency (today NEITHER lists `controller`, which falls under "a registered plugin" — Phase 3 makes the controller presets first-class, so name them in both):
+
+Diagnostic #1 (~line 721):
 ```ts
         "pipeline: requires a 'name' (string, or { name, config }); built-ins: flat, linear, dag, stepper, controller, controller-weak",
 ```
+Diagnostic #2 (~line 1151) — keep its `or a registered plugin` suffix (other plugins still resolve):
+```ts
+          "pipeline: requires a 'name' (one of: flat, linear, dag, stepper, controller, controller-weak, or a registered plugin)",
+```
 (Also update the comment at config.ts ~line 419 `# flat (default) | linear | dag | stepper | <plugin>` → add `| controller | controller-weak`.)
+
+> These are SHAPE-error hints, not the unknown-NAME resolver (that lives in the `SmartServer` registry lookup — Step 1). Listing the presets here is for user discoverability; the authoritative name resolution is the registry (Step 1) + the conformance test (Step 3).
 
 - [ ] **Step 3: Add `controller-weak` to the conformance test (conformance.test.ts)**
 
@@ -670,7 +680,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 - `PlannerKind = 'smart-executor' | 'weak-executor'`, `makePlanner`→`makeControllerPlanner` → Task 1, Task 2. ✓
 - Fail-loud removal of `planner:` (no alias) → Task 4. ✓ (review P2: rejects the `planner` KEY only; the spec's "anywhere" value-scan is intentionally dropped — false-positive risk on legit values; noted in Task 4 scope.)
 - Files the spec lists (types, planner, controller.ts parser, controller.yaml + controller-mixed.yaml, factory, tests/examples, PIPELINES.md) → Tasks 1-7. ✓
-- Register `controller-weak` NAME in the built-in registry + name parsing/diagnostics + conformance test → Task 5. ✓
+- Register `controller-weak` NAME in the built-in registry + name parsing/diagnostics + conformance test → Task 5. ✓ (review round 4: Task 5 Step 2 updates BOTH config.ts shape-error diagnostics — ~721 and ~1151 — not just one, so neither stays stale; the authoritative name resolution remains the registry + conformance test.)
 - Strong guarantee (preset-pinned executor); `declaredCapability` DEFERRED → honored (no such field added; out-of-scope note). ✓
 - Incidental `server-context.ts` comment cleanup → already DONE (PR #186); not re-opened. ✓
 
