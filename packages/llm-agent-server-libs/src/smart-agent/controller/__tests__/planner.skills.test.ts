@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import type { CallOptions } from '@mcp-abap-adt/llm-agent';
-import { AdaptivePlanner, IncrementalPlanner } from '../planner.js';
+import { SmartExecutorPlanner, WeakExecutorPlanner } from '../planner.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import type { SessionBundle } from '../types.js';
 
@@ -32,18 +32,14 @@ function recordingClient(reply: string): {
 const PLAN_REPLY = JSON.stringify({
   plan: [{ name: 's1', instructions: 'fetch A' }],
 });
-const STEP_REPLY = JSON.stringify({
-  kind: 'next',
-  step: { name: 's1', instructions: 'do' },
-});
 
 const SKILLS_BLOCK = 'Relevant skills:\n- X';
 const skillsStub = async () => SKILLS_BLOCK;
 
-describe('AdaptivePlanner skills recall injection', () => {
+describe('SmartExecutorPlanner skills recall injection', () => {
   it('injects the recall block into the create-plan user message', async () => {
     const { client, userMsg } = recordingClient(PLAN_REPLY);
-    await new AdaptivePlanner(client, undefined, skillsStub).next({
+    await new SmartExecutorPlanner(client, undefined, skillsStub).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -56,13 +52,13 @@ describe('AdaptivePlanner skills recall injection', () => {
     const without = recordingClient(PLAN_REPLY);
     const emptyHook = recordingClient(PLAN_REPLY);
 
-    await new AdaptivePlanner(without.client).next({
+    await new SmartExecutorPlanner(without.client).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
     });
     // A hook that returns '' must ALSO yield the byte-identical agnostic prompt.
-    await new AdaptivePlanner(emptyHook.client, undefined, async () => '').next(
+    await new SmartExecutorPlanner(emptyHook.client, undefined, async () => '').next(
       {
         bundle: bundle(),
         prompt: 'r',
@@ -71,7 +67,7 @@ describe('AdaptivePlanner skills recall injection', () => {
     );
     // And a present, non-empty hook must DIFFER (sanity that we are comparing
     // something meaningful).
-    await new AdaptivePlanner(withHook.client, undefined, skillsStub).next({
+    await new SmartExecutorPlanner(withHook.client, undefined, skillsStub).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -82,10 +78,10 @@ describe('AdaptivePlanner skills recall injection', () => {
   });
 });
 
-describe('IncrementalPlanner skills recall injection', () => {
+describe('WeakExecutorPlanner skills recall injection', () => {
   it('injects the recall block into the planner user message', async () => {
-    const { client, userMsg } = recordingClient(STEP_REPLY);
-    await new IncrementalPlanner(client, undefined, skillsStub).next({
+    const { client, userMsg } = recordingClient(PLAN_REPLY);
+    await new WeakExecutorPlanner(client, undefined, skillsStub).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -94,15 +90,15 @@ describe('IncrementalPlanner skills recall injection', () => {
   });
 
   it('is byte-identical to the agnostic prompt when skillsRecall is absent', async () => {
-    const without = recordingClient(STEP_REPLY);
-    const emptyHook = recordingClient(STEP_REPLY);
+    const without = recordingClient(PLAN_REPLY);
+    const emptyHook = recordingClient(PLAN_REPLY);
 
-    await new IncrementalPlanner(without.client).next({
+    await new WeakExecutorPlanner(without.client).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
     });
-    await new IncrementalPlanner(
+    await new WeakExecutorPlanner(
       emptyHook.client,
       undefined,
       async () => '',
@@ -123,14 +119,14 @@ describe('skills recall receives the request CallOptions', () => {
     trace: { traceId: 'sentinel-trace' },
   } as unknown as CallOptions;
 
-  it('AdaptivePlanner threads input.options into skillsRecall (create-plan)', async () => {
+  it('SmartExecutorPlanner threads input.options into skillsRecall (create-plan)', async () => {
     const { client } = recordingClient(PLAN_REPLY);
     let seen: CallOptions | undefined;
     const spy = async (_goal: string, options?: CallOptions) => {
       seen = options;
       return SKILLS_BLOCK;
     };
-    await new AdaptivePlanner(client, undefined, spy).next({
+    await new SmartExecutorPlanner(client, undefined, spy).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -139,14 +135,14 @@ describe('skills recall receives the request CallOptions', () => {
     assert.equal(seen, SENTINEL);
   });
 
-  it('IncrementalPlanner threads input.options into skillsRecall', async () => {
-    const { client } = recordingClient(STEP_REPLY);
+  it('WeakExecutorPlanner threads input.options into skillsRecall', async () => {
+    const { client } = recordingClient(PLAN_REPLY);
     let seen: CallOptions | undefined;
     const spy = async (_goal: string, options?: CallOptions) => {
       seen = options;
       return SKILLS_BLOCK;
     };
-    await new IncrementalPlanner(client, undefined, spy).next({
+    await new WeakExecutorPlanner(client, undefined, spy).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,

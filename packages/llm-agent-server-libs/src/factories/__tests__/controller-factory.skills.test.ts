@@ -7,7 +7,7 @@ import type {
 } from '@mcp-abap-adt/llm-agent';
 import type { ControllerHandlerDeps } from '../../smart-agent/controller/controller-coordinator-handler.js';
 import { ControllerCoordinatorHandler } from '../../smart-agent/controller/controller-coordinator-handler.js';
-import { makePlanner } from '../../smart-agent/controller/planner.js';
+import { makeControllerPlanner } from '../../smart-agent/controller/planner.js';
 import type { ISubagentClient } from '../../smart-agent/controller/subagent-client.js';
 import type {
   ControllerConfig,
@@ -38,7 +38,6 @@ const config: ControllerConfig = {
     planner: { provider: 'x', model: 'm-plan' },
     executor: { provider: 'x', model: 'm-exec' },
   } as never,
-  planner: 'adaptive',
   targetState: { strategy: 'consumer-confirm', distanceThreshold: 0.5 },
   sessionMemory: { collection: 'c' },
   budgets: { maxSteps: 5, maxRetries: 2, maxRewinds: 2 },
@@ -70,7 +69,7 @@ test('factory threads skillsRecall into the handler deps; the planner invokes it
   assert.equal(typeof deps.skillsRecall, 'function');
 
   // And the planner the handler builds invokes it during create-plan: drive the
-  // same construction path the handler uses (makePlanner with deps.skillsRecall).
+  // same construction path the handler uses (makeControllerPlanner with deps.skillsRecall).
   let userMsg = '';
   const recording: ISubagentClient = {
     async send(messages) {
@@ -82,8 +81,8 @@ test('factory threads skillsRecall into the handler deps; the planner invokes it
       };
     },
   };
-  const planner = makePlanner(
-    'adaptive',
+  const planner = makeControllerPlanner(
+    'smart-executor',
     recording,
     undefined,
     deps.skillsRecall,

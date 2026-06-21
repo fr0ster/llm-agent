@@ -4,10 +4,7 @@ import {
   mintReplanStepIds,
   type PlanDecision,
 } from './artifacts.js';
-import {
-  extractJsonObject,
-  parseNextStep,
-} from './controller-coordinator-handler.js';
+import { extractJsonObject } from './controller-coordinator-handler.js';
 import { appendHint } from './prompts.js';
 import type { ISubagentClient } from './subagent-client.js';
 import {
@@ -37,28 +34,6 @@ export const ENGLISH_INSTRUCTIONS_RULE =
   `≤ ${MAX_REQUIRE_CHARS} chars) — not pasted content. (The user-facing answer is ` +
   "composed separately in the user's language.)";
 
-export const PLANNER_SYSTEM =
-  'You are the planner. Given the goal and progress, return a SINGLE JSON ' +
-  'object: {"kind":"next","step":{"name":...,"instructions":...}} to take the ' +
-  'next step, {"kind":"done","result":...} when the goal is met, or ' +
-  '{"kind":"rewind","reason":...} to discard the current path. Output JSON only.\n' +
-  'An executor carries out each step against the live target system using tools. ' +
-  'Describe each step by INTENT — WHAT to fetch or do — in plain language. Do ' +
-  'NOT choose, name, or assume a specific tool (no tool names in the step); the ' +
-  'executor selects the right tool for the step. Any fact about the system MUST ' +
-  'be obtained by planning a step that fetches it with a tool — do NOT answer ' +
-  'from prior knowledge, and do NOT mark the goal "done" until the required data ' +
-  'has actually been fetched (fetched results appear under Progress). Until then, ' +
-  'return a concrete "next" fetch step. ' +
-  'Keep each step MINIMAL and do NOT broaden the scope beyond what the goal asks, ' +
-  'at the granularity it asks: a LIST/SHOW/find request is satisfied by the list ' +
-  'itself — do NOT plan a step that fetches the full details of every listed item ' +
-  'unless the goal explicitly asks for per-item details.' +
-  ENGLISH_INSTRUCTIONS_RULE;
-
-const RETRY_HINT =
-  '\nIMPORTANT: your previous reply was NOT valid JSON. Reply with ONLY the raw ' +
-  'JSON object — no prose, no explanation, no markdown code fences.';
 
 /**
  * Controller-own skills recall hook (B4). Given the goal, returns a bounded,
@@ -80,46 +55,11 @@ function withSkillsBlock(userContent: string, block: string): string {
 /** The planner's progress context. With a live board, render the AUTHORITATIVE
  *  structured board AND the plannerPrivate tail — the latter carries non-board
  *  deltas the planner still needs (clarify answers, legacy external-tool result).
- *  An empty board (decision-less IncrementalPlanner) → plannerPrivate alone,
- *  byte-identical to the legacy prompt. */
+ *  An empty board → plannerPrivate alone, byte-identical to the legacy prompt. */
 function progressBlock(bundle: SessionBundle, boardText?: string): string {
   return boardText && boardText.length > 0
     ? `${boardText}\n${bundle.plannerPrivate}`
     : bundle.plannerPrivate;
-}
-
-export class IncrementalPlanner implements IControllerPlanner {
-  constructor(
-    private readonly planner: ISubagentClient,
-    /** Optional consumer domain hint appended to the agnostic planner prompt. */
-    private readonly hint?: string,
-    /** Optional controller-own skills recall hook (B4). */
-    private readonly skillsRecall?: SkillsRecall,
-  ) {}
-
-  async next(input: PlannerNextInput): Promise<NextStep | null> {
-    const { bundle, prompt, retrying, logUsage, options, boardText } = input;
-    const block = this.skillsRecall
-      ? await this.skillsRecall(bundle.goal, options)
-      : '';
-    const res = await this.planner.send([
-      {
-        role: 'system',
-        content:
-          appendHint(PLANNER_SYSTEM, this.hint) + (retrying ? RETRY_HINT : ''),
-      },
-      {
-        role: 'user',
-        content: withSkillsBlock(
-          `Goal: ${bundle.goal}\nProgress:${progressBlock(bundle, boardText)}\nRequest: ${prompt}`,
-          block,
-        ),
-      },
-    ]);
-    logUsage?.('planner', res.usage);
-    if (res.kind !== 'content') return null;
-    return parseNextStep(res.content);
-  }
 }
 
 export const CREATE_PLAN_SYSTEM =
@@ -175,6 +115,38 @@ export const EXTERNAL_RESULT_REPLAN_SYSTEM =
   'the result, return {"plan":[]}. Output JSON only.' +
   ENGLISH_INSTRUCTIONS_RULE;
 
+/** Smart-executor granularity clause (§C). A capable executor can self-expand a
+ *  coarse step inside its own tool-loop, so the planner MAY plan coarse. Clarifies
+ *  that the base's "one concrete action" means one INTENT — a coarse batch step is
+ *  one intent, not a planner-side per-item fan-out. AGNOSTIC: no tool names. */
+const SMART_GRANULARITY =
+  ' GRANULARITY (smart executor): a step MAY be COARSE — a single intent that ' +
+  'covers a set of related items (e.g. "read every item referenced by the prior ' +
+  'result"); a capable executor enumerates and processes each item WITHIN ITS OWN ' +
+  'tool-loop, and control returns to the reviewer after the coarse step. This does ' +
+  'NOT violate "one concrete action": a coarse batch is ONE intent. PREFER fewer ' +
+  'coarse steps over enumerating items yourself.';
+
+/** Weak-executor granularity clause (§C). A weak executor cannot be trusted to
+ *  self-expand, so every step is exactly one atomic action. (Deferred discovery
+ *  fan-out for plan-time-unknowable batches — §D — is Phase 4; in Phase 3 the weak
+ *  planner just plans the finest grain it can.) AGNOSTIC: no tool names. */
+const WEAK_GRANULARITY =
+  ' GRANULARITY (weak executor): each step is EXACTLY ONE ATOMIC action the ' +
+  'executor performs in a SINGLE tool use. NEVER emit a coarse/batch step and ' +
+  'NEVER rely on the executor to self-expand a step — the executor handles one ' +
+  'action at a time; if work spans several actions, emit that many steps.';
+
+export const SMART_CREATE_PLAN_SYSTEM = CREATE_PLAN_SYSTEM + SMART_GRANULARITY;
+export const SMART_REPLAN_SYSTEM = REPLAN_SYSTEM + SMART_GRANULARITY;
+export const SMART_EXTERNAL_RESULT_REPLAN_SYSTEM =
+  EXTERNAL_RESULT_REPLAN_SYSTEM + SMART_GRANULARITY;
+
+export const WEAK_CREATE_PLAN_SYSTEM = CREATE_PLAN_SYSTEM + WEAK_GRANULARITY;
+export const WEAK_REPLAN_SYSTEM = REPLAN_SYSTEM + WEAK_GRANULARITY;
+export const WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM =
+  EXTERNAL_RESULT_REPLAN_SYSTEM + WEAK_GRANULARITY;
+
 const FINALIZE_SYSTEM =
   'All planned steps are complete. Using the progress below (the fetched results), ' +
   'write the final answer to the user request. Plain text, no JSON.';
@@ -218,7 +190,7 @@ function recordDecision(bundle: SessionBundle, decision: PlanDecision): void {
   bundle.pendingPlanDecisions.push(decision);
 }
 
-export class AdaptivePlanner implements IControllerPlanner {
+export class SmartExecutorPlanner implements IControllerPlanner {
   // No budget field: replans are bounded by the loop's maxSteps (a failed step
   // bumps stepsUsed in runStep). Replan-specific budgeting is the deferred
   // "limits as a selectable strategy" work.
@@ -231,6 +203,17 @@ export class AdaptivePlanner implements IControllerPlanner {
      *  create-plan/replan; its block is injected into the user message. */
     private readonly skillsRecall?: SkillsRecall,
   ) {}
+
+  /** Prompt seam — overridden by WeakExecutorPlanner for atomic granularity (§C). */
+  protected get createPlanSystem(): string {
+    return SMART_CREATE_PLAN_SYSTEM;
+  }
+  protected get replanSystem(): string {
+    return SMART_REPLAN_SYSTEM;
+  }
+  protected get externalResultReplanSystem(): string {
+    return SMART_EXTERNAL_RESULT_REPLAN_SYSTEM;
+  }
 
   async next(input: PlannerNextInput): Promise<NextStep | null> {
     const {
@@ -247,7 +230,7 @@ export class AdaptivePlanner implements IControllerPlanner {
     // 1. No plan yet → create it.
     if (!bundle.plan) {
       const plan = await this.callPlan(
-        CREATE_PLAN_SYSTEM,
+        this.createPlanSystem,
         bundle,
         prompt,
         retrying,
@@ -283,8 +266,8 @@ export class AdaptivePlanner implements IControllerPlanner {
       resumedExternal
     ) {
       const system = resumedExternal
-        ? EXTERNAL_RESULT_REPLAN_SYSTEM
-        : REPLAN_SYSTEM;
+        ? this.externalResultReplanSystem
+        : this.replanSystem;
       const cursor = bundle.planCursor ?? 0;
       // Steps before the cursor already ran successfully — pass them so the replan
       // plans only the remaining work and never repeats a completed step.
@@ -414,13 +397,28 @@ export class AdaptivePlanner implements IControllerPlanner {
   }
 }
 
-export function makePlanner(
+/** Weak-executor planner (§C): the same plan-first engine as SmartExecutorPlanner,
+ *  but with the finest-grain create/replan prompts (one action per step). Phase 4
+ *  adds deferred discovery expansion to this class; Phase 3 differs only by prompt. */
+export class WeakExecutorPlanner extends SmartExecutorPlanner {
+  protected override get createPlanSystem(): string {
+    return WEAK_CREATE_PLAN_SYSTEM;
+  }
+  protected override get replanSystem(): string {
+    return WEAK_REPLAN_SYSTEM;
+  }
+  protected override get externalResultReplanSystem(): string {
+    return WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM;
+  }
+}
+
+export function makeControllerPlanner(
   kind: PlannerKind,
   planner: ISubagentClient,
   hint?: string,
   skillsRecall?: SkillsRecall,
 ): IControllerPlanner {
-  return kind === 'adaptive'
-    ? new AdaptivePlanner(planner, hint, skillsRecall)
-    : new IncrementalPlanner(planner, hint, skillsRecall);
+  return kind === 'weak-executor'
+    ? new WeakExecutorPlanner(planner, hint, skillsRecall)
+    : new SmartExecutorPlanner(planner, hint, skillsRecall);
 }
