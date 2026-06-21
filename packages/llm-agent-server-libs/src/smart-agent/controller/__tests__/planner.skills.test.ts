@@ -58,20 +58,24 @@ describe('SmartExecutorPlanner skills recall injection', () => {
       retrying: false,
     });
     // A hook that returns '' must ALSO yield the byte-identical agnostic prompt.
-    await new SmartExecutorPlanner(emptyHook.client, undefined, async () => '').next(
+    await new SmartExecutorPlanner(
+      emptyHook.client,
+      undefined,
+      async () => '',
+    ).next({
+      bundle: bundle(),
+      prompt: 'r',
+      retrying: false,
+    });
+    // And a present, non-empty hook must DIFFER (sanity that we are comparing
+    // something meaningful).
+    await new SmartExecutorPlanner(withHook.client, undefined, skillsStub).next(
       {
         bundle: bundle(),
         prompt: 'r',
         retrying: false,
       },
     );
-    // And a present, non-empty hook must DIFFER (sanity that we are comparing
-    // something meaningful).
-    await new SmartExecutorPlanner(withHook.client, undefined, skillsStub).next({
-      bundle: bundle(),
-      prompt: 'r',
-      retrying: false,
-    });
 
     assert.equal(emptyHook.userMsg(), without.userMsg());
     assert.notEqual(withHook.userMsg(), without.userMsg());

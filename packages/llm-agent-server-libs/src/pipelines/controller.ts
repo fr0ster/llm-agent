@@ -7,7 +7,10 @@ import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
-import type { ControllerConfig, PlannerKind } from '../smart-agent/controller/types.js';
+import type {
+  ControllerConfig,
+  PlannerKind,
+} from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
@@ -70,11 +73,17 @@ export class ControllerPipelinePlugin
     >;
     const budgetsRaw = (cfg.budgets ?? {}) as Record<string, unknown>;
 
+    if ('planner' in (cfg as Record<string, unknown>)) {
+      throw new Error(
+        'controller: `planner:` removed — capability is preset-encoded. Select ' +
+          'pipeline: { name: controller } (smart-executor) or ' +
+          '{ name: controller-weak } (weak-executor), or pass `kind` to ' +
+          'makeControllerPlanner. No `planner:` alias exists.',
+      );
+    }
+
     return {
       subagents: subagents as ControllerConfig['subagents'],
-      planner: (cfg.planner === 'adaptive'
-        ? 'adaptive'
-        : 'incremental') as ControllerConfig['planner'],
       targetState: {
         strategy: 'auto',
         distanceThreshold: 0.25,

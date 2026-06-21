@@ -4,6 +4,7 @@ import {
   CREATE_PLAN_SYSTEM,
   ENGLISH_INSTRUCTIONS_RULE,
   EXTERNAL_RESULT_REPLAN_SYSTEM,
+  makeControllerPlanner,
   REPLAN_SYSTEM,
   SMART_CREATE_PLAN_SYSTEM,
   SMART_EXTERNAL_RESULT_REPLAN_SYSTEM,
@@ -13,7 +14,6 @@ import {
   WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM,
   WEAK_REPLAN_SYSTEM,
   WeakExecutorPlanner,
-  makeControllerPlanner,
 } from '../planner.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import {
@@ -54,7 +54,10 @@ const newBundle = (opts: {
 
 const recordingFakeClient = (
   replies: string[],
-): ISubagentClient & { lastUserContent: () => string; lastSystemContent: () => string } => {
+): ISubagentClient & {
+  lastUserContent: () => string;
+  lastSystemContent: () => string;
+} => {
   let _lastUserContent = '';
   let _lastSystemContent = '';
   return {
@@ -119,7 +122,6 @@ test('SmartExecutorPlanner replan mints anchored stepIds + records a replan deci
   assert.equal(dec?.steps[0].supersedesStepId, anchor);
   assert.notEqual(dec?.steps[0].stepId, anchor);
 });
-
 
 describe('SmartExecutorPlanner', () => {
   it('first call creates the full plan and returns step 0', async () => {
@@ -302,7 +304,9 @@ describe('SmartExecutorPlanner', () => {
 
   it('finalizer non-content reply → null (retry, not a fake "completed")', async () => {
     // plan present + cursor at end + no failure → stepAtCursor → finalize.
-    const p = new SmartExecutorPlanner(planner([{ kind: 'error', error: 'boom' }]));
+    const p = new SmartExecutorPlanner(
+      planner([{ kind: 'error', error: 'boom' }]),
+    );
     const b: SessionBundle = {
       ...bundle(),
       plan: [{ name: 's1', instructions: 'do' }],
@@ -664,8 +668,14 @@ describe('parsePlan requires validation (via SmartExecutorPlanner.next)', () => 
 
 test('makeControllerPlanner returns the kind-matched implementation', () => {
   const client = fakeClient([]);
-  assert.ok(makeControllerPlanner('smart-executor', client) instanceof SmartExecutorPlanner);
-  assert.ok(makeControllerPlanner('weak-executor', client) instanceof WeakExecutorPlanner);
+  assert.ok(
+    makeControllerPlanner('smart-executor', client) instanceof
+      SmartExecutorPlanner,
+  );
+  assert.ok(
+    makeControllerPlanner('weak-executor', client) instanceof
+      WeakExecutorPlanner,
+  );
 });
 
 test('WeakExecutorPlanner create-plan prompt demands ONE ATOMIC action per step (coarse forbidden)', async () => {

@@ -34,7 +34,6 @@ export const ENGLISH_INSTRUCTIONS_RULE =
   `≤ ${MAX_REQUIRE_CHARS} chars) — not pasted content. (The user-facing answer is ` +
   "composed separately in the user's language.)";
 
-
 /**
  * Controller-own skills recall hook (B4). Given the goal, returns a bounded,
  * pre-formatted "Relevant skills" block (or '' when there is nothing to inject).

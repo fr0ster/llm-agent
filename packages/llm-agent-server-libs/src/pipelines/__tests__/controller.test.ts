@@ -43,20 +43,33 @@ describe('ControllerPipelinePlugin', () => {
     );
   });
 
-  it('parseConfig defaults planner to incremental and preserves an explicit choice', () => {
+  it('parseConfig rejects a removed planner: key with a migration message', () => {
     const plugin = new ControllerPipelinePlugin();
-    const base = {
+    assert.throws(
+      () =>
+        plugin.parseConfig({
+          subagents: {
+            evaluator: { provider: 'openai' },
+            planner: { provider: 'openai' },
+            executor: { provider: 'openai' },
+          },
+          planner: 'adaptive',
+        }),
+      /planner:.*removed|capability is preset-encoded|controller-weak/,
+    );
+  });
+
+  it('parseConfig accepts a controller config with no planner key', () => {
+    const plugin = new ControllerPipelinePlugin();
+    const cfg = plugin.parseConfig({
       subagents: {
         evaluator: { provider: 'openai' },
         planner: { provider: 'openai' },
         executor: { provider: 'openai' },
       },
-    };
-    assert.equal(plugin.parseConfig(base).planner, 'incremental');
-    assert.equal(
-      plugin.parseConfig({ ...base, planner: 'adaptive' }).planner,
-      'adaptive',
-    );
+    });
+    // no throw; planner selection is preset-encoded (not on the parsed config)
+    assert.ok(!('planner' in cfg));
   });
 
   it('parseConfig defaults the board-budget knobs', () => {
