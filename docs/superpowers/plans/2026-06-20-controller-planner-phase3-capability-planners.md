@@ -32,7 +32,7 @@
 
 ## Task 1: PlannerKind values + remove `ControllerConfig.planner` + handler dep (types.ts)
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP — Tasks 1, 2, 3.** Do NOT run the package build or test suite between these three tasks: the break leaves the package un-importable in intermediate states (the handler still calls `makePlanner` until Task 3). The single build+test green checkpoint is **Task 3 Step 4**. (Per-step grep checks within Tasks 1-2 are fine; a `npm … test` run is not.)
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP — Tasks 1, 2, 3, 4.** Do NOT run the package build or test suite between these four tasks: the break leaves PRODUCT code inconsistent in intermediate states — the handler calls `makePlanner` until Task 3, AND `pipelines/controller.ts` parseConfig still casts `as ControllerConfig['planner']` (a now-removed type) until Task 4, so `tsc` fails until Task 4 closes the parser. The single build+test green checkpoint is **Task 4 Step 4**. (Per-step grep checks within Tasks 1-3 are fine; a `npm run build` / `npm … test` run is not.)
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts`
@@ -109,7 +109,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 2: Two planners — delete Incremental, SmartExecutor + WeakExecutor, makeControllerPlanner (planner.ts)
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 2 of 1-2-3).** No `npm … test` run in this task — the handler still calls `makePlanner` until Task 3, and the tsx runner imports every `*.test.ts`, so a suite run here crashes on import. Migrate the test files (Step 6), grep-verify (Step 7), commit (Step 8); the green checkpoint is Task 3 Step 4.
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 2 of 1-2-3-4).** No `npm run build` / `npm … test` run in this task — the handler still calls `makePlanner` (Task 3) and `controller.ts` still casts the removed type (Task 4). Migrate the test files (Step 6), grep-verify (Step 7), commit (Step 8); the green checkpoint is Task 4 Step 4.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts`
@@ -308,17 +308,20 @@ Expected: no matches (these files are fully migrated; the handler — fixed in T
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts \
-        packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts
+        packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts \
+        packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.skills.test.ts \
+        packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.skills.test.ts
 git commit -m "feat(controller): SmartExecutor/WeakExecutor planners; retire IncrementalPlanner; makeControllerPlanner (Phase 3)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
+(All FOUR files migrated in this task — planner.ts + the three test files from Step 6 — are committed together.)
 
 ---
 
 ## Task 3: Thread `plannerKind` through handler + factory + plugin
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 3 of 1-2-3) — closes the break.** Step 1 removes the handler's last `makePlanner` reference; Step 4 is the FIRST build+test green checkpoint of the whole group.
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 3 of 1-2-3-4).** Step 1 removes the handler's last `makePlanner` reference — but the build is STILL red after this task because `pipelines/controller.ts` parseConfig casts `as ControllerConfig['planner']` (removed type) until Task 4. Do NOT expect a green build here; the green checkpoint is Task 4 Step 4.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
@@ -387,17 +390,12 @@ Then pass the kind into the factory call (the `await new ControllerFactory().bui
 
 > If `ControllerPipelinePlugin` already has a constructor or class fields initialized inline, fold these into it consistently — read the current class head before editing.
 
-- [ ] **Step 4: Build + run the suite — the clean break is now complete and should be GREEN**
+- [ ] **Step 4: Verify the handler reference is gone — but DO NOT expect a green build yet**
 
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs build`
-Expected: SUCCESS. The clean break (Tasks 1-3) is now type-complete in PRODUCT code: no references to `makePlanner`, `AdaptivePlanner`, `IncrementalPlanner`, `ControllerConfig.planner`, or `PlannerKind = incremental|adaptive` remain. If the build still fails, the error names the last stale reference — fix it (it belongs to this task's threading).
+The handler no longer calls `makePlanner`. But `pipelines/controller.ts` parseConfig STILL casts `as ControllerConfig['planner']` (a type removed in Task 1), so `tsc` is still red until Task 4. Do NOT run `npm run build`/`npm test` for a green result here. Just confirm the handler is migrated:
 
-Then run the full package suite (now that the handler loads):
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test`
-Expected: GREEN, and report the counts. Notes:
-- `plan-analysis.ts` is **excluded from BOTH** the build (`tsconfig.exclude` lists `src/**/plan-analysis.ts`) and the test runner (it is not a `*.test.ts`), so its stale `makePlanner` reference affects NEITHER this build NOR this test run — it is a manual dev/eval harness, fixed in Task 7 for hygiene only.
-- The three planner test files were migrated in Task 2, so they import cleanly now. `controller-coordinator-handler.test.ts` carries some stale `planner: 'adaptive'` config props — harmless at runtime (tsx strips types; the handler ignores the removed field and defaults to `'smart-executor'`, which IS the old adaptive/board behaviour), so those tests still pass; Task 7 removes the dead props.
-- `controller.test.ts` (pipelines) still asserts the OLD `parseConfig(...).planner` mapping (lines ~55-58) and still PASSES here because `parseConfig` is unchanged until Task 4 — Task 4 updates those assertions when it flips the parser to fail-loud.
+Run: `grep -n "makePlanner\|deps.config.planner" packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
+Expected: no matches (the handler uses `makeControllerPlanner(deps.plannerKind ?? 'smart-executor', …)`). The whole-group green checkpoint is **Task 4 Step 4**, after the parser cast is removed.
 
 - [ ] **Step 5: Commit**
 
@@ -413,6 +411,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ---
 
 ## Task 4: Fail-loud removal of the `planner:` config key (controller.ts parser)
+
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 4 of 1-2-3-4) — CLOSES the break.** Step 3 removes the `as ControllerConfig['planner']` cast (the last reference to the removed type) → `tsc` goes green. Step 4b is the FIRST whole-group build+test green checkpoint. (Steps 1-2 run individual tests under `tsx`, which strips types, so they work even while `tsc` is still red.)
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/pipelines/controller.ts`
@@ -443,7 +443,7 @@ test('parseConfig accepts a controller config with no planner key', () => {
 - [ ] **Step 2: Run — verify FAIL**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="removed planner|no planner key"`
-Expected: FAIL — `parseConfig` currently maps `planner` instead of rejecting it.
+Expected: FAIL — `parseConfig` currently maps `planner` instead of rejecting it. (This runs under `tsx`, which strips types, so it executes even though `tsc` build is still red from the Task-1 type removal — the run-fail is a genuine logic fail, not a compile error.)
 
 - [ ] **Step 2b: Remove the stale `.planner` assertions in controller.test.ts**
 
@@ -470,19 +470,31 @@ In `parseConfig`, REMOVE the `planner: (cfg.planner === 'adaptive' ? 'adaptive' 
       );
     }
 ```
-(The returned config object no longer has a `planner` field — it was removed from `ControllerConfig` in Task 1.)
+(The returned config object no longer has a `planner` field — it was removed from `ControllerConfig` in Task 1.) **Removing this mapping ALSO removes the `as ControllerConfig['planner']` cast — the last product-code reference to the removed type — so `tsc` now compiles.** This is the edit that closes the atomic break.
 
-- [ ] **Step 4: Run — verify PASS**
+- [ ] **Step 4: Run the targeted tests — verify PASS**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="removed planner|no planner key"`
 Expected: PASS (2 tests).
+
+- [ ] **Step 4b: WHOLE-GROUP green checkpoint (first build + full suite of the 1-2-3-4 break)**
+
+Now that the parser cast is gone, the package compiles and the suite is consistent:
+```bash
+npm run -w @mcp-abap-adt/llm-agent-server-libs build
+npm run -w @mcp-abap-adt/llm-agent-server-libs test
+```
+Expected: build SUCCESS (no `ControllerConfig.planner` / `makePlanner` / `AdaptivePlanner` / `IncrementalPlanner` references remain in product code); full suite GREEN — report counts. Notes:
+- `plan-analysis.ts` is excluded from BOTH the build (`tsconfig.exclude` lists `src/**/plan-analysis.ts`) and the runner (not a `*.test.ts`), so its stale `makePlanner` reference affects neither — fixed in Task 7 for hygiene.
+- `controller-coordinator-handler.test.ts` carries dead `planner: 'adaptive'` props — harmless under `tsx` (the handler defaults to `'smart-executor'`, the same board behaviour those tests exercised); Task 7 removes them.
+- If the build fails on a residual reference, it names the file — fix it before proceeding (it belongs to this atomic group).
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/pipelines/controller.ts \
         packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts
-git commit -m "feat(controller): fail-loud removal of the planner: config key (Phase 3)
+git commit -m "feat(controller): fail-loud removal of the planner: config key — closes the clean break (Phase 3)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
@@ -668,8 +680,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Type consistency:** `PlannerKind` (Task 1) is consumed by `makeControllerPlanner` (Task 2), `ControllerHandlerDeps.plannerKind` (Task 1/handler), `ControllerFactory.build`'s 3rd param (Task 3), and the `ControllerPipelinePlugin` constructor (Task 3). `makeControllerPlanner` replaces `makePlanner` everywhere (Task 2 def, Task 3 handler call). `SmartExecutorPlanner`/`WeakExecutorPlanner` names are used consistently in Task 2 (def), Task 2 Step 6 (tests across planner.test + planner.skills + factory-skills), Task 5 (registry via the plugin, not the class). The build is intentionally red across Tasks 1-2 and green from Task 3 Step 4 onward — noted in each task.
 
-**Clean-break sequencing (review round 2):** Tasks 1→2→3 are ONE atomic break. The `tsconfig` EXCLUDES `**/*.test.ts`, `**/__tests__/**`, and `src/**/plan-analysis.ts` from the BUILD — so the build green-checkpoint (Task 3 Step 4) depends only on PRODUCT code consistency. But the test RUNNER (`tsx`) imports every `*.test.ts`, so EVERY test file referencing a retired symbol must be migrated before a suite run: `planner.test.ts` + `planner.skills.test.ts` + `controller-factory.skills.test.ts` in Task 2 Step 6, `controller.test.ts` parser assertions in Task 4 Step 2b. `plan-analysis.ts` (build- AND runner-excluded) and the dead `planner:` props in `controller-coordinator-handler.test.ts` (harmless under tsx type-stripping) are cleaned in Task 7. So there is no intermediate state where the suite crashes on an un-migrated import.
+**Clean-break sequencing (review rounds 2 + 3):** Tasks 1→2→3→4 are ONE atomic break — `tsc` is red from Task 1 (removes `ControllerConfig.planner`) until Task 4 Step 3 (removes the `as ControllerConfig['planner']` cast in `pipelines/controller.ts` parseConfig, the last product-code reference to the removed type). The `tsconfig` EXCLUDES `**/*.test.ts`, `**/__tests__/**`, and `src/**/plan-analysis.ts` from the BUILD, so the build green-checkpoint depends only on PRODUCT code (`types.ts`, `planner.ts`, handler, factory, `controller.ts`). The test RUNNER (`tsx`) imports every `*.test.ts` and strips types, so: (a) every test file referencing a retired symbol must be migrated before a suite run — `planner.test.ts` + `planner.skills.test.ts` + `controller-factory.skills.test.ts` in Task 2 Step 6, `controller.test.ts` parser assertions in Task 4 Step 2b; (b) Task 4's TDD run-fail/run-pass (Steps 2/4) execute under tsx even while `tsc` is red. The FIRST whole-group build+test green checkpoint is **Task 4 Step 4b**. `plan-analysis.ts` (build- AND runner-excluded) and the dead `planner:` props in `controller-coordinator-handler.test.ts` (harmless under tsx) are cleaned in Task 7.
 
-**Review fixes applied:** P1 (round 1) — smart-executor genuinely coarse (granularity clauses + tests). P2 (round 1) — key-only fail-loud. P1 (round 2) — all THREE planner-referencing test files migrated inside Task 2 (not Task 7), so the suite imports cleanly. P2 (round 2) — `SMART_REPLAN_SYSTEM`/`SMART_EXTERNAL_RESULT_REPLAN_SYSTEM` added to the prompt-contract English-invariant list (complete new-surface coverage).
+**Review fixes applied:** P1 (round 1) — smart-executor genuinely coarse (granularity clauses + tests). P2 (round 1) — key-only fail-loud. P1 (round 2) — all THREE planner-referencing test files migrated inside Task 2. P2 (round 2) — `SMART_REPLAN_SYSTEM`/`SMART_EXTERNAL_RESULT_REPLAN_SYSTEM` added to the prompt-contract list. P1 (round 3, external) — atomic group corrected to Tasks 1-**4** (the `controller.ts` parser cast keeps `tsc` red until Task 4); green checkpoint moved to Task 4 Step 4b; banners updated. P2 (round 3) — Task 2 Step 8 commit now adds all four migrated files (planner.ts + 3 test files).
 
 **Ordering note:** Tasks 1→2→3 are a contiguous clean-break group (build red until Task 3 Step 4). Implement them in order before the green gate. Tasks 4-7 are independently green.
