@@ -269,19 +269,36 @@ Also fix the existing `planner prompt contract` test (it iterates `PLANNER_SYSTE
       REPLAN_SYSTEM,
       EXTERNAL_RESULT_REPLAN_SYSTEM,
       SMART_CREATE_PLAN_SYSTEM,
+      SMART_REPLAN_SYSTEM,
+      SMART_EXTERNAL_RESULT_REPLAN_SYSTEM,
       WEAK_CREATE_PLAN_SYSTEM,
       WEAK_REPLAN_SYSTEM,
       WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM,
     ]) {
 ```
-(Update the import at the top of `planner.test.ts`: remove `PLANNER_SYSTEM`, add `SMART_CREATE_PLAN_SYSTEM`, `WEAK_CREATE_PLAN_SYSTEM`, `WEAK_REPLAN_SYSTEM`, `WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM`. The base `CREATE_PLAN_SYSTEM`/`REPLAN_SYSTEM`/`EXTERNAL_RESULT_REPLAN_SYSTEM` imports stay.)
+(Update the import at the top of `planner.test.ts`: remove `PLANNER_SYSTEM`, add ALL SIX new variants — `SMART_CREATE_PLAN_SYSTEM`, `SMART_REPLAN_SYSTEM`, `SMART_EXTERNAL_RESULT_REPLAN_SYSTEM`, `WEAK_CREATE_PLAN_SYSTEM`, `WEAK_REPLAN_SYSTEM`, `WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM`. The base `CREATE_PLAN_SYSTEM`/`REPLAN_SYSTEM`/`EXTERNAL_RESULT_REPLAN_SYSTEM` imports stay — they back the variants and the contract assertion.)
 
 > Reuse / extend the existing `fakeClient`/`recordingFakeClient`/`newBundle` helpers from Task-4/7 of Phase 2 in this file. If `recordingFakeClient` exposes only `lastUserContent()`, add a `lastSystemContent()` accessor (the content of the last message with role `'system'`) the same way.
 
-- [ ] **Step 7: Run the planner suite**
+**CRITICAL — fix ALL test files that import the retired symbols, in THIS task.** Deleting `IncrementalPlanner`/`AdaptivePlanner` (Step 4) and renaming `makePlanner` (Step 5) breaks the MODULE-LEVEL imports of two other test files. The package test script discovers `src/**/*.test.ts` and IMPORTS every file before any `--test-name-pattern` filter applies, so a stale import crashes the WHOLE run (not just its tests). Both MUST be converted here, not deferred to Task 7:
 
-Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="Planner|planner|makeControllerPlanner|WeakExecutor|SmartExecutor"`
-Expected: the new tests pass; renamed Phase-2 tests still pass. (Full-package build stays red until Task 4 — the handler still calls `makePlanner`.)
+`packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.skills.test.ts`:
+- Import: `import { AdaptivePlanner, IncrementalPlanner } from '../planner.js';` → `import { SmartExecutorPlanner, WeakExecutorPlanner } from '../planner.js';`
+- `describe('AdaptivePlanner skills recall injection')` → `describe('SmartExecutorPlanner skills recall injection')`; every `new AdaptivePlanner(` → `new SmartExecutorPlanner(`. These tests already use `PLAN_REPLY` (`{ plan: [...] }`) — keep it.
+- `describe('IncrementalPlanner skills recall injection')` → `describe('WeakExecutorPlanner skills recall injection')`; every `new IncrementalPlanner(` → `new WeakExecutorPlanner(`. **Switch their stub reply from `STEP_REPLY` (`{ kind:'next', ... }`) to `PLAN_REPLY`** — `WeakExecutorPlanner` is plan-first (`{ plan: [...] }`), not single-step. Remove the now-unused `STEP_REPLY` const. The assertion (`userMsg()` matches `/Relevant skills:\n- X/`) holds for both planners (both inject via `withSkillsBlock` in `callPlan`).
+- The two `… threads input.options into skillsRecall` tests: `AdaptivePlanner` → `SmartExecutorPlanner`, `IncrementalPlanner` → `WeakExecutorPlanner` (the latter likewise on `PLAN_REPLY`).
+
+`packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.skills.test.ts`:
+- Import: `import { makePlanner } from '../../smart-agent/controller/planner.js';` → `import { makeControllerPlanner } from '../../smart-agent/controller/planner.js';`
+- The construction-path test calls `makePlanner('adaptive', …)` (~line 85-86) → `makeControllerPlanner('smart-executor', …)`.
+- Any config literal with `planner: 'adaptive'` (~line 41) → remove that line (the field no longer exists on `ControllerConfig`; if the test needs to assert kind, pass it via the factory's `plannerKind` arg or the handler dep, per Task 3).
+
+- [ ] **Step 7: Do NOT run the suite yet — the clean break is incomplete until Task 3**
+
+Tasks 1→2→3 are ONE atomic clean break. After Task 2 the planner classes + all three planner-referencing test files are updated, BUT the handler still calls `makePlanner` (fixed in Task 3 Step 1). The test runner imports every `src/**/*.test.ts` via tsx, and the handler/factory tests transitively import the handler module — which won't load until Task 3. So a full suite run here WILL crash on the handler's stale `makePlanner`. Do NOT run it now; the build+test green checkpoint is **Task 3 Step 4**. Just confirm by grep that Task 2's own files no longer reference the retired symbols:
+
+Run: `grep -n "AdaptivePlanner\|IncrementalPlanner\|makePlanner\|PLANNER_SYSTEM\|RETRY_HINT" packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.test.ts packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/planner.skills.test.ts packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.skills.test.ts`
+Expected: no matches (these files are fully migrated; the handler — fixed in Task 3 — is the only remaining `makePlanner` reference).
 
 - [ ] **Step 8: Commit**
 
@@ -364,10 +381,17 @@ Then pass the kind into the factory call (the `await new ControllerFactory().bui
 
 > If `ControllerPipelinePlugin` already has a constructor or class fields initialized inline, fold these into it consistently — read the current class head before editing.
 
-- [ ] **Step 4: Build the whole package — should now be GREEN**
+- [ ] **Step 4: Build + run the suite — the clean break is now complete and should be GREEN**
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs build`
-Expected: SUCCESS. The clean break (Tasks 1-3) is now type-complete: no references to `makePlanner`, `AdaptivePlanner`, `IncrementalPlanner`, `ControllerConfig.planner`, or `PlannerKind = incremental|adaptive` remain in product code. If the build still fails, the error names the last stale reference — fix it (it belongs to this task's threading).
+Expected: SUCCESS. The clean break (Tasks 1-3) is now type-complete in PRODUCT code: no references to `makePlanner`, `AdaptivePlanner`, `IncrementalPlanner`, `ControllerConfig.planner`, or `PlannerKind = incremental|adaptive` remain. If the build still fails, the error names the last stale reference — fix it (it belongs to this task's threading).
+
+Then run the full package suite (now that the handler loads):
+Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test`
+Expected: GREEN, and report the counts. Notes:
+- `plan-analysis.ts` is **excluded from BOTH** the build (`tsconfig.exclude` lists `src/**/plan-analysis.ts`) and the test runner (it is not a `*.test.ts`), so its stale `makePlanner` reference affects NEITHER this build NOR this test run — it is a manual dev/eval harness, fixed in Task 7 for hygiene only.
+- The three planner test files were migrated in Task 2, so they import cleanly now. `controller-coordinator-handler.test.ts` carries some stale `planner: 'adaptive'` config props — harmless at runtime (tsx strips types; the handler ignores the removed field and defaults to `'smart-executor'`, which IS the old adaptive/board behaviour), so those tests still pass; Task 7 removes the dead props.
+- `controller.test.ts` (pipelines) still asserts the OLD `parseConfig(...).planner` mapping (lines ~55-58) and still PASSES here because `parseConfig` is unchanged until Task 4 — Task 4 updates those assertions when it flips the parser to fail-loud.
 
 - [ ] **Step 5: Commit**
 
@@ -414,6 +438,18 @@ test('parseConfig accepts a controller config with no planner key', () => {
 
 Run: `npm run -w @mcp-abap-adt/llm-agent-server-libs test -- --test-name-pattern="removed planner|no planner key"`
 Expected: FAIL — `parseConfig` currently maps `planner` instead of rejecting it.
+
+- [ ] **Step 2b: Remove the stale `.planner` assertions in controller.test.ts**
+
+The existing pipeline test asserts the OLD mapping (around lines 55-58):
+```ts
+    assert.equal(plugin.parseConfig(base).planner, 'incremental');
+    assert.equal(
+      plugin.parseConfig({ ...base, planner: 'adaptive' }).planner,
+      'adaptive',
+    );
+```
+These now break (the field is gone; a `planner:` key throws). DELETE both assertions — they are superseded by the two new fail-loud/accept tests from Step 1.
 
 - [ ] **Step 3: Reject `planner:` in `parseConfig` (controller.ts)**
 
@@ -562,21 +598,22 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts`
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts`
-- Modify: `packages/llm-agent-server-libs/src/factories/__tests__/controller-factory.skills.test.ts`
 - (any other file the sweep finds)
 
-- [ ] **Step 1: Find every remaining reference**
+> NOTE: `planner.test.ts`, `planner.skills.test.ts`, and `controller-factory.skills.test.ts` were already migrated in Task 2 Step 6; `controller.test.ts` in Task 4 Step 2b. This task cleans up the two remaining files (the build/runner-excluded eval harness + the stale handler-test props) and runs the final green gate.
+
+- [ ] **Step 1: Fix the remaining references**
+
+- **`plan-analysis.ts`** (dev/eval harness — `tsconfig`-excluded from the build AND not a `*.test.ts`, so it broke neither prior checkpoint; fix for hygiene): it imports `makePlanner` and drives `incremental`+`adaptive`. Change the import to `makeControllerPlanner`, and replace the driven kinds with `'smart-executor'` and `'weak-executor'`. Update the file's header comment ("incremental + adaptive" → "smart-executor + weak-executor") and any stub-prompt comment that named `PLANNER_SYSTEM (incremental)`. Both planners are plan-first (`{"plan":[...]}`), so if a stub branch keyed on the incremental single-step `{"kind":"next"}` shape, that branch is dead — remove it. Quick check it still runs: `node --import tsx/esm packages/llm-agent-server-libs/src/smart-agent/controller/plan-analysis.ts` (stub mode, no `EVAL_LIVE`) should print its summary without a module/`makePlanner` error.
+- **`controller-coordinator-handler.test.ts`**: remove the dead `planner: 'adaptive'` props from the `config: { ...baseConfig(), planner: 'adaptive' }` fixtures (lines ~1085, 1111, 1155, 1335, 1597, 1634) — the field is gone and the handler defaults to `'smart-executor'` (same board behaviour these tests already exercised). If any test wants to pin the kind explicitly, set `plannerKind: 'smart-executor'` (or `'weak-executor'`) on the handler deps object instead. Do NOT rewrite unrelated assertions.
+
+- [ ] **Step 1b: Confirm the sweep is clean**
 
 Run:
 ```bash
-grep -rn "makePlanner\|AdaptivePlanner\|IncrementalPlanner\|'incremental'\|'adaptive'\|PLANNER_SYSTEM\|RETRY_HINT\|config.planner\|planner: 'incremental'\|planner: 'adaptive'" packages/llm-agent-server-libs/src --include='*.ts' | grep -v node_modules
+grep -rn "makePlanner\|AdaptivePlanner\|IncrementalPlanner\|PLANNER_SYSTEM\|RETRY_HINT\|config.planner\|planner: 'incremental'\|planner: 'adaptive'" packages/llm-agent-server-libs/src --include='*.ts' | grep -v node_modules
 ```
-Each hit must be updated:
-- **`plan-analysis.ts`** (eval harness): it imports `makePlanner` and drives `incremental`+`adaptive`. Change the import to `makeControllerPlanner`, and replace the driven kinds with `'smart-executor'` and `'weak-executor'`. Update the file's header comment ("incremental + adaptive" → "smart-executor + weak-executor") and any stub-prompt comment that named `PLANNER_SYSTEM (incremental)`. If a stub branch keyed on the incremental single-step `{"kind":"next"}` shape, keep it only if a planner still emits that shape — both planners are plan-first (`{"plan":[...]}`), so a `next`-shape stub branch is dead and should be removed.
-- **`controller-coordinator-handler.test.ts`**: any fixture setting `config.planner` or asserting the incremental path — switch to `plannerKind` on the handler deps (e.g. `plannerKind: 'smart-executor'`), or drop if it tested the removed incremental planner.
-- **`controller-factory.skills.test.ts`**: if it passed `planner:` in a config or expected a planner kind, update to pass `plannerKind` as the 3rd `build()` arg (or rely on the default) and assert via the handler's behavior.
-
-> For each test file, READ it first; convert `planner`/enum usage to the new surface minimally — do not rewrite unrelated assertions.
+Expected: NO matches (the base/SMART/WEAK prompt constants do NOT match these patterns). A residual hit means a file was missed — fix it.
 
 - [ ] **Step 2: Full green gate**
 
@@ -587,9 +624,9 @@ npm run -w @mcp-abap-adt/llm-agent-server-libs build
 npm run -w @mcp-abap-adt/llm-agent-server-libs test
 npm run lint:check
 ```
-Expected: all builds succeed; full server-libs suite green (report counts); lint 0 errors. Confirm the sweep is clean:
+Expected: all builds succeed; full server-libs suite green (report counts); lint 0 errors. Confirm the sweep is clean (structural symbols only — NOT `'adaptive'`/`'incremental'` substrings, which can legitimately appear in unrelated strings):
 ```bash
-grep -rn "makePlanner\|AdaptivePlanner\|IncrementalPlanner\|config.planner" packages/llm-agent-server-libs/src --include='*.ts' | grep -v node_modules && echo "STALE REFS REMAIN" || echo "CLEAN"
+grep -rn "makePlanner\|AdaptivePlanner\|IncrementalPlanner\|PLANNER_SYSTEM\|RETRY_HINT\|config.planner" packages/llm-agent-server-libs/src --include='*.ts' | grep -v node_modules && echo "STALE REFS REMAIN" || echo "CLEAN"
 ```
 And no NUL bytes:
 ```bash
@@ -623,6 +660,10 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 **Placeholder scan:** Every code step shows concrete code. The "minimal valid subagents" / "read the file first" notes (Tasks 4/5/7) delegate ONLY to reusing the EXISTING test fixtures + matching the current class head — the production code is given in full. No TBD/"handle edge cases"/"similar to".
 
-**Type consistency:** `PlannerKind` (Task 1) is consumed by `makeControllerPlanner` (Task 2), `ControllerHandlerDeps.plannerKind` (Task 1/handler), `ControllerFactory.build`'s 3rd param (Task 3), and the `ControllerPipelinePlugin` constructor (Task 3). `makeControllerPlanner` replaces `makePlanner` everywhere (Task 2 def, Task 3 handler call, Task 7 sweep). `SmartExecutorPlanner`/`WeakExecutorPlanner` names are used consistently in Task 2 (def), Task 2 Step 6 (tests), Task 5 (registry via the plugin, not the class). The build is intentionally red across Tasks 1-2 and green from Task 3 Step 4 onward — noted in each task.
+**Type consistency:** `PlannerKind` (Task 1) is consumed by `makeControllerPlanner` (Task 2), `ControllerHandlerDeps.plannerKind` (Task 1/handler), `ControllerFactory.build`'s 3rd param (Task 3), and the `ControllerPipelinePlugin` constructor (Task 3). `makeControllerPlanner` replaces `makePlanner` everywhere (Task 2 def, Task 3 handler call). `SmartExecutorPlanner`/`WeakExecutorPlanner` names are used consistently in Task 2 (def), Task 2 Step 6 (tests across planner.test + planner.skills + factory-skills), Task 5 (registry via the plugin, not the class). The build is intentionally red across Tasks 1-2 and green from Task 3 Step 4 onward — noted in each task.
+
+**Clean-break sequencing (review round 2):** Tasks 1→2→3 are ONE atomic break. The `tsconfig` EXCLUDES `**/*.test.ts`, `**/__tests__/**`, and `src/**/plan-analysis.ts` from the BUILD — so the build green-checkpoint (Task 3 Step 4) depends only on PRODUCT code consistency. But the test RUNNER (`tsx`) imports every `*.test.ts`, so EVERY test file referencing a retired symbol must be migrated before a suite run: `planner.test.ts` + `planner.skills.test.ts` + `controller-factory.skills.test.ts` in Task 2 Step 6, `controller.test.ts` parser assertions in Task 4 Step 2b. `plan-analysis.ts` (build- AND runner-excluded) and the dead `planner:` props in `controller-coordinator-handler.test.ts` (harmless under tsx type-stripping) are cleaned in Task 7. So there is no intermediate state where the suite crashes on an un-migrated import.
+
+**Review fixes applied:** P1 (round 1) — smart-executor genuinely coarse (granularity clauses + tests). P2 (round 1) — key-only fail-loud. P1 (round 2) — all THREE planner-referencing test files migrated inside Task 2 (not Task 7), so the suite imports cleanly. P2 (round 2) — `SMART_REPLAN_SYSTEM`/`SMART_EXTERNAL_RESULT_REPLAN_SYSTEM` added to the prompt-contract English-invariant list (complete new-surface coverage).
 
 **Ordering note:** Tasks 1→2→3 are a contiguous clean-break group (build red until Task 3 Step 4). Implement them in order before the green gate. Tasks 4-7 are independently green.
