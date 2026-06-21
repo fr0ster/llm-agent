@@ -7,7 +7,7 @@ import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
-import type { ControllerConfig } from '../smart-agent/controller/types.js';
+import type { ControllerConfig, PlannerKind } from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
@@ -42,7 +42,15 @@ export type {
 export class ControllerPipelinePlugin
   implements IPipelinePlugin<ControllerConfig>
 {
-  readonly name = 'controller';
+  readonly name: string;
+  private readonly plannerKind: PlannerKind;
+  constructor(
+    name = 'controller',
+    plannerKind: PlannerKind = 'smart-executor',
+  ) {
+    this.name = name;
+    this.plannerKind = plannerKind;
+  }
 
   parseConfig(raw: unknown): ControllerConfig {
     const cfg = (raw ?? {}) as Record<string, unknown>;
@@ -160,7 +168,11 @@ export class ControllerPipelinePlugin
       ...(skillsRecall ? { skillsRecall } : {}),
     };
 
-    const { handler } = await new ControllerFactory().build(cfg, deps);
+    const { handler } = await new ControllerFactory().build(
+      cfg,
+      deps,
+      this.plannerKind,
+    );
     const builder = await ctx.createAgentBuilder();
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };

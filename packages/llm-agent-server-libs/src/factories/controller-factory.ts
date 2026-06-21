@@ -13,7 +13,7 @@ import { ControllerCoordinatorHandler } from '../smart-agent/controller/controll
 import { LlmFinalizer } from '../smart-agent/controller/finalizer.js';
 import { LlmReviewer } from '../smart-agent/controller/reviewer.js';
 import { makeSubagentClient } from '../smart-agent/controller/subagent-client.js';
-import type { ControllerConfig } from '../smart-agent/controller/types.js';
+import type { ControllerConfig, PlannerKind } from '../smart-agent/controller/types.js';
 
 /**
  * Runtime dependencies for {@link ControllerFactory}. Like the Stepper factory
@@ -84,6 +84,7 @@ export class ControllerFactory
   async build(
     config: ControllerConfig,
     deps: ControllerFactoryDeps,
+    plannerKind: PlannerKind = 'smart-executor',
   ): Promise<BuiltCoordinator> {
     // results-RAG recall is embedding-based in EVERY persistence mode → require an
     // embedder AND a semantic-recall-capable backend. The embedder alone is not
@@ -147,6 +148,7 @@ export class ControllerFactory
         perResultCap: 4000,
       }),
       config,
+      plannerKind,
       models: {
         evaluator: evaluatorLlm.model ?? 'unknown',
         planner: plannerLlm.model ?? 'unknown',

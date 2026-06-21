@@ -36,7 +36,7 @@ import type { IFinalizer } from './finalizer.js';
 import { writeArtifact } from './memorizer.js';
 import type { Outcome } from './outcome.js';
 import { resolveByPrecedence } from './outcome.js';
-import { makePlanner } from './planner.js';
+import { makeControllerPlanner } from './planner.js';
 import { appendHint } from './prompts.js';
 import type { Evidence, IReviewer, ReviewResult } from './reviewer.js';
 import type { RunIdMinter } from './run-scope.js';
@@ -354,8 +354,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // external-resume adopt below calls planner.commit() to keep the adaptive
     // planCursor in lockstep with nextSeq. Stateless construction; the main loop
     // reuses this same instance.
-    const planner = makePlanner(
-      deps.config.planner ?? 'incremental',
+    const planner = makeControllerPlanner(
+      deps.plannerKind ?? 'smart-executor',
       deps.planner,
       deps.config.subagents.planner?.hint,
       deps.skillsRecall,
