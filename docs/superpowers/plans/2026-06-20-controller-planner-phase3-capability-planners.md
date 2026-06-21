@@ -32,6 +32,8 @@
 
 ## Task 1: PlannerKind values + remove `ControllerConfig.planner` + handler dep (types.ts)
 
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP — Tasks 1, 2, 3.** Do NOT run the package build or test suite between these three tasks: the break leaves the package un-importable in intermediate states (the handler still calls `makePlanner` until Task 3). The single build+test green checkpoint is **Task 3 Step 4**. (Per-step grep checks within Tasks 1-2 are fine; a `npm … test` run is not.)
+
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/types.ts`
 - Test: `packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/types.test.ts`
@@ -106,6 +108,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ---
 
 ## Task 2: Two planners — delete Incremental, SmartExecutor + WeakExecutor, makeControllerPlanner (planner.ts)
+
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 2 of 1-2-3).** No `npm … test` run in this task — the handler still calls `makePlanner` until Task 3, and the tsx runner imports every `*.test.ts`, so a suite run here crashes on import. Migrate the test files (Step 6), grep-verify (Step 7), commit (Step 8); the green checkpoint is Task 3 Step 4.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts`
@@ -313,6 +317,8 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ---
 
 ## Task 3: Thread `plannerKind` through handler + factory + plugin
+
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 3 of 1-2-3) — closes the break.** Step 1 removes the handler's last `makePlanner` reference; Step 4 is the FIRST build+test green checkpoint of the whole group.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
