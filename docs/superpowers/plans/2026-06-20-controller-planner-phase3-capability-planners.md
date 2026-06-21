@@ -109,7 +109,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 2: Two planners — delete Incremental, SmartExecutor + WeakExecutor, makeControllerPlanner (planner.ts)
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 2 of 1-2-3-4).** No `npm run build` / `npm … test` run in this task — the handler still calls `makePlanner` (Task 3) and `controller.ts` still casts the removed type (Task 4). Migrate the test files (Step 6), grep-verify (Step 7), commit (Step 8); the green checkpoint is Task 4 Step 4.
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 2 of 1-2-3-4).** No `npm run build` / `npm … test` run in this task — the handler still calls `makePlanner` (Task 3) and `controller.ts` still casts the removed type (Task 4). Migrate the test files (Step 6), grep-verify (Step 7), commit (Step 8); the green checkpoint is Task 4 Step 4b.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/planner.ts`
@@ -321,7 +321,7 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ## Task 3: Thread `plannerKind` through handler + factory + plugin
 
-> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 3 of 1-2-3-4).** Step 1 removes the handler's last `makePlanner` reference — but the build is STILL red after this task because `pipelines/controller.ts` parseConfig casts `as ControllerConfig['planner']` (removed type) until Task 4. Do NOT expect a green build here; the green checkpoint is Task 4 Step 4.
+> ⚠️ **ATOMIC CLEAN-BREAK GROUP (Task 3 of 1-2-3-4).** Step 1 removes the handler's last `makePlanner` reference — but the build is STILL red after this task because `pipelines/controller.ts` parseConfig casts `as ControllerConfig['planner']` (removed type) until Task 4. Do NOT expect a green build here; the green checkpoint is Task 4 Step 4b.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
@@ -395,7 +395,7 @@ Then pass the kind into the factory call (the `await new ControllerFactory().bui
 The handler no longer calls `makePlanner`. But `pipelines/controller.ts` parseConfig STILL casts `as ControllerConfig['planner']` (a type removed in Task 1), so `tsc` is still red until Task 4. Do NOT run `npm run build`/`npm test` for a green result here. Just confirm the handler is migrated:
 
 Run: `grep -n "makePlanner\|deps.config.planner" packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts`
-Expected: no matches (the handler uses `makeControllerPlanner(deps.plannerKind ?? 'smart-executor', …)`). The whole-group green checkpoint is **Task 4 Step 4**, after the parser cast is removed.
+Expected: no matches (the handler uses `makeControllerPlanner(deps.plannerKind ?? 'smart-executor', …)`). The whole-group green checkpoint is **Task 4 Step 4b**, after the parser cast is removed.
 
 - [ ] **Step 5: Commit**
 
