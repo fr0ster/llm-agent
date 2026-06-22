@@ -179,36 +179,36 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
-### Custom pipeline implementation with stage handler
+### Custom pipeline implementation
 
-```ts
-import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
+Three ways to customise orchestration (v19+):
 
-class AuditLogHandler implements IStageHandler {
-  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
-    const level = (config.level as string) ?? 'info';
-    console.log(`[${level}] Processing: ${ctx.inputText.slice(0, 100)}`);
-    return true;
-  }
-}
+1. **Select a built-in pipeline by name** (YAML):
+   ```yaml
+   pipeline:
+     name: flat          # flat | linear | dag | stepper | controller | controller-weak
+     config: {}          # pipeline-specific options
+   ```
 
-const handle = await new SmartAgentBuilder()
-  .withConfigPath('smart-server.yaml')
-  .withStageHandlers({ 'audit-log': new AuditLogHandler() })
-  .build();
-```
+2. **Inject a custom `IPipeline`** (programmatic):
+   ```ts
+   import type { IPipeline, PipelineDeps, PipelineResult, LlmStreamChunk } from '@mcp-abap-adt/llm-agent';
+   import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-Register the handler in YAML by selecting a named pipeline and passing the custom stage in `pipeline.config`:
+   class MyPipeline implements IPipeline {
+     initialize(deps: PipelineDeps): void { /* wire deps */ }
+     async execute(input, history, options, yieldChunk): Promise<PipelineResult> {
+       // fully custom orchestration
+     }
+   }
 
-```yaml
-pipeline:
-  name: flat
-  config:
-    stageHandlers:
-      audit-log: {}  # resolved from the withStageHandlers() registry
-```
+   const handle = await new SmartAgentBuilder()
+     .withConfigPath('smart-server.yaml')
+     .setPipeline(new MyPipeline())
+     .build();
+   ```
+
+3. **Register a pipeline plugin** — implement `IPipelinePlugin`, export it as `pipelinePlugins` from a plugin module, and select it by name via `pipeline.name`. See [INTEGRATION.md](INTEGRATION.md) for the Plugin System details.
 
 ### Skills — programmatic setup
 
