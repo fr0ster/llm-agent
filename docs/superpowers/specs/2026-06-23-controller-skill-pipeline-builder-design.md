@@ -255,7 +255,7 @@ default `budgets`/`targetState`/`sessionMemory`.
   (`withLlm`/`withRoleLlm` never called), no embedder when a skill source is set
   (skills need an embedder), or no skill source (the whole point — at least one
   required). Messages name the missing `.withX()` call.
-- Config translation reuses the existing `parseSmartServerConfig` / pipeline
+- Config translation reuses the existing `resolveSmartServerConfig` / pipeline
   `parseConfig`, so the same fail-loud rules (e.g. `github` XOR `registry`) apply
   to the generated config — one validation path, no divergence.
 - `buildAgent` surfaces composition errors (bad creds, unreachable MCP at
