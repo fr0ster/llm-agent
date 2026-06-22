@@ -22,9 +22,9 @@ mode: smart
 
 llm:
   main:
-    provider: sap-ai-sdk
-    model: ${SAP_AI_MODEL:-gpt-4o}
-    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    provider: openai
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o
     temperature: 0.7
   classifier:
     provider: deepseek
@@ -41,8 +41,8 @@ rag:
   type: qdrant
   url: ${QDRANT_URL:-http://qdrant:6333}
   collectionName: llm-agent-tools
-  embedder: ollama
-  model: bge-m3
+  embedder: openai
+  model: text-embedding-3-small
 
 mcp:
   - type: http

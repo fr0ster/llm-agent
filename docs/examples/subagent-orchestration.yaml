@@ -18,9 +18,9 @@ host: 0.0.0.0
 mode: smart
 
 llm:
-  provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: ${DEEPSEEK_MODEL:-deepseek-chat}
+  provider: openai
+  apiKey: ${OPENAI_API_KEY}
+  model: ${OPENAI_MODEL:-gpt-4o-mini}
   temperature: 0.7
 
 pipeline:
@@ -37,10 +37,10 @@ subagents:
     description: |
       Writes and refines ABAP source code: reports, classes, function modules.
       Use for any task that asks to generate or modify ABAP code.
-    config: ../../examples/subagents/abap-coder-deepseek.yaml
+    config: ../../examples/subagents/abap-coder.yaml
   - name: code-reviewer
     description: |
       Reviews ABAP code and returns a one-line JSON object
       {"approved": boolean, "issues": string[]}. Use after code generation to
       verify correctness; do not use for generating new code.
-    config: ../../examples/subagents/code-reviewer-deepseek.yaml
+    config: ../../examples/subagents/code-reviewer.yaml

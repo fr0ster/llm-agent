@@ -14,9 +14,9 @@ host: 0.0.0.0
 mode: smart
 
 llm:
-  provider: deepseek
-  apiKey: ${DEEPSEEK_API_KEY}
-  model: deepseek-chat
+  provider: openai
+  apiKey: ${OPENAI_API_KEY}
+  model: gpt-4o
   temperature: 0.7
 
 mcp:
