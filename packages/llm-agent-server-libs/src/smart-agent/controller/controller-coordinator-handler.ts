@@ -46,6 +46,7 @@ import type { ISubagentClient } from './subagent-client.js';
 import { establishTargetState } from './target-state.js';
 import {
   type ControllerConfig,
+  type IControllerPlanner,
   type NextStep,
   type PlannerKind,
   type SessionBundle,
@@ -180,6 +181,10 @@ export interface ControllerHandlerDeps {
    *  Selects the planner implementation. Defaults to 'smart-executor' when absent
    *  (a consumer building the handler directly without a preset). */
   plannerKind?: PlannerKind;
+  /** Test/composition seam: a pre-built planner used verbatim instead of
+   *  makeControllerPlanner(...). Lets a test/consumer supply an IControllerPlanner
+   *  that emits behaviours the default smart/weak planners do not (e.g. rewind). */
+  controllerPlanner?: IControllerPlanner;
 }
 
 // ---------------------------------------------------------------------------
@@ -354,12 +359,14 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     // external-resume adopt below calls planner.commit() to keep the adaptive
     // planCursor in lockstep with nextSeq. Stateless construction; the main loop
     // reuses this same instance.
-    const planner = makeControllerPlanner(
-      deps.plannerKind ?? 'smart-executor',
-      deps.planner,
-      deps.config.subagents.planner?.hint,
-      deps.skillsRecall,
-    );
+    const planner =
+      deps.controllerPlanner ??
+      makeControllerPlanner(
+        deps.plannerKind ?? 'smart-executor',
+        deps.planner,
+        deps.config.subagents.planner?.hint,
+        deps.skillsRecall,
+      );
 
     if (bundle.pending?.kind === 'external-tool') {
       const { extId, toolName } = bundle.pending;

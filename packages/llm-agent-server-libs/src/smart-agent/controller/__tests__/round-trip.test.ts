@@ -129,10 +129,7 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
     const leg1Planner = scriptedClient([
       {
         kind: 'content',
-        content: JSON.stringify({
-          kind: 'next',
-          step: { name: 's1', instructions: 'do' },
-        }),
+        content: JSON.stringify({ plan: [{ name: 's1', instructions: 'do' }] }),
       },
     ]);
     const leg1Executor = scriptedClient([toolCall(TOOL_NAME, TOOL_ARGS)]);
@@ -197,17 +194,18 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
     const leg2Evaluator = scriptedClient([
       { kind: 'content', content: 'Goal: do work' },
     ]);
-    // On resume the existing step result is fed forward; planner just closes.
+    // On resume the step continues: the external tool result is injected into the
+    // in-flight step's transcript and the executor re-runs the step (continues
+    // from its own tool call). Once the step commits, the plan is exhausted →
+    // FINALIZE_SYSTEM call → plain text.
     const leg2Planner = scriptedClient([
-      {
-        kind: 'content',
-        content: JSON.stringify({ kind: 'done', result: 'all done' }),
-      },
+      { kind: 'content', content: 'all done' },
     ]);
-    // Executor must NOT be called again for the external tool — the result
-    // arrives through externalResults. If the handler erroneously re-asks,
-    // the scripted queue is empty and we can detect excess calls.
-    const leg2Executor = scriptedClient([]);
+    // The executor IS called once on resume: the tool result is in its transcript
+    // and it completes the step.
+    const leg2Executor = scriptedClient([
+      { kind: 'content', content: 'continued with tool result' },
+    ]);
 
     const leg2Deps: ControllerHandlerDeps = {
       evaluator: leg2Evaluator,
@@ -225,9 +223,11 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
     };
 
     const handler2 = new ControllerCoordinatorHandler(leg2Deps);
+    // Use the same textOrMessages as leg 1 so classifyRequest fingerprints match
+    // the originalRequest and classifies this as a 'resume' (not 'fresh').
     const { ctx: ctx2, captured: captured2 } = fakeCtx({
       sessionId: SESSION_ID,
-      textOrMessages: '',
+      textOrMessages: 'do work',
       externalResults: new Map([[extId, 'TOOL RESULT']]),
     });
 
@@ -256,8 +256,8 @@ describe('ControllerCoordinatorHandler – suspend/resume round-trip', () => {
 
     assert.equal(
       leg2Executor.calls,
-      0,
-      'leg 2: executor was NOT called again (tool result fed forward via externalResults)',
+      1,
+      'leg 2: executor re-runs the step once with the external tool result in its transcript',
     );
   });
 });
