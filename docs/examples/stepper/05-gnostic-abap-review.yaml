@@ -82,53 +82,55 @@ rag:
   url: ${EMBEDDER_URL:-}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
-coordinator:
-  mode: planned-react            # default; explicit here for documentation
+pipeline:
+  name: stepper
+  config:
+    mode: planned-react            # default; explicit here for documentation
 
-  stepper:
-    maxParallelSteps: 4          # local fan-out cap per Stepper level
-    maxDepth: 4                  # interpreter recursion limit
-    tokenBudget: 400000          # soft token cap (shared ledger, all branches)
-    reviewer:
-      atDepths: [0, 1]           # review at root + first child level
+    stepper:
+      maxParallelSteps: 4          # local fan-out cap per Stepper level
+      maxDepth: 4                  # interpreter recursion limit
+      tokenBudget: 400000          # soft token cap (shared ledger, all branches)
+      reviewer:
+        atDepths: [0, 1]           # review at root + first child level
 
-  # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
-  # agent calls whatever the server exposes via tools/list; safety is the
-  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
+    # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
+    # agent calls whatever the server exposes via tools/list; safety is the
+    # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
 
-  # Session-scope guidance seeded into each NEW session's knowledge-RAG. This
-  # GNOSTIC preset fills it with a few ABAP/mcp-abap-adt domain rules. They are
-  # surfaced to the planner/executor as "Known facts" AND enrich the tool-search
-  # query, so the right tool is ranked and the analysis is complete. Edit for
-  # your own MCP/domain; keep them principle-level (no brittle step recipes).
-  knowledgeSeed:
-    - artifactType: tool-rule
-      content: >-
-        To read or review the FULL source of an ABAP report/program you MUST read
-        ALL of its includes (e.g. *_TOP, *_O01, *_I01, *_F01 …), not only the main
-        program shell. The main shell only lists INCLUDE statements; the logic
-        lives in the includes.
-    - artifactType: tool-rule
-      content: >-
-        Read an include body with the dedicated include-reading tool. The
-        program-source tool returns only the main shell and does NOT resolve
-        include names into their bodies.
-    - artifactType: domain-rule
-      content: >-
-        A security review of ABAP code covers at least: authority-checks
-        (AUTHORITY-CHECK / missing checks), SQL injection via dynamic
-        WHERE/EXEC SQL, hardcoded credentials, and client handling (CLIENT
-        SPECIFIED). Report each with the offending location.
-    - artifactType: domain-rule
-      content: >-
-        A performance review covers at least: SELECT inside LOOP (nested
-        DB access), SELECT * vs field lists, missing index/WHERE coverage, and
-        internal-table reads without a sorted/hashed key.
-    - artifactType: domain-rule
-      content: >-
-        A CleanCore / maintainability review covers at least: use of released
-        APIs only (no direct table writes to SAP standard), modularization, and
-        avoidance of obsolete statements.
+    # Session-scope guidance seeded into each NEW session's knowledge-RAG. This
+    # GNOSTIC preset fills it with a few ABAP/mcp-abap-adt domain rules. They are
+    # surfaced to the planner/executor as "Known facts" AND enrich the tool-search
+    # query, so the right tool is ranked and the analysis is complete. Edit for
+    # your own MCP/domain; keep them principle-level (no brittle step recipes).
+    knowledgeSeed:
+      - artifactType: tool-rule
+        content: >-
+          To read or review the FULL source of an ABAP report/program you MUST read
+          ALL of its includes (e.g. *_TOP, *_O01, *_I01, *_F01 …), not only the main
+          program shell. The main shell only lists INCLUDE statements; the logic
+          lives in the includes.
+      - artifactType: tool-rule
+        content: >-
+          Read an include body with the dedicated include-reading tool. The
+          program-source tool returns only the main shell and does NOT resolve
+          include names into their bodies.
+      - artifactType: domain-rule
+        content: >-
+          A security review of ABAP code covers at least: authority-checks
+          (AUTHORITY-CHECK / missing checks), SQL injection via dynamic
+          WHERE/EXEC SQL, hardcoded credentials, and client handling (CLIENT
+          SPECIFIED). Report each with the offending location.
+      - artifactType: domain-rule
+        content: >-
+          A performance review covers at least: SELECT inside LOOP (nested
+          DB access), SELECT * vs field lists, missing index/WHERE coverage, and
+          internal-table reads without a sorted/hashed key.
+      - artifactType: domain-rule
+        content: >-
+          A CleanCore / maintainability review covers at least: use of released
+          APIs only (no direct table writes to SAP standard), modularization, and
+          avoidance of obsolete statements.
 
 mcp:
   - type: http
