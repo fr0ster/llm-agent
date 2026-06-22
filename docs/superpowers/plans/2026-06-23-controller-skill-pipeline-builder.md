@@ -165,7 +165,18 @@ Route the embedder, skill-host, and MCP construction through `this._deps`:
       : this._deps.resolveEmbedder(ec, { extraFactories: mergedEmbedderFactories }),
   ```
   So with `deps.embedder` set: NO prefetch, NO `resolveEmbedder` — the injected instance is used directly. (Note `resolvedEmbedder` itself already prefers `deps.embedder` via the agent-embedder fix above, so both paths use the same injected instance.)
-- **Skill-host build→load→validate (P2 — preserve the invariant):** keep the existing `initSkillHost(buildHost, skillCfg, pools)` (`:1245`) — it runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk: `const buildHost = this._deps.skillHost ? async () => this._deps.skillHost! : () => this._deps.buildSkillHost(skillCfg, { resolveEmbedder: <the thunk above>, makePgPool: <unchanged> })`. A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
+- **Skill-host build→load→validate (P2 — preserve the invariant):** keep the existing `initSkillHost(buildHost, skillCfg, pools)` (`:1245`) — it runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk and, within the build branch, swap ONLY the `resolveEmbedder` field — **keep every other key of the existing `buildSkillHostFromConfig` deps object unchanged, including BOTH `makePgPool` AND `makePgReadPool`** (the latter is required for the recall-only / qdrant+postgres path; dropping it breaks that config). I.e.:
+  ```ts
+  const buildHost = this._deps.skillHost
+    ? async () => this._deps.skillHost!
+    : () => this._deps.buildSkillHost(skillCfg, {
+        resolveEmbedder: <the thunk above>,
+        makePgPool: <unchanged>,
+        makePgReadPool: <unchanged>,   // ← keep — recall-only/postgres path
+        // …any other existing deps keys unchanged
+      });
+  ```
+  A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
 - replace any `connectMcpClientsFromConfig(...)` call with `this._deps.connectMcp(...)`.
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -638,6 +649,11 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
     embedder: stubEmbedder,                       // P1b: covers agent-RAG + skill-host
     buildSkillHost: async (cfg) => { skillCfgSeen = cfg; return stubHost(); }, // P1a: capture
     connectMcp: async () => [],
+    // P1c: with deps.embedder set, prefetch MUST be skipped — throw if it runs so
+    // the assertion is honest (test fails loudly instead of silently doing I/O).
+    prefetchEmbedderFactories: async () => {
+      throw new Error('prefetch must not run when deps.embedder is injected');
+    },
   };
   const { agent, close } = await new ControllerSkillPipelineBuilder()
     .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
