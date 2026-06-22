@@ -9,7 +9,7 @@
 #   This allows the agent to select only relevant tools per request
 #   instead of flooding the LLM context with the entire tool catalog.
 #
-# PER REQUEST (DefaultPipeline):
+# PER REQUEST (flat / DefaultPipeline):
 #
 #   1. CLASSIFY — the classifier LLM decomposes the user message into
 #      typed subprompts:
@@ -39,6 +39,10 @@
 # NOTE: Domain knowledge, user corrections, and session state are consumer
 # responsibilities. Implement a custom IPipeline to add those stores.
 #
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. This file now uses the flat pipeline (the default), which runs the same
+# DefaultPipeline flow. Omit the `pipeline:` key or set `pipeline: { name: flat }`.
+#
 # Usage:
 #   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/08-real-world-scenario.yaml
 
@@ -47,6 +51,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -73,53 +78,3 @@ agent:
   queryExpansionEnabled: true
   showReasoning: false
   historyAutoSummarizeLimit: 10
-
-# Structured pipeline — same as DefaultPipeline flow, but explicit and customizable.
-# Remove or reorder stages as needed.
-pipeline:
-  version: "1"
-  stages:
-    # Decompose user message into typed subprompts (action/chat)
-    - id: classify
-      type: classify
-
-    # Condense old messages if conversation is long
-    - id: summarize
-      type: summarize
-
-    # Query tools and history RAG stores in parallel
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        # tools: MCP tool descriptions + skill descriptions
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 10 }
-        # history: semantic conversation history
-        - id: rag-history
-          type: rag-query
-          config: { store: history, k: 5 }
-      after:
-        # Re-score results by relevance to the query
-        - id: rerank
-          type: rerank
-
-    # Pick skills whose descriptions matched the query
-    - id: skill-select
-      type: skill-select
-
-    # Pick MCP tools whose descriptions matched the query
-    - id: tool-select
-      type: tool-select
-
-    # Build LLM context: actions + RAG results + selected tools + history
-    - id: assemble
-      type: assemble
-
-    # Stream LLM response, execute MCP tools, loop until done
-    - id: tool-loop
-      type: tool-loop
-
-    # Summarize turn and upsert to history RAG store
-    - id: history-upsert
-      type: history-upsert

@@ -2005,220 +2005,71 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
-## Structured Pipeline (YAML DSL)
+## Custom Pipelines & Plugins
 
-The structured pipeline replaces the hardcoded orchestration flow with a YAML-defined stage tree. This enables reordering, skipping, or adding custom stages without modifying agent code.
+> For the full list of built-in pipeline variants and their YAML config options, see [`docs/PIPELINES.md`](PIPELINES.md).
 
-### Enabling via YAML
+In v19 the YAML `pipeline.version` / `pipeline.stages` DSL and the builder methods `withPipeline(stageTree)` / `withStageHandler()` / `getDefaultStages()` were removed and fail loud at startup. The current extension model has three levels:
 
-Add `pipeline.version` and `pipeline.stages` to your config:
+1. **Select a built-in pipeline by name** — zero code, just YAML config.
+2. **Register a pipeline plugin** (`IPipelinePlugin` / `pipelinePlugins`) — ship a named agent variant as a plugin module; SmartServer selects it via `pipeline: { name: <plugin> }`.
+3. **Inject a custom `IPipeline` programmatically** — full control via `builder.setPipeline(myPipeline)`.
+
+### Built-in pipeline selection
+
+Select a pipeline in `smart-server.yaml` with the `pipeline.name` key (default: `flat`):
 
 ```yaml
-llm:
-  main:
-    provider: openai
-    apiKey: ${OPENAI_API_KEY}
-    model: gpt-4o
-
 pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: summarize
-      type: summarize
-    - id: rag-retrieval
-      type: parallel
-      when: "shouldRetrieve"
-      stages:
-        - { id: translate, type: translate }
-        - { id: expand, type: expand }
-      after:
-        - id: rag-queries
-          type: parallel
-          stages:
-            - { id: facts, type: rag-query, config: { store: facts, k: 10 } }
-            - { id: feedback, type: rag-query, config: { store: feedback, k: 5 } }
-            - { id: state, type: rag-query, config: { store: state, k: 5 } }
-        - { id: rerank, type: rerank }
-        - { id: tool-select, type: tool-select }
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
+  name: stepper        # flat | linear | dag | stepper | controller | controller-weak
+  config:
+    maxDepth: 4        # pipeline-specific config passed to the plugin's parseConfig()
 ```
 
-### Enabling via Builder (programmatic)
+Omit `pipeline:` entirely (or omit `name`) to use the `flat` default.
+
+### Custom `IPipeline` via `setPipeline()`
+
+For programmatic setups where you need full control over orchestration, implement `IPipeline` and inject it via the builder:
 
 ```ts
-import {
-  SmartAgentBuilder,
-  type StructuredPipelineDefinition,
-  getDefaultStages,
-} from '@mcp-abap-adt/llm-agent-libs';
+import type { IPipeline } from '@mcp-abap-adt/llm-agent-libs';
+import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
 
-const pipeline: StructuredPipelineDefinition = {
-  version: '1',
-  stages: getDefaultStages(), // or your custom stage tree
-};
+class MyCustomPipeline implements IPipeline {
+  // implement initialize() and run() according to IPipeline contract
+}
 
 const handle = await new SmartAgentBuilder({ mcp: { type: 'http', url: '...' } })
   .withMainLlm(myLlm)
-  .withPipeline(pipeline)
+  .setPipeline(new MyCustomPipeline())
   .build();
 ```
 
-### Stage Definition Reference
-
-Each stage has the following fields:
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `id` | `string` | yes | Unique identifier for logging/tracing |
-| `type` | `string` | yes | Built-in type or custom handler name |
-| `config` | `object` | no | Arbitrary config passed to the handler |
-| `when` | `string` | no | Condition expression — stage skipped if falsy |
-| `stages` | `StageDefinition[]` | no | Child stages (for `parallel`/`repeat`) |
-| `after` | `StageDefinition[]` | no | Sequential follow-up stages (for `parallel` only) |
-| `maxIterations` | `number` | no | Max loop iterations (for `repeat`, default: 10) |
-| `until` | `string` | no | Stop condition (for `repeat`) |
-
-### Condition Expressions
-
-The `when` and `until` fields use a safe expression evaluator (no `eval()`):
-
-```yaml
-# Simple property check (truthy)
-when: "shouldRetrieve"
-
-# Negation
-when: "!isAscii"
-
-# Dot-path access
-when: "config.classificationEnabled"
-
-# Boolean operators
-when: "shouldRetrieve && !isAscii"
-
-# Comparisons
-until: "state.iterationCount >= 5"
-```
-
-Supported operators: `!`, `&&`, `||`, `>`, `<`, `>=`, `<=`, `==`, `!=`
-
-### Custom Stage Handlers
-
-Register custom handlers for domain-specific pipeline stages:
-
-```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
-
-class ContentFilterHandler implements IStageHandler {
-  async execute(
-    ctx: PipelineContext,
-    config: Record<string, unknown>,
-    span: ISpan,
-  ): Promise<boolean> {
-    const blockedPatterns = (config.patterns as string[]) ?? [];
-    for (const pattern of blockedPatterns) {
-      if (new RegExp(pattern, 'i').test(ctx.inputText)) {
-        ctx.error = `Input matched blocked pattern: ${pattern}`;
-        return false; // abort pipeline
-      }
-    }
-    return true; // continue
-  }
-}
-
-// Register via builder
-builder.withStageHandler('content-filter', new ContentFilterHandler());
-```
-
-Then use in YAML:
-
-```yaml
-stages:
-  - id: filter
-    type: content-filter
-    config:
-      patterns: ["DROP TABLE", "rm -rf"]
-  - id: classify
-    type: classify
-  # ...
-```
-
-### Parallel Execution with Sequential Follow-up
-
-The `parallel` type runs `stages` concurrently, then runs `after` stages sequentially:
-
-```yaml
-- id: rag-retrieval
-  type: parallel
-  stages:
-    # These run concurrently
-    - { id: translate, type: translate }
-    - { id: expand, type: expand }
-  after:
-    # These run sequentially after all parallel stages complete
-    - id: queries
-      type: parallel
-      stages:
-        - { id: facts, type: rag-query, config: { store: facts } }
-        - { id: state, type: rag-query, config: { store: state } }
-    - { id: rerank, type: rerank }
-```
-
-### Repeat (Loop) Stages
-
-The `repeat` type loops child stages until a condition or max iterations:
-
-```yaml
-- id: retry-loop
-  type: repeat
-  maxIterations: 3
-  until: "state.validationPassed"
-  stages:
-    - { id: tool-loop, type: tool-loop }
-    - { id: validate, type: my-validator }
-```
-
-### Minimal Pipeline (Skip RAG)
-
-For simple LLM-only use cases, define a minimal pipeline:
-
-```yaml
-pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-```
-
-### Using Default Stages as Base
-
-```ts
-import { getDefaultStages } from '@mcp-abap-adt/llm-agent-libs';
-
-// Get default stages and insert a custom stage before tool-loop
-const stages = getDefaultStages();
-const toolLoopIndex = stages.findIndex(s => s.id === 'tool-loop');
-stages.splice(toolLoopIndex, 0, {
-  id: 'audit',
-  type: 'audit-log',
-  config: { level: 'info' },
-});
-
-builder.withPipeline({ version: '1', stages });
-```
+`setPipeline()` bypasses the plugin registry entirely — `pipeline.name` in YAML is ignored when a pipeline is injected this way. Use it when you need a one-off custom pipeline for a single deployment rather than a reusable named variant.
 
 ### Plugin System
 
-The library provides a plugin system for loading custom implementations from external sources. It uses the same DI pattern as the rest of the library: an interface with a default implementation.
+The plugin system is the canonical way to ship a reusable named pipeline (or other components such as embedder factories, rerankers, and output validators). A plugin module exports a `PluginExports` object; SmartServer merges all plugin registrations at startup before accepting requests.
+
+#### IPipelinePlugin contract
+
+```ts
+import type { IPipelinePlugin, IPipelineContext, IPipelineInstance } from '@mcp-abap-adt/llm-agent';
+
+interface IPipelinePlugin<Config = unknown> {
+  readonly name: string;
+  parseConfig(raw: unknown): Config;               // validates + parses pipeline.config
+  build(config: Config, ctx: IPipelineContext): Promise<IPipelineInstance>;
+}
+
+interface IPipelineInstance {
+  readonly agent: ISmartAgent;
+  close(): Promise<void>;                          // release MCP / RAG / session resources
+}
+```
+
+`IPipelineContext` gives a plugin opaque access to per-role LLMs (`resolveLlm(role)`), the session-scoped knowledge RAG, the tools RAG handle, and MCP clients — without importing server-internal types.
 
 #### IPluginLoader interface
 
@@ -2228,21 +2079,22 @@ interface IPluginLoader {
 }
 ```
 
-The loader discovers plugins and returns merged registrations. The library ships `FileSystemPluginLoader` as the default — consumers can replace it with their own implementation.
+The loader discovers plugin modules and returns merged registrations. The library ships `FileSystemPluginLoader` as the default — consumers can replace it with their own implementation.
 
 #### PluginExports — what a plugin provides
 
 All fields are optional — a plugin can register any subset:
 
-| Export               | Type                              | Effect                          |
-|----------------------|-----------------------------------|---------------------------------|
-| `stageHandlers`      | `Record<string, IStageHandler>`   | Available in YAML `type:`       |
-| `embedderFactories`  | `Record<string, EmbedderFactory>` | Available in YAML `rag.embedder:` |
-| `reranker`           | `IReranker`                       | Replaces default reranker       |
-| `queryExpander`      | `IQueryExpander`                  | Replaces default query expander |
-| `outputValidator`    | `IOutputValidator`                | Replaces default validator      |
-| `skillManager`       | `ISkillManager`                   | Replaces default skill manager  |
-| `mcpClients`         | `IMcpClient[]`                    | Accumulated MCP clients         |
+| Export               | Type                                   | Effect                                    |
+|----------------------|----------------------------------------|-------------------------------------------|
+| `pipelinePlugins`    | `Record<string, IPipelinePlugin>`      | Named pipeline variants (selected by YAML `pipeline.name`) |
+| `embedderFactories`  | `Record<string, EmbedderFactory>`      | Available in YAML `rag.embedder:`         |
+| `reranker`           | `IReranker`                            | Replaces default reranker                 |
+| `queryExpander`      | `IQueryExpander`                       | Replaces default query expander           |
+| `outputValidator`    | `IOutputValidator`                     | Replaces default validator                |
+| `skillManager`       | `ISkillManager`                        | Replaces default skill manager            |
+| `mcpClients`         | `IMcpClient[]`                         | Accumulated MCP clients                   |
+| `stageHandlers`      | `Record<string, IStageHandler>`        | Internal stage handlers (used by stepper/DAG pipelines) |
 
 #### Option 1: FileSystemPluginLoader (default)
 
@@ -2254,21 +2106,39 @@ Drop plugin files into a directory. SmartServer scans and loads them at startup.
 2. `./plugins/` — project-level (relative to cwd)
 3. `--plugin-dir <path>` CLI flag or `pluginDir` in YAML config
 
-**Example plugin file** (`~/.config/llm-agent/plugins/audit-log.ts`):
+**Example pipeline plugin file** (`~/.config/llm-agent/plugins/my-pipeline.ts`):
 
 ```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent-libs';
-import type { ISpan } from '@mcp-abap-adt/llm-agent';
+import type {
+  IPipelinePlugin,
+  IPipelineContext,
+  IPipelineInstance,
+} from '@mcp-abap-adt/llm-agent';
 
-class AuditLogHandler implements IStageHandler {
-  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan) {
-    console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
-    return true;
-  }
+interface MyConfig {
+  maxRetries: number;
 }
 
-export const stageHandlers = {
-  'audit-log': new AuditLogHandler(),
+const myPlugin: IPipelinePlugin<MyConfig> = {
+  name: 'my-pipeline',
+
+  parseConfig(raw: unknown): MyConfig {
+    const cfg = (raw ?? {}) as Record<string, unknown>;
+    return { maxRetries: typeof cfg.maxRetries === 'number' ? cfg.maxRetries : 3 };
+  },
+
+  async build(config: MyConfig, ctx: IPipelineContext): Promise<IPipelineInstance> {
+    const llm = await ctx.resolveLlm('main');
+    // ... build and return your agent instance
+    return {
+      agent: myAgent,
+      close: async () => { /* release resources */ },
+    };
+  },
+};
+
+export const pipelinePlugins = {
+  'my-pipeline': myPlugin,
 };
 ```
 
@@ -2278,13 +2148,9 @@ export const stageHandlers = {
 pluginDir: ./my-plugins
 
 pipeline:
-  version: "1"
-  stages:
-    - id: audit
-      type: audit-log      # resolved from plugin
-    - id: classify
-      type: classify
-    # ...
+  name: my-pipeline    # resolved from plugin
+  config:
+    maxRetries: 5
 ```
 
 **Programmatic usage:**
@@ -2334,14 +2200,14 @@ class NpmPluginLoader implements IPluginLoader {
 
 // Use via builder
 builder.withPluginLoader(new NpmPluginLoader([
-  '@my-org/llm-plugin-audit',
+  '@my-org/llm-plugin-my-pipeline',
   '@my-org/llm-plugin-cohere-embedder',
 ]));
 
 // Or via SmartServer config
 const server = new SmartServer({
   ...config,
-  pluginLoader: new NpmPluginLoader(['@my-org/llm-plugin-audit']),
+  pluginLoader: new NpmPluginLoader(['@my-org/llm-plugin-my-pipeline']),
 });
 ```
 
@@ -2357,9 +2223,9 @@ class CompositePluginLoader implements IPluginLoader {
     const result = emptyLoadedPlugins();
     for (const loader of this.loaders) {
       const plugins = await loader.load();
-      // Merge each loader's results (later wins)
-      for (const [type, handler] of plugins.stageHandlers) {
-        result.stageHandlers.set(type, handler);
+      // Merge each loader's results (later wins for single-valued fields)
+      for (const [name, plugin] of plugins.pipelinePlugins) {
+        result.pipelinePlugins.set(name, plugin);
       }
       Object.assign(result.embedderFactories, plugins.embedderFactories);
       if (plugins.reranker) result.reranker = plugins.reranker;
@@ -2375,7 +2241,7 @@ class CompositePluginLoader implements IPluginLoader {
 
 builder.withPluginLoader(new CompositePluginLoader([
   new FileSystemPluginLoader({ dirs: getDefaultPluginDirs() }),
-  new NpmPluginLoader(['@my-org/llm-plugin-audit']),
+  new NpmPluginLoader(['@my-org/llm-plugin-my-pipeline']),
 ]));
 ```
 
@@ -2385,7 +2251,7 @@ builder.withPluginLoader(new CompositePluginLoader([
 builder.withXxx()  >  plugin loader  >  built-in defaults
 ```
 
-Explicit builder calls (`withReranker()`, `withStageHandler()`, etc.) always take precedence over plugin-loaded registrations. This allows consumers to override individual plugin components without replacing the entire loader.
+Explicit builder calls (`withReranker()`, `withOutputValidator()`, etc.) always take precedence over plugin-loaded registrations. This allows consumers to override individual plugin components without replacing the entire loader.
 
 #### Helper utilities for custom loaders
 
@@ -2398,8 +2264,6 @@ Explicit builder calls (`withReranker()`, `withStageHandler()`, etc.) always tak
 #### Performance note
 
 Plugin loading happens **once at startup** (during `builder.build()` or `SmartServer.start()`), not per request. Loaded handlers are plain objects in memory — zero runtime overhead compared to direct builder wiring.
-
-See [`docs/examples/plugins/`](examples/plugins/) for 6 complete plugin examples covering all export types.
 
 ## Test Doubles
 

@@ -750,7 +750,7 @@ Consumers extend the agent by implementing `IPipeline` directly and injecting it
 Key components:
 - **`PipelineExecutor`** (`packages/llm-agent-libs/src/pipeline/executor.ts`) — walks the stage tree, handles `parallel`/`repeat` control flow, evaluates `when` conditions, creates tracer spans.
 - **`PipelineContext`** (`packages/llm-agent/src/pipeline/context.ts`) — mutable state bag threaded through all stages. Contains immutable input, injected dependencies, mutable state (RAG results, tools, messages), and a `yield()` callback for streaming.
-- **`IStageHandler`** (`packages/llm-agent/src/pipeline/stage-handler.ts`) — single-method interface: `execute(ctx, config, span): Promise<boolean>`.
+- **`IStageHandler`** (`packages/llm-agent/src/interfaces/plugin.ts`) — single-method interface: `execute(ctx, config, span): Promise<boolean>`. Used internally by built-in handlers and by plugin authors (exported via `PluginExports.stageHandlers`).
 - **Condition evaluator** (`packages/llm-agent/src/pipeline/condition-evaluator.ts`) — safe expression evaluator for `when`/`until` fields. Supports dot-path property access, negation, `&&`/`||`, comparisons. No `eval()`.
 
 ### Stage Types
@@ -811,33 +811,27 @@ builder
   .build();
 ```
 
-### Custom Stage Handlers
+### Customising Orchestration (v19+)
 
-Consumers can register custom stage handlers via the builder:
+Three mechanisms are available to end-users and integrators:
 
-```ts
-import type { IStageHandler, PipelineContext } from '@mcp-abap-adt/llm-agent';
+1. **Select a built-in pipeline by name** (YAML, recommended):
+   ```yaml
+   pipeline:
+     name: flat    # flat | linear | dag | stepper | controller | controller-weak
+     config: {}    # pipeline-specific options (see PIPELINES.md)
+   ```
+   Omit `pipeline:` entirely to get the default `flat` pipeline.
 
-class AuditLogHandler implements IStageHandler {
-  async execute(ctx: PipelineContext, config: Record<string, unknown>, span: ISpan): Promise<boolean> {
-    console.log(`[audit] Processing: ${ctx.inputText.slice(0, 100)}`);
-    return true; // continue pipeline
-  }
-}
+2. **Inject a custom `IPipeline`** (programmatic):
+   ```ts
+   builder.setPipeline(new MyPipeline());
+   ```
+   The custom implementation receives `PipelineDeps` via `initialize()` and owns the full orchestration. See the [Custom pipeline example](#custom-pipeline-example-with-consumer-defined-stores) above.
 
-builder.withStageHandler('audit-log', new AuditLogHandler());
-```
+3. **Register a pipeline plugin** — implement `IPipelinePlugin`, export it as `pipelinePlugins` from a plugin module, and select it by `pipeline.name`. See [INTEGRATION.md](INTEGRATION.md) for the Plugin System.
 
-Then reference in YAML:
-
-```yaml
-stages:
-  - id: audit
-    type: audit-log
-  - id: classify
-    type: classify
-  # ...
-```
+> **Removed in v19:** `builder.withStageHandler()`, `builder.withStageHandlers()`, `getDefaultStages()`, and the structured `pipeline: { version: "1", stages: [...] }` YAML DSL have been removed and will fail at startup. Use the mechanisms above instead.
 
 ### Backwards Compatibility
 
@@ -852,8 +846,9 @@ packages/llm-agent/src/
   pipeline/
     types.ts              # StageDefinition, BuiltInStageType, ControlFlowType
     context.ts            # PipelineContext interface
-    stage-handler.ts      # IStageHandler interface
     condition-evaluator.ts # Safe expression evaluator for when/until
+  interfaces/
+    plugin.ts             # IStageHandler interface (also PluginExports, IPluginLoader)
 
 packages/llm-agent-libs/src/
   pipeline/
@@ -912,7 +907,7 @@ A plugin module can export any subset of:
 
 | Export name          | Type                              | Registers as            |
 |----------------------|-----------------------------------|-------------------------|
-| `stageHandlers`      | `Record<string, IStageHandler>`   | Pipeline stage handlers |
+| `stageHandlers`      | `Record<string, IStageHandler>`   | Stage handler implementations (plugin-author use; no YAML/builder wiring — use `pipelinePlugins` to expose them to end-users) |
 | `embedderFactories`  | `Record<string, EmbedderFactory>` | Embedder factories      |
 | `reranker`           | `IReranker`                       | RAG reranker            |
 | `queryExpander`      | `IQueryExpander`                  | Query expander          |
@@ -949,7 +944,7 @@ For custom loader authors:
 SmartServer.start() / builder.build()
   → IPluginLoader.load()           # discover & import plugins
   → merge embedderFactories        # plugins + config (config wins)
-  → apply stageHandlers to builder # plugin handlers available in YAML
+  → register stageHandlers          # available to internal pipeline implementations
   → apply reranker, expander, validator
   → resolve mcpClients             # config > plugin > YAML fallback
   → build agent

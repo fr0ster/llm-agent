@@ -72,25 +72,27 @@ rag:
   url: ${EMBEDDER_URL:-}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
-coordinator:
-  mode: planned-react            # default; explicit here for documentation
+pipeline:
+  name: stepper
+  config:
+    mode: planned-react            # default; explicit here for documentation
 
-  stepper:
-    maxParallelSteps: 4          # local fan-out cap per Stepper level
-    maxDepth: 4                  # interpreter recursion limit
-    tokenBudget: 400000          # soft token cap (shared ledger, all branches)
-    reviewer:
-      atDepths: [0, 1]           # review at root + first child level
+    stepper:
+      maxParallelSteps: 4          # local fan-out cap per Stepper level
+      maxDepth: 4                  # interpreter recursion limit
+      tokenBudget: 400000          # soft token cap (shared ledger, all branches)
+      reviewer:
+        atDepths: [0, 1]           # review at root + first child level
 
-  # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
-  # agent calls whatever the server exposes via tools/list; safety is the
-  # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
+    # Tool permissioning is the MCP SERVER's job — there is NO agent-side gate. The
+    # agent calls whatever the server exposes via tools/list; safety is the
+    # deployment's choice of server (e.g. a read-only MCP proxy / scoped tool set).
 
-  # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
-  # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's
-  # tools (the executor surfaces them as facts and prioritises the named tools
-  # over a bare-prompt tool search). Do NOT ship tool-specific rules here.
-  knowledgeSeed: []
+    # Session-scope guidance seeded into each NEW session's knowledge-RAG. Left
+    # EMPTY to stay MCP-agnostic — fill per deployment with rules for YOUR MCP's
+    # tools (the executor surfaces them as facts and prioritises the named tools
+    # over a bare-prompt tool search). Do NOT ship tool-specific rules here.
+    knowledgeSeed: []
 
 mcp:
   - type: http

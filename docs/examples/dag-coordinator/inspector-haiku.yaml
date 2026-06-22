@@ -17,43 +17,30 @@ agent:
   ragQueryK: 5
   healthTimeoutMs: 15000
 
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+  classifier:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0
+
 rag:
   type: in-memory
   embedder: sap-ai-core
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
 systemPrompt: |
   You are an inspection-only ABAP oracle. Answer short factual questions about
   whether SAP repository objects exist and what type they are. Call ONE MCP
   tool per question (SearchObject or GetTypeInfo). Reply in ONE sentence,
   NO Markdown.
-
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0
-    classifier:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_ORACLE_MODEL:-anthropic--claude-4.5-haiku}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0
-
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
-
-  version: "1"
-  stages:
-    - { id: classify, type: classify }
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - { id: rag-tools, type: rag-query, config: { store: tools, k: 5 } }
-      after:
-        - { id: tool-select, type: tool-select }
-    - { id: assemble, type: assemble }
-    - { id: tool-loop, type: tool-loop, config: { maxIterations: 6 } }

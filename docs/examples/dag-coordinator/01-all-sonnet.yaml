@@ -24,15 +24,17 @@ rag:
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
-coordinator:
-  activation: explicit
-  planner:
-    type: llm
-    plannerLlm: main             # → llm.main (sonnet)
-  # reviewer / finalizer / stateOracle omitted → defaults:
-  #   reviewer    = unused (no per-node review)
-  #   finalizer   = PassthroughFinalizer (yields interpreter.output verbatim)
-  #   stateOracle = none (NeedInfoSignal would surface as OrchestratorError)
+pipeline:
+  name: dag
+  config:
+    activation: explicit
+    planner:
+      type: llm
+      plannerLlm: main             # → llm.main (sonnet)
+    # reviewer / finalizer / stateOracle omitted → defaults:
+    #   reviewer    = unused (no per-node review)
+    #   finalizer   = PassthroughFinalizer (yields interpreter.output verbatim)
+    #   stateOracle = none (NeedInfoSignal would surface as OrchestratorError)
 
 subagents:
   - name: abap-analyst

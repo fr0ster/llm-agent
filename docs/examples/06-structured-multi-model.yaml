@@ -1,88 +1,54 @@
-# Structured pipeline — multi-model with Qdrant RAG.
-# Combines separate LLM models for different tasks with explicit stage control.
+# Flat pipeline (v19+) — multi-model LLM with Qdrant RAG.
+# Combines separate LLM providers for different roles with the flat (default) pipeline.
 #
-# - Main LLM: OpenAI GPT-4o (creative, high temperature)
+# The structured-stages DSL (`pipeline: { version, stages }`) was removed in v19.
+# Multi-role LLM config and RAG config now live at the top level (no nesting under
+# `pipeline:`). The named per-store RAG (`pipeline.rag.{name}`) was also removed;
+# use the top-level flat `rag:` block. The flat pipeline runs the full
+# DefaultPipeline flow automatically.
+#
+# - Main LLM: SAP AI Core gpt-4o (capable, high temperature)
 # - Classifier/Helper: DeepSeek (cheap, low temperature)
-# - Tools RAG: Qdrant + OpenAI embeddings (for tool/skill selection)
-# - Custom tool-loop config: higher iteration/tool limits
+# - Tools RAG: Qdrant + Ollama embeddings (for tool/skill selection)
+# - tool-loop / maxIterations / maxToolCalls tunable via agent:
 #
 # Usage:
-#   OPENAI_API_KEY=sk-xxx DEEPSEEK_API_KEY=sk-xxx \
+#   AICORE_SERVICE_KEY='...' DEEPSEEK_API_KEY=sk-xxx \
 #     npm run dev -- --config docs/examples/06-structured-multi-model.yaml
 
 port: 4004
 host: 0.0.0.0
 mode: smart
 
-pipeline:
-  llm:
-    main:
-      provider: openai
-      apiKey: ${OPENAI_API_KEY}
-      model: gpt-4o
-      temperature: 0.7
-    classifier:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
-    helper:
-      provider: deepseek
-      apiKey: ${DEEPSEEK_API_KEY}
-      model: deepseek-chat
-      temperature: 0.1
+llm:
+  main:
+    provider: openai
+    apiKey: ${OPENAI_API_KEY}
+    model: gpt-4o
+    temperature: 0.7
+  classifier:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.1
+  helper:
+    provider: deepseek
+    apiKey: ${DEEPSEEK_API_KEY}
+    model: deepseek-chat
+    temperature: 0.1
 
-  rag:
-    tools:
-      type: qdrant
-      url: http://qdrant:6333
-      collectionName: llm-agent-tools
-      embedder: openai
-      model: text-embedding-3-small
-      apiKey: ${OPENAI_API_KEY}
+rag:
+  type: qdrant
+  url: ${QDRANT_URL:-http://qdrant:6333}
+  collectionName: llm-agent-tools
+  embedder: openai
+  model: text-embedding-3-small
 
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
+mcp:
+  - type: http
+    url: http://localhost:3001/mcp/stream/http
 
-  version: "1"
-  # Two-phase tool retrieval: first query RAG stores (skills/facts), then
-  # build an enriched query from those results + selected skills, and use
-  # it to hit the tools store. Skills and domain knowledge thus steer
-  # MCP tool discovery instead of the raw user prompt alone.
-  stages:
-    - id: classify
-      type: classify
-    - id: summarize
-      type: summarize
-    # First phase — non-tool stores. Add rag-query children here for any
-    # dedicated skills/facts stores you have. Example:
-    #   - id: rag-retrieval
-    #     type: parallel
-    #     stages:
-    #       - id: rag-facts
-    #         type: rag-query
-    #         config: { store: facts, k: 10 }
-    #     after:
-    #       - id: rerank
-    #         type: rerank
-    - id: skill-select
-      type: skill-select
-    # Compose enriched query from ragText + prior RAG snippets + skills.
-    - id: build-tool-query
-      type: build-tool-query
-      config: { topK: 5, maxChars: 2000 }
-    # Second phase — drive tools retrieval with the enriched query.
-    - id: rag-tools
-      type: rag-query
-      config: { store: tools, k: 15, queryText: toolQueryText }
-    - id: tool-select
-      type: tool-select
-      config: { queryText: toolQueryText }
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-      config: { maxIterations: 15, maxToolCalls: 50 }
-    - id: history-upsert
-      type: history-upsert
+agent:
+  maxIterations: 15
+  maxToolCalls: 50
+  ragQueryK: 15

@@ -13,42 +13,29 @@ agent:
   ragQueryK: 10
   healthTimeoutMs: 15000
 
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.2
+  classifier:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.1
+
 rag:
   type: in-memory
   embedder: sap-ai-core
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
+
 systemPrompt: |
   You are an ABAP repository worker. Use the available SAP MCP tools to fulfill
   the single task you are given. NEVER fabricate object contents — call the
   tools to get real data. Write concise, structured findings.
-
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.2
-    classifier:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_WORKER_MODEL:-anthropic--claude-4.5-haiku}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.1
-
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://localhost:3003/mcp/stream/http}
-
-  version: '1'
-  stages:
-    - { id: classify, type: classify }
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - { id: rag-tools, type: rag-query, config: { store: tools, k: 10 } }
-      after:
-        - { id: tool-select, type: tool-select }
-    - { id: assemble, type: assemble }
-    - { id: tool-loop, type: tool-loop, config: { maxIterations: 25 } }

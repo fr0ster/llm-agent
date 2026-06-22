@@ -1,8 +1,8 @@
 # Recursive Stepper — per-role configurations (18.0)
 
 Production-shaped examples for the Stepper coordinator introduced in release
-**18.0.0**. Every example sets `coordinator.mode` (or `coordinator.flow`) + a
-`coordinator.stepper.*` block.
+**18.0.0**. Every example sets `pipeline.config.mode` (or `pipeline.config.flow`) + a
+`pipeline.config.stepper.*` block.
 
 | File | Mode | Use it for |
 |---|---|---|
@@ -22,9 +22,9 @@ Production-shaped examples for the Stepper coordinator introduced in release
 It is a complete smart-agent config (`mode: smart` + `pipeline.*`) — exactly what a
 Stepper executor dispatches steps to.
 
-## `coordinator.flow` — composition over modes
+## `pipeline.config.flow` — composition over modes
 
-`mode` is a **preset** that expands to a `coordinator.flow`. Writing `flow` directly
+`mode` is a **preset** that expands to a `pipeline.config.flow`. Writing `flow` directly
 (see `04-flow-composition.yaml`) gives full control:
 
 - **`flow.planner`** — `{ type: none | llm | static, granularity: shallow | detailed }`.
@@ -217,7 +217,7 @@ it belongs in the tool-RAG layer (which tools are discoverable), not at executio
 ## Gnostification is the consumer's responsibility
 
 The engine is **agnostic** — it hardcodes no tool names and no domain procedures. Making it
-thorough for YOUR MCP/domain is **the consumer's job**, supplied as DATA via `coordinator.
+thorough for YOUR MCP/domain is **the consumer's job**, supplied as DATA via `pipeline.config.
 knowledgeSeed` (and/or skills): procedural "how an operation is done" records — e.g. *"for a code
 review, work from the full source including all includes"* (no tool names needed), or *"the
 security checks are X/Y/Z, else fetch them from resource R"*. These are surfaced to the
@@ -238,18 +238,20 @@ deliberately task-agnostic, and the executor never self-assesses completeness (t
 planner's / the 18.1 Evaluator's job):
 
 ```yaml
-coordinator:
-  mode: cyclic-react
-  flow:
-    executor:
-      type: cyclic-react
-      systemPrompt: |
-        You complete the task by calling the available tools. Before concluding an
-        analysis or review of an object, ensure you have its COMPLETE content — all
-        of its parts/sub-parts, not only the top level.
-    planner:                       # planned modes
-      type: llm
-      systemPrompt: "<override STEPPER_PLANNER_SYSTEM>"
+pipeline:
+  name: stepper
+  config:
+    mode: cyclic-react
+    flow:
+      executor:
+        type: cyclic-react
+        systemPrompt: |
+          You complete the task by calling the available tools. Before concluding an
+          analysis or review of an object, ensure you have its COMPLETE content — all
+          of its parts/sub-parts, not only the top level.
+      planner:                       # planned modes
+        type: llm
+        systemPrompt: "<override STEPPER_PLANNER_SYSTEM>"
 ```
 
 Omitted → the built-in agnostic defaults are used. Nested `flow.nodes[].flow` may carry its own
@@ -257,7 +259,7 @@ overrides per sub-Stepper. Use `knowledgeSeed`, `systemPrompt`, or both.
 
 ---
 
-## `coordinator.stepper.*` reference
+## `pipeline.config.stepper.*` reference
 
 | Key | Type | Default | Description |
 |---|---|---|---|

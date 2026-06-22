@@ -2,6 +2,11 @@
 # Routes parent + sub-agents through SAP AI Core (gpt-4o by default).
 # Connects MCP via the local mcp-abap-adt-proxy on http://127.0.0.1:3001.
 #
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. The old repeat/subagent stage loop is replaced by the linear pipeline's
+# plan→dispatch coordination. Multi-role LLM config and RAG/MCP config now live
+# at the top level (no nesting under `pipeline:`).
+#
 # Prerequisites:
 #   1. mcp-abap-adt-proxy running in background:
 #        mcp-abap-adt-proxy --config ~/.config/mcp-abap-adt/proxy/epam-sap-mcp.yaml
@@ -18,78 +23,43 @@ agent:
   healthTimeoutMs: 15000
   ragQueryK: 10
 
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.7
+  classifier:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.1
+
+rag:
+  type: in-memory
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
+
 pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_MODEL:-gpt-4o}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.7
-    classifier:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_MODEL:-gpt-4o}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.1
-
-  rag:
-    tools:
-      type: in-memory
-
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
-
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 10 }
-      after:
-        - id: tool-select
-          type: tool-select
-
-    - id: assemble
-      type: assemble
-
-    - id: generate-and-review
-      type: repeat
-      maxIterations: 3
-      until: "ctx.subResults?.review?.includes('\"approved\": true')"
-      stages:
-        - id: generate-code
-          type: subagent
-          config:
-            agent: abap-coder
-            task: |
-              {{inputText}}
-
-              Previous attempt (if any):
-              {{subResults.code}}
-
-              Reviewer feedback (if any):
-              {{subResults.review}}
-            outputTo: subResults.code
-
-        - id: review-code
-          type: subagent
-          config:
-            agent: code-reviewer
-            task: "Review this ABAP code:\n{{subResults.code}}"
-            outputTo: subResults.review
-
-    - id: tool-loop
-      type: tool-loop
-      config:
-        maxIterations: 1
+  name: linear
+  config:
+    planning: replan-on-error
+    dispatch: subagent
+    maxSteps: 6
+    maxRetriesPerStep: 2
+    failPolicy: abort
 
 subagents:
   - name: abap-coder
+    description: |
+      Writes and refines ABAP source code: reports, classes, function modules.
+      Use for any task that asks to generate or modify ABAP code.
     config: ../../examples/subagents/abap-coder-sap-aicore.yaml
   - name: code-reviewer
+    description: |
+      Reviews ABAP code and returns a one-line JSON object
+      {"approved": boolean, "issues": string[]}. Use after code generation to
+      verify correctness; do not use for generating new code.
     config: ../../examples/subagents/code-reviewer-sap-aicore.yaml

@@ -1,5 +1,10 @@
-# Structured pipeline — SAP AI Core provider.
-# Uses SAP AI SDK for LLM and structured pipeline for orchestration.
+# Flat pipeline (v19+) — SAP AI Core provider.
+# Uses SAP AI SDK for LLM with the flat (default) pipeline.
+#
+# The structured-stages DSL (`pipeline: { version, stages }`) was removed in v19.
+# Multi-role LLM config and RAG/MCP config now live at the top level (no nesting
+# under `pipeline:`). The flat pipeline runs the full DefaultPipeline flow
+# automatically.
 #
 # Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
 # See docs/SAP_AI_CORE.md for detailed setup instructions.
@@ -14,41 +19,21 @@ mode: smart
 agent:
   healthTimeoutMs: 15000   # SAP AI Core round-trips often exceed the default 5 s
 
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: gpt-4o
-      resourceGroup: default
-      temperature: 0.7
-    classifier:
-      provider: sap-ai-sdk
-      model: gpt-4o
-      resourceGroup: default
-      temperature: 0.1
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: gpt-4o
+    resourceGroup: default
+    temperature: 0.7
+  classifier:
+    provider: sap-ai-sdk
+    model: gpt-4o
+    resourceGroup: default
+    temperature: 0.1
 
-  rag:
-    tools:
-      type: in-memory
+rag:
+  type: in-memory
 
-  mcp:
-    - type: http
-      url: http://localhost:3001/mcp/stream/http
-
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 10 }
-      after:
-        - id: tool-select
-          type: tool-select
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
+mcp:
+  - type: http
+    url: http://localhost:3001/mcp/stream/http

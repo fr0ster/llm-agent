@@ -43,26 +43,28 @@ rag:
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
 
-coordinator:
-  activation: explicit
-  planner:
-    type: llm
-    plannerLlm: planner          # → llm.planner
-  reviewer:
-    type: llm
-    reviewerLlm: reviewer        # → llm.reviewer (cheap per-node "good enough?")
-  finalizer:
-    type: llm                    # real synthesis pass over the execution trace
-    finalizerLlm: finalizer      # → llm.finalizer
-    systemPrompt: |
-      You are a synthesis assistant. Read the user prompt and the execution
-      trace of completed plan nodes. Produce ONE final answer in clean Markdown
-      that fulfills the user request. Do not invent facts beyond the trace.
-  errorStrategy:
-    type: replan                 # vs `abort` — retry a failing node by replanning
-    maxReplans: 2
-  stateOracle: abap-inspector    # name of a subagent below — auto-wrapped as IStateOracle
-  maxRoundTrips: 3                # NeedInfoSignal round-trip budget
+pipeline:
+  name: dag
+  config:
+    activation: explicit
+    planner:
+      type: llm
+      plannerLlm: planner          # → llm.planner
+    reviewer:
+      type: llm
+      reviewerLlm: reviewer        # → llm.reviewer (cheap per-node "good enough?")
+    finalizer:
+      type: llm                    # real synthesis pass over the execution trace
+      finalizerLlm: finalizer      # → llm.finalizer
+      systemPrompt: |
+        You are a synthesis assistant. Read the user prompt and the execution
+        trace of completed plan nodes. Produce ONE final answer in clean Markdown
+        that fulfills the user request. Do not invent facts beyond the trace.
+    errorStrategy:
+      type: replan                 # vs `abort` — retry a failing node by replanning
+      maxReplans: 2
+    stateOracle: abap-inspector    # name of a subagent below — auto-wrapped as IStateOracle
+    maxRoundTrips: 3                # NeedInfoSignal round-trip budget
 
 subagents:
   - name: abap-analyst                 # DAG worker (target of plan nodes)

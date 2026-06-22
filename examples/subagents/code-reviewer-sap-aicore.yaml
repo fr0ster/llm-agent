@@ -1,6 +1,10 @@
 # SAP AI Core-backed code reviewer sub-agent (with semantic tool-select).
 # Used by docs/examples/subagent-orchestration-sap-aicore.yaml.
 # Requires: AICORE_SERVICE_KEY env variable with SAP AI Core service key JSON.
+#
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. Multi-role LLM and MCP config now live at the top level. The flat
+# (default) pipeline handles classify → RAG → tool-select → assemble → tool-loop.
 
 mode: smart
 
@@ -9,48 +13,27 @@ agent:
   maxIterations: 2
   ragQueryK: 10
 
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.1
+  classifier:
+    provider: sap-ai-sdk
+    model: ${SAP_AI_MODEL:-gpt-4o}
+    resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
+    temperature: 0.1
+
 rag:
   type: in-memory
+
+mcp:
+  - type: http
+    url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
 
 systemPrompt: |
   You are a senior code reviewer. Read the code and respond with a single JSON
   object on one line: {"approved": boolean, "issues": string[]}. Approve only if
   the code is correct, idiomatic, and complete. No prose outside the JSON.
   You may use read-only SAP tools to verify cross-references when needed.
-
-pipeline:
-  llm:
-    main:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_MODEL:-gpt-4o}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.1
-    classifier:
-      provider: sap-ai-sdk
-      model: ${SAP_AI_MODEL:-gpt-4o}
-      resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-      temperature: 0.1
-
-  mcp:
-    - type: http
-      url: ${MCP_ENDPOINT:-http://127.0.0.1:3001/mcp/stream/http}
-
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 10 }
-      after:
-        - id: tool-select
-          type: tool-select
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-      config:
-        maxIterations: 2

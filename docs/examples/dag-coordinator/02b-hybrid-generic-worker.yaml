@@ -19,10 +19,12 @@ rag:
   embedder: sap-ai-core
   model: ${EMBEDDING_MODEL:-text-embedding-3-small}
   resourceGroup: ${SAP_AI_RESOURCE_GROUP:-default}
-coordinator:
-  activation: explicit
-  planner: { type: llm, plannerLlm: planner }
-  finalizer: { type: passthrough }
+pipeline:
+  name: dag
+  config:
+    activation: explicit
+    planner: { type: llm, plannerLlm: planner }
+    finalizer: { type: passthrough }
 subagents:
   - name: abap-analyst
     description: |
