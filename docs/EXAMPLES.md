@@ -56,16 +56,16 @@ PER REQUEST (DefaultPipeline)
 | [`01-minimal-inmemory.yaml`](examples/01-minimal-inmemory.yaml) | Minimal start — DeepSeek + in-memory RAG, no MCP |
 | [`02-ollama-mcp.yaml`](examples/02-ollama-mcp.yaml) | Ollama embeddings + MCP tools |
 | [`03-multi-model.yaml`](examples/03-multi-model.yaml) | Separate classifier/helper models + Qdrant RAG |
-| [`12-deepseek-mcp.yaml`](examples/12-deepseek-mcp.yaml) | **Full options reference** — DeepSeek + Ollama embeddings + MCP with all agent knobs and commented advanced sections (multi-model pipeline, structured stages, custom prompts) |
+| [`12-deepseek-mcp.yaml`](examples/12-deepseek-mcp.yaml) | **Full options reference** — DeepSeek + Ollama embeddings + MCP with all agent knobs and commented advanced sections (multi-model pipeline, named pipeline config, custom prompts) |
 
-### Structured pipeline configs — YAML-defined stage tree
+### Named pipeline configs
 
 | File | Description |
 |---|---|
 | [`04-structured-default.yaml`](examples/04-structured-default.yaml) | DefaultPipeline flow as explicit YAML (tools + history stores) |
 | [`05-structured-minimal.yaml`](examples/05-structured-minimal.yaml) | Minimal pipeline — no RAG, just classify + assemble + tool-loop |
 | [`06-structured-multi-model.yaml`](examples/06-structured-multi-model.yaml) | Multi-model + Qdrant tools store + higher tool limits |
-| [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider with structured pipeline |
+| [`07-structured-sap-ai-core.yaml`](examples/07-structured-sap-ai-core.yaml) | SAP AI Core provider |
 | [`08-real-world-scenario.yaml`](examples/08-real-world-scenario.yaml) | **Full real-world scenario** with detailed comments explaining tool vectorization, classification, and tool selection |
 | [`09-parallel-optimized.yaml`](examples/09-parallel-optimized.yaml) | **Parallel-optimized** — summarize ‖ RAG queries run in parallel |
 | [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
@@ -80,25 +80,7 @@ npm run dev -- --config docs/examples/04-structured-default.yaml
 
 OpenAI-compatible endpoint: `http://localhost:4004/v1/chat/completions`
 
-## Simple vs structured pipeline — comparison
-
-| Feature | Simple (flat YAML) | Structured pipeline |
-|---|---|---|
-| Config location | `llm:`, `rag:`, `mcp:`, `agent:` top-level keys | `pipeline:` section with `version` + `stages` |
-| Orchestration flow | DefaultPipeline (tools + history stores) | YAML-defined stage tree |
-| Stage ordering | Fixed | Fully customizable |
-| Parallel stages | Fixed internal parallelism | Explicit `parallel` type with `after` |
-| Custom stages | Not possible | `withStageHandler()` + YAML reference |
-| Conditional stages | `agent.classificationEnabled` | `when` expressions on any stage |
-| Loops | Fixed tool loop | `repeat` type with `until` + `maxIterations` |
-| Custom RAG stores | Not possible | Implement custom `IPipeline` |
-| Best for | Simple setups, quick start | Complex orchestration, consumer-defined pipelines |
-
-**Without `pipeline.stages`** — `DefaultPipeline` runs (tools + history stores only).
-
-**With `pipeline.stages`** — the executor replaces DefaultPipeline entirely.
-
-**With custom `IPipeline`** — inject via `.setPipeline(myPipeline)` for full control.
+The pipeline is selected by name (`pipeline: { name, config }`); omit it for the default `flat` flow. See [PIPELINES.md](PIPELINES.md).
 
 ## Programmatic Examples
 
@@ -197,7 +179,7 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
-### Structured pipeline with custom stage handler
+### Custom pipeline implementation with stage handler
 
 ```ts
 import { SmartAgentBuilder } from '@mcp-abap-adt/llm-agent-libs';
@@ -218,18 +200,14 @@ const handle = await new SmartAgentBuilder()
   .build();
 ```
 
-Then reference in YAML (see [`04-structured-default.yaml`](examples/04-structured-default.yaml) and add):
+Register the handler in YAML by selecting a named pipeline and passing the custom stage in `pipeline.config`:
 
 ```yaml
 pipeline:
-  version: "1"
-  stages:
-    - id: audit
-      type: audit-log
-      config: { level: info }
-    - id: classify
-      type: classify
-    # ... rest of stages
+  name: flat
+  config:
+    stageHandlers:
+      audit-log: {}  # resolved from the withStageHandlers() registry
 ```
 
 ### Skills — programmatic setup
