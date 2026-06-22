@@ -77,8 +77,9 @@ export class ControllerPipelinePlugin
       throw new Error(
         'controller: `planner:` removed — capability is preset-encoded. Select ' +
           'pipeline: { name: controller } (smart-executor) or ' +
-          '{ name: controller-weak } (weak-executor), or pass `kind` to ' +
-          'makeControllerPlanner. No `planner:` alias exists.',
+          '{ name: controller-weak } (weak-executor), or pass the kind to ' +
+          '`new ControllerFactory().build(config, deps, "weak-executor")` when ' +
+          'composing in code. No `planner:` alias exists.',
       );
     }
 

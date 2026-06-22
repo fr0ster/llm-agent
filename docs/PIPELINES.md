@@ -7,7 +7,7 @@ pipelines; deployments can add their own as plugins.
 ```yaml
 # smart-server.yaml
 pipeline:
-  name: stepper            # flat | linear | dag | stepper | controller | <plugin name>
+  name: stepper            # flat | linear | dag | stepper | controller | controller-weak | <plugin name>
   config:                  # the dialect of the chosen pipeline (see below)
     mode: planned-react
 ```
@@ -82,7 +82,8 @@ pairing by pipeline name:
   trusted to self-expand).
 
 A `planner:` key in the controller config is rejected fail-loud (migration: use the
-preset name, or pass `kind` to `makeControllerPlanner` when composing in code).
+preset name, or pass the kind to `new ControllerFactory().build(config, deps, 'weak-executor')`
+when composing in code — `ControllerFactory` is the public controller export).
 
 - The three subagents are independent LLM endpoints — they can target different
   providers/models (e.g. a heavy planner + a light executor). The executor must
