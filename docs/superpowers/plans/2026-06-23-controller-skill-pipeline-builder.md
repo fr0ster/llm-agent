@@ -149,7 +149,23 @@ Route the embedder, skill-host, and MCP construction through `this._deps`:
 - **Agent embedder (P1b):** the agent RAG embedder is built via `resolveAgentEmbedder(rag, diEmbedder, extraFactories)` — a **3-arg** function whose **2nd** param IS the DI embedder slot (`resolve-agent-embedder.ts:24`). The current call (`:1216`) passes `this.cfg.embedder` as that 2nd arg. Prefer the injected one: change it to `resolveAgentEmbedder(this.cfg.rag, this._deps.embedder ?? this.cfg.embedder, mergedEmbedderFactories)`. (Do NOT add a 4th argument — the signature has three.) This is the ONLY way an injected embedder reaches the agent-RAG path — without it, a stubbed test still resolves `rag.embedder` (e.g. `sap-ai-core`) for real.
 - replace direct `resolveEmbedder(...)` calls (e.g. `:1251` in the skill-host build) with `this._deps.resolveEmbedder(...)`, and when `this._deps.embedder` is set pass it via `options.injectedEmbedder` so the skill-host reuses the same injected instance;
 - replace `prefetchEmbedderFactories()` calls with `this._deps.prefetchEmbedderFactories()`.
-- **Skill-host (P2 — preserve build→load→validate):** the skill-host is already created via `initSkillHost(buildHost, skillCfg, pools)` (`:1245`), which runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk: `const buildHost = this._deps.skillHost ? async () => this._deps.skillHost! : () => this._deps.buildSkillHost(skillCfg, { resolveEmbedder: (ec) => this._deps.resolveEmbedder(ec, this._deps.embedder ? { injectedEmbedder: this._deps.embedder } : undefined) })`. A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
+- **Skill-host embedder + prefetch (P1c — injected embedder must short-circuit ALL embedder I/O):** the current block (`:1230-1262`) computes `reuseAgentEmbedder = skillCfg.embedder === undefined && resolvedEmbedder !== undefined`, and when `!reuseAgentEmbedder` it calls `prefetchEmbedderFactories([skillCfg.embedder?.provider ?? 'ollama'])` (real network) BEFORE building. Because the builder ALWAYS sets `skillPlugins.embedder`, `reuseAgentEmbedder` would be `false` even with an injected embedder → real prefetch. Fix: an injected embedder forces reuse and skips prefetch. Replace the block's embedder logic with:
+  ```ts
+  const injectedEmbedder = this._deps.embedder;
+  const reuseAgentEmbedder =
+    injectedEmbedder !== undefined ||
+    (skillCfg.embedder === undefined && resolvedEmbedder !== undefined);
+  if (!reuseAgentEmbedder) {
+    await this._deps.prefetchEmbedderFactories([skillCfg.embedder?.provider ?? 'ollama']);
+  }
+  // …in the buildHost thunk's resolveEmbedder:
+  resolveEmbedder: (ec) =>
+    reuseAgentEmbedder
+      ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
+      : this._deps.resolveEmbedder(ec, { extraFactories: mergedEmbedderFactories }),
+  ```
+  So with `deps.embedder` set: NO prefetch, NO `resolveEmbedder` — the injected instance is used directly. (Note `resolvedEmbedder` itself already prefers `deps.embedder` via the agent-embedder fix above, so both paths use the same injected instance.)
+- **Skill-host build→load→validate (P2 — preserve the invariant):** keep the existing `initSkillHost(buildHost, skillCfg, pools)` (`:1245`) — it runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk: `const buildHost = this._deps.skillHost ? async () => this._deps.skillHost! : () => this._deps.buildSkillHost(skillCfg, { resolveEmbedder: <the thunk above>, makePgPool: <unchanged> })`. A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
 - replace any `connectMcpClientsFromConfig(...)` call with `this._deps.connectMcp(...)`.
 
 - [ ] **Step 4: Run test to verify it passes**
@@ -593,8 +609,11 @@ Append:
 Two tests: (a) the agent builds with everything stubbed — and crucially via
 `buildSkillHost` (NOT a direct `skillHost`), so we ALSO assert the skill config
 reached it **normalized** (P1a); (b) an injected `embedder` covers the agent-RAG
-path (P1b). The stub host implements `load()`/`groups()`/`rag().activeManifest()`
-because `.build()` routes it through `initSkillHost` (load+validate, P2).
+path (P1b) AND, because `deps.embedder` is set, the skill-host prefetch is skipped
+entirely (P1c) — no embedder factory is ever fetched, so the test is truly
+I/O-free without needing a `prefetchEmbedderFactories` stub. The stub host
+implements `load()`/`groups()`/`rag().activeManifest()` because `.build()` routes
+it through `initSkillHost` (load+validate, P2).
 
 ```ts
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
@@ -776,6 +795,7 @@ Expected: all green; commit succeeds.
 - **Config normalization (review P1a):** `.build()` runs the raw config through `resolveSmartServerConfig` so skill-host defaults (catalog/chunk/loadOnStartup) are filled before the build path reads `skillCfg.catalog.type` → Task 4 Step 3 + the P1a assertion test. ✓
 - **Embedder seam covers ALL paths (review P1b):** `BuildAgentDeps.embedder` threaded as `resolveAgentEmbedder`'s `diEmbedder` (agent-RAG) AND skill-host `injectedEmbedder` → Task 1 Step 3 + the integration test injects `embedder`. ✓
 - **Startup invariant preserved (review P2):** even a prebuilt `skillHost` goes through `initSkillHost` (load + validate + group probe) — only the `buildHost` thunk is swapped → Task 1 Step 3 + the P2 test asserts `load()` ran. ✓
+- **Injected embedder short-circuits ALL embedder I/O incl. skill-host prefetch (review P1c):** an injected `deps.embedder` forces `reuseAgentEmbedder` and skips `prefetchEmbedderFactories` → Task 1 Step 3 embedder/prefetch block; the integration test injects `embedder` and asserts no factory fetch. ✓
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows code; commands have expected output. The one non-code instruction (the `_start()` body MOVE in Task 2 Step 3) is a bounded extract with explicit boundary lines + the new method signatures + the close composition shown. ✓
 
