@@ -227,9 +227,14 @@ import { makeGitHubTransport } from './github-transport.js';
  *  where body is an object (JSON) or string (raw text). Unmapped URL → 404. */
 function fakeFetch(routes: Record<string, { status?: number; body: unknown }>) {
   const calls: string[] = [];
-  const impl = async (input: unknown) => {
+  const headers: Array<Record<string, string> | undefined> = [];
+  const impl = async (
+    input: unknown,
+    init?: { headers?: Record<string, string> },
+  ) => {
     const url = String(input);
     calls.push(url);
+    headers.push(init?.headers);
     const hit = routes[url];
     const status = hit?.status ?? (hit ? 200 : 404);
     const ok = status >= 200 && status < 300;
@@ -241,7 +246,7 @@ function fakeFetch(routes: Record<string, { status?: number; body: unknown }>) {
       text: async () => String(hit?.body ?? ''),
     } as unknown as Response;
   };
-  return { impl: impl as unknown as typeof fetch, calls };
+  return { impl: impl as unknown as typeof fetch, calls, headers };
 }
 
 const RAW = 'https://raw.githubusercontent.com';
@@ -317,28 +322,26 @@ test('fetchSkillMd hits the raw SKILL.md URL and returns the body', async () => 
 });
 
 test('a token attaches an Authorization header to every request', async () => {
-  const seen: Array<Record<string, string> | undefined> = [];
-  const impl = (async (_url: unknown, init?: { headers?: Record<string, string> }) => {
-    seen.push(init?.headers);
-    return {
-      ok: true,
-      status: 200,
-      statusText: 'OK',
-      json: async () => MARKETPLACE,
-      text: async () => '',
-    } as unknown as Response;
-  }) as unknown as typeof fetch;
+  // Proper response sequence: marketplace JSON for the manifest URL, a directory
+  // array for the one enabled plugin's Contents URL. (ref is provided, so no
+  // default-branch metadata call.) Then assert EVERY captured call carried auth.
+  const { impl, headers } = fakeFetch({
+    [`${RAW}/o/r/main/.claude-plugin/marketplace.json`]: { body: MARKETPLACE },
+    [`${API}/repos/o/r/contents/plugins/sap-abap/skills?ref=main`]: {
+      body: [{ name: 'sap-abap', type: 'dir' }],
+    },
+  });
   const t = makeGitHubTransport({
     owner: 'o',
     repo: 'r',
     ref: 'main',
     token: 'gho_x',
-    enabled: ['*'],
+    enabled: ['sap-abap'],
     fetchImpl: impl,
   });
   await t.listPlugins();
-  assert.ok(seen.length > 0);
-  for (const h of seen) {
+  assert.ok(headers.length > 0);
+  for (const h of headers) {
     assert.equal(h?.authorization, 'Bearer gho_x');
   }
 });
@@ -623,6 +626,37 @@ test('a fetched source with NEITHER github nor registry fails loud', () => {
     /exactly one of 'registry' or 'github'/,
   );
 });
+
+test('a fetched source rejects an empty / non-string selector', () => {
+  const base = {
+    store: { type: 'in-memory' as const },
+    embedder: { provider: 'sap-ai-core', model: 'm' },
+  };
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', registry: '', enabled: ['a'] }],
+      }),
+    /registry must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', github: '', enabled: ['a'] }],
+      }),
+    /github must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', registry: 123, enabled: ['a'] }],
+      }),
+    /registry must be a non-empty string/,
+  );
+});
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -660,24 +694,29 @@ export interface SkillPluginsFetchedSource {
 }
 ```
 
-- [ ] **Step 4: Parse the new fields + XOR check**
+- [ ] **Step 4: Parse the new fields + non-empty validation + XOR check**
 
-In the fetched-source parse path, after the `enabled` validation and the existing line that conditionally copies `registry`:
+Currently the fetched-source path builds `out` with an inline conditional copy of
+`registry` (`...(typeof raw.registry === 'string' ? { registry: raw.registry } : {})`).
+**Replace that whole `out` construction** (the object literal plus the inline
+`registry` copy) with an explicit, validated build. Both selectors are validated
+as **non-empty strings** so `registry: ''` / `github: ''` / a non-string can no
+longer slip through the XOR check into `makeHttpTransport({ registry: '' })`:
 
 ```ts
 const out: SkillPluginsFetchedSource = {
   id,
   enabled: enabled as readonly string[],
-  ...(typeof raw.registry === 'string' ? { registry: raw.registry } : {}),
 };
-```
-
-insert the github-field copies and the XOR validation:
-
-```ts
+if (raw.registry !== undefined) {
+  if (typeof raw.registry !== 'string' || raw.registry.length === 0) {
+    fail(`source '${id}': registry must be a non-empty string`);
+  }
+  out.registry = raw.registry;
+}
 if (raw.github !== undefined) {
-  if (typeof raw.github !== 'string') {
-    fail(`source '${id}': github must be a string`);
+  if (typeof raw.github !== 'string' || raw.github.length === 0) {
+    fail(`source '${id}': github must be a non-empty string`);
   }
   out.github = raw.github;
 }
@@ -707,7 +746,7 @@ Run:
 node --import tsx/esm --test --test-reporter=spec \
   packages/llm-agent-server-libs/src/smart-agent/skill-plugins-config.test.ts
 ```
-Expected: PASS — the three new tests pass and existing config tests still pass.
+Expected: PASS — the four new tests pass and existing config tests still pass.
 
 > If any PRE-EXISTING config test now fails because it declared a fetched source with neither `registry` nor `github` (relying on the old silently-optional `registry`), that test was asserting the old loose behaviour. Update it to include a `registry` (or `github`) — the XOR rule is intended. Do NOT weaken the XOR check to keep a loose test green.
 
@@ -721,37 +760,100 @@ git commit -m "feat(skills): config supports a github source (github XOR registr
 
 ---
 
-## Task 5: Wire the transport in `buildSources`
+## Task 5: Wire the transport in `buildSources` (DI seam, real wiring tested)
 
 **Files:**
-- Modify: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.ts:35-50` (imports), `:162-177` (fetched branch)
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.ts:35-50` (imports), `:152-180` (`buildSources`)
 - Test: `packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts`
+
+> The reviewer flagged that testing a `chooseTransportKind` predicate would not
+> catch a broken implementation that drops `ref`/`token`/`enabled` or skips
+> `parseGitHubRepo`. Instead, give `buildSources` a **transport-factory DI seam**
+> (defaulting to the real factories) and assert the GitHub source ACTUALLY
+> constructs `makeGitHubTransport` with the right options. No production export
+> exists solely for the test — the seam is a real, defaulted parameter.
 
 - [ ] **Step 1: Write the failing test**
 
-Append to `skill-plugins-host-factory.test.ts`. This test exercises the live `buildSources` path indirectly by building a host with a `github` source and a fake-fetch transport — but `buildSources` calls `makeGitHubTransport` with the real global `fetch`, which we cannot hit in a unit test. Instead, assert the WIRING decision directly with a focused export. Add a tiny exported helper to the factory so the choice is unit-testable without network:
-
-First, the test (it imports a helper we add in Step 3):
+Append to `skill-plugins-host-factory.test.ts`. (The file already imports `assert`
+and `test`; ensure `SkillPluginsConfig` is imported — if not, add
+`import type { SkillPluginsConfig } from './skill-plugins-config.js';`. Also add
+`import type { GitHubTransportOptions } from '@mcp-abap-adt/llm-agent-libs';`.)
 
 ```ts
-import { chooseTransportKind } from './skill-plugins-host-factory.js';
+import {
+  buildSources,
+  type TransportFactories,
+} from './skill-plugins-host-factory.js';
+import type { GitHubTransportOptions } from '@mcp-abap-adt/llm-agent-libs';
 
-test('chooseTransportKind picks github when a github field is present', () => {
-  assert.equal(
-    chooseTransportKind({ id: 'x', github: 'a/b', enabled: ['*'] }),
-    'github',
+const STUB_TRANSPORT = {
+  listPlugins: async () => [],
+  fetchSkillMd: async () => '',
+};
+
+test('buildSources builds a github source, threading repo/ref/token/enabled', () => {
+  let captured: GitHubTransportOptions | undefined;
+  const factories: TransportFactories = {
+    github: (opts) => {
+      captured = opts;
+      return STUB_TRANSPORT;
+    },
+    http: () => {
+      throw new Error('should not build an http transport for a github source');
+    },
+  };
+  const sources = buildSources(
+    {
+      chunk: { maxChars: 1000 },
+      sources: [
+        {
+          id: 'sap-skills',
+          github: 'https://github.com/secondsky/sap-skills.git',
+          ref: 'main',
+          token: 'gho_x',
+          enabled: ['sap-abap'],
+          strategy: 'single-collection',
+          strategyConfig: { collection: 'sap' },
+        },
+      ],
+    } as unknown as SkillPluginsConfig,
+    factories,
   );
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].id, 'sap-skills');
+  // parseGitHubRepo ran (URL → owner/repo) AND ref/token/enabled were threaded.
+  assert.deepEqual(captured, {
+    owner: 'secondsky',
+    repo: 'sap-skills',
+    ref: 'main',
+    token: 'gho_x',
+    enabled: ['sap-abap'],
+  });
 });
 
-test('chooseTransportKind picks http when only registry is present', () => {
-  assert.equal(
-    chooseTransportKind({ id: 'x', registry: 'http://h', enabled: ['*'] }),
-    'http',
+test('buildSources builds an http source from registry', () => {
+  let registry: string | undefined;
+  const factories: TransportFactories = {
+    github: () => {
+      throw new Error('should not build a github transport for a registry source');
+    },
+    http: (opts) => {
+      registry = opts.registry;
+      return STUB_TRANSPORT;
+    },
+  };
+  const sources = buildSources(
+    {
+      chunk: { maxChars: 1000 },
+      sources: [{ id: 'r', registry: 'http://h', enabled: ['*'] }],
+    } as unknown as SkillPluginsConfig,
+    factories,
   );
+  assert.equal(sources.length, 1);
+  assert.equal(registry, 'http://h');
 });
 ```
-
-(Match the existing import style at the top of the file; `assert` and `test` are already imported there.)
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -760,58 +862,70 @@ Run:
 node --import tsx/esm --test --test-reporter=spec \
   packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts
 ```
-Expected: FAIL — `chooseTransportKind` is not exported.
+Expected: FAIL — `buildSources` / `TransportFactories` are not exported, and
+`buildSources` does not yet accept a factories argument.
 
-- [ ] **Step 3: Add the helper, the import, and use it in `buildSources`**
+- [ ] **Step 3: Add the imports, the DI seam, and the github branch**
 
-In `skill-plugins-host-factory.ts`, add `makeGitHubTransport` and `parseGitHubRepo` to the existing `@mcp-abap-adt/llm-agent-libs` import block (which already imports `makeHttpTransport`):
+In `skill-plugins-host-factory.ts`, extend the existing
+`@mcp-abap-adt/llm-agent-libs` import block (which already imports
+`makeHttpTransport`) to also bring in the GitHub transport, the option/transport
+types, and `parseGitHubRepo`:
 
 ```ts
+  type GitHubTransportOptions,
+  type HttpTransportOptions,
+  type IMarketplaceTransport,
   makeGitHubTransport,
   makeHttpTransport,
   parseGitHubRepo,
 ```
 
-Add the exported helper just above `buildSources`:
+Define the DI seam + default just above `buildSources`:
 
 ```ts
-/** Which transport a fetched source selects. Exported for unit testing the
- *  wiring decision without touching the network. */
-export function chooseTransportKind(
-  src: SkillPluginsFetchedSource,
-): 'github' | 'http' {
-  return src.github !== undefined ? 'github' : 'http';
+/** Transport factories for {@link buildSources}. A DI seam: production uses the
+ *  defaults; unit tests inject capturing stubs to assert the wiring without
+ *  touching the network. */
+export interface TransportFactories {
+  github: (opts: GitHubTransportOptions) => IMarketplaceTransport;
+  http: (opts: HttpTransportOptions) => IMarketplaceTransport;
 }
+
+const defaultTransports: TransportFactories = {
+  github: makeGitHubTransport,
+  http: makeHttpTransport,
+};
 ```
 
-Add the type import for `SkillPluginsFetchedSource` to the existing config-type import:
+Change `buildSources` to be EXPORTED, take the factories (defaulted), and pick
+the transport by the present selector. The whole function becomes:
 
 ```ts
-import type {
-  SkillPluginsConfig,
-  SkillPluginsFetchedSource,
-  SkillPluginsRecordsSource,
-} from './skill-plugins-config.js';
-```
-
-Replace the fetched-branch transport construction (currently
-`transport: makeHttpTransport({ registry: src.registry ?? '' })`) with a
-kind-driven choice. The fetched branch becomes:
-
-```ts
-    // Fetched source → resolve the named strategy + pick a transport.
+/** Map every config source to a `{ id, source }` ingest entry. */
+export function buildSources(
+  cfg: SkillPluginsConfig,
+  transports: TransportFactories = defaultTransports,
+): ReadonlyArray<{ id: string; source: ISkillSource }> {
+  const out: { id: string; source: ISkillSource }[] = [];
+  for (const src of cfg.sources ?? []) {
+    if ('records' in src) {
+      out.push({ id: src.id, source: makeRecordsSource(src) });
+      continue;
+    }
+    // Fetched source → resolve the named strategy + pick a transport by selector.
     const strategy = resolveSkillSourceStrategy(
       src.strategy ?? 'one-group-per-plugin',
     );
     const transport =
-      chooseTransportKind(src) === 'github'
-        ? makeGitHubTransport({
-            ...parseGitHubRepo(src.github as string),
+      src.github !== undefined
+        ? transports.github({
+            ...parseGitHubRepo(src.github),
             ...(src.ref !== undefined ? { ref: src.ref } : {}),
             ...(src.token !== undefined ? { token: src.token } : {}),
             enabled: src.enabled ?? [],
           })
-        : makeHttpTransport({ registry: src.registry ?? '' });
+        : transports.http({ registry: src.registry ?? '' });
     out.push({
       id: src.id,
       source: strategy({
@@ -824,11 +938,16 @@ kind-driven choice. The fetched branch becomes:
           : {}),
       }),
     });
+  }
+  return out;
+}
 ```
 
-> The `'records' in src` guard above this branch still narrows out the records
-> source, so `src` here is a `SkillPluginsFetchedSource` — `src.github`/`src.ref`/
-> `src.token` are all in scope.
+> `buildSkillHostFromConfig` already calls `const sources = buildSources(cfg);` —
+> the new second parameter is defaulted, so that call is unchanged and uses the
+> real factories. The `'records' in src` guard narrows `src` to
+> `SkillPluginsFetchedSource`, so `src.github`/`src.ref`/`src.token` are in scope
+> with no cast (Task 4 added those fields to the type).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -837,7 +956,7 @@ Run:
 node --import tsx/esm --test --test-reporter=spec \
   packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts
 ```
-Expected: PASS — both `chooseTransportKind` tests pass; existing factory tests still pass.
+Expected: PASS — both new wiring tests pass; existing factory tests still pass.
 
 - [ ] **Step 5: Build the package to confirm types**
 
@@ -845,14 +964,14 @@ Run:
 ```bash
 npm -w @mcp-abap-adt/llm-agent-server-libs run build
 ```
-Expected: build succeeds (the `src.github as string` cast is guarded by `chooseTransportKind`).
+Expected: build succeeds.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.ts \
         packages/llm-agent-server-libs/src/smart-agent/skill-plugins-host-factory.test.ts
-git commit -m "feat(skills): wire github source transport in buildSources"
+git commit -m "feat(skills): wire github source transport in buildSources (DI seam)"
 ```
 
 ---
@@ -973,8 +1092,8 @@ Send the prompt `Review ABAP program zdms_upload_files, check security, performa
 - Contents-API listing + raw bodies (hybrid) → Task 2 `listPlugins`/`fetchSkillMd`. ✓
 - Enumerate only enabled → Task 2 test "ONLY enabled". ✓
 - Optional token, public default → Task 2 token test; Task 4 config `token`. ✓
-- `github` XOR `registry` fail-loud → Task 4. ✓
-- Wiring picks transport → Task 5. ✓
+- `github` XOR `registry` fail-loud + non-empty validation → Task 4 (+ empty/non-string tests). ✓
+- Wiring picks transport (real `buildSources` via DI seam) → Task 5. ✓
 - Default-branch resolution + explicit ref skip → Task 2 tests. ✓
 - 403 token hint → Task 2 test. ✓
 - Index export → Task 3. ✓
@@ -983,4 +1102,4 @@ Send the prompt `Review ABAP program zdms_upload_files, check security, performa
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows full code; every command has expected output. ✓
 
-**3. Type consistency:** `makeGitHubTransport`/`GitHubTransportOptions`/`parseGitHubRepo`/`parseMarketplace`/`skillDirsFromContents`/`chooseTransportKind` and the `{ owner, repo, ref?, token?, enabled, fetchImpl? }` option shape are used identically across Tasks 1, 2, 3, and 5. `SkillPluginsFetchedSource` field names (`github`/`ref`/`token`/`registry`/`enabled`) match between Task 4 (definition) and Task 5 (use). ✓
+**3. Type consistency:** `makeGitHubTransport`/`GitHubTransportOptions`/`parseGitHubRepo`/`parseMarketplace`/`skillDirsFromContents` and the `{ owner, repo, ref?, token?, enabled, fetchImpl? }` option shape are used identically across Tasks 1, 2, 3, and 5. `TransportFactories` (`{ github, http }`) is defined and consumed in Task 5 only. `SkillPluginsFetchedSource` field names (`github`/`ref`/`token`/`registry`/`enabled`) match between Task 4 (definition) and Task 5 (use). The Task 5 test's `captured` deep-equal (`{owner,repo,ref,token,enabled}`) matches exactly what the `buildSources` github branch passes. ✓
