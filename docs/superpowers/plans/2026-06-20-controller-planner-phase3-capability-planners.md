@@ -550,12 +550,13 @@ This is the gate: **a non-green suite here is a STOP, not a "proceed and fix lat
 ```bash
 git add packages/llm-agent-server-libs/src/pipelines/controller.ts \
         packages/llm-agent-server-libs/src/pipelines/__tests__/controller.test.ts \
+        packages/llm-agent-server-libs/src/smart-agent/controller/controller-coordinator-handler.ts \
         packages/llm-agent-server-libs/src/smart-agent/controller/__tests__/controller-coordinator-handler.test.ts
-git commit -m "feat(controller): fail-loud planner: removal + migrate handler tests to plan-first — closes the clean break (Phase 3)
+git commit -m "feat(controller): fail-loud planner: removal + plan-first handler tests + rewind DI seam — closes the clean break (Phase 3)
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
-(The handler-test migration from Step 2c is committed here, with the parser change, since both are needed for the Step 4b green gate.)
+(This commit carries everything from Step 2c needed for the Step 4b green gate: the parser fail-loud change (`controller.ts`), the `deps.controllerPlanner` DI seam (`controller-coordinator-handler.ts` — product code), and the handler-test migration + parser tests. The seam product-code file MUST be in `git add` — Step 2c edits it.)
 
 ---
 
