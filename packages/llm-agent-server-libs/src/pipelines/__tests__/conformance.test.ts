@@ -26,7 +26,14 @@ const BUILTINS: Array<{
   { plugin: new LinearPipelinePlugin(), ctx: fakeServerCtx },
   { plugin: new DagPipelinePlugin(), ctx: fakeServerCtx },
   { plugin: new StepperPipelinePlugin(), ctx: fakeServerCtx },
-  { plugin: new ControllerPipelinePlugin(), ctx: fakeControllerServerCtx },
+  {
+    plugin: new ControllerPipelinePlugin('controller', 'smart-executor'),
+    ctx: fakeControllerServerCtx,
+  },
+  {
+    plugin: new ControllerPipelinePlugin('controller-weak', 'weak-executor'),
+    ctx: fakeControllerServerCtx,
+  },
 ];
 const MIN_CFG: Record<string, unknown> = {
   flat: {},
@@ -34,6 +41,13 @@ const MIN_CFG: Record<string, unknown> = {
   dag: { planner: { type: 'llm' } },
   stepper: { mode: 'planned-react' },
   controller: {
+    subagents: {
+      evaluator: { provider: 'openai' },
+      planner: { provider: 'openai' },
+      executor: { provider: 'openai' },
+    },
+  },
+  'controller-weak': {
     subagents: {
       evaluator: { provider: 'openai' },
       planner: { provider: 'openai' },
