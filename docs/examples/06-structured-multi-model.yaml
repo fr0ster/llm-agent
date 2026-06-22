@@ -7,13 +7,13 @@
 # use the top-level flat `rag:` block. The flat pipeline runs the full
 # DefaultPipeline flow automatically.
 #
-# - Main LLM: SAP AI Core gpt-4o (capable, high temperature)
+# - Main LLM: OpenAI gpt-4o (capable, high temperature)
 # - Classifier/Helper: DeepSeek (cheap, low temperature)
-# - Tools RAG: Qdrant + Ollama embeddings (for tool/skill selection)
+# - Tools RAG: Qdrant + OpenAI embeddings (for tool/skill selection)
 # - tool-loop / maxIterations / maxToolCalls tunable via agent:
 #
 # Usage:
-#   AICORE_SERVICE_KEY='...' DEEPSEEK_API_KEY=sk-xxx \
+#   OPENAI_API_KEY=sk-xxx DEEPSEEK_API_KEY=sk-xxx \
 #     npm run dev -- --config docs/examples/06-structured-multi-model.yaml
 
 port: 4004

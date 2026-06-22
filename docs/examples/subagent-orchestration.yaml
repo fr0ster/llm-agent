@@ -11,7 +11,7 @@
 # for multi-agent orchestration.
 #
 # Usage:
-#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/subagent-orchestration.yaml
+#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/subagent-orchestration.yaml
 
 port: 4004
 host: 0.0.0.0

@@ -7,7 +7,7 @@
 # skips classification and the RAG/summarize/history stages when RAG is not configured.
 #
 # Usage:
-#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml
+#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml
 
 port: 4004
 host: 0.0.0.0

@@ -1,6 +1,6 @@
 # @mcp-abap-adt/deepseek-llm
 
-## 19.3.0
+## 20.0.0
 
 ### Added
 - Controller planner capability-tuned planners (§C): smart-executor (default `controller`) and weak-executor (new `controller-weak` preset); preset-encoded selection; `ControllerFactory.build(config, deps, kind)` + `deps.controllerPlanner` DI seam.
