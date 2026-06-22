@@ -302,7 +302,7 @@ async function makeRealEmbedder(): Promise<IEmbedder> {
 // --------------------------------------------------------------------------
 // STUB subagent client — deterministic canned planner output (NO network).
 // Branches on the SYSTEM prompt: create-plan → {plan:[...]}, finalize → done,
-// incremental next-step → one step then done. Records whether the injected
+// plan-first next-step → step from plan then done. Records whether the injected
 // "Relevant skills" block reached the prompt (proves the WITH wiring).
 // --------------------------------------------------------------------------
 interface StubProbe {

@@ -161,8 +161,8 @@ export interface ControllerHandlerDeps {
    *  approve-content reviewer (legacy behaviour — every content result is 'ok')
    *  so pre-reviewer callers keep working. The factory injects LlmReviewer. */
   reviewer?: IReviewer;
-  /** Finalizer role. Optional; when absent the adaptive planner's own finalize is
-   *  used and the incremental planner's `done.result` is the answer (legacy). */
+  /** Finalizer role. Optional; when absent the plan-first planner's own finalize is
+   *  used and a planner without finalize support uses the planner's `done.result` as the answer (legacy). */
   finalizer?: IFinalizer;
   /** Injectable runId minter (tests pass a deterministic counter). */
   runIdMinter?: RunIdMinter;
@@ -252,7 +252,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       externalNames.has(name) || (deps.isExternalTool?.(name) ?? false);
 
     // True for the first planner.next of a turn that resumed an external-tool
-    // result (the result is now in plannerPrivate) → the adaptive planner replans
+    // result (the result is now in plannerPrivate) → the plan-first planner replans
     // with it rather than blindly re-running the suspended step. Set in the
     // external-tool resume branch below.
     let resumedExternal = false;
@@ -356,7 +356,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
     // -- Resume from a persisted pending marker -----------------------------
     // Planner is constructed BEFORE the resume preamble: the artifact-first
-    // external-resume adopt below calls planner.commit() to keep the adaptive
+    // external-resume adopt below calls planner.commit() to keep the plan-first
     // planCursor in lockstep with nextSeq. Stateless construction; the main loop
     // reuses this same instance.
     const planner =
@@ -398,7 +398,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           bundle.pending = undefined;
           bundle.runState = 'active';
           // Same commit side effects as settle(), incl. planner.commit() so the
-          // adaptive planCursor advances with nextSeq.
+          // plan-first planCursor advances with nextSeq.
           const mapped = mapOutcome(resolved.status);
           bundle.lastOutcome = mapped;
           planner.commit?.(bundle, mapped);
@@ -482,7 +482,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
           bundle.runState = 'active';
           externalContinuation = true;
         } else {
-          // Legacy path (no inFlightStep — e.g. a seeded adaptive bundle): feed the
+          // Legacy path (no inFlightStep — e.g. a seeded plan-first bundle): feed the
           // result via plannerPrivate and let the planner replan.
           bundle.plannerPrivate += `\n[external tool ${toolName} result] ${result}`;
           bundle.pending = undefined;
@@ -591,7 +591,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     let planParseRetries = 0;
     // bundle.lastOutcome is the SINGLE source of truth for the last step's
     // outcome — durable, so a resume after a FAILED step replans instead of
-    // repeating it. runStep.settle() sets it; the adaptive replan branch clears it
+    // repeating it. runStep.settle() sets it; the plan-first replan branch clears it
     // once the failure has been consumed into a new plan (so a crash after the
     // replan, or a finalizer retry after an empty replan, does NOT replan again).
     while (bundle.budgets.stepsUsed < cfg.maxSteps) {
@@ -614,7 +614,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         );
         if (resolved) {
           // Already committed → adopt, do NOT re-run. Same commit side effects as
-          // settle(), including planner.commit() so the adaptive planCursor advances
+          // settle(), including planner.commit() so the plan-first planCursor advances
           // in lockstep with nextSeq.
           const mapped = mapOutcome(resolved.status);
           bundle.lastOutcome = mapped;
@@ -677,7 +677,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
       // Planner crash-guard: a prior crash mid-call left plannerCallInFlight set →
       // charge plannerResumeCount; exhausting maxPlannerResumes is a TERMINAL abort
-      // (store-first). The adaptive replan runs through planner.next too, so this one
+      // (store-first). The plan-first replan runs through planner.next too, so this one
       // guard covers the awaiting-replan replan with no separate site.
       if (bundle.plannerCallInFlight) {
         bundle.plannerResumeCount = (bundle.plannerResumeCount ?? 0) + 1;
@@ -754,8 +754,8 @@ export class ControllerCoordinatorHandler implements IStageHandler {
       // NB: do NOT reset resumedExternal here — if this replan reply was malformed
       // (next === null), the parse-retry below must keep replanning. It is reset
       // only after a VALID decision (beside planParseRetries = 0;).
-      // The adaptive planner mutates bundle.plan/planCursor in next(); persist so
-      // a stateless resume continues from the same point. (No-op for incremental.)
+      // The plan-first planner mutates bundle.plan/planCursor in next(); persist so
+      // a stateless resume continues from the same point. (No-op for a planner without plan-state.)
       await persistBundle(deps.backend, sessionId, bundle);
 
       // Format failure (not valid NextStep JSON) → re-ask the planner with a
@@ -779,7 +779,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
 
       if (next.kind === 'done') {
         // Pass next.result as the legacy answer: used only when no finalizer is
-        // injected (3-role config) — the adaptive planner already composed it.
+        // injected (3-role config) — the plan-first planner already composed it.
         return this.finalize(
           ctx,
           sessionId,
@@ -1387,7 +1387,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
     usageNow: () => TerminalUsage,
     now: () => string,
     terminalTtlMs: number,
-    /** Used ONLY when no finalizer is injected (3-role config): the adaptive
+    /** Used ONLY when no finalizer is injected (3-role config): the plan-first
      *  planner's already-composed done.result. */
     legacyAnswer?: string,
   ): Promise<boolean> {
@@ -1489,7 +1489,7 @@ export class ControllerCoordinatorHandler implements IStageHandler {
         }
       }
     } else {
-      // Legacy: the adaptive planner already composed the answer in done.result.
+      // Legacy: the plan-first planner already composed the answer in done.result.
       // Prefer the live param, else the durable copy persisted on finalizing-entry.
       answer = legacyAnswer ?? bundle.legacyFinalAnswer ?? '';
     }

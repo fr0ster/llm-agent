@@ -31,7 +31,7 @@ that variant's dialect.
 | `linear` | Ordered plan → dispatch coordinator | `planning` (`one-shot`/`replan-on-error`/`skill-steps`), `dispatch` (`self`/`subagent`/`hybrid`), `maxSteps`, `maxRetriesPerStep`, `failPolicy` |
 | `dag` ⚠️ | _(legacy — see note below)_ Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
 | `stepper` ⚠️ | _(legacy — see note below)_ Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
-| `controller` | Deterministic coordinator + three opaque subagent roles (evaluator/planner/executor); incremental loop, durable per-session bundle, stateless suspend/resume | `subagents.{evaluator,planner,executor}`, `targetState`, `sessionMemory`, `budgets` |
+| `controller` | Deterministic coordinator + three opaque subagent roles (evaluator/planner/executor); plan-first step loop, durable per-session bundle, stateless suspend/resume | `subagents.{evaluator,planner,executor}`, `targetState`, `sessionMemory`, `budgets` |
 | `controller-weak` | Same as `controller` but with the **weak-executor** planner (fine-grained steps — one action per step); for smaller executor models that cannot self-expand | same as `controller` |
 
 Stepper's `knowledgeSeed` (deployment-supplied tool guidance, seeded into a new

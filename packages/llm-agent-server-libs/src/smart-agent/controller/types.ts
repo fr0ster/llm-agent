@@ -211,17 +211,17 @@ export interface PlannerNextInput {
   bundle: SessionBundle;
   prompt: string;
   /** Outcome of the step run since the previous `next()` (undefined on the first
-   *  call / after a rewind / on resume). The adaptive planner replans on 'failed';
-   *  the incremental planner ignores it. Cursor advance on 'advanced' happens in
+   *  call / after a rewind / on resume). The plan-first planner replans on 'failed';
+   *  a planner that does not implement commit() ignores it. Cursor advance on 'advanced' happens in
    *  commit(), not here. */
   lastOutcome?: 'advanced' | 'failed' | 'partial';
   /** True when re-asking after an unparsable reply (stern format reminder). */
   retrying: boolean;
   /** True on the first call of a turn that just resumed an EXTERNAL-tool result
-   *  (the result is now in `bundle.plannerPrivate`). The adaptive planner replans
+   *  (the result is now in `bundle.plannerPrivate`). The plan-first planner replans
    *  from the cursor so it incorporates the result via the planner — which reads
    *  plannerPrivate — instead of blindly re-running the suspended step (the
-   *  executor prompt does NOT include plannerPrivate). Incremental ignores it. */
+   *  executor prompt does NOT include plannerPrivate). A no-op planner ignores it. */
   resumedExternal?: boolean;
   /** The rendered step-state digest board (§B), reconstructed by the controller
    *  from artifacts before each call. When present + non-empty it is the
@@ -240,8 +240,8 @@ export interface PlannerNextInput {
 export interface IControllerPlanner {
   next(input: PlannerNextInput): Promise<NextStep | null>;
   /** Optional: record a just-finished step's outcome so the planner's durable
-   *  bookkeeping (e.g. the adaptive cursor) is updated and can be persisted in the
-   *  SAME write that follows. Incremental does not implement it (no-op). */
+   *  bookkeeping (e.g. the plan-first cursor) is updated and can be persisted in the
+   *  SAME write that follows. A planner that does not track state need not implement it (no-op). */
   commit?(
     bundle: SessionBundle,
     outcome: 'advanced' | 'failed' | 'partial',
