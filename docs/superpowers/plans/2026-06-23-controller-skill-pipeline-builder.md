@@ -1,0 +1,716 @@
+# Controller + Skills Pipeline Builder — Implementation Plan
+
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Goal:** Ship a fluent, embeddable builder that produces a partially-configured controller+skills pipeline agent, backed by a new no-listen `buildAgent` capability extracted from `SmartServer` (server = default impl over exported components).
+
+**Architecture:** (1) Add a `BuildAgentDeps` DI seam and thread it through `SmartServer`'s LLM/embedder/skill-host/MCP construction. (2) Extract the build portion of `SmartServer._start()` (everything before `server.listen`) into a `buildAgent()` returning `{ agent, close }`; `_start()` becomes `buildAgent()` + listen. (3) Add `ControllerSkillPipelineBuilder`, a fluent façade that accumulates `.withX()` calls, translates them to a `SmartServerConfig`, and delegates to `buildAgent`.
+
+**Tech Stack:** TypeScript (ESM, strict), `node:test` + `tsx`, Biome. Package: `@mcp-abap-adt/llm-agent-server-libs`.
+
+**Spec:** `docs/superpowers/specs/2026-06-23-controller-skill-pipeline-builder-design.md`
+
+---
+
+## Prerequisites & sequencing (READ FIRST)
+
+- **Tasks 1–3 (the `buildAgent` refactor) are independent of PR #195** — they touch only `SmartServer`, which is already on `main`. They can be implemented and merged on their own.
+- **Tasks 4–7 (the `ControllerSkillPipelineBuilder`) DEPEND on PR #195** (the `github` skill source: `makeGitHubTransport`, the `github` config variant). The builder bakes a `skillPlugins` source with a `github:` key; without #195 in `main`, config parsing rejects it. **Before executing Tasks 4–7, ensure #195 is merged to `main` and rebase this branch onto it.**
+- This branch (`feat/controller-skill-builder`) is based on `main`. If executing all tasks in one pass, merge #195 first, then rebase.
+
+## File Structure
+
+- **Modify** `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — add `BuildAgentDeps`, thread it through construction, extract `buildAgent()`, add an exported free `buildAgent(cfg, deps?)`.
+- **Create** `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts` — the fluent builder + its input types.
+- **Create** `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts` — unit + integration tests.
+- **Modify** `packages/llm-agent-server-libs/src/index.ts` — export the builder + `buildAgent` + `BuildAgentDeps` (the latter two flow via the existing `export * from './smart-agent/smart-server.js'`, so only the builder needs an explicit line).
+- **Modify** `packages/llm-agent-server-libs/src/smart-agent/__tests__/` — add a regression test that `SmartServer.start()` still builds+listens with `deps` omitted.
+
+### Conventions
+
+- ESM `.js` import extensions; Biome (2 spaces, single quotes, semicolons; `npm run lint`).
+- Tests: `node --import tsx/esm --test --test-reporter=spec <file>`; package suite `npm -w @mcp-abap-adt/llm-agent-server-libs run test`.
+
+---
+
+## Task 1: `BuildAgentDeps` seam threaded through SmartServer
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (constructor `:1028`, `_makeLlm` `:1917`, embedder use `:1251`, skill-host `:1245`, MCP connect via `connectMcpClientsFromConfig`)
+
+- [ ] **Step 1: Write the failing test**
+
+Create `packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { SmartServer } from '../smart-server.js';
+
+test('SmartServer accepts BuildAgentDeps and uses the injected makeLlm', async () => {
+  let llmCalls = 0;
+  const cannedLlm = {
+    // minimal ILlm surface used by construction; extend as the build path needs.
+    chat: async () => ({ content: '', toolCalls: [] }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const server = new SmartServer(
+    {
+      llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+      // flat pipeline: no MCP, no skills — exercises only the LLM seam.
+    } as unknown as import('../smart-server.js').SmartServerConfig,
+    { makeLlm: async () => { llmCalls++; return cannedLlm; } },
+  );
+  assert.ok(server);
+  // The seam is exercised during build (Task 2); here we only assert the
+  // constructor accepts deps without throwing and stores them.
+  assert.equal(typeof (server as unknown as { _deps: unknown })._deps, 'object');
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+```
+Expected: FAIL — `SmartServer` constructor takes only one arg; `_deps` undefined.
+
+- [ ] **Step 3: Add `BuildAgentDeps` + accept/default it in the constructor**
+
+Add the interface near the other exported config types in `smart-server.ts` (use the REAL imported types — `EmbedderResolutionConfig`/`EmbedderResolutionOptions` are already importable from `@mcp-abap-adt/llm-agent-rag`; `IMcpClient` from `@mcp-abap-adt/llm-agent`):
+
+```ts
+export interface BuildAgentDeps {
+  makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  resolveEmbedder?: (
+    cfg: EmbedderResolutionConfig,
+    options?: EmbedderResolutionOptions,
+  ) => IEmbedder;
+  prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
+  buildSkillHost?: (
+    cfg: SkillPluginsConfig,
+    deps: BuildSkillHostDeps,
+  ) => Promise<ISkillPluginHost>;
+  skillHost?: ISkillPluginHost;
+  connectMcp?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<IMcpClient[]>;
+}
+```
+
+Change the constructor to capture defaulted deps:
+
+```ts
+private readonly _deps: Required<Pick<BuildAgentDeps,
+  'makeLlm' | 'resolveEmbedder' | 'prefetchEmbedderFactories' | 'buildSkillHost' | 'connectMcp'>>
+  & Pick<BuildAgentDeps, 'skillHost'>;
+
+constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
+  this.cfg = config;
+  this._deps = {
+    makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
+    resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
+    prefetchEmbedderFactories:
+      deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
+    buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
+    connectMcp: deps.connectMcp ?? connectMcpClientsFromConfig,
+    ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
+  };
+  // ... existing constructor body unchanged
+}
+```
+
+Rename the existing private `_makeLlm` body to `_makeLlmDefault` (the real `makeLlm` wrapper) and route ALL of `_makeLlm`'s call sites through `this._deps.makeLlm`:
+
+```ts
+private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
+  return this._deps.makeLlm(lc);
+}
+private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
+  return makeLlm(
+    { provider: lc.provider ?? 'deepseek', apiKey: lc.apiKey, baseURL: lc.url, model: lc.model },
+    Number(lc.temperature ?? this._mainTemp ?? 0.7),
+  );
+}
+```
+
+Route the embedder, skill-host, and MCP construction through `this._deps`:
+- replace direct `resolveEmbedder(...)` calls (e.g. `:1251` in the skill-host build, and the agent-RAG path) with `this._deps.resolveEmbedder(...)`;
+- replace `buildSkillHostFromConfig(skillCfg, {...})` (`:1247`) with: if `this._deps.skillHost` is set, use it directly (skip building); else `this._deps.buildSkillHost(skillCfg, {...})`;
+- replace any `connectMcpClientsFromConfig(...)` call with `this._deps.connectMcp(...)`;
+- replace `prefetchEmbedderFactories()` call with `this._deps.prefetchEmbedderFactories()`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+npm -w @mcp-abap-adt/llm-agent-server-libs run build
+```
+Expected: PASS; build clean (all `this._deps.*` calls type-check against the real signatures).
+
+- [ ] **Step 5: Run the full package suite (no regressions)**
+
+Run:
+```bash
+npm -w @mcp-abap-adt/llm-agent-server-libs run test 2>&1 | tail -8
+```
+Expected: same pass count as baseline + the 1 new test; 0 fail. If a pre-existing test broke, baseline-diff against `main` (`git stash` + re-run) before attributing — do NOT assume "pre-existing".
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts \
+        packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+git commit -m "feat(server): BuildAgentDeps DI seam threaded through SmartServer construction"
+```
+
+---
+
+## Task 2: Extract `buildAgent()` (no-listen) from `_start()`
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`_start()` `:1032`+, the `server.listen` boundary `:1677`)
+
+- [ ] **Step 1: Write the failing test**
+
+Append to `build-agent-deps.test.ts`:
+
+```ts
+import { buildAgent } from '../smart-server.js';
+
+test('buildAgent builds a runnable agent with NO port bound, and close() disposes', async () => {
+  const cannedLlm = {
+    chat: async () => ({ content: 'ok', toolCalls: [] }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const { agent, close } = await buildAgent(
+    {
+      llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+    } as unknown as import('../smart-server.js').SmartServerConfig,
+    { makeLlm: async () => cannedLlm },
+  );
+  assert.equal(typeof agent.process, 'function');
+  await close();
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+```
+Expected: FAIL — `buildAgent` is not exported.
+
+- [ ] **Step 3: Extract the build portion + add the public entry**
+
+In `_start()`, everything from the start of the method up to (but NOT including) the `return new Promise((resolve, reject) => { ... server.listen ... })` block (`:1677`) is the BUILD portion. It already produces `smartAgent` (`:1428`) and accumulates `closeFns`. Refactor:
+
+1. Add a private method that returns the built artifacts without listening:
+
+```ts
+private async _buildAgent(): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+  // <-- MOVE the body of _start() here, from its top through the point just
+  //     BEFORE `return new Promise(... server.listen ...)`. It already binds
+  //     `smartAgent` and `closeFns`. End with:
+  return {
+    agent: smartAgent,
+    close: async () => {
+      for (const fn of closeFns) await fn();
+    },
+  };
+}
+```
+
+2. `_start()` becomes: call `_buildAgent()`, then create the HTTP server and listen, composing the close:
+
+```ts
+private async _start(): Promise<SmartServerHandle> {
+  const built = await this._buildAgent();
+  // ... existing HTTP server creation (the `http.createServer(...)` block that
+  //     references `chat`/`streamChat`/`requestLogger`) stays here. Those locals
+  //     must be returned from _buildAgent too if still needed by the server —
+  //     widen the _buildAgent return to include `{ chat, streamChat, requestLogger }`
+  //     (they are produced in the moved block). Keep them internal (not in the
+  //     public buildAgent return).
+  return new Promise((resolve, reject) => {
+    const port = this.cfg.port ?? 4004;
+    const host = this.cfg.host ?? '0.0.0.0';
+    server.on('error', reject);
+    server.listen(port, host, () => {
+      const addr = server.address();
+      const actualPort = typeof addr === 'object' && addr !== null ? addr.port : port;
+      log({ event: 'server_started', port: actualPort, host });
+      resolve({
+        port: actualPort,
+        close: async () => {
+          await new Promise<void>((res, rej) => server.close((e) => (e ? rej(e) : res())));
+          await built.close();   // <-- compose: server shutdown THEN agent dispose
+        },
+        requestLogger,
+      });
+    });
+  });
+}
+```
+
+> Implementation note: `_buildAgent` returns the PUBLIC `{ agent, close }` plus the
+> server-only locals (`chat`, `streamChat`, `requestLogger`) the HTTP handler needs.
+> Define an internal return type `{ agent, close, chat, streamChat, requestLogger }`;
+> the public `buildAgent` (below) returns only `{ agent, close }`. The pg-pool
+> cleanup `finally` in `start()` is unchanged (it still wraps `_start()`).
+
+3. Add the exported free function:
+
+```ts
+/** Build a runnable agent for any configured pipeline WITHOUT binding a port.
+ *  `SmartServer.start()` is the default impl that adds HTTP `listen` on top. */
+export async function buildAgent(
+  cfg: SmartServerConfig,
+  deps?: BuildAgentDeps,
+): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+  const server = new SmartServer(cfg, deps);
+  const built = await (server as unknown as {
+    _buildAgent(): Promise<{ agent: SmartAgent; close: () => Promise<void> }>;
+  })._buildAgent();
+  return { agent: built.agent, close: built.close };
+}
+```
+
+- [ ] **Step 4: Run tests to verify they pass**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+npm -w @mcp-abap-adt/llm-agent-server-libs run build
+```
+Expected: PASS (both tests); build clean.
+
+- [ ] **Step 5: Regression — `start()` still listens**
+
+Find the existing server start/listen test (search `server.test.ts` / `__tests__` for `.start()` + a port assertion) and run the suite:
+```bash
+npm -w @mcp-abap-adt/llm-agent-server-libs run test 2>&1 | tail -8
+```
+Expected: existing `start()`/listen tests still pass (behaviour-preserving). 0 fail vs baseline.
+
+- [ ] **Step 6: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts \
+        packages/llm-agent-server-libs/src/smart-agent/__tests__/build-agent-deps.test.ts
+git commit -m "feat(server): extract no-listen buildAgent() from start(); start = buildAgent + listen"
+```
+
+---
+
+## Task 3: `ControllerSkillPipelineBuilder` — fluent accumulation + config translation
+
+> **Prerequisite:** PR #195 (github skill source) merged to `main`; this branch rebased onto it (the generated config uses a `github:` skill source).
+
+**Files:**
+- Create: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts`
+- Test: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts`
+
+- [ ] **Step 1: Write the failing test (config translation only)**
+
+Create `controller-skill-pipeline-builder.test.ts`:
+
+```ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
+
+test('fluent calls translate to the expected SmartServerConfig', () => {
+  const cfg = new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+    .withRoleLlm('planner', { provider: 'openai', apiKey: 'k', model: 'gpt-4o' })
+    .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })
+    .withSkillSource({
+      github: 'https://github.com/secondsky/sap-skills.git',
+      enabled: ['sap-abap', 'sap-btp-developer-guide'],
+      collection: 'sap',
+    })
+    .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
+    .withBudgets({ maxToolCalls: 30 })
+    .toConfig(); // test seam: expose the assembled SmartServerConfig
+
+  assert.equal(cfg.pipeline?.name, 'controller');
+  const sub = (cfg.pipeline?.config as any).subagents;
+  assert.equal(sub.evaluator.provider, 'sap-ai-sdk');
+  assert.equal(sub.executor.provider, 'sap-ai-sdk');
+  assert.equal(sub.planner.provider, 'openai');           // per-role override
+  assert.equal(sub.planner.apiKey, 'k');
+  assert.equal((cfg.pipeline?.config as any).budgets.maxToolCalls, 30);
+  assert.deepEqual(cfg.mcp, [{ type: 'http', url: 'http://localhost:3001/mcp/stream/http' }]);
+  assert.equal((cfg as any).skillPlugins.controllerSkillGroup, 'sap');
+  assert.equal((cfg as any).skillPlugins.sources[0].github,
+    'https://github.com/secondsky/sap-skills.git');
+  assert.equal((cfg as any).skillPlugins.sources[0].strategyConfig.collection, 'sap');
+  assert.equal((cfg as any).rag.embedder, 'sap-ai-core');
+});
+
+test('withPlanner(weak-executor) selects the controller-weak pipeline', () => {
+  const cfg = new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk' })
+    .withSkillSource({ github: 'a/b', enabled: ['x'] })
+    .withEmbedder({ provider: 'sap-ai-core' })
+    .withPlanner('weak-executor')
+    .toConfig();
+  assert.equal(cfg.pipeline?.name, 'controller-weak');
+});
+
+test('build() throws when no LLM was set', () => {
+  assert.throws(
+    () => new ControllerSkillPipelineBuilder()
+      .withSkillSource({ github: 'a/b', enabled: ['x'] })
+      .withEmbedder({ provider: 'sap-ai-core' })
+      .toConfig(),
+    /withLlm/,
+  );
+});
+
+test('build() throws when no skill source was set', () => {
+  assert.throws(
+    () => new ControllerSkillPipelineBuilder()
+      .withLlm({ provider: 'sap-ai-sdk' })
+      .withEmbedder({ provider: 'sap-ai-core' })
+      .toConfig(),
+    /withSkillSource/,
+  );
+});
+
+test('build() throws when no embedder was set (skills need one)', () => {
+  assert.throws(
+    () => new ControllerSkillPipelineBuilder()
+      .withLlm({ provider: 'sap-ai-sdk' })
+      .withSkillSource({ github: 'a/b', enabled: ['x'] })
+      .toConfig(),
+    /withEmbedder/,
+  );
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+```
+Expected: FAIL — module does not exist.
+
+- [ ] **Step 3: Implement the builder (accumulation + `toConfig`)**
+
+Create `controller-skill-pipeline-builder.ts`:
+
+```ts
+import type { SmartServerConfig, SmartServerLlmConfig, SmartServerMcpConfig } from '../smart-agent/smart-server.js';
+import type { PlannerKind } from '../smart-agent/controller/types.js';
+
+export interface BuilderLlmInput {
+  provider: 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek' | 'ollama';
+  model?: string;
+  apiKey?: string;
+  url?: string;
+  temperature?: number;
+  maxTokens?: number;
+}
+export interface BuilderSkillSourceInput {
+  github: string;
+  enabled: readonly string[];
+  collection?: string;
+  ref?: string;
+  token?: string;
+}
+export interface BuilderEmbedderInput {
+  provider: string;
+  model?: string;
+  scenario?: string;
+  resourceGroup?: string;
+}
+type Role = 'evaluator' | 'planner' | 'executor';
+
+const KEYLESS = new Set(['sap-ai-sdk', 'ollama']);
+const ENV_KEY: Record<string, string> = {
+  openai: 'OPENAI_API_KEY', anthropic: 'ANTHROPIC_API_KEY', deepseek: 'DEEPSEEK_API_KEY',
+};
+
+/** Translate a BuilderLlmInput to a SmartServerLlmConfig, resolving apiKey per
+ *  provider (keyless → '' placeholder; keyed → arg or conventional env var). */
+function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
+  let apiKey = input.apiKey ?? '';
+  if (!KEYLESS.has(input.provider) && apiKey === '') {
+    apiKey = process.env[ENV_KEY[input.provider] ?? ''] ?? '';
+    if (apiKey === '') {
+      throw new Error(
+        `ControllerSkillPipelineBuilder: provider '${input.provider}' needs an apiKey — ` +
+        `pass it to .withLlm()/.withRoleLlm() or set ${ENV_KEY[input.provider]}`,
+      );
+    }
+  }
+  return {
+    provider: input.provider,
+    apiKey,
+    ...(input.model !== undefined ? { model: input.model } : {}),
+    ...(input.url !== undefined ? { url: input.url } : {}),
+    ...(input.temperature !== undefined ? { temperature: input.temperature } : {}),
+    ...(input.maxTokens !== undefined ? { maxTokens: input.maxTokens } : {}),
+  } as SmartServerLlmConfig;
+}
+
+export class ControllerSkillPipelineBuilder {
+  private _llm?: BuilderLlmInput;
+  private _roleLlm: Partial<Record<Role, BuilderLlmInput>> = {};
+  private _mcp: SmartServerMcpConfig[] = [];
+  private _skill?: BuilderSkillSourceInput;
+  private _embedder?: BuilderEmbedderInput;
+  private _budgets: Record<string, unknown> = {};
+  private _targetState: Record<string, unknown> = {};
+  private _plannerKind: PlannerKind = 'smart-executor';
+
+  withLlm(cfg: BuilderLlmInput): this { this._llm = cfg; return this; }
+  withRoleLlm(role: Role, cfg: BuilderLlmInput): this { this._roleLlm[role] = cfg; return this; }
+  withMcp(cfg: { url: string; headers?: Record<string, string> }): this {
+    this._mcp.push({ type: 'http', url: cfg.url, ...(cfg.headers ? { headers: cfg.headers } : {}) } as SmartServerMcpConfig);
+    return this;
+  }
+  withSkillSource(cfg: BuilderSkillSourceInput): this { this._skill = cfg; return this; }
+  withEmbedder(cfg: BuilderEmbedderInput): this { this._embedder = cfg; return this; }
+  withBudgets(b: Record<string, unknown>): this { this._budgets = { ...this._budgets, ...b }; return this; }
+  withTargetState(t: Record<string, unknown>): this { this._targetState = { ...this._targetState, ...t }; return this; }
+  withPlanner(kind: PlannerKind): this { this._plannerKind = kind; return this; }
+
+  /** Assemble the SmartServerConfig (fail-loud on missing required pieces). */
+  toConfig(): SmartServerConfig {
+    if (!this._llm && Object.keys(this._roleLlm).length === 0) {
+      throw new Error('ControllerSkillPipelineBuilder: call .withLlm() (or .withRoleLlm() for all roles) before building');
+    }
+    if (!this._skill) {
+      throw new Error('ControllerSkillPipelineBuilder: call .withSkillSource() before building');
+    }
+    if (!this._embedder) {
+      throw new Error('ControllerSkillPipelineBuilder: call .withEmbedder() before building (skills need an embedder)');
+    }
+    const base = this._llm ? toLlmConfig(this._llm) : undefined;
+    const roleCfg = (r: Role): SmartServerLlmConfig => {
+      const ovr = this._roleLlm[r];
+      if (ovr) return toLlmConfig(ovr);
+      if (base) return base;
+      throw new Error(`ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`);
+    };
+    const collection = this._skill.collection ?? 'sap';
+    return {
+      llm: { main: base ?? roleCfg('executor') },
+      pipeline: {
+        name: this._plannerKind === 'weak-executor' ? 'controller-weak' : 'controller',
+        config: {
+          subagents: { evaluator: roleCfg('evaluator'), planner: roleCfg('planner'), executor: roleCfg('executor') },
+          ...(Object.keys(this._targetState).length ? { targetState: this._targetState } : {}),
+          ...(Object.keys(this._budgets).length ? { budgets: this._budgets } : {}),
+        },
+      },
+      rag: {
+        type: 'in-memory',
+        embedder: this._embedder.provider,
+        ...(this._embedder.model ? { model: this._embedder.model } : {}),
+        ...(this._embedder.scenario ? { scenario: this._embedder.scenario } : {}),
+        ...(this._embedder.resourceGroup ? { resourceGroup: this._embedder.resourceGroup } : {}),
+      },
+      ...(this._mcp.length ? { mcp: this._mcp } : {}),
+      skillPlugins: {
+        store: { type: 'in-memory' },
+        embedder: { provider: this._embedder.provider, ...(this._embedder.model ? { model: this._embedder.model } : {}) },
+        controllerSkillGroup: collection,
+        sources: [{
+          id: 'skills',
+          github: this._skill.github,
+          enabled: this._skill.enabled,
+          ...(this._skill.ref ? { ref: this._skill.ref } : {}),
+          ...(this._skill.token ? { token: this._skill.token } : {}),
+          strategy: 'single-collection',
+          strategyConfig: { collection },
+        }],
+      },
+    } as unknown as SmartServerConfig;
+  }
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+npm -w @mcp-abap-adt/llm-agent-server-libs run build
+```
+Expected: PASS (5 tests); build clean.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts \
+        packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+git commit -m "feat(builders): ControllerSkillPipelineBuilder fluent accumulation + config translation"
+```
+
+---
+
+## Task 4: `build(deps?)` — delegate to `buildAgent`
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts`
+- Test: `packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts`
+
+- [ ] **Step 1: Write the failing integration test (deps-stubbed, no I/O)**
+
+Append:
+
+```ts
+import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
+
+test('build(deps) returns a runnable agent via buildAgent, no network/port', async () => {
+  const cannedLlm = { chat: async () => ({ content: 'review', toolCalls: [] }), model: 'stub' }
+    as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const stubEmbedder = { embed: async () => ({ vector: [0, 0, 0] }) }
+    as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+  const stubSkillHost = {
+    rag: () => ({ query: async () => [] }),
+    groups: () => [{ group: 'sap' }],
+    load: async () => {},
+  } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+  const deps: BuildAgentDeps = {
+    makeLlm: async () => cannedLlm,
+    resolveEmbedder: () => stubEmbedder,
+    skillHost: stubSkillHost,
+    connectMcp: async () => [],
+  };
+  const { agent, close } = await new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+    .withSkillSource({ github: 'secondsky/sap-skills', enabled: ['sap-abap'], collection: 'sap' })
+    .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
+    .build(deps);
+  assert.equal(typeof agent.process, 'function');
+  await close();
+});
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+```
+Expected: FAIL — `.build` is not a function.
+
+- [ ] **Step 3: Add `build(deps?)`**
+
+Add to the class (import `buildAgent` at the top):
+
+```ts
+import { buildAgent } from '../smart-agent/smart-server.js';
+// ...
+  /** Assemble + build a runnable agent (no port bound). `deps` forwards a
+   *  BuildAgentDeps for embedding/testing; omit it for the real implementations. */
+  async build(deps?: BuildAgentDeps): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+    return buildAgent(this.toConfig(), deps);
+  }
+```
+
+Add the `BuildAgentDeps`/`SmartAgent` type imports from `../smart-agent/smart-server.js` and `@mcp-abap-adt/llm-agent`.
+
+- [ ] **Step 4: Run test to verify it passes**
+
+Run:
+```bash
+node --import tsx/esm --test --test-reporter=spec \
+  packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+npm -w @mcp-abap-adt/llm-agent-server-libs run build
+```
+Expected: PASS (6 tests); build clean.
+
+> If the stub surfaces in Step 1 are insufficient for the controller build path
+> (e.g. the handler needs more `ISkillPluginHost`/`ILlm` methods), extend the
+> stubs minimally to satisfy the real call path — do NOT widen the production
+> types. Report any stub gap as a DONE_WITH_CONCERNS note.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.ts \
+        packages/llm-agent-server-libs/src/builders/controller-skill-pipeline-builder.test.ts
+git commit -m "feat(builders): ControllerSkillPipelineBuilder.build(deps?) delegates to buildAgent"
+```
+
+---
+
+## Task 5: Export + docs
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/index.ts`
+- Modify: `docs/INTEGRATION.md` (add a builder snippet)
+
+- [ ] **Step 1: Export the builder**
+
+Add to `packages/llm-agent-server-libs/src/index.ts`:
+
+```ts
+export {
+  ControllerSkillPipelineBuilder,
+  type BuilderLlmInput,
+  type BuilderSkillSourceInput,
+  type BuilderEmbedderInput,
+} from './builders/controller-skill-pipeline-builder.js';
+```
+
+(`buildAgent` + `BuildAgentDeps` already flow via `export * from './smart-agent/smart-server.js'` — verify with the reachability check below.)
+
+- [ ] **Step 2: Verify exports reachable + add an INTEGRATION snippet**
+
+Run:
+```bash
+npm -w @mcp-abap-adt/llm-agent-server-libs run build
+node --import tsx/esm -e "import('@mcp-abap-adt/llm-agent-server-libs').then(m => { for (const n of ['ControllerSkillPipelineBuilder','buildAgent']) if (typeof m[n] !== 'function') throw new Error('missing '+n); console.log('exports OK'); })"
+```
+Expected: prints `exports OK`.
+
+Add to `docs/INTEGRATION.md` a short "Embeddable controller+skills pipeline" section showing the fluent builder usage from the spec example (the `agent.process(...)` form).
+
+- [ ] **Step 3: Full gate + commit**
+
+```bash
+npm test && npm run lint:check && npm run build
+git add packages/llm-agent-server-libs/src/index.ts docs/INTEGRATION.md
+git commit -m "feat(builders): export ControllerSkillPipelineBuilder + INTEGRATION snippet"
+```
+Expected: all green; commit succeeds.
+
+---
+
+## Self-Review
+
+**1. Spec coverage:**
+- Guiding principle (export components; server = default impl) → Task 2 (`buildAgent` exported, `start` = `buildAgent` + listen). ✓
+- `BuildAgentDeps` (real types) → Task 1. ✓
+- No-listen build → Task 2. ✓
+- Fluent surface (`withLlm`/`withRoleLlm`/`withMcp`/`withSkillSource`/`withEmbedder`/`withBudgets`/`withTargetState`/`withPlanner`) → Task 3. ✓
+- Baked controller + skill-host + defaults; `withPlanner` → controller/controller-weak → Task 3. ✓
+- Optional apiKey + per-provider env semantics (`BuilderLlmInput`) → Task 3 `toLlmConfig`. ✓
+- `build(deps?)` → `buildAgent`, returns `{ agent, close }`; `agent.process(...)` → Task 4. ✓
+- Fail-loud guards (no LLM / no skill source / no embedder) → Task 3 tests. ✓
+- Unit (config translation) + integration (deps-stubbed, no I/O) + regression (`start()` still listens) → Tasks 1,2,3,4. ✓
+- Exports → Task 5. ✓
+
+**2. Placeholder scan:** No TBD/TODO; every code step shows code; commands have expected output. The one non-code instruction (the `_start()` body MOVE in Task 2 Step 3) is a bounded extract with explicit boundary lines + the new method signatures + the close composition shown. ✓
+
+**3. Type consistency:** `BuildAgentDeps`, `buildAgent`, `ControllerSkillPipelineBuilder`, `BuilderLlmInput`/`BuilderSkillSourceInput`/`BuilderEmbedderInput`, `toLlmConfig`, `toConfig`, `build(deps?)`, and the `Role` type are used identically across Tasks 1–5. `withPlanner`→pipeline-name mapping (`controller`/`controller-weak`) matches the spec and the registered presets. ✓
+
+**4. Sequencing:** Tasks 1–2 are #195-independent; Tasks 3–5 require #195 merged (noted in Prerequisites + Task 3 header). ✓
