@@ -9,6 +9,52 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [19.3.0] — 2026-06-22
+
+### Added
+
+- **Controller planner — capability-tuned planners (§C).** The `controller` pipeline
+  now selects its planner by **preset**, matching the planner to the executor it is
+  paired with:
+  - **`smart-executor`** (the default `controller` preset) — plan-first with coarse,
+    self-expanding steps; a capable executor enumerates/processes a coarse step
+    within its own tool-loop, returning to the reviewer after each step. This is the
+    Phase-2 live-board planner, now the default.
+  - **`weak-executor`** (the new **`controller-weak`** preset) — plan-first with
+    fine-grained, exactly-one-action steps, for smaller executor models that cannot
+    be trusted to self-expand. Same plan-first engine + digest board; the difference
+    is an agnostic granularity prompt clause.
+  - Selection is **preset-encoded**, not a user YAML toggle: built-in names
+    `controller` (smart) and `controller-weak` (weak); a consumer composing in code
+    passes the kind to `new ControllerFactory().build(config, deps, 'weak-executor')`.
+    A `deps.controllerPlanner` DI seam allows injecting a custom `IControllerPlanner`.
+
+### Changed
+
+- **`controller` defaults to the live digest board (smart-executor).** The previous
+  default was the per-step incremental planner; it is now the plan-first board
+  planner (Phase 2 behaviour).
+
+### Removed
+
+- **`planner:` controller config key (clean break, fail-loud).** The
+  `planner: 'incremental' | 'adaptive'` field and the per-step `IncrementalPlanner`
+  are removed; a `planner:` key now throws at config load with a migration message
+  (select `pipeline: { name: controller }` or `{ name: controller-weak }`, or pass
+  the kind to `ControllerFactory.build`). No compatibility alias.
+
+### Fixed / Docs
+
+- **Documentation accuracy pass (v19 stale examples + docs).** Migrated ~25 example
+  configs and several docs sections that still used config shapes removed in v19 and
+  failed loud at startup: top-level `coordinator:` blocks (→ `pipeline: { name:
+  stepper | dag, config: {...} }`) and the structured `pipeline: { version, stages }`
+  YAML DSL (→ named pipelines / `flat`). Removed `withStageHandler()`/structured-DSL
+  how-tos from `EXAMPLES.md`/`INTEGRATION.md`/`ARCHITECTURE.md` and the stepper/dag
+  example READMEs, replaced with the current model (built-in by name · custom
+  `IPipeline` via `setPipeline()` · pipeline plugins). All shipped example YAMLs now
+  config-validate.
+
 ## [19.2.0] — 2026-06-20
 
 ### Added
