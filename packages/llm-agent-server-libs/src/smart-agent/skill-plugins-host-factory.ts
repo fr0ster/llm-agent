@@ -33,8 +33,12 @@ import type {
   SkillRecord,
 } from '@mcp-abap-adt/llm-agent';
 import {
+  type GitHubTransportOptions,
+  type HttpTransportOptions,
   type ICatalogStore,
+  type IMarketplaceTransport,
   type IPgPool,
+  makeGitHubTransport,
   makeHttpTransport,
   makeInMemoryStoreProvider,
   makeInProcessCatalogStore,
@@ -45,6 +49,7 @@ import {
   makeQdrantReader,
   makeQdrantStoreProvider,
   makeSkillPluginHost,
+  parseGitHubRepo,
   pointId,
   resolveSkillSourceStrategy,
 } from '@mcp-abap-adt/llm-agent-libs';
@@ -149,9 +154,23 @@ function makeRecordsSource(src: SkillPluginsRecordsSource): ISkillSource {
   return { acquire: async () => result };
 }
 
+/** Transport factories for {@link buildSources}. A DI seam: production uses the
+ *  defaults; unit tests inject capturing stubs to assert the wiring without
+ *  touching the network. */
+export interface TransportFactories {
+  github: (opts: GitHubTransportOptions) => IMarketplaceTransport;
+  http: (opts: HttpTransportOptions) => IMarketplaceTransport;
+}
+
+const defaultTransports: TransportFactories = {
+  github: makeGitHubTransport,
+  http: makeHttpTransport,
+};
+
 /** Map every config source to a `{ id, source }` ingest entry. */
-function buildSources(
+export function buildSources(
   cfg: SkillPluginsConfig,
+  transports: TransportFactories = defaultTransports,
 ): ReadonlyArray<{ id: string; source: ISkillSource }> {
   const out: { id: string; source: ISkillSource }[] = [];
   for (const src of cfg.sources ?? []) {
@@ -159,16 +178,25 @@ function buildSources(
       out.push({ id: src.id, source: makeRecordsSource(src) });
       continue;
     }
-    // Fetched (registry) source → resolve the named strategy.
+    // Fetched source → resolve the named strategy + pick a transport by selector.
     const strategy = resolveSkillSourceStrategy(
       src.strategy ?? 'one-group-per-plugin',
     );
+    const transport =
+      src.github !== undefined
+        ? transports.github({
+            ...parseGitHubRepo(src.github),
+            ...(src.ref !== undefined ? { ref: src.ref } : {}),
+            ...(src.token !== undefined ? { token: src.token } : {}),
+            enabled: src.enabled ?? [],
+          })
+        : transports.http({ registry: src.registry ?? '' });
     out.push({
       id: src.id,
       source: strategy({
         source: src.id,
         enabled: src.enabled ?? [],
-        transport: makeHttpTransport({ registry: src.registry ?? '' }),
+        transport,
         chunk: cfg.chunk,
         ...(src.strategyConfig !== undefined
           ? { strategyConfig: src.strategyConfig }
