@@ -1,9 +1,13 @@
 # DeepSeek-backed ABAP coder sub-agent.
 # Used by docs/examples/subagent-orchestration-deepseek.yaml.
+#
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. Sub-agents use the flat (default) pipeline.
 
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   endpoint: ${DEEPSEEK_ENDPOINT:-https://api.deepseek.com/v1/chat/completions}
   model: ${DEEPSEEK_MODEL:-deepseek-chat}
@@ -15,13 +19,3 @@ agent:
 systemPrompt: |
   You are an expert ABAP developer. Produce concise, production-grade ABAP code
   for the given task. Do not explain unless asked.
-
-pipeline:
-  version: "1"
-  stages:
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
-      config:
-        maxIterations: 1

@@ -1,63 +1,46 @@
 # Subagent orchestration — iterative ABAP code generation with review loop.
 #
-# Pipeline:
-#   1. assemble  — build LLM context from the user request
-#   2. repeat    — up to 3 iterations: generate code, review it, stop when approved
-#        a. subagent: abap-coder    — generate / refine ABAP code
-#        b. subagent: code-reviewer — review code, return {"approved":bool,"issues":[]}
-#   3. tool-loop — final pass (one iteration) for any follow-up tool calls
+# The linear pipeline (plan → dispatch to subagents) coordinates the generation
+# and review loop. The planner decomposes the request into steps; each step is
+# dispatched to the matching subagent (abap-coder or code-reviewer). The
+# coordinator retries on executor error and stops when the plan is fulfilled.
+#
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. The old repeat/subagent stage loop is replaced by the linear pipeline's
+# plan→dispatch coordination. Use `pipeline: { name: linear }` with `subagents:`
+# for multi-agent orchestration.
 #
 # Usage:
-#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/subagent-orchestration.yaml
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/subagent-orchestration.yaml
 
 port: 4004
 host: 0.0.0.0
 mode: smart
 
 llm:
-  apiKey: ${OPENAI_API_KEY}
-  model: ${OPENAI_MODEL:-gpt-4o-mini}
+  provider: deepseek
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: ${DEEPSEEK_MODEL:-deepseek-chat}
   temperature: 0.7
+
+pipeline:
+  name: linear
+  config:
+    planning: replan-on-error
+    dispatch: subagent
+    maxSteps: 6
+    maxRetriesPerStep: 2
+    failPolicy: abort
 
 subagents:
   - name: abap-coder
-    config: ../../examples/subagents/abap-coder.yaml
+    description: |
+      Writes and refines ABAP source code: reports, classes, function modules.
+      Use for any task that asks to generate or modify ABAP code.
+    config: ../../examples/subagents/abap-coder-deepseek.yaml
   - name: code-reviewer
-    config: ../../examples/subagents/code-reviewer.yaml
-
-pipeline:
-  version: "1"
-  stages:
-    - id: assemble
-      type: assemble
-
-    - id: generate-and-review
-      type: repeat
-      maxIterations: 3
-      until: "ctx.subResults?.review?.includes('\"approved\": true')"
-      stages:
-        - id: generate-code
-          type: subagent
-          config:
-            agent: abap-coder
-            task: |
-              {{inputText}}
-
-              Previous attempt (if any):
-              {{subResults.code}}
-
-              Reviewer feedback (if any):
-              {{subResults.review}}
-            outputTo: subResults.code
-
-        - id: review-code
-          type: subagent
-          config:
-            agent: code-reviewer
-            task: "Review this ABAP code:\n{{subResults.code}}"
-            outputTo: subResults.review
-
-    - id: tool-loop
-      type: tool-loop
-      config:
-        maxIterations: 1
+    description: |
+      Reviews ABAP code and returns a one-line JSON object
+      {"approved": boolean, "issues": string[]}. Use after code generation to
+      verify correctness; do not use for generating new code.
+    config: ../../examples/subagents/code-reviewer-deepseek.yaml

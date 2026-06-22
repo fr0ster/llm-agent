@@ -1,4 +1,4 @@
-# 11-skills.yaml — Pipeline with Agent Skills support
+# 11-skills.yaml — Pipeline with Agent Skills support (v19+)
 #
 # Demonstrates using ISkillManager to discover and inject skills
 # into the LLM system prompt alongside MCP tools.
@@ -6,6 +6,11 @@
 # Skills are reusable instruction packages (SKILL.md files) that teach
 # the agent HOW to do something. Unlike MCP tools (which provide actions),
 # skills provide context, guidelines, and domain knowledge.
+#
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. Skills are loaded and injected automatically by the flat (default)
+# pipeline. No explicit stages YAML is needed — just configure `skills:` and the
+# flat pipeline handles discover → RAG-index → per-request skill-select → inject.
 #
 # ── Skill discovery ──
 #
@@ -51,7 +56,7 @@
 #        "Skill: code-review\nGuidelines for reviewing pull requests"
 #        metadata: { id: "skill:code-review" }
 #
-#   2. PER REQUEST:
+#   2. PER REQUEST (flat pipeline):
 #        rag-query    → retrieves skill:* and tool:* entries from tools store
 #        skill-select → filters skills by RAG matches (skill: prefix)
 #                     → loads content via ISkill.getContent()
@@ -91,6 +96,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -127,47 +133,3 @@ agent:
   maxToolCalls: 30
   ragQueryK: 15
   classificationEnabled: true
-
-pipeline:
-  version: "1"
-  stages:
-    # ── Step 1: classify user input into typed subprompts
-    - id: classify
-      type: classify
-
-    # ── Step 2: RAG retrieval
-    #    Queries tools store which contains both skill:* and tool:* entries.
-    #    In-memory RAG uses BM25 keyword matching (no embedder needed).
-    - id: rag-queries
-      type: parallel
-      stages:
-        - { id: rag-tools, type: rag-query, config: { store: tools, k: 15 } }
-
-    # ── Step 3: skill + tool discovery
-    #
-    #    skill-select: finds matching skills via RAG (skill:* IDs)
-    #                  → loads skill content → writes to ctx.skillContent
-    #    tool-select:  finds matching MCP tools via RAG (tool:* IDs)
-    #
-    #    Both use the same tools RAG store. At startup, tools are vectorized
-    #    as "tool:NAME" and skills as "skill:NAME". The RAG query returns
-    #    both types, and each handler filters by its own prefix.
-    - id: discovery
-      type: parallel
-      stages:
-        - id: skill-select
-          type: skill-select
-        - id: tool-select
-          type: tool-select
-          config: { k: 15 }
-
-    # ── Step 4: assemble LLM context
-    #    AssembleHandler builds messages from subprompts + RAG + history,
-    #    then appends ctx.skillContent as "## Active Skills" section
-    #    in the system message.
-    - id: assemble
-      type: assemble
-
-    # ── Step 5: streaming LLM + tool execution loop
-    - id: tool-loop
-      type: tool-loop

@@ -1,22 +1,44 @@
-# 10-plugins.yaml — Plugin-extended pipeline
+# 10-plugins.yaml — Plugin-extended pipeline (v19+)
 #
 # Demonstrates loading custom implementations from a plugin directory.
 # Plugin files are standard ES modules exporting named registrations.
+#
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. Custom stage handlers (stageHandlers export) can still be registered
+# from plugins but are no longer invocable from a stages YAML block. Use the
+# `pipelinePlugins` export to register a fully custom IPipelinePlugin instead,
+# or use the supported plugin extension points (reranker, queryExpander,
+# outputValidator, embedderFactories, mcpClients).
 #
 # Plugin directories (load order, later wins):
 #   1. ~/.config/llm-agent/plugins/     (user-level)
 #   2. ./plugins/                       (project-level)
 #   3. pluginDir below                  (config-level)
 #
-# Example plugin file (./my-plugins/audit-log.js):
+# Example plugin file (./my-plugins/score-reranker.js):
 #
-#   class AuditLogHandler {
-#     async execute(ctx, config, span) {
-#       console.log(`[audit] ${ctx.inputText.slice(0, 100)}`);
-#       return true;
+#   class ScoreReranker {
+#     async rerank(results, query) {
+#       // re-score and re-sort results
+#       return results;
 #     }
 #   }
-#   export const stageHandlers = { 'audit-log': new AuditLogHandler() };
+#   export const reranker = new ScoreReranker();
+#
+# Example pipeline plugin (./my-plugins/my-pipeline.js):
+#
+#   class MyPipeline {
+#     get name() { return 'my-pipeline'; }
+#     parseConfig(raw) { return raw ?? {}; }
+#     async build(cfg, ctx) {
+#       const builder = await ctx.createAgentBuilder();
+#       const handle = await builder.build();
+#       return { agent: handle.agent, close: () => handle.close() };
+#     }
+#   }
+#   export const pipelinePlugins = { 'my-pipeline': new MyPipeline() };
+#
+# See docs/examples/plugins/ for full working examples of each plugin type.
 
 port: 4004
 host: 0.0.0.0
@@ -25,6 +47,7 @@ mode: smart
 pluginDir: ./my-plugins
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -38,43 +61,3 @@ rag:
 mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
-
-pipeline:
-  version: "1"
-  stages:
-    # Custom plugin stage — loaded from pluginDir
-    - id: audit
-      type: audit-log
-      config:
-        level: info
-
-    - id: classify
-      type: classify
-
-    - id: summarize-and-query
-      type: parallel
-      stages:
-        - { id: summarize, type: summarize }
-        - id: rag-queries
-          type: parallel
-          stages:
-            - { id: rag-tools, type: rag-query, config: { store: tools, k: 20 } }
-            - { id: rag-history, type: rag-query, config: { store: history, k: 5 } }
-
-    - id: rerank
-      type: rerank
-
-    - id: skill-select
-      type: skill-select
-
-    - id: tool-select
-      type: tool-select
-
-    - id: assemble
-      type: assemble
-
-    - id: tool-loop
-      type: tool-loop
-
-    - id: history-upsert
-      type: history-upsert

@@ -1,29 +1,27 @@
-# Structured pipeline — minimal (no RAG).
+# Flat pipeline (v19+) — minimal (no RAG, no classification).
 # For simple LLM + MCP tools setups where RAG retrieval is not needed.
-# Skips: summarize, rag-query, rerank, skill-select, history-upsert.
+#
+# The old structured-stages DSL (`pipeline: { version, stages }`) was removed in v19.
+# This example previously demonstrated skipping classify/summarize/rag/history stages.
+# The equivalent in v19 is the flat pipeline with classificationEnabled: false, which
+# skips classification and the RAG/summarize/history stages when RAG is not configured.
 #
 # Usage:
-#   OPENAI_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml
+#   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/05-structured-minimal.yaml
 
 port: 4004
 host: 0.0.0.0
 mode: smart
 
 llm:
-  apiKey: ${OPENAI_API_KEY}
-  model: gpt-4o
+  provider: deepseek
+  apiKey: ${DEEPSEEK_API_KEY}
+  model: deepseek-chat
   temperature: 0.7
 
 mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
 
-pipeline:
-  version: "1"
-  stages:
-    - id: classify
-      type: classify
-    - id: assemble
-      type: assemble
-    - id: tool-loop
-      type: tool-loop
+agent:
+  classificationEnabled: false

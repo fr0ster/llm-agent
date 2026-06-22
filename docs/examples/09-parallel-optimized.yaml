@@ -1,21 +1,15 @@
-# Parallel-optimized pipeline — maximizes concurrency.
+# Flat pipeline (v19+) — parallel-optimized tuning via agent: knobs.
 #
-# Key differences from the sequential default (04):
+# NOTE: The structured-stages DSL (`pipeline: { version, stages }`) was removed
+# in v19. The custom parallel stage arrangement (running summarize + RAG queries
+# simultaneously) is no longer expressible as explicit stage YAML. The flat
+# pipeline's DefaultPipeline already parallelizes the RAG queries internally.
+# Per-request tuning (ragQueryK, historyAutoSummarizeLimit, etc.) is done via
+# the top-level `agent:` block as shown below.
 #
-#   DEFAULT (04):  classify → summarize → [rag-tools, rag-history] → rerank → ...
-#   THIS (09):     classify → parallel { summarize | [rag-tools, rag-history] } → rerank → ...
-#
-# What runs in parallel:
-#
-#   After classification, summarize and RAG queries run SIMULTANEOUSLY.
-#   Summarize compresses old history (reads history, writes condensed history).
-#   RAG queries fetch tool/history matches for the current request.
-#   These two have zero data dependency on each other.
-#
-# Why this is faster:
-#   - summarize can take 1-3s (LLM call to condense history)
-#   - RAG queries can take 0.2-1s (embedding + vector search)
-#   - Running them in parallel saves the slower one's entire duration
+# What the flat pipeline does internally (equivalent to the old stage sequence):
+#   classify → summarize → [rag-tools, rag-history](parallel) → rerank
+#   → skill-select → tool-select → assemble → tool-loop → history-upsert
 #
 # Usage:
 #   DEEPSEEK_API_KEY=sk-xxx npm run dev -- --config docs/examples/09-parallel-optimized.yaml
@@ -25,6 +19,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -48,57 +43,7 @@ logDir: sessions                      # session debug logs (RAG scores, tool sel
 agent:
   maxIterations: 10
   maxToolCalls: 30
-  ragQueryK: 10
+  ragQueryK: 20
   classificationEnabled: true
   queryExpansionEnabled: true
   historyAutoSummarizeLimit: 10
-
-pipeline:
-  version: "1"
-  stages:
-    # ── Step 1: classify (must run first — everything depends on subprompts)
-    - id: classify
-      type: classify
-
-    # ── Step 2: summarize + RAG queries IN PARALLEL
-    #    No data dependency between them:
-    #    - summarize reads history, writes condensed history
-    #    - RAG queries read from vector stores
-    - id: post-classify
-      type: parallel
-      stages:
-        - id: summarize
-          type: summarize
-        - id: rag-queries
-          type: parallel
-          stages:
-            - id: rag-tools
-              type: rag-query
-              config: { store: tools, k: 20 }
-            - id: rag-history
-              type: rag-query
-              config: { store: history, k: 5 }
-
-    # ── Step 3: rerank sequentially (depends on RAG query results)
-    - id: rerank
-      type: rerank
-
-    # ── Step 4: skill and tool discovery (uses reranked RAG results)
-    - id: skill-select
-      type: skill-select
-
-    - id: tool-select
-      type: tool-select
-      config: { k: 20 }
-
-    # ── Step 5: assemble LLM context
-    - id: assemble
-      type: assemble
-
-    # ── Step 6: streaming LLM + tool execution loop
-    - id: tool-loop
-      type: tool-loop
-
-    # ── Step 7: upsert turn to history RAG store
-    - id: history-upsert
-      type: history-upsert

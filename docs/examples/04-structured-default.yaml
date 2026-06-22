@@ -1,5 +1,13 @@
-# Structured pipeline — reproduces the DefaultPipeline flow as explicit YAML.
+# Flat pipeline (v19+) — reproduces the DefaultPipeline flow without explicit stage YAML.
 # Good starting point for understanding the built-in stage sequence.
+#
+# The flat pipeline (default when no `pipeline:` is specified) runs the full
+# DefaultPipeline flow: classify → summarize → rag-retrieval(parallel) → rerank
+# → skill-select → tool-select → assemble → tool-loop → history-upsert.
+#
+# The structured-stages DSL (`pipeline: { version, stages }`) was removed in v19.
+# Omitting `pipeline:` (or setting `pipeline: { name: flat }`) selects flat, which
+# is identical to what the old structured default demo described.
 #
 # DefaultPipeline uses only two RAG stores:
 #   - tools:   MCP tool descriptions + skill descriptions (for tool/skill selection)
@@ -16,6 +24,7 @@ host: 0.0.0.0
 mode: smart
 
 llm:
+  provider: deepseek
   apiKey: ${DEEPSEEK_API_KEY}
   model: deepseek-chat
   temperature: 0.7
@@ -29,51 +38,3 @@ rag:
 mcp:
   type: http
   url: http://localhost:3001/mcp/stream/http
-
-pipeline:
-  version: "1"
-  stages:
-    # 1. Classify user input into typed subprompts (action/chat)
-    - id: classify
-      type: classify
-
-    # 2. Condense conversation history if too long
-    - id: summarize
-      type: summarize
-
-    # 3. RAG retrieval block — query tools and history stores in parallel
-    - id: rag-retrieval
-      type: parallel
-      stages:
-        # Query tools store: MCP tool descriptions + skill descriptions
-        - id: rag-tools
-          type: rag-query
-          config: { store: tools, k: 10 }
-        # Query history store: semantic conversation history (if configured)
-        - id: rag-history
-          type: rag-query
-          config: { store: history, k: 5 }
-      after:
-        # Re-score RAG results
-        - id: rerank
-          type: rerank
-
-    # 4. Select skills based on tools RAG matches
-    - id: skill-select
-      type: skill-select
-
-    # 5. Select MCP tools based on RAG matches
-    - id: tool-select
-      type: tool-select
-
-    # 6. Build final LLM context from subprompts + RAG + tools
-    - id: assemble
-      type: assemble
-
-    # 7. Streaming LLM call + tool execution loop
-    - id: tool-loop
-      type: tool-loop
-
-    # 8. Summarize turn and upsert to history RAG (if historyRag is set)
-    - id: history-upsert
-      type: history-upsert
