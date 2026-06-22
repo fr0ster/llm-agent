@@ -80,8 +80,46 @@ Refactor `SmartServer.start()` to split the build from the listen:
   `SmartServer` is cleaner given private state, export a thin free function that
   wraps `new SmartServer(cfg).buildAgent()`.)
 
+#### `BuildAgentDeps` — the DI seam (required for I/O-free tests)
+
+`SmartServer` today takes only `config` (constructor at `smart-server.ts:1028`)
+and constructs its LLMs, embedder, and skill-host via **direct imports/internal
+calls** — `makeLlm` (`:1077/1092/1109/1917`), `resolveEmbedder` (`:84`, used at
+`:1251`), and `buildSkillHostFromConfig` (`:1245`). With no seam, a `buildAgent`
+integration test would reach real providers and GitHub. So `buildAgent` accepts
+an **optional, fully-defaulted** deps object, and `SmartServer` routes the same
+constructions through it:
+
+```ts
+export interface BuildAgentDeps {
+  /** LLM factory per role/main. Default: makeLlm from llm-agent-libs. */
+  makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  /** Embedder resolver (results + MCP-tool RAG + skill-host). Default: resolveEmbedder. */
+  resolveEmbedder?: (cfg: { embedder?: string; model?: string }, opts?: ResolveEmbedderOptions) => IEmbedder;
+  /** One-time embedder-factory prefetch. Default: prefetchEmbedderFactories. */
+  prefetchEmbedderFactories?: () => Promise<void>;
+  /** Skill-host builder. Default: buildSkillHostFromConfig. */
+  buildSkillHost?: (cfg: SkillPluginsConfig, deps: BuildSkillHostDeps) => Promise<ISkillPluginHost>;
+  /** Escape hatch: a PREBUILT skill host (skips building entirely). */
+  skillHost?: ISkillPluginHost;
+  /** MCP connector seam (connect/list tools). Default: the live MCP client connector. */
+  connectMcp?: (cfg: McpClientConfig) => Promise<IMcpClient>;
+}
+```
+
+- Every field is optional; omitting `deps` (production / `SmartServer.start()`)
+  uses the real implementations exactly as today → **behaviour-preserving**.
+- The refactor threads `this._deps` (defaulted in the constructor) through the
+  LLM / embedder / skill-host / MCP construction points so both `start()` and
+  `buildAgent()` honour injected stubs.
+- Integration tests inject: a stub `makeLlm` returning a canned `ILlm`, a stub
+  `resolveEmbedder` returning a deterministic-vector embedder, and a **prebuilt
+  in-memory `skillHost`** — no network, no port, no GitHub.
+
 This makes the agent embeddable for **all** pipelines (bonus beyond controller),
-and is the single seam the fluent builder delegates to.
+and is the single seam the fluent builder delegates to. The fluent builder may
+forward a `BuildAgentDeps` (e.g. `.withDeps(deps)` or a `build(deps?)` argument)
+so the same stubs reach `buildAgent`.
 
 ### Component 2 — `ControllerSkillPipelineBuilder` (fluent façade, exported)
 
@@ -92,8 +130,8 @@ mcp, llm) and delegates to `buildAgent`.
 
 ```ts
 const { agent, close } = await new ControllerSkillPipelineBuilder()
-  .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
-  .withRoleLlm('planner', { provider: 'openai', model: 'gpt-4o' }) // optional override
+  .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' }) // keyless
+  .withRoleLlm('planner', { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' })
   .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })       // repeatable
   .withSkillSource({
     github: 'https://github.com/secondsky/sap-skills.git',
@@ -108,8 +146,52 @@ const { agent, close } = await new ControllerSkillPipelineBuilder()
   .withPlanner('smart-executor')           // optional; default smart-executor
   .build();
 
-const out = await agent.run('Review ABAP program ZDAZ_R_DELAYED_UPDATE, …');
+// `agent` is a SmartAgent — its public entry point is `process()`
+// (string | Message[]) → Promise<Result<SmartAgentResponse, OrchestratorError>>.
+const res = await agent.process('Review ABAP program ZDAZ_R_DELAYED_UPDATE, …');
+if (res.ok) console.log(res.value.content);
 await close();
+```
+
+#### Builder input types (apiKey is OPTIONAL — per-provider semantics)
+
+`SmartServerLlmConfig.apiKey` is a required `string` at the type level
+(`smart-server.ts:94`), but the config parser already tolerates a missing key for
+**keyless** providers (`config.ts:543` handles Ollama / SAP AI Core, which omit
+`apiKey`). The builder therefore exposes its OWN input type with an **optional**
+`apiKey`, and fills the value when translating to `SmartServerLlmConfig`:
+
+```ts
+export interface BuilderLlmInput {
+  provider: 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek' | 'ollama';
+  model?: string;
+  apiKey?: string;     // OPTIONAL here (see semantics below)
+  url?: string;        // OpenAI-compatible base URL (Ollama/Azure/vLLM)
+  temperature?: number;
+  maxTokens?: number;
+}
+```
+
+Translation/validation at `.build()`:
+- **Keyless** (`sap-ai-sdk`, `ollama`): `apiKey` omitted; the builder supplies the
+  empty-string placeholder the parser accepts. Credentials come from the
+  environment out-of-band — SAP AI Core via `AICORE_SERVICE_KEY` (+ `SAP_AI_MODEL`
+  / resource group), Ollama via `url`. No token is read or logged by the builder.
+- **Keyed** (`openai`, `anthropic`, `deepseek`): `apiKey` required. If omitted, the
+  builder falls back to the conventional env var (`OPENAI_API_KEY` /
+  `ANTHROPIC_API_KEY` / `DEEPSEEK_API_KEY`); if still empty, `.build()` throws
+  naming the missing key. The example passes `process.env.OPENAI_API_KEY`
+  explicitly for the `openai` role override.
+
+`withSkillSource` input mirrors the config's github source variant:
+```ts
+export interface BuilderSkillSourceInput {
+  github: string;                 // repo URL or owner/repo
+  enabled: readonly string[];     // plugin names; ['*'] = all
+  collection?: string;            // default 'sap' → controllerSkillGroup + group name
+  ref?: string;                   // default = repo default_branch
+  token?: string;                 // optional; or via env
+}
 ```
 
 **Baked (not in the fluent surface):** pipeline name `controller`; skill-host
@@ -163,13 +245,17 @@ default `budgets`/`targetState`/`sessionMemory`.
   flips the pipeline name; `withBudgets`/`withTargetState` shallow-merge over defaults.
 - Missing-piece guards throw with the naming the spec requires.
 
-**Integration:**
-- `buildAgent` no-listen path returns a runnable agent for the controller pipeline
-  with skill recall wired, using stub `makeLlm`/embedder/skill-host (no network,
-  no port). Assert `agent.run(...)` reaches the controller handler and `close()`
-  disposes.
+**Integration (via the `BuildAgentDeps` seam — no network, no port):**
+- `buildAgent(cfg, deps)` returns a runnable agent for the controller pipeline with
+  skill recall wired, injecting stubs through `BuildAgentDeps`: a stub `makeLlm`
+  (canned `ILlm`), a stub `resolveEmbedder` (deterministic-vector embedder), and a
+  **prebuilt in-memory `skillHost`**. Assert `agent.process(...)` reaches the
+  controller handler (skill recall block present) and `close()` disposes cleanly.
+- The fluent builder end-to-end: `new ControllerSkillPipelineBuilder().withLlm(…)
+  …​.build(deps)` produces the same wired agent (asserts the façade → config →
+  `buildAgent` path), with the stubs forwarded via the builder's deps argument.
 - Regression: `SmartServer.start()` still builds + listens + returns a working
-  handle (the refactor is behaviour-preserving).
+  handle with `deps` omitted (the refactor is behaviour-preserving).
 
 ## Out of scope (YAGNI)
 
