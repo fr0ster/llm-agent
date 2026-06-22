@@ -1,5 +1,16 @@
 # @mcp-abap-adt/pg-vector-rag
 
+## 19.3.0
+
+### Added
+- Controller planner capability-tuned planners (§C): smart-executor (default `controller`) and weak-executor (new `controller-weak` preset); preset-encoded selection; `ControllerFactory.build(config, deps, kind)` + `deps.controllerPlanner` DI seam.
+### Changed
+- `controller` defaults to the live digest board (smart-executor; was incremental).
+### Removed
+- `planner:` controller config key + `IncrementalPlanner` (clean break, fail-loud — no alias).
+### Fixed / Docs
+- v19 documentation-accuracy pass: migrated ~25 example configs + docs off removed shapes (`coordinator:`, structured `pipeline:{version,stages}`, `withStageHandler`) to the current `pipeline:{name,config}` model; all shipped examples config-validate.
+
 ## 19.2.0
 
 ### Added
