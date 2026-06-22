@@ -9,7 +9,17 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
-## [19.3.0] — 2026-06-22
+## [20.0.0] — 2026-06-22
+
+> **Major bump (SemVer): BREAKING CHANGE.** This release REMOVES the published
+> `controller` config key `planner: 'incremental' | 'adaptive'` (shipped in 19.1.0
+> / 19.2.0) with NO compatibility alias — a config still carrying it now throws
+> fail-loud at load. A consumer who set `pipeline.config.planner` MUST migrate:
+> select `pipeline: { name: controller }` (smart-executor, the former `adaptive`/
+> board behaviour — now the default) or `{ name: controller-weak }` (weak-executor),
+> or pass the kind to `new ControllerFactory().build(config, deps, 'weak-executor')`.
+> Because this breaks a published surface, it is a MAJOR (20.0.0), not a minor.
+> (Supersedes the never-published 19.3.0 preparation.)
 
 ### Added
 
