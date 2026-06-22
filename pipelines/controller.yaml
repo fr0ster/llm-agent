@@ -46,9 +46,8 @@ pipeline:
       executor:
         provider: sap-ai-sdk
         model: ${LLM_MODEL:-anthropic--claude-4.6-sonnet}
-    # Planner implementation: incremental (per-step LLM decision) | adaptive
-    # (full plan upfront, replan only on failure/external result).
-    planner: ${PLANNER:-incremental}
+    # planner selection is preset-encoded: `name: controller` = smart-executor.
+    # (Removed `planner:` — use `name: controller-weak` for the weak-executor preset.)
     # consumer-confirm | semantic-distance | auto. A generous threshold keeps the
     # loop moving instead of asking to confirm the goal on every request.
     targetState: { strategy: auto, distanceThreshold: 0.7 }

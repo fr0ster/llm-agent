@@ -25,7 +25,7 @@ rag:
   model: text-embedding-3-small
 
 pipeline:
-  name: controller
+  name: controller-weak
   config:
     # Per-role `hint` = optional OPERATIONAL guidance appended to a role's system
     # prompt — used here to scaffold the weaker executor model. Capable models
@@ -53,10 +53,8 @@ pipeline:
           tools from the provided list, with exactly their documented arguments;
           never invent a tool name or argument. Return the step result only once
           the tool results are in.
-    # Planner implementation: adaptive (plan once upfront, replan only on failure).
-    # The whole point of mixed-model is to minimise EXPENSIVE planner LLM calls,
-    # so adaptive (1 createPlan) beats incremental (a planner call per step).
-    planner: ${PLANNER:-adaptive}
+    # The controller-weak preset wires the weak-executor planner (fine-grained
+    # steps) — the right pairing for a light executor model.
     targetState: { strategy: auto, distanceThreshold: 0.7 }
     sessionMemory: { collection: session-memory }
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }

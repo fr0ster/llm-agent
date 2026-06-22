@@ -32,6 +32,7 @@ that variant's dialect.
 | `dag` ⚠️ | _(legacy — see note below)_ Planner → parallel workers → finalizer | `planner`, `reviewer`, `finalizer`, `errorStrategy`, `stateOracle`, `maxRoundTrips` |
 | `stepper` ⚠️ | _(legacy — see note below)_ Composition flow (planner/executor/evaluator/reviewer/finalizer) | `mode` (`cyclic-react`/`planned-react`/`deep-stepper`), `flow`, `knowledgeSeed`, `maxParallelSteps`, `maxDepth`, `evaluator`, `reviewer` |
 | `controller` | Deterministic coordinator + three opaque subagent roles (evaluator/planner/executor); incremental loop, durable per-session bundle, stateless suspend/resume | `subagents.{evaluator,planner,executor}`, `targetState`, `sessionMemory`, `budgets` |
+| `controller-weak` | Same as `controller` but with the **weak-executor** planner (fine-grained steps — one action per step); for smaller executor models that cannot self-expand | same as `controller` |
 
 Stepper's `knowledgeSeed` (deployment-supplied tool guidance, seeded into a new
 session's knowledge store) lives under `pipeline.config.knowledgeSeed`.
@@ -39,8 +40,8 @@ session's knowledge store) lives under `pipeline.config.knowledgeSeed`.
 > **⚠️ `dag` and `stepper` are deprecated (legacy).** They keep running on their
 > own legacy step-interpreter and remain selectable for backward compatibility,
 > but they are no longer the active development path and will not receive the
-> newer planner/replan/metering work. The `controller` pipeline (with its
-> `incremental` or `adaptive` planner) is the maintained interpreter and the
+> newer planner/replan/metering work. The `controller` pipeline (and its
+> `controller-weak` variant) is the maintained interpreter and the
 > recommended choice for new deployments. The newer controller interpreter was
 > **not** designed to drive the legacy DAG/stepper flows — do not migrate a
 > `dag`/`stepper` config onto it; pick `controller` directly instead. These two
@@ -70,6 +71,19 @@ pipeline:
     budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 10 }
 ```
 
+**Capability is preset-encoded — there is no `planner:` config key.** Select the
+pairing by pipeline name:
+
+- `pipeline: { name: controller }` → **smart-executor** planner (coarse steps; the
+  capable executor self-expands a step in its tool-loop, control returns to the
+  reviewer after each coarse step). The default controller preset.
+- `pipeline: { name: controller-weak }` → **weak-executor** planner (fine-grained
+  steps — exactly one action per step; for smaller executor models that cannot be
+  trusted to self-expand).
+
+A `planner:` key in the controller config is rejected fail-loud (migration: use the
+preset name, or pass `kind` to `makeControllerPlanner` when composing in code).
+
 - The three subagents are independent LLM endpoints — they can target different
   providers/models (e.g. a heavy planner + a light executor). The executor must
   be a **tool-capable** model the backend accepts (OpenAI function format);
@@ -98,9 +112,10 @@ pipeline:
 - `DEBUG_CONTROLLER=1` logs (stderr) the step instructions the planner delegates
   and per-role/total token spend. The HTTP response always carries total `usage`.
 - Ready-to-run examples: [`pipelines/controller.yaml`](../pipelines/controller.yaml)
-  (all-sonnet, no hints) and [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
-  (sonnet deciders + light `gpt-4o-mini` executor, with an executor hint that
-  scaffolds the smaller model).
+  (all-sonnet, `name: controller` — smart-executor) and
+  [`pipelines/controller-mixed.yaml`](../pipelines/controller-mixed.yaml)
+  (`name: controller-weak` — sonnet deciders + light `gpt-4o-mini` executor, with
+  an executor hint that scaffolds the smaller model).
 
 ### `linear` planning/dispatch behaviour & guidance
 
