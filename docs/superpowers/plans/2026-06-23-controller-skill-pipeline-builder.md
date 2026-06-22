@@ -14,8 +14,11 @@
 
 ## Prerequisites & sequencing (READ FIRST)
 
-- **Tasks 1–3 (the `buildAgent` refactor) are independent of PR #195** — they touch only `SmartServer`, which is already on `main`. They can be implemented and merged on their own.
-- **Tasks 4–7 (the `ControllerSkillPipelineBuilder`) DEPEND on PR #195** (the `github` skill source: `makeGitHubTransport`, the `github` config variant). The builder bakes a `skillPlugins` source with a `github:` key; without #195 in `main`, config parsing rejects it. **Before executing Tasks 4–7, ensure #195 is merged to `main` and rebase this branch onto it.**
+This plan has exactly **Tasks 1–5** (terminal condition for subagent-driven
+execution = Task 5 complete).
+
+- **Tasks 1–2 (the `buildAgent` refactor) are independent of PR #195** — they touch only `SmartServer`, which is already on `main`. They can be implemented and merged on their own.
+- **Tasks 3–5 (the `ControllerSkillPipelineBuilder`) DEPEND on PR #195** (the `github` skill source: `makeGitHubTransport`, the `github` config variant). The builder bakes a `skillPlugins` source with a `github:` key; without #195 in `main`, config parsing rejects it. **Before executing Tasks 3–5, ensure #195 is merged to `main` and rebase this branch onto it.**
 - This branch (`feat/controller-skill-builder`) is based on `main`. If executing all tasks in one pass, merge #195 first, then rebase.
 
 ## File Structure
@@ -97,6 +100,11 @@ export interface BuildAgentDeps {
   connectMcp?: (
     mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
   ) => Promise<IMcpClient[]>;
+  /** Injected embedder instance — short-circuits BOTH the agent-RAG embedder
+   *  (`resolveAgentEmbedder`'s `diEmbedder` param) AND the skill-host embedder
+   *  resolution. Simplest stub for I/O-free tests: one deterministic embedder
+   *  covers every embedder path. Default: undefined (resolve from config). */
+  embedder?: IEmbedder;
 }
 ```
 
@@ -105,7 +113,7 @@ Change the constructor to capture defaulted deps:
 ```ts
 private readonly _deps: Required<Pick<BuildAgentDeps,
   'makeLlm' | 'resolveEmbedder' | 'prefetchEmbedderFactories' | 'buildSkillHost' | 'connectMcp'>>
-  & Pick<BuildAgentDeps, 'skillHost'>;
+  & Pick<BuildAgentDeps, 'skillHost' | 'embedder'>;
 
 constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
   this.cfg = config;
@@ -117,6 +125,7 @@ constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
     connectMcp: deps.connectMcp ?? connectMcpClientsFromConfig,
     ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
+    ...(deps.embedder ? { embedder: deps.embedder } : {}),
   };
   // ... existing constructor body unchanged
 }
@@ -137,10 +146,11 @@ private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
 ```
 
 Route the embedder, skill-host, and MCP construction through `this._deps`:
-- replace direct `resolveEmbedder(...)` calls (e.g. `:1251` in the skill-host build, and the agent-RAG path) with `this._deps.resolveEmbedder(...)`;
-- replace `buildSkillHostFromConfig(skillCfg, {...})` (`:1247`) with: if `this._deps.skillHost` is set, use it directly (skip building); else `this._deps.buildSkillHost(skillCfg, {...})`;
-- replace any `connectMcpClientsFromConfig(...)` call with `this._deps.connectMcp(...)`;
-- replace `prefetchEmbedderFactories()` call with `this._deps.prefetchEmbedderFactories()`.
+- **Agent embedder (P1b):** the agent RAG embedder is built via `resolveAgentEmbedder(this.cfg.rag, this.cfg.embedder, mergedFactories)` (`:1216`). That fn already accepts a `diEmbedder: IEmbedder | undefined` parameter (`resolve-agent-embedder.ts:26`) that short-circuits resolution. Pass `this._deps.embedder` as that arg: `resolveAgentEmbedder(this.cfg.rag, this.cfg.embedder, mergedFactories, this._deps.embedder)`. This is the ONLY way an injected embedder reaches the agent-RAG path — without it, a stubbed test still resolves `rag.embedder` (e.g. `sap-ai-core`) for real.
+- replace direct `resolveEmbedder(...)` calls (e.g. `:1251` in the skill-host build) with `this._deps.resolveEmbedder(...)`, and when `this._deps.embedder` is set pass it via `options.injectedEmbedder` so the skill-host reuses the same injected instance;
+- replace `prefetchEmbedderFactories()` calls with `this._deps.prefetchEmbedderFactories()`.
+- **Skill-host (P2 — preserve build→load→validate):** the skill-host is already created via `initSkillHost(buildHost, skillCfg, pools)` (`:1245`), which runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk: `const buildHost = this._deps.skillHost ? async () => this._deps.skillHost! : () => this._deps.buildSkillHost(skillCfg, { resolveEmbedder: (ec) => this._deps.resolveEmbedder(ec, this._deps.embedder ? { injectedEmbedder: this._deps.embedder } : undefined) })`. A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
+- replace any `connectMcpClientsFromConfig(...)` call with `this._deps.connectMcp(...)`.
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -487,7 +497,9 @@ export class ControllerSkillPipelineBuilder {
   withTargetState(t: Record<string, unknown>): this { this._targetState = { ...this._targetState, ...t }; return this; }
   withPlanner(kind: PlannerKind): this { this._plannerKind = kind; return this; }
 
-  /** Assemble the SmartServerConfig (fail-loud on missing required pieces). */
+  /** Assemble the RAW (yaml-shaped, PRE-normalization) config, fail-loud on
+   *  missing required pieces. `.build()` runs this through
+   *  `resolveSmartServerConfig` to fill all defaults before building. */
   toConfig(): SmartServerConfig {
     if (!this._llm && Object.keys(this._roleLlm).length === 0) {
       throw new Error('ControllerSkillPipelineBuilder: call .withLlm() (or .withRoleLlm() for all roles) before building');
@@ -573,23 +585,34 @@ git commit -m "feat(builders): ControllerSkillPipelineBuilder fluent accumulatio
 
 Append:
 
+Two tests: (a) the agent builds with everything stubbed — and crucially via
+`buildSkillHost` (NOT a direct `skillHost`), so we ALSO assert the skill config
+reached it **normalized** (P1a); (b) an injected `embedder` covers the agent-RAG
+path (P1b). The stub host implements `load()`/`groups()`/`rag().activeManifest()`
+because `.build()` routes it through `initSkillHost` (load+validate, P2).
+
 ```ts
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
+import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js';
 
-test('build(deps) returns a runnable agent via buildAgent, no network/port', async () => {
+function stubHost() {
+  return {
+    rag: () => ({ query: async () => [], activeManifest: async () => ({}) }),
+    groups: () => [{ group: 'sap' }],
+    load: async () => {},
+  } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+}
+
+test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', async () => {
   const cannedLlm = { chat: async () => ({ content: 'review', toolCalls: [] }), model: 'stub' }
     as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
   const stubEmbedder = { embed: async () => ({ vector: [0, 0, 0] }) }
     as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
-  const stubSkillHost = {
-    rag: () => ({ query: async () => [] }),
-    groups: () => [{ group: 'sap' }],
-    load: async () => {},
-  } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+  let skillCfgSeen: SkillPluginsConfig | undefined;
   const deps: BuildAgentDeps = {
     makeLlm: async () => cannedLlm,
-    resolveEmbedder: () => stubEmbedder,
-    skillHost: stubSkillHost,
+    embedder: stubEmbedder,                       // P1b: covers agent-RAG + skill-host
+    buildSkillHost: async (cfg) => { skillCfgSeen = cfg; return stubHost(); }, // P1a: capture
     connectMcp: async () => [],
   };
   const { agent, close } = await new ControllerSkillPipelineBuilder()
@@ -598,6 +621,27 @@ test('build(deps) returns a runnable agent via buildAgent, no network/port', asy
     .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
     .build(deps);
   assert.equal(typeof agent.process, 'function');
+  // P1a — normalization happened: defaults filled by resolveSmartServerConfig.
+  assert.ok(skillCfgSeen, 'buildSkillHost was called');
+  assert.equal(skillCfgSeen!.store.type, 'in-memory');
+  assert.ok(skillCfgSeen!.catalog, 'catalog default present');     // normalized
+  assert.notEqual(skillCfgSeen!.chunk, undefined);                 // chunk default present
+  await close();
+});
+
+test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', async () => {
+  const cannedLlm = { chat: async () => ({ content: '', toolCalls: [] }), model: 'stub' }
+    as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  let loaded = false;
+  const host = { ...stubHost(), load: async () => { loaded = true; } }
+    as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+  const { close } = await new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk' })
+    .withSkillSource({ github: 'a/b', enabled: ['sap-abap'], collection: 'sap' })
+    .withEmbedder({ provider: 'sap-ai-core' })
+    .build({ makeLlm: async () => cannedLlm, embedder: { embed: async () => ({ vector: [0] }) } as any,
+             skillHost: host, connectMcp: async () => [] });
+  assert.equal(loaded, true, 'prebuilt host still went through initSkillHost.load()');
   await close();
 });
 ```
@@ -613,19 +657,35 @@ Expected: FAIL — `.build` is not a function.
 
 - [ ] **Step 3: Add `build(deps?)`**
 
-Add to the class (import `buildAgent` at the top):
+Add to the class (import `buildAgent` + the config resolver at the top). **`.build()`
+MUST normalize the raw assembled config through `resolveSmartServerConfig` before
+handing it to `buildAgent`** — `buildAgent`/`SmartServer` expect an already-normalized
+`SmartServerConfig` (the `_start()` path reads `skillCfg.catalog.type` directly;
+`store`/`catalog`/`k`/`threshold`/`loadOnStartup`/`chunk` defaults are added ONLY by
+`resolveSmartServerConfig` → `parseSkillPluginsConfig`). `toConfig()` returns the RAW
+(yaml-shaped, pre-normalization) object; normalization happens here:
 
 ```ts
 import { buildAgent } from '../smart-agent/smart-server.js';
+import { resolveSmartServerConfig } from '../smart-agent/config.js';
 // ...
   /** Assemble + build a runnable agent (no port bound). `deps` forwards a
    *  BuildAgentDeps for embedding/testing; omit it for the real implementations. */
   async build(deps?: BuildAgentDeps): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
-    return buildAgent(this.toConfig(), deps);
+    // toConfig() is the RAW yaml-shaped config; resolveSmartServerConfig fills
+    // ALL defaults (incl. skillPlugins catalog/chunk/loadOnStartup) so the
+    // SmartServer build path receives a fully-normalized config.
+    const normalized = resolveSmartServerConfig({}, this.toConfig() as YamlConfig, process.env);
+    // resolveSmartServerConfig returns Omit<SmartServerConfig,'log'>; buildAgent
+    // does not listen/log to a file, so a no-op/absent log is fine.
+    return buildAgent(normalized as SmartServerConfig, deps);
   }
 ```
 
-Add the `BuildAgentDeps`/`SmartAgent` type imports from `../smart-agent/smart-server.js` and `@mcp-abap-adt/llm-agent`.
+Add imports: `buildAgent`, `BuildAgentDeps`, `SmartServerConfig` from
+`../smart-agent/smart-server.js`; `resolveSmartServerConfig`, `YamlConfig` from
+`../smart-agent/config.js`; `SmartAgent` from `@mcp-abap-adt/llm-agent`. If
+`SmartServerConfig` requires a `log`, supply a no-op (`{ ...normalized, log: () => {} }`).
 
 - [ ] **Step 4: Run test to verify it passes**
 
@@ -708,6 +768,9 @@ Expected: all green; commit succeeds.
 - Fail-loud guards (no LLM / no skill source / no embedder) → Task 3 tests. ✓
 - Unit (config translation) + integration (deps-stubbed, no I/O) + regression (`start()` still listens) → Tasks 1,2,3,4. ✓
 - Exports → Task 5. ✓
+- **Config normalization (review P1a):** `.build()` runs the raw config through `resolveSmartServerConfig` so skill-host defaults (catalog/chunk/loadOnStartup) are filled before the build path reads `skillCfg.catalog.type` → Task 4 Step 3 + the P1a assertion test. ✓
+- **Embedder seam covers ALL paths (review P1b):** `BuildAgentDeps.embedder` threaded as `resolveAgentEmbedder`'s `diEmbedder` (agent-RAG) AND skill-host `injectedEmbedder` → Task 1 Step 3 + the integration test injects `embedder`. ✓
+- **Startup invariant preserved (review P2):** even a prebuilt `skillHost` goes through `initSkillHost` (load + validate + group probe) — only the `buildHost` thunk is swapped → Task 1 Step 3 + the P2 test asserts `load()` ran. ✓
 
 **2. Placeholder scan:** No TBD/TODO; every code step shows code; commands have expected output. The one non-code instruction (the `_start()` body MOVE in Task 2 Step 3) is a bounded extract with explicit boundary lines + the new method signatures + the close composition shown. ✓
 
