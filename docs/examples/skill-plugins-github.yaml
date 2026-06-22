@@ -1,21 +1,49 @@
-# Skill plugin-host that SELF-FETCHES skills from a GitHub Claude-plugin repo.
-# The host downloads marketplace.json + each SKILL.md over HTTPS into memory
-# (no git clone, no filesystem). marketplace.json + the Contents API are used to
-# enumerate skills; raw.githubusercontent.com fetches the bodies.
+# Controller pipeline + skill plugin-host that SELF-FETCHES skills from a GitHub
+# Claude-plugin repo. The host downloads marketplace.json + each SKILL.md over
+# HTTPS into memory (no git clone, no filesystem): marketplace.json + the GitHub
+# Contents API enumerate skills; raw.githubusercontent.com fetches the bodies.
+#
+# This is the validated ABAP-review composition: the `controller` pipeline recalls
+# the merged `sap` skill group while reviewing an ABAP program over MCP.
 #
 # Usage:
 #   npm run dev -- --config docs/examples/skill-plugins-github.yaml
+#   curl -s localhost:4004/v1/chat/completions -H 'content-type: application/json' \
+#     -d '{"messages":[{"role":"user",
+#          "content":"Review ABAP program ZDAZ_R_DELAYED_UPDATE, check security, performance, CleanCore, maintainability"}]}'
 port: 4004
 host: 0.0.0.0
 
+# Base llm block (config requires it even with pipeline: controller).
 llm:
   main:
     provider: sap-ai-sdk
     model: anthropic--claude-4.6-sonnet
+    temperature: 0.3
+    maxTokens: 32768
 
+# Controller pipeline — smart-executor (default since 20.0.0): plan-first board.
+# Each subagent role takes its own LLM config (here all the same provider/model).
 pipeline:
   name: controller
+  config:
+    subagents:
+      evaluator:
+        provider: sap-ai-sdk
+        model: anthropic--claude-4.6-sonnet
+      planner:
+        provider: sap-ai-sdk
+        model: anthropic--claude-4.6-sonnet
+      executor:
+        provider: sap-ai-sdk
+        model: anthropic--claude-4.6-sonnet
+    targetState:
+      strategy: auto
+      distanceThreshold: 0.7
+    sessionMemory: { collection: session-memory }
+    budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 30 }
 
+# Results-RAG + MCP tool-RAG embedder — SAP AI Core (foundation-models).
 rag:
   type: in-memory
   embedder: sap-ai-core
@@ -23,15 +51,27 @@ rag:
   resourceGroup: default
   model: text-embedding-3-small
 
+# MCP via a local ABAP ADT approuter/proxy (adjust the URL to your endpoint).
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+  headers:
+    Accept: "application/json, text/event-stream"
+
+# Skill plugin-host: SELF-FETCH the SAP skills directly from the GitHub repo
+# (no shim, no clone, zero-FS), merged into ONE collection `sap` so the controller
+# planner recalls from all enabled plugins at once.
 skillPlugins:
   store: { type: in-memory }
   embedder: { provider: sap-ai-core, model: text-embedding-3-small }
   controllerSkillGroup: sap
+  k: 4
+  threshold: 0.3
   sources:
     - id: sap-skills
       github: https://github.com/secondsky/sap-skills.git   # host self-fetches
-      # ref: main            # optional; default = repo default_branch
+      # ref: main               # optional; default = repo default_branch
       # token: ${GITHUB_TOKEN}  # optional; lifts rate limit + private repos
-      enabled: [sap-abap, sap-btp-developer-guide]
+      enabled: [sap-abap, sap-abap-cds, sap-btp-developer-guide, sap-btp-best-practices]
       strategy: single-collection
       strategyConfig: { collection: sap }
