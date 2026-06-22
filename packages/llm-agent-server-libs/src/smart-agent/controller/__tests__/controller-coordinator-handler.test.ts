@@ -1084,7 +1084,7 @@ describe('ControllerCoordinatorHandler', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx, captured } = fakeCtx();
     const ret = await new ControllerCoordinatorHandler(h.deps).execute(
@@ -1110,7 +1110,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('adaptive: a persisted cursor resumes from the NEXT step (no repeat)', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     await persistBundle(backend, 'sess-1', {
       goal: 'Goal',
       plannerPrivate: '\n[step s1] did A',
@@ -1154,7 +1154,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('adaptive + external tool: resume injects the result into the step transcript; the executor continues', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
 
     // Leg 1 — 1-step plan; executor emits an external tool call → suspend.
@@ -1336,7 +1336,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('legacy external resume (no inFlightStep): feeds plannerPrivate + replan, parse-retry preserves resumedExternal', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
     // Seed a SUSPENDED adaptive bundle WITHOUT an inFlightStep — the retained
     // legacy external-resume branch: the result is fed via plannerPrivate and the
@@ -1601,7 +1601,6 @@ describe('ControllerCoordinatorHandler', () => {
       planner: [],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxStepResumes: 1 },
       },
     });
@@ -1638,7 +1637,7 @@ describe('ControllerCoordinatorHandler', () => {
       evaluator: [], // goal already in the seeded bundle → establishTargetState skipped
       planner: [],
       executor: [{ kind: 'content', content: 's2 done' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     // Recording planner: capture the SYSTEM prompt of each call; reply replan→finalize.
     const seenSystems: string[] = [];
@@ -1760,7 +1759,6 @@ describe('ControllerCoordinatorHandler', () => {
       executor: [],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxPlannerResumes: 0 },
       },
     });
@@ -2072,7 +2070,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
@@ -2103,7 +2101,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
@@ -2186,7 +2184,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
       evaluator: [{ kind: 'content', content: 'Goal: do it' }],
       planner: [], // overridden below
       executor: [{ kind: 'content', content: 'STEP-RESULT-CONTENT' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     h.deps.backend = backend;
     h.deps.knowledgeRagFor = () => proxyRag;
@@ -2258,7 +2256,6 @@ describe('Phase 2 — Live Digest Board integration', () => {
       executor: [{ kind: 'error', error: 'boom' }],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxRetries: 0 },
       },
     });
