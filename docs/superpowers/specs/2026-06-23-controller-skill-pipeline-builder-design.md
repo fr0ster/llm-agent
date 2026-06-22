@@ -90,20 +90,43 @@ integration test would reach real providers and GitHub. So `buildAgent` accepts
 an **optional, fully-defaulted** deps object, and `SmartServer` routes the same
 constructions through it:
 
+All signatures below are the REAL exported types (no invented aliases):
+`SmartServerLlmConfig`, `SmartServerMcpConfig`, `connectMcpClientsFromConfig`,
+`buildSkillHostFromConfig`, `BuildSkillHostDeps`, `SkillPluginsConfig`,
+`ISkillPluginHost` from `@mcp-abap-adt/llm-agent-server-libs`; `resolveEmbedder`,
+`EmbedderResolutionConfig`, `EmbedderResolutionOptions`,
+`prefetchEmbedderFactories` from `@mcp-abap-adt/llm-agent-rag`; `ILlm`,
+`IEmbedder`, `IMcpClient` from `@mcp-abap-adt/llm-agent`.
+
 ```ts
 export interface BuildAgentDeps {
-  /** LLM factory per role/main. Default: makeLlm from llm-agent-libs. */
+  /** LLM factory at the SmartServer level (mirrors the private `_makeLlm`
+   *  seam, `smart-server.ts:1917`). Default: the real `_makeLlm`. */
   makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
-  /** Embedder resolver (results + MCP-tool RAG + skill-host). Default: resolveEmbedder. */
-  resolveEmbedder?: (cfg: { embedder?: string; model?: string }, opts?: ResolveEmbedderOptions) => IEmbedder;
-  /** One-time embedder-factory prefetch. Default: prefetchEmbedderFactories. */
-  prefetchEmbedderFactories?: () => Promise<void>;
-  /** Skill-host builder. Default: buildSkillHostFromConfig. */
-  buildSkillHost?: (cfg: SkillPluginsConfig, deps: BuildSkillHostDeps) => Promise<ISkillPluginHost>;
+  /** Embedder resolver (results + MCP-tool RAG + skill-host). Default:
+   *  `resolveEmbedder` (`rag-factories.ts:138`). NOTE: the simplest stub path is
+   *  to pass `options.injectedEmbedder` — that field already short-circuits
+   *  resolution to a supplied IEmbedder, so a test need not replace the fn. */
+  resolveEmbedder?: (
+    cfg: EmbedderResolutionConfig,
+    options?: EmbedderResolutionOptions,
+  ) => IEmbedder;
+  /** One-time embedder-factory prefetch. Default: `prefetchEmbedderFactories`. */
+  prefetchEmbedderFactories?: typeof import('@mcp-abap-adt/llm-agent-rag').prefetchEmbedderFactories;
+  /** Skill-host builder. Default: `buildSkillHostFromConfig`
+   *  (`skill-plugins-host-factory.ts:236`). */
+  buildSkillHost?: (
+    cfg: SkillPluginsConfig,
+    deps: BuildSkillHostDeps,
+  ) => Promise<ISkillPluginHost>;
   /** Escape hatch: a PREBUILT skill host (skips building entirely). */
   skillHost?: ISkillPluginHost;
-  /** MCP connector seam (connect/list tools). Default: the live MCP client connector. */
-  connectMcp?: (cfg: McpClientConfig) => Promise<IMcpClient>;
+  /** MCP connector. Default: `connectMcpClientsFromConfig` (`smart-server.ts:876`),
+   *  whose real signature accepts the single|array|nullish union and returns
+   *  connected clients. */
+  connectMcp?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<IMcpClient[]>;
 }
 ```
 
@@ -113,8 +136,10 @@ export interface BuildAgentDeps {
   LLM / embedder / skill-host / MCP construction points so both `start()` and
   `buildAgent()` honour injected stubs.
 - Integration tests inject: a stub `makeLlm` returning a canned `ILlm`, a stub
-  `resolveEmbedder` returning a deterministic-vector embedder, and a **prebuilt
-  in-memory `skillHost`** — no network, no port, no GitHub.
+  embedder (either a `resolveEmbedder` override or, simpler, the existing
+  `EmbedderResolutionOptions.injectedEmbedder` field with a deterministic-vector
+  embedder), and a **prebuilt in-memory `skillHost`** — no network, no port, no
+  GitHub.
 
 This makes the agent embeddable for **all** pipelines (bonus beyond controller),
 and is the single seam the fluent builder delegates to. The fluent builder may
