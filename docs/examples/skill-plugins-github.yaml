@@ -1,0 +1,37 @@
+# Skill plugin-host that SELF-FETCHES skills from a GitHub Claude-plugin repo.
+# The host downloads marketplace.json + each SKILL.md over HTTPS into memory
+# (no git clone, no filesystem). marketplace.json + the Contents API are used to
+# enumerate skills; raw.githubusercontent.com fetches the bodies.
+#
+# Usage:
+#   npm run dev -- --config docs/examples/skill-plugins-github.yaml
+port: 4004
+host: 0.0.0.0
+
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: anthropic--claude-4.6-sonnet
+
+pipeline:
+  name: controller
+
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  scenario: foundation-models
+  resourceGroup: default
+  model: text-embedding-3-small
+
+skillPlugins:
+  store: { type: in-memory }
+  embedder: { provider: sap-ai-core, model: text-embedding-3-small }
+  controllerSkillGroup: sap
+  sources:
+    - id: sap-skills
+      github: https://github.com/secondsky/sap-skills.git   # host self-fetches
+      # ref: main            # optional; default = repo default_branch
+      # token: ${GITHUB_TOKEN}  # optional; lifts rate limit + private repos
+      enabled: [sap-abap, sap-btp-developer-guide]
+      strategy: single-collection
+      strategyConfig: { collection: sap }
