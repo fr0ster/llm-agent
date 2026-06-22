@@ -78,6 +78,10 @@ import {
   MCPClientWrapper,
   McpClientAdapter,
 } from '@mcp-abap-adt/llm-agent-mcp';
+import type {
+  EmbedderResolutionConfig,
+  EmbedderResolutionOptions,
+} from '@mcp-abap-adt/llm-agent-rag';
 import {
   makeRag,
   prefetchEmbedderFactories,
@@ -286,6 +290,33 @@ export interface SmartServerConfig {
 }
 
 /**
+ * DI seam for SmartServer's LLM / embedder / skill-host / MCP construction.
+ * Every member is optional and defaults to the real implementation, so omitting
+ * `deps` (or passing `{}`) preserves the original behaviour exactly. Used by
+ * tests (and a future no-listen `buildAgent()`) to substitute canned
+ * implementations without network or port I/O.
+ */
+export interface BuildAgentDeps {
+  makeLlm?: (cfg: SmartServerLlmConfig) => Promise<ILlm>;
+  resolveEmbedder?: (
+    cfg: EmbedderResolutionConfig,
+    options?: EmbedderResolutionOptions,
+  ) => IEmbedder;
+  prefetchEmbedderFactories?: typeof prefetchEmbedderFactories;
+  buildSkillHost?: (
+    cfg: SkillPluginsConfig,
+    deps: BuildSkillHostDeps,
+  ) => Promise<ISkillPluginHost>;
+  skillHost?: ISkillPluginHost;
+  connectMcp?: (
+    mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
+  ) => Promise<IMcpClient[]>;
+  /** Injected embedder — short-circuits BOTH resolveAgentEmbedder (diEmbedder) AND
+   *  the skill-host embedder resolution + prefetch. */
+  embedder?: IEmbedder;
+}
+
+/**
  * A nested sub-agent declared via the top-level `subagents:` YAML block.
  * The `config` field is the resolved `SmartServerConfig` for the sub-agent
  * (without `subagents:` of its own — nested orchestration is not supported).
@@ -401,6 +432,7 @@ import type {
 } from './session-meta-store.js';
 import { InMemorySessionMetaStore } from './session-meta-store.js';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
+import type { BuildSkillHostDeps } from './skill-plugins-host-factory.js';
 import {
   buildSkillHostFromConfig,
   initSkillHost,
@@ -1025,8 +1057,35 @@ export class SmartServer {
    */
   private readonly _sessionCloseFns = new Map<string, () => Promise<void>>();
 
-  constructor(config: SmartServerConfig) {
+  /**
+   * Defaulted construction deps (the BuildAgentDeps DI seam). Required members
+   * always resolve to the real implementation when not injected; `skillHost`
+   * and `embedder` stay optional (present only when injected).
+   */
+  private readonly _deps: Required<
+    Pick<
+      BuildAgentDeps,
+      | 'makeLlm'
+      | 'resolveEmbedder'
+      | 'prefetchEmbedderFactories'
+      | 'buildSkillHost'
+      | 'connectMcp'
+    >
+  > &
+    Pick<BuildAgentDeps, 'skillHost' | 'embedder'>;
+
+  constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     this.cfg = config;
+    this._deps = {
+      makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
+      resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
+      prefetchEmbedderFactories:
+        deps.prefetchEmbedderFactories ?? prefetchEmbedderFactories,
+      buildSkillHost: deps.buildSkillHost ?? buildSkillHostFromConfig,
+      connectMcp: deps.connectMcp ?? connectMcpClientsFromConfig,
+      ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
+      ...(deps.embedder ? { embedder: deps.embedder } : {}),
+    };
   }
 
   async start(): Promise<SmartServerHandle> {
@@ -1215,7 +1274,7 @@ export class SmartServer {
     // subagent context-builder's toolSource (#137). See resolve-agent-embedder.
     const resolvedEmbedder = await resolveAgentEmbedder(
       this.cfg.rag,
-      this.cfg.embedder,
+      this._deps.embedder ?? this.cfg.embedder,
       mergedEmbedderFactories,
     );
     // Hold the resolved embedder so buildServerCtx can thread it onto every
@@ -1229,12 +1288,16 @@ export class SmartServer {
     // llm-agent-rag). Absent `skillPlugins:` → no host, behaviour unchanged.
     if (this.cfg.skillPlugins) {
       const skillCfg = this.cfg.skillPlugins;
+      // An injected embedder short-circuits ALL embedder I/O for the skill host
+      // (no dedicated build, no prefetch) — the seam owns the embedder.
+      const injectedEmbedder = this._deps.embedder;
       const reuseAgentEmbedder =
-        skillCfg.embedder === undefined && resolvedEmbedder !== undefined;
+        injectedEmbedder !== undefined ||
+        (skillCfg.embedder === undefined && resolvedEmbedder !== undefined);
       // Prefetch the named embedder factory only when we will actually build a
       // dedicated one (the agent embedder is already prefetched + wrapped).
       if (!reuseAgentEmbedder) {
-        await prefetchEmbedderFactories([
+        await this._deps.prefetchEmbedderFactories([
           skillCfg.embedder?.provider ?? 'ollama',
         ]);
       }
@@ -1242,39 +1305,42 @@ export class SmartServer {
       // captured pg pools are ended INSIDE initSkillHost (the later closeFns
       // cleanup never runs when start() rejects before returning a handle), so
       // the pools cannot leak open sockets on a startup failure.
+      const buildHost = this._deps.skillHost
+        ? async () => this._deps.skillHost as ISkillPluginHost
+        : () =>
+            this._deps.buildSkillHost(skillCfg, {
+              resolveEmbedder: (ec) =>
+                reuseAgentEmbedder
+                  ? ((injectedEmbedder ?? resolvedEmbedder) as IEmbedder)
+                  : this._deps.resolveEmbedder(ec, {
+                      extraFactories: mergedEmbedderFactories,
+                    }),
+              // Real pg `Pool` provider for a `postgres` catalog (qdrant
+              // deployment). Lazily imports `pg` and ensures the catalog table
+              // exists on first use; pass the configured table so the DDL targets
+              // the SAME table the catalog store reads/writes. Absent
+              // skillPlugins.catalog.type:postgres this is never invoked.
+              makePgPool: (connectionString) => {
+                const pool = makePgPool(
+                  connectionString,
+                  skillCfg.catalog.type === 'postgres'
+                    ? skillCfg.catalog.table
+                    : undefined,
+                );
+                this._skillPgPools.push(pool);
+                return pool;
+              },
+              // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
+              // recall-only process with read-only pg credentials does not crash
+              // attempting to CREATE the catalog table it only reads.
+              makePgReadPool: (connectionString) => {
+                const pool = makePgReadPool(connectionString);
+                this._skillPgPools.push(pool);
+                return pool;
+              },
+            });
       this._skillHost = await initSkillHost(
-        () =>
-          buildSkillHostFromConfig(skillCfg, {
-            resolveEmbedder: (ec) =>
-              reuseAgentEmbedder
-                ? (resolvedEmbedder as IEmbedder)
-                : resolveEmbedder(ec, {
-                    extraFactories: mergedEmbedderFactories,
-                  }),
-            // Real pg `Pool` provider for a `postgres` catalog (qdrant
-            // deployment). Lazily imports `pg` and ensures the catalog table
-            // exists on first use; pass the configured table so the DDL targets
-            // the SAME table the catalog store reads/writes. Absent
-            // skillPlugins.catalog.type:postgres this is never invoked.
-            makePgPool: (connectionString) => {
-              const pool = makePgPool(
-                connectionString,
-                skillCfg.catalog.type === 'postgres'
-                  ? skillCfg.catalog.table
-                  : undefined,
-              );
-              this._skillPgPools.push(pool);
-              return pool;
-            },
-            // READ-ONLY pg pool for the recall-only path — NEVER runs DDL, so a
-            // recall-only process with read-only pg credentials does not crash
-            // attempting to CREATE the catalog table it only reads.
-            makePgReadPool: (connectionString) => {
-              const pool = makePgReadPool(connectionString);
-              this._skillPgPools.push(pool);
-              return pool;
-            },
-          }),
+        buildHost,
         skillCfg,
         this._skillPgPools,
       );
@@ -1913,8 +1979,15 @@ export class SmartServer {
   // -- Pipeline-context dep sources (promoted from the inline coordinator-gate
   //    closures; consumed by buildServerCtx, which later tasks call) ----------
 
-  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG). */
+  /** Build an LLM from a SmartServerLlmConfig (mirrors stepperMakeLlm/DAG).
+   *  Routes through the BuildAgentDeps seam so an injected `makeLlm` overrides
+   *  the real builder. */
   private _makeLlm(lc: SmartServerLlmConfig): Promise<ILlm> {
+    return this._deps.makeLlm(lc);
+  }
+
+  /** The real `makeLlm`-backed construction (the seam's default). */
+  private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
     return makeLlm(
       {
         provider: lc.provider ?? 'deepseek',
@@ -2021,7 +2094,7 @@ export class SmartServer {
     // connect the YAML `mcp:` block ONCE (connect is not safe to invoke twice
     // on the same wrapper — guard via the cache field).
     if (!mcpClients && !this._stepperMcpClients) {
-      this._stepperMcpClients = await connectMcpClientsFromConfig(this.cfg.mcp);
+      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
     }
     this._sharedMcpClients = mcpClients ?? this._stepperMcpClients ?? [];
 
