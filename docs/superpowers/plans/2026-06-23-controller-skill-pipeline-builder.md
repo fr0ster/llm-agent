@@ -146,7 +146,7 @@ private _makeLlmDefault(lc: SmartServerLlmConfig): Promise<ILlm> {
 ```
 
 Route the embedder, skill-host, and MCP construction through `this._deps`:
-- **Agent embedder (P1b):** the agent RAG embedder is built via `resolveAgentEmbedder(this.cfg.rag, this.cfg.embedder, mergedFactories)` (`:1216`). That fn already accepts a `diEmbedder: IEmbedder | undefined` parameter (`resolve-agent-embedder.ts:26`) that short-circuits resolution. Pass `this._deps.embedder` as that arg: `resolveAgentEmbedder(this.cfg.rag, this.cfg.embedder, mergedFactories, this._deps.embedder)`. This is the ONLY way an injected embedder reaches the agent-RAG path — without it, a stubbed test still resolves `rag.embedder` (e.g. `sap-ai-core`) for real.
+- **Agent embedder (P1b):** the agent RAG embedder is built via `resolveAgentEmbedder(rag, diEmbedder, extraFactories)` — a **3-arg** function whose **2nd** param IS the DI embedder slot (`resolve-agent-embedder.ts:24`). The current call (`:1216`) passes `this.cfg.embedder` as that 2nd arg. Prefer the injected one: change it to `resolveAgentEmbedder(this.cfg.rag, this._deps.embedder ?? this.cfg.embedder, mergedEmbedderFactories)`. (Do NOT add a 4th argument — the signature has three.) This is the ONLY way an injected embedder reaches the agent-RAG path — without it, a stubbed test still resolves `rag.embedder` (e.g. `sap-ai-core`) for real.
 - replace direct `resolveEmbedder(...)` calls (e.g. `:1251` in the skill-host build) with `this._deps.resolveEmbedder(...)`, and when `this._deps.embedder` is set pass it via `options.injectedEmbedder` so the skill-host reuses the same injected instance;
 - replace `prefetchEmbedderFactories()` calls with `this._deps.prefetchEmbedderFactories()`.
 - **Skill-host (P2 — preserve build→load→validate):** the skill-host is already created via `initSkillHost(buildHost, skillCfg, pools)` (`:1245`), which runs `host.load()` + `validateServedGroups()` + the `controllerSkillGroup` eager-probe. Do NOT bypass it. Only swap the `buildHost` thunk: `const buildHost = this._deps.skillHost ? async () => this._deps.skillHost! : () => this._deps.buildSkillHost(skillCfg, { resolveEmbedder: (ec) => this._deps.resolveEmbedder(ec, this._deps.embedder ? { injectedEmbedder: this._deps.embedder } : undefined) })`. A prebuilt injected `skillHost` therefore STILL goes through `load()`/validate — a typo'd group or unloaded host fails at startup as today. (Test stubs must implement `load()`, `groups()`, and `rag(group).activeManifest()`.)
@@ -224,7 +224,7 @@ In `_start()`, everything from the start of the method up to (but NOT including)
 1. Add a private method that returns the built artifacts without listening:
 
 ```ts
-private async _buildAgent(): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+private async _buildAgent(): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
   // <-- MOVE the body of _start() here, from its top through the point just
   //     BEFORE `return new Promise(... server.listen ...)`. It already binds
   //     `smartAgent` and `closeFns`. End with:
@@ -283,14 +283,19 @@ private async _start(): Promise<SmartServerHandle> {
 export async function buildAgent(
   cfg: SmartServerConfig,
   deps?: BuildAgentDeps,
-): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
   const server = new SmartServer(cfg, deps);
   const built = await (server as unknown as {
-    _buildAgent(): Promise<{ agent: SmartAgent; close: () => Promise<void> }>;
+    _buildAgent(): Promise<{ agent: ISmartAgent; close: () => Promise<void> }>;
   })._buildAgent();
   return { agent: built.agent, close: built.close };
 }
 ```
+
+> Add an `import type { ISmartAgent } from '@mcp-abap-adt/llm-agent';` to
+> `smart-server.ts` if not already present (the concrete `smartAgent` produced by
+> `builder.build()` satisfies this public interface; we annotate the public
+> `buildAgent`/`_buildAgent` returns with the interface, not the concrete class).
 
 - [ ] **Step 4: Run tests to verify they pass**
 
@@ -671,7 +676,7 @@ import { resolveSmartServerConfig } from '../smart-agent/config.js';
 // ...
   /** Assemble + build a runnable agent (no port bound). `deps` forwards a
    *  BuildAgentDeps for embedding/testing; omit it for the real implementations. */
-  async build(deps?: BuildAgentDeps): Promise<{ agent: SmartAgent; close: () => Promise<void> }> {
+  async build(deps?: BuildAgentDeps): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
     // toConfig() is the RAW yaml-shaped config; resolveSmartServerConfig fills
     // ALL defaults (incl. skillPlugins catalog/chunk/loadOnStartup) so the
     // SmartServer build path receives a fully-normalized config.
@@ -684,7 +689,7 @@ import { resolveSmartServerConfig } from '../smart-agent/config.js';
 
 Add imports: `buildAgent`, `BuildAgentDeps`, `SmartServerConfig` from
 `../smart-agent/smart-server.js`; `resolveSmartServerConfig`, `YamlConfig` from
-`../smart-agent/config.js`; `SmartAgent` from `@mcp-abap-adt/llm-agent`. If
+`../smart-agent/config.js`; `ISmartAgent` from `@mcp-abap-adt/llm-agent` (the public contract; the concrete `SmartAgent` class lives in `llm-agent-libs`). If
 `SmartServerConfig` requires a `log`, supply a no-op (`{ ...normalized, log: () => {} }`).
 
 - [ ] **Step 4: Run test to verify it passes**
