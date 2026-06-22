@@ -6,6 +6,7 @@ import {
   MAX_REQUIRES,
   type NextStep,
   type PendingMarker,
+  type PlannerKind,
   type SessionBundle,
   type Step,
   type SubagentResult,
@@ -49,18 +50,19 @@ describe('controller types', () => {
     assert.equal(bundle.budgets.stepsUsed, 0);
     assert.equal(cfg.budgets.maxSteps, 20);
   });
-  it('ControllerConfig.planner + SessionBundle.plan/planCursor + planner seam types', () => {
-    const cfg: Partial<ControllerConfig> = { planner: 'adaptive' };
-    const bundle: SessionBundle = {
-      goal: 'g',
-      plannerPrivate: '',
-      budgets: { stepsUsed: 0, rewindsUsed: 0 },
-      plan: [{ name: 's1', instructions: 'do' }],
-      planCursor: 0,
-    };
-    assert.equal(cfg.planner, 'adaptive');
-    assert.equal(bundle.plan?.[0].name, 's1');
-    assert.equal(bundle.planCursor, 0);
+  it('ControllerConfig has no user planner field; PlannerKind is capability-tuned', () => {
+    // planner selection is preset-encoded, not a config field (§C clean break).
+    const cfg: Partial<ControllerConfig> = {
+      subagents: {
+        evaluator: { provider: 'openai', apiKey: 'k' },
+        planner: { provider: 'openai', apiKey: 'k' },
+        executor: { provider: 'openai', apiKey: 'k' },
+      },
+    } as Partial<ControllerConfig>;
+    // @ts-expect-error — `planner` is no longer a ControllerConfig field
+    cfg.planner;
+    const kind: PlannerKind = 'weak-executor';
+    assert.equal(kind, 'weak-executor');
   });
 });
 

@@ -7,7 +7,10 @@ import {
   ControllerFactory,
   type ControllerFactoryDeps,
 } from '../factories/controller-factory.js';
-import type { ControllerConfig } from '../smart-agent/controller/types.js';
+import type {
+  ControllerConfig,
+  PlannerKind,
+} from '../smart-agent/controller/types.js';
 import { buildMcpBridge } from '../smart-agent/smart-server.js';
 import type { IControllerServerPipelineContext } from './server-context.js';
 
@@ -42,7 +45,15 @@ export type {
 export class ControllerPipelinePlugin
   implements IPipelinePlugin<ControllerConfig>
 {
-  readonly name = 'controller';
+  readonly name: string;
+  private readonly plannerKind: PlannerKind;
+  constructor(
+    name = 'controller',
+    plannerKind: PlannerKind = 'smart-executor',
+  ) {
+    this.name = name;
+    this.plannerKind = plannerKind;
+  }
 
   parseConfig(raw: unknown): ControllerConfig {
     const cfg = (raw ?? {}) as Record<string, unknown>;
@@ -62,11 +73,18 @@ export class ControllerPipelinePlugin
     >;
     const budgetsRaw = (cfg.budgets ?? {}) as Record<string, unknown>;
 
+    if ('planner' in (cfg as Record<string, unknown>)) {
+      throw new Error(
+        'controller: `planner:` removed — capability is preset-encoded. Select ' +
+          'pipeline: { name: controller } (smart-executor) or ' +
+          '{ name: controller-weak } (weak-executor), or pass the kind to ' +
+          '`new ControllerFactory().build(config, deps, "weak-executor")` when ' +
+          'composing in code. No `planner:` alias exists.',
+      );
+    }
+
     return {
       subagents: subagents as ControllerConfig['subagents'],
-      planner: (cfg.planner === 'adaptive'
-        ? 'adaptive'
-        : 'incremental') as ControllerConfig['planner'],
       targetState: {
         strategy: 'auto',
         distanceThreshold: 0.25,
@@ -160,7 +178,11 @@ export class ControllerPipelinePlugin
       ...(skillsRecall ? { skillsRecall } : {}),
     };
 
-    const { handler } = await new ControllerFactory().build(cfg, deps);
+    const { handler } = await new ControllerFactory().build(
+      cfg,
+      deps,
+      this.plannerKind,
+    );
     const builder = await ctx.createAgentBuilder();
     const handle = await builder.withStepperCoordinator(handler).build();
     return { agent: handle.agent, close: () => handle.close() };

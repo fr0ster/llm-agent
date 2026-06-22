@@ -18,8 +18,8 @@ export type DagPipelineConfig = Record<string, unknown>;
  *
  * @deprecated Legacy pipeline. `dag` runs on its own legacy coordinator/step
  * interpreter and stays selectable only for backward compatibility — it is not
- * the active development path. The newer `controller` pipeline (incremental /
- * adaptive planner) is the maintained interpreter; new deployments should use
+ * the active development path. The newer `controller` pipeline (smart-executor /
+ * controller-weak presets) is the maintained interpreter; new deployments should use
  * it. The controller interpreter was not designed to drive the legacy DAG flow,
  * so do not migrate a `dag` config onto it. May be removed in a future major.
  */

@@ -21,7 +21,13 @@ import {
 } from '../controller-coordinator-handler.js';
 import { hydrateBundle, persistBundle } from '../session-bundle.js';
 import type { ISubagentClient } from '../subagent-client.js';
-import type { ControllerConfig, SubagentResult } from '../types.js';
+import type {
+  ControllerConfig,
+  IControllerPlanner,
+  NextStep,
+  SessionBundle,
+  SubagentResult,
+} from '../types.js';
 
 // ---------------------------------------------------------------------------
 // Test scaffolding
@@ -163,17 +169,15 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal: do the thing' }],
       planner: [
+        // create-plan (plan-first): the full plan in one reply
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'finished' }),
-        },
+        // finalize: FINALIZE_SYSTEM returns PLAIN TEXT → becomes the done result
+        { kind: 'content', content: 'finished' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
     });
@@ -202,14 +206,10 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'final-out' }),
-        },
+        { kind: 'content', content: 'final-out' },
       ],
       executor: [
         toolCall('GetX', { id: 1 }),
@@ -251,8 +251,7 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
       ],
@@ -289,8 +288,7 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
       ],
@@ -301,12 +299,10 @@ describe('ControllerCoordinatorHandler', () => {
     await handler.execute(fakeCtx().ctx, {}, undefined);
     const extId = externalToolCallId('ExtTool', { q: 'abc' });
 
-    // Second leg: planner now completes; provide the external result.
+    // Second leg: planner finalizes; provide the external result.
+    // Under plan-first the finalize call returns PLAIN TEXT (not JSON done).
     (h.deps.planner as ISubagentClient & { send: unknown }).send = async () =>
-      ({
-        kind: 'content',
-        content: JSON.stringify({ kind: 'done', result: 'resumed-done' }),
-      }) as SubagentResult;
+      ({ kind: 'content', content: 'resumed-done' }) as SubagentResult;
     const { ctx, captured } = fakeCtx({
       externalResults: new Map([[extId, 'TOOL RESULT']]),
     });
@@ -327,27 +323,25 @@ describe('ControllerCoordinatorHandler', () => {
   });
 
   it('rewind: one rewind then proceeds to done', async () => {
+    // SmartExecutorPlanner cannot emit {kind:'rewind'} — use the DI seam to inject
+    // a fake IControllerPlanner that emits rewind once, then next+done.
+    const rewindPlan: NextStep[] = [
+      { kind: 'rewind', reason: 'wrong path' },
+      { kind: 'next', step: { name: 's1', instructions: 'do' } },
+      { kind: 'done', result: 'ok' },
+    ];
+    const fakePlanner: IControllerPlanner = {
+      async next() {
+        return rewindPlan.shift() ?? null;
+      },
+      commit(_bundle: SessionBundle) {},
+    };
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
-      planner: [
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'rewind', reason: 'wrong path' }),
-        },
-        {
-          kind: 'content',
-          content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
-          }),
-        },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'ok' }),
-        },
-      ],
+      planner: [],
       executor: [{ kind: 'content', content: 'x' }],
     });
+    h.deps.controllerPlanner = fakePlanner;
     const handler = new ControllerCoordinatorHandler(h.deps);
     const { ctx, captured } = fakeCtx();
 
@@ -365,21 +359,25 @@ describe('ControllerCoordinatorHandler', () => {
   });
 
   it('rewind budget: escalates after exceeding maxRewinds', async () => {
+    // SmartExecutorPlanner cannot emit {kind:'rewind'} — use the DI seam to inject
+    // a fake IControllerPlanner that emits two rewinds (exceeding maxRewinds=1).
+    const rewindPlan: NextStep[] = [
+      { kind: 'rewind', reason: 'a' },
+      { kind: 'rewind', reason: 'b' },
+    ];
+    const fakePlanner: IControllerPlanner = {
+      async next() {
+        return rewindPlan.shift() ?? null;
+      },
+      commit(_bundle: SessionBundle) {},
+    };
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
-      planner: [
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'rewind', reason: 'a' }),
-        },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'rewind', reason: 'b' }),
-        },
-      ],
+      planner: [],
       executor: [],
       config: baseConfig({ maxRewinds: 1 }),
     });
+    h.deps.controllerPlanner = fakePlanner;
     const handler = new ControllerCoordinatorHandler(h.deps);
     const { ctx, captured } = fakeCtx();
 
@@ -399,18 +397,14 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
+        // plan-first: create a 2-step plan; after s1 the step budget (maxSteps=1) is hit
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'd' },
-          }),
-        },
-        {
-          kind: 'content',
-          content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's2', instructions: 'd' },
+            plan: [
+              { name: 's1', instructions: 'd' },
+              { name: 's2', instructions: 'd' },
+            ],
           }),
         },
       ],
@@ -438,17 +432,20 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
+        // create-plan: one step
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after s1 exhausts retries: empty plan → proceeds to finalize
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'replanned-done' }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize: plain text
+        { kind: 'content', content: 'replanned-done' },
       ],
       // maxRetries = 2 → executor must fail (maxRetries + 1) = 3 times.
       executor: [
@@ -485,17 +482,20 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
+        // create-plan: one step
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after the step aborts on tool-call budget: empty plan → finalize
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'budget-done' }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize: plain text
+        { kind: 'content', content: 'budget-done' },
       ],
       // Executor ALWAYS emits an internal tool call → would loop forever
       // without the bound.
@@ -539,8 +539,7 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
       ],
@@ -619,14 +618,10 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'find includes' },
+            plan: [{ name: 's1', instructions: 'find includes' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'done' }),
-        },
+        { kind: 'content', content: 'done' },
       ],
       executor: [],
       ragQuery,
@@ -674,14 +669,10 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'read the table' },
+            plan: [{ name: 's1', instructions: 'read the table' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'internal-done' }),
-        },
+        { kind: 'content', content: 'internal-done' },
       ],
       executor: [],
       selectTools: [readTable],
@@ -796,12 +787,18 @@ describe('ControllerCoordinatorHandler', () => {
     const h2 = harness({
       evaluator: [], // must NOT be called
       planner: [
+        // create-plan: one step (empty plan is rejected by the plan-first engine
+        // as a format error — a real task always has at least one step)
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'all done' }),
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'execute the read' }],
+          }),
         },
+        // finalize: plain text
+        { kind: 'content', content: 'all done' },
       ],
-      executor: [],
+      executor: [{ kind: 'content', content: 'read done' }],
       config: cfg,
     });
     h2.deps.backend = backend;
@@ -863,12 +860,17 @@ describe('ControllerCoordinatorHandler', () => {
     const h2 = harness({
       evaluator: [],
       planner: [
+        // create-plan: one step (empty plan is rejected by the plan-first engine)
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'ok' }),
+          content: JSON.stringify({
+            plan: [{ name: 's1', instructions: 'execute the read' }],
+          }),
         },
+        // finalize: plain text
+        { kind: 'content', content: 'ok' },
       ],
-      executor: [],
+      executor: [{ kind: 'content', content: 'read done' }],
       config: cfg,
     });
     h2.deps.backend = backend;
@@ -914,14 +916,16 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after the ForbiddenTool retry exhaustion
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'done' }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize
+        { kind: 'content', content: 'done' },
       ],
       executor: [],
       selectTools: [allowed], // only AllowedTool is offered
@@ -956,17 +960,15 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [{ kind: 'content', content: 'Goal' }],
       planner: [
-        // fenced JSON
+        // fenced JSON plan-first create-plan: parsePlan must unwrap the fence
         {
           kind: 'content',
-          content:
-            '```json\n{"kind":"next","step":{"name":"s1","instructions":"do"}}\n```',
+          content: '```json\n{"plan":[{"name":"s1","instructions":"do"}]}\n```',
         },
-        // prose-wrapped JSON
+        // prose-wrapped finalize: plain text (not JSON) → done result
         {
           kind: 'content',
-          content:
-            'Sure, here is my decision:\n{"kind":"done","result":"finished"}',
+          content: 'finished',
         },
       ],
       executor: [{ kind: 'content', content: 'did it' }],
@@ -1082,7 +1084,7 @@ describe('ControllerCoordinatorHandler', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx, captured } = fakeCtx();
     const ret = await new ControllerCoordinatorHandler(h.deps).execute(
@@ -1108,7 +1110,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('adaptive: a persisted cursor resumes from the NEXT step (no repeat)', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     await persistBundle(backend, 'sess-1', {
       goal: 'Goal',
       plannerPrivate: '\n[step s1] did A',
@@ -1152,7 +1154,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('adaptive + external tool: resume injects the result into the step transcript; the executor continues', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
 
     // Leg 1 — 1-step plan; executor emits an external tool call → suspend.
@@ -1245,6 +1247,10 @@ describe('ControllerCoordinatorHandler', () => {
       runPhase: 'executing',
       originalRequest: 'x',
       nextSeq: 0,
+      // Plan must be seeded so that after adopting s1 the planner sees the plan
+      // is exhausted and calls FINALIZE_SYSTEM (not CREATE_PLAN again).
+      plan: [{ name: 's1', instructions: 'i' }],
+      planCursor: 0,
       inFlightStep: {
         seq: 0,
         step: { name: 's1', instructions: 'i' },
@@ -1304,10 +1310,8 @@ describe('ControllerCoordinatorHandler', () => {
     const h = harness({
       evaluator: [],
       planner: [
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'fin' }),
-        },
+        // finalize: plain text (the step was adopted; plan exhausted → finalize)
+        { kind: 'content', content: 'fin' },
       ],
       executor: [],
     });
@@ -1332,7 +1336,7 @@ describe('ControllerCoordinatorHandler', () => {
 
   it('legacy external resume (no inFlightStep): feeds plannerPrivate + replan, parse-retry preserves resumedExternal', async () => {
     const backend = new InMemoryKnowledgeBackend();
-    const cfg: ControllerConfig = { ...baseConfig(), planner: 'adaptive' };
+    const cfg: ControllerConfig = { ...baseConfig() };
     const extId = externalToolCallId('ExtTool', { q: 'x' });
     // Seed a SUSPENDED adaptive bundle WITHOUT an inFlightStep — the retained
     // legacy external-resume branch: the result is fed via plannerPrivate and the
@@ -1433,14 +1437,16 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after reviewer marks s1 failed
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'final' }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize
+        { kind: 'content', content: 'final' },
       ],
       executor: [{ kind: 'content', content: 'I think it worked' }],
     });
@@ -1475,17 +1481,16 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after reviewer degrades to failed step
         {
           kind: 'content',
-          content: JSON.stringify({
-            kind: 'done',
-            result: 'replanned-done',
-          }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize
+        { kind: 'content', content: 'replanned-done' },
       ],
       executor: [{ kind: 'content', content: 'result' }],
       config: baseConfig({ maxReviewRetries: 1 }),
@@ -1541,14 +1546,16 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
+        // replan after tool-call budget abort
         {
           kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'after-budget' }),
+          content: JSON.stringify({ plan: [] }),
         },
+        // finalize
+        { kind: 'content', content: 'after-budget' },
       ],
       executor: Array.from({ length: 20 }, () => toolCall('LoopTool', {})),
       selectTools: [{ name: 'LoopTool', description: '', inputSchema: {} }],
@@ -1594,7 +1601,6 @@ describe('ControllerCoordinatorHandler', () => {
       planner: [],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxStepResumes: 1 },
       },
     });
@@ -1631,7 +1637,7 @@ describe('ControllerCoordinatorHandler', () => {
       evaluator: [], // goal already in the seeded bundle → establishTargetState skipped
       planner: [],
       executor: [{ kind: 'content', content: 's2 done' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     // Recording planner: capture the SYSTEM prompt of each call; reply replan→finalize.
     const seenSystems: string[] = [];
@@ -1753,7 +1759,6 @@ describe('ControllerCoordinatorHandler', () => {
       executor: [],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxPlannerResumes: 0 },
       },
     });
@@ -1777,17 +1782,13 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({
-            kind: 'done',
-            result: 'IGNORED-when-finalizer-present',
-          }),
-        },
+        // finalize: planner's done.result is IGNORED when deps.finalizer is set;
+        // the finalizer's return value is the surfaced answer. Still must provide
+        // a planner finalize reply (FINALIZE_SYSTEM is always called by the planner).
+        { kind: 'content', content: 'IGNORED-when-finalizer-present' },
       ],
       executor: [{ kind: 'content', content: 'STEP RESULT' }],
     });
@@ -1850,14 +1851,11 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
+            plan: [{ name: 's1', instructions: 'do' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'r' }),
-        },
+        // finalize: plain text; finalizer will throw and exhaust retries
+        { kind: 'content', content: 'r' },
       ],
       executor: [{ kind: 'content', content: 'STEP' }],
       config: {
@@ -1932,18 +1930,16 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: {
-              name: 's1',
-              instructions: 'do',
-              requires: ['table T100', 'domain ZD'],
-            },
+            plan: [
+              {
+                name: 's1',
+                instructions: 'do',
+                requires: ['table T100', 'domain ZD'],
+              },
+            ],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'd' }),
-        },
+        { kind: 'content', content: 'd' },
       ],
       executor: [{ kind: 'content', content: 'r' }],
       ragQuery: async (text) =>
@@ -1993,14 +1989,10 @@ describe('ControllerCoordinatorHandler', () => {
         {
           kind: 'content',
           content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'analyze' },
+            plan: [{ name: 's1', instructions: 'analyze' }],
           }),
         },
-        {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'd' }),
-        },
+        { kind: 'content', content: 'd' },
       ],
       executor: [],
       // step-result query → one HUGE step artifact; mcp-result query → a distinct artifact.
@@ -2078,7 +2070,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
@@ -2109,7 +2101,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
         { kind: 'content', content: 'FINAL' },
       ],
       executor: [{ kind: 'content', content: 'did s1' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     const { ctx } = fakeCtx();
     await new ControllerCoordinatorHandler(h.deps).execute(ctx, {}, undefined);
@@ -2192,7 +2184,7 @@ describe('Phase 2 — Live Digest Board integration', () => {
       evaluator: [{ kind: 'content', content: 'Goal: do it' }],
       planner: [], // overridden below
       executor: [{ kind: 'content', content: 'STEP-RESULT-CONTENT' }],
-      config: { ...baseConfig(), planner: 'adaptive' },
+      config: { ...baseConfig() },
     });
     h.deps.backend = backend;
     h.deps.knowledgeRagFor = () => proxyRag;
@@ -2264,7 +2256,6 @@ describe('Phase 2 — Live Digest Board integration', () => {
       executor: [{ kind: 'error', error: 'boom' }],
       config: {
         ...baseConfig(),
-        planner: 'adaptive',
         budgets: { ...baseConfig().budgets, maxRetries: 0 },
       },
     });

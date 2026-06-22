@@ -23,8 +23,8 @@ import type { IServerPipelineContext } from './server-context.js';
  *
  * @deprecated Legacy pipeline. `stepper` runs on its own legacy composition
  * step-interpreter and stays selectable only for backward compatibility — it is
- * not the active development path. The newer `controller` pipeline (incremental
- * / adaptive planner) is the maintained interpreter; new deployments should use
+ * not the active development path. The newer `controller` pipeline (smart-executor
+ * / controller-weak presets) is the maintained interpreter; new deployments should use
  * it. The controller interpreter was not designed to drive the legacy stepper
  * flow, so do not migrate a `stepper` config onto it. May be removed in a future
  * major.

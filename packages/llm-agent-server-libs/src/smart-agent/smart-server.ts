@@ -1184,7 +1184,8 @@ export class SmartServer {
       new LinearPipelinePlugin(),
       new DagPipelinePlugin(),
       new StepperPipelinePlugin(),
-      new ControllerPipelinePlugin(),
+      new ControllerPipelinePlugin('controller', 'smart-executor'),
+      new ControllerPipelinePlugin('controller-weak', 'weak-executor'),
     ]) {
       pipelineRegistry.set(builtin.name, builtin);
     }

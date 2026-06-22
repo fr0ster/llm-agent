@@ -416,7 +416,7 @@ log: smart-server.log                 # path to log file; omit for stdout
 #     config: ./agents/code-reviewer.yaml
 
 # pipeline:                           # Optional: select the request pipeline.
-#   name: flat                        # flat (default) | linear | dag | stepper | <plugin>
+#   name: flat                        # flat (default) | linear | dag | stepper | controller | controller-weak | <plugin>
 #   config:                           # Opaque per-pipeline dialect (validated by the plugin)
 #     mode: planned-react             # e.g. stepper: cyclic-react | planned-react | deep-stepper
 #     knowledgeSeed: []               # stepper: deployment-supplied tool guidance
@@ -718,7 +718,7 @@ function validateResolvedConfig(
         typeof (rawPipeline as { name?: unknown }).name === 'string');
     if (!ok) {
       issues.push(
-        "pipeline: requires a 'name' (string, or { name, config }); built-ins: flat, linear, dag, stepper",
+        "pipeline: requires a 'name' (string, or { name, config }); built-ins: flat, linear, dag, stepper, controller, controller-weak",
       );
     }
   }
@@ -1148,7 +1148,7 @@ export function resolveSmartServerConfig(
       const obj = raw as { name?: unknown; config?: unknown };
       if (typeof obj.name !== 'string') {
         throw new Error(
-          "pipeline: requires a 'name' (one of: flat, linear, dag, stepper, or a registered plugin)",
+          "pipeline: requires a 'name' (one of: flat, linear, dag, stepper, controller, controller-weak, or a registered plugin)",
         );
       }
       return {

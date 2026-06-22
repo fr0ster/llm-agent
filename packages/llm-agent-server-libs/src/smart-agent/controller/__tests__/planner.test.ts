@@ -1,13 +1,19 @@
 import assert from 'node:assert/strict';
 import { describe, it, test } from 'node:test';
 import {
-  AdaptivePlanner,
   CREATE_PLAN_SYSTEM,
   ENGLISH_INSTRUCTIONS_RULE,
   EXTERNAL_RESULT_REPLAN_SYSTEM,
-  IncrementalPlanner,
-  PLANNER_SYSTEM,
+  makeControllerPlanner,
   REPLAN_SYSTEM,
+  SMART_CREATE_PLAN_SYSTEM,
+  SMART_EXTERNAL_RESULT_REPLAN_SYSTEM,
+  SMART_REPLAN_SYSTEM,
+  SmartExecutorPlanner,
+  WEAK_CREATE_PLAN_SYSTEM,
+  WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM,
+  WEAK_REPLAN_SYSTEM,
+  WeakExecutorPlanner,
 } from '../planner.js';
 import type { ISubagentClient } from '../subagent-client.js';
 import {
@@ -48,21 +54,29 @@ const newBundle = (opts: {
 
 const recordingFakeClient = (
   replies: string[],
-): ISubagentClient & { lastUserContent: () => string } => {
+): ISubagentClient & {
+  lastUserContent: () => string;
+  lastSystemContent: () => string;
+} => {
   let _lastUserContent = '';
+  let _lastSystemContent = '';
   return {
     async send(messages) {
       const userMsg = messages.find((m) => m.role === 'user');
+      const sysMsg = messages.find((m) => m.role === 'system');
       _lastUserContent =
         typeof userMsg?.content === 'string' ? userMsg.content : '';
+      _lastSystemContent =
+        typeof sysMsg?.content === 'string' ? sysMsg.content : '';
       const content = replies.shift() ?? '';
       return { kind: 'content', content };
     },
     lastUserContent: () => _lastUserContent,
+    lastSystemContent: () => _lastSystemContent,
   };
 };
 
-test('AdaptivePlanner mints create stepIds + records a create plan-decision', async () => {
+test('SmartExecutorPlanner mints create stepIds + records a create plan-decision', async () => {
   const client = fakeClient([
     JSON.stringify({
       plan: [
@@ -71,7 +85,7 @@ test('AdaptivePlanner mints create stepIds + records a create plan-decision', as
       ],
     }),
   ]);
-  const p = new AdaptivePlanner(client);
+  const p = new SmartExecutorPlanner(client);
   const b = newBundle({ runId: 'run-1', goal: 'g' });
   const next = await p.next({ bundle: b, prompt: 'g', retrying: false });
   assert.equal(next?.kind, 'next');
@@ -83,14 +97,14 @@ test('AdaptivePlanner mints create stepIds + records a create plan-decision', as
   assert.equal(dec?.steps[0].stepId, b.plan?.[0].stepId);
 });
 
-test('AdaptivePlanner replan mints anchored stepIds + records a replan decision', async () => {
+test('SmartExecutorPlanner replan mints anchored stepIds + records a replan decision', async () => {
   const client = fakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }), // create
     JSON.stringify({
       plan: [{ name: 'a2', instructions: 'fetch a differently' }],
     }), // replan
   ]);
-  const p = new AdaptivePlanner(client);
+  const p = new SmartExecutorPlanner(client);
   const b = newBundle({ runId: 'run-1', goal: 'g' });
   await p.next({ bundle: b, prompt: 'g', retrying: false }); // create; cursor 0
   const anchor = b.plan?.[0].stepId;
@@ -109,68 +123,10 @@ test('AdaptivePlanner replan mints anchored stepIds + records a replan decision'
   assert.notEqual(dec?.steps[0].stepId, anchor);
 });
 
-describe('IncrementalPlanner', () => {
-  it('returns the planner LLM decision each call', async () => {
-    const p = new IncrementalPlanner(
-      planner([
-        {
-          kind: 'content',
-          content: JSON.stringify({
-            kind: 'next',
-            step: { name: 's1', instructions: 'do' },
-          }),
-        },
-      ]),
-    );
-    const next = await p.next({
-      bundle: bundle(),
-      prompt: 'req',
-      retrying: false,
-    });
-    assert.equal(next?.kind, 'next');
-    assert.equal(next?.kind === 'next' && next.step.name, 's1');
-  });
-  it('appends the per-role hint to the agnostic planner prompt', async () => {
-    let sys = '';
-    const recording: ISubagentClient = {
-      async send(messages) {
-        sys =
-          typeof messages[0]?.content === 'string' ? messages[0].content : '';
-        return {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'ok' }),
-        };
-      },
-    };
-    await new IncrementalPlanner(recording, 'Keep the plan minimal.').next({
-      bundle: bundle(),
-      prompt: 'r',
-      retrying: false,
-    });
-    assert.doesNotMatch(sys, /SAP|ABAP/i);
-    assert.match(sys, /Additional guidance: Keep the plan minimal\./);
-    // Contract: plan by intent, never name a tool; no dangling tool-list ref.
-    assert.match(sys, /do NOT (choose|name)/i);
-    assert.doesNotMatch(sys, /listed below/i);
-  });
-
-  it('non-content planner reply → null (format failure)', async () => {
-    const p = new IncrementalPlanner(planner([{ kind: 'error', error: 'x' }]));
-    assert.equal(
-      await p.next({
-        bundle: bundle(),
-        prompt: 'r',
-        retrying: false,
-      }),
-      null,
-    );
-  });
-});
-
-describe('AdaptivePlanner', () => {
+describe('SmartExecutorPlanner', () => {
   it('first call creates the full plan and returns step 0', async () => {
     const b = bundle();
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         {
           kind: 'content',
@@ -203,7 +159,7 @@ describe('AdaptivePlanner', () => {
       ],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(planner([]));
+    const p = new SmartExecutorPlanner(planner([]));
     p.commit(b, 'advanced'); // ← advance happens in commit, persisted by the handler
     assert.equal(b.planCursor, 1);
     const next = await p.next({
@@ -221,7 +177,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 0,
     };
-    new AdaptivePlanner(planner([])).commit(b, 'failed');
+    new SmartExecutorPlanner(planner([])).commit(b, 'failed');
     assert.equal(b.planCursor, 0);
   });
 
@@ -233,7 +189,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 1,
     };
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([{ kind: 'content', content: 'FINAL ANSWER' }]),
     );
     const next = await p.next({
@@ -247,7 +203,7 @@ describe('AdaptivePlanner', () => {
   });
 
   it('rejects a malformed plan step (missing instructions) → null', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         {
           kind: 'content',
@@ -274,7 +230,7 @@ describe('AdaptivePlanner', () => {
       ],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         {
           kind: 'content',
@@ -301,7 +257,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         { kind: 'content', content: JSON.stringify({ plan: [] }) }, // nothing left to do
         { kind: 'content', content: 'done despite failure' }, // finalize
@@ -317,7 +273,7 @@ describe('AdaptivePlanner', () => {
   });
 
   it('unparsable create-plan reply → null (handler retries)', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([{ kind: 'content', content: 'not json at all' }]),
     );
     assert.equal(
@@ -331,7 +287,7 @@ describe('AdaptivePlanner', () => {
   });
 
   it('EMPTY create-plan {"plan":[]} → null (retry — must NOT skip to finalizer)', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([{ kind: 'content', content: '{"plan":[]}' }]),
     );
     const b = bundle();
@@ -348,7 +304,9 @@ describe('AdaptivePlanner', () => {
 
   it('finalizer non-content reply → null (retry, not a fake "completed")', async () => {
     // plan present + cursor at end + no failure → stepAtCursor → finalize.
-    const p = new AdaptivePlanner(planner([{ kind: 'error', error: 'boom' }]));
+    const p = new SmartExecutorPlanner(
+      planner([{ kind: 'error', error: 'boom' }]),
+    );
     const b: SessionBundle = {
       ...bundle(),
       plan: [{ name: 's1', instructions: 'do' }],
@@ -371,7 +329,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         {
           kind: 'content',
@@ -415,7 +373,7 @@ describe('AdaptivePlanner', () => {
       ],
       planCursor: 2, // s1,s2 succeeded (cursor advanced); s3 (at cursor) failed
     };
-    await new AdaptivePlanner(recording).next({
+    await new SmartExecutorPlanner(recording).next({
       bundle: b,
       prompt: 'r',
       retrying: false,
@@ -442,7 +400,7 @@ describe('AdaptivePlanner', () => {
       },
     };
     // Without a hint: the create-plan prompt is agnostic, no appended guidance.
-    await new AdaptivePlanner(recording).next({
+    await new SmartExecutorPlanner(recording).next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -455,7 +413,7 @@ describe('AdaptivePlanner', () => {
     assert.doesNotMatch(sys, /available tools|listed below/i);
 
     // With a hint: it is appended as an "Additional guidance" preamble.
-    await new AdaptivePlanner(recording, 'Call one tool at a time.').next({
+    await new SmartExecutorPlanner(recording, 'Call one tool at a time.').next({
       bundle: bundle(),
       prompt: 'r',
       retrying: false,
@@ -471,7 +429,7 @@ describe('AdaptivePlanner', () => {
       plan: [{ name: 's1', instructions: 'a' }],
       planCursor: 0,
     };
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       planner([
         { kind: 'content', content: JSON.stringify({ plan: [] }) }, // empty replan (done)
         { kind: 'error', error: 'finalizer boom' }, // finalize fails → null
@@ -502,10 +460,15 @@ describe('AdaptivePlanner', () => {
 describe('planner prompt contract', () => {
   it('every planner/replan prompt carries the English-instructions invariant', () => {
     for (const p of [
-      PLANNER_SYSTEM,
       CREATE_PLAN_SYSTEM,
       REPLAN_SYSTEM,
       EXTERNAL_RESULT_REPLAN_SYSTEM,
+      SMART_CREATE_PLAN_SYSTEM,
+      SMART_REPLAN_SYSTEM,
+      SMART_EXTERNAL_RESULT_REPLAN_SYSTEM,
+      WEAK_CREATE_PLAN_SYSTEM,
+      WEAK_REPLAN_SYSTEM,
+      WEAK_EXTERNAL_RESULT_REPLAN_SYSTEM,
     ]) {
       assert.ok(
         p.includes(ENGLISH_INSTRUCTIONS_RULE),
@@ -521,9 +484,9 @@ describe('planner prompt contract', () => {
   });
 });
 
-describe('AdaptivePlanner partial transition', () => {
+describe('SmartExecutorPlanner partial transition', () => {
   it('commit(partial) advances the cursor (accepted part not re-run)', () => {
-    const p = new AdaptivePlanner(planner([]));
+    const p = new SmartExecutorPlanner(planner([]));
     const b: SessionBundle = {
       goal: 'g',
       plannerPrivate: '',
@@ -549,7 +512,7 @@ describe('AdaptivePlanner partial transition', () => {
         return { kind: 'content', content: JSON.stringify({ plan: [] }) };
       },
     };
-    const p = new AdaptivePlanner(client);
+    const p = new SmartExecutorPlanner(client);
     const b: SessionBundle = {
       goal: 'g',
       plannerPrivate: '\n[step s1 partial] only half',
@@ -568,11 +531,11 @@ describe('AdaptivePlanner partial transition', () => {
   });
 });
 
-test('AdaptivePlanner prompt carries boardText when present', async () => {
+test('SmartExecutorPlanner prompt carries boardText when present', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
-  const planner2 = new AdaptivePlanner(client);
+  const planner2 = new SmartExecutorPlanner(client);
   const b = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
   await planner2.next({
     bundle: b,
@@ -583,11 +546,11 @@ test('AdaptivePlanner prompt carries boardText when present', async () => {
   assert.match(client.lastUserContent(), /includes A,B/);
 });
 
-test('AdaptivePlanner prompt is ADDITIVE: board + plannerPrivate deltas both survive', async () => {
+test('SmartExecutorPlanner prompt is ADDITIVE: board + plannerPrivate deltas both survive', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
-  const planner2 = new AdaptivePlanner(client);
+  const planner2 = new SmartExecutorPlanner(client);
   const b = newBundle({
     runId: 'run-1',
     goal: 'g',
@@ -604,11 +567,11 @@ test('AdaptivePlanner prompt is ADDITIVE: board + plannerPrivate deltas both sur
   assert.match(userMsg, /use system PRD/);
 });
 
-test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText empty', async () => {
+test('SmartExecutorPlanner prompt falls back to plannerPrivate alone when boardText empty', async () => {
   const client = recordingFakeClient([
     JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
   ]);
-  const planner2 = new AdaptivePlanner(client);
+  const planner2 = new SmartExecutorPlanner(client);
   const b = newBundle({
     runId: 'run-1',
     goal: 'g',
@@ -623,7 +586,7 @@ test('AdaptivePlanner prompt falls back to plannerPrivate alone when boardText e
   assert.match(client.lastUserContent(), /\[seq 0 a ok\]/);
 });
 
-test('AdaptivePlanner empty replan records a tail-truncating plan-decision', async () => {
+test('SmartExecutorPlanner empty replan records a tail-truncating plan-decision', async () => {
   const client = fakeClient([
     JSON.stringify({
       plan: [
@@ -633,7 +596,7 @@ test('AdaptivePlanner empty replan records a tail-truncating plan-decision', asy
     }), // create (2 steps)
     JSON.stringify({ plan: [] }), // empty replan
   ]);
-  const planner2 = new AdaptivePlanner(client);
+  const planner2 = new SmartExecutorPlanner(client);
   const b = newBundle({ runId: 'run-1', goal: 'g' });
   await planner2.next({ bundle: b, prompt: 'g', retrying: false }); // create
   const anchor = b.plan?.[0].stepId; // cursor 0 → the failed step is plan[0]
@@ -650,7 +613,7 @@ test('AdaptivePlanner empty replan records a tail-truncating plan-decision', asy
   assert.equal((dec as { anchor?: string })?.anchor, anchor);
 });
 
-describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
+describe('parsePlan requires validation (via SmartExecutorPlanner.next)', () => {
   const createPlanWith = (step: object): ISubagentClient =>
     planner([{ kind: 'content', content: JSON.stringify({ plan: [step] }) }]);
   const freshBundle = (): SessionBundle => ({
@@ -660,7 +623,7 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
   });
 
   it('rejects a malformed requires (parse failure → null)', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       createPlanWith({ name: 's1', instructions: 'do', requires: [123] }),
     );
     const r = await p.next({
@@ -671,7 +634,7 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
     assert.equal(r, null);
   });
   it('rejects an oversized requires entry', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       createPlanWith({
         name: 's1',
         instructions: 'do',
@@ -686,7 +649,7 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
     assert.equal(r, null);
   });
   it('carries a valid requires through trimmed', async () => {
-    const p = new AdaptivePlanner(
+    const p = new SmartExecutorPlanner(
       createPlanWith({
         name: 's1',
         instructions: 'do',
@@ -701,4 +664,40 @@ describe('parsePlan requires validation (via AdaptivePlanner.next)', () => {
     assert.equal(r?.kind, 'next');
     assert.deepEqual(r?.kind === 'next' && r.step.requires, ['table T100']);
   });
+});
+
+test('makeControllerPlanner returns the kind-matched implementation', () => {
+  const client = fakeClient([]);
+  assert.ok(
+    makeControllerPlanner('smart-executor', client) instanceof
+      SmartExecutorPlanner,
+  );
+  assert.ok(
+    makeControllerPlanner('weak-executor', client) instanceof
+      WeakExecutorPlanner,
+  );
+});
+
+test('WeakExecutorPlanner create-plan prompt demands ONE ATOMIC action per step (coarse forbidden)', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const p = new WeakExecutorPlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
+  await p.next({ bundle: b, prompt: 'g', retrying: false });
+  const sys = client.lastSystemContent();
+  assert.match(sys, /EXACTLY ONE ATOMIC action/); // weak granularity clause present
+  assert.doesNotMatch(sys, /a step MAY be COARSE/); // NOT the smart clause
+});
+
+test('SmartExecutorPlanner create-plan prompt PERMITS coarse, self-expanding steps', async () => {
+  const client = recordingFakeClient([
+    JSON.stringify({ plan: [{ name: 'a', instructions: 'fetch a' }] }),
+  ]);
+  const p = new SmartExecutorPlanner(client);
+  const b = newBundle({ runId: 'run-1', goal: 'g', plannerPrivate: '' });
+  await p.next({ bundle: b, prompt: 'g', retrying: false });
+  const sys = client.lastSystemContent();
+  assert.match(sys, /a step MAY be COARSE/); // smart granularity clause present
+  assert.doesNotMatch(sys, /EXACTLY ONE ATOMIC action/); // NOT the weak clause
 });

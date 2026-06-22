@@ -2,7 +2,7 @@
  * plan-analysis.ts — DEV EVAL HARNESS (NOT shipped, NOT a unit test).
  * =====================================================================
  *
- * Runs the controller PLANNER (incremental + adaptive) over a fixed set of
+ * Runs the controller PLANNER (smart-executor + weak-executor) over a fixed set of
  * SAP create/review prompts, TWICE:
  *   - WITHOUT skills (agnostic baseline — no `skillsRecall`), and
  *   - WITH skills    (a `skillsRecall` built from an in-memory skill plugin-host).
@@ -69,7 +69,7 @@ import {
   makeLlm,
   makeSkillPluginHost,
 } from '@mcp-abap-adt/llm-agent-libs';
-import { makePlanner } from './planner.js';
+import { makeControllerPlanner } from './planner.js';
 import { type ISubagentClient, makeSubagentClient } from './subagent-client.js';
 import type { PlannerKind, SessionBundle, SubagentResult } from './types.js';
 
@@ -302,7 +302,7 @@ async function makeRealEmbedder(): Promise<IEmbedder> {
 // --------------------------------------------------------------------------
 // STUB subagent client — deterministic canned planner output (NO network).
 // Branches on the SYSTEM prompt: create-plan → {plan:[...]}, finalize → done,
-// incremental next-step → one step then done. Records whether the injected
+// plan-first next-step → step from plan then done. Records whether the injected
 // "Relevant skills" block reached the prompt (proves the WITH wiring).
 // --------------------------------------------------------------------------
 interface StubProbe {
@@ -351,35 +351,14 @@ function makeStubClient(probe: StubProbe): ISubagentClient {
       const sys = String(system);
       const goal = String(user);
 
-      // Discriminate on the EXACT controller system prompts (robust substrings,
-      // NOT fuzzy keywords — e.g. "compose" also appears inside PLANNER_SYSTEM):
+      // Discriminate on the EXACT controller system prompts (robust substrings):
       //  - FINALIZE_SYSTEM starts "All planned steps are complete." → plain answer.
       //  - CREATE_PLAN / REPLAN / EXTERNAL_RESULT_REPLAN ask for {"plan":[...]}.
-      //  - PLANNER_SYSTEM (incremental) asks for a single {"kind":"next"|"done"} object.
+      // Both smart-executor and weak-executor are plan-first — no single-step shape.
       if (sys.startsWith('All planned steps are complete.')) {
         return { kind: 'content', content: 'Done (stub finalizer answer).' };
       }
-      if (sys.includes('{"plan":[')) {
-        return { kind: 'content', content: cannedPlan(goal) };
-      }
-      // Incremental PLANNER_SYSTEM → emit ONE next step, then done once Progress
-      // shows a completed step (the loop appends "[step ...] OK").
-      if (goal.includes('] OK')) {
-        return {
-          kind: 'content',
-          content: JSON.stringify({ kind: 'done', result: 'Done (stub).' }),
-        };
-      }
-      return {
-        kind: 'content',
-        content: JSON.stringify({
-          kind: 'next',
-          step: {
-            name: 'stub-step',
-            instructions: 'Fetch the requested data (stub).',
-          },
-        }),
-      };
+      return { kind: 'content', content: cannedPlan(goal) };
     },
   };
 }
@@ -409,7 +388,7 @@ async function analyze(
   client: ISubagentClient,
   skillsRecall?: (goal: string) => Promise<string>,
 ): Promise<RunRow> {
-  const planner = makePlanner(mode, client, undefined, skillsRecall);
+  const planner = makeControllerPlanner(mode, client, undefined, skillsRecall);
   const bundle = freshBundle(prompt);
   const steps: string[] = [];
   let lastOutcome: 'advanced' | 'failed' | 'partial' | undefined;
@@ -498,7 +477,7 @@ async function main(): Promise<void> {
     `  recall sample for abap-review (${sample.length} chars): ${preview}\n`,
   );
 
-  const modes: PlannerKind[] = ['incremental', 'adaptive'];
+  const modes: PlannerKind[] = ['smart-executor', 'weak-executor'];
   const bar = '═'.repeat(100);
   for (const [label, prompt] of Object.entries(PROMPTS)) {
     console.log(`${bar}\n${label}: ${prompt}\n${bar}`);
