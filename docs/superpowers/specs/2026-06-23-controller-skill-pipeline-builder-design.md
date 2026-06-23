@@ -13,9 +13,9 @@
   `inst.agent`.
 - **P1b + dependency-injection philosophy** — the library does NOT decide how MCP
   is provided (one/many, in-process/external, static/dynamic). It exposes
-  **interface/strategy seams**; the consumer injects ready `IMcpClient`s, an
-  `IMcpConnectionStrategy`, or a URL config — or supplies their own. Same for LLM
-  (`ILlm`), embedder (`IEmbedder`), and skills. The builder is a composition root
+  **interface/function seams**; the consumer injects ready `IMcpClient`s, a custom
+  `connectMcp` provisioning function, or a URL config — or supplies their own. Same
+  for LLM (`ILlm`), embedder (`IEmbedder`), and skills. The builder is a composition root
   with overridable defaults, not a policy.
 
 ## Problem
@@ -43,13 +43,12 @@ components — it is one consumer, not the center.
 **Dependencies are injected through interfaces and strategies; the library does
 not hard-code implementation choices.** Whether MCP is one server or many,
 in-process or external, fixed or swapped per task — that is the consumer's choice,
-expressed by injecting an implementation (`IMcpClient[]`, `IMcpConnectionStrategy`,
-or a URL config). Likewise the LLM provider (`ILlm`), embedder (`IEmbedder`), and
+expressed by injecting an implementation (`IMcpClient[]`, a custom `connectMcp`
+function, or a URL config). Likewise the LLM provider (`ILlm`), embedder (`IEmbedder`), and
 skill source. The builder ships sensible defaults and lets every dependency be
 overridden or replaced. We do NOT bake these decisions into the library at design
-time (consistent with the engine's existing seams: `withMcpClients`,
-`withMcpConnectionStrategy`, consumer-implementable `ILlm`, the MCP-agnostic
-engine).
+time (consistent with the engine's existing seams: `withMcpClients`, injectable
+`connectMcp`, consumer-implementable `ILlm`, the MCP-agnostic engine).
 
 ## Constraints (decided)
 
