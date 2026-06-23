@@ -634,3 +634,59 @@ describe('resolveSmartServerConfig — skillPlugins block', () => {
     );
   });
 });
+
+describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => {
+  it('sap-ai-sdk with no AICORE_SERVICE_KEY + no models does not throw', () => {
+    const yaml = {
+      llm: { main: { provider: 'sap-ai-sdk' } },
+      pipeline: {
+        name: 'controller',
+        config: {
+          subagents: {
+            evaluator: { provider: 'sap-ai-sdk' },
+            planner: { provider: 'sap-ai-sdk' },
+            executor: { provider: 'sap-ai-sdk' },
+          },
+        },
+      },
+      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+    };
+    assert.doesNotThrow(() =>
+      // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
+      resolveSmartServerConfig({}, yaml as any, {} as NodeJS.ProcessEnv, {
+        skipProviderRuntimeChecks: true,
+      }),
+    );
+  });
+
+  it('WITHOUT the flag, the same config throws (server path unchanged)', () => {
+    const yaml = {
+      llm: { main: { provider: 'sap-ai-sdk' } },
+      rag: { type: 'in-memory', embedder: 'sap-ai-core' },
+    };
+    assert.throws(
+      // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
+      () =>
+        resolveSmartServerConfig({}, yaml as any, {} as NodeJS.ProcessEnv, {}),
+      /AICORE_SERVICE_KEY|model/,
+    );
+  });
+
+  it('still enforces STRUCTURAL validation', () => {
+    const yaml = {
+      llm: { main: { provider: 'bogus-provider' } },
+      rag: { type: 'in-memory' },
+    };
+    assert.throws(
+      () =>
+        resolveSmartServerConfig(
+          {},
+          // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
+          yaml as any,
+          {} as NodeJS.ProcessEnv,
+          { skipProviderRuntimeChecks: true },
+        ),
+      /provider.*invalid|invalid.*provider/i,
+    );
+  });
+});
