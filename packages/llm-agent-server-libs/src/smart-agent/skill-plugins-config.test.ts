@@ -573,3 +573,91 @@ test('controllerSkillGroup valid string parses through', () => {
   );
   assert.equal(cfg.controllerSkillGroup, 'abap');
 });
+
+test('a github source parses with ref + token', () => {
+  const cfg = parseSkillPluginsConfig({
+    store: { type: 'in-memory' },
+    embedder: { provider: 'sap-ai-core', model: 'text-embedding-3-small' },
+    sources: [
+      {
+        id: 'sap-skills',
+        github: 'https://github.com/secondsky/sap-skills.git',
+        ref: 'main',
+        token: 'gho_x',
+        enabled: ['sap-abap'],
+        strategy: 'single-collection',
+        strategyConfig: { collection: 'sap' },
+      },
+    ],
+  });
+  const src = cfg.sources?.[0] as {
+    github?: string;
+    ref?: string;
+    token?: string;
+  };
+  assert.equal(src.github, 'https://github.com/secondsky/sap-skills.git');
+  assert.equal(src.ref, 'main');
+  assert.equal(src.token, 'gho_x');
+});
+
+test('a fetched source with BOTH github and registry fails loud', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core', model: 'm' },
+        sources: [
+          {
+            id: 'x',
+            github: 'secondsky/sap-skills',
+            registry: 'http://localhost:4100',
+            enabled: ['sap-abap'],
+          },
+        ],
+      }),
+    /exactly one of 'registry' or 'github'/,
+  );
+});
+
+test('a fetched source with NEITHER github nor registry fails loud', () => {
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        store: { type: 'in-memory' },
+        embedder: { provider: 'sap-ai-core', model: 'm' },
+        sources: [{ id: 'x', enabled: ['sap-abap'] }],
+      }),
+    /exactly one of 'registry' or 'github'/,
+  );
+});
+
+test('a fetched source rejects an empty / non-string selector', () => {
+  const base = {
+    store: { type: 'in-memory' as const },
+    embedder: { provider: 'sap-ai-core', model: 'm' },
+  };
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', registry: '', enabled: ['a'] }],
+      }),
+    /registry must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', github: '', enabled: ['a'] }],
+      }),
+    /github must be a non-empty string/,
+  );
+  assert.throws(
+    () =>
+      parseSkillPluginsConfig({
+        ...base,
+        sources: [{ id: 'x', registry: 123, enabled: ['a'] }],
+      }),
+    /registry must be a non-empty string/,
+  );
+});

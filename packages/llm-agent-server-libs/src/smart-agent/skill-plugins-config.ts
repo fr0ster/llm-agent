@@ -24,10 +24,18 @@ export type SkillPluginsCatalogConfig =
   | { type: 'postgres'; connectionString: string; table?: string };
 
 /** A FETCHED source: a marketplace/registry pulled into memory. Requires a
- *  non-empty `enabled` plugin list (omitting it is a config error, NOT "load all"). */
+ *  non-empty `enabled` plugin list AND exactly one transport selector
+ *  (`registry` for an HTTP marketplace, or `github` for a GitHub repo). */
 export interface SkillPluginsFetchedSource {
   id: string;
+  /** HTTP marketplace base URL. Mutually exclusive with `github`. */
   registry?: string;
+  /** GitHub repo URL or bare `owner/repo`. Mutually exclusive with `registry`. */
+  github?: string;
+  /** Branch/tag/sha for a `github` source; default = repo `default_branch`. */
+  ref?: string;
+  /** Optional auth token for a `github` source (env-expanded upstream). */
+  token?: string;
   enabled?: readonly string[];
   /** Acquisition/materialisation strategy name (validated via the registry). */
   strategy?: string;
@@ -199,8 +207,36 @@ function parseSource(raw: unknown): SkillPluginsSource {
   const out: SkillPluginsFetchedSource = {
     id,
     enabled: enabled as readonly string[],
-    ...(typeof raw.registry === 'string' ? { registry: raw.registry } : {}),
   };
+  if (raw.registry !== undefined) {
+    if (typeof raw.registry !== 'string' || raw.registry.length === 0) {
+      fail(`source '${id}': registry must be a non-empty string`);
+    }
+    out.registry = raw.registry;
+  }
+  if (raw.github !== undefined) {
+    if (typeof raw.github !== 'string' || raw.github.length === 0) {
+      fail(`source '${id}': github must be a non-empty string`);
+    }
+    out.github = raw.github;
+  }
+  if (raw.ref !== undefined) {
+    if (typeof raw.ref !== 'string') {
+      fail(`source '${id}': ref must be a string`);
+    }
+    out.ref = raw.ref;
+  }
+  if (raw.token !== undefined) {
+    if (typeof raw.token !== 'string') {
+      fail(`source '${id}': token must be a string`);
+    }
+    out.token = raw.token;
+  }
+  if ((out.registry === undefined) === (out.github === undefined)) {
+    fail(
+      `source '${id}': a fetched source needs exactly one of 'registry' or 'github'`,
+    );
+  }
   if (raw.strategy !== undefined) {
     if (typeof raw.strategy !== 'string') {
       fail(`source '${id}': strategy must be a string`);

@@ -7,13 +7,18 @@ import {
   type SkillGroupInfo,
   SkillsIncompatibleError,
 } from '@mcp-abap-adt/llm-agent';
-import type { IPgPool } from '@mcp-abap-adt/llm-agent-libs';
+import type {
+  GitHubTransportOptions,
+  IPgPool,
+} from '@mcp-abap-adt/llm-agent-libs';
 import type { SkillPluginsConfig } from './skill-plugins-config.js';
 import { parseSkillPluginsConfig } from './skill-plugins-config.js';
 import {
   buildSkillHostFromConfig,
+  buildSources,
   type IClosablePool,
   initSkillHost,
+  type TransportFactories,
   validateServedGroups,
 } from './skill-plugins-host-factory.js';
 
@@ -528,4 +533,75 @@ test('initSkillHost: no controllerSkillGroup → no eager probe', async () => {
   const out = await initSkillHost(async () => host, recallOnlyCfg(), pools);
   assert.equal(out, host, 'host returned');
   assert.equal(probed, false, 'no controllerSkillGroup → no eager probe');
+});
+
+// Task 5 — buildSources transport wiring (DI seam).
+
+const STUB_TRANSPORT = {
+  listPlugins: async () => [],
+  fetchSkillMd: async () => '',
+};
+
+test('buildSources builds a github source, threading repo/ref/token/enabled', () => {
+  let captured: GitHubTransportOptions | undefined;
+  const factories: TransportFactories = {
+    github: (opts) => {
+      captured = opts;
+      return STUB_TRANSPORT;
+    },
+    http: () => {
+      throw new Error('should not build an http transport for a github source');
+    },
+  };
+  const sources = buildSources(
+    {
+      chunk: { maxChars: 1000 },
+      sources: [
+        {
+          id: 'sap-skills',
+          github: 'https://github.com/secondsky/sap-skills.git',
+          ref: 'main',
+          token: 'gho_x',
+          enabled: ['sap-abap'],
+          strategy: 'single-collection',
+          strategyConfig: { collection: 'sap' },
+        },
+      ],
+    } as unknown as SkillPluginsConfig,
+    factories,
+  );
+  assert.equal(sources.length, 1);
+  assert.equal(sources[0].id, 'sap-skills');
+  // parseGitHubRepo ran (URL → owner/repo) AND ref/token/enabled were threaded.
+  assert.deepEqual(captured, {
+    owner: 'secondsky',
+    repo: 'sap-skills',
+    ref: 'main',
+    token: 'gho_x',
+    enabled: ['sap-abap'],
+  });
+});
+
+test('buildSources builds an http source from registry', () => {
+  let registry: string | undefined;
+  const factories: TransportFactories = {
+    github: () => {
+      throw new Error(
+        'should not build a github transport for a registry source',
+      );
+    },
+    http: (opts) => {
+      registry = opts.registry;
+      return STUB_TRANSPORT;
+    },
+  };
+  const sources = buildSources(
+    {
+      chunk: { maxChars: 1000 },
+      sources: [{ id: 'r', registry: 'http://h', enabled: ['*'] }],
+    } as unknown as SkillPluginsConfig,
+    factories,
+  );
+  assert.equal(sources.length, 1);
+  assert.equal(registry, 'http://h');
 });

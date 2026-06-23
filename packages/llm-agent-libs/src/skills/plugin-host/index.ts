@@ -7,6 +7,11 @@ export {
   makeCompatibleSkillsRag,
 } from './compatible-skills-rag.js';
 export {
+  type GitHubTransportOptions,
+  makeGitHubTransport,
+  parseGitHubRepo,
+} from './github-transport.js';
+export {
   type HttpMarketplaceSourceOptions,
   type HttpTransportOptions,
   type IMarketplaceTransport,
