@@ -1,7 +1,22 @@
 # Controller + Skills Pipeline Builder — Design
 
 **Date:** 2026-06-23
-**Status:** Approved (design); pending spec review → implementation plan.
+**Status:** REVISED after PR #196 code review — pending re-review.
+
+**Revision (2026-06-23, post-#196 review):**
+- **P1a** — `buildAgent()` must return the agent that runs the **configured
+  pipeline** (the coordinated one), NOT the startup/infra passthrough agent. In
+  `SmartServer` the coordinated agent is the **per-session pipeline instance**
+  (`buildSessionAgent` → `buildPipelineInstance` → `plugin.build()` →
+  `IPipelineInstance.agent`); the startup `smartAgent` is infra-only and is never
+  dispatched to. So `buildAgent` builds a pipeline instance and returns
+  `inst.agent`.
+- **P1b + dependency-injection philosophy** — the library does NOT decide how MCP
+  is provided (one/many, in-process/external, static/dynamic). It exposes
+  **interface/strategy seams**; the consumer injects ready `IMcpClient`s, an
+  `IMcpConnectionStrategy`, or a URL config — or supplies their own. Same for LLM
+  (`ILlm`), embedder (`IEmbedder`), and skills. The builder is a composition root
+  with overridable defaults, not a policy.
 
 ## Problem
 
@@ -25,60 +40,114 @@ exported capabilities of `@mcp-abap-adt/llm-agent-server-libs`. `SmartServer`
 remains the default assembly that adds the HTTP transport (`listen`) over those
 components — it is one consumer, not the center.
 
+**Dependencies are injected through interfaces and strategies; the library does
+not hard-code implementation choices.** Whether MCP is one server or many,
+in-process or external, fixed or swapped per task — that is the consumer's choice,
+expressed by injecting an implementation (`IMcpClient[]`, `IMcpConnectionStrategy`,
+or a URL config). Likewise the LLM provider (`ILlm`), embedder (`IEmbedder`), and
+skill source. The builder ships sensible defaults and lets every dependency be
+overridden or replaced. We do NOT bake these decisions into the library at design
+time (consistent with the engine's existing seams: `withMcpClients`,
+`withMcpConnectionStrategy`, consumer-implementable `ILlm`, the MCP-agnostic
+engine).
+
 ## Constraints (decided)
 
-1. **Fluent builder, not a config blob.** Variable parts (LLM, MCP, skill source,
+1. **`buildAgent` returns the PIPELINE agent.** Not the infra startup agent — the
+   coordinated `IPipelineInstance.agent` for `cfg.pipeline` (see P1a above).
+2. **MCP is injected, not decided.** The builder exposes `.withMcpClients(IMcpClient[])`,
+   `.withMcpConnectionStrategy(IMcpConnectionStrategy)`, and `.withMcp({url})` —
+   the consumer picks. Injected clients/strategy mean the builder never forces a
+   real connect (closes P1b and covers in-process / many / dynamic MCP).
+3. **Fluent builder, not a config blob.** Variable parts (LLM, MCP, skill source,
    embedder, optional budgets/targetState/planner) are set via chained `.withX()`
    methods. An internal config object is an implementation detail the consumer
    never authors.
-2. **Keep the current behaviour model** (no change to controller semantics):
+4. **Keep the current behaviour model** (no change to controller semantics):
    - Subagent LLMs are **per-role** (`evaluator`/`planner`/`executor`). The
      builder offers a shared `.withLlm()` (sets all three) plus a per-role
      `.withRoleLlm(role, cfg)` override.
    - `budgets` / `targetState` / `sessionMemory` keep their baked defaults
      (from `ControllerPipelinePlugin.parseConfig`) and are overridable.
    - `plannerKind` is baked `smart-executor`; `.withPlanner(kind)` overrides.
-3. **DRY — no duplication of orchestration.** The builder must reuse the existing
-   composition machinery (ctx assembly, `toolsRag` vectorization, skill-host init)
-   rather than re-implement `SmartServer.start()`.
-4. **No new HTTP coupling.** Building an embeddable agent must not require binding
+5. **DRY — no duplication of orchestration.** The builder must reuse the existing
+   composition machinery (infra assembly, `toolsRag` vectorization, skill-host
+   init, `buildPipelineInstance`) rather than re-implement `SmartServer.start()`.
+6. **No new HTTP coupling.** Building an embeddable agent must not require binding
    a port.
 
 ## Architecture
 
 ```
         consumer code
-             │  fluent .withLlm()/.withMcp()/.withSkillSource()/…
+   fluent .withLlm()/.withMcpClients()|.withMcpConnectionStrategy()|.withMcp()/.withSkillSource()/…
              ▼
   ControllerSkillPipelineBuilder        (NEW, exported)
-             │  .build():  accumulated state ──► SmartServerConfig (internal)
+             │  .build(deps?):  accumulated state ──► SmartServerConfig + BuildAgentDeps (internal)
              ▼
-  buildAgent(config): { agent, close }  (NEW exported fn — the no-listen build)
-             │  (extracted from SmartServer.start(), shared)
+  buildAgent(config, deps?): { agent, close }   (NEW exported fn — no-listen)
+             │  assemble infra (LLM/embedder/skill-host/MCP via injected seams)
              ▼
-  existing composition: buildServerCtx → buildPipelineInstance
-        → ControllerPipelinePlugin.build(cfg, ctx) → SmartAgentBuilder
+  buildPipelineInstance({sessionId:'embedded', parts})           (the SAME path a
+             │  → buildServerCtx → plugin.build(cfg, ctx)         session uses)
+             ▼
+  IPipelineInstance { agent, close }   ← agent = the COORDINATED pipeline agent
+             │
+  buildAgent returns { agent: inst.agent, close: inst.close + infra close }
 
-  SmartServer.start() = buildAgent(config) + server.listen(...)   (default impl)
+  SmartServer.start() = (infra build + per-session graph.agent via the SAME
+                         buildPipelineInstance) + server.listen(...)   (default impl)
 ```
 
-### Component 1 — `buildAgent` (no-listen build, exported)
+Note: the startup `smartAgent` from `builder.build()` is INFRA/passthrough only
+(no coordinator) — the HTTP path dispatches to the per-session `graph.agent`
+(= `buildPipelineInstance(...).agent`). `buildAgent` must therefore build a
+pipeline instance and return ITS agent, not the startup agent.
 
-Refactor `SmartServer.start()` to split the build from the listen:
+### Component 1 — `buildAgent` (no-listen build of the PIPELINE agent, exported)
 
-- Extract everything `start()` does **before** `server.listen(...)` — context
-  assembly, `toolsRag` vectorization, skill-host init, pipeline-instance build —
-  into a path that returns `{ agent, close }` (the same `agent`/`close` `start()`
-  already assembles before listening).
-- `start()` becomes: `const built = await this.buildAgent(); server.listen(...)`,
-  and the returned `SmartServerHandle.close()` composes `built.close()` with the
-  server shutdown. **Net behaviour of `start()` is unchanged.**
-- Expose the no-listen result as a public, exported capability. Preferred shape:
-  a module-level `export async function buildAgent(cfg: SmartServerConfig, deps?):
-  Promise<{ agent: ISmartAgent; close: () => Promise<void> }>` that constructs the
-  `SmartServer` internally and runs its build-without-listen path. (If a method on
-  `SmartServer` is cleaner given private state, export a thin free function that
-  wraps `new SmartServer(cfg).buildAgent()`.)
+`buildAgent` does two things, in order:
+
+1. **Assemble the global infra** — the same pre-listen work `SmartServer._start()`
+   already does (LLM globals, embedder, `toolsRag` + vectorization, skill-host
+   init, MCP clients). This is extracted into a private `_buildInfra()` so both
+   `start()` and `buildAgent` share it (DRY).
+2. **Build ONE pipeline instance** for `cfg.pipeline` via the existing
+   `buildPipelineInstance({ sessionId: 'embedded', parts })` — the SAME path a
+   session uses (`buildSessionAgent` → `buildPipelineInstance` →
+   `plugin.build(cfg, buildServerCtx(scope))`). The `parts` (`SessionAgentParts`)
+   are assembled from the infra globals (the same shape the session manager
+   passes). This yields `IPipelineInstance { agent, close }` where **`agent` is the
+   coordinated pipeline agent** (the controller coordinator). Return
+   `{ agent: inst.agent, close: <inst.close + infra close> }`.
+
+> Why not return `builder.build().agent`? That startup `smartAgent` is
+> INFRA/passthrough only (no coordinator) — the HTTP path never dispatches to it;
+> it dispatches to the per-session `graph.agent` = `buildPipelineInstance(...).agent`.
+> Returning the startup agent (the original draft's mistake, P1a) would NOT run the
+> controller pipeline.
+
+`SmartServer.start()` is refactored to call the SAME `_buildInfra()` and reuse the
+existing per-session `buildPipelineInstance` path it already has, then
+`server.listen(...)`; the returned `SmartServerHandle.close()` composes the infra
+close with the server shutdown. **Net behaviour of `start()` is unchanged.**
+
+Expose the no-listen result as a public, exported free function:
+`export async function buildAgent(cfg: SmartServerConfig, deps?: BuildAgentDeps):
+Promise<{ agent: ISmartAgent; close: () => Promise<void> }>` — constructs the
+`SmartServer` internally, runs `_buildInfra()` + a single `buildPipelineInstance`,
+binds NO port.
+
+**MCP (P1b) via the injected seam:** `buildAgent` resolves MCP clients through the
+consumer's choice and passes them as the infra `mcpClients` so the builder does
+NOT self-connect from `cfg.mcp`:
+- `deps.mcpClients` (ready `IMcpClient[]`) → used directly (in-process / many / test stubs);
+- else `deps.connectMcp(cfg.mcp)` (a strategy/function; default
+  `connectMcpClientsFromConfig`) → connected clients;
+- the builder-level `withMcpClients` / `withMcpConnectionStrategy` seams remain
+  available for the SmartAgentBuilder path.
+Injected clients/strategy mean **no forced real connect** — closing P1b and
+covering in-process, multiple, and dynamic MCP without the library deciding.
 
 #### `BuildAgentDeps` — the DI seam (required for I/O-free tests)
 
@@ -121,12 +190,17 @@ export interface BuildAgentDeps {
   ) => Promise<ISkillPluginHost>;
   /** Escape hatch: a PREBUILT skill host (skips building entirely). */
   skillHost?: ISkillPluginHost;
-  /** MCP connector. Default: `connectMcpClientsFromConfig` (`smart-server.ts:876`),
-   *  whose real signature accepts the single|array|nullish union and returns
-   *  connected clients. */
+  /** MCP connection STRATEGY (function form). Default: `connectMcpClientsFromConfig`
+   *  (`smart-server.ts:876`), accepting the single|array|nullish union → connected
+   *  clients. A consumer injects their own to provision MCP however they want
+   *  (e.g. per-task / dynamic). */
   connectMcp?: (
     mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
   ) => Promise<IMcpClient[]>;
+  /** Escape hatch: READY `IMcpClient`s (in-process / external / test stubs). When
+   *  present, used directly as the infra `mcpClients` — NO connect runs (the
+   *  builder never self-connects from `cfg.mcp`). Parallels `skillHost`. */
+  mcpClients?: IMcpClient[];
 }
 ```
 
@@ -157,7 +231,11 @@ mcp, llm) and delegates to `buildAgent`.
 const { agent, close } = await new ControllerSkillPipelineBuilder()
   .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' }) // keyless
   .withRoleLlm('planner', { provider: 'openai', apiKey: process.env.OPENAI_API_KEY, model: 'gpt-4o' })
-  .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })       // repeatable
+  .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })       // EXTERNAL by URL (repeatable)
+  // OR inject the consumer's OWN in-process MCP (no URL, no connect):
+  //   .withMcpClients([myInProcessMcpClient, anotherClient])
+  // OR a custom provisioning strategy (dynamic / per-task):
+  //   .withMcpConnectionStrategy(myStrategy)
   .withSkillSource({
     github: 'https://github.com/secondsky/sap-skills.git',
     enabled: ['sap-abap', 'sap-abap-cds', 'sap-btp-developer-guide', 'sap-btp-best-practices'],
@@ -230,7 +308,9 @@ default `budgets`/`targetState`/`sessionMemory`.
 |--------|--------|
 | `withLlm(cfg)` | sets `subagents.{evaluator,planner,executor}` all to `cfg`, and the base `llm.main` |
 | `withRoleLlm(role, cfg)` | overrides one subagent role (applied after `withLlm`) |
-| `withMcp(cfg)` | appends an MCP endpoint (repeatable → array) |
+| `withMcp(cfg)` | EXTERNAL MCP by URL config (repeatable → array); built on the default connect strategy |
+| `withMcpClients(clients)` | inject READY `IMcpClient[]` (in-process MCP that's part of the consumer's app, many servers, or test stubs) → `deps.mcpClients`; no connect runs |
+| `withMcpConnectionStrategy(strategy)` | inject an `IMcpConnectionStrategy` → the consumer owns provisioning (e.g. dynamic / per-task) |
 | `withSkillSource(cfg)` | sets the single github skill source + derives `controllerSkillGroup`/collection |
 | `withEmbedder(cfg)` | sets `rag.embedder` (results + MCP-tool RAG) and the skill-host embedder |
 | `withBudgets(partial)` | shallow-merges over baked `budgets` |
@@ -243,11 +323,15 @@ default `budgets`/`targetState`/`sessionMemory`.
 
 ### Data flow (build)
 
-`.build()` → assemble `SmartServerConfig` (pipeline `controller`/`controller-weak`
-+ `config.subagents/budgets/targetState/sessionMemory`, `rag`, `mcp[]`,
-`skillPlugins` with the github source) → `buildAgent(cfg)` → existing
-`buildServerCtx` + `buildPipelineInstance` → `ControllerPipelinePlugin.build` →
-`SmartAgentBuilder` → `{ agent, close }`. No port is bound.
+`.build(deps?)` → assemble the RAW `SmartServerConfig` (pipeline
+`controller`/`controller-weak` + `config.subagents/budgets/targetState/sessionMemory`,
+`rag`, optional `mcp[]`, `skillPlugins` with the github source) + a `BuildAgentDeps`
+(from any injected MCP clients/strategy) → normalize via `resolveSmartServerConfig`
+→ `buildAgent(cfg, deps)` → `_buildInfra()` (LLM/embedder/skill-host/MCP via the
+injected seams) → `buildPipelineInstance({ sessionId:'embedded', parts })` →
+`ControllerPipelinePlugin.build(cfg, ctx)` → `IPipelineInstance { agent, close }` →
+return `{ agent: inst.agent, close: inst.close + infra close }`. **No port bound;
+no forced MCP connect when clients/strategy are injected.**
 
 ## Validation & error handling
 
@@ -273,20 +357,44 @@ default `budgets`/`targetState`/`sessionMemory`.
 **Integration (via the `BuildAgentDeps` seam — no network, no port):**
 - `buildAgent(cfg, deps)` returns a runnable agent for the controller pipeline with
   skill recall wired, injecting stubs through `BuildAgentDeps`: a stub `makeLlm`
-  (canned `ILlm`), a stub `resolveEmbedder` (deterministic-vector embedder), and a
-  **prebuilt in-memory `skillHost`**. Assert `agent.process(...)` reaches the
-  controller handler (skill recall block present) and `close()` disposes cleanly.
+  (canned `ILlm`), an injected `embedder` (deterministic-vector — covers agent-RAG
+  + skill-host, skips prefetch), and a **prebuilt in-memory `skillHost`**.
+- **P1a — the COORDINATED pipeline agent runs (not the infra passthrough):** the
+  stubbed planner/executor `makeLlm` records that it was invoked through the
+  controller coordinator (e.g. the planner LLM receives the create-plan prompt).
+  Assert the controller handler is actually exercised — NOT just `typeof
+  agent.process === 'function'`. (The original draft test only checked the latter
+  and would pass even with the wrong agent.)
+- **P1b — injected MCP clients ⇒ no real connect:** with `mcp` set in the config
+  AND `deps.connectMcp` a stub that THROWS on call (or `deps.mcpClients` injected),
+  `buildAgent` builds successfully — proving the embeddable path never performs a
+  real MCP connect. (A second variant injects ready `IMcpClient` stubs via
+  `.withMcpClients(...)` and asserts those exact clients reach the pipeline.)
 - The fluent builder end-to-end: `new ControllerSkillPipelineBuilder().withLlm(…)
-  …​.build(deps)` produces the same wired agent (asserts the façade → config →
-  `buildAgent` path), with the stubs forwarded via the builder's deps argument.
-- Regression: `SmartServer.start()` still builds + listens + returns a working
-  handle with `deps` omitted (the refactor is behaviour-preserving).
+  …​.build(deps)` produces the same wired coordinated agent (façade → config →
+  `buildAgent`), with stubs forwarded via the builder's deps argument.
+- Regression: `SmartServer.start()` still builds + listens + serves the per-session
+  coordinated agent with `deps` omitted (the refactor is behaviour-preserving).
+
+## Explicitly SUPPORTED via injection (not the library's decision)
+
+- **Multiple / different MCP servers** — inject several `IMcpClient`s
+  (`.withMcpClients`) or repeat `.withMcp`. Tools from all feed the tool-RAG;
+  selection is semantic per query.
+- **In-process MCP that's part of the consumer's app** — `.withMcpClients([...])`
+  with the consumer's own client(s), or an `embedded`-transport config. No URL, no
+  external connect.
+- **Dynamic / per-task MCP provisioning** — inject an `IMcpConnectionStrategy`
+  (`.withMcpConnectionStrategy`); the consumer's strategy decides what to provide
+  and when.
 
 ## Out of scope (YAGNI)
 
 - A fluent builder for the other pipelines (flat/linear/dag/stepper) — only the
   controller+skills composition is requested. (`buildAgent` is generic, so they
   benefit from the no-listen path, but get no dedicated builder yet.)
-- Multiple skill sources in the builder (single github source covers the need;
-  the underlying config still supports more if hand-written).
-- Hot-reconfigure / re-build of an already-built agent.
+- Multiple skill *sources* in the fluent builder (single github source covers the
+  need; the underlying config still supports more if hand-written).
+- **Mutating an already-built agent's MCP/models at runtime** (hot-reconfigure of a
+  live instance). Per-task variation is handled by an injected MCP strategy or by
+  building a separate agent — NOT by reconfiguring one returned instance.
