@@ -334,12 +334,12 @@ default `budgets`/`targetState`/`sessionMemory`.
 `.build(deps?)` → assemble the RAW `SmartServerConfig` (pipeline
 `controller`/`controller-weak` + `config.subagents/budgets/targetState/sessionMemory`,
 `rag`, optional `mcp[]`, `skillPlugins` with the github source) + a `BuildAgentDeps`
-(from any injected MCP clients/strategy) → normalize via `resolveSmartServerConfig`
+(from any injected MCP clients / `connectMcp` function) → normalize via `resolveSmartServerConfig`
 → `buildAgent(cfg, deps)` → `_buildInfra()` (LLM/embedder/skill-host/MCP via the
 injected seams) → `buildPipelineInstance({ sessionId:'embedded', parts })` →
 `ControllerPipelinePlugin.build(cfg, ctx)` → `IPipelineInstance { agent, close }` →
 return `{ agent: inst.agent, close: inst.close + infra close }`. **No port bound;
-no forced MCP connect when clients/strategy are injected.**
+no forced MCP connect when clients or a custom `connectMcp` function are injected.**
 
 ## Validation & error handling
 
@@ -405,5 +405,6 @@ no forced MCP connect when clients/strategy are injected.**
 - Multiple skill *sources* in the fluent builder (single github source covers the
   need; the underlying config still supports more if hand-written).
 - **Mutating an already-built agent's MCP/models at runtime** (hot-reconfigure of a
-  live instance). Per-task variation is handled by an injected MCP strategy or by
+  live instance). Per-task variation is handled by an injected `connectMcp`
+  provisioning function (or ready `mcpClients`) or by
   building a separate agent — NOT by reconfiguring one returned instance.
