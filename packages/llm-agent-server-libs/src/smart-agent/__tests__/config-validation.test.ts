@@ -652,10 +652,14 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       rag: { type: 'in-memory', embedder: 'sap-ai-core' },
     };
     assert.doesNotThrow(() =>
-      // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
-      resolveSmartServerConfig({}, yaml as any, {} as NodeJS.ProcessEnv, {
-        skipProviderRuntimeChecks: true,
-      }),
+      resolveSmartServerConfig(
+        {},
+        yaml,
+        {},
+        {
+          skipProviderRuntimeChecks: true,
+        },
+      ),
     );
   });
 
@@ -665,9 +669,7 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       rag: { type: 'in-memory', embedder: 'sap-ai-core' },
     };
     assert.throws(
-      // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
-      () =>
-        resolveSmartServerConfig({}, yaml as any, {} as NodeJS.ProcessEnv, {}),
+      () => resolveSmartServerConfig({}, yaml, {}, {}),
       /AICORE_SERVICE_KEY|model/,
     );
   });
@@ -681,10 +683,11 @@ describe('resolveSmartServerConfig — skipProviderRuntimeChecks option', () => 
       () =>
         resolveSmartServerConfig(
           {},
-          // biome-ignore lint/suspicious/noExplicitAny: test-only loose YAML shape
-          yaml as any,
-          {} as NodeJS.ProcessEnv,
-          { skipProviderRuntimeChecks: true },
+          yaml,
+          {},
+          {
+            skipProviderRuntimeChecks: true,
+          },
         ),
       /provider.*invalid|invalid.*provider/i,
     );

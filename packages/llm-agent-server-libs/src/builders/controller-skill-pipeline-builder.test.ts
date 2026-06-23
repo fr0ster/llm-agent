@@ -238,12 +238,26 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
     } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
     const { close } = await new ControllerSkillPipelineBuilder()
       .withLlm({ provider: 'sap-ai-sdk' })
-      .withSkillSource({ github: 'a/b', enabled: ['sap-abap'], collection: 'sap' })
+      .withSkillSource({
+        github: 'a/b',
+        enabled: ['sap-abap'],
+        collection: 'sap',
+      })
       .withEmbedder({ provider: 'sap-ai-core' })
       .build({
         makeLlm: async () => cannedLlm,
-        embedder: { embed: async () => ({ vector: [0] }) } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder,
-        buildSkillHost: async () => ({ rag: () => ({ query: async () => [], activeManifest: async () => ({}) }), groups: () => [{ group: 'sap' }], load: async () => {} } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost),
+        embedder: {
+          embed: async () => ({ vector: [0] }),
+        } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder,
+        buildSkillHost: async () =>
+          ({
+            rag: () => ({
+              query: async () => [],
+              activeManifest: async () => ({}),
+            }),
+            groups: () => [{ group: 'sap' }],
+            load: async () => {},
+          }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
         connectMcp: async () => [],
       });
     await close();
