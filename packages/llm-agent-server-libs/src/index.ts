@@ -1,3 +1,9 @@
+export {
+  type BuilderEmbedderInput,
+  type BuilderLlmInput,
+  type BuilderSkillSourceInput,
+  ControllerSkillPipelineBuilder,
+} from './builders/controller-skill-pipeline-builder.js';
 export * from './factories/index.js';
 export * from './pipelines/server-context.js';
 export * from './smart-agent/build-dag-coordinator-deps.js';
