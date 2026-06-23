@@ -840,13 +840,14 @@ implements `load()`/`groups()`/`rag().activeManifest()` because `.build()` route
 it through `initSkillHost` (load+validate, P2).
 
 > **Coverage split (deliberate):** that the returned agent is the COORDINATED
-> controller agent is proven by **Task 2b**'s `buildAgent` coordinator test
-> (planner LLM invoked). Task 4's builder test proves the **façade → config →
-> deps-forwarding** path: the fluent calls produce a normalized config and the
-> injected deps (incl. `mcpClients`/`embedder`) reach `buildAgent` (asserted via
-> `buildSkillHost` capture + the no-connect deps). It need not re-assert the
-> coordinator — but DO add one `await agent.process('x')` to confirm the façade's
-> agent is runnable end-to-end (it is the same `inst.agent` Task 2b validates).
+> controller agent — and that it RUNS (planner LLM invoked) — is proven by
+> **Task 2b**'s `buildAgent` coordinator test. Task 4's builder test proves only
+> the **façade → config → deps-forwarding** path: the fluent calls produce a
+> normalized config and the injected deps (incl. `mcpClients`/`embedder`) reach
+> `buildAgent` (asserted via `buildSkillHost` capture + the no-connect deps). It
+> does NOT re-run `agent.process` — that would duplicate Task 2b's coordinator
+> startup setup (`skipModelValidation`, Result-shaped chat) for no extra coverage.
+> The façade returns the SAME `inst.agent` Task 2b validates.
 
 ```ts
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
@@ -861,7 +862,7 @@ function stubHost() {
 }
 
 test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', async () => {
-  const cannedLlm = { chat: async () => ({ content: 'review', toolCalls: [] }), model: 'stub' }
+  const cannedLlm = { chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }), model: 'stub' }
     as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
   const stubEmbedder = { embed: async () => ({ vector: [0, 0, 0] }) }
     as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
@@ -882,6 +883,9 @@ test('build(deps): normalized skill config reaches buildSkillHost (P1a), injecte
     .withSkillSource({ github: 'secondsky/sap-skills', enabled: ['sap-abap'], collection: 'sap' })
     .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
     .build(deps);
+  // The façade returns the same coordinated inst.agent Task 2b validates; here we
+  // assert the façade → config → deps-forwarding path (NOT re-running the
+  // coordinator — that is Task 2b's job, to avoid duplicating its startup setup).
   assert.equal(typeof agent.process, 'function');
   // P1a — normalization happened: defaults filled by resolveSmartServerConfig.
   assert.ok(skillCfgSeen, 'buildSkillHost was called');
@@ -1033,7 +1037,7 @@ Expected: all green; commit succeeds.
 - Fluent surface (`withLlm`/`withRoleLlm`/`withMcp`/`withSkillSource`/`withEmbedder`/`withBudgets`/`withTargetState`/`withPlanner`) → Task 3. ✓
 - Baked controller + skill-host + defaults; `withPlanner` → controller/controller-weak → Task 3. ✓
 - Optional apiKey + per-provider env semantics (`BuilderLlmInput`) → Task 3 `toLlmConfig`. ✓
-- `build(deps?)` → `buildAgent`, returns `{ agent, close }`; `agent.process(...)` → Task 4. ✓
+- `build(deps?)` → `buildAgent`, returns `{ agent, close }` (Task 4 — façade/forwarding); `agent.process(...)` coordinator run proven in Task 2b. ✓
 - Fail-loud guards (no LLM / no skill source / no embedder) → Task 3 tests. ✓
 - Unit (config translation) + integration (deps-stubbed, no I/O) + regression (`start()` still listens) → Tasks 1,2,3,4. ✓
 - Exports → Task 5. ✓
