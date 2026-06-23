@@ -1,10 +1,14 @@
-import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
+import type { IMcpClient, ISmartAgent } from '@mcp-abap-adt/llm-agent';
+import type { YamlConfig } from '../smart-agent/config.js';
+import { resolveSmartServerConfig } from '../smart-agent/config.js';
 import type { PlannerKind } from '../smart-agent/controller/types.js';
 import type {
+  BuildAgentDeps,
   SmartServerConfig,
   SmartServerLlmConfig,
   SmartServerMcpConfig,
 } from '../smart-agent/smart-server.js';
+import { buildAgent } from '../smart-agent/smart-server.js';
 
 export interface BuilderLlmInput {
   provider: 'sap-ai-sdk' | 'openai' | 'anthropic' | 'deepseek' | 'ollama';
@@ -63,7 +67,6 @@ export class ControllerSkillPipelineBuilder {
   private _llm?: BuilderLlmInput;
   private _roleLlm: Partial<Record<Role, BuilderLlmInput>> = {};
   private _mcp: SmartServerMcpConfig[] = [];
-  // will be read by build() in the next task
   private _mcpClients?: IMcpClient[];
   private _skill?: BuilderSkillSourceInput;
   private _embedder?: BuilderEmbedderInput;
@@ -90,15 +93,6 @@ export class ControllerSkillPipelineBuilder {
   withMcpClients(clients: IMcpClient[]): this {
     this._mcpClients = clients;
     return this;
-  }
-  /**
-   * Pre-built MCP clients accumulated via {@link withMcpClients}. Consumed by
-   * `build()` in the next task; exposed here as a protected accessor so the
-   * field is `read` (satisfies `noUnusedLocals`, which flags unused private
-   * members under TS 5.x) ahead of that task.
-   */
-  protected get mcpClients(): IMcpClient[] | undefined {
-    return this._mcpClients;
   }
   withSkillSource(cfg: BuilderSkillSourceInput): this {
     this._skill = cfg;
@@ -200,5 +194,23 @@ export class ControllerSkillPipelineBuilder {
         ],
       },
     } as unknown as SmartServerConfig;
+  }
+
+  async build(
+    deps?: BuildAgentDeps,
+  ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
+    const normalized = resolveSmartServerConfig(
+      {},
+      this.toConfig() as YamlConfig,
+      process.env,
+    );
+    const mergedDeps: BuildAgentDeps | undefined =
+      this._mcpClients || deps
+        ? {
+            ...(this._mcpClients ? { mcpClients: this._mcpClients } : {}),
+            ...deps,
+          }
+        : undefined;
+    return buildAgent(normalized as SmartServerConfig, mergedDeps);
   }
 }

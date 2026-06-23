@@ -1,6 +1,27 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import type { SkillPluginsConfig } from '../smart-agent/skill-plugins-config.js';
+import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
 import { ControllerSkillPipelineBuilder } from './controller-skill-pipeline-builder.js';
+
+// build() routes through the real resolveSmartServerConfig, whose config
+// validator requires AICORE_SERVICE_KEY for the sap-ai-sdk provider. The DI
+// stubs (makeLlm/embedder/buildSkillHost) mean no SAP AI Core connection is
+// ever opened, so a dummy value satisfies validation without any I/O.
+process.env.AICORE_SERVICE_KEY ??= JSON.stringify({
+  clientid: 'test',
+  clientsecret: 'test',
+  url: 'https://example.invalid',
+  serviceurls: { AI_API_URL: 'https://example.invalid' },
+});
+
+function stubHost() {
+  return {
+    rag: () => ({ query: async () => [], activeManifest: async () => ({}) }),
+    groups: () => [{ group: 'sap' }],
+    load: async () => {},
+  } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+}
 
 test('fluent calls translate to the expected SmartServerConfig', () => {
   const cfg = new ControllerSkillPipelineBuilder()
@@ -83,4 +104,77 @@ test('build() throws when no embedder was set (skills need one)', () => {
         .toConfig(),
     /withEmbedder/,
   );
+});
+
+test('build(deps): normalized skill config reaches buildSkillHost (P1a), injected embedder covers all paths (P1b), no I/O', async () => {
+  const cannedLlm = {
+    chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const stubEmbedder = {
+    embed: async () => ({ vector: [0, 0, 0] }),
+  } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+  let skillCfgSeen: SkillPluginsConfig | undefined;
+  const deps: BuildAgentDeps = {
+    makeLlm: async () => cannedLlm,
+    embedder: stubEmbedder,
+    buildSkillHost: async (cfg) => {
+      skillCfgSeen = cfg;
+      return stubHost();
+    },
+    connectMcp: async () => [],
+    prefetchEmbedderFactories: async () => {
+      throw new Error('prefetch must not run when deps.embedder is injected');
+    },
+  };
+  const { agent, close } = await new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+    .withSkillSource({
+      github: 'secondsky/sap-skills',
+      enabled: ['sap-abap'],
+      collection: 'sap',
+    })
+    .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
+    .build(deps);
+  assert.equal(typeof agent.process, 'function');
+  assert.ok(skillCfgSeen, 'buildSkillHost was called');
+  assert.equal(skillCfgSeen!.store.type, 'in-memory');
+  assert.ok(skillCfgSeen!.catalog, 'catalog default present');
+  assert.notEqual(skillCfgSeen!.chunk, undefined);
+  await close();
+});
+
+test('build(deps) with a prebuilt skillHost still routes through load/validate (P2)', async () => {
+  const cannedLlm = {
+    chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  let loaded = false;
+  const host = {
+    ...stubHost(),
+    load: async () => {
+      loaded = true;
+    },
+  } as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost;
+  const { close } = await new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+    .withSkillSource({
+      github: 'a/b',
+      enabled: ['sap-abap'],
+      collection: 'sap',
+    })
+    .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
+    .build({
+      makeLlm: async () => cannedLlm,
+      // biome-ignore lint/suspicious/noExplicitAny: stub embedder for test
+      embedder: { embed: async () => ({ vector: [0] }) } as any,
+      skillHost: host,
+      connectMcp: async () => [],
+    });
+  assert.equal(
+    loaded,
+    true,
+    'prebuilt host still went through initSkillHost.load()',
+  );
+  await close();
 });
