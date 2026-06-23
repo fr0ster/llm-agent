@@ -70,6 +70,7 @@ import {
   SessionGraphFactory,
   SessionLogger,
   SessionRegistry,
+  SessionRequestLogger,
   SmartAgentBuilder,
   type SmartAgentHandle,
   type SmartAgentReconfigureOptions,
@@ -312,6 +313,14 @@ export interface BuildAgentDeps {
   connectMcp?: (
     mcpCfg: SmartServerMcpConfig | SmartServerMcpConfig[] | undefined | null,
   ) => Promise<IMcpClient[]>;
+  /**
+   * Ready-to-use MCP clients — parallel to `skillHost` (NOT an
+   * `IMcpConnectionStrategy`). When present they are used DIRECTLY and take
+   * precedence over `cfg.mcpClients`, plugin clients, and the YAML `mcp:` block:
+   * NO connect runs (the embeddable `buildAgent(cfg)` path never forces a real
+   * MCP connection). Inject `[]` to deliberately disable MCP.
+   */
+  mcpClients?: IMcpClient[];
   /** Injected embedder — short-circuits BOTH resolveAgentEmbedder (diEmbedder) AND
    *  the skill-host embedder resolution + prefetch. */
   embedder?: IEmbedder;
@@ -1023,6 +1032,15 @@ export class SmartServer {
    */
   private _stepperMcpClients?: IMcpClient[];
   /**
+   * True when the consumer injected an MCP seam (`BuildAgentDeps.mcpClients` or
+   * `connectMcp`). In that case MCP is provisioned ONLY through the seam (the
+   * embeddable path must never force a real connect / builder self-connect). When
+   * false (default), the YAML `mcp:` path keeps the builder-owned connect so the
+   * builder VECTORIZES the tools into `toolsRag` (the ToolSelect ranking contract;
+   * see mcp-yaml-vectorization.test.ts).
+   */
+  private readonly _mcpSeamInjected: boolean;
+  /**
    * The MCP clients the pipeline `callMcp` bridge dispatches over — resolved
    * UNCONDITIONALLY in `start()` as DI/plugin clients (`mcpClients`) ?? the
    * YAML-connected `_stepperMcpClients`. Held so every pipeline (not just the
@@ -1073,10 +1091,12 @@ export class SmartServer {
       | 'connectMcp'
     >
   > &
-    Pick<BuildAgentDeps, 'skillHost' | 'embedder'>;
+    Pick<BuildAgentDeps, 'skillHost' | 'embedder' | 'mcpClients'>;
 
   constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     this.cfg = config;
+    this._mcpSeamInjected =
+      deps.mcpClients !== undefined || deps.connectMcp !== undefined;
     this._deps = {
       makeLlm: deps.makeLlm ?? ((cfg) => this._makeLlmDefault(cfg)),
       resolveEmbedder: deps.resolveEmbedder ?? resolveEmbedder,
@@ -1086,6 +1106,7 @@ export class SmartServer {
       connectMcp: deps.connectMcp ?? connectMcpClientsFromConfig,
       ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
       ...(deps.embedder ? { embedder: deps.embedder } : {}),
+      ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
     };
   }
 
@@ -1366,9 +1387,12 @@ export class SmartServer {
     // Deployments that previously declared `pipeline.rag.{name}` collections must
     // move them to top-level `rag:` (or register them as plugin RAG).
 
-    // MCP clients (DI > plugin > YAML). The YAML `mcp:` block is NOT pre-connected
-    // here — see the branch below.
+    // MCP clients (BuildAgentDeps.mcpClients > DI cfg.mcpClients > plugin > YAML).
+    // P1b: `this._deps.mcpClients` is the embeddable seam's ready-client override —
+    // when present it short-circuits ALL connect paths (parallel to skillHost). The
+    // YAML `mcp:` block is otherwise NOT pre-connected here — see the branch below.
     const diOrPluginMcpClients =
+      this._deps.mcpClients ??
       this.cfg.mcpClients ??
       (plugins.mcpClients.length > 0 ? plugins.mcpClients : undefined);
 
@@ -1380,47 +1404,64 @@ export class SmartServer {
     this.buildKnowledgeBackend();
 
     // ---- MCP connection strategy (exactly ONE connection) -----------------
-    // Two client sources, two orderings — both keep ONE MCP connection AND a
-    // vectorized `toolsRag`:
+    // P1b: MCP is ALWAYS provisioned through the injected `BuildAgentDeps` seam so
+    // the embeddable `buildAgent(cfg)` path never forces a real connect. Two
+    // sources, ONE provisioning point:
     //
-    //   • DI/plugin clients present → inject them into the startup builder via
-    //     `withMcpClients` (builder.ts:923 short-circuits its own `cfg.mcp`
-    //     auto-connect). These pre-built clients were never vectorized by the
-    //     builder (unchanged behavior). `_sharedMcpClients` = that exact set,
-    //     and the `_toolsRagHandle` catalog is built now over them.
+    //   • Ready clients present (`_deps.mcpClients` / `cfg.mcpClients` / plugin
+    //     clients, captured as `diOrPluginMcpClients`) → inject them into the
+    //     startup builder via `withMcpClients` (builder short-circuits its own
+    //     `cfg.mcp` auto-connect). `_sharedMcpClients` = that exact set, and the
+    //     `_toolsRagHandle` catalog is built now over them.
     //
-    //   • YAML-only (no DI/plugin) → do NOT pre-connect and do NOT inject. The
-    //     startup builder receives `cfg.mcp` (via buildBaseBuilder, since
-    //     `mcpClients` is undefined) so `build()` CONNECTS the YAML block AND
-    //     VECTORIZES the tools into `toolsRag` (the `IRag`). AFTER `build()` we
-    //     harvest its connected set into `_sharedMcpClients` so `ctx.callMcp`
-    //     and per-session agents reuse the SAME single connection, then build
-    //     the `_toolsRagHandle` catalog over them. (Restores the
-    //     tool-vectorization the inject-skip regressed, with no double-connect.)
-    // DI precedence semantics: an explicitly-provided client set (even an EMPTY
-    // array) overrides YAML `mcp:`. `cfg.mcpClients: []` is a deliberate "disable
-    // MCP / override plugin+YAML" signal — it must take the DI branch (inject `[]`
-    // → builder short-circuits via withMcpClients([]) → no YAML auto-connect), NOT
-    // fall through to the YAML branch. So gate on presence (`!== undefined`), not
-    // length. (`diOrPluginMcpClients` is already undefined when neither DI nor a
-    // non-empty plugin set was provided — see its resolution above.)
-    const hasDiOrPlugin = diOrPluginMcpClients !== undefined;
+    //   • No ready clients but a YAML `mcp:` block → provision ONCE via the seam
+    //     (`this._deps.connectMcp(this.cfg.mcp)`; default = real connect, an
+    //     embedded host can inject a stub) and inject those clients too, so the
+    //     builder does NOT self-connect from `cfg.mcp` (single provisioning
+    //     point). The `_toolsRagHandle` catalog is built over the connected set.
+    //     (Tool ranking falls back to the MCP catalog, same as the ready-client
+    //     path; the builder no longer vectorizes the YAML `mcp:` block itself.)
+    //
+    //   • No clients and no `mcp:` block → undefined; no MCP wiring at all.
+    // Precedence: a ready client set (even an EMPTY array) overrides YAML `mcp:`.
+    // `cfg.mcpClients: []` (or `_deps.mcpClients: []`) is a deliberate "disable
+    // MCP / override plugin+YAML" signal — it takes the inject branch (inject `[]`
+    // → builder short-circuits → no YAML connect), NOT the YAML connect branch. So
+    // gate on presence (`!== undefined`), not length.
+    const hasReadyClients = diOrPluginMcpClients !== undefined;
+    // YAML `mcp:` with NO ready clients AND NO injected seam → keep the legacy
+    // builder-owned connect so the builder VECTORIZES the tools (the ToolSelect
+    // ranking contract). `_sharedMcpClients` + the tools-RAG handle are harvested
+    // from the built handle AFTER `build()` (see the harvest block below). When
+    // the seam IS injected we provision through it instead (no builder connect).
+    const yamlBuilderConnect =
+      !hasReadyClients && !!this.cfg.mcp && !this._mcpSeamInjected;
 
     let mcpClients: IMcpClient[] | undefined;
-    if (hasDiOrPlugin) {
-      // DI/plugin branch — resolve `_sharedMcpClients` + tools-RAG handle NOW
-      // (knowledge backend is idempotent; already built above).
+    if (hasReadyClients) {
+      mcpClients = diOrPluginMcpClients;
+    } else if (this.cfg.mcp && this._mcpSeamInjected) {
+      // Injected seam + YAML `mcp:` → the seam is the SINGLE provisioning point
+      // (the embeddable path must never force a real connect). Stash on
+      // `_stepperMcpClients` so the idempotent guard inside
+      // buildSharedPipelineInfra does not connect a second time.
+      this._stepperMcpClients = await this._deps.connectMcp(this.cfg.mcp);
+      mcpClients = this._stepperMcpClients;
+    } else {
+      // No MCP, or the YAML-builder-connect path (mcpClients stays undefined so
+      // the builder receives `cfg.mcp` and connects + vectorizes itself).
+      mcpClients = undefined;
+    }
+    // Resolve `_sharedMcpClients` + the tools-RAG handle catalog over the
+    // provisioned set for every path EXCEPT yamlBuilderConnect, which resolves
+    // them AFTER `build()` from the harvested handle (knowledge backend is
+    // idempotent; already built above).
+    if (!yamlBuilderConnect) {
       await this.buildSharedPipelineInfra({
         toolsRag,
         resolvedEmbedder,
-        mcpClients: diOrPluginMcpClients,
+        mcpClients,
       });
-      mcpClients = diOrPluginMcpClients;
-    } else {
-      // YAML-only / no-mcp branch — let the builder connect + vectorize from
-      // `cfg.mcp`; `_sharedMcpClients` + the tools-RAG handle are resolved from
-      // the built handle AFTER `build()` (see below).
-      mcpClients = undefined;
     }
 
     // Build SubAgentRegistry from `subagents:` YAML block (if present).
@@ -1495,13 +1536,14 @@ export class SmartServer {
     const { ragRegistry: globalRagRegistry, mcpClients: globalMcpClients } =
       agentHandle;
 
-    // ---- YAML-only MCP harvest (single-connect + restored vectorization) ----
-    // For the YAML-only branch the startup builder connected the `mcp:` block
-    // AND vectorized its tools into `toolsRag`. Harvest the builder's connected
-    // set into `_sharedMcpClients` so `ctx.callMcp` and per-session agents reuse
-    // the SAME single connection (no second connect), then build the tools-RAG
-    // handle catalog over it. The DI/plugin branch already did this earlier.
-    if (!hasDiOrPlugin) {
+    // ---- YAML-builder-connect MCP harvest (single-connect + vectorization) ----
+    // Only on the `yamlBuilderConnect` path (YAML `mcp:`, no ready clients, no
+    // injected seam) did the startup builder OWN the connection AND vectorize the
+    // tools into `toolsRag`. Harvest its connected set into `_sharedMcpClients` so
+    // `ctx.callMcp` + per-session agents reuse the SAME single connection (no
+    // second connect), then build the tools-RAG handle catalog over it. Every
+    // other path already resolved these in buildSharedPipelineInfra before build().
+    if (yamlBuilderConnect) {
       this._sharedMcpClients = globalMcpClients ?? [];
       await this.buildToolsRagHandle({ toolsRag, resolvedEmbedder });
     }
@@ -1707,19 +1749,57 @@ export class SmartServer {
 
     const { requestLogger } = agentHandle;
 
+    // ---- Embeddable coordinated agent (P1a) -------------------------------
+    // `smartAgent` above is the INFRA/passthrough startup agent — it has NO
+    // coordinator, so it would never run the configured pipeline. The HTTP
+    // `start()` path serves the PER-SESSION `graph.agent` (built lazily via
+    // buildSessionAgent → buildPipelineInstance), so it ignores this and keeps
+    // using `smartAgent` for infra endpoints (/v1/models, health). But the
+    // embeddable `buildAgent(cfg)` consumer has no session lifecycle, so it must
+    // receive a fully COORDINATED agent. Build ONE pipeline instance via the SAME
+    // path a session uses — an `'embedded'` session — and return ITS agent.
+    const inst = await this.buildPipelineInstance({
+      sessionId: 'embedded',
+      parts: this._embeddedSessionParts(globalMcpClients, globalRagRegistry),
+    });
+    closeFns.unshift(() => inst.close());
+
     return {
-      agent: smartAgent,
+      // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
+      agent: inst.agent,
       close: async () => {
         for (const fn of closeFns) await fn();
       },
       chat,
       streamChat,
       requestLogger,
+      // Infra/passthrough startup agent — `_start()` serves infra endpoints
+      // (HealthChecker / /v1/models) from this, NOT from `agent` above.
       smartAgent,
       log,
       healthChecker,
       modelProvider,
       adapterMap,
+    };
+  }
+
+  /**
+   * Assemble the `SessionAgentParts` for the single `'embedded'` pipeline
+   * instance returned by `_buildAgent` (the embeddable `buildAgent(cfg)` path).
+   * Mirrors EXACTLY what the session lifecycle passes to `buildSessionAgent`:
+   * the global mcpClients + the global ragRegistry + the global tools store,
+   * with a fresh per-(embedded-)session request logger.
+   */
+  private _embeddedSessionParts(
+    mcpClients: IMcpClient[] | undefined,
+    ragRegistry: IRagRegistry,
+  ): SessionAgentParts {
+    return {
+      sessionId: 'embedded',
+      mcpClients: mcpClients ?? this._sharedMcpClients ?? [],
+      toolsRag: this._toolsRag,
+      ragRegistry,
+      logger: new SessionRequestLogger(),
     };
   }
 
