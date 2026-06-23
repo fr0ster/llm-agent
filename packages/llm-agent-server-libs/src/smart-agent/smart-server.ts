@@ -26,6 +26,7 @@ import type {
   IRequestLogger,
   ISkillManager,
   ISkillPluginHost,
+  ISmartAgent,
   IToolsRagHandle,
   LlmTool,
   LoadedPlugins,
@@ -1112,7 +1113,18 @@ export class SmartServer {
     }
   }
 
-  private async _start(): Promise<SmartServerHandle> {
+  private async _buildAgent(): Promise<{
+    agent: ISmartAgent;
+    close: () => Promise<void>;
+    chat: SmartAgentHandle['chat'];
+    streamChat: SmartAgentHandle['streamChat'];
+    requestLogger: IRequestLogger;
+    smartAgent: SmartAgent;
+    log: (e: Record<string, unknown>) => void;
+    healthChecker: HealthChecker;
+    modelProvider?: IModelProvider;
+    adapterMap?: Map<string, ILlmApiAdapter>;
+  }> {
     const log = this.cfg.log ?? this.noop;
     const fileLogger: ILogger = {
       log: (e) => log(e as unknown as Record<string, unknown>),
@@ -1695,6 +1707,35 @@ export class SmartServer {
 
     const { requestLogger } = agentHandle;
 
+    return {
+      agent: smartAgent,
+      close: async () => {
+        for (const fn of closeFns) await fn();
+      },
+      chat,
+      streamChat,
+      requestLogger,
+      smartAgent,
+      log,
+      healthChecker,
+      modelProvider,
+      adapterMap,
+    };
+  }
+
+  private async _start(): Promise<SmartServerHandle> {
+    const built = await this._buildAgent();
+    const {
+      chat,
+      streamChat,
+      requestLogger,
+      smartAgent,
+      log,
+      healthChecker,
+      modelProvider,
+      adapterMap,
+    } = built;
+
     const server = http.createServer((req, res) =>
       this._handle(
         req,
@@ -1738,7 +1779,9 @@ export class SmartServer {
             // 2. Now run lifecycle cleanup: sweep timer, lifecycle.disposeAll,
             //    config watcher stop, agent close. By this point no HTTP
             //    request is in flight, so disposing session graphs is safe.
-            for (const fn of closeFns) await fn();
+            //    `built.close()` runs the same `closeFns` loop the original
+            //    inline close did — order preserved.
+            await built.close();
           },
           requestLogger,
         });
@@ -3688,4 +3731,22 @@ export class SmartServer {
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ models, agent }));
   }
+}
+
+/** Build a runnable agent for any configured pipeline WITHOUT binding a port.
+ *  `SmartServer.start()` is the default impl that adds HTTP `listen` on top. */
+export async function buildAgent(
+  cfg: SmartServerConfig,
+  deps?: BuildAgentDeps,
+): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
+  const server = new SmartServer(cfg, deps);
+  const built = await (
+    server as unknown as {
+      _buildAgent(): Promise<{
+        agent: ISmartAgent;
+        close: () => Promise<void>;
+      }>;
+    }
+  )._buildAgent();
+  return { agent: built.agent, close: built.close };
 }
