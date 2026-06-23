@@ -55,10 +55,18 @@ engine).
 
 1. **`buildAgent` returns the PIPELINE agent.** Not the infra startup agent — the
    coordinated `IPipelineInstance.agent` for `cfg.pipeline` (see P1a above).
-2. **MCP is injected, not decided.** The builder exposes `.withMcpClients(IMcpClient[])`,
-   `.withMcpConnectionStrategy(IMcpConnectionStrategy)`, and `.withMcp({url})` —
-   the consumer picks. Injected clients/strategy mean the builder never forces a
-   real connect (closes P1b and covers in-process / many / dynamic MCP).
+2. **MCP is injected, not decided.** MCP *provisioning* (which clients) has two
+   fluent paths plus a function seam: `.withMcpClients(IMcpClient[])` (ready
+   clients — in-process / many / stubs) and `.withMcp({url})` (external by config,
+   connected via the default/injected `connectMcp`); for fully custom or dynamic
+   provisioning the consumer injects a `connectMcp(cfg) => Promise<IMcpClient[]>`
+   function via `.build(deps)`. Injected clients (or a stub `connectMcp`) mean the
+   builder never forces a real connect (closes P1b; covers in-process / many /
+   custom). **NOTE:** `IMcpConnectionStrategy` (`withMcpConnectionStrategy`) is a
+   DIFFERENT, orthogonal seam — the *runtime connection lifecycle* (reconnect /
+   refresh of an established connection), NOT a client factory. It is out of this
+   builder's provisioning surface (advanced users reach it via `SmartAgentBuilder`
+   directly); do not conflate it with `connectMcp`.
 3. **Fluent builder, not a config blob.** Variable parts (LLM, MCP, skill source,
    embedder, optional budgets/targetState/planner) are set via chained `.withX()`
    methods. An internal config object is an implementation detail the consumer
@@ -80,7 +88,7 @@ engine).
 
 ```
         consumer code
-   fluent .withLlm()/.withMcpClients()|.withMcpConnectionStrategy()|.withMcp()/.withSkillSource()/…
+   fluent .withLlm()/.withMcpClients()|.withMcp()/.withSkillSource()/…  (+ custom connectMcp via .build(deps))
              ▼
   ControllerSkillPipelineBuilder        (NEW, exported)
              │  .build(deps?):  accumulated state ──► SmartServerConfig + BuildAgentDeps (internal)
@@ -142,12 +150,13 @@ binds NO port.
 consumer's choice and passes them as the infra `mcpClients` so the builder does
 NOT self-connect from `cfg.mcp`:
 - `deps.mcpClients` (ready `IMcpClient[]`) → used directly (in-process / many / test stubs);
-- else `deps.connectMcp(cfg.mcp)` (a strategy/function; default
-  `connectMcpClientsFromConfig`) → connected clients;
-- the builder-level `withMcpClients` / `withMcpConnectionStrategy` seams remain
-  available for the SmartAgentBuilder path.
-Injected clients/strategy mean **no forced real connect** — closing P1b and
-covering in-process, multiple, and dynamic MCP without the library deciding.
+- else `deps.connectMcp(cfg.mcp)` (a function seam; default
+  `connectMcpClientsFromConfig`) → connected clients. A consumer's custom
+  `connectMcp` does any provisioning logic they want.
+Injected clients (or a stub `connectMcp`) mean **no forced real connect** —
+closing P1b and covering in-process, multiple, and custom provisioning without the
+library deciding. (`IMcpConnectionStrategy` is the separate runtime reconnect/
+refresh lifecycle — not used here for provisioning.)
 
 #### `BuildAgentDeps` — the DI seam (required for I/O-free tests)
 
@@ -234,8 +243,8 @@ const { agent, close } = await new ControllerSkillPipelineBuilder()
   .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })       // EXTERNAL by URL (repeatable)
   // OR inject the consumer's OWN in-process MCP (no URL, no connect):
   //   .withMcpClients([myInProcessMcpClient, anotherClient])
-  // OR a custom provisioning strategy (dynamic / per-task):
-  //   .withMcpConnectionStrategy(myStrategy)
+  // OR custom/dynamic provisioning — inject connectMcp via .build(deps):
+  //   .build({ connectMcp: async (cfg) => myProvisionClients(cfg) })
   .withSkillSource({
     github: 'https://github.com/secondsky/sap-skills.git',
     enabled: ['sap-abap', 'sap-abap-cds', 'sap-btp-developer-guide', 'sap-btp-best-practices'],
@@ -310,7 +319,7 @@ default `budgets`/`targetState`/`sessionMemory`.
 | `withRoleLlm(role, cfg)` | overrides one subagent role (applied after `withLlm`) |
 | `withMcp(cfg)` | EXTERNAL MCP by URL config (repeatable → array); built on the default connect strategy |
 | `withMcpClients(clients)` | inject READY `IMcpClient[]` (in-process MCP that's part of the consumer's app, many servers, or test stubs) → `deps.mcpClients`; no connect runs |
-| `withMcpConnectionStrategy(strategy)` | inject an `IMcpConnectionStrategy` → the consumer owns provisioning (e.g. dynamic / per-task) |
+| custom provisioning | inject a `connectMcp(cfg) => Promise<IMcpClient[]>` via `.build(deps)` — the consumer owns how clients are produced (default `connectMcpClientsFromConfig`). NOTE: NOT `IMcpConnectionStrategy` (that is the separate runtime reconnect/refresh lifecycle, out of this builder's surface). |
 | `withSkillSource(cfg)` | sets the single github skill source + derives `controllerSkillGroup`/collection |
 | `withEmbedder(cfg)` | sets `rag.embedder` (results + MCP-tool RAG) and the skill-host embedder |
 | `withBudgets(partial)` | shallow-merges over baked `budgets` |
@@ -384,9 +393,10 @@ no forced MCP connect when clients/strategy are injected.**
 - **In-process MCP that's part of the consumer's app** — `.withMcpClients([...])`
   with the consumer's own client(s), or an `embedded`-transport config. No URL, no
   external connect.
-- **Dynamic / per-task MCP provisioning** — inject an `IMcpConnectionStrategy`
-  (`.withMcpConnectionStrategy`); the consumer's strategy decides what to provide
-  and when.
+- **Custom / dynamic MCP provisioning** — inject a `connectMcp(cfg) =>
+  Promise<IMcpClient[]>` function via `.build(deps)`; the consumer's function
+  decides what clients to produce. (Runtime reconnect/refresh of an established
+  connection is the separate `IMcpConnectionStrategy` concern, not this.)
 
 ## Out of scope (YAGNI)
 
