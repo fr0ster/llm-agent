@@ -1133,30 +1133,14 @@ export class SmartServer {
 
     const mainTemp = Number(topMain?.temperature ?? 0.7);
     const mainLlm = topMain
-      ? await makeLlm(
-          {
-            provider: topMain.provider ?? 'deepseek',
-            apiKey: topMain.apiKey,
-            baseURL: topMain.url,
-            model: topMain.model,
-          },
-          mainTemp,
-        )
+      ? await this._deps.makeLlm({ ...topMain, temperature: mainTemp })
       : (() => {
           throw new Error('no LLM configured: provide top-level llm.main');
         })();
 
     const classifierTemp = Number(topMain?.classifierTemperature ?? 0.1);
     const classifierLlm = topMain
-      ? await makeLlm(
-          {
-            provider: topMain.provider ?? 'deepseek',
-            apiKey: topMain.apiKey,
-            baseURL: topMain.url,
-            model: topMain.model,
-          },
-          classifierTemp,
-        )
+      ? await this._deps.makeLlm({ ...topMain, temperature: classifierTemp })
       : (() => {
           throw new Error('no LLM configured: provide top-level llm.main');
         })();
@@ -1165,15 +1149,10 @@ export class SmartServer {
     // (built only when an explicit map entry exists).
     const helperCfg = resolveLlmConfigStrict(llmMap, 'helper');
     const helperLlm = helperCfg
-      ? await makeLlm(
-          {
-            provider: helperCfg.provider ?? 'deepseek',
-            apiKey: helperCfg.apiKey,
-            baseURL: helperCfg.url,
-            model: helperCfg.model,
-          },
-          Number(helperCfg.temperature ?? 0.1),
-        )
+      ? await this._deps.makeLlm({
+          ...helperCfg,
+          temperature: Number(helperCfg.temperature ?? 0.1),
+        })
       : undefined;
     this._mainLlm = mainLlm;
     this._classifierLlm = classifierLlm;
