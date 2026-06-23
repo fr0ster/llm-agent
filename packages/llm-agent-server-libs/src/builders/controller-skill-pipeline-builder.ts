@@ -176,10 +176,12 @@ export class ControllerSkillPipelineBuilder {
       ...(this._mcp.length ? { mcp: this._mcp } : {}),
       skillPlugins: {
         store: { type: 'in-memory' },
-        embedder: {
-          provider: this._embedder.provider,
-          ...(this._embedder.model ? { model: this._embedder.model } : {}),
-        },
+        // Intentionally NO `embedder` here: there is a single fluent embedder, and
+        // omitting `skillPlugins.embedder` makes SmartServer REUSE the already-
+        // resolved agent-RAG embedder (built from `rag` above with the full
+        // scenario/resourceGroup). Setting `skillPlugins.embedder` would force a
+        // SEPARATE skill-host embedder built from provider/model ONLY — dropping
+        // scenario/resourceGroup and causing a deployment mismatch (review P1).
         controllerSkillGroup: collection,
         sources: [
           {

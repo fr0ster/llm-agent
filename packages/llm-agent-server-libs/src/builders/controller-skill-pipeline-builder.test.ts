@@ -63,6 +63,26 @@ test('fluent calls translate to the expected SmartServerConfig', () => {
   assert.equal((cfg as any).rag.embedder, 'sap-ai-core');
 });
 
+test('embedder scenario/resourceGroup land on rag; skillPlugins.embedder is omitted (reuse the rag embedder)', () => {
+  const cfg = new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'm' })
+    .withSkillSource({ github: 'a/b', enabled: ['x'], collection: 'sap' })
+    .withEmbedder({
+      provider: 'sap-ai-core',
+      model: 'text-embedding-3-small',
+      scenario: 'foundation-models',
+      resourceGroup: 'default',
+    })
+    .toConfig();
+  // Full embedder config (incl. scenario/resourceGroup) lives on rag…
+  assert.equal((cfg as any).rag.scenario, 'foundation-models');
+  assert.equal((cfg as any).rag.resourceGroup, 'default');
+  // …and skillPlugins carries NO embedder, so SmartServer reuses the resolved
+  // agent-RAG embedder (which has scenario/resourceGroup) — review P1: setting it
+  // would build a separate skill-host embedder from provider/model only.
+  assert.equal((cfg as any).skillPlugins.embedder, undefined);
+});
+
 test('withPlanner(weak-executor) selects the controller-weak pipeline', () => {
   const cfg = new ControllerSkillPipelineBuilder()
     .withLlm({ provider: 'sap-ai-sdk' })
