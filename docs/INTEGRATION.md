@@ -2770,3 +2770,7 @@ provisioning function via `.build({ connectMcp: async (cfg) => [...] })`. The sa
 applies to the LLM provider, embedder, and skill source. For tests/embedding,
 `.build(deps)` accepts a `BuildAgentDeps` to inject stubs (`makeLlm`, `embedder`,
 `buildSkillHost`/`skillHost`, `connectMcp`/`mcpClients`) so no network or port is used.
+
+Note that even the bare `.build()` (no injected deps) still runs config validation,
+so a `sap-ai-sdk` provider requires `AICORE_SERVICE_KEY` in the environment, and each
+role/embedder needs a `model`.

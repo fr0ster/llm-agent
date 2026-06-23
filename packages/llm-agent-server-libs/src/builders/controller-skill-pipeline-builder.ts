@@ -193,6 +193,9 @@ export class ControllerSkillPipelineBuilder {
           },
         ],
       },
+      // RAW yaml-shaped config (carries skillPlugins / pipeline.config keys that aren't
+      // all on the typed SmartServerConfig surface); resolveSmartServerConfig in build()
+      // validates + fills defaults. Shape is covered by the translation unit tests.
     } as unknown as SmartServerConfig;
   }
 

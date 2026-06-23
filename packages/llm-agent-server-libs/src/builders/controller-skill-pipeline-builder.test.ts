@@ -178,3 +178,43 @@ test('build(deps) with a prebuilt skillHost still routes through load/validate (
   );
   await close();
 });
+
+test('build(): .withMcpClients forwards clients into deps (no connect runs)', async () => {
+  const cannedLlm = {
+    chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const stubClient = {
+    listTools: async () => ({ ok: true, value: [] }),
+  } as unknown as import('@mcp-abap-adt/llm-agent').IMcpClient;
+  const { close } = await new ControllerSkillPipelineBuilder()
+    .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+    .withMcpClients([stubClient])
+    .withSkillSource({
+      github: 'a/b',
+      enabled: ['sap-abap'],
+      collection: 'sap',
+    })
+    .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small' })
+    .build({
+      makeLlm: async () => cannedLlm,
+      embedder: {
+        embed: async () => ({ vector: [0] }),
+      } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder,
+      buildSkillHost: async () =>
+        ({
+          rag: () => ({
+            query: async () => [],
+            activeManifest: async () => ({}),
+          }),
+          groups: () => [{ group: 'sap' }],
+          load: async () => {},
+        }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
+      // If buildAgent were to self-connect MCP instead of using the injected
+      // clients, THIS throws and fails the test.
+      connectMcp: async () => {
+        throw new Error('connectMcp must not run when .withMcpClients is set');
+      },
+    });
+  await close();
+});
