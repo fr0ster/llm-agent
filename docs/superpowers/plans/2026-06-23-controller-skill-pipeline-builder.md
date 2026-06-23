@@ -1002,4 +1002,4 @@ Expected: all green; commit succeeds.
 
 **3. Type consistency:** `BuildAgentDeps`, `buildAgent`, `ControllerSkillPipelineBuilder`, `BuilderLlmInput`/`BuilderSkillSourceInput`/`BuilderEmbedderInput`, `toLlmConfig`, `toConfig`, `build(deps?)`, and the `Role` type are used identically across Tasks 1–5. `withPlanner`→pipeline-name mapping (`controller`/`controller-weak`) matches the spec and the registered presets. ✓
 
-**4. Sequencing:** Tasks 1–2 are #195-independent; Tasks 3–5 require #195 merged (noted in Prerequisites + Task 3 header). ✓
+**4. Sequencing:** Tasks 1, 2, 2b are #195-independent (and #195 is now merged); Tasks 3–5 use the merged github source (noted in Prerequisites + Task 3 header). ✓
