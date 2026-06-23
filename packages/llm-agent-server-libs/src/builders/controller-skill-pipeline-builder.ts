@@ -204,10 +204,15 @@ export class ControllerSkillPipelineBuilder {
   async build(
     deps?: BuildAgentDeps,
   ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
+    // When the consumer injects BOTH the LLM factory and the embedder, the real
+    // provider/credentials/model are never used — skip provider-runtime config
+    // validation (structural checks still run).
+    const skipProviderRuntimeChecks = !!(deps?.makeLlm && deps?.embedder);
     const normalized = resolveSmartServerConfig(
       {},
       this.toConfig() as YamlConfig,
       process.env,
+      { skipProviderRuntimeChecks },
     );
     const mergedDeps: BuildAgentDeps | undefined =
       this._mcpClients || deps
