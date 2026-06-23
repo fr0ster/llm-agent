@@ -2734,3 +2734,43 @@ construct the existing `DagCoordinatorHandler` / `CoordinatorHandler` (behaviour
 import { DagFactory } from '@mcp-abap-adt/llm-agent-server-libs';
 const { handler } = await new DagFactory().build(dagCoordinatorHandlerDeps, baseDeps);
 ```
+
+## Embeddable controller + skills pipeline
+
+`ControllerSkillPipelineBuilder` assembles a ready-to-run controller pipeline
+(with a GitHub skill source) as a single importable component — no HTTP server,
+no hand-built config. Variable parts are set through fluent methods; the
+composition (controller + skill-host + sensible defaults) is baked in. `.build()`
+returns `{ agent, close }` with NO port bound.
+
+```ts
+import { ControllerSkillPipelineBuilder } from '@mcp-abap-adt/llm-agent-server-libs';
+
+const { agent, close } = await new ControllerSkillPipelineBuilder()
+  .withLlm({ provider: 'sap-ai-sdk', model: 'anthropic--claude-4.6-sonnet' })
+  .withMcp({ url: 'http://localhost:3001/mcp/stream/http' })
+  .withSkillSource({
+    github: 'https://github.com/secondsky/sap-skills.git',
+    enabled: ['sap-abap', 'sap-abap-cds', 'sap-btp-developer-guide', 'sap-btp-best-practices'],
+    collection: 'sap',
+  })
+  .withEmbedder({ provider: 'sap-ai-core', model: 'text-embedding-3-small',
+                  scenario: 'foundation-models', resourceGroup: 'default' })
+  .build();
+
+// agent is a SmartAgent — its entry point is process()
+const res = await agent.process('Review ABAP program ZDAZ_R_DELAYED_UPDATE, check security, performance, CleanCore, maintainability');
+if (res.ok) console.log(res.value.content);
+await close();
+```
+
+Dependencies are injected, not decided by the library. Provide your own MCP
+in-process clients with `.withMcpClients([...])` (no connect runs), or a custom
+provisioning function via `.build({ connectMcp: async (cfg) => [...] })`. The same
+applies to the LLM provider, embedder, and skill source. For tests/embedding,
+`.build(deps)` accepts a `BuildAgentDeps` to inject stubs (`makeLlm`, `embedder`,
+`buildSkillHost`/`skillHost`, `connectMcp`/`mcpClients`) so no network or port is used.
+
+Note that even the bare `.build()` (no injected deps) still runs config validation,
+so a `sap-ai-sdk` provider requires `AICORE_SERVICE_KEY` in the environment, and each
+role/embedder needs a `model`.
