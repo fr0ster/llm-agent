@@ -121,7 +121,7 @@ Change the constructor to capture defaulted deps:
 ```ts
 private readonly _deps: Required<Pick<BuildAgentDeps,
   'makeLlm' | 'resolveEmbedder' | 'prefetchEmbedderFactories' | 'buildSkillHost' | 'connectMcp'>>
-  & Pick<BuildAgentDeps, 'skillHost' | 'embedder'>;
+  & Pick<BuildAgentDeps, 'skillHost' | 'embedder' | 'mcpClients'>;
 
 constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
   this.cfg = config;
@@ -134,6 +134,7 @@ constructor(config: SmartServerConfig, deps: BuildAgentDeps = {}) {
     connectMcp: deps.connectMcp ?? connectMcpClientsFromConfig,
     ...(deps.skillHost ? { skillHost: deps.skillHost } : {}),
     ...(deps.embedder ? { embedder: deps.embedder } : {}),
+    ...(deps.mcpClients ? { mcpClients: deps.mcpClients } : {}),
   };
   // ... existing constructor body unchanged
 }
@@ -216,6 +217,15 @@ git commit -m "feat(server): BuildAgentDeps DI seam threaded through SmartServer
 ---
 
 ## Task 2: Extract `buildAgent()` (no-listen) from `_start()`
+
+> ⚠️ **HISTORICAL — DO NOT IMPLEMENT AS WRITTEN.** This task records the FIRST cut
+> (already committed). The no-listen extraction + `start()` = `_buildAgent()` +
+> listen that it describes ARE correct and landed — BUT its Step 3
+> `return { agent: smartAgent, … }` is WRONG (P1a): `smartAgent` is the
+> infra/passthrough startup agent with no coordinator. **`buildAgent`'s returned
+> agent is authoritatively defined by Task 2b** (build the pipeline instance →
+> `inst.agent`). Execute **Task 2b**, not this task's Step 3 return. Kept here only
+> so the diff/history reads coherently.
 
 **Files:**
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`_start()` `:1032`+, the `server.listen` boundary `:1677`)
@@ -440,6 +450,34 @@ test('buildAgent does NOT connect MCP when connectMcp is stubbed (no real connec
     },
   );
   assert.equal(typeof agent.process, 'function');
+  await close();
+});
+
+// (c) P1b — WITHOUT mcpClients, the injected connectMcp is used (NOT a self-connect
+//     from cfg.mcp). Proves the seam is the single provisioning point.
+test('buildAgent provisions via injected connectMcp when no mcpClients (called once)', async () => {
+  const cannedLlm = {
+    chat: async () => ({ ok: true, value: { content: 'ok', toolCalls: [] } }),
+    model: 'stub',
+  } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+  const stubEmbedder = { embed: async () => ({ vector: [0] }) }
+    as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder;
+  let connectCalls = 0;
+  const { agent, close } = await buildAgent(
+    {
+      skipModelValidation: true,
+      llm: { main: { provider: 'openai', apiKey: 'x', model: 'gpt-4o' } },
+      mcp: { type: 'http', url: 'http://127.0.0.1:9/should-not-self-connect/mcp/stream/http' },
+    } as unknown as import('../smart-server.js').SmartServerConfig,
+    {
+      makeLlm: async () => cannedLlm,
+      embedder: stubEmbedder,
+      // No mcpClients → buildAgent must call THIS, not self-connect from cfg.mcp.
+      connectMcp: async () => { connectCalls++; return []; },
+    },
+  );
+  assert.equal(typeof agent.process, 'function');
+  assert.equal(connectCalls, 1, 'injected connectMcp must be the single provisioning point');
   await close();
 });
 ```
@@ -800,6 +838,15 @@ entirely (P1c) — no embedder factory is ever fetched, so the test is truly
 I/O-free without needing a `prefetchEmbedderFactories` stub. The stub host
 implements `load()`/`groups()`/`rag().activeManifest()` because `.build()` routes
 it through `initSkillHost` (load+validate, P2).
+
+> **Coverage split (deliberate):** that the returned agent is the COORDINATED
+> controller agent is proven by **Task 2b**'s `buildAgent` coordinator test
+> (planner LLM invoked). Task 4's builder test proves the **façade → config →
+> deps-forwarding** path: the fluent calls produce a normalized config and the
+> injected deps (incl. `mcpClients`/`embedder`) reach `buildAgent` (asserted via
+> `buildSkillHost` capture + the no-connect deps). It need not re-assert the
+> coordinator — but DO add one `await agent.process('x')` to confirm the façade's
+> agent is runnable end-to-end (it is the same `inst.agent` Task 2b validates).
 
 ```ts
 import type { BuildAgentDeps } from '../smart-agent/smart-server.js';
