@@ -1134,13 +1134,24 @@ export class SmartServer {
     }
   }
 
-  private async _buildAgent(): Promise<{
-    agent: ISmartAgent;
+  /**
+   * Assemble and return the server INFRA bundle ONLY — every shared resource
+   * needed by both the HTTP `_start()` path and the embeddable
+   * `_buildEmbeddedAgent()` path: the infra/passthrough `smartAgent`, the
+   * server-only locals (`chat`/`streamChat`/`requestLogger`/etc.), the resolved
+   * `globalMcpClients`/`globalRagRegistry`, and the `closeFns` loop (exposed as
+   * `close`). It does NOT build the `'embedded'` pipeline instance — that idle
+   * coordinator is built only on the embeddable path (see `_buildEmbeddedAgent`),
+   * so a plain `start()` no longer pays for a coordinator it never serves.
+   */
+  private async _buildInfra(): Promise<{
     close: () => Promise<void>;
     chat: SmartAgentHandle['chat'];
     streamChat: SmartAgentHandle['streamChat'];
     requestLogger: IRequestLogger;
     smartAgent: SmartAgent;
+    globalMcpClients: IMcpClient[] | undefined;
+    globalRagRegistry: IRagRegistry;
     log: (e: Record<string, unknown>) => void;
     healthChecker: HealthChecker;
     modelProvider?: IModelProvider;
@@ -1749,24 +1760,7 @@ export class SmartServer {
 
     const { requestLogger } = agentHandle;
 
-    // ---- Embeddable coordinated agent (P1a) -------------------------------
-    // `smartAgent` above is the INFRA/passthrough startup agent — it has NO
-    // coordinator, so it would never run the configured pipeline. The HTTP
-    // `start()` path serves the PER-SESSION `graph.agent` (built lazily via
-    // buildSessionAgent → buildPipelineInstance), so it ignores this and keeps
-    // using `smartAgent` for infra endpoints (/v1/models, health). But the
-    // embeddable `buildAgent(cfg)` consumer has no session lifecycle, so it must
-    // receive a fully COORDINATED agent. Build ONE pipeline instance via the SAME
-    // path a session uses — an `'embedded'` session — and return ITS agent.
-    const inst = await this.buildPipelineInstance({
-      sessionId: 'embedded',
-      parts: this._embeddedSessionParts(globalMcpClients, globalRagRegistry),
-    });
-    closeFns.unshift(() => inst.close());
-
     return {
-      // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
-      agent: inst.agent,
       close: async () => {
         for (const fn of closeFns) await fn();
       },
@@ -1774,8 +1768,12 @@ export class SmartServer {
       streamChat,
       requestLogger,
       // Infra/passthrough startup agent — `_start()` serves infra endpoints
-      // (HealthChecker / /v1/models) from this, NOT from `agent` above.
+      // (HealthChecker / /v1/models) from this.
       smartAgent,
+      // Resolved globals the embeddable path needs to assemble the `'embedded'`
+      // SessionAgentParts (the HTTP path serves per-session graphs instead).
+      globalMcpClients,
+      globalRagRegistry,
       log,
       healthChecker,
       modelProvider,
@@ -1784,8 +1782,51 @@ export class SmartServer {
   }
 
   /**
+   * Build the embeddable COORDINATED agent for the free `buildAgent(cfg)` path.
+   *
+   * `_buildInfra().smartAgent` is the INFRA/passthrough startup agent — it has
+   * NO coordinator, so it would never run the configured pipeline. The HTTP
+   * `start()` path serves the PER-SESSION `graph.agent` (built lazily via
+   * buildSessionAgent → buildPipelineInstance) and keeps using `smartAgent` for
+   * infra endpoints (/v1/models, health). But the embeddable `buildAgent(cfg)`
+   * consumer has no session lifecycle, so it must receive a fully COORDINATED
+   * agent. Build ONE pipeline instance via the SAME path a session uses — an
+   * `'embedded'` session — over the shared infra, and return ITS agent. This is
+   * the ONLY caller that builds the embedded instance, so `start()` no longer
+   * pays for an idle coordinator it never serves.
+   *
+   * @internal — reached only by the same-module free `buildAgent(cfg)`; not part
+   * of the documented public API. Public (not `private`) solely so that seam can
+   * call it by name (a `private` reached only via an external cast trips
+   * `noUnusedLocals`).
+   */
+  async _buildEmbeddedAgent(): Promise<{
+    agent: ISmartAgent;
+    close: () => Promise<void>;
+  }> {
+    const infra = await this._buildInfra();
+    const inst = await this.buildPipelineInstance({
+      sessionId: 'embedded',
+      parts: this._embeddedSessionParts(
+        infra.globalMcpClients,
+        infra.globalRagRegistry,
+      ),
+    });
+    return {
+      // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
+      agent: inst.agent,
+      // Dispose the pipeline instance FIRST, then the shared infra.
+      close: async () => {
+        await inst.close();
+        await infra.close();
+      },
+    };
+  }
+
+  /**
    * Assemble the `SessionAgentParts` for the single `'embedded'` pipeline
-   * instance returned by `_buildAgent` (the embeddable `buildAgent(cfg)` path).
+   * instance returned by `_buildEmbeddedAgent` (the embeddable `buildAgent(cfg)`
+   * path).
    * Mirrors EXACTLY what the session lifecycle passes to `buildSessionAgent`:
    * the global mcpClients + the global ragRegistry + the global tools store,
    * with a fresh per-(embedded-)session request logger.
@@ -1804,7 +1845,7 @@ export class SmartServer {
   }
 
   private async _start(): Promise<SmartServerHandle> {
-    const built = await this._buildAgent();
+    const built = await this._buildInfra();
     const {
       chat,
       streamChat,
@@ -3820,13 +3861,6 @@ export async function buildAgent(
   deps?: BuildAgentDeps,
 ): Promise<{ agent: ISmartAgent; close: () => Promise<void> }> {
   const server = new SmartServer(cfg, deps);
-  const built = await (
-    server as unknown as {
-      _buildAgent(): Promise<{
-        agent: ISmartAgent;
-        close: () => Promise<void>;
-      }>;
-    }
-  )._buildAgent();
+  const built = await server._buildEmbeddedAgent();
   return { agent: built.agent, close: built.close };
 }
