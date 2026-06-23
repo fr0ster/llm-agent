@@ -1805,20 +1805,33 @@ export class SmartServer {
     close: () => Promise<void>;
   }> {
     const infra = await this._buildInfra();
-    const inst = await this.buildPipelineInstance({
-      sessionId: 'embedded',
-      parts: this._embeddedSessionParts(
-        infra.globalMcpClients,
-        infra.globalRagRegistry,
-      ),
-    });
+    // If the pipeline-instance build throws, the infra (LLM clients, MCP, skill
+    // host, pg pools) is already live — tear it down before propagating so a
+    // failed embedded build never leaks the infra.
+    let inst: IPipelineInstance;
+    try {
+      inst = await this.buildPipelineInstance({
+        sessionId: 'embedded',
+        parts: this._embeddedSessionParts(
+          infra.globalMcpClients,
+          infra.globalRagRegistry,
+        ),
+      });
+    } catch (e) {
+      await infra.close().catch(() => {});
+      throw e;
+    }
     return {
       // PUBLIC embeddable agent = the coordinated pipeline instance's agent.
       agent: inst.agent,
-      // Dispose the pipeline instance FIRST, then the shared infra.
+      // Dispose the pipeline instance FIRST, then the shared infra. `finally`
+      // guarantees `infra.close()` runs even if `inst.close()` throws.
       close: async () => {
-        await inst.close();
-        await infra.close();
+        try {
+          await inst.close();
+        } finally {
+          await infra.close();
+        }
       },
     };
   }
