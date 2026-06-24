@@ -71,6 +71,17 @@ PER REQUEST (DefaultPipeline)
 | [`10-plugins.yaml`](examples/10-plugins.yaml) | **Plugin-extended** — loads custom stage handlers from a plugin directory |
 | [`11-skills.yaml`](examples/11-skills.yaml) | **Agent Skills** — discovers SKILL.md files and injects skill context into LLM prompt via RAG selection |
 
+### Controller pipeline configs
+
+The `controller` family is the plan-first coordinator (planner + evaluator + executor subagents, durable step board, three-stage recovery). Each comes in two variants — **without** skills (engine-agnostic base) and **with** GitHub-hosted skill plugins (`skillPlugins` self-fetched into a runtime skills-RAG, recalled by the planner via `controllerSkillGroup`).
+
+| File | Description |
+|---|---|
+| [`13-controller.yaml`](examples/13-controller.yaml) | **Controller** (smart-executor) — plan-first board, no skills |
+| [`13-controller-skills.yaml`](examples/13-controller-skills.yaml) | Controller **+ GitHub skills** — SAP ABAP skill plugins self-fetched into a skills-RAG, recalled by the planner |
+| [`14-controller-weak.yaml`](examples/14-controller-weak.yaml) | **Controller-weak** (weak-executor) — atomic-step granularity preset, no skills |
+| [`14-controller-weak-skills.yaml`](examples/14-controller-weak-skills.yaml) | Controller-weak **+ GitHub skills** — atomic-step preset with the same SAP ABAP skill plugins |
+
 ### Running a YAML config
 
 ```bash
