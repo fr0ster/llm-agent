@@ -265,3 +265,41 @@ test('build({makeLlm,embedder}) needs no AICORE_SERVICE_KEY and no models (provi
     if (prev !== undefined) process.env.AICORE_SERVICE_KEY = prev;
   }
 });
+
+test('build({makeLlm,embedder}) with a KEYED provider needs no API key (skip reaches toLlmConfig)', async () => {
+  const prevOpenai = process.env.OPENAI_API_KEY;
+  delete process.env.OPENAI_API_KEY;
+  try {
+    const cannedLlm = {
+      chat: async () => ({ ok: true, value: { content: '', toolCalls: [] } }),
+      model: 'stub',
+    } as unknown as import('@mcp-abap-adt/llm-agent').ILlm;
+    const { close } = await new ControllerSkillPipelineBuilder()
+      .withLlm({ provider: 'openai' }) // keyed provider, NO apiKey, NO model
+      .withSkillSource({
+        github: 'a/b',
+        enabled: ['sap-abap'],
+        collection: 'sap',
+      })
+      .withEmbedder({ provider: 'openai' }) // keyed embedder provider too
+      .build({
+        makeLlm: async () => cannedLlm,
+        embedder: {
+          embed: async () => ({ vector: [0] }),
+        } as unknown as import('@mcp-abap-adt/llm-agent').IEmbedder,
+        buildSkillHost: async () =>
+          ({
+            rag: () => ({
+              query: async () => [],
+              activeManifest: async () => ({}),
+            }),
+            groups: () => [{ group: 'sap' }],
+            load: async () => {},
+          }) as unknown as import('@mcp-abap-adt/llm-agent').ISkillPluginHost,
+        connectMcp: async () => [],
+      });
+    await close();
+  } finally {
+    if (prevOpenai !== undefined) process.env.OPENAI_API_KEY = prevOpenai;
+  }
+});

@@ -40,11 +40,14 @@ const ENV_KEY: Record<string, string> = {
   deepseek: 'DEEPSEEK_API_KEY',
 };
 
-function toLlmConfig(input: BuilderLlmInput): SmartServerLlmConfig {
+function toLlmConfig(
+  input: BuilderLlmInput,
+  opts: { skipRuntime?: boolean } = {},
+): SmartServerLlmConfig {
   let apiKey = input.apiKey ?? '';
   if (!KEYLESS.has(input.provider) && apiKey === '') {
     apiKey = process.env[ENV_KEY[input.provider] ?? ''] ?? '';
-    if (apiKey === '') {
+    if (apiKey === '' && !opts.skipRuntime) {
       throw new Error(
         `ControllerSkillPipelineBuilder: provider '${input.provider}' needs an apiKey — ` +
           `pass it to .withLlm()/.withRoleLlm() or set ${ENV_KEY[input.provider]}`,
@@ -115,7 +118,9 @@ export class ControllerSkillPipelineBuilder {
     return this;
   }
 
-  toConfig(): SmartServerConfig {
+  toConfig(
+    opts: { skipProviderRuntimeChecks?: boolean } = {},
+  ): SmartServerConfig {
     if (!this._llm && Object.keys(this._roleLlm).length === 0) {
       throw new Error(
         'ControllerSkillPipelineBuilder: call .withLlm() (or .withRoleLlm() for all roles) before building',
@@ -131,10 +136,13 @@ export class ControllerSkillPipelineBuilder {
         'ControllerSkillPipelineBuilder: call .withEmbedder() before building (skills need an embedder)',
       );
     }
-    const base = this._llm ? toLlmConfig(this._llm) : undefined;
+    const skipRuntime = opts.skipProviderRuntimeChecks;
+    const base = this._llm
+      ? toLlmConfig(this._llm, { skipRuntime })
+      : undefined;
     const roleCfg = (r: Role): SmartServerLlmConfig => {
       const ovr = this._roleLlm[r];
-      if (ovr) return toLlmConfig(ovr);
+      if (ovr) return toLlmConfig(ovr, { skipRuntime });
       if (base) return base;
       throw new Error(
         `ControllerSkillPipelineBuilder: no LLM for role '${r}' (set .withLlm() or .withRoleLlm('${r}', …))`,
@@ -210,7 +218,7 @@ export class ControllerSkillPipelineBuilder {
     const skipProviderRuntimeChecks = !!(deps?.makeLlm && deps?.embedder);
     const normalized = resolveSmartServerConfig(
       {},
-      this.toConfig() as YamlConfig,
+      this.toConfig({ skipProviderRuntimeChecks }) as YamlConfig,
       process.env,
       { skipProviderRuntimeChecks },
     );
