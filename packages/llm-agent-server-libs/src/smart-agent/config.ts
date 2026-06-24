@@ -516,6 +516,7 @@ function checkLlmRole(
   requireModel: boolean,
   env: NodeJS.ProcessEnv,
   issues: string[],
+  skipRuntime = false,
 ): void {
   const provider = role?.provider as string | undefined;
   if (!provider) {
@@ -532,6 +533,10 @@ function checkLlmRole(
     );
     return;
   }
+  // Structural checks above always run. The credential + model-required checks
+  // below are provider-runtime concerns; skip them when the caller injects its
+  // own makeLlm/embedder (embeddable path).
+  if (skipRuntime) return;
   if (requireModel && !role?.model) {
     issues.push(`${label}.model: required (string)`);
   }
@@ -567,6 +572,7 @@ function checkRagStore(
       }
     | undefined,
   issues: string[],
+  skipRuntime = false,
 ): void {
   if (!store) return;
   const ragType = store.type as string | undefined;
@@ -610,7 +616,7 @@ function checkRagStore(
     ragType === 'hana-vector' ||
     ragType === 'pg-vector' ||
     (ragType === 'in-memory' && embedder != null);
-  if (usesEmbedder && !store.model) {
+  if (!skipRuntime && usesEmbedder && !store.model) {
     issues.push(
       `${label}.model: required when an embedder is used (e.g. bge-m3 for ollama)`,
     );
@@ -623,8 +629,9 @@ function validateLlmEntry(
   required: boolean,
   env: NodeJS.ProcessEnv,
   issues: string[],
+  skipRuntime = false,
 ): void {
-  checkLlmRole(label, cfg, required, env, issues);
+  checkLlmRole(label, cfg, required, env, issues, skipRuntime);
 }
 
 /**
@@ -667,8 +674,10 @@ function validateResolvedConfig(
   _resolved: Omit<SmartServerConfig, 'log'>,
   yaml: YamlConfig,
   env: NodeJS.ProcessEnv,
+  opts: { skipProviderRuntimeChecks?: boolean } = {},
 ): void {
   const issues: string[] = [];
+  const skip = opts.skipProviderRuntimeChecks === true;
 
   // LLM is always sourced from the top-level `llm:` block now — the legacy
   // `pipeline.llm.*` override has been removed with the `pipeline: {name,config}`
@@ -689,6 +698,7 @@ function validateResolvedConfig(
       true,
       env,
       issues,
+      skip,
     );
   } else {
     // Map shape — llm.main is required; every named entry is validated.
@@ -699,11 +709,11 @@ function validateResolvedConfig(
     if (!map.main) {
       issues.push("llm.main: required when 'llm' is a named map");
     } else {
-      validateLlmEntry('llm.main', map.main, true, env, issues);
+      validateLlmEntry('llm.main', map.main, true, env, issues, skip);
     }
     for (const [name, entry] of Object.entries(map)) {
       if (name === 'main') continue;
-      validateLlmEntry(`llm.${name}`, entry, true, env, issues);
+      validateLlmEntry(`llm.${name}`, entry, true, env, issues, skip);
     }
   }
 
@@ -746,7 +756,12 @@ function validateResolvedConfig(
   }
 
   if (get(yaml, 'rag')) {
-    checkRagStore('rag', get(yaml, 'rag') as Record<string, unknown>, issues);
+    checkRagStore(
+      'rag',
+      get(yaml, 'rag') as Record<string, unknown>,
+      issues,
+      skip,
+    );
   }
   // NOTE: the legacy `pipeline.rag.{name}` multistore was removed with the
   // `pipeline: {name,config}` migration; the top-level `rag:` block is the sole
@@ -857,6 +872,12 @@ export interface ResolveSmartServerConfigOptions {
    * block in `yaml` will cause an error.
    */
   configPath?: string;
+
+  /** When true, SKIP provider-runtime validation — credential checks
+   *  (apiKey / AICORE_SERVICE_KEY) and `*.model` required — keeping STRUCTURAL
+   *  checks. Set by embeddable callers that inject their own makeLlm + embedder.
+   *  Default false → server behaviour unchanged. */
+  skipProviderRuntimeChecks?: boolean;
 }
 
 export function resolveSmartServerConfig(
@@ -1178,7 +1199,9 @@ export function resolveSmartServerConfig(
       ? { skillPlugins: parseSkillPluginsConfig(yaml.skillPlugins) }
       : {}),
   };
-  validateResolvedConfig(resolved, yaml, env);
+  validateResolvedConfig(resolved, yaml, env, {
+    skipProviderRuntimeChecks: options.skipProviderRuntimeChecks,
+  });
   return resolved;
 }
 
