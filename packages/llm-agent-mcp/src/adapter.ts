@@ -5,6 +5,7 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
+  isMcpUnavailable,
   McpError,
   type McpTool,
   type McpToolResult,
@@ -12,6 +13,7 @@ import {
   type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
+import { toMcpError } from './error-mapping.js';
 
 // ---------------------------------------------------------------------------
 // Module-private helper
@@ -64,8 +66,7 @@ export class McpClientAdapter implements IMcpClient {
       this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 
@@ -85,8 +86,7 @@ export class McpClientAdapter implements IMcpClient {
       return { ok: true, value: true };
     } catch (err) {
       this.lastHealthy = false;
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 
@@ -106,6 +106,15 @@ export class McpClientAdapter implements IMcpClient {
         () => new McpError('Aborted', 'ABORTED'),
       );
 
+      // The wrapper RETURNS { result:null, error } after a failed reconnect (it
+      // does not always throw). An availability signature on that returned error
+      // must escalate to ok:false — otherwise it is wrapped ok:true/isError and the
+      // tool loop feeds "MCP error" back to the LLM instead of failing loud.
+      if (result.error !== undefined && result.error !== null) {
+        const mapped = toMcpError(result.error);
+        if (isMcpUnavailable(mapped)) return { ok: false, error: mapped };
+      }
+
       return {
         ok: true,
         value: {
@@ -120,8 +129,7 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 }
