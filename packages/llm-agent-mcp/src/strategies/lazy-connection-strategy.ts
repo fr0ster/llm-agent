@@ -73,10 +73,22 @@ export class LazyConnectionStrategy
           slot.healthy = true;
           continue;
         }
-        // Client is unhealthy — clear it and attempt reconnect
+        // Client is unhealthy — CLOSE the old transport before clearing it, then
+        // attempt reconnect. Skipping the close leaks the previous HTTP/stdio
+        // connection on every health-failure reconnect (this strategy is now the
+        // default YAML `mcp:` lifecycle path). Best-effort: a failing close must
+        // not abort the resolve pass.
+        const staleClose = slot.closeHandle;
         slot.client = undefined;
         slot.closeHandle = undefined;
         slot.healthy = false;
+        if (staleClose) {
+          try {
+            await staleClose();
+          } catch {
+            /* best-effort — the transport is already considered dead */
+          }
+        }
       }
 
       // No client or just cleared — try reconnect if cooldown expired
