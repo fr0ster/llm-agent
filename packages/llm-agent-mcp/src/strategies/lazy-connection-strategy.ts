@@ -2,6 +2,7 @@ import type {
   ConnectionStrategyOptions,
   IMcpClient,
   IMcpConnectionStrategy,
+  IReadinessReporter,
   McpClientFactory,
   McpConnectionConfig,
   McpConnectionResult,
@@ -16,7 +17,9 @@ interface Slot {
   healthy: boolean;
 }
 
-export class LazyConnectionStrategy implements IMcpConnectionStrategy {
+export class LazyConnectionStrategy
+  implements IMcpConnectionStrategy, IReadinessReporter
+{
   private readonly _slots: Slot[];
   private readonly _skipRevectorize: boolean;
   private readonly _cooldownMs: number;
@@ -48,6 +51,13 @@ export class LazyConnectionStrategy implements IMcpConnectionStrategy {
     });
 
     return this._resolving;
+  }
+
+  /** Readiness = every configured target currently has a healthy connection.
+   *  Reflects the health computed by the last `resolve()` pass. No slots (no MCP
+   *  configured) ⇒ ready. */
+  isReady(): boolean {
+    return this._slots.every((s) => s.healthy);
   }
 
   private async _doResolve(): Promise<McpConnectionResult> {

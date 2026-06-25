@@ -329,3 +329,49 @@ describe('LazyConnectionStrategy', () => {
     assert.equal(r.clients.length, 0);
   });
 });
+
+describe('LazyConnectionStrategy.isReady()', () => {
+  it('no configured targets ⇒ ready', () => {
+    assert.equal(new LazyConnectionStrategy([]).isReady(), true);
+  });
+
+  it('a configured target is NOT ready until resolve() connects it', async () => {
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig],
+      { cooldownMs: 0 },
+      makeSuccessFactory(makeHealthyClient()),
+    );
+    assert.equal(strategy.isReady(), false, 'not connected yet');
+    await strategy.resolve([]);
+    assert.equal(strategy.isReady(), true, 'connected → ready');
+  });
+
+  it('a target whose factory throws stays NOT ready', async () => {
+    const failing: McpClientFactory = async () => {
+      throw new Error('connect ECONNREFUSED');
+    };
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig],
+      { cooldownMs: 0 },
+      failing,
+    );
+    await strategy.resolve([]);
+    assert.equal(strategy.isReady(), false);
+  });
+
+  it('with two targets, ready only when BOTH connect', async () => {
+    let n = 0;
+    const factory: McpClientFactory = async () => {
+      n++;
+      if (n === 1) throw new Error('connect ECONNREFUSED'); // first target down
+      return { client: makeHealthyClient() };
+    };
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig, http2Config],
+      { cooldownMs: 0 },
+      factory,
+    );
+    await strategy.resolve([]);
+    assert.equal(strategy.isReady(), false, 'one target down ⇒ not ready');
+  });
+});

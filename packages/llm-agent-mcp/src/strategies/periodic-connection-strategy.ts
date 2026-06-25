@@ -2,13 +2,16 @@ import type {
   ConnectionStrategyOptions,
   IMcpClient,
   IMcpConnectionStrategy,
+  IReadinessReporter,
   McpClientFactory,
   McpConnectionConfig,
   McpConnectionResult,
 } from '@mcp-abap-adt/llm-agent';
 import { LazyConnectionStrategy } from './lazy-connection-strategy.js';
 
-export class PeriodicConnectionStrategy implements IMcpConnectionStrategy {
+export class PeriodicConnectionStrategy
+  implements IMcpConnectionStrategy, IReadinessReporter
+{
   private readonly _lazy: LazyConnectionStrategy;
   private _cachedResult: McpConnectionResult;
   private _changed: boolean;
@@ -43,6 +46,12 @@ export class PeriodicConnectionStrategy implements IMcpConnectionStrategy {
       this._cachedResult = result;
       this._changed = true;
     }
+  }
+
+  /** Readiness delegates to the wrapped lazy strategy (its slot health is updated
+   *  by the periodic probe). */
+  isReady(): boolean {
+    return this._lazy.isReady();
   }
 
   async resolve(_currentClients?: IMcpClient[]): Promise<McpConnectionResult> {

@@ -146,6 +146,10 @@ export type {
 } from './rag.js';
 export { isBatchEmbedder } from './rag.js';
 export type { ILlmRateLimiter } from './rate-limiter.js';
+export {
+  type IReadinessReporter,
+  isReadinessReporter,
+} from './readiness-reporter.js';
 export type {
   IRequestLogger,
   LlmCallEntry,
