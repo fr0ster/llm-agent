@@ -42,6 +42,7 @@ import {
   buildExternalResults,
   type ExternalToolValidationCode,
   type IRag,
+  isMcpUnavailable,
   normalizeAndValidateExternalTools,
   QueryEmbedding,
   toToolCallDelta,
@@ -952,11 +953,19 @@ export function buildMcpBridge(
         : {};
     for (const client of clients) {
       const listed = await client.listTools();
-      if (!listed.ok) continue;
+      if (!listed.ok) {
+        // FAIL LOUD on an availability failure: a transient listTools() outage must
+        // NOT make the tool look merely absent (→ "Tool not found"/tool-blind). A
+        // benign error (this client genuinely can't list) falls through to the next.
+        if (isMcpUnavailable(listed.error)) throw listed.error;
+        continue;
+      }
       const owns = listed.value.some((t) => t.name === name);
       if (!owns) continue;
       const result = await client.callTool(name, safeArgs);
       if (!result.ok) {
+        // Availability failure → fail loud; a tool-level error → LLM feedback text.
+        if (isMcpUnavailable(result.error)) throw result.error;
         return result.error.message;
       }
       const { content } = result.value;
