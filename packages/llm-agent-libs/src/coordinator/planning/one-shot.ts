@@ -24,6 +24,18 @@ export class OneShotPlanning implements IPlanningStrategy {
       ? `\n\nApplicable skill instructions:\n${ctx.skillContent}\n`
       : '';
 
+    // Agnostic capability signal (NOT a tool catalogue): when the request will be
+    // executed against a system that has tools, the planner must know that each
+    // dispatched step's executor CAN read from / act on that system — otherwise a
+    // tool-blind planner gates with "please paste the table/source", which the
+    // executor could have obtained itself. We gate on the PRESENCE of selected
+    // tools, never their names: the planner stays MCP-agnostic and authors intent
+    // ("read the structure of table X") — the executor picks and calls the tool.
+    const hasTools = (ctx.selectedTools?.length ?? 0) > 0;
+    const toolCapabilityBlock = hasTools
+      ? `\nEach dispatched step's executor has access to tools that can inspect and act on the target system (read objects and their definitions/structure, search the namespace, and create or modify artifacts). When the request needs data or actions such tools can perform, author a step that performs it — e.g. "read the structure of table X" — and do NOT ask the user to paste or supply material the executor could obtain itself. Never name specific tools; describe the action in plain terms.\n`
+      : '';
+
     const systemPrompt = `You are a planner. Decompose the user request into ordered steps.
 The dispatched executor sees ONLY the step you author (its "goal" plus the shared
 "objective", and the user's input as delimited data when you set "needsInput").
@@ -31,8 +43,8 @@ It never sees the raw user request as an instruction. So set "needsInput": true 
 any step that must act on the user's provided material (text to summarize, code to
 review, etc.).
 Emit a plan-level "objective" (the shared purpose) so all steps stay aligned.
-For each step, choose the best agent from the list (or omit "agent" if no specialist fits).
-If the request is too ambiguous to plan, respond with ONLY {"clarification":"<your question>"}.
+For each step, choose the best agent from the list (or omit "agent" if no specialist fits).${toolCapabilityBlock}
+If the request is too ambiguous to plan, respond with ONLY {"clarification":"<your question>"}. Reserve clarification for genuinely ambiguous intent — NOT for data a dispatched step could read from the target system.
 If the request needs no decomposition (it can be answered directly without breaking it into steps), return an empty steps array: {"steps":[]}.
 Otherwise respond with ONLY a JSON object of shape:
 {"objective":"...","steps":[{"id":"step-1","goal":"...","agent":"optional-name","needsInput":false}],"rationale":"..."}

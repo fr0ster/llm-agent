@@ -150,14 +150,31 @@ export class ControllerPipelinePlugin
               ? { k, threshold: ctx.skillRecall.threshold }
               : { k };
           const hits = await skillRagHandle.query(goal, queryOpts, options);
-          if (hits.length === 0) return '';
+          if (hits.length === 0) {
+            // Make skill engagement verifiable: an empty recall means the planner
+            // prompt is byte-identical to the agnostic path (no skills injected).
+            if (process.env.DEBUG_CONTROLLER)
+              console.error(
+                `[controller] skills-recall group=${group} hits=0 injected=0 chars=0 (empty — no skills in plan)`,
+              );
+            return '';
+          }
           let block = 'Relevant skills:\n';
+          let injected = 0;
           for (const h of hits) {
             const next = `${block}- ${h.record.content}\n`;
             if (next.length > maxInjectChars) break;
             block = next;
+            injected++;
           }
-          return block.trimEnd();
+          const out = block.trimEnd();
+          // The recall block is built in-memory and never persisted, so without
+          // this line there is no way to confirm skills actually reached the plan.
+          if (process.env.DEBUG_CONTROLLER)
+            console.error(
+              `[controller] skills-recall group=${group} hits=${hits.length} injected=${injected} chars=${out.length}`,
+            );
+          return out;
         }
       : undefined;
 

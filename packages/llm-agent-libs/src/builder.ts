@@ -821,7 +821,14 @@ export class SmartAgentBuilder {
     }
 
     // Register user-supplied static collections (from addRagCollection fluent calls).
+    // Skip names already present: the RAG registry is shared across per-session
+    // builds (global-scope collections like skills/tools must persist, not be
+    // re-embedded per session), so a second build re-issuing the same static
+    // collection (e.g. `relevant-skills:<group>` from registerSkillSources) would
+    // otherwise throw `Collection '...' is already registered`. Idempotent here,
+    // matching the tools/history check-before-register below.
     for (const c of this._staticCollections) {
+      if (ragRegistry.get(c.name)) continue;
       ragRegistry.register(c.name, c.rag, c.editor, c.meta);
     }
 
