@@ -1,0 +1,62 @@
+# Controller (weak-executor) + GitHub skills (EXPLICIT recall via
+# controllerSkillGroup). No-skills pair: 14-controller-weak.yaml.
+#
+#   npm run dev -- --config docs/examples/14-controller-weak-skills.yaml
+host: 0.0.0.0
+port: 4004
+
+# Base llm block (required even with pipeline: controller). sap-ai-sdk is keyless
+# (creds via AICORE_SERVICE_KEY env); swap provider/model as needed.
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: anthropic--claude-4.6-sonnet
+    temperature: 0.3
+    maxTokens: 32768
+
+pipeline:
+  name: controller-weak
+  config:
+    # Each subagent role takes its own LLM config (here all the same).
+    subagents:
+      evaluator: { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+      planner:   { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+      executor:  { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+    targetState: { strategy: auto, distanceThreshold: 0.7 }
+    budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 30 }
+
+# Results-RAG + MCP tool-RAG embedder.
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  scenario: foundation-models
+  resourceGroup: default
+  model: text-embedding-3-small
+
+# MCP over a local ABAP ADT approuter/proxy (adjust the URL to your endpoint).
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+  headers:
+    Accept: "application/json, text/event-stream"
+
+# Skills (EXPLICIT mode): the controller planner recalls the named group.
+# The plugin-host SELF-FETCHES the skills from the GitHub repo over HTTPS into
+# memory (no clone, zero-FS). controllerSkillGroup = the group to recall.
+skillPlugins:
+  store: { type: in-memory }
+  # NO `embedder:` here on purpose. The SkillPlugins embedder schema only carries
+  # provider/model — it CANNOT express the SAP AI Core deployment context
+  # (`scenario` / `resourceGroup` above). Setting it would build a SEPARATE,
+  # context-less skill-host embedder and mismatch the AI Core deployment. Omitting
+  # it makes the skill host REUSE the resolved `rag.embedder` (with its full
+  # scenario/resourceGroup). Only set it when the skill embedder must differ.
+  controllerSkillGroup: sap
+  k: 4
+  threshold: 0.3
+  sources:
+    - id: sap-skills
+      github: https://github.com/secondsky/sap-skills.git
+      enabled: [sap-abap, sap-abap-cds, sap-btp-developer-guide, sap-btp-best-practices]
+      strategy: single-collection
+      strategyConfig: { collection: sap }

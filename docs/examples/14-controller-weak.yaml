@@ -1,0 +1,43 @@
+# Controller pipeline (weak-executor preset): the planner emits atomic, one-action
+# steps (for weaker/cheaper executor models that confabulate on coarse steps).
+# Same engine as controller, only the granularity prompt differs. NO skills.
+# With-skills pair: 14-controller-weak-skills.yaml.
+#
+#   npm run dev -- --config docs/examples/14-controller-weak.yaml
+host: 0.0.0.0
+port: 4004
+
+# Base llm block (required even with pipeline: controller). sap-ai-sdk is keyless
+# (creds via AICORE_SERVICE_KEY env); swap provider/model as needed.
+llm:
+  main:
+    provider: sap-ai-sdk
+    model: anthropic--claude-4.6-sonnet
+    temperature: 0.3
+    maxTokens: 32768
+
+pipeline:
+  name: controller-weak
+  config:
+    # Each subagent role takes its own LLM config (here all the same).
+    subagents:
+      evaluator: { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+      planner:   { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+      executor:  { provider: sap-ai-sdk, model: anthropic--claude-4.6-sonnet }
+    targetState: { strategy: auto, distanceThreshold: 0.7 }
+    budgets: { maxSteps: 20, maxRetries: 3, maxRewinds: 5, maxToolCalls: 30 }
+
+# Results-RAG + MCP tool-RAG embedder.
+rag:
+  type: in-memory
+  embedder: sap-ai-core
+  scenario: foundation-models
+  resourceGroup: default
+  model: text-embedding-3-small
+
+# MCP over a local ABAP ADT approuter/proxy (adjust the URL to your endpoint).
+mcp:
+  type: http
+  url: http://localhost:3001/mcp/stream/http
+  headers:
+    Accept: "application/json, text/event-stream"
