@@ -32,7 +32,6 @@ import {
   type AgentCallOptions,
   getStreamToolCallName,
   type IQueryExpander,
-  isMcpUnavailable,
   NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
@@ -63,6 +62,7 @@ import { NoopRequestLogger } from './logger/noop-request-logger.js';
 import { summaryToUsage } from './logger/session-request-logger.js';
 import { NoopMetrics } from './metrics/noop-metrics.js';
 import type { IMetrics } from './metrics/types.js';
+import { classifyToolResult } from './pipeline/handlers/escalate-if-unavailable.js';
 import { fireInternalToolsAsync } from './policy/mixed-tool-call-handler.js';
 import { PendingToolResultsRegistry } from './policy/pending-tool-results-registry.js';
 import {
@@ -1950,11 +1950,15 @@ export class SmartAgent {
         // after reconnect) — do NOT feed "MCP error" back to the LLM as tool text.
         // Yield an error chunk (not throw) so process() returns ok:false (a real
         // error to the consumer) instead of a silent "(no response)" or an uncaught
-        // exception escaping the generator.
-        if (!res.ok && isMcpUnavailable(res.error)) {
+        // exception escaping the generator. classifyToolResult is the shared decision.
+        const decision = classifyToolResult(res);
+        if (decision.escalate) {
           yield {
             ok: false,
-            error: new OrchestratorError(res.error.message, 'MCP_UNAVAILABLE'),
+            error: new OrchestratorError(
+              decision.escalate.message,
+              'MCP_UNAVAILABLE',
+            ),
           };
           return;
         }

@@ -42,6 +42,7 @@ import { isToolContextUnavailableError } from '../../policy/tool-availability-re
 import type { ISpan } from '../../tracer/types.js';
 import type { PipelineContext } from '../context.js';
 import type { IStageHandler } from '../stage-handler.js';
+import { classifyToolResult } from './escalate-if-unavailable.js';
 
 function summarizeIterationMessages(
   messages: Message[],
@@ -946,6 +947,19 @@ export class ToolLoopHandler implements IStageHandler {
       for (const r of results) {
         const { tc, text, res } = r;
         if (!res) continue;
+        // FAIL LOUD on an MCP availability failure — yield an error (→ pipeline
+        // fails with ok:false) instead of feeding "MCP error" to the LLM as text.
+        const decision = classifyToolResult(res);
+        if (decision.escalate) {
+          ctx.yield({
+            ok: false,
+            error: new OrchestratorError(
+              decision.escalate.message,
+              'MCP_UNAVAILABLE',
+            ),
+          });
+          return false;
+        }
         if (
           !res.ok &&
           isToolContextUnavailableError(text) &&

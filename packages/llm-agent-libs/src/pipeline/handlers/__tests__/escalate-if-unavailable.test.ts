@@ -1,30 +1,33 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { McpError } from '@mcp-abap-adt/llm-agent';
-import { escalateIfUnavailable } from '../escalate-if-unavailable.js';
+import { classifyToolResult } from '../escalate-if-unavailable.js';
 
-test('throws on an availability error result', () => {
-  const res = {
-    ok: false as const,
+test('classify: availability error → escalate', () => {
+  const d = classifyToolResult({
+    ok: false,
     error: new McpError('Not connected', 'MCP_NOT_CONNECTED'),
-  };
-  assert.throws(() => escalateIfUnavailable(res), /Not connected/);
+  });
+  assert.ok(d.escalate, 'must escalate');
+  assert.equal(d.escalate?.message, 'Not connected');
 });
 
-test('returns text for a tool-level error result', () => {
-  const res = {
-    ok: false as const,
+test('classify: tool-level error → text (LLM feedback)', () => {
+  const d = classifyToolResult({
+    ok: false,
     error: new McpError('bad args', 'MCP_ERROR'),
-  };
-  assert.equal(escalateIfUnavailable(res), 'bad args');
+  });
+  assert.equal(d.escalate, undefined);
+  assert.equal(d.text, 'bad args');
 });
 
-test('returns string content for an ok result', () => {
-  const res = { ok: true as const, value: { content: 'hello' } };
-  assert.equal(escalateIfUnavailable(res), 'hello');
+test('classify: ok string content → text', () => {
+  const d = classifyToolResult({ ok: true, value: { content: 'hello' } });
+  assert.equal(d.escalate, undefined);
+  assert.equal(d.text, 'hello');
 });
 
-test('JSON-stringifies non-string content for an ok result', () => {
-  const res = { ok: true as const, value: { content: { rows: 3 } } };
-  assert.equal(escalateIfUnavailable(res), '{"rows":3}');
+test('classify: ok non-string content → JSON text', () => {
+  const d = classifyToolResult({ ok: true, value: { content: { rows: 3 } } });
+  assert.equal(d.text, '{"rows":3}');
 });

@@ -1,24 +1,33 @@
-import {
-  isMcpUnavailable,
-  type McpError,
-  type Result,
-} from '@mcp-abap-adt/llm-agent';
+import { isMcpUnavailable, type McpError } from '@mcp-abap-adt/llm-agent';
 
-type ToolRes = Result<{ content: unknown }, McpError>;
+// Loose over the exact tool-result shape (callTool's Result error is structurally
+// `{ message }`, but at runtime an availability failure is a real McpError — which
+// `isMcpUnavailable`'s instanceof check detects). Accepting `{ message: string }`
+// keeps both the core loop and the pipeline-handler loop type-compatible.
+type ToolRes =
+  | { ok: true; value: { content: unknown } }
+  | { ok: false; error: { message: string } };
 
-/**
- * The single decision both MCP tool loops (the core SmartAgent loop and the
- * pipeline-handler tool loop) use to turn a tool-call result into text — EXCEPT
- * an availability failure, which it THROWS so the run fails loud (→ a real error
- * to the consumer, not a silent "(no response)") instead of feeding "MCP error"
- * back to the LLM as tool text. A tool-level error stays text (LLM feedback).
- */
-export function escalateIfUnavailable(res: ToolRes): string {
+/** The decision both MCP tool loops share for one tool-call result:
+ *  - `escalate` → an availability failure (transport down / 403 / timeout after
+ *    reconnect): the caller must FAIL LOUD (yield an error → process() ok:false),
+ *    NOT feed it to the LLM as text;
+ *  - `text` → normal content OR a tool-level error, which stays LLM feedback. */
+export type ToolResultDecision =
+  | { escalate: McpError }
+  | { escalate?: undefined; text: string };
+
+/** Classify a tool-call result. Used by BOTH the core SmartAgent tool loop and the
+ *  pipeline-handler tool loop so the throw-or-text decision lives in ONE place. */
+export function classifyToolResult(res: ToolRes): ToolResultDecision {
   if (!res.ok) {
-    if (isMcpUnavailable(res.error)) throw res.error;
-    return res.error.message;
+    if (isMcpUnavailable(res.error)) return { escalate: res.error as McpError };
+    return { text: res.error.message };
   }
-  return typeof res.value.content === 'string'
-    ? res.value.content
-    : JSON.stringify(res.value.content);
+  return {
+    text:
+      typeof res.value.content === 'string'
+        ? res.value.content
+        : JSON.stringify(res.value.content),
+  };
 }
