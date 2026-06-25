@@ -225,7 +225,7 @@ for its throw.
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd packages/llm-agent-mcp && npx tsx --test src/__tests__/adapter-unavailable-codes.test.ts`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -713,7 +713,8 @@ export class McpReadinessRegistry {
 
   /** Live execution clients for GLOBAL targets — the source of truth `callMcp`
    *  reads (§3.6) so a monitor-recovered client is used without a restart. Worker
-   *  targets are excluded: worker execution is builder-owned (self-heals). */
+   *  targets are excluded: worker clients drive readiness + worker INJECTION
+   *  (Task 9c), not the top-level callMcp. */
   liveClients(): IMcpClient[] {
     const out: IMcpClient[] = [];
     for (const s of this.slots.values()) {
@@ -880,7 +881,7 @@ export class McpReadinessMonitor {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/mcp-readiness-monitor.test.ts`
-Expected: PASS (2 tests).
+Expected: PASS (3 tests).
 
 - [ ] **Step 5: Commit**
 
@@ -952,7 +953,7 @@ git commit -m "feat(server): wire MCP readiness registry+monitor; no-throw boot 
 - Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`callMcp` ~2210; monitor DOWN→UP hook)
 - Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/callmcp-reads-registry.test.ts`
 
-> **Review round 4 (P1#2/#4).** `callMcp` runs `buildMcpBridge(this._sharedMcpClients ?? [])` — a SNAPSHOT harvested at start (smart-server.ts:1557). If MCP was down at boot the snapshot is `[]`; a monitor-recovered client never reaches execution and the toolsRag catalog stays empty. Flipping READY without this task is a lie. Worker `subCfg.mcp` is builder-owned (2052/2122) — out of scope for a client-swap; it self-heals via the worker client's own reconnect (Task 3).
+> **Review round 4 (P1#2/#4).** `callMcp` runs `buildMcpBridge(this._sharedMcpClients ?? [])` — a SNAPSHOT harvested at start (smart-server.ts:1557). If MCP was down at boot the snapshot is `[]`; a monitor-recovered client never reaches execution and the toolsRag catalog stays empty. Flipping READY without this task is a lie. (Worker `subCfg.mcp` execution recovery is handled separately and explicitly by **Task 9c** — server-managed hoist + rebuild; it is NOT covered by this global task.)
 
 - [ ] **Step 1: Write the failing test**
 
@@ -1001,10 +1002,9 @@ previously down becomes healthy AND `scope === 'global'`, call it. Wire it in
 `start()` to re-run `buildToolsRagHandle({ toolsRag, resolvedEmbedder })` over
 `registry.liveClients()` (guard re-entrancy with an in-flight flag).
 
-> Worker scope (P1#4): `liveClients()` excludes `scope:'worker'`; do NOT swap
-> recovered worker clients into worker internals. Worker execution recovery is the
-> worker client's own session-preserving reconnect (Task 3). Add a one-line comment
-> at smart-server.ts:2052 pointing here.
+> Worker scope: `liveClients()` excludes `scope:'worker'` — worker clients are not a
+> top-level `callMcp` source. Worker EXECUTION recovery is **Task 9c** (server-managed
+> hoist + registry-sourced injection on rebuild), NOT this task.
 
 - [ ] **Step 4: Run the test + build**
 
@@ -1030,17 +1030,57 @@ git commit -m "feat(server): callMcp reads live clients from the registry; tools
 
 - [ ] **Step 1: Implement the hoist (integration-covered; unit-test the slot effect)**
 
-When processing a worker (subagent) config at build time: if `subCfg.mcp` is set AND
-`subCfg.mcpClients` is empty, do NOT let the builder connect it. Instead:
-1. Register a registry slot `addTarget('worker:<name>:<i>', subCfgMcp, 'worker')`.
-2. Attempt the server-owned connect (same factory as global; no-throw — Task 7). On
-   success `markHealthy(...)` and pass the connected client as the worker's injected
-   `mcpClients` (the path at smart-server.ts:2122 `subBuilder.withMcpClients(injected.mcpClients)`).
-   On failure leave the slot DOWN (server NOT_READY).
-3. On a worker slot DOWN→UP recovery (monitor), invalidate the per-worker cache entry
-   (the cache at smart-server.ts:2446 `cached.mcpClients`) so the NEXT session rebuild
-   injects the now-live client. Add a `onWorkerRecovered(id)` hook to the monitor deps
-   mirroring `onGlobalRecovered` (Task 9b); wire it to drop the worker cache entry.
+Hoisting requires THREE precise mechanisms — review round 6 verified that a naive
+"inject + drop cache" still falls through to the builder-owned connect:
+
+**(a) Disable the builder-owned connect.** `buildSubAgent` builds
+`new SmartAgentBuilder({ mcp: subCfg.mcp, … })` (smart-server.ts:2065) and only calls
+`withMcpClients(...)` when the injected list is NON-empty (2116; the comment says an
+empty list "falls through to the builder's own MCP-connect path which honours
+`subCfg.mcp`"). So a DOWN server-managed connect (empty injected) would let the
+builder connect `subCfg.mcp` itself and skip-on-fail. Fix: when the server hoists a
+worker's MCP, pass a **sanitized config WITHOUT `mcp`** to the builder, and inject the
+registry clients (or an explicit empty list = deliberate disable):
+
+```ts
+const hoisted = !!subCfg.mcp && !(subCfg.mcpClients && subCfg.mcpClients.length);
+let subBuilder = new SmartAgentBuilder({
+  mcp: hoisted ? undefined : subCfg.mcp, // server owns the connect when hoisted
+  agent: subCfg.agent,
+  prompts: subCfg.prompts,
+  skipModelValidation: subCfg.skipModelValidation,
+});
+if (hoisted) {
+  subBuilder = subBuilder.withMcpClients(this.workerMcpClientsFromRegistry(name));
+}
+```
+
+**(b) A registry-sourced helper used on EVERY worker build path.** Drop-cache is not
+enough: the per-session rebuild calls `buildSubAgent(sub.name, sub.config, …)` with NO
+`injected` (smart-server.ts:2424), which would re-enter the builder-owned path. Add:
+
+```ts
+/** Live worker MCP clients for a worker, from the readiness registry (empty when
+ *  the worker target is currently down). Used by BOTH the primary build and the
+ *  per-session lazy rebuild so a recovered client is injected, never re-connected
+ *  by the builder. */
+private workerMcpClientsFromRegistry(name: string): IMcpClient[] {
+  return (this._mcpReadiness?.list() ?? [])
+    .filter((s) => s.scope === 'worker' && s.id.startsWith(`worker:${name}:`) && s.healthy && s.client)
+    .map((s) => s.client as IMcpClient);
+}
+```
+
+Call `workerMcpClientsFromRegistry(name)` in the hoisted branch of BOTH the primary
+build (above) and the rebuild path (2424) before `buildSubAgent` — inject its result.
+
+**(c) Register + connect the worker target, and recover via cache invalidation.** At
+the FIRST worker setup: `addTarget('worker:<name>:<i>', subCfgMcp, 'worker')`, attempt
+the server-owned no-throw connect (Task 7 factory); success → `markHealthy`, down →
+slot stays DOWN (server NOT_READY). On a worker slot DOWN→UP recovery the monitor
+calls an `onWorkerRecovered(name)` hook (mirror `onGlobalRecovered`, Task 9b) that
+deletes the `_workerLlmCache`/worker-cache entry (smart-server.ts:2446) — so the next
+session rebuild runs path (b) and injects the now-live client.
 
 Replace the worker MCP wiring comment at smart-server.ts:2052 ("connection is the
 builder's job") with a pointer to this server-managed path.
@@ -1433,7 +1473,7 @@ git commit -m "feat(server): failed MCP run surfaces an error, never (no respons
 - §3.3 all execution surfaces + classification → Tasks 1, 2 (primitive + shared `error-mapping.ts`, returned-error path), 4 (agent), 5 (tool-loop via shared `escalateIfUnavailable` + real handler test), 6 (bridge).
 - §3.4 background probe (ping, lazy reconnect, no cached listTools) → Task 8.
 - §3.5 session-preserving reconnect + **client THROWS** on retry exhaustion → Task 3.
-- §3.6 execution source-of-truth (callMcp reads registry; toolsRag refresh on recovery; worker self-heal scope) → **Task 9b**.
+- §3.6 execution source-of-truth (callMcp reads registry; toolsRag refresh on recovery) → **Task 9b** (global) + **Task 9c** (worker hoist/rebuild).
 - §4 consumer contract → Tasks 10 (503), 10b (streaming), 11 (/health), 12 (no (no response)).
 - Open §6 (multi-MCP policy, intervals, de-dup) → config knobs in Tasks 8/9; `allHealthy()` encodes "any down ⇒ not ready".
 
@@ -1441,7 +1481,7 @@ git commit -m "feat(server): failed MCP run surfaces an error, never (no respons
 - **P1 returned-error trap** → Task 2 (adapter escalates returned availability error) + Task 3 (client throws, not returns).
 - **P1 execution recovery** → Task 9b (callMcp reads `registry.liveClients()`; toolsRag re-vectorized on DOWN→UP).
 - **P1 streaming [DONE]** → Task 10b (code + test).
-- **P1/P2 worker MCP** → Task 9b scope: readiness includes worker targets; worker EXECUTION self-heals via Task 3 (no cross-owner client swap).
+- **P1/P2 worker MCP** → readiness includes worker targets (Task 9b). *(Worker EXECUTION recovery was first scoped as "self-heal via Task 3" here; round 5 proved that insufficient for cold start — SUPERSEDED by the Task 9c server-managed hoist.)*
 - **P2 gate route test** → Task 10 Step 4 (real route integration test, stream:true → 503, agent not called).
 - **P2 Task 5 stub** → Task 5 rewritten: shared `escalateIfUnavailable` helper the handler USES + real handler regression test.
 
