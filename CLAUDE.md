@@ -61,6 +61,30 @@ still install only what they need.)
 `MCPClientConfig.transport` values: `stdio` | `sse` | `stream-http` | `embedded` | `auto`
 `auto` detects transport from URL patterns. `embedded` injects an in-process server (used for testing).
 
+## Architecture Principles (MUST verify at every brainstorm AND every review)
+
+These are binding. Before finalizing any design (brainstorm) and before approving any
+change (review), explicitly check the work against each one and state how it complies.
+
+1. **Build ON existing components — never bespoke glue in the app.** Find the
+   component that already does it; if it falls short, **rework/extend the component**
+   so the fix lands in the reusable library, not in app-local code.
+2. **The app IS the example.** `@mcp-abap-adt/llm-agent-server` / `SmartServer` must be
+   a working demonstration of *consuming* the libraries. If the app is full of bespoke
+   logic, we are proving we don't use our own components — so nobody else will.
+   *Corollary:* the answer to an over-grown file is NOT to carve it into ad-hoc
+   fragments — it is to **reimplement on the components**.
+3. **Everything is built around interfaces.** Consumers depend on interfaces, not
+   concrete classes.
+4. **Many small interfaces > one big one (ISP).** ADD a new focused interface; do NOT
+   grow an existing one. (e.g. a separate `IReadinessReporter`, not an `isReady?()`
+   bolted onto `IMcpConnectionStrategy`.)
+5. **Variation points the consumer should own → STRATEGIES.** Anything we want to leave
+   to the consumer's choice is expressed as a strategy they can swap/implement.
+6. **Control file size — no multi-thousand-line files.** A giant file is itself a smell;
+   put new logic in a small focused module and consume it (don't append to a god-object).
+7. **Don't break components.** Extend additively / backward-compatibly.
+
 ## Language
 
 - All artifacts (code, comments, docs, commit messages) must be written in **English**.
