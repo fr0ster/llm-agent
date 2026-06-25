@@ -5,7 +5,6 @@
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import {
   type CallOptions,
-  isMcpUnavailable,
   McpError,
   type McpTool,
   type McpToolResult,
@@ -106,13 +105,20 @@ export class McpClientAdapter implements IMcpClient {
         () => new McpError('Aborted', 'ABORTED'),
       );
 
-      // The wrapper RETURNS { result:null, error } after a failed reconnect (it
-      // does not always throw). An availability signature on that returned error
-      // must escalate to ok:false — otherwise it is wrapped ok:true/isError and the
-      // tool loop feeds "MCP error" back to the LLM instead of failing loud.
+      // A RETURNED { error } is normally TOOL-level feedback (the tool ran and
+      // failed) → ok:true/isError below. The ONE exception is a connection-loss
+      // signature the wrapper may still return instead of throw (legacy/embedded
+      // paths): escalate ONLY those to ok:false. We deliberately do NOT escalate
+      // timeout/HTTP/ambiguous returned errors here — a tool's own "request timed
+      // out" / "forbidden" message is domain feedback, not an MCP outage; only the
+      // THROWN transport path (catch below) treats those as unavailable.
       if (result.error !== undefined && result.error !== null) {
         const mapped = toMcpError(result.error);
-        if (isMcpUnavailable(mapped)) return { ok: false, error: mapped };
+        if (
+          mapped.code === 'MCP_NOT_CONNECTED' ||
+          mapped.code === 'MCP_NO_RESPONSE'
+        )
+          return { ok: false, error: mapped };
       }
 
       return {

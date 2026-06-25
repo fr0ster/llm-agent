@@ -34,6 +34,24 @@ test('toMcpError: a plain tool error stays MCP_ERROR (not unavailable)', () => {
   assert.equal(isMcpUnavailable(toMcpError('field X is required')), false);
 });
 
+// Negative cases — SAP/ABAP domain errors that contain transport/network words
+// must NOT be classified as MCP outages (review: bare-substring false positives).
+const DOMAIN_NOT_OUTAGE = [
+  'Transport request ZDEVK900123 not found',
+  'transport request is not released',
+  'Business network id is invalid',
+  'Network profile NETPROF does not exist',
+  'Object 503 in package not found', // bare number must not match HTTP 503
+  'Table T502 read error', // bare 502 must not match HTTP 502
+];
+for (const msg of DOMAIN_NOT_OUTAGE) {
+  test(`toMcpError: domain error "${msg.slice(0, 28)}…" stays MCP_ERROR`, () => {
+    const mapped = toMcpError(new Error(msg));
+    assert.equal(mapped.code, 'MCP_ERROR', `${msg} → ${mapped.code}`);
+    assert.equal(isMcpUnavailable(mapped), false);
+  });
+}
+
 test('integration: a real down HTTP endpoint maps to unavailable', async () => {
   const w = new MCPClientWrapper({
     transport: 'stream-http',

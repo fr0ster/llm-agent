@@ -38,19 +38,27 @@ export function toMcpError(err: unknown): McpError {
   const top = err instanceof Error ? err.message : String(err);
   const m = collectErrorText(err) || String(err).toLowerCase();
 
+  // NOTE: NO bare `transport` / `network` substring matches — "transport request"
+  // and "business network" are common SAP/ABAP DOMAIN terms; matching them would
+  // flip a normal tool error into a false MCP outage. Match only distinctive
+  // transport-exception shapes: OS/network error codes, the Node `fetch failed`
+  // wrapper, MCP timeout (-32001), and HTTP status by NAME (not bare number).
   let code = 'MCP_ERROR';
   if (
-    m.includes('timed out') ||
-    m.includes('timeout') ||
     m.includes('-32001') ||
-    m.includes('etimedout')
+    m.includes('etimedout') ||
+    m.includes('request timed out') ||
+    m.includes('timed out')
   )
     code = 'MCP_TIMEOUT';
   else if (m.includes('after reconnect') || m.includes('no response'))
     code = 'MCP_NO_RESPONSE';
-  else if (m.includes('403')) code = 'MCP_HTTP_403';
-  else if (m.includes('502')) code = 'MCP_HTTP_502';
-  else if (m.includes('503')) code = 'MCP_HTTP_503';
+  else if (m.includes('http 403') || m.includes('forbidden'))
+    code = 'MCP_HTTP_403';
+  else if (m.includes('http 502') || m.includes('bad gateway'))
+    code = 'MCP_HTTP_502';
+  else if (m.includes('http 503') || m.includes('service unavailable'))
+    code = 'MCP_HTTP_503';
   else if (
     m.includes('not connected') ||
     m.includes('fetch failed') ||
@@ -61,12 +69,11 @@ export function toMcpError(err: unknown): McpError {
     m.includes('enetunreach') ||
     m.includes('enotfound') ||
     m.includes('eai_again') ||
+    m.includes('epipe') ||
     m.includes('socket hang up') ||
-    m.includes('bad port') ||
-    m.includes('network')
+    m.includes('bad port')
   )
     code = 'MCP_NOT_CONNECTED';
-  else if (m.includes('transport')) code = 'MCP_TRANSPORT';
 
   return new McpError(top || 'MCP transport error', code);
 }
