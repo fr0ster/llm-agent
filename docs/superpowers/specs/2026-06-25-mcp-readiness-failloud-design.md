@@ -129,8 +129,12 @@ non-streaming):
       **HTTP 503 JSON error** — do NOT open a `200` SSE stream first. The gate runs
       before `res.writeHead(200, …text/event-stream…)`.
     - *In-flight* (MCP fails AFTER the 200 SSE headers are already sent): the status
-      line is committed, so emit a single SSE error event (`data: {"error":…}`) then
-      `res.end()` — NO `[DONE]` (which would mask the failure as a clean finish).
+      line is committed, so emit the SSE error chunk then `res.end()` — and **skip the
+      trailing `data: [DONE]`**. **Review (round 4):** the current writer emits the
+      error chunk (`delta.content: "[Error] …"`, `break`) but then UNCONDITIONALLY
+      writes `data: [DONE]` (smart-server.ts:3613) — a clean-finish marker after a
+      failure. The writer must track that it ended on error and skip the `[DONE]` (and
+      the usage chunk) in that case. This needs a code change + test, not just "verify".
 - **`(no response)` fallback (smart-server.ts:3632):** keep `(no response)` ONLY for
   a genuinely empty-but-successful turn. When the run degraded due to MCP
   unavailability, the component throws (next section) → `result.ok === false` →
@@ -219,10 +223,52 @@ escalate to NOT_READY / a lost tool result):
   live server-assigned session.
 - `callTool` retry path: if resume-with-session still fails (server dropped the
   session — 404/expired), clear `this.sessionId` and connect fresh once before
-  giving up. Only then is it an unavailability error (§3.3).
+  giving up. **When even the fresh retry fails, the client THROWS a coded
+  availability `McpError` — it does NOT return `{ result: null, error }`.**
+
+> **Review (round 4) — the returned-error trap.** Today `client.ts callTool`
+> *returns* `{ result: null, error }` after a failed reconnect (client.ts:427), and
+> `McpClientAdapter.callTool` wraps that into `{ ok: true, value: { isError: true }}`
+> (adapter.ts:109). So `res.ok` is **true** and the §3.3 `!res.ok` escalation never
+> fires — MCP-down still becomes tool text. The fix is the throw above: an
+> unrecoverable availability failure must surface as a THROWN coded `McpError` so the
+> adapter's catch maps it to `ok:false`. (Embedded/tool-level errors keep returning
+> `{ error }` — only transport/availability exhaustion throws.)
 
 This keeps transient network flaps invisible (resume, no readiness change), while a
 genuine outage still escalates to NOT_READY.
+
+### 3.6 Execution wiring is the source of truth — not a startup snapshot
+
+> **Review (round 4) — readiness recovery ≠ execution recovery.** `ctx.callMcp` runs
+> tools through `buildMcpBridge(this._sharedMcpClients ?? [])` (smart-server.ts:2210),
+> and `_sharedMcpClients` is a SNAPSHOT harvested at `start()` (`= globalMcpClients ??
+> []`, smart-server.ts:1557). If MCP was down at boot the snapshot is `[]`; a client
+> the monitor later recovers lands only in the readiness registry — the pipeline still
+> has no live client and the vectorized tool catalog (toolsRag) is empty. Flipping
+> READY without rewiring execution is a lie.
+
+**Global MCP — the registry is the execution source of truth:**
+- `ctx.callMcp` reads the registry's **live clients** (`registry.liveClients()`), not
+  the `_sharedMcpClients` snapshot. The monitor keeps the registry current, so a
+  recovered client is used immediately.
+- **Tool catalog refresh:** when a global target transitions DOWN→UP, the monitor
+  triggers a one-shot re-vectorization of `toolsRag` over the now-live clients
+  (`buildToolsRagHandle`), so tool *selection* (not just the live `listTools` in the
+  bridge) recovers. A cold-boot-then-recover server ends up with a populated catalog.
+
+**Worker/subagent MCP — readiness probe only; execution self-heals:**
+- Worker `subCfg.mcp` is **builder-owned** inside the worker's SmartAgent
+  (smart-server.ts:2052/2122 — "connection is the builder's job"). The server cannot
+  swap a recovered client into a worker's internals.
+- Therefore the readiness monitor's worker probe-connection covers **readiness only**
+  (it flips the server NOT_READY so the gate protects the whole pipeline). Worker
+  **execution** recovery is delegated to the worker client's OWN session-preserving
+  reconnect (§3.5 applies to worker `MCPClientWrapper`s too) — no client-swap into
+  worker internals. This is an explicit, documented scope boundary (resolves the
+  former worker-execution gap without an intractable cross-owner client swap).
+- DI `subCfg.mcpClients` (server-provided) ARE registry live clients and recover like
+  global ones.
 
 ---
 
@@ -234,7 +280,8 @@ genuine outage still escalates to NOT_READY.
 | worker/subagent MCP down (DAG/stepper) | `/health` 200 (top-level only) | server **NOT_READY** — worker targets are in the registry |
 | MCP drops mid-life | silent `(no response)` 200 | in-flight request → **loud error** (non-200 / `Error:`); server flips NOT_READY |
 | transient blip (session kept) | reconnect = fresh session, result may be lost | **resume** same session, result preserved, stays READY |
-| MCP recovers | stays degraded / manual restart | background probe flips **READY**, intake resumes automatically |
+| global MCP recovers | stays degraded / manual restart | probe flips **READY**, `callMcp` reads the registry's live client, toolsRag re-vectorized → intake + tool-selection resume (§3.6) |
+| worker MCP recovers | — | server flips READY (gate reopens); worker EXECUTION self-heals via the worker client's own reconnect (§3.6 scope) |
 | genuinely empty answer (MCP fine) | `(no response)` | `(no response)` (unchanged — not an error) |
 
 `/health` change: MCP-down moves from `degraded` (200) to a readiness-failing state
@@ -249,7 +296,9 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
   `isMcpUnavailable(err)` classifier (§3.3); `McpUnavailableError` (or `McpError` with
   the code) typed for consumers.
 - `packages/llm-agent-mcp/src/adapter.ts` / `client.ts` — tag transport/availability
-  failures with the availability code; session-preserving reconnect (§3.5).
+  failures with the availability code; session-preserving reconnect (§3.5); **client
+  THROWS a coded `McpError` after retry exhaustion instead of returning `{ error }`**
+  (so the adapter maps to `ok:false` — §3.5 round-4 note).
 - `packages/llm-agent-libs/src/agent.ts` — core tool loop: escalate availability
   errors instead of stringifying them (§3.3).
 - `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — same escalation in
@@ -262,7 +311,11 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
   background readiness monitor (lazy slot reconnect), `buildMcpBridge` fail-loud,
   `(no response)` branch, `/health` readiness mapping, AND
   `connectMcpClientsFromConfig` change: a down-at-boot target is recorded as a DOWN
-  slot instead of throwing (so start() comes up NOT_READY).
+  slot instead of throwing (so start() comes up NOT_READY). **`callMcp` reads the
+  registry's live clients (§3.6), not the `_sharedMcpClients` snapshot; monitor
+  triggers `buildToolsRagHandle` re-vectorization on a global DOWN→UP transition.**
+  Streaming writer: skip `data: [DONE]` (and the usage chunk) when the stream ended
+  on an error chunk (§3.2 round-4).
 - `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` — reuse the
   `Slot` model / `_doResolve` cooldown-reconnect as the registry/monitor mechanism
   (extract or compose; don't duplicate).
