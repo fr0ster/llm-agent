@@ -46,7 +46,12 @@ mcp:
 # memory (no clone, zero-FS). controllerSkillGroup = the group to recall.
 skillPlugins:
   store: { type: in-memory }
-  embedder: { provider: sap-ai-core, model: text-embedding-3-small }
+  # NO `embedder:` here on purpose. The SkillPlugins embedder schema only carries
+  # provider/model — it CANNOT express the SAP AI Core deployment context
+  # (`scenario` / `resourceGroup` above). Setting it would build a SEPARATE,
+  # context-less skill-host embedder and mismatch the AI Core deployment. Omitting
+  # it makes the skill host REUSE the resolved `rag.embedder` (with its full
+  # scenario/resourceGroup). Only set it when the skill embedder must differ.
   controllerSkillGroup: sap
   k: 4
   threshold: 0.3
