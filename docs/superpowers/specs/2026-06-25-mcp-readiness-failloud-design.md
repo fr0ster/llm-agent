@@ -189,8 +189,16 @@ source of truth used at every surface.
 
 - A periodic monitor (interval configurable, default e.g. 10s) walks the
   SmartServer-owned MCP **target registry** (§3.1). For each slot:
-  - if it has a live `client`, probe via `client.healthCheck()` → `client.ping()`
-    (adapter.ts), a LIVE round-trip;
+  - if it has a live `client` that implements `healthCheck`, probe via
+    `client.healthCheck()` → `client.ping()` (adapter.ts), a LIVE round-trip; mark
+    down only on an actual failed probe;
+  - **`healthCheck` is OPTIONAL on `IMcpClient` (mcp-client.ts:25).** A live client
+    WITHOUT `healthCheck` is **assumed healthy** by the monitor (per the interface
+    doc) — it is NOT marked down. **Review round 5:** otherwise the first tick marks a
+    DI/plugin client without `healthCheck` down forever (no config to reconnect). The
+    server cannot proactively detect such a client's outage; it surfaces reactively via
+    in-flight fail-loud (§3.3). (A future option: require `healthCheck` for
+    readiness-managed clients, or a wrapper probe — see §6.)
   - if it has NO healthy client (cold target / dropped), attempt a lazy (re)connect of
     the slot's `config` on cooldown (the `LazyConnectionStrategy._doResolve` pattern),
     then probe. Success → slot healthy + live handle cached; failure → slot stays
@@ -257,18 +265,35 @@ genuine outage still escalates to NOT_READY.
   (`buildToolsRagHandle`), so tool *selection* (not just the live `listTools` in the
   bridge) recovers. A cold-boot-then-recover server ends up with a populated catalog.
 
-**Worker/subagent MCP — readiness probe only; execution self-heals:**
-- Worker `subCfg.mcp` is **builder-owned** inside the worker's SmartAgent
-  (smart-server.ts:2052/2122 — "connection is the builder's job"). The server cannot
-  swap a recovered client into a worker's internals.
-- Therefore the readiness monitor's worker probe-connection covers **readiness only**
-  (it flips the server NOT_READY so the gate protects the whole pipeline). Worker
-  **execution** recovery is delegated to the worker client's OWN session-preserving
-  reconnect (§3.5 applies to worker `MCPClientWrapper`s too) — no client-swap into
-  worker internals. This is an explicit, documented scope boundary (resolves the
-  former worker-execution gap without an intractable cross-owner client swap).
-- DI `subCfg.mcpClients` (server-provided) ARE registry live clients and recover like
-  global ones.
+**Worker/subagent MCP — HOISTED to server-managed (so recovery actually wires through):**
+
+> **Review round 5.** "Self-heals via the worker client's own reconnect" does NOT
+> cover cold start: if worker `subCfg.mcp` is down at boot, `SmartAgentBuilder` catches
+> the connect error and builds the worker with **no client** (builder.ts:1137) — there
+> is no wrapper to self-heal, and `buildSubAgent` returns a worker without MCP
+> (smart-server.ts:2122). A monitor probe could call the slot "healthy" while the
+> worker's execution graph has no client → a lie.
+
+Resolution: the server **takes over** worker `subCfg.mcp` connection instead of leaving
+it builder-owned.
+- When a worker config has `subCfg.mcp` and no DI `subCfg.mcpClients`, the server
+  connects that target through the **registry** (a `scope:'worker'` slot, server-
+  managed) and passes the resulting client to the worker as **injected** mcpClients —
+  reusing the existing injected-clients seam (smart-server.ts:2122), so the builder
+  does NOT connect it again (no double-connect).
+- This makes worker MCP behave exactly like global/DI MCP: a down target is a DOWN
+  slot (server NOT_READY); on a DOWN→UP recovery the monitor **invalidates the worker
+  cache** so the next session rebuild injects the now-live client. Because the
+  readiness gate blocks requests while NOT_READY, a request only runs after recovery +
+  cache invalidation → the rebuilt worker has a live client.
+- `liveClients()` (global execution source) still returns only `scope:'global'` slots;
+  worker slots drive **readiness + worker injection**, not the top-level `callMcp`.
+- DI `subCfg.mcpClients` are already server-provided → registered as live worker slots.
+
+> Effort note: this hoist is the only fully-honest option (the alternative — excluding
+> builder-owned worker MCP from readiness — reintroduces the round-3 "/health lies for
+> DAG/stepper" problem and a silent cold-start-no-client gap). It reuses existing
+> injection + cache seams; no cross-owner client swap into a built worker is needed.
 
 ---
 
@@ -281,7 +306,8 @@ genuine outage still escalates to NOT_READY.
 | MCP drops mid-life | silent `(no response)` 200 | in-flight request → **loud error** (non-200 / `Error:`); server flips NOT_READY |
 | transient blip (session kept) | reconnect = fresh session, result may be lost | **resume** same session, result preserved, stays READY |
 | global MCP recovers | stays degraded / manual restart | probe flips **READY**, `callMcp` reads the registry's live client, toolsRag re-vectorized → intake + tool-selection resume (§3.6) |
-| worker MCP recovers | — | server flips READY (gate reopens); worker EXECUTION self-heals via the worker client's own reconnect (§3.6 scope) |
+| worker MCP recovers | — | server-managed worker slot reconnects → worker cache invalidated → next session rebuilds the worker with the live client; server flips READY (§3.6) |
+| worker MCP down at cold start | builder skips it → worker has no client, `/health` 200 (lies) | server owns the connect → DOWN worker slot → **NOT_READY** until it connects |
 | genuinely empty answer (MCP fine) | `(no response)` | `(no response)` (unchanged — not an error) |
 
 `/health` change: MCP-down moves from `degraded` (200) to a readiness-failing state
