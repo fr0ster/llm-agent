@@ -12,6 +12,7 @@ import {
   type SmartAgentError,
 } from '@mcp-abap-adt/llm-agent';
 import type { MCPClientWrapper } from './client.js';
+import { toMcpError } from './error-mapping.js';
 
 // ---------------------------------------------------------------------------
 // Module-private helper
@@ -64,8 +65,7 @@ export class McpClientAdapter implements IMcpClient {
       this.toolsCache = tools;
       return { ok: true, value: tools };
     } catch (err) {
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 
@@ -85,8 +85,7 @@ export class McpClientAdapter implements IMcpClient {
       return { ok: true, value: true };
     } catch (err) {
       this.lastHealthy = false;
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 
@@ -106,6 +105,22 @@ export class McpClientAdapter implements IMcpClient {
         () => new McpError('Aborted', 'ABORTED'),
       );
 
+      // A RETURNED { error } is normally TOOL-level feedback (the tool ran and
+      // failed) → ok:true/isError below. The ONE exception is a connection-loss
+      // signature the wrapper may still return instead of throw (legacy/embedded
+      // paths): escalate ONLY those to ok:false. We deliberately do NOT escalate
+      // timeout/HTTP/ambiguous returned errors here — a tool's own "request timed
+      // out" / "forbidden" message is domain feedback, not an MCP outage; only the
+      // THROWN transport path (catch below) treats those as unavailable.
+      if (result.error !== undefined && result.error !== null) {
+        const mapped = toMcpError(result.error);
+        if (
+          mapped.code === 'MCP_NOT_CONNECTED' ||
+          mapped.code === 'MCP_NO_RESPONSE'
+        )
+          return { ok: false, error: mapped };
+      }
+
       return {
         ok: true,
         value: {
@@ -120,8 +135,7 @@ export class McpClientAdapter implements IMcpClient {
         },
       };
     } catch (err) {
-      if (err instanceof McpError) return { ok: false, error: err };
-      return { ok: false, error: new McpError(String(err)) };
+      return { ok: false, error: toMcpError(err) };
     }
   }
 }

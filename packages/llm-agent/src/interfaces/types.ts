@@ -122,6 +122,28 @@ export class McpError extends SmartAgentError {
   }
 }
 
+/**
+ * McpError codes that mean the MCP transport/endpoint is UNAVAILABLE (not that a
+ * tool ran and returned an error). Only these escalate to fail-loud / NOT_READY;
+ * a plain `MCP_ERROR` (tool-level) stays LLM feedback.
+ */
+export const MCP_UNAVAILABLE_CODES = [
+  'MCP_NOT_CONNECTED',
+  'MCP_TIMEOUT',
+  'MCP_TRANSPORT',
+  'MCP_HTTP_403',
+  'MCP_HTTP_502',
+  'MCP_HTTP_503',
+  'MCP_NO_RESPONSE',
+] as const;
+
+const MCP_UNAVAILABLE_SET = new Set<string>(MCP_UNAVAILABLE_CODES);
+
+/** True iff `err` is an McpError whose code marks the endpoint unavailable. */
+export function isMcpUnavailable(err: unknown): boolean {
+  return err instanceof McpError && MCP_UNAVAILABLE_SET.has(err.code);
+}
+
 export class RagError extends SmartAgentError {
   constructor(message: string, code = 'RAG_ERROR') {
     super(message, code);

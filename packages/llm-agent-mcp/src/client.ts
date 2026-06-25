@@ -8,6 +8,7 @@ import type { ToolCall, ToolResult } from '@mcp-abap-adt/llm-agent';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { toMcpError } from './error-mapping.js';
 
 type McpToolDef = {
   name: string;
@@ -253,7 +254,7 @@ export class MCPClientWrapper {
       const httpTransport = new StreamableHTTPClientTransport(
         new URL(this.config.url),
         {
-          sessionId: this.config.sessionId,
+          sessionId: this._sessionForConnect(),
           requestInit: {
             headers: {
               Accept: 'application/json, text/event-stream',
@@ -301,6 +302,15 @@ export class MCPClientWrapper {
    */
   getSessionId(): string | undefined {
     return this.sessionId || this.config.sessionId;
+  }
+
+  /**
+   * Session id to (re)connect with: prefer the live server-assigned id so a
+   * reconnect RESUMES the same session (no lost session state / tool result);
+   * fall back to the configured id on a first connect.
+   */
+  private _sessionForConnect(): string | undefined {
+    return this.sessionId ?? this.config.sessionId;
   }
 
   /**
@@ -425,14 +435,32 @@ export class MCPClientWrapper {
           result: response.content,
         };
       } catch (retryError: unknown) {
+        // Resume-with-session failed — the server may have dropped the session.
+        // Clear it and try ONE fresh connect so a truly-gone session does not
+        // wedge the client.
+        if (this.sessionId) {
+          this.sessionId = undefined;
+          try {
+            await this.disconnect();
+            await this.connect();
+            const response = await performCall();
+            return {
+              toolCallId: toolCall.id,
+              name: toolCall.name,
+              result: response.content,
+            };
+          } catch {
+            /* fall through to throw */
+          }
+        }
         const retryErrorMessage =
           retryError instanceof Error ? retryError.message : String(retryError);
-        return {
-          toolCallId: toolCall.id,
-          name: toolCall.name,
-          result: null,
-          error: retryErrorMessage || 'Tool execution failed after reconnect',
-        };
+        // THROW (not return) so McpClientAdapter.callTool's catch maps it to an
+        // ok:false availability McpError. Returning { error } would be wrapped
+        // ok:true/isError and never escalate to fail-loud / NOT_READY.
+        throw toMcpError(
+          `${retryErrorMessage || 'Tool execution failed'} (no response after reconnect)`,
+        );
       }
     }
   }

@@ -258,7 +258,9 @@ export type {
 export {
   AssemblerError,
   ClassifierError,
+  isMcpUnavailable,
   LlmError,
+  MCP_UNAVAILABLE_CODES,
   McpError,
   RagError,
   SkillError,
