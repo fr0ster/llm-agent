@@ -32,6 +32,7 @@ import {
   type AgentCallOptions,
   getStreamToolCallName,
   type IQueryExpander,
+  isReadinessReporter,
   NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
@@ -467,6 +468,17 @@ export class SmartAgent {
       historyAutoSummarizeLimit: this.config.historyAutoSummarizeLimit,
       classificationEnabled: this.config.classificationEnabled,
     };
+  }
+
+  /**
+   * Readiness (implements `IReadinessReporter`): delegate to the MCP connection
+   * strategy when it reports readiness, else `true` (no strategy / non-reporting ⇒
+   * readiness unknown → ready). Consumers (e.g. a server's `/health` + request
+   * gate) detect this via `isReadinessReporter(agent)` — no growth of `ISmartAgent`.
+   */
+  isReady(): boolean {
+    const strategy = this.deps.connectionStrategy;
+    return isReadinessReporter(strategy) ? strategy.isReady() : true;
   }
 
   async healthCheck(options?: CallOptions): Promise<

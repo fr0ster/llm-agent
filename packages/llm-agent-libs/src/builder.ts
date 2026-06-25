@@ -56,10 +56,7 @@ import {
   SimpleRagProviderRegistry,
   SimpleRagRegistry,
 } from '@mcp-abap-adt/llm-agent';
-import {
-  MCPClientWrapper,
-  McpClientAdapter,
-} from '@mcp-abap-adt/llm-agent-mcp';
+import { makeConnectionStrategy } from '@mcp-abap-adt/llm-agent-mcp';
 import { wrapEmbedder } from './adapters/usage-logging-embedder.js';
 import { SmartAgent, type SmartAgentConfig } from './agent.js';
 import {
@@ -79,7 +76,10 @@ import {
 } from './coordinator/index.js';
 import { HistoryMemory } from './history/history-memory.js';
 import { HistorySummarizer } from './history/history-summarizer.js';
-import type { IMcpConnectionStrategy } from './interfaces/mcp-connection-strategy.js';
+import type {
+  IMcpConnectionStrategy,
+  McpConnectionConfig,
+} from './interfaces/mcp-connection-strategy.js';
 import type { IPipeline } from './interfaces/pipeline.js';
 import { DefaultRequestLogger } from './logger/default-request-logger.js';
 import type { IMetrics } from './metrics/types.js';
@@ -939,45 +939,40 @@ export class SmartAgentBuilder {
     // ---- MCP clients + tool vectorization --------------------------------
     let mcpClients: IMcpClient[];
     const closeFns: Array<() => Promise<void>> = [];
-    const connectionStrategy = this._connectionStrategy;
+    let connectionStrategy = this._connectionStrategy;
 
     if (this._mcpClients) {
       // Caller-provided clients: skip auto-connect and vectorization
       mcpClients = this._mcpClients;
     } else {
-      const mcpList = this.cfg.mcp
-        ? Array.isArray(this.cfg.mcp)
-          ? this.cfg.mcp
-          : [this.cfg.mcp]
-        : [];
-      const connected: IMcpClient[] = [];
-      for (const mcpCfg of mcpList) {
-        try {
-          let wrapper: MCPClientWrapper;
-          if (mcpCfg.type === 'stdio') {
-            wrapper = new MCPClientWrapper({
-              transport: 'stdio',
-              command: mcpCfg.command,
-              args: mcpCfg.args ?? [],
-            });
-          } else {
-            wrapper = new MCPClientWrapper({
-              transport: 'auto',
-              url: mcpCfg.url,
-              headers: mcpCfg.headers,
-            });
-          }
-          await wrapper.connect();
-          const adapter = new McpClientAdapter(wrapper);
-          log?.log({
-            type: 'pipeline_done',
-            traceId: 'builder',
-            stopReason: 'stop',
-            iterations: 0,
-            toolCallCount: 0,
-            durationMs: 0,
-          });
+      // YAML `mcp:` → route connection through an IMcpConnectionStrategy
+      // (build-on-components). Default to a resilient `makeConnectionStrategy`
+      // (connect + periodic reconnect + readiness via IReadinessReporter) unless
+      // the consumer injected their own. The strategy OWNS lifecycle: its initial
+      // `resolve([])` connects the targets and the agent resolves through it each
+      // iteration; disposal is `connectionStrategy.dispose()` (no per-client
+      // closeFns). `BuilderMcpConfig` is structurally `McpConnectionConfig`.
+      const mcpConfigs = (
+        this.cfg.mcp
+          ? Array.isArray(this.cfg.mcp)
+            ? this.cfg.mcp
+            : [this.cfg.mcp]
+          : []
+      ) as McpConnectionConfig[];
+      if (mcpConfigs.length > 0 && !connectionStrategy) {
+        connectionStrategy = makeConnectionStrategy(
+          mcpConfigs,
+          log ? { logger: log } : undefined,
+        );
+      }
+      const resolved = connectionStrategy
+        ? await connectionStrategy.resolve([])
+        : { clients: [] as IMcpClient[], toolsChanged: false };
+      mcpClients = resolved.clients;
 
+      // Vectorize each connected client's tools into the tools RAG store.
+      for (const adapter of mcpClients) {
+        try {
           // Vectorize tools into the tools RAG store
           if (toolsRag) {
             const toolsResult = await adapter.listTools();
@@ -1131,25 +1126,17 @@ export class SmartAgentBuilder {
               }
             }
           }
-
-          connected.push(adapter);
-          closeFns.push(() => wrapper.disconnect?.() ?? Promise.resolve());
         } catch (err) {
-          // Skip failed MCP setup — agent continues without that server, but
-          // surface why: silently swallowing this leaves operators chasing
-          // "agent has no tools" with no log line to point at the cause
-          // (unreachable host, bad auth, container-network mismatch, etc.).
-          // Note: this try-block also covers tool/skill vectorization, so the
-          // failure could be either connect or post-connect setup.
-          const target = mcpCfg.type === 'stdio' ? mcpCfg.command : mcpCfg.url;
+          // Tool vectorization failed for this client — skip it; the agent
+          // continues. (Connection failures are handled inside the strategy,
+          // which skips a down target and reconnects it later.)
           log?.log({
             type: 'warning',
             traceId: 'builder',
-            message: `MCP setup failed for ${target}: ${err instanceof Error ? err.message : String(err)}`,
+            message: `Tool vectorization failed: ${err instanceof Error ? err.message : String(err)}`,
           });
         }
       }
-      mcpClients = connected;
     }
 
     // ---- SmartAgent Config ------------------------------------------------
