@@ -229,6 +229,11 @@ export class SmartAgentBuilder {
     rag: IRag;
     editor?: IRagEditor;
     meta?: Omit<RagCollectionMeta, 'name' | 'editable'>;
+    /** Opt-in: skip (don't re-register, don't throw) when a collection of this
+     *  name is already present in the shared registry. Used ONLY by callers that
+     *  re-run across per-session builds against a shared registry (skills wiring).
+     *  Ordinary callers leave this unset → duplicate names still fail loud. */
+    idempotent?: boolean;
   }> = [];
   private _pendingDynamicCollections: Array<{
     providerName: string;
@@ -305,6 +310,10 @@ export class SmartAgentBuilder {
     rag: IRag;
     editor?: IRagEditor;
     meta?: Omit<RagCollectionMeta, 'name' | 'editable'>;
+    /** Opt-in idempotency for callers re-run across per-session builds against a
+     *  shared registry (e.g. skills wiring): skip silently if `name` is already
+     *  registered. Default unset → duplicate names fail loud as before. */
+    idempotent?: boolean;
   }): this {
     this._staticCollections.push(params);
     return this;
@@ -821,14 +830,16 @@ export class SmartAgentBuilder {
     }
 
     // Register user-supplied static collections (from addRagCollection fluent calls).
-    // Skip names already present: the RAG registry is shared across per-session
-    // builds (global-scope collections like skills/tools must persist, not be
-    // re-embedded per session), so a second build re-issuing the same static
-    // collection (e.g. `relevant-skills:<group>` from registerSkillSources) would
-    // otherwise throw `Collection '...' is already registered`. Idempotent here,
-    // matching the tools/history check-before-register below.
+    // Duplicate names fail loud via SimpleRagRegistry.register — EXCEPT collections
+    // that explicitly opted into idempotency. The RAG registry is shared across
+    // per-session builds, so a caller that re-runs every build (skills wiring,
+    // `relevant-skills:<group>` from registerSkillSources) would otherwise throw
+    // `Collection '...' is already registered` on the 2nd session; those set
+    // `idempotent: true` and are skipped when already present. Ordinary callers
+    // leave it unset so a genuine name collision still surfaces instead of
+    // silently keeping the old RAG/editor/meta.
     for (const c of this._staticCollections) {
-      if (ragRegistry.get(c.name)) continue;
+      if (c.idempotent && ragRegistry.get(c.name)) continue;
       ragRegistry.register(c.name, c.rag, c.editor, c.meta);
     }
 

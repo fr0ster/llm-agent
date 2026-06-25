@@ -58,6 +58,11 @@ export function registerSkillSources(
         displayName: 'Relevant Skills',
         scope: 'global',
       },
+      // The host's RAG is built once at startup; this wiring re-runs on every
+      // per-session pipeline build against the SHARED registry, so skip rather
+      // than throw when the collection is already present. Narrowly opted in here
+      // — ordinary addRagCollection callers keep fail-loud on duplicate names.
+      idempotent: true,
     });
   }
   return out;
