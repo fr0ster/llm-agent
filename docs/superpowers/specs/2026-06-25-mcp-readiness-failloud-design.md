@@ -68,41 +68,103 @@ NOT_READY  ⟺  otherwise
     error flips the server NOT_READY immediately (don't wait for the next probe
     tick).
 
+#### Readiness source — a SmartServer-owned MCP client registry (NOT `agent.healthCheck()`)
+
+> **Review P1b.** `agent.healthCheck()` only probes the top-level agent's
+> `_activeClients` (agent.ts:269/471). Worker/subagent MCP clients live in
+> `subCfg.mcpClients` and the per-worker cache (smart-server.ts:2052 / 2446) and are
+> **invisible** to the top-level agent. "every configured MCP client ok" therefore
+> cannot be derived from `agent.healthCheck()`.
+
+The readiness signal is computed by SmartServer over an **explicit registry of every
+MCP client it owns**:
+- shared/global MCP clients (`connectMcpClientsFromConfig` / the `connectMcp` seam),
+  and
+- worker/subagent MCP clients (DI `subCfg.mcpClients` + builder-connected
+  `subCfg.mcp`, captured in the worker cache).
+
+SmartServer registers each client into this registry as it builds them (global at
+`start()`, workers as their handles are built/cached) and deregisters on close. The
+readiness monitor (§3.4) probes **this registry**, so worker/subagent MCP outages are
+covered. (LLM health stays via the existing path.) Builder-connected `subCfg.mcp`
+clients that SmartServer cannot reach a handle for are an explicit gap — see §6.
+
 ### 3.2 Request gate (fail-loud, replaces silent `(no response)`)
 
 On the pipeline request paths (`/v1/chat/completions`, `/v1/messages`, streaming and
 non-streaming):
 
-- **Before dispatch:** if NOT_READY → respond **HTTP 503** with an explicit OpenAI-
-  shaped error body, e.g.
+- **Before dispatch (NOT_READY):** respond **HTTP 503** with an explicit OpenAI-shaped
+  error body, e.g.
   `{"error":{"type":"service_unavailable","message":"MCP unavailable — server not ready"}}`.
-  Do NOT run the pipeline. (Streaming: emit a single error event then close, no
-  `[DONE]` masking.)
+  Do NOT run the pipeline.
+  - **Streaming requests are split (review P2b):**
+    - *Pre-dispatch* (readiness checked BEFORE any byte is written): return a normal
+      **HTTP 503 JSON error** — do NOT open a `200` SSE stream first. The gate runs
+      before `res.writeHead(200, …text/event-stream…)`.
+    - *In-flight* (MCP fails AFTER the 200 SSE headers are already sent): the status
+      line is committed, so emit a single SSE error event (`data: {"error":…}`) then
+      `res.end()` — NO `[DONE]` (which would mask the failure as a clean finish).
 - **`(no response)` fallback (smart-server.ts:3632):** keep `(no response)` ONLY for
   a genuinely empty-but-successful turn. When the run degraded due to MCP
   unavailability, the component throws (next section) → `result.ok === false` →
   the existing `Error: ${result.error.message}` path (3633) carries it. We also map
   that to a non-200 status where the response shape allows.
 
-### 3.3 In-flight fail-loud from the pipeline component
+### 3.3 In-flight fail-loud — ALL MCP execution surfaces
 
-- **`buildMcpBridge` (smart-server.ts:945–966):** distinguish *"this client does not
-  own the tool"* from *"this client errored"*. Today both fall through to
-  `continue` / `Tool not found`. New: if `listTools()` returns `!ok` because of a
-  **transport/availability** error (not a clean empty list), treat MCP as
-  unavailable → throw a typed `McpUnavailableError` (or return a Result the caller
-  fails on) rather than masking the tool as not-found. A genuine "no client owns
-  this tool name" stays `Tool not found`.
-- The thrown error propagates out of the coordinator/pipeline component as an
-  orchestrator error → the consumer sees a real failure (the embedding consumer can
-  catch it; the HTTP surface returns non-200 / `Error: …`).
-- Side effect: such a failure flips the server NOT_READY (§3.1).
+> **Review P1a.** `buildMcpBridge` is only the controller/stepper surface. The core
+> SmartAgent tool loop converts any `!res.ok` into tool-result **text** fed back to
+> the LLM (agent.ts:1882–1886), and the pipeline-handler tool-loop (tool-loop.ts)
+> does the same. So flat / default / linear loops keep feeding "MCP error" to the
+> model instead of failing loud. The policy below applies at EVERY surface.
+
+#### Error classification (the enabling primitive)
+
+Not every tool failure is an availability failure. A tool that *ran* and returned an
+error payload is legitimate LLM feedback; a *transport/availability* failure is not.
+Distinguish them by a stable `McpError` **code**:
+
+- **AVAILABILITY** — `NOT_CONNECTED`, transport/connect failure, `-32001` timeout,
+  HTTP 403/502/503 from the MCP endpoint, "no response after reconnect" (§3.5). The
+  `McpClientAdapter`/`MCPClientWrapper` tag these with an availability code.
+- **TOOL_ERROR** — the tool executed and returned an error result (or a 4xx that is
+  about the *arguments*, not the endpoint). Stays as text to the LLM (today's
+  behaviour, unchanged).
+
+A shared helper `isMcpUnavailable(err): boolean` (keyed on the code) is the single
+source of truth used at every surface.
+
+#### Per-surface policy
+
+- **Core SmartAgent tool loop (agent.ts:1882):** when `!res.ok && isMcpUnavailable`,
+  do NOT stringify the error into the tool message — abort the loop and surface a
+  typed `McpUnavailableError` up the `process()` Result (`result.ok === false`).
+  TOOL_ERROR stays text.
+- **Pipeline-handler tool-loop (tool-loop.ts):** same classification + abort/surface.
+- **`buildMcpBridge` (smart-server.ts:945–966):** distinguish *"no client owns this
+  tool"* (→ keep `Tool not found`) from *"a client's `listTools()`/`callTool` failed
+  with an availability error"* (→ throw `McpUnavailableError`, do NOT `continue` past
+  it as if the tool were absent).
+
+#### Propagation & side effect
+
+- The typed error propagates out of the coordinator/pipeline component as an
+  orchestrator error → the consumer sees a real failure (embedding consumers catch
+  it; the HTTP surface returns non-200 / `Error: …`, never a silent `(no response)`).
+- Any AVAILABILITY error observed in-flight ALSO flips the server NOT_READY (§3.1) —
+  immediately, without waiting for the next probe tick.
 
 ### 3.4 Background health probe (recovery + proactive detection)
 
-- A periodic monitor (interval configurable, default e.g. 10s) calls the existing
-  `agent.healthCheck()` (cheap — it already pings LLM/RAG/MCP) or a narrower MCP
-  `listTools()` probe.
+- A periodic monitor (interval configurable, default e.g. 10s) probes the
+  SmartServer-owned MCP client registry (§3.1) via each client's
+  `healthCheck()` — which calls `client.ping()` (adapter.ts), a LIVE round-trip.
+  - **Review P2a — never use `listTools()` for the probe.** `McpClientAdapter.listTools()`
+    returns the **cached** catalog after the first success (adapter.ts:47), so a
+    monitor on `listTools()` reports READY while the transport is down. Readiness
+    MUST use `healthCheck()`/`ping()` (cache-free). If a future probe wants a
+    tool-level check, it must bypass/invalidate the catalog cache explicitly.
 - Transition handling:
   - `READY → NOT_READY` when a probe finds MCP down (covers "MCP disappeared after
     startup" even with zero traffic).
@@ -111,9 +173,9 @@ non-streaming):
     "після відновлення MCP запускати процес прийому запитів заново" requirement.
 - The monitor starts at server `start()`; the first probe establishes initial
   readiness (so "startup with MCP down" yields NOT_READY rather than a false READY).
-- Reuse/extend the existing `IMcpConnectionStrategy` / `PeriodicConnectionStrategy`
-  infra where it fits; otherwise a small dedicated readiness monitor owned by
-  SmartServer. (Open: pick one in the plan — see §6.)
+- It is a **dedicated readiness monitor owned by SmartServer** (resolved — see §6),
+  separate from `IMcpConnectionStrategy` (which owns transport reconnect/refresh, a
+  different concern; the monitor reads health, it does not drive reconnect).
 
 ### 3.5 Session-preserving reconnect (transport, supporting fix)
 
@@ -150,14 +212,21 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
 
 ## 5. Files (anticipated)
 
-- `packages/llm-agent-libs/src/health/health-checker.ts` — readiness derivation
-  (mcp-down ⇒ not-ready signal), or a new small `readiness` helper.
-- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — readiness field,
-  request gate, background probe wiring, `buildMcpBridge` fail-loud, `(no response)`
-  branch.
-- `packages/llm-agent/src/interfaces/*` — `McpUnavailableError` (or reuse `McpError`
-  with a code) so the component error is typed for consumers.
-- `packages/llm-agent-mcp/src/client.ts` — session-preserving reconnect.
+- `packages/llm-agent/src/...` — `McpError` availability **code(s)** + the shared
+  `isMcpUnavailable(err)` classifier (§3.3); `McpUnavailableError` (or `McpError` with
+  the code) typed for consumers.
+- `packages/llm-agent-mcp/src/adapter.ts` / `client.ts` — tag transport/availability
+  failures with the availability code; session-preserving reconnect (§3.5).
+- `packages/llm-agent-libs/src/agent.ts` — core tool loop: escalate availability
+  errors instead of stringifying them (§3.3).
+- `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` — same escalation in
+  the pipeline-handler tool loop (§3.3).
+- `packages/llm-agent-libs/src/health/health-checker.ts` — readiness derivation over
+  the registry, or a new small `readiness` helper.
+- `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the SmartServer
+  MCP-client **registry** (global + worker/subagent), readiness field, request gate
+  (incl. streaming split §3.2), background readiness monitor, `buildMcpBridge`
+  fail-loud, `(no response)` branch, `/health` readiness mapping.
 - Tests in each touched package.
 
 ---
@@ -167,14 +236,25 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
 1. **Readiness surface:** reuse `/health` (make MCP-down → 503) **and/or** add a
    dedicated `/ready` (liveness vs readiness split)? Proposed: make `/health`
    readiness-accurate (503 on MCP-down) — minimal, no new endpoint — and document it.
-2. **Probe mechanism:** extend `PeriodicConnectionStrategy` vs a dedicated SmartServer
-   readiness monitor? Proposed: dedicated monitor calling `agent.healthCheck()` (one
-   owner, simplest).
-3. **Multi-MCP:** if one of N MCP clients is down — not-ready, or degraded-but-serving
+2. **Multi-MCP:** if one of N MCP clients is down — not-ready, or degraded-but-serving
    the others? Proposed: **any configured MCP down ⇒ not-ready** (conservative,
    matches "don't serve tool-blind"); revisit if a partial-serve use-case appears.
-4. **Probe interval / backoff:** default 10s; configurable via YAML
+3. **Probe interval / backoff:** default 10s; configurable via YAML
    (`mcp.healthIntervalMs`?).
+4. **Builder-connected `subCfg.mcp` coverage (review P1b residue):** worker MCP given
+   as DI `subCfg.mcpClients` is registry-reachable; worker MCP that the
+   SmartAgentBuilder connects internally from `subCfg.mcp` may not expose a handle to
+   SmartServer (smart-server.ts comments: "connection is the builder's job"). Decide:
+   surface those handles up for registry inclusion, or document readiness as covering
+   "SmartServer-reachable MCP clients" only (and rely on §3.3 in-flight escalation for
+   the rest). Proposed: expose the handles where cheap; otherwise document the scope.
+
+**Resolved by this revision (were open):**
+- *Probe mechanism* → dedicated SmartServer readiness monitor probing the owned MCP
+  registry via `healthCheck()`/`ping()` (NOT `agent.healthCheck()`, NOT cached
+  `listTools()`). See §3.1 / §3.4.
+- *Readiness source* → explicit SmartServer-owned MCP client registry (global +
+  worker/subagent), not the top-level agent's `_activeClients`. See §3.1.
 
 ---
 
