@@ -60,7 +60,12 @@ const RETURNED_DOMAIN_ERRORS = [
 for (const err of RETURNED_DOMAIN_ERRORS) {
   test(`callTool RETURNS domain error "${err.slice(0, 24)}…" → ok:true/isError`, async () => {
     const stub = {
-      callTool: async () => ({ toolCallId: '1', name: 'X', result: null, error: err }),
+      callTool: async () => ({
+        toolCallId: '1',
+        name: 'X',
+        result: null,
+        error: err,
+      }),
     };
     const a = new McpClientAdapter(stub as never);
     const r = await a.callTool('X', {});

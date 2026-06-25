@@ -12,15 +12,27 @@ function fetchFailed(causeMessage: string, code?: string): Error {
 }
 
 const UNAVAILABLE_CASES: Array<[string, unknown]> = [
-  ['fetch failed → ECONNREFUSED', fetchFailed('connect ECONNREFUSED 127.0.0.1:7779', 'ECONNREFUSED')],
-  ['fetch failed → ENOTFOUND', fetchFailed('getaddrinfo ENOTFOUND host.invalid', 'ENOTFOUND')],
+  [
+    'fetch failed → ECONNREFUSED',
+    fetchFailed('connect ECONNREFUSED 127.0.0.1:7779', 'ECONNREFUSED'),
+  ],
+  [
+    'fetch failed → ENOTFOUND',
+    fetchFailed('getaddrinfo ENOTFOUND host.invalid', 'ENOTFOUND'),
+  ],
   ['fetch failed → ECONNRESET', fetchFailed('read ECONNRESET', 'ECONNRESET')],
-  ['fetch failed → EHOSTUNREACH', fetchFailed('connect EHOSTUNREACH', 'EHOSTUNREACH')],
+  [
+    'fetch failed → EHOSTUNREACH',
+    fetchFailed('connect EHOSTUNREACH', 'EHOSTUNREACH'),
+  ],
   ['plain connection refused', new Error('connection refused')],
   ['Not connected', new Error('Not connected')],
   ['-32001 timeout', new Error('MCP error -32001: Request timed out')],
   ['HTTP 502', new Error('502 Bad Gateway')],
-  ['no response after reconnect', new Error('boom (no response after reconnect)')],
+  [
+    'no response after reconnect',
+    new Error('boom (no response after reconnect)'),
+  ],
 ];
 
 for (const [label, err] of UNAVAILABLE_CASES) {
@@ -30,7 +42,10 @@ for (const [label, err] of UNAVAILABLE_CASES) {
 }
 
 test('toMcpError: a plain tool error stays MCP_ERROR (not unavailable)', () => {
-  assert.equal(isMcpUnavailable(toMcpError(new Error('tool execution failed'))), false);
+  assert.equal(
+    isMcpUnavailable(toMcpError(new Error('tool execution failed'))),
+    false,
+  );
   assert.equal(isMcpUnavailable(toMcpError('field X is required')), false);
 });
 
