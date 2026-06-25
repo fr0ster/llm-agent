@@ -43,6 +43,7 @@ import {
   type ExternalToolValidationCode,
   type IRag,
   isMcpUnavailable,
+  isReadinessReporter,
   normalizeAndValidateExternalTools,
   QueryEmbedding,
   toToolCallDelta,
@@ -973,6 +974,27 @@ export function buildMcpBridge(
     }
     return `Tool not found: ${name}`;
   };
+}
+
+/**
+ * Pre-dispatch readiness gate response: HTTP 503 with an OpenAI-shaped error,
+ * written BEFORE any pipeline run or SSE stream is opened. Used when the server is
+ * NOT_READY (MCP unavailable) so a request fails loud instead of being served
+ * tool-blind / returning a silent "(no response)".
+ */
+export function writeNotReady(res: {
+  writeHead(code: number, headers?: Record<string, string>): unknown;
+  end(body?: string): unknown;
+}): void {
+  res.writeHead(503, { 'Content-Type': 'application/json' });
+  res.end(
+    JSON.stringify({
+      error: {
+        type: 'service_unavailable',
+        message: 'MCP unavailable — server not ready',
+      },
+    }),
+  );
 }
 
 export class SmartServer {
@@ -3109,14 +3131,20 @@ export class SmartServer {
       );
       return;
     }
+    // Server readiness: derived from the agent's MCP connection strategy (it
+    // implements IReadinessReporter). No strategy / non-reporting ⇒ ready
+    // (readiness unknown). Consumed by /health and the pre-dispatch request gate.
+    const ready = isReadinessReporter(smartAgent) ? smartAgent.isReady() : true;
     if (
       req.method === 'GET' &&
       (urlPath === '/health' || urlPath === '/v1/health')
     ) {
       const status = await healthChecker.check();
-      const httpCode = status.status === 'unhealthy' ? 503 : 200;
+      // MCP-down ⇒ NOT_READY ⇒ 503 too (not just LLM-unhealthy), so a load
+      // balancer stops routing while MCP is unreachable.
+      const httpCode = status.status === 'unhealthy' || !ready ? 503 : 200;
       res.writeHead(httpCode, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify(status));
+      res.end(JSON.stringify({ ...status, ready }));
       return;
     }
     // POST /v1/messages or /messages → Anthropic adapter
@@ -3124,6 +3152,11 @@ export class SmartServer {
       req.method === 'POST' &&
       (urlPath === '/v1/messages' || urlPath === '/messages')
     ) {
+      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any stream.
+      if (!ready) {
+        writeNotReady(res);
+        return;
+      }
       const anthropicAdapter = adapterMap?.get('anthropic');
       if (!anthropicAdapter) {
         res.writeHead(404, { 'Content-Type': 'application/json' });
@@ -3145,6 +3178,11 @@ export class SmartServer {
       req.method === 'POST' &&
       (urlPath === '/v1/chat/completions' || urlPath === '/chat/completions')
     ) {
+      // Pre-dispatch readiness gate: fail loud (503) BEFORE opening any SSE stream.
+      if (!ready) {
+        writeNotReady(res);
+        return;
+      }
       await this._withSession(req, res, async (graph, sessionId, traceId) => {
         await this._handleChat(
           req,
