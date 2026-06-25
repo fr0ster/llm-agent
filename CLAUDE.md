@@ -63,8 +63,7 @@ still install only what they need.)
 
 ## Architecture Principles (MUST verify at every brainstorm AND every review)
 
-These are binding. Before finalizing any design (brainstorm) and before approving any
-change (review), explicitly check the work against each one and state how it complies.
+**Canonical source: [`docs/ARCHITECTURE.md` → Architecture Principles](docs/ARCHITECTURE.md#architecture-principles)** (keep the two in sync). These are binding. Before finalizing any design (brainstorm) and before approving any change (review), explicitly check the work against each one and state how it complies.
 
 1. **Build ON existing components — never bespoke glue in the app.** Find the
    component that already does it; if it falls short, **rework/extend the component**
