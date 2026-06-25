@@ -1131,3 +1131,7 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
   **reimplementing on existing components** (e.g. MCP lifecycle/health via
   `IMcpConnectionStrategy` + `IReadinessReporter`, not bespoke server modules) — NOT by
   carving it into ad-hoc fragments.
+- **`builder.ts` (~1.5k) and `agent.ts` (~2.1k) are large too.** Follow-up extraction
+  targets: the builder's MCP block (connect + **tool vectorization** — pull the
+  vectorization into its own small module consumed by the builder) and the agent's
+  tool-loop. Keep the extraction component-shaped (Principle 1/6), not ad-hoc.

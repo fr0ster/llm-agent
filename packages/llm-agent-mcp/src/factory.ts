@@ -18,6 +18,7 @@ export async function createDefaultMcpClient(
       : new MCPClientWrapper({
           transport: 'auto',
           url: config.url,
+          ...(config.headers ? { headers: config.headers } : {}),
         });
 
   await wrapper.connect();

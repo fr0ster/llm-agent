@@ -19,6 +19,9 @@ export interface McpConnectionConfig {
   url?: string;
   command?: string;
   args?: string[];
+  /** HTTP transport headers (e.g. `Accept`, reverse-proxy routing like
+   *  `x-sap-destination`). Additive — strategies that ignore it are unaffected. */
+  headers?: Record<string, string>;
 }
 
 export interface McpClientFactoryResult {

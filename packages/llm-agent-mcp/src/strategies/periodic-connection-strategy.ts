@@ -16,6 +16,10 @@ export class PeriodicConnectionStrategy
   private _cachedResult: McpConnectionResult;
   private _changed: boolean;
   private readonly _interval: ReturnType<typeof setInterval>;
+  /** The initial probe — `resolve()` awaits it so the FIRST call (e.g. a builder's
+   *  build-time tool vectorization) sees the connected clients, not the empty
+   *  pre-probe cache. Subsequent resolves return the cache without blocking. */
+  private readonly _firstProbe: Promise<void>;
 
   constructor(
     configs: McpConnectionConfig[],
@@ -36,8 +40,8 @@ export class PeriodicConnectionStrategy
       void this._probe();
     }, intervalMs);
 
-    // Run first probe immediately
-    void this._probe();
+    // Run the first probe immediately; capture it so resolve() can await it once.
+    this._firstProbe = this._probe();
   }
 
   private async _probe(): Promise<void> {
@@ -55,6 +59,8 @@ export class PeriodicConnectionStrategy
   }
 
   async resolve(_currentClients?: IMcpClient[]): Promise<McpConnectionResult> {
+    // Ensure the initial connect has completed before the first resolve returns.
+    await this._firstProbe;
     if (this._changed) {
       this._changed = false;
       return {

@@ -76,7 +76,10 @@ describe('SmartAgentBuilder — MCP setup failure logging (#118)', () => {
         mcpWarning,
         `expected a 'warning' log entry mentioning ${unreachableUrl}, got: ${JSON.stringify(warnings)}`,
       );
-      assert.match(mcpWarning.message, /MCP setup failed/);
+      // #118 contract: the failure is logged with the target URL, not swallowed.
+      // Connection is now owned by the connection strategy, which logs
+      // "MCP connection failed for <url>" (was the builder's "MCP setup failed").
+      assert.match(mcpWarning.message, /MCP connection failed/);
 
       // Agent still builds (graceful degradation contract preserved).
       const health = await handle.agent.healthCheck();

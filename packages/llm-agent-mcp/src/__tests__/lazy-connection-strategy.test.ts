@@ -375,3 +375,50 @@ describe('LazyConnectionStrategy.isReady()', () => {
     assert.equal(strategy.isReady(), false, 'one target down ⇒ not ready');
   });
 });
+
+describe('LazyConnectionStrategy — closes stale transport on unhealthy reconnect', () => {
+  it('calls the old close handle before clearing/reconnecting an unhealthy client', async () => {
+    let healthy = true;
+    let closeCalls = 0;
+    let factoryCalls = 0;
+    const client: IMcpClient = {
+      async listTools(): Promise<Result<McpTool[], McpError>> {
+        return { ok: true, value: [] };
+      },
+      async callTool(): Promise<Result<McpToolResult, McpError>> {
+        return { ok: true, value: { content: 'ok' } };
+      },
+      async healthCheck(): Promise<Result<boolean, McpError>> {
+        return healthy
+          ? { ok: true, value: true }
+          : {
+              ok: false,
+              error: { message: 'down' } as McpError,
+            };
+      },
+    };
+    const factory: McpClientFactory = async () => {
+      factoryCalls++;
+      return {
+        client,
+        close: () => {
+          closeCalls++;
+        },
+      };
+    };
+    const strategy = new LazyConnectionStrategy(
+      [httpConfig],
+      { cooldownMs: 0 },
+      factory,
+    );
+
+    await strategy.resolve([]); // initial connect
+    assert.equal(factoryCalls, 1);
+    assert.equal(closeCalls, 0, 'no close on first connect');
+
+    healthy = false; // next health probe fails
+    await strategy.resolve([]); // unhealthy → close stale, then reconnect
+    assert.equal(closeCalls, 1, 'stale transport closed before reconnect');
+    assert.equal(factoryCalls, 2, 'reconnected after closing the stale one');
+  });
+});
