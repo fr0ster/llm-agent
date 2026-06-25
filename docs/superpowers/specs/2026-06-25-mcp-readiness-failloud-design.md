@@ -42,7 +42,12 @@ When MCP returns 403 / 502 / `-32001 timeout` / drops the connection:
 
 - **Startup with MCP down → start NOT-READY** (not fail-loud-at-start). The process
   comes up, reports not-ready, and a background probe flips it READY when MCP
-  appears. Survives a cold MCP.
+  appears. Survives a cold MCP. **Implication:** startup MCP connect must NOT throw on
+  failure — it records the target as a DOWN slot (§3.1) and the monitor retries it.
+  (Changes `connectMcpClientsFromConfig`'s throw-on-connect into a recorded-unhealthy
+  target.)
+- **Readiness covers worker/subagent MCP** (`subCfg.mcp` / `subCfg.mcpClients`), not
+  just global — the registry is keyed on configured targets (§3.1).
 - **Spec-first**, then implement in reviewed PRs.
 
 ---
@@ -54,8 +59,8 @@ When MCP returns 403 / 502 / `-32001 timeout` / drops the connection:
 A single server-level readiness signal, derived from MCP (and LLM) health:
 
 ```
-READY      ⟺  llm ok  AND  every configured MCP client ok
-NOT_READY  ⟺  otherwise
+READY      ⟺  llm ok  AND  every configured MCP target healthy
+NOT_READY  ⟺  otherwise   (incl. a target whose connect has not yet succeeded)
 ```
 
 - Held as an explicit field on SmartServer (e.g. `_ready: boolean`, default `false`
@@ -68,26 +73,47 @@ NOT_READY  ⟺  otherwise
     error flips the server NOT_READY immediately (don't wait for the next probe
     tick).
 
-#### Readiness source — a SmartServer-owned MCP client registry (NOT `agent.healthCheck()`)
+#### Readiness source — a SmartServer-owned MCP **target registry** (slots, not bare clients)
 
-> **Review P1b.** `agent.healthCheck()` only probes the top-level agent's
-> `_activeClients` (agent.ts:269/471). Worker/subagent MCP clients live in
-> `subCfg.mcpClients` and the per-worker cache (smart-server.ts:2052 / 2446) and are
-> **invisible** to the top-level agent. "every configured MCP client ok" therefore
-> cannot be derived from `agent.healthCheck()`.
+> **Review P1b + cold-start (P1).** `agent.healthCheck()` only probes the top-level
+> agent's `_activeClients` (agent.ts:269/471) — worker/subagent MCP (smart-server.ts
+> 2052/2446) is invisible. AND a registry of *live clients* cannot represent a
+> cold-MCP startup: `connectMcpClientsFromConfig()` awaits `wrapper.connect()` and
+> **throws** on failure (smart-server.ts:939), so a down-at-boot MCP produces no
+> client to register → either startup still throws (violates "start NOT_READY") or
+> "zero clients = ok" (false READY).
 
-The readiness signal is computed by SmartServer over an **explicit registry of every
-MCP client it owns**:
-- shared/global MCP clients (`connectMcpClientsFromConfig` / the `connectMcp` seam),
-  and
-- worker/subagent MCP clients (DI `subCfg.mcpClients` + builder-connected
-  `subCfg.mcp`, captured in the worker cache).
+The readiness source is therefore a registry of **configured MCP targets**, modelled
+on the existing `LazyConnectionStrategy.Slot` (lazy-connection-strategy.ts:11):
 
-SmartServer registers each client into this registry as it builds them (global at
-`start()`, workers as their handles are built/cached) and deregisters on close. The
-readiness monitor (§3.4) probes **this registry**, so worker/subagent MCP outages are
-covered. (LLM health stays via the existing path.) Builder-connected `subCfg.mcp`
-clients that SmartServer cannot reach a handle for are an explicit gap — see §6.
+```
+Slot { config: McpConnectionConfig; client?: IMcpClient;  // live handle, may be absent
+       healthy: boolean; lastAttempt: number }
+```
+
+- The registry is built from **config**, not from successful connections: every
+  configured MCP target gets a slot at `start()` even if its connect fails. A slot
+  with no healthy client ⇒ that target is DOWN ⇒ server NOT_READY. This is what makes
+  "cold-MCP startup → NOT_READY (not a thrown start)" implementable. **Startup connect
+  no longer throws on MCP-down** — a failed connect records the slot unhealthy and the
+  monitor (§3.4) retries it on cooldown.
+- **Targets covered (contract DECISION, review P1b — no longer punted):** readiness
+  includes **both**
+  - shared/global targets (`cfg.mcp` → `connectMcpClientsFromConfig` / `connectMcp`
+    seam), and
+  - **worker/subagent targets** (`subCfg.mcp` and DI `subCfg.mcpClients` from every
+    subagent config). DAG/stepper examples put MCP in worker configs, so excluding
+    them would make `/health` lie for those pipelines.
+- **Where a live handle already exists** (global clients, DI `subCfg.mcpClients`) the
+  slot reuses it for probing. **Where SmartServer has only the config** (builder-
+  connected `subCfg.mcp`, whose handle the builder owns and does not surface), the
+  readiness monitor owns its OWN lazy probe-connection to that target — independent of
+  the builder's per-worker connection — so the target is still probed/recovered. (This
+  is the explicit resolution of the former §6 punt: register the TARGET, not the
+  unreachable handle.)
+- Slots are registered as SmartServer builds targets (global at `start()`, workers as
+  their configs are read) and deregistered on close. The readiness monitor (§3.4)
+  probes this registry; LLM health stays via the existing path.
 
 ### 3.2 Request gate (fail-loud, replaces silent `(no response)`)
 
@@ -157,9 +183,15 @@ source of truth used at every surface.
 
 ### 3.4 Background health probe (recovery + proactive detection)
 
-- A periodic monitor (interval configurable, default e.g. 10s) probes the
-  SmartServer-owned MCP client registry (§3.1) via each client's
-  `healthCheck()` — which calls `client.ping()` (adapter.ts), a LIVE round-trip.
+- A periodic monitor (interval configurable, default e.g. 10s) walks the
+  SmartServer-owned MCP **target registry** (§3.1). For each slot:
+  - if it has a live `client`, probe via `client.healthCheck()` → `client.ping()`
+    (adapter.ts), a LIVE round-trip;
+  - if it has NO healthy client (cold target / dropped), attempt a lazy (re)connect of
+    the slot's `config` on cooldown (the `LazyConnectionStrategy._doResolve` pattern),
+    then probe. Success → slot healthy + live handle cached; failure → slot stays
+    DOWN.
+  - The server is READY iff **every** slot is healthy (and LLM ok).
   - **Review P2a — never use `listTools()` for the probe.** `McpClientAdapter.listTools()`
     returns the **cached** catalog after the first success (adapter.ts:47), so a
     monitor on `listTools()` reports READY while the transport is down. Readiness
@@ -198,7 +230,8 @@ genuine outage still escalates to NOT_READY.
 
 | Situation | Before | After |
 |---|---|---|
-| MCP down at startup | server READY, serves tool-blind | server **NOT_READY**, `/health` 503, requests 503 until MCP up |
+| MCP down at startup | server READY, serves tool-blind (or start throws) | server starts **NOT_READY** (no throw), `/health` 503, requests 503 until MCP up |
+| worker/subagent MCP down (DAG/stepper) | `/health` 200 (top-level only) | server **NOT_READY** — worker targets are in the registry |
 | MCP drops mid-life | silent `(no response)` 200 | in-flight request → **loud error** (non-200 / `Error:`); server flips NOT_READY |
 | transient blip (session kept) | reconnect = fresh session, result may be lost | **resume** same session, result preserved, stays READY |
 | MCP recovers | stays degraded / manual restart | background probe flips **READY**, intake resumes automatically |
@@ -224,9 +257,15 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
 - `packages/llm-agent-libs/src/health/health-checker.ts` — readiness derivation over
   the registry, or a new small `readiness` helper.
 - `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` — the SmartServer
-  MCP-client **registry** (global + worker/subagent), readiness field, request gate
-  (incl. streaming split §3.2), background readiness monitor, `buildMcpBridge`
-  fail-loud, `(no response)` branch, `/health` readiness mapping.
+  MCP **target registry** (slots: config + optional live handle; global +
+  worker/subagent), readiness field, request gate (incl. streaming split §3.2),
+  background readiness monitor (lazy slot reconnect), `buildMcpBridge` fail-loud,
+  `(no response)` branch, `/health` readiness mapping, AND
+  `connectMcpClientsFromConfig` change: a down-at-boot target is recorded as a DOWN
+  slot instead of throwing (so start() comes up NOT_READY).
+- `packages/llm-agent-mcp/src/strategies/lazy-connection-strategy.ts` — reuse the
+  `Slot` model / `_doResolve` cooldown-reconnect as the registry/monitor mechanism
+  (extract or compose; don't duplicate).
 - Tests in each touched package.
 
 ---
@@ -240,21 +279,24 @@ not-ready — proposed: any configured-MCP-down ⇒ not-ready.)
    the others? Proposed: **any configured MCP down ⇒ not-ready** (conservative,
    matches "don't serve tool-blind"); revisit if a partial-serve use-case appears.
 3. **Probe interval / backoff:** default 10s; configurable via YAML
-   (`mcp.healthIntervalMs`?).
-4. **Builder-connected `subCfg.mcp` coverage (review P1b residue):** worker MCP given
-   as DI `subCfg.mcpClients` is registry-reachable; worker MCP that the
-   SmartAgentBuilder connects internally from `subCfg.mcp` may not expose a handle to
-   SmartServer (smart-server.ts comments: "connection is the builder's job"). Decide:
-   surface those handles up for registry inclusion, or document readiness as covering
-   "SmartServer-reachable MCP clients" only (and rely on §3.3 in-flight escalation for
-   the rest). Proposed: expose the handles where cheap; otherwise document the scope.
+   (`mcp.healthIntervalMs`?). The slot lazy-reconnect cooldown
+   (`LazyConnectionStrategy` default 30s) is a separate knob — align or keep distinct?
+   Proposed: separate; probe interval ≤ cooldown.
+4. **Worker probe-connection cost:** for builder-connected `subCfg.mcp` the monitor
+   opens its OWN probe-connection per worker target (§3.1). For many workers sharing
+   one endpoint this could mean duplicate connections. Proposed: de-dup slots by
+   resolved target (url/command) so identical worker targets share one slot.
 
-**Resolved by this revision (were open):**
-- *Probe mechanism* → dedicated SmartServer readiness monitor probing the owned MCP
-  registry via `healthCheck()`/`ping()` (NOT `agent.healthCheck()`, NOT cached
-  `listTools()`). See §3.1 / §3.4.
-- *Readiness source* → explicit SmartServer-owned MCP client registry (global +
-  worker/subagent), not the top-level agent's `_activeClients`. See §3.1.
+**Resolved by this/the prior revision (were open):**
+- *Readiness source* → SmartServer-owned MCP **target registry** (slots: config +
+  optional live handle), covering global **and** worker/subagent targets — NOT
+  `agent.healthCheck()`'s top-level `_activeClients`. (§3.1)
+- *Cold-MCP startup* → registry built from config; failed connect = DOWN slot, not a
+  thrown start; monitor retries. (§3.1 / §2)
+- *Worker/subagent MCP contract* → **included** in readiness (target registration);
+  builder-connected `subCfg.mcp` covered via a monitor-owned probe-connection. (§3.1)
+- *Probe mechanism* → dedicated SmartServer readiness monitor over the registry via
+  `healthCheck()`/`ping()`, never cached `listTools()`. (§3.4)
 
 ---
 
