@@ -1085,6 +1085,14 @@ session rebuild runs path (b) and injects the now-live client.
 Replace the worker MCP wiring comment at smart-server.ts:2052 ("connection is the
 builder's job") with a pointer to this server-managed path.
 
+> **Implementation risk (review round 6, residual):** the worker setup runs on BOTH
+> the startup primary build AND the per-session lazy rebuild — do NOT register the
+> worker slot twice. `addTarget` is already idempotent on `id` (it early-returns if
+> the id exists, registry impl in Task 7), so reuse a STABLE slot id
+> (`worker:<name>:<i>`) on every path; the rebuild path must read the EXISTING slot's
+> client via `workerMcpClientsFromRegistry(name)`, never re-`addTarget` a fresh slot.
+> Add a test asserting two `addTarget` calls with the same id keep ONE slot.
+
 - [ ] **Step 2: Write the unit test (registry slot + injection contract)**
 
 ```ts
