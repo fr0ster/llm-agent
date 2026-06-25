@@ -1,5 +1,36 @@
 # Architecture
 
+## Architecture Principles
+
+These principles are **binding** for every change in this monorepo. Contributors and
+reviewers MUST check a design against each one at brainstorm time (before finalizing)
+and at review time (before approving); a violation is a blocking issue, not a nit.
+
+1. **Build ON existing components — never bespoke glue in the app.** Find the component
+   that already does the job; if it falls short, **rework/extend that component** so the
+   capability lands in the reusable library, not in app-local code.
+2. **The app IS the example.** `@mcp-abap-adt/llm-agent-server` / `SmartServer` is a
+   working demonstration of *consuming* the libraries. If the app accretes bespoke
+   logic, it proves we don't use our own components — so nobody else will. *Corollary:*
+   the fix for an over-grown file is NOT to carve it into ad-hoc fragments — it is to
+   **reimplement on the components**.
+3. **Everything is built around interfaces.** Consumers depend on interfaces, never on
+   concrete classes.
+4. **Many small interfaces, not one big one (Interface Segregation).** ADD a new focused
+   interface; do NOT grow an existing one. *Example:* readiness is a separate
+   `IReadinessReporter { isReady() }` (detected via `isReadinessReporter`), not an
+   `isReady?()` bolted onto `IMcpConnectionStrategy`.
+5. **Variation points the consumer should own are expressed as STRATEGIES.** Anything we
+   want to leave to the consumer's choice is a strategy they can swap or implement (e.g.
+   `IMcpConnectionStrategy` — `Lazy`/`Periodic`/`Noop`, or a custom one).
+6. **Control file size — no multi-thousand-line files.** A giant file is itself a smell;
+   put new logic in a small focused module and consume it, rather than appending to a
+   god-object.
+7. **Don't break components.** Extend additively and backward-compatibly.
+
+> See also **Current Technical Debt** at the end of this document for known violations
+> (e.g. an over-grown `smart-server.ts`) being worked down toward these principles.
+
 ## Scope
 
 The codebase is split across **six npm packages**:
@@ -1093,4 +1124,10 @@ See `docs/examples/coordinator-orchestration.yaml` for a complete configuration.
 
 ## Current Technical Debt (Explicit)
 
-- No known outstanding technical debt. Aggregate metrics, circuit breakers, health checks, and config hot-reload have been implemented.
+- **`smart-server.ts` is over-grown (~3.9k lines, ~57 methods)** — violates Principle 6
+  (file size) and Principle 2 (the app should consume components, not accrete bespoke
+  glue). It is the composition root that became a kitchen sink (HTTP routing, infra
+  build, MCP wiring, LLM resolution, worker build, session handling). Work it down by
+  **reimplementing on existing components** (e.g. MCP lifecycle/health via
+  `IMcpConnectionStrategy` + `IReadinessReporter`, not bespoke server modules) — NOT by
+  carving it into ad-hoc fragments.

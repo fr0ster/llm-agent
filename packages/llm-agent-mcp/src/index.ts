@@ -7,6 +7,8 @@ export {
 export { createDefaultMcpClient } from './factory.js';
 export {
   LazyConnectionStrategy,
+  type MakeConnectionStrategyOptions,
+  makeConnectionStrategy,
   NoopConnectionStrategy,
   PeriodicConnectionStrategy,
 } from './strategies/index.js';
