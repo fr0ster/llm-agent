@@ -631,20 +631,20 @@ test('empty registry (no MCP configured) is healthy', () => {
 
 test('a configured-but-unconnected target is NOT healthy', () => {
   const r = new McpReadinessRegistry();
-  r.addTarget('global-0', { transport: 'auto', url: 'http://down:1/mcp' } as never);
+  r.addTarget('global-0', { transport: 'auto', url: 'http://down:1/mcp' } as never, 'global');
   assert.equal(r.allHealthy(), false);
 });
 
 test('marking the only slot healthy makes the registry healthy', () => {
   const r = new McpReadinessRegistry();
-  r.addTarget('global-0', { transport: 'auto', url: 'http://x/mcp' } as never);
+  r.addTarget('global-0', { transport: 'auto', url: 'http://x/mcp' } as never, 'global');
   r.markHealthy('global-0', { listTools: async () => ({ ok: true, value: [] }) } as never);
   assert.equal(r.allHealthy(), true);
 });
 
 test('a live DI client registers healthy', () => {
   const r = new McpReadinessRegistry();
-  r.addLiveClient('worker-a', { listTools: async () => ({ ok: true, value: [] }) } as never);
+  r.addLiveClient('worker-a', { listTools: async () => ({ ok: true, value: [] }) } as never, 'worker');
   assert.equal(r.allHealthy(), true);
 });
 ```
@@ -661,8 +661,11 @@ Expected: FAIL — module does not exist.
 import type { IMcpClient } from '@mcp-abap-adt/llm-agent';
 import type { SmartServerMcpConfig } from './config.js'; // adjust import to the real config type
 
+export type ReadinessScope = 'global' | 'worker';
+
 export interface ReadinessSlot {
   id: string;
+  scope: ReadinessScope;
   config?: SmartServerMcpConfig; // absent for DI-only live clients
   client?: IMcpClient;
   healthy: boolean;
@@ -676,14 +679,14 @@ export class McpReadinessRegistry {
   private readonly slots = new Map<string, ReadinessSlot>();
 
   /** Register a configured target whose client may not be connected yet. */
-  addTarget(id: string, config: SmartServerMcpConfig): void {
+  addTarget(id: string, config: SmartServerMcpConfig, scope: ReadinessScope): void {
     if (this.slots.has(id)) return;
-    this.slots.set(id, { id, config, healthy: false, lastAttempt: 0 });
+    this.slots.set(id, { id, scope, config, healthy: false, lastAttempt: 0 });
   }
 
   /** Register an already-live DI client (no lazy connect needed). */
-  addLiveClient(id: string, client: IMcpClient): void {
-    this.slots.set(id, { id, client, healthy: true, lastAttempt: 0 });
+  addLiveClient(id: string, client: IMcpClient, scope: ReadinessScope): void {
+    this.slots.set(id, { id, scope, client, healthy: true, lastAttempt: 0 });
   }
 
   markHealthy(id: string, client: IMcpClient): void {
@@ -721,8 +724,6 @@ export class McpReadinessRegistry {
 }
 ```
 
-> Add `scope: 'global' | 'worker'` to `ReadinessSlot` and to `addTarget(id, config, scope)` / `addLiveClient(id, client, scope)` so `liveClients()` can return only global execution clients. Update Task 7's tests to pass a scope (`'global'`).
-
 > Integration note: `connectMcpClientsFromConfig` must STOP throwing on a failed connect. Wrap its `await wrapper.connect()` in try/catch: on success, the caller `addLiveClient`s; on failure, the caller `addTarget`s the still-unconnected config so the monitor can retry. Keep the existing return type by returning successfully-connected clients only; the registry (not the return value) tracks down targets.
 
 - [ ] **Step 4: Run the test to verify it passes**
@@ -759,7 +760,7 @@ import { McpReadinessMonitor } from '../mcp-readiness-monitor.js';
 
 test('tick: a down target reconnects and becomes ready', async () => {
   const reg = new McpReadinessRegistry();
-  reg.addTarget('g0', { transport: 'auto', url: 'http://x/mcp' } as never);
+  reg.addTarget('g0', { transport: 'auto', url: 'http://x/mcp' } as never, 'global');
   const healthyClient = {
     healthCheck: async () => ({ ok: true as const, value: true }),
   };
@@ -777,11 +778,20 @@ test('tick: a live client that fails healthCheck flips NOT ready', async () => {
   const flaky = {
     healthCheck: async () => ({ ok: false as const, error: new McpError('Not connected', 'MCP_NOT_CONNECTED') }),
   };
-  reg.addLiveClient('w', flaky as never);
+  reg.addLiveClient('w', flaky as never, 'worker');
   const monitor = new McpReadinessMonitor(reg, { connect: async () => { throw new Error('still down'); }, cooldownMs: 0 });
   assert.equal(monitor.isReady(), true);
   await monitor.tick();
   assert.equal(monitor.isReady(), false);
+});
+
+test('tick: a live client WITHOUT healthCheck stays ready (not marked down)', async () => {
+  const reg = new McpReadinessRegistry();
+  reg.addLiveClient('di', { listTools: async () => ({ ok: true, value: [] }) } as never, 'global');
+  const monitor = new McpReadinessMonitor(reg, { connect: async () => { throw new Error('n/a'); }, cooldownMs: 0 });
+  assert.equal(monitor.isReady(), true);
+  await monitor.tick();
+  assert.equal(monitor.isReady(), true); // no healthCheck ⇒ assumed healthy
 });
 ```
 
@@ -825,7 +835,15 @@ export class McpReadinessMonitor {
   async tick(now = Date.now()): Promise<void> {
     for (const slot of this.registry.list()) {
       if (slot.client) {
-        const hc = await slot.client.healthCheck?.();
+        // healthCheck is OPTIONAL on IMcpClient (mcp-client.ts:25). A client that
+        // does not implement it is ASSUMED healthy (per the interface doc) — never
+        // marked down on a missing probe, else a DI/plugin client without a probe
+        // wedges readiness down forever with no config to reconnect (review r5).
+        if (typeof slot.client.healthCheck !== 'function') {
+          this.registry.markHealthy(slot.id, slot.client);
+          continue;
+        }
+        const hc = await slot.client.healthCheck();
         if (hc && hc.ok) {
           this.registry.markHealthy(slot.id, slot.client);
           continue;
@@ -1002,6 +1020,68 @@ git commit -m "feat(server): callMcp reads live clients from the registry; tools
 
 ---
 
+### Task 9c: Hoist worker `subCfg.mcp` to server-managed (cold-start + recovery)
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (worker build path ~2052/2122; worker cache)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-mcp-hoist.test.ts`
+
+> **Review round 5 (P1#1).** A builder-owned worker `subCfg.mcp` that is down at boot is SKIPPED by the builder (builder.ts:1137) → the worker runs client-less and "self-heal" is impossible (no wrapper exists). Fix: the SERVER connects worker `subCfg.mcp` through the registry and INJECTS the client into the worker (reusing the injected-clients seam at 2122), so worker MCP is registry-managed and recovery rewires through a cache invalidation.
+
+- [ ] **Step 1: Implement the hoist (integration-covered; unit-test the slot effect)**
+
+When processing a worker (subagent) config at build time: if `subCfg.mcp` is set AND
+`subCfg.mcpClients` is empty, do NOT let the builder connect it. Instead:
+1. Register a registry slot `addTarget('worker:<name>:<i>', subCfgMcp, 'worker')`.
+2. Attempt the server-owned connect (same factory as global; no-throw — Task 7). On
+   success `markHealthy(...)` and pass the connected client as the worker's injected
+   `mcpClients` (the path at smart-server.ts:2122 `subBuilder.withMcpClients(injected.mcpClients)`).
+   On failure leave the slot DOWN (server NOT_READY).
+3. On a worker slot DOWN→UP recovery (monitor), invalidate the per-worker cache entry
+   (the cache at smart-server.ts:2446 `cached.mcpClients`) so the NEXT session rebuild
+   injects the now-live client. Add a `onWorkerRecovered(id)` hook to the monitor deps
+   mirroring `onGlobalRecovered` (Task 9b); wire it to drop the worker cache entry.
+
+Replace the worker MCP wiring comment at smart-server.ts:2052 ("connection is the
+builder's job") with a pointer to this server-managed path.
+
+- [ ] **Step 2: Write the unit test (registry slot + injection contract)**
+
+```ts
+// packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-mcp-hoist.test.ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { McpReadinessRegistry } from '../mcp-readiness-registry.js';
+
+test('a down worker target keeps the server NOT ready', () => {
+  const reg = new McpReadinessRegistry();
+  reg.addTarget('worker:analyst:0', { transport: 'auto', url: 'http://down/mcp' } as never, 'worker');
+  assert.equal(reg.allHealthy(), false); // worker MCP down ⇒ server not ready
+});
+
+test('worker live clients are NOT returned by liveClients() (global-only execution source)', () => {
+  const reg = new McpReadinessRegistry();
+  reg.addLiveClient('worker:analyst:0', { listTools: async () => ({ ok: true, value: [] }) } as never, 'worker');
+  assert.equal(reg.liveClients().length, 0); // worker clients drive readiness+injection, not callMcp
+  assert.equal(reg.allHealthy(), true);
+});
+```
+
+- [ ] **Step 3: Run the test + build**
+
+Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/worker-mcp-hoist.test.ts` then `npm run build`.
+Expected: PASS; build green. Manually verify (smoke) that a DAG/stepper config with a
+down worker MCP starts NOT_READY and recovers (covered in Final verification).
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/worker-mcp-hoist.test.ts
+git commit -m "feat(server): hoist worker subCfg.mcp to server-managed registry (cold-start + recovery)"
+```
+
+---
+
 ## Phase 5 — Request gate + health surface (§3.2, §4)
 
 ### Task 10: Request gate — pre-dispatch NOT_READY → HTTP 503 (streaming split)
@@ -1151,16 +1231,48 @@ Also gate the preceding usage chunk (`...usage: lastUsage...` ~3610) on `!endedO
 so a failed stream emits neither a usage frame nor `[DONE]` — only the `[Error]` chunk
 then `end()`.
 
-- [ ] **Step 4: Run the test + verify**
+- [ ] **Step 4: Add a REAL streaming integration test (review round 5, P2#4)**
+
+The pure-helper test does not prove the writer sets `endedOnError` on `!chunk.ok` and
+skips the usage/`[DONE]` frames. Add an integration test that drives the actual
+streaming response path with a fake stream that yields one `{ ok: false, error }`
+chunk and asserts the written SSE bytes contain the `[Error]` chunk but **no**
+`data: [DONE]` and **no** usage frame. If the suite already streams through a handler
+harness (search `smart-agent/__tests__` for an SSE/streaming test), add the case
+there; otherwise capture `res.write` into a buffer with a stub `res` and call the
+streaming writer with an injected async-iterable `stream` that yields
+`{ ok: false, error: new McpError('Not connected','MCP_NOT_CONNECTED') }`:
+
+```ts
+test('streaming MCP failure: [Error] chunk present, no [DONE], no usage frame', async () => {
+  const out: string[] = [];
+  const res = { write: (s: string) => { out.push(s); return true; }, end: () => {} };
+  async function* stream() {
+    yield { ok: false as const, error: new McpError('Not connected', 'MCP_NOT_CONNECTED') };
+  }
+  // Call the extracted streaming-writer function with (res, stream(), …); see the
+  // writer's signature in smart-server.ts. Assert:
+  const joined = out.join('');
+  assert.match(joined, /\[Error\]/);
+  assert.doesNotMatch(joined, /\[DONE\]/);
+  assert.doesNotMatch(joined, /"usage"/);
+});
+```
+
+> If the streaming writer is currently an inline block (not a callable function),
+> extract it into a named method/function as part of Task 10b so this test can drive
+> it directly — that extraction is itself the testability fix the review asks for.
+
+- [ ] **Step 5: Run the tests + verify**
 
 Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/streaming-failloud.test.ts`
-Expected: PASS (2 tests). Then `npm run build`.
+Expected: PASS (helper + integration). Then `npm run build`.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 6: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/streaming-failloud.test.ts
-git commit -m "feat(server): in-flight streaming failure emits no [DONE] after the error chunk"
+git commit -m "feat(server): in-flight streaming failure emits no [DONE]/usage after the error chunk"
 ```
 
 ---
@@ -1332,3 +1444,9 @@ git commit -m "feat(server): failed MCP run surfaces an error, never (no respons
 - **P1/P2 worker MCP** → Task 9b scope: readiness includes worker targets; worker EXECUTION self-heals via Task 3 (no cross-owner client swap).
 - **P2 gate route test** → Task 10 Step 4 (real route integration test, stream:true → 503, agent not called).
 - **P2 Task 5 stub** → Task 5 rewritten: shared `escalateIfUnavailable` helper the handler USES + real handler regression test.
+
+### Round-5 review resolutions
+- **P1 worker cold-start** → §3.6 + **Task 9c**: the server HOISTS worker `subCfg.mcp` (connects via the registry, injects into the worker via the 2122 seam, invalidates the worker cache on recovery). No more "self-heal" hand-wave; a down worker target is a DOWN slot → NOT_READY → recovers by rebuild.
+- **P1 optional healthCheck** → Task 8 monitor: a live client without `healthCheck` is ASSUMED healthy (never marked down on a missing probe); new test covers it. (`healthCheck`-required contract left as a §6 follow-up.)
+- **P2 registry scope arg** → all Task 7/8/9b snippets + tests now pass `scope` ('global'|'worker'); `addTarget`/`addLiveClient` signatures updated.
+- **P2 streaming integration** → Task 10b Step 4: a real streaming-writer test (fake stream yields `ok:false`) asserting `[Error]` present, no `[DONE]`, no usage frame — plus extracting the writer into a callable for testability.
