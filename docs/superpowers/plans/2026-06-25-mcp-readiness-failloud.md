@@ -17,9 +17,12 @@ Spec: `docs/superpowers/specs/2026-06-25-mcp-readiness-failloud-design.md`.
 | File | Responsibility | Phase |
 |---|---|---|
 | `packages/llm-agent/src/interfaces/types.ts` | availability `McpError` codes + `isMcpUnavailable()` classifier | 1 |
-| `packages/llm-agent-mcp/src/adapter.ts` / `client.ts` | tag transport failures with availability codes; session-preserving reconnect | 1–2 |
-| `packages/llm-agent-libs/src/agent.ts` | core tool loop escalates availability errors | 3 |
-| `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` | pipeline-handler tool loop escalates availability errors | 3 |
+| `packages/llm-agent-mcp/src/error-mapping.ts` | **new** — `toMcpError()` message→availability-code mapper (shared by adapter + client) | 1 |
+| `packages/llm-agent-mcp/src/adapter.ts` | map thrown AND returned availability errors to `ok:false` | 1 |
+| `packages/llm-agent-mcp/src/client.ts` | session-preserving reconnect; THROW coded `McpError` on retry exhaustion | 2 |
+| `packages/llm-agent-libs/src/pipeline/handlers/escalate-if-unavailable.ts` | **new** — shared throw-or-text decision both tool loops use | 3 |
+| `packages/llm-agent-libs/src/agent.ts` | core tool loop uses `escalateIfUnavailable` | 3 |
+| `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` | pipeline-handler tool loop uses `escalateIfUnavailable` | 3 |
 | `packages/llm-agent-server-libs/src/smart-agent/mcp-readiness-registry.ts` | **new** — target-slot registry + readiness derivation | 4 |
 | `packages/llm-agent-server-libs/src/smart-agent/mcp-readiness-monitor.ts` | **new** — periodic ping monitor + lazy reconnect | 4 |
 | `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` | registry wiring, `connectMcpClientsFromConfig` no-throw, request gate, `/health` mapping, `buildMcpBridge` fail-loud, `(no response)` branch | 4–5 |
@@ -160,6 +163,18 @@ test('callTool MCP -32001 timeout → unavailable McpError', async () => {
   assert.equal(r.ok, false);
   assert.equal(isMcpUnavailable(r.ok ? undefined : r.error), true);
 });
+
+test('callTool that RETURNS { error: "Not connected" } → ok:false (not isError text)', async () => {
+  // The real wrapper returns { result:null, error } after a failed reconnect; the
+  // adapter must escalate an availability signature even on the returned path.
+  const stub = {
+    callTool: async () => ({ toolCallId: '1', name: 'GetTable', result: null, error: 'Not connected' }),
+  };
+  const a = new McpClientAdapter(stub as never);
+  const r = await a.callTool('GetTable', {});
+  assert.equal(r.ok, false, 'returned availability error must be ok:false');
+  assert.equal(isMcpUnavailable(r.ok ? undefined : r.error), true);
+});
 ```
 
 - [ ] **Step 2: Run the test to verify it fails**
@@ -167,15 +182,17 @@ test('callTool MCP -32001 timeout → unavailable McpError', async () => {
 Run: `cd packages/llm-agent-mcp && npx tsx --test src/__tests__/adapter-unavailable-codes.test.ts`
 Expected: FAIL — errors come back as plain `MCP_ERROR`, `isMcpUnavailable` false.
 
-- [ ] **Step 3: Implement the mapping**
+- [ ] **Step 3: Implement the shared mapper + use it in the adapter**
 
-Add a helper near the top of `packages/llm-agent-mcp/src/adapter.ts`:
+Create `packages/llm-agent-mcp/src/error-mapping.ts` (shared by adapter + client — DRY):
 
 ```ts
+// packages/llm-agent-mcp/src/error-mapping.ts
 import { McpError } from '@mcp-abap-adt/llm-agent';
 
-/** Map a thrown transport error to an McpError with an availability code. */
-function toMcpError(err: unknown): McpError {
+/** Map a thrown/returned transport message to an McpError with an availability
+ *  code. Used by both McpClientAdapter (catch) and MCPClientWrapper (throw). */
+export function toMcpError(err: unknown): McpError {
   if (err instanceof McpError) return err;
   const msg = err instanceof Error ? err.message : String(err);
   const m = msg.toLowerCase();
@@ -186,11 +203,24 @@ function toMcpError(err: unknown): McpError {
   else if (m.includes('403')) code = 'MCP_HTTP_403';
   else if (m.includes('502')) code = 'MCP_HTTP_502';
   else if (m.includes('503')) code = 'MCP_HTTP_503';
+  else if (m.includes('after reconnect') || m.includes('no response'))
+    code = 'MCP_NO_RESPONSE';
   return new McpError(msg, code);
 }
 ```
 
-Replace the three `catch` fallbacks (`callTool`, `listTools`, `healthCheck`) that today do `new McpError(String(err))` with `toMcpError(err)`. Keep the existing `if (err instanceof McpError) return ...` short-circuits (now subsumed by `toMcpError`, but harmless).
+In `packages/llm-agent-mcp/src/adapter.ts`, import `toMcpError` and replace the three
+`catch` fallbacks (`callTool`, `listTools`, `healthCheck`) that today do
+`new McpError(String(err))` with `toMcpError(err)`. **Also** convert the
+returned-error path: in `callTool`'s success block, BEFORE wrapping into
+`{ ok: true, isError }`, if `result.error` is set AND `isMcpUnavailable(toMcpError(result.error))`,
+return `{ ok: false, error: toMcpError(result.error) }` instead — so even if the
+wrapper returns `{ error }` (older path / embedded), an availability signature still
+escalates. (Tool-level `result.error` without an availability signature keeps the
+`ok:true/isError` text path.)
+
+In Task 3, `MCPClientWrapper` imports `toMcpError` as `toWrapperMcpError` (same fn)
+for its throw.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -267,7 +297,8 @@ const httpTransport = new StreamableHTTPClientTransport(
 ```
 
 In the `callTool` catch/retry block, if the resume-retry still fails, clear the
-session and try ONE fresh connect before giving up:
+session and try ONE fresh connect; if THAT also fails, **throw a coded availability
+`McpError`** (do NOT return `{ result:null, error }` — see Task 4 note / spec §3.5):
 
 ```ts
 } catch (retryError: unknown) {
@@ -281,19 +312,28 @@ session and try ONE fresh connect before giving up:
       const response = await performCall();
       return { toolCallId: toolCall.id, name: toolCall.name, result: response.content };
     } catch {
-      /* fall through to error result */
+      /* fall through to throw */
     }
   }
-  const retryErrorMessage =
+  const msg =
     retryError instanceof Error ? retryError.message : String(retryError);
-  return {
-    toolCallId: toolCall.id,
-    name: toolCall.name,
-    result: null,
-    error: retryErrorMessage || 'Tool execution failed after reconnect',
-  };
+  // THROW (not return) so McpClientAdapter.callTool's catch maps it to ok:false.
+  // Returning { error } would be wrapped ok:true/isError and never escalate.
+  throw toWrapperMcpError(msg); // coded availability McpError (Task 2 helper, shared)
 }
 ```
+
+Where `toWrapperMcpError(msg)` builds an `McpError` with the same availability-code
+mapping as the adapter's `toMcpError` (extract that mapper into a shared
+`packages/llm-agent-mcp/src/error-mapping.ts` and import it in both client.ts and
+adapter.ts — DRY). Default code `MCP_NO_RESPONSE` when nothing matches.
+
+> **Caller-contract note (review round 4):** this changes `callTool` from
+> "return `{ error }` on unrecoverable failure" to "throw". Grep callers of
+> `MCPClientWrapper.callTool` / `callTools`; the adapter's `callTool` already wraps in
+> try/catch (adapter.ts:122) so it maps the throw to `ok:false`. Embedded/tool-level
+> errors (the `result: null, error` branch at client.ts:380–388) STILL return — only
+> the transport-exhaustion path throws.
 
 - [ ] **Step 4: Run the test to verify it passes**
 
@@ -396,30 +436,87 @@ git commit -m "feat(agent): core tool loop fails loud on MCP unavailability"
 - Modify: `packages/llm-agent-libs/src/pipeline/handlers/tool-loop.ts` (~885–892, mirror of agent.ts)
 - Test: `packages/llm-agent-libs/src/__tests__/tool-loop-mcp-unavailable.test.ts`
 
-Apply the SAME change as Task 4 at the `const text = !res.ok ? res.error.message : …` site (tool-loop.ts:885). Add the `if (!res.ok && isMcpUnavailable(res.error)) throw res.error;` guard immediately before it.
+**Two-part fix (review P2#6 — a classifier stub is not TDD; it passes even if the
+handler is unchanged).** (a) Extract a shared decision helper that the handler USES,
+and (b) add a REAL pipeline-level test that drives the tool-loop handler with a fake
+failing MCP client.
 
-- [ ] **Step 1: Write the failing test**
+First confirm which tool loop `SmartAgent.process()` actually drives: grep
+`packages/llm-agent-libs/src/agent.ts` and `pipeline/default-pipeline.ts` for the
+tool-loop handler. If `process()` routes through `pipeline/handlers/tool-loop.ts`,
+Task 4's `SmartAgentBuilder` test already exercises THIS file — in that case make
+Task 4's test the real coverage and keep Task 5 as the shared-helper extraction +
+the agent.ts:1882 site (so BOTH the `agent.ts` inline loop and the handler use one
+guarded helper). Either way, no surface is left stringifying availability errors.
+
+- [ ] **Step 1: Write the failing test (shared helper, USED by the handler)**
+
+Create the helper test:
 
 ```ts
-// packages/llm-agent-libs/src/__tests__/tool-loop-mcp-unavailable.test.ts
+// packages/llm-agent-libs/src/pipeline/handlers/__tests__/escalate-if-unavailable.test.ts
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { McpError, isMcpUnavailable } from '@mcp-abap-adt/llm-agent';
+import { McpError } from '@mcp-abap-adt/llm-agent';
+import { escalateIfUnavailable } from '../escalate-if-unavailable.js';
 
-// Contract-level guard: the tool-loop handler must not stringify an availability
-// error into tool text. This test asserts the shared decision the handler uses.
-test('tool-loop classifies availability error as escalate, not text', () => {
-  const err = new McpError('MCP error -32001: Request timed out', 'MCP_TIMEOUT');
-  assert.equal(isMcpUnavailable(err), true);
+test('throws on an availability error result', () => {
+  const res = { ok: false as const, error: new McpError('Not connected', 'MCP_NOT_CONNECTED') };
+  assert.throws(() => escalateIfUnavailable(res), /Not connected/);
+});
+
+test('returns text for a tool-level error result', () => {
+  const res = { ok: false as const, error: new McpError('bad args', 'MCP_ERROR') };
+  assert.equal(escalateIfUnavailable(res), 'bad args');
+});
+
+test('returns content for an ok result', () => {
+  const res = { ok: true as const, value: { content: 'hello' } };
+  assert.equal(escalateIfUnavailable(res), 'hello');
 });
 ```
 
-> Note: a full pipeline-level test requires wiring the DefaultPipeline tool-loop with a failing MCP client. If the package already has a tool-loop integration test harness (search `pipeline/handlers/__tests__`), add an availability-escalation case there mirroring Task 4 instead of this contract stub, and delete the stub.
+- [ ] **Step 2: Run to verify it fails**
 
-- [ ] **Step 2: Run the test to verify it fails / Step 3: implement / Step 4: verify**
+Run: `cd packages/llm-agent-libs && npx tsx --test src/pipeline/handlers/__tests__/escalate-if-unavailable.test.ts`
+Expected: FAIL — module does not exist.
 
-Run: `cd packages/llm-agent-libs && npx tsx --test src/__tests__/tool-loop-mcp-unavailable.test.ts`
-Implement the guard at tool-loop.ts:885 as described. Verify the test passes and `npm run -w @mcp-abap-adt/llm-agent-libs test` stays green.
+- [ ] **Step 3: Implement the shared helper and CALL it from both loops**
+
+```ts
+// packages/llm-agent-libs/src/pipeline/handlers/escalate-if-unavailable.ts
+import { type McpError, isMcpUnavailable } from '@mcp-abap-adt/llm-agent';
+import type { Result } from '@mcp-abap-adt/llm-agent';
+
+type ToolRes = Result<{ content: unknown }, McpError>;
+
+/** Single decision both tool loops use: throw on an availability failure (so the
+ *  run fails loud), else return the textual tool result for the LLM. */
+export function escalateIfUnavailable(res: ToolRes): string {
+  if (!res.ok) {
+    if (isMcpUnavailable(res.error)) throw res.error;
+    return res.error.message;
+  }
+  return typeof res.value.content === 'string'
+    ? res.value.content
+    : JSON.stringify(res.value.content);
+}
+```
+
+Replace the `const text = !res.ok ? res.error.message : …` expression at
+tool-loop.ts:885 with `const text = escalateIfUnavailable(res);`. Do the SAME at
+agent.ts:1882 (Task 4 can use this helper too — DRY; if so, fold Task 4's inline
+guard into this helper).
+
+- [ ] **Step 4: Add the REAL handler regression test + verify**
+
+In `pipeline/handlers/__tests__/` (mirror an existing tool-loop handler test if one
+exists), build the tool-loop with a fake MCP client whose `callTool` returns
+`{ ok:false, error: new McpError('Not connected','MCP_NOT_CONNECTED') }` and an LLM
+that requests one tool call; assert the handler/pipeline run surfaces `ok:false`
+(does not embed `[Error]`/tool text and continue). Run:
+`npx tsx --test src/pipeline/handlers/__tests__/escalate-if-unavailable.test.ts` and
+`npm run -w @mcp-abap-adt/llm-agent-libs test` — both green.
 
 - [ ] **Step 5: Commit**
 
@@ -610,8 +707,21 @@ export class McpReadinessRegistry {
   list(): ReadinessSlot[] {
     return [...this.slots.values()];
   }
+
+  /** Live execution clients for GLOBAL targets — the source of truth `callMcp`
+   *  reads (§3.6) so a monitor-recovered client is used without a restart. Worker
+   *  targets are excluded: worker execution is builder-owned (self-heals). */
+  liveClients(): IMcpClient[] {
+    const out: IMcpClient[] = [];
+    for (const s of this.slots.values()) {
+      if (s.scope === 'global' && s.healthy && s.client) out.push(s.client);
+    }
+    return out;
+  }
 }
 ```
+
+> Add `scope: 'global' | 'worker'` to `ReadinessSlot` and to `addTarget(id, config, scope)` / `addLiveClient(id, client, scope)` so `liveClients()` can return only global execution clients. Update Task 7's tests to pass a scope (`'global'`).
 
 > Integration note: `connectMcpClientsFromConfig` must STOP throwing on a failed connect. Wrap its `await wrapper.connect()` in try/catch: on success, the caller `addLiveClient`s; on failure, the caller `addTarget`s the still-unconnected config so the monitor can retry. Keep the existing return type by returning successfully-connected clients only; the registry (not the return value) tracks down targets.
 
@@ -818,6 +928,80 @@ git commit -m "feat(server): wire MCP readiness registry+monitor; no-throw boot 
 
 ---
 
+### Task 9b: Execution reads the registry (recovery actually works); catalog refresh; worker scope
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (`callMcp` ~2210; monitor DOWN→UP hook)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/callmcp-reads-registry.test.ts`
+
+> **Review round 4 (P1#2/#4).** `callMcp` runs `buildMcpBridge(this._sharedMcpClients ?? [])` — a SNAPSHOT harvested at start (smart-server.ts:1557). If MCP was down at boot the snapshot is `[]`; a monitor-recovered client never reaches execution and the toolsRag catalog stays empty. Flipping READY without this task is a lie. Worker `subCfg.mcp` is builder-owned (2052/2122) — out of scope for a client-swap; it self-heals via the worker client's own reconnect (Task 3).
+
+- [ ] **Step 1: Write the failing test**
+
+```ts
+// packages/llm-agent-server-libs/src/smart-agent/__tests__/callmcp-reads-registry.test.ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { McpReadinessRegistry } from '../mcp-readiness-registry.js';
+import { buildMcpBridge } from '../smart-server.js';
+
+// Proves the execution path follows the registry's live clients, so a client added
+// AFTER startup (cold-start recovery) is used without a restart.
+test('bridge over registry.liveClients() sees a post-start recovered client', async () => {
+  const reg = new McpReadinessRegistry();
+  assert.equal(reg.liveClients().length, 0); // MCP down at boot
+  const recovered = {
+    listTools: async () => ({ ok: true as const, value: [{ name: 'GetTable', description: '', inputSchema: {} }] }),
+    callTool: async () => ({ ok: true as const, value: { content: 'TABLE OK', isError: false } }),
+  };
+  reg.addLiveClient('g0', recovered as never, 'global');
+  const bridge = buildMcpBridge(reg.liveClients());
+  assert.equal(await bridge('GetTable', {}), 'TABLE OK');
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/callmcp-reads-registry.test.ts`
+Expected: FAIL until Task 7's `addLiveClient(id, client, scope)` + `liveClients()` are in place; this task locks the execution contract.
+
+- [ ] **Step 3: Implement — `callMcp` reads the registry; catalog refresh on recovery**
+
+```ts
+private async callMcp(name: string, args: unknown, signal?: AbortSignal): Promise<string> {
+  const clients = this._mcpReadiness
+    ? this._mcpReadiness.liveClients()
+    : (this._sharedMcpClients ?? []);
+  return buildMcpBridge(clients)(name, args, signal);
+}
+```
+
+Add a DOWN→UP hook so tool SELECTION recovers (the bridge lists tools live, but
+`toolsRag` was vectorized once at start). In `McpReadinessMonitorDeps` add
+`onGlobalRecovered?: () => Promise<void>`; in `monitor.tick()`, after a slot that was
+previously down becomes healthy AND `scope === 'global'`, call it. Wire it in
+`start()` to re-run `buildToolsRagHandle({ toolsRag, resolvedEmbedder })` over
+`registry.liveClients()` (guard re-entrancy with an in-flight flag).
+
+> Worker scope (P1#4): `liveClients()` excludes `scope:'worker'`; do NOT swap
+> recovered worker clients into worker internals. Worker execution recovery is the
+> worker client's own session-preserving reconnect (Task 3). Add a one-line comment
+> at smart-server.ts:2052 pointing here.
+
+- [ ] **Step 4: Run the test + build**
+
+Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/callmcp-reads-registry.test.ts` then `npm run build`.
+Expected: PASS; build green.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/mcp-readiness-monitor.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/callmcp-reads-registry.test.ts
+git commit -m "feat(server): callMcp reads live clients from the registry; toolsRag refresh on recovery"
+```
+
+---
+
 ## Phase 5 — Request gate + health surface (§3.2, §4)
 
 ### Task 10: Request gate — pre-dispatch NOT_READY → HTTP 503 (streaming split)
@@ -886,18 +1070,97 @@ if (!this.isReady()) {
 }
 ```
 
-This is the pre-dispatch path for BOTH streaming and non-streaming (it runs before the SSE stream is opened — review P2b's pre-dispatch case). The in-flight streaming case (failure after headers) is already handled by the SSE error event + `res.end()` without `[DONE]` (Task 4/6 cause the failure; the streaming writer must emit an error event on a thrown McpError rather than a clean stop — verify the streaming catch path).
+This is the pre-dispatch path for BOTH streaming and non-streaming (it runs before the SSE stream is opened — review P2b's pre-dispatch case).
 
-- [ ] **Step 4: Run the test to verify it passes**
+- [ ] **Step 4: Run the helper test; add a REAL route integration test (review P2#5)**
 
-Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/readiness-gate.test.ts`
-Expected: PASS.
+The helper test alone can pass while the route still opens a stream. Add an
+integration test that drives the actual handler with `isReady() === false` and asserts
+(a) HTTP 503 JSON, (b) the agent's `process` is NOT called, (c) NO SSE `200` is
+opened — for a `stream: true` body too. If the suite has an existing in-process
+request harness (search `smart-agent/__tests__` for one that POSTs to the handler),
+use it; otherwise construct the SmartServer with a stub agent whose `process` sets a
+called-flag and a fake `req`/`res`, force `isReady()` false (inject a registry with a
+DOWN slot), and assert. Run the new test and `readiness-gate.test.ts` — both green.
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/readiness-gate.test.ts
-git commit -m "feat(server): pre-dispatch readiness gate (503 when MCP not ready)"
+git commit -m "feat(server): pre-dispatch readiness gate (503 before any SSE stream)"
+```
+
+---
+
+### Task 10b: In-flight streaming failure — error chunk, then NO `[DONE]`
+
+**Files:**
+- Modify: `packages/llm-agent-server-libs/src/smart-agent/smart-server.ts` (streaming writer: `!chunk.ok` branch ~3505–3520; trailing `[DONE]` ~3613)
+- Test: `packages/llm-agent-server-libs/src/smart-agent/__tests__/streaming-failloud.test.ts`
+
+> **Review round 4 (P1#3).** Today the writer emits the error chunk (`delta.content: "[Error] …"`, `break`) but then UNCONDITIONALLY writes `data: [DONE]` (smart-server.ts:3613) — a clean-finish marker after a failure. Track that the stream ended on error and skip `[DONE]` (and the usage chunk) in that case.
+
+- [ ] **Step 1: Write the failing test**
+
+Extract the trailing-frames decision into a pure helper so it is unit-testable:
+
+```ts
+// packages/llm-agent-server-libs/src/smart-agent/__tests__/streaming-failloud.test.ts
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { streamTrailer } from '../smart-server.js';
+
+test('a stream that ended on error emits NO [DONE]', () => {
+  assert.equal(streamTrailer({ endedOnError: true }).includes('[DONE]'), false);
+});
+test('a clean stream emits [DONE]', () => {
+  assert.equal(streamTrailer({ endedOnError: false }).includes('[DONE]'), true);
+});
+```
+
+- [ ] **Step 2: Run to verify it fails**
+
+Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/streaming-failloud.test.ts`
+Expected: FAIL — `streamTrailer` not exported.
+
+- [ ] **Step 3: Implement**
+
+Add the helper and use it; set `endedOnError` in the `!chunk.ok` branch:
+
+```ts
+export function streamTrailer(opts: { endedOnError: boolean }): string {
+  return opts.endedOnError ? '' : 'data: [DONE]\n\n';
+}
+```
+
+In the streaming writer: declare `let endedOnError = false;` before the loop; in the
+`if (!chunk.ok)` branch set `endedOnError = true;` (keep the existing error chunk +
+`break`). Replace the unconditional `res.write('data: [DONE]\n\n');` (smart-server.ts:3613)
+with:
+
+```ts
+if (!endedOnError) {
+  // usage chunk (existing block) stays gated on !endedOnError too
+  const trailer = streamTrailer({ endedOnError });
+  if (trailer) res.write(trailer);
+}
+res.end();
+```
+
+Also gate the preceding usage chunk (`...usage: lastUsage...` ~3610) on `!endedOnError`
+so a failed stream emits neither a usage frame nor `[DONE]` — only the `[Error]` chunk
+then `end()`.
+
+- [ ] **Step 4: Run the test + verify**
+
+Run: `cd packages/llm-agent-server-libs && npx tsx --test src/smart-agent/__tests__/streaming-failloud.test.ts`
+Expected: PASS (2 tests). Then `npm run build`.
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add packages/llm-agent-server-libs/src/smart-agent/smart-server.ts packages/llm-agent-server-libs/src/smart-agent/__tests__/streaming-failloud.test.ts
+git commit -m "feat(server): in-flight streaming failure emits no [DONE] after the error chunk"
 ```
 
 ---
@@ -1054,9 +1317,18 @@ git commit -m "feat(server): failed MCP run surfaces an error, never (no respons
 ## Self-review (spec coverage)
 
 - §3.1 readiness target registry → Tasks 7, 9.
-- §3.2 request gate + streaming split → Task 10 (pre-dispatch); in-flight via Tasks 4/6 + streaming catch (Task 10 note).
-- §3.3 all execution surfaces + classification → Tasks 1, 2 (primitive), 4 (agent), 5 (tool-loop), 6 (bridge).
+- §3.2 request gate + streaming split → Task 10 (pre-dispatch 503, incl. route integration test); in-flight streaming → **Task 10b** (no `[DONE]` after error chunk).
+- §3.3 all execution surfaces + classification → Tasks 1, 2 (primitive + shared `error-mapping.ts`, returned-error path), 4 (agent), 5 (tool-loop via shared `escalateIfUnavailable` + real handler test), 6 (bridge).
 - §3.4 background probe (ping, lazy reconnect, no cached listTools) → Task 8.
-- §3.5 session-preserving reconnect → Task 3.
-- §4 consumer contract → Tasks 10 (503), 11 (/health), 12 (no (no response)).
-- Open §6 (multi-MCP policy, intervals, de-dup) → carried as config knobs in Tasks 8/9; `allHealthy()` already encodes "any down ⇒ not ready".
+- §3.5 session-preserving reconnect + **client THROWS** on retry exhaustion → Task 3.
+- §3.6 execution source-of-truth (callMcp reads registry; toolsRag refresh on recovery; worker self-heal scope) → **Task 9b**.
+- §4 consumer contract → Tasks 10 (503), 10b (streaming), 11 (/health), 12 (no (no response)).
+- Open §6 (multi-MCP policy, intervals, de-dup) → config knobs in Tasks 8/9; `allHealthy()` encodes "any down ⇒ not ready".
+
+### Round-4 review resolutions
+- **P1 returned-error trap** → Task 2 (adapter escalates returned availability error) + Task 3 (client throws, not returns).
+- **P1 execution recovery** → Task 9b (callMcp reads `registry.liveClients()`; toolsRag re-vectorized on DOWN→UP).
+- **P1 streaming [DONE]** → Task 10b (code + test).
+- **P1/P2 worker MCP** → Task 9b scope: readiness includes worker targets; worker EXECUTION self-heals via Task 3 (no cross-owner client swap).
+- **P2 gate route test** → Task 10 Step 4 (real route integration test, stream:true → 503, agent not called).
+- **P2 Task 5 stub** → Task 5 rewritten: shared `escalateIfUnavailable` helper the handler USES + real handler regression test.
