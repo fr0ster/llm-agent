@@ -32,6 +32,7 @@ import {
   type AgentCallOptions,
   getStreamToolCallName,
   type IQueryExpander,
+  isMcpUnavailable,
   NoopQueryExpander,
   NoopToolCache,
   normalizeExternalTools,
@@ -1945,6 +1946,18 @@ export class SmartAgent {
       const toolMessages: Message[] = [];
       for (const { tc, text, res } of results) {
         if (!res) continue;
+        // FAIL LOUD on an MCP availability failure (transport down / 403 / timeout
+        // after reconnect) — do NOT feed "MCP error" back to the LLM as tool text.
+        // Yield an error chunk (not throw) so process() returns ok:false (a real
+        // error to the consumer) instead of a silent "(no response)" or an uncaught
+        // exception escaping the generator.
+        if (!res.ok && isMcpUnavailable(res.error)) {
+          yield {
+            ok: false,
+            error: new OrchestratorError(res.error.message, 'MCP_UNAVAILABLE'),
+          };
+          return;
+        }
         if (
           !res.ok &&
           isToolContextUnavailableError(text) &&
