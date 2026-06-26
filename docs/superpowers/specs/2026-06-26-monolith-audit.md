@@ -241,3 +241,182 @@ that plan executes it (one-monolith-per-plan).
 | 6 | **Control file size** | Primary objective: 3926 → ~1.4k residual + 5 small modules (target <500 each). Slices 1+5+6 carry the bulk of the reduction. ✅ |
 | 7 | **Don't break components** | All changes additive + behavior-preserving: barrel re-exports keep `connectMcpClientsFromConfig`/`buildMcpBridge`/`buildSessionLifecycle`/`buildAgent`/… import paths stable; route method+path+status+shape unchanged; pinned by `public-api.test.ts` + endpoint characterization tests. ✅ |
 
+## Blueprint: agent.ts
+
+`packages/llm-agent-libs/src/agent.ts` (2160 lines). The `SmartAgent` class (decl `232`,
+body to `2160`) is the core god-object; two module-level helpers (`mergeSignals`,
+`createTimeoutSignal`, `202`–`224`) are small and stay. The class has ~16 direct importers
+across the monorepo — the highest fan-in in `llm-agent-libs`. All importers use
+`SmartAgent`, `SmartAgentDeps`, `SmartAgentConfig`, `SmartAgentReconfigureOptions`,
+`OrchestratorError`, or `SmartAgentRagStores`; these symbols must remain in `agent.ts` or
+be barrel re-exported from it.
+
+The key architectural insight: the **streaming tool loop** (`_runStreamingToolLoop`
+`1244`–`2007`, ~764 lines) is nearly identical to `ToolLoopHandler`
+(`pipeline/handlers/tool-loop.ts`, 1004 lines). Both already share `classifyToolResult`
+and `fireInternalToolsAsync`. The blueprint converges them rather than extracting yet
+another copy.
+
+### 1. Responsibility map (jobs → method clusters / line ranges)
+
+| # | Responsibility | Method cluster (line ranges) |
+|---|---|---|
+| **R1** | **Streaming tool loop** — per-iteration LLM call, streaming chunk assembly, external-tool index tracking, heartbeat (SSE), concurrent tool execution, tool availability filtering, blocked / hallucinated / external-call dispatch, mixed-call bridging, output validation, `streamMode` buffering, `onBeforeStream` hook, `classifyToolResult` escalation (fail-loud) | `_runStreamingToolLoop` `1244`–`2007` |
+| **R2** | **RAG + context assembly orchestration** — history summarization gate, `classificationEnabled` branch, subprompt classification, per-store embedding (translated vs. original), reranking, tool RAG selection + enriched-tool-search, skill injection (RAG-driven + fallback query), context assembly via `IContextAssembler`, final tool merge + availability filter | `streamProcess` `817`–`1168` (the `smart`/`hard` branch), `_preparePipeline` `1178`–`1242`, `_toEnglishForRag` `2033`–`2053`, `_summarizeHistory` `2055`–`2097` |
+| **R3** | **Pass-through mode** — `mode === 'pass'` transparent LLM proxy: stream chunks, strip intermediate usage, emit terminal usage summary; no tool loop, no RAG | `streamProcess` `717`–`801` (the `pass` branch) |
+| **R4** | **Structured-pipeline delegation** — `deps.pipeline` path: adapts `IPipeline.execute` callback-push API into an async generator via a queue + `resolveWait` pattern; delegates all execution; propagates errors | `_runStructuredPipeline` `2099`–`2159` |
+| **R5** | **Session + RAG store lifecycle** — `closeSession` (registry cleanup + history flush), `addRagStore` / `removeRagStore` (registry or direct-store path, `translateQueryStores` bookkeeping, `rebuildStages` signal) | `closeSession` `425`–`437`, `addRagStore` `368`–`399`, `removeRagStore` `405`–`418` |
+| **R6** | **Config & LLM hot-swap** — `applyConfigUpdate`, `reconfigure` (swap main/helper/classifier LLM + `LlmClassifier` rebuild + pipeline propagation via `deps.pipeline.reconfigure`), `getActiveConfig`, `getAgentConfig` | `applyConfigUpdate` `313`–`315`, `reconfigure` `334`–`358`, `getActiveConfig` `440`–`450`, `getAgentConfig` `453`–`471` |
+| **R7** | **Health-check coordination** — `healthCheck` probes LLM (`.healthCheck` or `chat('ping')` fallback), RAG (first store), and each MCP client; merges abort signals + timeout; `isReady` delegates to `connectionStrategy` | `healthCheck` `484`–`579`, `isReady` `479`–`482` |
+| **R8** | **MCP tool listing + connection resolution** — `_listAllTools` (resolves active clients via strategy, parallel `listTools`, de-dups name-first-wins), `_resolveActiveClients` (connectionStrategy.resolve + conditional revectorize on `toolsChanged`), `_revectorizeTools` (upserts tool text into the tools RAG store) | `_listAllTools` `2008`–`2031`, `_resolveActiveClients` `283`–`293`, `_revectorizeTools` `295`–`310` |
+
+### 2. Seams (cut lines + shared state read/written across each cut)
+
+Mutable class fields (declared `233`–`248`) are the coupling currency. Request-scoped
+state (`toolClientMap`, per-iteration locals) lives on the stack and does NOT leak across
+seams.
+
+| Cut | Methods on the producing side | Shared state read (R) / written (W) | Coupling note |
+|---|---|---|---|
+| **R8 MCP tool listing** | `_listAllTools`, `_resolveActiveClients`, `_revectorizeTools` | R/W **`_activeClients`**; R `deps.connectionStrategy` `deps.ragStores.tools` | `_activeClients` written here and read by R7 healthCheck and R1 (indirectly via `_listAllTools`). Cleanest first cut: a closed 3-method cluster producing `{ tools, toolClientMap }` as a value object. |
+| **R7 Health-check** | `healthCheck`, `isReady` | R `_mainLlm` `_activeClients`; R `deps.ragStores` `deps.connectionStrategy` | Reads R6's `_mainLlm` and R8's `_activeClients`. The logic mirrors `HealthChecker`; seam is natural once R8 exposes `_activeClients` via interface. |
+| **R3 Pass-through** | `streamProcess` lines `717`–`801` | R `_mainLlm`; R `requestLogger` | Only two deps; already a self-contained block. No fields written. Easiest isolated cut. |
+| **R4 Pipeline adapter** | `_runStructuredPipeline` | R `deps.pipeline` only | Zero field deps; already a private method with a clean parameter surface. |
+| **R2 RAG orchestration** | `streamProcess` `817`–`1168`, `_preparePipeline`, `_toEnglishForRag`, `_summarizeHistory` | R `_mainLlm` `_helperLlm` `_classifier` `_classifierLlm`; R `deps.*` (ragStores, embedder, assembler, reranker, queryExpander, skillManager, translateQueryStores, connectionStrategy) | Reads R6 LLM fields and R8 tool listing. Must run after R8 extraction so `_listAllTools` is already behind `IMcpToolRegistry`. R2 produces `{ retrieved, finalTools, skillContent, assembledMessages }` passed to R1. |
+| **R1 Streaming tool loop** | `_runStreamingToolLoop` | R `_mainLlm` `config`; R `toolCache` `toolAvailabilityRegistry` `pendingToolResults` `metrics` `tracer` `outputValidator` `requestLogger` `sessionManager`; R `defaultLlmCallStrategy` | The largest cluster. All deps are constructor-injected (no `_activeClients` mutation here — `toolClientMap` is a parameter). This is the convergence target: the class-field deps become explicit constructor params of the extracted `runToolLoop` function. |
+| **R5 / R6 (residual)** | `closeSession`, `addRagStore`, `removeRagStore`, `reconfigure`, `applyConfigUpdate`, `getActiveConfig`, `getAgentConfig` | R/W `_mainLlm` `_helperLlm` `_classifierLlm` `_classifier` `config`; R `deps.ragRegistry` `deps.historyMemory` `deps.pipeline` | The residual public API after all extractions. These 8 methods are already slim facades (≤20 lines each); they stay in `SmartAgent`. |
+
+### 3. Decomposition target per responsibility (components-first)
+
+For each responsibility: the **Component catalog reference** was checked first.
+
+- **R1 Streaming tool loop → CONVERGE onto `ToolLoopHandler` (REUSE).**
+  `ToolLoopHandler` (`pipeline/handlers/tool-loop.ts`) is the same algorithm. Both already
+  share `classifyToolResult` (`escalate-if-unavailable.ts`) and `fireInternalToolsAsync`.
+  The heartbeat race, external-tool forwarding, blocked/hallucination handling, and tool
+  cache patterns are duplicated. No new component: extract the shared body into a single
+  free async generator function `runToolLoop(deps, config, loopInput)` in
+  `agent/run-tool-loop.ts`. `ToolLoopHandler.execute` delegates to it; `SmartAgent`'s
+  `_runStreamingToolLoop` becomes a one-call wrapper. Net: one authoritative loop, two thin
+  entry points. Blast-radius: `ToolLoopHandler` has blast 1 (no external importers); the
+  convergence is additive to agent.ts's public API.
+
+- **R2 RAG + context assembly → EXTRACT `RagOrchestrator` (REUSE + bounded EXTRACT).**
+  No catalog component owns "per-request RAG fan-out + rerank + tool-skill selection +
+  assembly". The sub-components it delegates to are all catalog: `IContextAssembler`
+  (reused), `IReranker` (reused), `IQueryExpander` (reused), `IRag` stores (reused). Gap:
+  the *coordination* logic. EXTRACT a minimal `IRagOrchestrator` interface +
+  `RagOrchestrator` class in `agent/rag-orchestrator.ts` with one entry
+  `orchestrate(query, opts) → Promise<OrchestratedContext>`. The two helpers
+  (`_toEnglishForRag`, `_summarizeHistory`) become module-scope functions injected as
+  optional strategies. Reusable by any host needing the same RAG-then-assemble pattern.
+
+- **R3 Pass-through mode → REUSE `IStageHandler` contract (EXTRACT `PassThroughHandler`).**
+  The `pass` branch is a focused, testable unit with two deps (`_mainLlm`,
+  `requestLogger`). Express it as a standalone async generator function
+  `runPassThrough(llm, requestLogger, messages, opts)` in `pipeline/handlers/pass-through.ts`
+  — reusing the `IStageHandler`-shaped pattern without the interface overhead (it is not
+  plugged into a stage registry). `streamProcess` delegates to it.
+
+- **R4 Structured-pipeline delegation → EXTRACT `pipelineToStream` free function (REUSE `IPipeline`).**
+  `_runStructuredPipeline` (60 lines) is a reusable adapter: converts `IPipeline.execute`'s
+  callback-push API into an async generator. Extract as
+  `pipelineToStream(pipeline, input, opts): AsyncIterable<…>` in
+  `pipeline/pipeline-to-stream.ts`. REUSE `IPipeline` (catalog). Zero new interface.
+  Reusable by any consumer that hosts an `IPipeline`.
+
+- **R5 Session + RAG store lifecycle → REUSE `ISessionManager` + `IRagRegistry` (no extraction).**
+  `closeSession`, `addRagStore`, `removeRagStore` are already thin delegating facades over
+  catalog interfaces. No extraction needed — they stay as the correct public API boundary.
+  The test is that each is ≤20 lines and contains no business logic.
+
+- **R6 Config + LLM hot-swap → REUSE pattern (keep slim, no extraction).**
+  `reconfigure`/`applyConfigUpdate` are 20 lines combined; they propagate to `deps.pipeline`
+  (REUSE). No extraction warranted — they are already the right abstraction.
+
+- **R7 Health-check coordination → REUSE `HealthChecker` (catalog).**
+  `healthCheck` (96 lines) reinvents what `HealthChecker` does: aggregate per-component
+  health results. Rework: `SmartAgent.healthCheck` instantiates an ad-hoc `HealthChecker`
+  (or calls a `buildAgentHealthChecker(llm, ragStores, mcpClients)` factory function in
+  `health/agent-health.ts`) and delegates to it. REUSE `IReadinessReporter` + `HealthChecker`
+  (catalog). `isReady()` already delegates correctly (no change).
+
+- **R8 MCP tool listing + connection → EXTRACT `McpToolRegistry` (interface-bounded, REUSE `IMcpConnectionStrategy`).**
+  `_listAllTools`, `_resolveActiveClients`, `_revectorizeTools` form a cohesive 51-line
+  cluster. REUSE `IMcpConnectionStrategy` (catalog) for the connection resolution.
+  EXTRACT `IMcpToolRegistry { resolve(opts): Promise<ToolRegistryResult> }` +
+  `McpToolRegistry` in `mcp/tool-registry.ts`. Reusable: any agent or pipeline stage
+  needing tool-discovery can consume it. `SmartAgent` holds one instance (constructor-
+  injected), eliminating `_activeClients` as a mutable class field.
+
+Every R1–R8 has a catalog REUSE or a named, interface-bounded EXTRACT target.
+Net: **5 EXTRACTs** (all small + reusable: `runToolLoop` convergence function,
+`RagOrchestrator`, `PassThroughHandler` function, `pipelineToStream`, `McpToolRegistry`)
++ **2 REUSE-only** (`HealthChecker` delegation for R7; R5/R6 already-slim facades).
+
+### 4. Behavior-preservation strategy
+
+Behavior-preserving, public-API-stable refactor pinned by characterization tests.
+
+**Public API that must stay byte-stable** (verified by export contract):
+- `SmartAgent` class (all public methods: `process`, `streamProcess`, `healthCheck`,
+  `isReady`, `reconfigure`, `applyConfigUpdate`, `addRagStore`, `removeRagStore`,
+  `closeSession`, `getActiveConfig`, `getAgentConfig`, `currentMainLlm` getter)
+- `SmartAgentDeps`, `SmartAgentConfig`, `SmartAgentReconfigureOptions`, `SmartAgentRagStores`
+- `OrchestratorError`, `AgentCallOptions`, `SmartAgentResponse`, `StopReason`
+  (re-exported from `@mcp-abap-adt/llm-agent`)
+
+Blast radius ~16 → all importers keep their import paths stable. If `OrchestratorError`
+eventually migrates to `@mcp-abap-adt/llm-agent` (contracts package), add a barrel
+re-export in `agent.ts` to preserve import paths (Principle 7).
+
+**Existing characterization tests to lean on:**
+- `streaming.test.ts` (R1 main path)
+- `heartbeat.test.ts` (R1 heartbeat)
+- `agent-mcp-unavailable-escalates.test.ts` (R1 fail-loud via `classifyToolResult`)
+- `parallel-mixed-tool-calls.test.ts` (R1 mixed-call bridge)
+- `tool-reselection.test.ts` (R2 per-iteration reselect)
+- `builder-tool-selection.test.ts` (R2 tool RAG selection)
+- `smart-agent-custom-rag.test.ts` (R2 multi-store RAG)
+- `pass-usage.test.ts` (R3 pass-through usage)
+- `agent-readiness.test.ts` (R7 isReady + healthCheck)
+- `mcp-reconnection.test.ts`, `mcp-clients-di.test.ts` (R8 connection resolution)
+- `reconfigure.test.ts`, `handle-hotswap.test.ts` (R6)
+- `smart-agent-close-session.test.ts` (R5)
+
+**Tests to ADD before refactoring (gaps):**
+1. A **`runToolLoop` parity test**: drive both `_runStreamingToolLoop` (agent path) and
+   `ToolLoopHandler` with identical inputs; assert identical chunk sequences. Pin BEFORE
+   the R1 convergence (Slice 6).
+2. A **`_toEnglishForRag` + enriched-tool-search characterization test**: verify the
+   translate-then-embed + two-phase RAG path in isolation. Pin BEFORE extracting
+   `RagOrchestrator` (Slice 5).
+
+### 5. Suggested PR slices (ordered; first = lowest-risk / highest-value)
+
+| # | Slice | Touches | Rough Δ | Risk | Why here |
+|---|---|---|---|---|---|
+| 1 | **`pipelineToStream` free function** — extract `_runStructuredPipeline` `2099`–`2159` into `pipeline/pipeline-to-stream.ts`; `SmartAgent` calls it | R4 | −60 / +75 | **very low** | Zero field deps, no public API change, zero blast. Pure adapter pattern. Sets extraction habit. |
+| 2 | **`McpToolRegistry` module** — extract `_listAllTools`/`_resolveActiveClients`/`_revectorizeTools` behind `IMcpToolRegistry`; `SmartAgent` holds an instance | R8 | −51 / +120 | **low** | Closed 3-method cluster, removes `_activeClients` mutable field. Pinned by `mcp-reconnection.test.ts`, `mcp-clients-di.test.ts`. Enables R7 (health uses same client list). |
+| 3 | **`PassThroughHandler` function** — extract `pass` branch `717`–`801` into `pipeline/handlers/pass-through.ts`; `streamProcess` delegates | R3 | −84 / +95 | **low** | Self-contained 80-line block, pinned by `pass-usage.test.ts`. No new interface needed. |
+| 4 | **`HealthChecker` delegation** — rework `healthCheck` to compose `HealthChecker` (catalog); add `buildAgentHealthChecker` factory | R7 | −70 / +50 | **low-med** | Pinned by `agent-readiness.test.ts`. `healthCheck` public signature unchanged. Depends on Slice 2 (client list). |
+| 5 | **`RagOrchestrator` + helpers** — extract `_toEnglishForRag`, `_summarizeHistory`, RAG fan-out block, context assembly coordination into `agent/rag-orchestrator.ts` | R2 | −350 / +280 | **medium** | Largest extraction; pinned by `smart-agent-custom-rag.test.ts`, `tool-reselection.test.ts`, `builder-tool-selection.test.ts`. New gap test (§4 #2) must gate this. Depends on Slice 2 (McpToolRegistry) for the `_listAllTools` call inside `_preparePipeline`. |
+| 6 | **`runToolLoop` convergence** — extract `_runStreamingToolLoop` body into `agent/run-tool-loop.ts`; `ToolLoopHandler` delegates to same function; delete duplicate code in tool-loop.ts | R1 | −760 / +420 | **medium** | Biggest Δ, touches two files simultaneously. New parity test (§4 #1) must gate this. All R1 characterization tests pin it. Last because it depends on all prior extractions (McpToolRegistry for toolClientMap seam, all dependencies explicit). |
+
+Cumulative: `agent.ts` drops from 2160 toward ~900 lines; `ToolLoopHandler` drops from
+1004 toward ~300 lines (the shared loop body lives in `run-tool-loop.ts`). The residual
+`SmartAgent` is the public API façade + thin orchestrator calling the extracted components
+— the desired Principle-2 end-state.
+
+### 6. Principle self-check
+
+| # | Principle | Compliance of this decomposition |
+|---|---|---|
+| 1 | **Build ON existing components** | R1: CONVERGE onto `ToolLoopHandler` / shared `runToolLoop` (REUSE, not new); R2: REUSE `IContextAssembler`, `IReranker`, `IQueryExpander`; R3: REUSE `IStageHandler` pattern; R4: REUSE `IPipeline` contract; R7: REUSE `HealthChecker`; R8: REUSE `IMcpConnectionStrategy`. All 5 EXTRACTs land in the library as reusable components, not app-local glue. ✅ |
+| 2 | **The app IS the example** | Post-refactor `SmartAgent` is a thin orchestrator that *consumes* `McpToolRegistry`, `RagOrchestrator`, `runToolLoop`, `pipelineToStream`, and `HealthChecker` — the demonstration consumers should copy when building their own agent host. ✅ |
+| 3 | **Everything around interfaces** | New cuts: `IRagOrchestrator`, `IMcpToolRegistry`. `IStageHandler`/`IPipeline`/`IContextAssembler`/`IMcpConnectionStrategy`/`HealthChecker` (all reused). `SmartAgent` depends on interfaces, not classes. ✅ |
+| 4 | **Many small interfaces (ISP)** | Each EXTRACT gets one focused interface. `IReadinessReporter` stays separate (already correct — `isReady` delegates without widening the interface). ✅ |
+| 5 | **Consumer-owned variation = strategies** | Connection strategy stays `IMcpConnectionStrategy` (catalog, swappable). `RagOrchestrator` helpers (`_toEnglishForRag`, `_summarizeHistory`) become injectable functions. `PassThroughHandler` and `pipelineToStream` are standalone, replaceable. ✅ |
+| 6 | **Control file size** | Primary objective: `agent.ts` 2160 → ~900; `ToolLoopHandler` 1004 → ~300. No file in the extraction exceeds 400 lines. ✅ |
+| 7 | **Don't break components** | All 16+ importers of `agent.ts` import only `SmartAgent`, `SmartAgentDeps/Config/ReconfigureOptions`, `OrchestratorError`, `SmartAgentRagStores` — all stay in `agent.ts` or barrel re-exported. Public method signatures unchanged. Pinned by existing test suite. ✅ |
+
