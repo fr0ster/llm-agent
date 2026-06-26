@@ -24,8 +24,14 @@ This is an **audit-first** effort: analysis only. No code changes here.
 
 ## 2. Scope
 
-- **All** source files under `packages/*/src/**` that are **> 500 lines**, EXCLUDING
-  test files (`*.test.ts`, `__tests__/`). A whole-repo sweep, not just the known three.
+- **All** source files under `packages/*/src/**` that are **> 500 lines**. A whole-repo
+  sweep, not just the known three.
+- **Binding excludes** (the sweep MUST filter these out — a naive glob otherwise pulls
+  in large vendored files, e.g. Zod under `packages/*/node_modules/**/src/**`):
+  `**/node_modules/**`, test files (`*.test.ts`, `__tests__/`), build output
+  (`dist/`, `build/`), `coverage/`, generated files (`*.d.ts`, codegen output), and any
+  vendored third-party code. With `node_modules` excluded, the snapshot below matches
+  current HEAD.
 - **Snapshot at authoring time (2026-06-26), 13 files > 500:**
 
   | Lines | File |
@@ -68,10 +74,22 @@ One row per file:
 | Driver | one line: WHY it grew (accretion of which features) |
 | Priority | rank to tackle (function of size × #responsibilities × blast-radius × component-fit) |
 
-### 3b. Deep decomposition blueprint — top **N = 4**
+### 3b. Deep decomposition blueprint — top **N ≈ 5, PRIORITY-driven**
 
-The four > 1500-line files: `smart-server.ts`, `agent.ts`,
-`controller-coordinator-handler.ts`, `config.ts`. Each blueprint contains:
+Selection is by the triage **priority** rank (§4), NOT raw line count — otherwise a
+high-value target just under the line cliff is left without a blueprint even though the
+audit may name it the first refactor to start with. Concretely:
+
+- Take the top **~5** files by priority, AND
+- **MUST include any file already named in `docs/ARCHITECTURE.md` → Current Technical
+  Debt** (currently `builder.ts` — the active MCP lifecycle/vectorization accumulation
+  point — and `agent.ts`).
+
+At authoring time that yields at least: `smart-server.ts`, `agent.ts`,
+`controller-coordinator-handler.ts`, `config.ts`, `builder.ts` (the four > 1500 plus
+the tech-debt-named `builder.ts`). The audit re-ranks at execution time and adjusts the
+exact set; `tool-loop.ts` (1004) is the likely 6th if priority warrants. Each blueprint
+contains:
 
 1. **Responsibility map** — the distinct jobs, with line ranges / method clusters.
 2. **Seams** — the natural cut lines (method groups, import clusters, data boundaries).
@@ -131,7 +149,8 @@ The four > 1500-line files: `smart-server.ts`, `agent.ts`,
 ## 7. Success criteria
 
 - Every file over the threshold appears in the triage table with a priority.
-- The top-4 each have an actionable blueprint a future plan can consume directly
+- The top-N-by-priority (§3b — ~5, including any tech-debt-named file such as
+  `builder.ts`) each have an actionable blueprint a future plan can consume directly
   (responsibilities → seams → component-first targets → PR slices → principle check).
 - Every recommendation is component-first and principle-compliant; any proposed new
   module is justified as reusable/interface-bounded, not an ad-hoc fragment.
