@@ -443,7 +443,7 @@ siblings. The blueprint fixes that as its first slice.
 | **R3** | **Run-scoped artifact recall** — embedding-based deduped recall over the session's knowledge backend; relevant-extract (windowed cosine scoring); approved-results collection for the finalizer; recall-block text building | `runScopedRecall()` `1895`–`1941`; `relevantExtract()` `1995`–`2026`; `collectApproved()` `1857`–`1884`; `buildRecallBlock()` `1650`–`1669`; `rankStatus()` `1944`–`1952`; `isBetterStep()` `1954`–`1971`; `isBetterMcp()` `1976`–`1981`; recall constants `1634`–`1642` |
 | **R4** | **Tool-call normalization** — coerce a `StreamToolCall` (full or delta) into a canonical `LlmToolCall` for external-tool surfacing | `toLlmToolCall()` `1754`–`1782` (module-scope, used only inside `runStep`) |
 | **R5** | **Plan JSON parsing helpers** — parse the planner's reply into a typed `NextStep`; extract the first balanced JSON object from prose/fenced text | `parseNextStep()` `1686`–`1722`; `extractJsonObject()` `1727`–`1751` — **currently imported by `planner.ts` and `reviewer.ts` from this handler (inverted dependency)** |
-| **R-util** | **Token-usage logging utility** — build the per-request `logUsage(role, usage)` closure that writes every subagent call into `IRequestLogger` with role-to-model attribution | `makeLogUsage()` `79`–`113` (exported; imported by `pipelines/controller.ts`) |
+| **R-util** | **Token-usage logging utility** — build the per-request `logUsage(role, usage)` closure that writes every subagent call into `IRequestLogger` with role-to-model attribution | `makeLogUsage()` `79`–`113` (exported; called once in `execute()`; no external production importer — only the TEST `usage-logging.test.ts`) |
 
 ### 2. Seams (cut lines + shared state read/written across each cut)
 
@@ -457,7 +457,7 @@ parameter surface. Seams are therefore import-level, not field-level.
 | **R5 JSON parser seam** | `parseNextStep`, `extractJsonObject` | Imported BY `planner.ts` (`extractJsonObject`) AND `reviewer.ts` (`extractJsonObject`) from the handler — inverted direction | The handler is the bottom of the controller dependency graph; siblings importing FROM it block future handler imports of planner/reviewer helpers. Move-to-sibling `parser.ts` reverses the direction without changing any signature. |
 | **R2 board rendering seam** | `renderLiveBoard` | Reads `rag`, `bundle`, `boardBudget`; delegates entirely to `board.ts` (`readPlanDecisions`, `readClaims`, `rag.list`, `reconstructBoard`, `renderBoard`) — ZERO handler-specific logic | Pure glue function: 20 lines that belong in `board.ts` next to the components it calls. The call site in `execute()` `706` already imports those same board symbols. |
 | **R3 recall seam** | `runScopedRecall`, `relevantExtract`, `collectApproved`, `buildRecallBlock`, `rankStatus`, `isBetterStep`, `isBetterMcp` | Reads `rag` (param) + `bundle.runId`/`writeOrdinal` (passed as params); `relevantExtract` imports `cosine` from `../embedder-knowledge-index.js` | Already a self-contained cluster. `run-scoped-recall.test.ts` tests `runScopedRecall` and `relevantExtract` in isolation — the test knows these belong in their own module. |
-| **R-util usage-logging seam** | `makeLogUsage` | Reads `IRequestLogger`, `requestId`, `models` map — no class state | Already tested in `usage-logging.test.ts`. Imported by `pipelines/controller.ts`. A standalone utility masquerading as part of the handler. |
+| **R-util usage-logging seam** | `makeLogUsage` | Reads `IRequestLogger`, `requestId`, `models` map — no class state | Already tested in `usage-logging.test.ts`; no external production importer (called once in `execute()`). A standalone utility masquerading as part of the handler. |
 | **R4 tool-call normalizer seam** | `toLlmToolCall` | Used ONLY inside `runStep` at one call site; no external importers | Trivial inline candidate: move the body adjacent to its single call site in `runStep` and delete the module-scope function. Alternatively move to `types.ts` alongside `LlmToolCall`. |
 | **R1 execution loop (residual)** | All class methods | Reads `this.deps` (injected); writes `SessionBundle` via `persistBundle` (called through `deps.backend`); consumes R2–R5 helpers as module-scope calls | After R2–R5 move out, the handler is the pure execution loop consuming its neighbors — the correct architecture. |
 
@@ -469,11 +469,12 @@ controller sibling family.
 - **R5 Plan JSON parsing → MOVE to new sibling `controller/parser.ts` (FIX inverted dependency).**
   No catalog component owns JSON parsing; `types.ts` already owns `NextStep`/`Step` shapes.
   Introducing a tiny `parser.ts` next to `types.ts` is the minimum seam: it owns
-  `parseNextStep` + `extractJsonObject`. `planner.ts` and `reviewer.ts` re-point their imports
-  to `./parser.js`; the handler barrel re-exports both for the 2 external consumers
-  (`pipelines/controller.ts` imports `parseNextStep`). The inverted dependency is eliminated —
-  the handler is no longer required by its own sibling. No interface overhead needed
-  (pure functions, no state).
+  `parseNextStep` + `extractJsonObject`. `planner.ts` and `reviewer.ts` re-point their
+  `extractJsonObject` imports to `./parser.js` (the only PRODUCTION consumers of either symbol
+  outside the handler); the handler barrel re-exports both as a no-cost safety net for the TEST
+  import paths (`parseNextStep` is consumed only by `controller-coordinator-handler.test.ts`).
+  The inverted dependency is eliminated — the handler is no longer required by its own sibling.
+  No interface overhead needed (pure functions, no state).
 
 - **R2 Board rendering → MOVE `renderLiveBoard` into existing sibling `controller/board.ts`
   (REUSE + relocate).**
@@ -491,21 +492,22 @@ controller sibling family.
   file (`run-scoped-recall.test.ts`), and has no dependencies on the class or on any other
   handler helper. REUSE `IKnowledgeRagHandle` (catalog, already the parameter type) and
   `IEmbedder` (catalog) as the interface boundary. The new `recall.ts` exports
-  `runScopedRecall` and `relevantExtract` (the two that are tested directly and the two that
-  `pipelines/controller.ts` may expose). The handler re-exports from `recall.ts`. No new
-  interface needed — the functions ARE the interface.
+  `runScopedRecall` and `relevantExtract` (the two that are tested directly in
+  `run-scoped-recall.test.ts`; neither has a production importer outside the handler). The
+  handler re-exports both from `recall.ts` as a no-cost safety net for the test import path.
+  No new interface needed — the functions ARE the interface.
 
 - **R-util Usage logging → MOVE to new sibling `controller/usage-logging.ts` (REUSE
   `IRequestLogger` + relocate).**
   `makeLogUsage` is already tested in isolation (`usage-logging.test.ts`), is exported, and
-  is imported by `pipelines/controller.ts` — it has no coupling to the handler's execution
-  logic. REUSE `IRequestLogger` (catalog) as the interface boundary. Move: create
+  is called once inside `execute()` (no external production importer) — it has no coupling to
+  the handler's execution logic. REUSE `IRequestLogger` (catalog) as the interface boundary. Move: create
   `usage-logging.ts` in the controller directory; handler re-exports `makeLogUsage` from it.
   Net: zero new interfaces; pure REUSE/relocate.
 
 - **R4 Tool-call normalization → INLINE into `runStep` (trivial; zero new module).**
   `toLlmToolCall` is 28 lines, has zero external importers, and is called at exactly one site
-  inside `runStep` (`1241`). The correct move is to inline it — eliminate the module-scope
+  inside `runStep` (`1207`). The correct move is to inline it — eliminate the module-scope
   function and expand the call site. No extraction needed. Alternatively it can move to
   `types.ts` alongside `LlmToolCall`/`StreamToolCall` if the co-location is preferred, but
   no catalog component or new interface is needed either way.
@@ -529,20 +531,33 @@ modules.
 
 Behavior-preserving, public-API-stable refactor pinned by characterization tests.
 
-**Public API that must stay byte-stable** (all 4 blast-radius importers checked):
-- `ControllerCoordinatorHandler` class + `execute()` signature (imported by `controller-factory.ts`,
-  `pipelines/controller.ts`, `factories/__tests__/controller-factory.test.ts`)
-- `ControllerHandlerDeps` interface (imported by `controller-factory.ts`,
-  `factories/__tests__/controller-factory.skills.test.ts`, `__tests__/usage-e2e.test.ts`)
-- `TerminalUsage` type
-- `makeLogUsage` function (imported by `pipelines/controller.ts`; tested in `usage-logging.test.ts`)
-- `parseNextStep` function (imported by `pipelines/controller.ts`)
-- `extractJsonObject` function (imported by `planner.ts`, `reviewer.ts`)
-- `runScopedRecall` function (tested in `run-scoped-recall.test.ts`)
-- `relevantExtract` function (tested in `run-scoped-recall.test.ts`)
+**Public API that must stay byte-stable** (every "imported by" claim below grep-verified;
+production blast radius = exactly 2 files that import a SYMBOL needing re-export: `planner.ts`
+and `reviewer.ts`, both for `extractJsonObject`):
+- `ControllerCoordinatorHandler` class + `execute()` signature (production importers:
+  `controller-factory.ts`, `pipelines/controller.ts` — the latter re-exports it; also
+  `factories/__tests__/controller-factory.test.ts`). NOT a moved symbol — stays in the handler.
+- `ControllerHandlerDeps` interface (production importers: `controller-factory.ts`,
+  `pipelines/controller.ts` re-export; tests: `controller-factory.skills.test.ts`,
+  `__tests__/usage-e2e.test.ts`). NOT a moved symbol — stays in the handler.
+- `TerminalUsage` type — no external importer; stays in the handler.
+- `makeLogUsage` function — **NO external production importer** (`pipelines/controller.ts`
+  re-exports only `ControllerCoordinatorHandler` + `ControllerHandlerDeps`). Sole importer
+  outside the handler is the TEST `usage-logging.test.ts`; in production it is called once
+  inside `execute()`. The re-export after the move is a no-cost safety net for the TEST path.
+- `parseNextStep` function — **ZERO importers outside the handler in production**; sole importer
+  is the TEST `controller-coordinator-handler.test.ts`. The Slice-1 re-export is a no-cost
+  safety net for that test path, not driven by any external production importer.
+- `extractJsonObject` function — **the only genuinely externally-consumed moved symbol**:
+  imported in PRODUCTION by `planner.ts` and `reviewer.ts` (verified). These two update their
+  import to `./parser.js` in Slice 1.
+- `runScopedRecall` function — no production importer outside the handler; tested in
+  `run-scoped-recall.test.ts`. Re-export = no-cost safety net for the test path.
+- `relevantExtract` function — no production importer outside the handler; tested in
+  `run-scoped-recall.test.ts`. Re-export = no-cost safety net for the test path.
 
-All moved symbols must be barrel re-exported from `controller-coordinator-handler.ts` until the
-next major version, so all 4 blast-radius importers keep their import paths without change.
+All moved symbols are barrel re-exported from `controller-coordinator-handler.ts` until the
+next major version, so every importer (production AND test) keeps its import path without change.
 `planner.ts` and `reviewer.ts` MUST be updated to import `extractJsonObject` from `./parser.js`
 (not re-exporting FROM handler to handler's own siblings would be circular).
 
@@ -559,8 +574,9 @@ next major version, so all 4 blast-radius importers keep their import paths with
 
 **Tests to ADD before refactoring (gaps):**
 1. A **`parseNextStep` characterization test** covering valid `done`/`next`/`rewind` shapes,
-   JSON-fenced input, invalid/partial JSON, and the `validateRequires` boundary. Pin BEFORE
-   moving to `parser.ts` (Slice 1). The planner test covers it indirectly but not as a unit.
+   JSON-fenced input, and invalid/partial JSON. Pin BEFORE moving to `parser.ts` (Slice 1).
+   `controller-coordinator-handler.test.ts` already unit-tests `parseNextStep` for the
+   `validateRequires` boundary (lines `2283`+) but not the full shape matrix — broaden it.
 2. A **`renderLiveBoard` unit test** asserting the glue delegates correctly to
    `reconstructBoard`+`renderBoard` and returns `''` on absent `runId`. Pin BEFORE moving
    to `board.ts` (Slice 2). `board.test.ts` covers the components but not the glue entry.
@@ -571,7 +587,7 @@ next major version, so all 4 blast-radius importers keep their import paths with
 |---|---|---|---|---|---|
 | 1 | **`parser.ts` — move `parseNextStep`+`extractJsonObject`** — create `controller/parser.ts`; update `planner.ts` and `reviewer.ts` import paths; handler re-exports both | R5 | −70 / +80 | **very low** | Fixes the inverted dependency. Only 2 sibling files update their import path (`planner.ts` → `./parser.js`; `reviewer.ts` → `./parser.js`). External importers of the handler keep their paths via re-export. Gate with new `parseNextStep` characterization test (§4 #1). |
 | 2 | **`renderLiveBoard` → `board.ts`** — move the 20-line function into `board.ts`; add one import in the handler | R2 | −20 / +25 | **very low** | Zero external importers of `renderLiveBoard`. `board.test.ts` already covers the components. Gate with new `renderLiveBoard` unit test (§4 #2). Pure move-to-sibling. |
-| 3 | **`usage-logging.ts` — move `makeLogUsage`** — create `controller/usage-logging.ts`; handler re-exports `makeLogUsage` | R-util | −35 / +45 | **very low** | Already tested in isolation (`usage-logging.test.ts`). One external importer (`pipelines/controller.ts`) keeps its path via handler re-export. Zero behavior change. |
+| 3 | **`usage-logging.ts` — move `makeLogUsage`** — create `controller/usage-logging.ts`; handler re-exports `makeLogUsage` | R-util | −35 / +45 | **very low** | Already tested in isolation (`usage-logging.test.ts`). NO external production importer (called once inside `execute()`); the handler re-export is a no-cost safety net keeping the TEST import path stable. Zero behavior change. |
 | 4 | **`recall.ts` — move recall cluster** — create `controller/recall.ts` with `runScopedRecall`, `relevantExtract`, `collectApproved`, `buildRecallBlock`, `rankStatus`, `isBetterStep`, `isBetterMcp`, recall constants; handler re-exports the two public functions | R3 | −250 / +270 | **low** | `run-scoped-recall.test.ts` pins the two exported functions in isolation. `collectApproved` is only called by `finalize()` in the handler; the import is internal. The `cosine` dependency (`../embedder-knowledge-index.js`) moves with `recall.ts`. |
 | 5 | **Inline `toLlmToolCall`** — expand the one call site in `runStep` and delete the module-scope function | R4 | −30 / +20 | **very low** | Single call site; zero external importers; trivially verifiable by the existing `round-trip.test.ts` exercising the external-tool path. Do after Slice 4 to keep the diff set coherent. |
 | 6 | **Residual cleanup** — after all moves, remove dead re-exports that are no longer needed, tighten section comments in the shrunken handler | R1 residual | −10 / +0 | **very low** | Cosmetic; no behavior change. Handler ends at ~1350 lines — a single-responsibility execution loop. |
